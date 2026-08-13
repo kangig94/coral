@@ -2,8 +2,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { DefaultProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
+import { createProviderHostContainmentReaper } from '#src/coordinator/live/provider-hosts/drain.js';
 import { PROVIDER_SERVER_INITIALIZE_TIMEOUT_MS } from '#src/providers/app-server-transport.js';
 import { backendLog } from '#src/infra/backend-log.js';
+import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
 import type { ProviderServerSpec } from '#src/providers/contract.js';
 import { flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
@@ -47,15 +49,31 @@ function observePromise<T>(promise: Promise<T>): { settled: boolean; value?: T; 
   return observed;
 }
 
+function createHostManager(
+  runtime: SimulationRuntime,
+  launchCoordinator: LaunchCoordinator,
+): DefaultProviderHostManager {
+  let elapsedMs = 0;
+  const clock = createMonotonicClock(Symbol('provider-transport-concurrency'), {
+    readMilliseconds: () => BigInt(elapsedMs),
+    sleep: async (milliseconds) => {
+      elapsedMs += milliseconds;
+    },
+  });
+  return new DefaultProviderHostManager({
+    runtime,
+    spawnProviderServer: launchCoordinator.spawnProviderServer.bind(launchCoordinator),
+    carrierBlocksRetirement: () => false,
+    reapContainment: createProviderHostContainmentReaper(runtime, { clock }),
+  });
+}
+
 describe('provider transport concurrency hardening', () => {
   it('rejects and kills a provider server that never answers initialize', async () => {
     const runtime = new SimulationRuntime();
     runtime.spawner.enqueueSpawn({ close: null });
     const launchCoordinator = new LaunchCoordinator({ runtime });
-    const hostManager = new DefaultProviderHostManager({
-      runtime,
-      spawnProviderServer: launchCoordinator.spawnProviderServer.bind(launchCoordinator),
-    });
+    const hostManager = createHostManager(runtime, launchCoordinator);
 
     const observed = observePromise(hostManager.openSession(createHostLaunch(), { jobId: 'job-a' }));
     await flushMicrotasks();
@@ -63,24 +81,22 @@ describe('provider transport concurrency hardening', () => {
     runtime.time.tick(PROVIDER_SERVER_INITIALIZE_TIMEOUT_MS - 1);
     await flushMicrotasks();
     expect(observed.settled).toBe(false);
-    expect(runtime.spawner.killCalls).toEqual([]);
+    expect(runtime.spawner.killCalls).toEqual([{ pid: -20_000, signal: 0 }]);
 
     runtime.time.tick(1);
-    await flushMicrotasks(20);
+    await flushMicrotasks(200);
 
     expect(observed.settled).toBe(true);
     expect(observed.error).toBeInstanceOf(Error);
-    expect(runtime.spawner.killCalls).toContainEqual({ pid: 20_000, signal: 'SIGTERM' });
+    expect(runtime.spawner.killCalls).toContainEqual({ pid: -20_000, signal: 'SIGTERM' });
+    expect(runtime.spawner.killCalls).not.toContainEqual({ pid: 20_000, signal: 'SIGTERM' });
   });
 
   it('honors a provider-specific initialize timeout', async () => {
     const runtime = new SimulationRuntime();
     runtime.spawner.enqueueSpawn({ close: null });
     const launchCoordinator = new LaunchCoordinator({ runtime });
-    const hostManager = new DefaultProviderHostManager({
-      runtime,
-      spawnProviderServer: launchCoordinator.spawnProviderServer.bind(launchCoordinator),
-    });
+    const hostManager = createHostManager(runtime, launchCoordinator);
 
     const observed = observePromise(
       hostManager.openSession(createHostLaunch({ initializeTimeoutMs: 250 }), { jobId: 'job-a' }),
@@ -92,21 +108,19 @@ describe('provider transport concurrency hardening', () => {
     expect(observed.settled).toBe(false);
 
     runtime.time.tick(1);
-    await flushMicrotasks(20);
+    await flushMicrotasks(200);
 
     expect(observed.settled).toBe(true);
     expect((observed.error as Error | undefined)?.message).toContain('initialize timed out after 250ms');
-    expect(runtime.spawner.killCalls).toContainEqual({ pid: 20_000, signal: 'SIGTERM' });
+    expect(runtime.spawner.killCalls).toContainEqual({ pid: -20_000, signal: 'SIGTERM' });
+    expect(runtime.spawner.killCalls).not.toContainEqual({ pid: 20_000, signal: 'SIGTERM' });
   });
 
   it('falls back to the default initialize timeout for invalid provider timeout values', async () => {
     const runtime = new SimulationRuntime();
     runtime.spawner.enqueueSpawn({ close: null });
     const launchCoordinator = new LaunchCoordinator({ runtime });
-    const hostManager = new DefaultProviderHostManager({
-      runtime,
-      spawnProviderServer: launchCoordinator.spawnProviderServer.bind(launchCoordinator),
-    });
+    const hostManager = createHostManager(runtime, launchCoordinator);
 
     const observed = observePromise(
       hostManager.openSession(createHostLaunch({ initializeTimeoutMs: 0 }), { jobId: 'job-a' }),
@@ -118,22 +132,20 @@ describe('provider transport concurrency hardening', () => {
     expect(observed.settled).toBe(false);
 
     runtime.time.tick(1);
-    await flushMicrotasks(20);
+    await flushMicrotasks(200);
 
     expect(observed.settled).toBe(true);
     expect((observed.error as Error | undefined)?.message).toContain(
       `initialize timed out after ${PROVIDER_SERVER_INITIALIZE_TIMEOUT_MS}ms`,
     );
-    expect(runtime.spawner.killCalls).toContainEqual({ pid: 20_000, signal: 'SIGTERM' });
+    expect(runtime.spawner.killCalls).toContainEqual({ pid: -20_000, signal: 'SIGTERM' });
+    expect(runtime.spawner.killCalls).not.toContainEqual({ pid: 20_000, signal: 'SIGTERM' });
   });
 
   it('does not spawn a provider server when acquire is already aborted', async () => {
     const runtime = new SimulationRuntime();
     const launchCoordinator = new LaunchCoordinator({ runtime });
-    const hostManager = new DefaultProviderHostManager({
-      runtime,
-      spawnProviderServer: launchCoordinator.spawnProviderServer.bind(launchCoordinator),
-    });
+    const hostManager = createHostManager(runtime, launchCoordinator);
     const controller = new AbortController();
     const reason = new Error('already aborted');
     controller.abort(reason);
@@ -151,10 +163,7 @@ describe('provider transport concurrency hardening', () => {
     const runtime = new SimulationRuntime();
     runtime.spawner.enqueueSpawn({ close: null });
     const launchCoordinator = new LaunchCoordinator({ runtime });
-    const hostManager = new DefaultProviderHostManager({
-      runtime,
-      spawnProviderServer: launchCoordinator.spawnProviderServer.bind(launchCoordinator),
-    });
+    const hostManager = createHostManager(runtime, launchCoordinator);
     const controller = new AbortController();
 
     const observed = observePromise(
@@ -167,7 +176,8 @@ describe('provider transport concurrency hardening', () => {
 
     expect(observed.settled).toBe(true);
     expect(observed.error).toBeInstanceOf(Error);
-    expect(runtime.spawner.killCalls).toContainEqual({ pid: 20_000, signal: 'SIGTERM' });
+    expect(runtime.spawner.killCalls).toContainEqual({ pid: -20_000, signal: 'SIGTERM' });
+    expect(runtime.spawner.killCalls).not.toContainEqual({ pid: 20_000, signal: 'SIGTERM' });
   });
 
   it('faults the provider transport instead of rethrowing notification handler errors', async () => {

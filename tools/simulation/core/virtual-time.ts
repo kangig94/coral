@@ -98,6 +98,10 @@ export class VirtualTime implements TimePort {
     return this.currentTime;
   }
 
+  monotonicNow(): bigint {
+    return BigInt(Math.trunc(this.currentTime));
+  }
+
   sleep(ms: number, options?: { signal?: AbortSignal }): Promise<void> {
     assertFiniteNonNegative(ms, 'sleep(ms)');
     return new Promise<void>((resolve) => {

@@ -191,7 +191,7 @@ describe('runShutdownSequence drain budget', () => {
     expect(harness.closeIpcCalled()).toBe(true);
   });
 
-  it('bounds hard-mode provider host shutdown before terminating children', async () => {
+  it('reports hard shutdown failure when provider-host containment exceeds the lifecycle deadline', async () => {
     const harness = buildHarness({
       hooksOnShutdown: async () => {},
     });
@@ -208,15 +208,20 @@ describe('runShutdownSequence drain budget', () => {
       harness.callLog.push('terminateAllFn');
     };
 
-    const sequence = runShutdownSequence(harness.ctx);
+    const sequence = runShutdownSequence(harness.ctx).catch((error: unknown) => error);
     for (let i = 0; i <= SHUTDOWN_DRAIN_TIMEOUT_MS + 100; i += 100) {
       harness.time.tick(100);
       await flush();
     }
-    await sequence;
+    const failure = await sequence;
 
     const sawExceeded = harness.logLines.some((l) => l.includes('provider host shutdown: exceeded drain budget'));
-    expect(sawExceeded).toBe(true);
+    expect(sawExceeded).toBe(false);
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as Error).message).toContain('shutdown completed with 1 finalizer failure');
+    expect(harness.logLines).toContainEqual(
+      expect.stringContaining("Required shutdown step 'provider host shutdown' timed-out"),
+    );
     expect(providerSignal?.aborted).toBe(true);
     expect(harness.callLog).toContain('terminateAllFn');
     expect(harness.closeIpcCalled()).toBe(true);
@@ -268,15 +273,19 @@ describe('runShutdownSequence drain budget', () => {
       harness.time.tick(200);
       await flush();
     }
-    await sequence;
+    await expect(sequence).rejects.toBeInstanceOf(AggregateError);
 
     // The drain-for-handoff step exceeded budget; later steps must surface
     // "skipped (drain budget exhausted)" because remainingDrain() == 0.
     const sawExceeded = harness.logLines.some((l) =>
       l.includes('provider host drain for handoff: exceeded drain budget'),
     );
+    const sawRequiredFailure = harness.logLines.some((l) =>
+      l.includes("Required shutdown step 'provider host drain for handoff' timed-out"),
+    );
     const sawSkipped = harness.logLines.some((l) => l.includes('hooks.onShutdown: skipped (drain budget exhausted)'));
-    expect(sawExceeded).toBe(true);
+    expect(sawExceeded).toBe(false);
+    expect(sawRequiredFailure).toBe(true);
     expect(sawSkipped).toBe(true);
     expect(harness.closeIpcCalled()).toBe(true);
   });

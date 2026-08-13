@@ -6,9 +6,15 @@ import type {
   ProviderResponseDiagnosticFact,
   ProviderResponseObservationSink,
 } from '#src/providers/host-diagnostics.js';
-import { DefaultProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
 import { createCoordinatorProviderHostAdmission } from '#src/coordinator/live/provider-host-admission.js';
-import { createExclusiveSpec, createFakeProviderServerHandle, createSharedSpec, runtime } from './helpers.js';
+import {
+  StubbedContainmentProviderHostManager,
+  noCarrierBlocksRetirement,
+  createExclusiveSpec,
+  createFakeProviderServerHandle,
+  createSharedSpec,
+  runtime,
+} from './helpers.js';
 
 function rejectedConfigRead(generation: number): ProviderResponseDiagnosticFact {
   return Object.freeze({
@@ -37,20 +43,22 @@ describe('coordinator provider-host admission', () => {
     });
     const handles = [first.handle, second.handle];
     const sinks: ProviderResponseObservationSink[] = [];
-    const spawnProviderServer = vi.fn<SpawnProviderServerFn>(async (_options, sink) => {
+    const spawnProviderServer = vi.fn<SpawnProviderServerFn>(async (_options, sink, _generation, recordContainment) => {
       sinks.push(sink);
       const handle = handles.shift();
       if (handle === undefined) throw new Error('unexpected replacement spawn');
+      recordContainment?.(handle.containmentIdentity);
       return handle;
     });
     let generation = 101;
-    const manager = new DefaultProviderHostManager({
+    const manager = new StubbedContainmentProviderHostManager({
+      carrierBlocksRetirement: noCarrierBlocksRetirement,
       runtime,
       spawnProviderServer,
       admission: createCoordinatorProviderHostAdmission(),
       allocateProviderServerGeneration: () => generation++,
     });
-    const hostSpec = createSharedSpec({ provider: 'codex', idleRetirement: 'none' });
+    const hostSpec = createSharedSpec({ provider: 'codex', idleRetirement: 'never' });
 
     const opened = await manager.openSession(hostSpec);
     sinks[0]?.(rejectedConfigRead(101));
@@ -126,6 +134,42 @@ describe('coordinator provider-host admission', () => {
     await manager.shutdown();
   });
 
+  it('returns provider_host_draining when eviction is reclaiming a blocked-live host', async () => {
+    const server = createFakeProviderServerHandle({ generation: 103 });
+    const reapStarted = createDeferred<void>();
+    const finishReap = createDeferred<void>();
+    let sink: ProviderResponseObservationSink | undefined;
+    const manager = new StubbedContainmentProviderHostManager({
+      carrierBlocksRetirement: noCarrierBlocksRetirement,
+      runtime,
+      admission: createCoordinatorProviderHostAdmission(),
+      spawnProviderServer: async (_options, observationSink, _generation, recordContainment) => {
+        sink = observationSink;
+        recordContainment?.(server.handle.containmentIdentity);
+        return server.handle;
+      },
+      reapContainment: async () => {
+        reapStarted.resolve();
+        await finishReap.promise;
+      },
+      allocateProviderServerGeneration: () => 103,
+    });
+    const hostSpec = createSharedSpec({ provider: 'codex', idleRetirement: 'never' });
+    const opened = await manager.openSession(hostSpec);
+    sink?.(rejectedConfigRead(103));
+    expect(manager.admissionSnapshot().state.values().next().value?.phase).toBe('blocked-live');
+
+    const eviction = manager.evictHost(opened.hostRef);
+    await reapStarted.promise;
+
+    await expect(manager.openSession(hostSpec)).rejects.toThrow(/^provider_host_draining:/u);
+
+    finishReap.resolve();
+    await expect(eviction).resolves.toBe(true);
+    opened.close();
+    await manager.shutdown();
+  });
+
   it('correlates an openSession RPC rejection to its exact blocked coordinator host', async () => {
     const providerCause = new Error('coordinator provider RPC rejected');
     const server = createFakeProviderServerHandle({
@@ -136,16 +180,18 @@ describe('coordinator provider-host admission', () => {
       },
     });
     let sink: ProviderResponseObservationSink | undefined;
-    const manager = new DefaultProviderHostManager({
+    const manager = new StubbedContainmentProviderHostManager({
+      carrierBlocksRetirement: noCarrierBlocksRetirement,
       runtime,
       admission: createCoordinatorProviderHostAdmission(),
-      spawnProviderServer: async (_options, observationSink) => {
+      spawnProviderServer: async (_options, observationSink, _generation, recordContainment) => {
         sink = observationSink;
+        recordContainment?.(server.handle.containmentIdentity);
         return server.handle;
       },
       allocateProviderServerGeneration: () => 151,
     });
-    const opened = await manager.openSession(createSharedSpec({ provider: 'codex', idleRetirement: 'none' }));
+    const opened = await manager.openSession(createSharedSpec({ provider: 'codex', idleRetirement: 'never' }));
     sink?.(rejectedConfigRead(151));
 
     const rejection = await opened.session.rpc('turn/start', {}).catch((error: unknown) => error);
@@ -167,14 +213,16 @@ describe('coordinator provider-host admission', () => {
     const second = createFakeProviderServerHandle({ generation: 202 });
     const sinks: ProviderResponseObservationSink[] = [];
     const handles = [first.handle, second.handle];
-    const spawnProviderServer = vi.fn<SpawnProviderServerFn>(async (_options, sink) => {
+    const spawnProviderServer = vi.fn<SpawnProviderServerFn>(async (_options, sink, _generation, recordContainment) => {
       sinks.push(sink);
       const handle = handles.shift();
       if (handle === undefined) throw new Error('unexpected third spawn');
+      recordContainment?.(handle.containmentIdentity);
       return handle;
     });
     let generation = 201;
-    const manager = new DefaultProviderHostManager({
+    const manager = new StubbedContainmentProviderHostManager({
+      carrierBlocksRetirement: noCarrierBlocksRetirement,
       runtime,
       spawnProviderServer,
       admission: createCoordinatorProviderHostAdmission(),
@@ -223,14 +271,16 @@ describe('coordinator provider-host admission', () => {
     const replacement = createFakeProviderServerHandle({ generation: 303 });
     const handles = [evicted.handle, untouched.handle, replacement.handle];
     const sinks: ProviderResponseObservationSink[] = [];
-    const spawnProviderServer = vi.fn<SpawnProviderServerFn>(async (_options, sink) => {
+    const spawnProviderServer = vi.fn<SpawnProviderServerFn>(async (_options, sink, _generation, recordContainment) => {
       sinks.push(sink);
       const handle = handles.shift();
       if (handle === undefined) throw new Error('unexpected fourth spawn');
+      recordContainment?.(handle.containmentIdentity);
       return handle;
     });
     let generation = 301;
-    const manager = new DefaultProviderHostManager({
+    const manager = new StubbedContainmentProviderHostManager({
+      carrierBlocksRetirement: noCarrierBlocksRetirement,
       runtime,
       spawnProviderServer,
       admission: createCoordinatorProviderHostAdmission(),
@@ -258,7 +308,7 @@ describe('coordinator provider-host admission', () => {
     await expect(
       manager.openSession(hostSpec, { jobId: 'job-a' }),
       'ref A admission reopened before ref A exact live close settled',
-    ).rejects.toMatchObject({ code: 'provider_host_unserviceable', hostRef: first.hostRef });
+    ).rejects.toThrow(/^provider_host_draining:/u);
     expect(untouched.closeMock, 'ref B was closed while evicting ref A').not.toHaveBeenCalled();
 
     evictedClose.resolve();
@@ -275,7 +325,7 @@ describe('coordinator provider-host admission', () => {
     await manager.shutdown();
   });
 
-  it('keeps coordinator admission blocked when exact live close fails', async () => {
+  it('keeps coordinator admission gated as draining when exact live close fails', async () => {
     const server = createFakeProviderServerHandle({
       generation: 401,
       close: async () => {
@@ -283,16 +333,18 @@ describe('coordinator provider-host admission', () => {
       },
     });
     let sink: ProviderResponseObservationSink | undefined;
-    const manager = new DefaultProviderHostManager({
+    const manager = new StubbedContainmentProviderHostManager({
+      carrierBlocksRetirement: noCarrierBlocksRetirement,
       runtime,
       admission: createCoordinatorProviderHostAdmission(),
-      spawnProviderServer: async (_options, observationSink) => {
+      spawnProviderServer: async (_options, observationSink, _generation, recordContainment) => {
         sink = observationSink;
+        recordContainment?.(server.handle.containmentIdentity);
         return server.handle;
       },
       allocateProviderServerGeneration: () => 401,
     });
-    const hostSpec = createSharedSpec({ provider: 'codex', idleRetirement: 'none' });
+    const hostSpec = createSharedSpec({ provider: 'codex', idleRetirement: 'never' });
     const opened = await manager.openSession(hostSpec);
     sink?.(rejectedConfigRead(401));
 
@@ -301,10 +353,7 @@ describe('coordinator provider-host admission', () => {
       ref: opened.hostRef,
       phase: 'blocked-live',
     });
-    await expect(manager.openSession(hostSpec)).rejects.toMatchObject({
-      code: 'provider_host_unserviceable',
-      hostRef: opened.hostRef,
-    });
+    await expect(manager.openSession(hostSpec)).rejects.toThrow(/^provider_host_draining:/u);
     opened.close();
   });
 });

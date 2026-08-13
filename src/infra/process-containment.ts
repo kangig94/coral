@@ -1,8 +1,8 @@
 import { probeProcessStartedAtSeconds } from './node-process.js';
 import type { MonotonicClock, MonotonicInstant } from './monotonic-clock.js';
 import {
-  PROXY_DISAPPEARANCE_CONFIRM_MS,
-  PROXY_PROCESS_CONTROL_CALL_MAX_MS,
+  CONTAINMENT_DISAPPEARANCE_CONFIRM_MS,
+  CONTAINMENT_PROCESS_CONTROL_CALL_MAX_MS,
   SIGKILL_GRACE_MS,
   SIGTERM_GRACE_MS,
 } from './process-constants.js';
@@ -18,7 +18,7 @@ export type RecordedProcessIdentity = Readonly<{
   processStartedAtSeconds: number;
 }>;
 
-/** The detached proxy leader and the process group it established. */
+/** A detached process leader and the process group it established. */
 export type RecordedContainmentIdentity = RecordedProcessIdentity &
   Readonly<{
     processGroupId: number;
@@ -39,7 +39,18 @@ export type ProcessContainmentEnvironment<Scope extends symbol> = {
   };
   readonly platform: NodeJS.Platform;
   readonly readProcessStartedAtSeconds?: (pid: number, platform: NodeJS.Platform) => number | null;
+  readonly signal?: AbortSignal;
 };
+
+function containmentAbortError(signal: AbortSignal): Error {
+  return signal.reason instanceof Error
+    ? signal.reason
+    : new Error('Recorded containment reclamation was aborted.', { cause: signal.reason });
+}
+
+function assertContainmentAuthorized(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw containmentAbortError(signal);
+}
 
 /** Closed failures reported by recorded-containment teardown. */
 export type ProcessContainmentErrorCode = 'process_identity_unverified' | 'process_containment_reap_failed';
@@ -62,7 +73,7 @@ type TargetObservation = 'absent' | 'present';
 
 type RecordedSetObservation = Readonly<{
   containment: TargetObservation;
-  providerRoots: readonly TargetObservation[];
+  recordedRoots: readonly TargetObservation[];
 }>;
 
 function reapFailure(message: string, context: Readonly<Record<string, unknown>> = {}): ProcessContainmentError {
@@ -89,18 +100,8 @@ function assertProcessIdentity(identity: RecordedProcessIdentity, field: string)
   }
 }
 
-function assertRecordedSet(
-  containment: RecordedContainmentIdentity,
-  providerRoots: readonly RecordedProcessIdentity[],
-  maxRecordedRoots: number,
-): void {
-  if (providerRoots.length > maxRecordedRoots) {
-    throw reapFailure(`Recorded target count exceeds the ${maxRecordedRoots} limit.`, {
-      observed: providerRoots.length,
-      limit: maxRecordedRoots,
-    });
-  }
-
+/** Verifies that a recorded containment names its detached process-group leader. */
+export function assertRecordedContainmentIdentity(containment: RecordedContainmentIdentity): void {
   assertProcessIdentity(containment, 'containment');
   assertPositiveSafeInteger(containment.processGroupId, 'containment.processGroupId');
   if (containment.processGroupId !== containment.pid) {
@@ -110,8 +111,23 @@ function assertRecordedSet(
       { pid: containment.pid, processGroupId: containment.processGroupId },
     );
   }
-  for (const [index, root] of providerRoots.entries()) {
-    assertProcessIdentity(root, `providerRoots[${index}]`);
+}
+
+function assertRecordedSet(
+  containment: RecordedContainmentIdentity,
+  recordedRoots: readonly RecordedProcessIdentity[],
+  maxRecordedRoots: number,
+): void {
+  if (recordedRoots.length > maxRecordedRoots) {
+    throw reapFailure(`Recorded target count exceeds the ${maxRecordedRoots} limit.`, {
+      observed: recordedRoots.length,
+      limit: maxRecordedRoots,
+    });
+  }
+
+  assertRecordedContainmentIdentity(containment);
+  for (const [index, root] of recordedRoots.entries()) {
+    assertProcessIdentity(root, `recordedRoots[${index}]`);
   }
 }
 
@@ -154,6 +170,10 @@ function observeContainment<Scope extends symbol>(
 ): TargetObservation {
   const observedStartedAt = readStartedAt(containment, environment);
   if (observedStartedAt !== null && observedStartedAt !== containment.processStartedAtSeconds) {
+    // A mismatched start time proves that pid no longer identifies the recorded leader, not that every member
+    // of its old group is gone. Do not probe or signal -processGroupId after reuse because the numeric group can
+    // no longer be proven ours. This can strand original members: the guarantee is never to signal the wrong
+    // group, not always to reap ours.
     return 'absent';
   }
   if (observedStartedAt === null && environment.process.isAlive(containment.pid)) {
@@ -168,14 +188,14 @@ function observeContainment<Scope extends symbol>(
   if (observedStartedAt === containment.processStartedAtSeconds && !groupIsAlive) {
     return 'absent';
   }
-  // A detached group remains signalable after its verified leader exits; treating
-  // leader exit as group absence would strand the proxy's in-group children.
+  // A detached group remains signalable after its verified leader exits; treating leader exit as group
+  // absence would strand the containment's remaining members.
   return groupIsAlive ? 'present' : 'absent';
 }
 
 function observeRecordedSet<Scope extends symbol>(
   containment: RecordedContainmentIdentity,
-  providerRoots: readonly RecordedProcessIdentity[],
+  recordedRoots: readonly RecordedProcessIdentity[],
   environment: ProcessContainmentEnvironment<Scope>,
 ): RecordedSetObservation {
   const roots: TargetObservation[] = [];
@@ -187,7 +207,7 @@ function observeRecordedSet<Scope extends symbol>(
   } catch (error: unknown) {
     firstFailure = error;
   }
-  for (const root of providerRoots) {
+  for (const root of recordedRoots) {
     try {
       roots.push(observeProcessIdentity(root, environment));
     } catch (error: unknown) {
@@ -199,11 +219,11 @@ function observeRecordedSet<Scope extends symbol>(
   if (firstFailure !== undefined) {
     throw reapFailure('Recorded containment observation failed.');
   }
-  return { containment: containmentObservation, providerRoots: roots };
+  return { containment: containmentObservation, recordedRoots: roots };
 }
 
 function allRecordedTargetsAbsent(observation: RecordedSetObservation): boolean {
-  return observation.containment === 'absent' && observation.providerRoots.every((root) => root === 'absent');
+  return observation.containment === 'absent' && observation.recordedRoots.every((root) => root === 'absent');
 }
 
 function assertSignalCallWithinBounds<Scope extends symbol>(
@@ -213,11 +233,14 @@ function assertSignalCallWithinBounds<Scope extends symbol>(
 ): void {
   const now = environment.clock.now();
   const callDurationMs = environment.clock.millisecondsBetween(callStartedAt, now);
-  if (callDurationMs > PROXY_PROCESS_CONTROL_CALL_MAX_MS) {
-    throw reapFailure(`Recorded containment process-control call exceeded ${PROXY_PROCESS_CONTROL_CALL_MAX_MS}ms.`, {
-      callDurationMs,
-      limit: PROXY_PROCESS_CONTROL_CALL_MAX_MS,
-    });
+  if (callDurationMs > CONTAINMENT_PROCESS_CONTROL_CALL_MAX_MS) {
+    throw reapFailure(
+      `Recorded containment process-control call exceeded ${CONTAINMENT_PROCESS_CONTROL_CALL_MAX_MS}ms.`,
+      {
+        callDurationMs,
+        limit: CONTAINMENT_PROCESS_CONTROL_CALL_MAX_MS,
+      },
+    );
   }
   if (environment.clock.compare(now, exitDeadline) > 0) {
     throw reapFailure('Recorded containment process-control call exceeded the exit deadline.', {
@@ -228,12 +251,13 @@ function assertSignalCallWithinBounds<Scope extends symbol>(
 
 function signalRecordedSet<Scope extends symbol>(
   containment: RecordedContainmentIdentity,
-  providerRoots: readonly RecordedProcessIdentity[],
+  recordedRoots: readonly RecordedProcessIdentity[],
   observation: RecordedSetObservation,
   signal: NodeJS.Signals,
   exitDeadline: MonotonicInstant<Scope>,
   environment: ProcessContainmentEnvironment<Scope>,
 ): void {
+  assertContainmentAuthorized(environment.signal);
   const callStartedAt = environment.clock.now();
   if (environment.clock.compare(callStartedAt, exitDeadline) >= 0) {
     throw reapFailure(`Recorded containment had no time remaining for ${signal}.`, {
@@ -246,6 +270,7 @@ function signalRecordedSet<Scope extends symbol>(
     // syscalls would otherwise exceed the per-call bound and abandon a reap that was progressing fine. The
     // sweep as a whole stays bounded by `exitDeadline`, which every step below still checks.
     const thisCallStartedAt = environment.clock.now();
+    assertContainmentAuthorized(environment.signal);
     assertSignalCallWithinBounds(thisCallStartedAt, exitDeadline, environment);
     environment.process.kill(pid, signal);
     assertSignalCallWithinBounds(thisCallStartedAt, exitDeadline, environment);
@@ -255,8 +280,8 @@ function signalRecordedSet<Scope extends symbol>(
     if (observation.containment === 'present' && observeContainment(containment, environment) === 'present') {
       signalPid(-containment.processGroupId);
     }
-    for (const [index, root] of providerRoots.entries()) {
-      if (observation.providerRoots[index] === 'present' && observeProcessIdentity(root, environment) === 'present') {
+    for (const [index, root] of recordedRoots.entries()) {
+      if (observation.recordedRoots[index] === 'present' && observeProcessIdentity(root, environment) === 'present') {
         signalPid(root.pid);
       }
     }
@@ -266,82 +291,113 @@ function signalRecordedSet<Scope extends symbol>(
   }
 }
 
+async function sleepWhileAuthorized<Scope extends symbol>(
+  milliseconds: number,
+  environment: ProcessContainmentEnvironment<Scope>,
+): Promise<void> {
+  const signal = environment.signal;
+  if (signal === undefined) {
+    await environment.clock.sleep(milliseconds);
+    return;
+  }
+  assertContainmentAuthorized(signal);
+  await new Promise<void>((resolve, reject) => {
+    const onAbort = (): void => reject(containmentAbortError(signal));
+    signal.addEventListener('abort', onAbort, { once: true });
+    void environment.clock.sleep(milliseconds).then(
+      () => {
+        signal.removeEventListener('abort', onAbort);
+        resolve();
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error instanceof Error ? error : new Error('Containment wait failed.', { cause: error }));
+      },
+    );
+  });
+  assertContainmentAuthorized(signal);
+}
+
 async function waitForAbsence<Scope extends symbol>(
   containment: RecordedContainmentIdentity,
-  providerRoots: readonly RecordedProcessIdentity[],
+  recordedRoots: readonly RecordedProcessIdentity[],
   waitDeadline: MonotonicInstant<Scope>,
   environment: ProcessContainmentEnvironment<Scope>,
 ): Promise<boolean> {
   while (true) {
-    if (allRecordedTargetsAbsent(observeRecordedSet(containment, providerRoots, environment))) {
+    assertContainmentAuthorized(environment.signal);
+    if (allRecordedTargetsAbsent(observeRecordedSet(containment, recordedRoots, environment))) {
       return true;
     }
     const remainingMs = environment.clock.millisecondsBetween(environment.clock.now(), waitDeadline);
     if (remainingMs <= 0) return false;
-    await environment.clock.sleep(Math.min(ABSENCE_POLL_MS, remainingMs));
+    await sleepWhileAuthorized(Math.min(ABSENCE_POLL_MS, remainingMs), environment);
   }
 }
 
 async function confirmAbsence<Scope extends symbol>(
   containment: RecordedContainmentIdentity,
-  providerRoots: readonly RecordedProcessIdentity[],
+  recordedRoots: readonly RecordedProcessIdentity[],
   exitDeadline: MonotonicInstant<Scope>,
   environment: ProcessContainmentEnvironment<Scope>,
 ): Promise<boolean> {
   const confirmationDeadline = environment.clock.shiftMilliseconds(
     environment.clock.now(),
-    PROXY_DISAPPEARANCE_CONFIRM_MS,
+    CONTAINMENT_DISAPPEARANCE_CONFIRM_MS,
   );
   if (environment.clock.compare(confirmationDeadline, exitDeadline) > 0) return false;
 
   while (environment.clock.compare(environment.clock.now(), confirmationDeadline) < 0) {
-    if (!allRecordedTargetsAbsent(observeRecordedSet(containment, providerRoots, environment))) {
+    assertContainmentAuthorized(environment.signal);
+    if (!allRecordedTargetsAbsent(observeRecordedSet(containment, recordedRoots, environment))) {
       return false;
     }
     // Observing the set can outlast the remaining window; clamping keeps that from becoming a negative
     // sleep, which would throw outside this module's closed failure set and report an absent set as failed.
     const remainingMs = environment.clock.millisecondsBetween(environment.clock.now(), confirmationDeadline);
-    await environment.clock.sleep(Math.max(0, Math.min(ABSENCE_POLL_MS, remainingMs)));
+    await sleepWhileAuthorized(Math.max(0, Math.min(ABSENCE_POLL_MS, remainingMs)), environment);
   }
-  return allRecordedTargetsAbsent(observeRecordedSet(containment, providerRoots, environment));
+  return allRecordedTargetsAbsent(observeRecordedSet(containment, recordedRoots, environment));
 }
 
 /**
- * Reaps exactly the recorded proxy group and provider-root identities before one absolute deadline.
+ * Reaps exactly the recorded group and additional recorded process identities before one absolute deadline.
  */
 export async function reapRecordedContainment<Scope extends symbol>(
   containment: RecordedContainmentIdentity,
-  providerRoots: readonly RecordedProcessIdentity[],
+  recordedRoots: readonly RecordedProcessIdentity[],
   exitDeadline: MonotonicInstant<Scope>,
   environment: ProcessContainmentEnvironment<Scope>,
 ): Promise<void> {
-  assertRecordedSet(containment, providerRoots, environment.maxRecordedRoots);
+  assertContainmentAuthorized(environment.signal);
+  assertRecordedSet(containment, recordedRoots, environment.maxRecordedRoots);
 
-  let observation = observeRecordedSet(containment, providerRoots, environment);
+  let observation = observeRecordedSet(containment, recordedRoots, environment);
   if (allRecordedTargetsAbsent(observation)) {
-    if (await confirmAbsence(containment, providerRoots, exitDeadline, environment)) return;
+    if (await confirmAbsence(containment, recordedRoots, exitDeadline, environment)) return;
     throw reapFailure('Recorded containment absence could not be confirmed before the exit deadline.');
   }
 
-  signalRecordedSet(containment, providerRoots, observation, 'SIGTERM', exitDeadline, environment);
+  signalRecordedSet(containment, recordedRoots, observation, 'SIGTERM', exitDeadline, environment);
   const termWaitDeadline = environment.clock.earlier(
     exitDeadline,
     environment.clock.shiftMilliseconds(environment.clock.now(), SIGTERM_GRACE_MS),
   );
-  if (await waitForAbsence(containment, providerRoots, termWaitDeadline, environment)) {
-    if (await confirmAbsence(containment, providerRoots, exitDeadline, environment)) return;
+  if (await waitForAbsence(containment, recordedRoots, termWaitDeadline, environment)) {
+    if (await confirmAbsence(containment, recordedRoots, exitDeadline, environment)) return;
     throw reapFailure('Recorded containment absence could not be confirmed before the exit deadline.');
   }
 
-  observation = observeRecordedSet(containment, providerRoots, environment);
-  signalRecordedSet(containment, providerRoots, observation, 'SIGKILL', exitDeadline, environment);
+  assertContainmentAuthorized(environment.signal);
+  observation = observeRecordedSet(containment, recordedRoots, environment);
+  signalRecordedSet(containment, recordedRoots, observation, 'SIGKILL', exitDeadline, environment);
   const killWaitDeadline = environment.clock.earlier(
     exitDeadline,
     environment.clock.shiftMilliseconds(environment.clock.now(), SIGKILL_GRACE_MS),
   );
   if (
-    (await waitForAbsence(containment, providerRoots, killWaitDeadline, environment)) &&
-    (await confirmAbsence(containment, providerRoots, exitDeadline, environment))
+    (await waitForAbsence(containment, recordedRoots, killWaitDeadline, environment)) &&
+    (await confirmAbsence(containment, recordedRoots, exitDeadline, environment))
   ) {
     return;
   }

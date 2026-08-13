@@ -1,5 +1,6 @@
-// Process-kill escalation invariant — terminating a live child process must
-// escalate SIGTERM→SIGKILL (via `gracefulKill`), never a bare
+// Process-kill escalation invariant — terminating a live child or recorded
+// process group must escalate SIGTERM→SIGKILL via `gracefulKill` or
+// `reapRecordedContainment`, respectively, never a bare
 // `safeKill(child, 'SIGTERM')` that leaks a wedged child when it ignores the
 // term signal. The rule itself is the BLOCKING "Timeout kills use SIGTERM then
 // SIGKILL after delay" check in `.claude/rules/validation.md`; this test is its
@@ -41,6 +42,13 @@ const PRIMITIVE_FILE = 'src/infra/process-supervision.ts';
 // The other sanctioned escalation helper's own home — defines
 // `reapRecordedContainment`'s SIGTERM→SIGKILL sequence.
 const CONTAINMENT_HELPER_FILE = 'src/infra/process-containment.ts';
+// A negative primitive scan cannot prove an owner still reaps its containment:
+// deleting teardown entirely would also make that scan pass. Keep both owners
+// explicit so adding one cannot silently narrow the escalation guarantee.
+const RECORDED_CONTAINMENT_OWNER_FILES = [
+  'src/provider-proxy/enforcement.ts',
+  'src/coordinator/live/provider-hosts/drain.ts',
+] as const;
 
 // File-level allowlist: call sites permitted to use the bare primitive, each
 // with the reason escalation does not apply. Adding a new entry is a conscious
@@ -81,6 +89,10 @@ function canonicalSrcPath(filePath: string): string {
 
 function callsSafeKill(source: string): boolean {
   return /(^|[^.\w$])safeKill\s*\(/u.test(codeTextOnly(source));
+}
+
+function callsReapRecordedContainment(source: string): boolean {
+  return /(^|[^.\w$])reapRecordedContainment\s*\(/u.test(codeTextOnly(source));
 }
 
 describe('process kills escalate SIGTERM→SIGKILL', () => {
@@ -315,6 +327,20 @@ function hasHandRolledEscalation(source: string): boolean {
 }
 
 describe('process kills do not hand-roll a SIGTERM→SIGKILL escalation outside the sanctioned helpers', () => {
+  it('both recorded-containment owners reap their recorded groups through reapRecordedContainment without an allowlist exemption', () => {
+    const ownersWithoutRecordedContainmentReaping = RECORDED_CONTAINMENT_OWNER_FILES.filter(
+      (canonical) => !callsReapRecordedContainment(readFileSync(join(REPO_ROOT, canonical), 'utf-8')),
+    );
+    const exemptedOwners = RECORDED_CONTAINMENT_OWNER_FILES.filter(
+      (canonical) => ALLOWLIST.has(canonical) || HAND_ROLLED_ESCALATION_ALLOWLIST.has(canonical),
+    );
+
+    expect({ ownersWithoutRecordedContainmentReaping, exemptedOwners }).toEqual({
+      ownersWithoutRecordedContainmentReaping: [],
+      exemptedOwners: [],
+    });
+  });
+
   it('detects a parameter-routed local escalation mutation', () => {
     const mutation = `
       function signal(pid: number, value: NodeJS.Signals): void {

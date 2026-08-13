@@ -20,6 +20,7 @@ export function parseIsoTimestamp(value: string): number {
 export function createRealTimePort(): TimePort {
   return {
     now: () => Date.now(),
+    monotonicNow: () => process.hrtime.bigint() / 1_000_000n,
     sleep: (ms, options) =>
       new Promise<void>((resolve) => {
         const signal = options?.signal;

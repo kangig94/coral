@@ -58,7 +58,7 @@ function createRecoveryProvider(): ProviderRegistry {
         args: [],
         cwd: fixtureCanonicalWorkDir('/handoff/cross-namespace'),
         leaseMode: 'shared',
-        idleRetirement: 'none',
+        idleRetirement: 'never',
       },
       interrupt: async () => {},
       probe: async (_transport, continuity) => ({ resumable: true, updatedContinuity: continuity }),

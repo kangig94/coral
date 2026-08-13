@@ -174,7 +174,7 @@ function providerHostInventoryRecord(): ProviderHostInventoryRecord {
       args: ['app-server'],
       cwd: canonicalizeWorkDir(process.cwd(), process.cwd()),
       leaseMode: 'shared',
-      idleRetirement: 'none',
+      idleRetirement: 'never',
     },
     host: { owner: 'coordinator' },
     diagnostics: {

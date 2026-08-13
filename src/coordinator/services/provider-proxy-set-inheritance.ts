@@ -317,7 +317,7 @@ async function proveProviderProxySetContainmentAbsent(
     }
     roots.set(`${record.providerRoot.pid}@${record.providerRoot.processStartedAtSeconds}`, record.providerRoot);
   }
-  const providerRoots = [...roots.values()];
+  const recordedRoots = [...roots.values()];
   const containment = {
     pid: identity.proxyPid,
     processStartedAtSeconds: identity.proxyProcessStartedAtSeconds,
@@ -326,17 +326,18 @@ async function proveProviderProxySetContainmentAbsent(
   const clock = createMonotonicClock(providerSetDisappearanceClockScope);
   await reapRecordedContainment(
     containment,
-    providerRoots,
+    recordedRoots,
     clock.shiftMilliseconds(clock.now(), PROXY_TEARDOWN_RESERVE_MS),
     {
       maxRecordedRoots: MAX_PROXY_RECORDED_PROVIDER_ROOTS,
       clock,
       process: runtime.process,
       platform,
+      signal,
     },
   );
   signal.throwIfAborted();
-  return providerProxyDisappearanceReceipt(containment, providerRoots);
+  return providerProxyDisappearanceReceipt(containment, recordedRoots);
 }
 
 /**

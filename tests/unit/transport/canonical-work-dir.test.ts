@@ -267,7 +267,7 @@ describe('canonical work directory transport ingress', () => {
       args: ['app-server'],
       cwd: canonicalizeWorkDir(physical, root),
       leaseMode: 'shared' as const,
-      idleRetirement: 'none' as const,
+      idleRetirement: 'never' as const,
     };
     const selectedSpec = {
       ...physicalSpec,

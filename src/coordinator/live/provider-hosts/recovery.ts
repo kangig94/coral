@@ -1,18 +1,17 @@
 import type { ProviderServerSpec } from '../../../providers/contract.js';
-import type { Runtime } from '../../../runtime/ports.js';
-import type { ProviderServerHandle } from '../../../providers/app-server-transport.js';
+import type { ContainedProviderServerHandle } from '../../../providers/app-server-transport.js';
 import type { ProviderHostEntry } from './state.js';
 import { AbortError } from '../../../runtime/abort.js';
 
 function waitForSpawn(
-  spawn: Promise<ProviderServerHandle>,
+  spawn: Promise<ContainedProviderServerHandle>,
   signal: AbortSignal | undefined,
-): Promise<ProviderServerHandle> {
+): Promise<ContainedProviderServerHandle> {
   if (signal === undefined) return spawn;
   if (signal.aborted) {
     return Promise.reject(new AbortError({ stage: 'provider_host_spawn_wait', reason: signal.reason }));
   }
-  return new Promise<ProviderServerHandle>((resolve, reject) => {
+  return new Promise<ContainedProviderServerHandle>((resolve, reject) => {
     const onAbort = () => reject(new AbortError({ stage: 'provider_host_spawn_wait', reason: signal.reason }));
     signal.addEventListener('abort', onAbort, { once: true });
     spawn.then(
@@ -47,47 +46,54 @@ function immutableSnapshot<Value>(value: Value): Value {
 export async function ensureProviderServerHandle(
   entry: ProviderHostEntry,
   options: {
-    spawnProviderServer: (spec: ProviderServerSpec) => Promise<ProviderServerHandle>;
-    runtime: Pick<Runtime, 'time'>;
-    shutdownHandle: (handle: ProviderServerHandle, spec: ProviderServerSpec) => Promise<void>;
-    attachHostNotificationListener: (entry: ProviderHostEntry, handle: ProviderServerHandle) => void;
-    clearIdleTimer: (entry: ProviderHostEntry) => void;
-    removeEntry: (entry: ProviderHostEntry) => void;
+    spawnProviderServer: (spec: ProviderServerSpec) => Promise<ContainedProviderServerHandle>;
+    closeEntry: (entry: ProviderHostEntry, detail: string) => Promise<void>;
+    attachHostNotificationListener: (entry: ProviderHostEntry, handle: ContainedProviderServerHandle) => void;
     createInstanceId: () => string;
-    observeRetired?: (entry: ProviderHostEntry, instanceId: string) => void;
+    observeRetired: (entry: ProviderHostEntry, instanceId: string) => void;
     signal?: AbortSignal;
   },
-): Promise<ProviderServerHandle> {
+): Promise<ContainedProviderServerHandle> {
   if (entry.handle) {
     return waitForSpawn(Promise.resolve(entry.handle), options.signal);
   }
   if (entry.closingError) {
-    throw entry.closingError;
+    throw providerHostDrainingError(entry.closingError);
   }
   if (entry.spawnPromise === null) {
     const instanceId = options.createInstanceId();
     entry.instanceId = instanceId;
-    let spawned: Promise<ProviderServerHandle>;
+    let spawned: Promise<ContainedProviderServerHandle>;
     try {
       spawned = options.spawnProviderServer(entry.spec);
     } catch (error: unknown) {
-      options.observeRetired?.(entry, instanceId);
-      if (entry.instanceId === instanceId) entry.instanceId = null;
+      try {
+        if (entry.containment !== null) {
+          await options.closeEntry(entry, 'failed during spawn or initialization');
+        }
+      } finally {
+        retireUninstalledInstance(entry, instanceId, options.observeRetired);
+      }
       throw error;
     }
     const initialization = initializeProviderServerHandle(entry, spawned, options);
-    entry.spawnPromise = initialization;
-    void initialization.then(
-      () => {
-        if (entry.spawnPromise === initialization) entry.spawnPromise = null;
-      },
-      () => {
-        if (entry.spawnPromise === initialization) {
-          entry.spawnPromise = null;
-          options.observeRetired?.(entry, instanceId);
-          if (entry.handle === null && entry.instanceId === instanceId) entry.instanceId = null;
+    const ownedInitialization = initialization.catch(async (error: unknown) => {
+      if (entry.spawnPromise === ownedInitialization) entry.spawnPromise = null;
+      try {
+        if (entry.containment !== null && entry.closePromise === null) {
+          await options.closeEntry(entry, 'failed during spawn or initialization');
         }
+      } finally {
+        if (entry.handle === null) retireUninstalledInstance(entry, instanceId, options.observeRetired);
+      }
+      throw error;
+    });
+    entry.spawnPromise = ownedInitialization;
+    void ownedInitialization.then(
+      () => {
+        if (entry.spawnPromise === ownedInitialization) entry.spawnPromise = null;
       },
+      () => {},
     );
   }
   return waitForSpawn(entry.spawnPromise, options.signal);
@@ -95,37 +101,49 @@ export async function ensureProviderServerHandle(
 
 async function initializeProviderServerHandle(
   entry: ProviderHostEntry,
-  spawned: Promise<ProviderServerHandle>,
+  spawned: Promise<ContainedProviderServerHandle>,
   options: {
-    shutdownHandle: (handle: ProviderServerHandle, spec: ProviderServerSpec) => Promise<void>;
-    attachHostNotificationListener: (entry: ProviderHostEntry, handle: ProviderServerHandle) => void;
-    clearIdleTimer: (entry: ProviderHostEntry) => void;
-    removeEntry: (entry: ProviderHostEntry) => void;
-    observeRetired?: (entry: ProviderHostEntry, instanceId: string) => void;
+    attachHostNotificationListener: (entry: ProviderHostEntry, handle: ContainedProviderServerHandle) => void;
+    closeEntry: (entry: ProviderHostEntry, detail: string) => Promise<void>;
+    observeRetired: (entry: ProviderHostEntry, instanceId: string) => void;
   },
-): Promise<ProviderServerHandle> {
+): Promise<ContainedProviderServerHandle> {
   const handle = await spawned;
-  // The entry-owned close operation, not an acquisition caller, owns a spawn that completes during drain.
-  const closingError = entry.closingError;
-  if (closingError !== null) {
-    await options.shutdownHandle(handle, entry.spec).catch(() => {});
-    throw new Error(closingError.message, { cause: closingError });
-  }
+  entry.containment = handle.containmentIdentity;
   entry.handle = handle;
-  options.attachHostNotificationListener(entry, handle);
   const instanceId = entry.instanceId;
-  const cleanup = () => {
-    if (entry.handle === handle) {
-      if (instanceId !== null) options.observeRetired?.(entry, instanceId);
+  const retire = () => {
+    // Starting unexpected-exit cleanup first lets its synchronous prefix retain the handle and containment
+    // identities before process-death bookkeeping removes the host as an acquisition candidate.
+    if (entry.closePromise === null) {
+      void options.closeEntry(entry, 'exited unexpectedly').catch(() => {});
+    }
+    if (instanceId !== null && entry.handle === handle && entry.instanceId === instanceId) {
+      options.observeRetired(entry, instanceId);
       entry.handle = null;
       entry.instanceId = null;
     }
-    options.clearIdleTimer(entry);
-    options.removeEntry(entry);
-    entry.disposeHostNotifications?.();
-    entry.disposeHostNotifications = null;
-    entry.hostStats = null;
   };
-  void handle.closePromise.then(cleanup, cleanup);
+  void handle.closePromise.then(retire, retire);
+  // The entry-owned close operation, not an acquisition caller, owns a spawn that completes during drain.
+  const closingError = entry.closingError;
+  if (closingError !== null) {
+    throw providerHostDrainingError(closingError);
+  }
+  options.attachHostNotificationListener(entry, handle);
   return handle;
+}
+
+function providerHostDrainingError(closingError: Error): Error {
+  return new Error(`provider_host_draining: ${closingError.message}`, { cause: closingError });
+}
+
+function retireUninstalledInstance(
+  entry: ProviderHostEntry,
+  instanceId: string,
+  observeRetired: (entry: ProviderHostEntry, instanceId: string) => void,
+): void {
+  if (entry.instanceId !== instanceId) return;
+  observeRetired(entry, instanceId);
+  entry.instanceId = null;
 }

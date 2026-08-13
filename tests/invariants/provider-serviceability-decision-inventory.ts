@@ -340,6 +340,61 @@ function symbolTargets(
   return [...new Set(targets)];
 }
 
+function assignedExpressions(context: CallableClosureContext, rawSymbol: ts.Symbol): readonly ts.Expression[] {
+  const symbol = aliasedSymbol(context.checker, rawSymbol);
+  const assignments: ts.Expression[] = [];
+  for (const declaration of symbol.declarations ?? []) {
+    const sourceFile = declaration.getSourceFile();
+    if (sourcePath(context, sourceFile) === undefined) continue;
+    const visit = (node: ts.Node): void => {
+      if (
+        ts.isBinaryExpression(node) &&
+        node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+        symbolAtExpression(context, node.left) === rawSymbol
+      ) {
+        assignments.push(node.right);
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sourceFile);
+  }
+  return [...new Set(assignments)];
+}
+
+function callableReturnExpressions(callable: CallableNode): readonly ts.Expression[] {
+  if (ts.isArrowFunction(callable) && !ts.isBlock(callable.body)) return [callable.body];
+  const returns: ts.Expression[] = [];
+  const visit = (node: ts.Node): void => {
+    if (node !== callable && isCallableNode(node)) return;
+    if (ts.isReturnStatement(node) && node.expression !== undefined) returns.push(node.expression);
+    ts.forEachChild(node, visit);
+  };
+  visit(callable);
+  return returns;
+}
+
+function callableFactoryTargets(
+  context: CallableClosureContext,
+  call: ts.CallExpression,
+  seenSymbols: Set<ts.Symbol>,
+): readonly CallableNode[] {
+  const rawFactorySymbol = symbolAtExpression(context, call.expression);
+  const factorySymbol = rawFactorySymbol === undefined ? undefined : aliasedSymbol(context.checker, rawFactorySymbol);
+  if (factorySymbol !== undefined && seenSymbols.has(factorySymbol)) return [];
+  const nextSeenSymbols = new Set(seenSymbols);
+  if (factorySymbol !== undefined) nextSeenSymbols.add(factorySymbol);
+  const factoryTargets = executableTargets(context, call);
+  return [
+    ...new Set(
+      factoryTargets.flatMap((factory) =>
+        callableReturnExpressions(factory).flatMap((returned) =>
+          expressionTargets(context, returned, new Set(nextSeenSymbols)),
+        ),
+      ),
+    ),
+  ];
+}
+
 function expressionTargets(
   context: CallableClosureContext,
   expression: ts.Expression,
@@ -358,16 +413,11 @@ function expressionTargets(
       ...expressionTargets(context, unwrapped.whenFalse, new Set(seenSymbols)),
     ];
   }
-  if (ts.isPropertyAccessExpression(unwrapped) || ts.isElementAccessExpression(unwrapped)) {
-    const directSymbol = symbolAtExpression(context, unwrapped);
-    const direct = directSymbol === undefined ? [] : symbolTargets(context, directSymbol, new Set(seenSymbols));
-    if (direct.length > 0) return direct;
-    const memberName = ts.isPropertyAccessExpression(unwrapped)
-      ? unwrapped.name.text
-      : unwrapped.argumentExpression !== undefined && ts.isStringLiteralLike(unwrapped.argumentExpression)
-        ? unwrapped.argumentExpression.text
-        : undefined;
-    return objectMemberTargets(context, unwrapped.expression, memberName, new Set(seenSymbols));
+  if (ts.isBinaryExpression(unwrapped) && unwrapped.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken) {
+    return [
+      ...expressionTargets(context, unwrapped.left, new Set(seenSymbols)),
+      ...expressionTargets(context, unwrapped.right, new Set(seenSymbols)),
+    ];
   }
   if (
     ts.isCallExpression(unwrapped) &&
@@ -377,6 +427,26 @@ function expressionTargets(
     unwrapped.arguments[0] !== undefined
   ) {
     return expressionTargets(context, unwrapped.arguments[0], seenSymbols);
+  }
+  if (ts.isCallExpression(unwrapped)) {
+    return callableFactoryTargets(context, unwrapped, seenSymbols);
+  }
+  if (ts.isPropertyAccessExpression(unwrapped) || ts.isElementAccessExpression(unwrapped)) {
+    const directSymbol = symbolAtExpression(context, unwrapped);
+    const direct = directSymbol === undefined ? [] : symbolTargets(context, directSymbol, new Set(seenSymbols));
+    const assigned =
+      directSymbol === undefined
+        ? []
+        : assignedExpressions(context, directSymbol).flatMap((assignment) =>
+            expressionTargets(context, assignment, new Set(seenSymbols)),
+          );
+    if (direct.length > 0 || assigned.length > 0) return [...new Set([...direct, ...assigned])];
+    const memberName = ts.isPropertyAccessExpression(unwrapped)
+      ? unwrapped.name.text
+      : unwrapped.argumentExpression !== undefined && ts.isStringLiteralLike(unwrapped.argumentExpression)
+        ? unwrapped.argumentExpression.text
+        : undefined;
+    return objectMemberTargets(context, unwrapped.expression, memberName, new Set(seenSymbols));
   }
   const symbol = symbolAtExpression(context, unwrapped);
   return symbol === undefined ? [] : symbolTargets(context, symbol, seenSymbols);
@@ -535,6 +605,12 @@ function callableLeaves(
       ...callableLeaves(context, unwrapped.whenFalse, new Set(seenSymbols)),
     ];
   }
+  if (ts.isBinaryExpression(unwrapped) && unwrapped.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken) {
+    return [
+      ...callableLeaves(context, unwrapped.left, new Set(seenSymbols)),
+      ...callableLeaves(context, unwrapped.right, new Set(seenSymbols)),
+    ];
+  }
   if (ts.isObjectLiteralExpression(unwrapped)) {
     return unwrapped.properties.flatMap((property) => {
       if (ts.isMethodDeclaration(property) && isCallableNode(property)) {
@@ -573,8 +649,16 @@ function callableLeaves(
         : callableLeaves(context, element, new Set(seenSymbols)),
     );
   }
+  const directSymbol = symbolAtExpression(context, unwrapped);
+  const assignedLeaves =
+    directSymbol === undefined
+      ? []
+      : assignedExpressions(context, directSymbol).flatMap((assignment) =>
+          callableLeaves(context, assignment, new Set(seenSymbols)),
+        );
   if (context.checker.getTypeAtLocation(unwrapped).getCallSignatures().length > 0) {
     return [
+      ...assignedLeaves,
       {
         node: unwrapped,
         expression: unwrapped,
@@ -588,9 +672,12 @@ function callableLeaves(
   const symbol = aliasedSymbol(context.checker, rawSymbol);
   if (seenSymbols.has(symbol)) return [];
   seenSymbols.add(symbol);
-  return (symbol.declarations ?? []).flatMap((declaration) =>
-    expressionInitializers(declaration).flatMap((initializer) => callableLeaves(context, initializer, seenSymbols)),
-  );
+  return [
+    ...assignedLeaves,
+    ...(symbol.declarations ?? []).flatMap((declaration) =>
+      expressionInitializers(declaration).flatMap((initializer) => callableLeaves(context, initializer, seenSymbols)),
+    ),
+  ];
 }
 
 function callSite(sourceFile: ts.SourceFile, call: ExecutableCall): string {

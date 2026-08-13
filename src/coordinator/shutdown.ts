@@ -405,7 +405,10 @@ export async function runShutdownSequence({
         await markJobsAsErrorFn('Backend shutting down', signal);
       });
     }
-    await runBudgetedStep('provider host shutdown', async (signal) => providerHostManager.shutdown(signal));
+    await runRequiredBudgetedStep('provider host shutdown', async (signal) => {
+      await providerHostManager.shutdown(signal);
+      return { confirmed: true };
+    });
     // Read only now, after `shutdown()` (and the `stopAndClose` abort inside it) has returned: see the
     // declaration above for why reading this any earlier would miss a set that finishes acquiring during
     // host shutdown.
@@ -430,9 +433,10 @@ export async function runShutdownSequence({
     for (const port of quiescePorts) {
       await runStep('app-server handoff quiesce', () => port.quiesceAppServerJobsForHandoff());
     }
-    await runBudgetedStep('provider host drain for handoff', async (signal) =>
-      providerHostManager.drainForHandoff(signal),
-    );
+    await runRequiredBudgetedStep('provider host drain for handoff', async (signal) => {
+      await providerHostManager.drainForHandoff(signal);
+      return { confirmed: true };
+    });
     // Same reasoning as the hard-mode read above: taken only after `drainForHandoff()` has aborted every
     // acquisition still in flight, so nothing settling afterward can be missing from it.
     liveProxySets = providerProxyAuthority?.liveSets() ?? [];

@@ -616,6 +616,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
     runtime,
     spawnProviderServer: launchCoordinator.spawnProviderServer.bind(launchCoordinator),
     admission: createHostAdmissionCollection({ classify: () => 'unknown' }),
+    carrierBlocksRetirement: () => false,
   });
 
   const hooks: SimulationHookLog = {

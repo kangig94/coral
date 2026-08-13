@@ -10,7 +10,11 @@ import {
   type ProviderProxySetAuthorityDependencies,
 } from '#src/coordinator/live/provider-proxy/set-authority.js';
 import type { ControlClient } from '#src/provider-proxy/control-client.js';
-import { PROXY_DISAPPEARANCE_CONFIRM_MS, SIGKILL_GRACE_MS, SIGTERM_GRACE_MS } from '#src/infra/process-constants.js';
+import {
+  CONTAINMENT_DISAPPEARANCE_CONFIRM_MS,
+  SIGKILL_GRACE_MS,
+  SIGTERM_GRACE_MS,
+} from '#src/infra/process-constants.js';
 import {
   DEFAULT_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS,
   PROXY_TEARDOWN_RESERVE_MS,
@@ -183,7 +187,7 @@ describe('createProviderProxySetAuthority: stopAndReap budget', () => {
     // per-syscall overhead. A budget below this floor cannot ever succeed against a stubborn process, so this
     // is deliberately the value under test rather than an arbitrary number that merely exceeds the bug's
     // 5s budget.
-    const stubbornReapFloorMs = SIGTERM_GRACE_MS + SIGKILL_GRACE_MS + PROXY_DISAPPEARANCE_CONFIRM_MS;
+    const stubbornReapFloorMs = SIGTERM_GRACE_MS + SIGKILL_GRACE_MS + CONTAINMENT_DISAPPEARANCE_CONFIRM_MS;
     expect(stubbornReapFloorMs).toBe(11_000);
     expect(stubbornReapFloorMs).toBeGreaterThan(PROXY_CONTROL_RPC_TIMEOUT_MS);
     expect(stubbornReapFloorMs).toBeLessThan(PROXY_TEARDOWN_RESERVE_MS);
@@ -250,7 +254,7 @@ describe('createProviderProxySetAuthority: RPC response validation', () => {
                 args: ['app-server'],
                 cwd: 'relative/provider-host',
                 leaseMode: 'shared',
-                idleRetirement: 'none',
+                idleRetirement: 'never',
               },
               host: { owner: 'provider-proxy' },
               diagnostics: {

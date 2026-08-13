@@ -1,6 +1,7 @@
 import type { Runtime } from '../../runtime/ports.js';
 import { type CliExecResult, type SpawnDurableJobOptions, spawnDurableJobTransport } from './durable-transport.js';
 import {
+  type ContainedProviderServerHandle,
   type ProviderResponseObservationSink,
   type SpawnProviderServerOptions,
   spawnProviderServerTransport,
@@ -9,6 +10,7 @@ import { CliBusyError } from '../../runtime/cli-busy.js';
 import { getActiveLimit, parsePositiveInt } from './worker-limits.js';
 import type { AdmissionResult, LaunchPool, QueuedHandle } from '../../jobs/contracts/admission.js';
 import type { ExecutionOwner } from '../../runtime/execution-owner.js';
+import { assertProviderHostPlatformSupported } from '../../providers/host-admission.js';
 
 /**
  * Admission queue capacity per pool. Operator knob — see §16(d) triage rule:
@@ -123,16 +125,20 @@ export class LaunchCoordinator {
     return Promise.reject(error instanceof Error ? error : new Error(String(error)));
   }
 
-  spawnProviderServer(
+  async spawnProviderServer(
     options: SpawnProviderServerOptions,
     observeProviderResponse: ProviderResponseObservationSink = () => {},
     generation = this.allocateProviderServerGeneration(),
-  ) {
+    recordContainment?: (containment: ContainedProviderServerHandle['containmentIdentity']) => void,
+  ): Promise<ContainedProviderServerHandle> {
+    assertProviderHostPlatformSupported(this.runtime.env.platform());
     return spawnProviderServerTransport({
       runtime: this.runtime,
       options,
       generation,
       observeProviderResponse,
+      detached: true,
+      ...(recordContainment === undefined ? {} : { recordContainment }),
     });
   }
 

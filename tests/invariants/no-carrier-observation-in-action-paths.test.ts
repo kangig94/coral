@@ -271,6 +271,24 @@ const OWNER_OBSERVATION_MUTATIONS = [
     signature: `${fixturePath('owner-constructor-root.ts')}:7:5 handle.close`,
   },
   {
+    id: 'owner-initializer-and-constructor-assignment-close',
+    boundary: {
+      module: fixturePath('owner-initializer-assignment-root.ts'),
+      transportCall: 'spawnAssignedProviderTransport',
+      sink: { property: 'observeProviderResponse' },
+    },
+    signature: `${fixturePath('owner-initializer-assignment-root.ts')}:11:5 this.handle.close`,
+  },
+  {
+    id: 'owner-identifier-assignment-close',
+    boundary: {
+      module: fixturePath('owner-identifier-assignment-root.ts'),
+      transportCall: 'spawnIdentifierAssignmentTransport',
+      sink: { property: 'observeProviderResponse' },
+    },
+    signature: `${fixturePath('owner-identifier-assignment-root.ts')}:12:5 handle.close`,
+  },
+  {
     id: 'owner-locally-collected-callback-close',
     boundary: {
       module: fixturePath('owner-local-callback-root.ts'),
@@ -278,6 +296,15 @@ const OWNER_OBSERVATION_MUTATIONS = [
       sink: { property: 'observeProviderResponse' },
     },
     signature: "argument 1 'selected' has callable type but no resolvable target",
+  },
+  {
+    id: 'owner-recursive-callback-factory',
+    boundary: {
+      module: fixturePath('owner-recursive-factory-root.ts'),
+      transportCall: 'spawnRecursiveFactoryTransport',
+      sink: { property: 'observeProviderResponse' },
+    },
+    signature: "argument 1 'recursiveObserverFactory()' has callable type but no resolvable target",
   },
 ] as const satisfies ReadonlyArray<Readonly<{ id: string; boundary: OwnerObservationBoundary; signature: string }>>;
 

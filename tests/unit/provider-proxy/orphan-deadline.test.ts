@@ -2,8 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { createMonotonicClock, type MonotonicClock, type MonotonicInstant } from '#src/infra/monotonic-clock.js';
 import {
-  PROXY_DISAPPEARANCE_CONFIRM_MS,
-  PROXY_PROCESS_CONTROL_CALL_MAX_MS,
+  CONTAINMENT_DISAPPEARANCE_CONFIRM_MS,
+  CONTAINMENT_PROCESS_CONTROL_CALL_MAX_MS,
   SIGKILL_GRACE_MS,
   SIGTERM_GRACE_MS,
 } from '#src/infra/process-constants.js';
@@ -107,14 +107,14 @@ describe('provider proxy orphan deadline configuration', () => {
   });
 
   it('derives the exact 14000ms reserve from the imported process constants', () => {
-    expect(PROXY_PROCESS_CONTROL_BUDGET_MS).toBe(2 * PROXY_PROCESS_CONTROL_CALL_MAX_MS);
+    expect(PROXY_PROCESS_CONTROL_BUDGET_MS).toBe(2 * CONTAINMENT_PROCESS_CONTROL_CALL_MAX_MS);
     expect(PROXY_TEARDOWN_RESERVE_MS).toBe(
       SIGTERM_GRACE_MS +
         SIGKILL_GRACE_MS +
-        PROXY_DISAPPEARANCE_CONFIRM_MS +
+        CONTAINMENT_DISAPPEARANCE_CONFIRM_MS +
         PROXY_ENDPOINT_CLEANUP_BUDGET_MS +
         PROXY_ENFORCER_MAX_WAKE_LATENCY_MS +
-        2 * PROXY_PROCESS_CONTROL_CALL_MAX_MS,
+        2 * CONTAINMENT_PROCESS_CONTROL_CALL_MAX_MS,
     );
     expect(PROXY_TEARDOWN_RESERVE_MS).toBe(14_000);
   });

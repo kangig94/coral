@@ -30,7 +30,7 @@ function spec(cwd = process.cwd()): ProviderServerSpec {
     args: ['app-server'],
     cwd: fixtureCanonicalWorkDir(cwd),
     leaseMode: 'shared',
-    idleRetirement: 'none',
+    idleRetirement: 'never',
   };
 }
 

@@ -12,8 +12,9 @@ import type { TimePort } from '#src/infra/port-types.js';
 function createTimeHarness(): { time: TimePort; tick: () => void; advance: (ms: number) => void } {
   let nowMs = 1_000;
   let intervalFn: (() => void) | null = null;
-  const time = {
+  const time: TimePort = {
     now: () => nowMs,
+    monotonicNow: () => BigInt(nowMs),
     sleep: async () => undefined,
     setTimeout: () => ({}),
     clearTimeout: () => undefined,
@@ -24,7 +25,7 @@ function createTimeHarness(): { time: TimePort; tick: () => void; advance: (ms: 
     clearInterval: () => {
       intervalFn = null;
     },
-  } as unknown as TimePort;
+  };
 
   return {
     time,

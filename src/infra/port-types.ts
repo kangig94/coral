@@ -8,6 +8,7 @@ export interface TimerHandle {
 
 export interface TimePort {
   now(): number;
+  monotonicNow(): bigint;
   sleep(ms: number, options?: { signal?: AbortSignal }): Promise<void>;
   setTimeout(fn: () => void, ms: number): TimerHandle;
   clearTimeout(handle: TimerHandle | null): void;

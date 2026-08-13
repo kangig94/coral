@@ -63,9 +63,9 @@ function createClaudeRegistry(
             cwd: input.request.cwd,
             env: {},
             leaseMode: 'shared',
-            idleRetirement: 'none',
+            idleRetirement: 'never',
           }),
-        compileStableHost: (host) => ({ ...host.serverSpec, leaseMode: 'shared', idleRetirement: 'none' }),
+        compileStableHost: (host) => ({ ...host.serverSpec, leaseMode: 'shared', idleRetirement: 'never' }),
       },
       recovery: {
         finalizeInterrupted: () => ({ kind: 'preserve' }),

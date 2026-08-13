@@ -190,7 +190,7 @@ describe('codexThreadProvider', () => {
             args: ['app-server'],
             cwd: fixtureCanonicalWorkDir(TEST_WORKSPACE),
             leaseMode: 'shared',
-            idleRetirement: 'none',
+            idleRetirement: 'unleased',
           }),
           host: Object.freeze({ owner: 'test' }),
           inspectDiagnostics: () =>
@@ -304,7 +304,7 @@ describe('codexThreadProvider', () => {
           args: ['app-server'],
           cwd: fixtureCanonicalWorkDir(TEST_WORKSPACE),
           leaseMode: 'shared',
-          idleRetirement: 'none',
+          idleRetirement: 'unleased',
         }),
         host: Object.freeze({ owner: 'test' }),
         inspectDiagnostics: () =>
@@ -401,6 +401,49 @@ describe('codexThreadProvider', () => {
         },
       },
     });
+  });
+
+  it('resumes the same thread after its app-server host retires between turns', async () => {
+    const threadId = 'thread-after-retirement';
+    const firstLease = makeLease(async (method) => {
+      if (method === 'thread/start') return { thread: { id: threadId } };
+      if (method === 'turn/start') return { turn: { id: 'turn-1', status: 'completed' } };
+      throw new Error(`Unexpected method: ${method}`);
+    });
+    const firstRequest = makeRequest({ action: 'exec', conversationRef: undefined });
+
+    const firstEvents = await collect(
+      codexThreadProvider(firstRequest, makeRuntime(firstLease, { cwd: TEST_WORKSPACE })),
+    );
+    const persistedContinuity = firstEvents.find(
+      (event): event is Extract<ProviderEventBody, { kind: 'continuity' }> =>
+        event.kind === 'continuity' && event.providerContinuity?.threadId === threadId,
+    )?.providerContinuity;
+
+    expect(firstLease.rpcMock).toHaveBeenCalledWith('thread/start', expect.any(Object));
+    expect(firstLease.rpcMock).not.toHaveBeenCalledWith('thread/resume', expect.any(Object));
+    expect(persistedContinuity).toMatchObject({ threadId });
+    if (persistedContinuity === undefined || persistedContinuity === null) {
+      throw new Error('First turn did not persist Codex thread continuity.');
+    }
+
+    firstLease.close();
+    await expect(firstLease.closed).resolves.toBeUndefined();
+
+    const followUpLease = makeLease(async (method, params) => {
+      if (method === 'thread/resume') return { thread: { id: params.threadId } };
+      if (method === 'turn/start') return { turn: { id: 'turn-2', status: 'completed' } };
+      throw new Error(`Unexpected method: ${method}`);
+    });
+    const followUpRequest = makeRequest({ conversationRef: threadId, prompt: 'Continue after retirement' });
+
+    await collect(codexThreadProvider(followUpRequest, makeRuntime(followUpLease, persistedContinuity)));
+
+    expect(followUpLease.rpcMock).toHaveBeenCalledWith(
+      'thread/resume',
+      expect.objectContaining({ threadId: persistedContinuity.threadId }),
+    );
+    expect(followUpLease.rpcMock).not.toHaveBeenCalledWith('thread/start', expect.any(Object));
   });
 
   it('runs the composed stack end-to-end and emits live continuity deltas before the terminal', async () => {

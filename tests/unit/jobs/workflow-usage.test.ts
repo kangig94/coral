@@ -27,6 +27,7 @@ const createdAt = '2026-04-21T00:00:00.000Z';
 const readCtx = createDefaultStoreReadContext();
 const time = {
   now: () => Date.parse(createdAt),
+  monotonicNow: () => BigInt(Date.parse(createdAt)),
   sleep: async (ms: number, options?: { signal?: AbortSignal }) => {
     await new Promise<void>((resolve, reject) => {
       if (options?.signal?.aborted) {

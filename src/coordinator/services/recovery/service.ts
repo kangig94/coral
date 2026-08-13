@@ -274,6 +274,7 @@ export class RecoveryService {
           platform: this.deps.runtime.env.platform() as NodeJS.Platform,
           db: this.deps.progressStore.getDb(),
           clock: createMonotonicClock(carrierDetachedRecoveryClockScope),
+          signal: options.signal,
         }),
     });
     options.signal.throwIfAborted();

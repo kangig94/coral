@@ -727,7 +727,7 @@ class ProxyProviderHostAdministration {
  * identity (shared) or identity+job (job-exclusive, so this proxy's own stage-then-activate sequence reuses
  * one process rather than spawning twice), ref-counts sessions, and closes a pool entry once its last
  * reference releases. Deliberately does not replicate the coordinator's idle-timer-based early retirement for
- * `idleRetirement: 'host-reported'` shared hosts — every host here stays open until its last referencing
+ * `idleRetirement: 'unleased-and-host-idle'` shared hosts — every host here stays open until its last referencing
  * operation stops, which is a reported simplification (see the task report), not an attempt to reproduce that
  * policy exactly.
  */

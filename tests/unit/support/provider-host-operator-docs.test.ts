@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const cliErrors = readFileSync(join(process.cwd(), 'docs', 'cli-errors.md'), 'utf8');
+const configuration = readFileSync(join(process.cwd(), 'docs', 'configuration.md'), 'utf8');
 const architecture = readFileSync(join(process.cwd(), 'docs', 'architecture.md'), 'utf8');
 
 function catalogEntry(code: string): string {
@@ -45,6 +46,24 @@ describe('provider-host operator documentation', () => {
     );
     expect(catalogEntry('provider_host_identity_integrity')).toContain('duplicate owner IDs before selecting a host');
     expect(catalogEntry('provider_host_identity_integrity')).toContain('exact host reference collided');
+  });
+
+  it('documents conditional containment and retryability for failed close or reclamation', () => {
+    for (const document of [configuration, cliErrors]) {
+      expect(document).toContain('reclamation-failed');
+      expect(document).toContain('did not complete a provider-host close or recorded-containment reclamation');
+      expect(document).toContain('pid');
+      expect(document).toContain('processGroupId');
+      expect(document).toContain('reclamationAttempts');
+      expect(document).toContain('reclamationFailure');
+      expect(document).toContain('reclamationRetryable');
+      expect(document).toContain('only `pid` is present');
+      expect(document).toContain('recorded containment carries both values');
+      expect(document).toContain('pre-containment');
+      expect(document).toContain('eviction cannot');
+      expect(document).toContain('escalate rather than discarding that evidence by restarting');
+    }
+    expect(catalogEntry('provider_host_not_found')).toContain('reclamation-failed');
   });
 
   it('places authorization at the RPC boundary, not in the administration service', () => {

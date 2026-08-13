@@ -1,12 +1,24 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import { createDeferred } from '#tools/testing/deferred.js';
+import { backendLog } from '#src/infra/backend-log.js';
+import { ProcessContainmentError } from '#src/infra/process-containment.js';
 import type { HostRef } from '#src/providers/contract.js';
 import { canonicalWorkDirWireSchema } from '#src/runtime/canonical-work-dir.js';
+import type { ProviderHostEntry } from '#src/coordinator/live/provider-hosts/index.js';
 import {
   ProviderHostAdministrationService,
   type ProviderHostAdministrationOwner,
   type ProviderHostInventoryRecord,
 } from '#src/coordinator/services/provider-host-administration.js';
+import {
+  StubbedContainmentProviderHostManager,
+  noCarrierBlocksRetirement,
+  createFakeProviderServerHandle,
+  createSharedSpec,
+  createSpawnProviderServerMock,
+  runtime,
+} from '#tests/unit/coordinator/live/provider-hosts/helpers.js';
 
 const fingerprint = 'a'.repeat(64);
 const workDir = canonicalWorkDirWireSchema.parse('/workspace');
@@ -30,7 +42,7 @@ function record(ref: HostRef, status: 'live' | 'retired-blocked' = 'live'): Prov
       args: ['app-server'],
       cwd: workDir,
       leaseMode: ref.leaseMode,
-      idleRetirement: ref.leaseMode === 'shared' ? 'none' : null,
+      idleRetirement: ref.leaseMode === 'shared' ? 'never' : null,
     },
     host: { owner: status === 'live' ? 'coordinator' : 'provider-proxy' },
     diagnostics: {
@@ -39,6 +51,22 @@ function record(ref: HostRef, status: 'live' | 'retired-blocked' = 'live'): Prov
       factsTruncatedBeforeSeq: 0,
     },
     diagnosticsRetention: { ownerBudgetTruncated: false },
+  };
+}
+
+function reclamationFailedRecord(ref: HostRef): Extract<ProviderHostInventoryRecord, { status: 'reclamation-failed' }> {
+  return {
+    ...record(ref),
+    status: 'reclamation-failed',
+    host: {
+      owner: 'coordinator',
+      hostKey: 'codex:shared:/workspace',
+      identityKey: 'codex:shared:/workspace:601',
+      ownerJobId: null,
+      reclamationAttempts: 1,
+      reclamationFailure: 'close was cancelled before containment was established',
+      reclamationRetryable: false,
+    },
   };
 }
 
@@ -61,6 +89,141 @@ function owner(
 }
 
 describe('provider host administration', () => {
+  it('keeps exhausted reclamation visible and operable through provider host administration', async () => {
+    vi.useFakeTimers();
+    const reapFailure = new ProcessContainmentError(
+      'process_containment_reap_failed',
+      'fixture containment reap failed',
+    );
+    const firstReap = createDeferred<void>();
+    const reapContainment = vi
+      .fn()
+      .mockImplementationOnce(async () => firstReap.promise)
+      .mockRejectedValue(reapFailure);
+    const errorLog = vi.spyOn(backendLog, 'error').mockImplementation(() => undefined);
+    const server = createFakeProviderServerHandle({ generation: 501 });
+    const manager = new StubbedContainmentProviderHostManager({
+      carrierBlocksRetirement: noCarrierBlocksRetirement,
+      runtime,
+      spawnProviderServer: createSpawnProviderServerMock(server.handle),
+      reapContainment,
+      allocateProviderServerGeneration: () => 501,
+    });
+    const lease = await manager.openSession(createSharedSpec());
+    const entry = [...(manager as unknown as { entries: Map<string, ProviderHostEntry> }).entries.values()][0];
+    if (entry === undefined) throw new Error('provider host entry was not installed');
+    const local: ProviderHostAdministrationOwner = {
+      ownerId: 'coordinator:test',
+      listProviderHosts: () => manager.listProviderHosts(),
+      inspectProviderHost: (ref) => manager.inspectProviderHost(ref),
+      evictProviderHost: (ref) => manager.evictHost(ref),
+    };
+    const service = new ProviderHostAdministrationService({ owners: () => [local] });
+    await expect(service.list()).resolves.toMatchObject([{ status: 'live', ref: lease.hostRef }]);
+
+    server.resolveClosed();
+    await server.handle.closePromise;
+    await Promise.resolve();
+    const failedOperation = entry.closePromise;
+    if (failedOperation === null) throw new Error('process death did not start reclamation');
+    const observedFailure = failedOperation.catch((error: unknown) => error);
+    firstReap.reject(reapFailure);
+    await vi.advanceTimersByTimeAsync(2_000);
+    await expect(observedFailure).resolves.toBe(reapFailure);
+    await Promise.resolve();
+
+    expect(reapContainment).toHaveBeenCalledTimes(3);
+    expect(errorLog).toHaveBeenCalledOnce();
+    expect(errorLog).toHaveBeenCalledWith(expect.stringContaining('attempts=3'), reapFailure);
+
+    const failedRow = {
+      ownerId: 'coordinator:test',
+      ref: lease.hostRef,
+      status: 'reclamation-failed',
+      host: {
+        owner: 'coordinator',
+        pid: server.handle.containmentIdentity.pid,
+        processGroupId: server.handle.containmentIdentity.processGroupId,
+        reclamationAttempts: 3,
+        reclamationFailure: reapFailure.message,
+      },
+    };
+    await expect(service.list()).resolves.toMatchObject([failedRow]);
+    await expect(service.inspect({ hostRef: lease.hostRef })).resolves.toMatchObject(failedRow);
+
+    reapContainment.mockResolvedValue(undefined);
+    await expect(service.evict({ hostRef: lease.hostRef })).resolves.toEqual({
+      ownerId: 'coordinator:test',
+      hostRef: lease.hostRef,
+    });
+    await expect(service.list()).resolves.toEqual([]);
+    expect(entry.containment).toBeNull();
+    expect(reapContainment).toHaveBeenCalledTimes(4);
+    lease.close();
+  });
+
+  it('joins an in-flight reclamation retry when eviction arrives through provider-host administration', async () => {
+    vi.useFakeTimers();
+    const reapFailure = new ProcessContainmentError(
+      'process_containment_reap_failed',
+      'fixture first reclamation failed',
+    );
+    const retryReap = createDeferred<void>();
+    const reapContainment = vi
+      .fn()
+      .mockRejectedValueOnce(reapFailure)
+      .mockImplementationOnce(async () => retryReap.promise);
+    vi.spyOn(backendLog, 'error').mockImplementation(() => undefined);
+    const server = createFakeProviderServerHandle({ generation: 502 });
+    const manager = new StubbedContainmentProviderHostManager({
+      carrierBlocksRetirement: noCarrierBlocksRetirement,
+      runtime,
+      spawnProviderServer: createSpawnProviderServerMock(server.handle),
+      reapContainment,
+      allocateProviderServerGeneration: () => 502,
+    });
+    const lease = await manager.openSession(createSharedSpec());
+    const evictionStarted = createDeferred<void>();
+    const local: ProviderHostAdministrationOwner = {
+      ownerId: 'coordinator:test',
+      listProviderHosts: () => manager.listProviderHosts(),
+      inspectProviderHost: (ref) => manager.inspectProviderHost(ref),
+      evictProviderHost: (ref) => {
+        evictionStarted.resolve();
+        return manager.evictHost(ref);
+      },
+    };
+    const service = new ProviderHostAdministrationService({ owners: () => [local] });
+
+    server.resolveClosed();
+    await server.handle.closePromise;
+    for (let round = 0; round < 8; round += 1) await Promise.resolve();
+    await expect(service.list()).resolves.toMatchObject([
+      { status: 'reclamation-failed', host: { reclamationAttempts: 1 } },
+    ]);
+    const eviction = service.evict({ hostRef: lease.hostRef });
+    await evictionStarted.promise;
+    let settled = false;
+    void eviction.finally(() => {
+      settled = true;
+    });
+
+    expect(reapContainment).toHaveBeenCalledOnce();
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(999);
+    expect(reapContainment).toHaveBeenCalledOnce();
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(reapContainment).toHaveBeenCalledTimes(2);
+    expect(settled).toBe(false);
+
+    retryReap.resolve();
+    await expect(eviction).resolves.toEqual({ ownerId: 'coordinator:test', hostRef: lease.hostRef });
+    await expect(service.list()).resolves.toEqual([]);
+    expect(reapContainment).toHaveBeenCalledTimes(2);
+    lease.close();
+  });
+
   it('returns one complete local-and-proxy snapshot including retained blocked tombstones', async () => {
     const local = owner('coordinator', [record(hostRef('live'))]);
     const proxy = owner('proxy-a', [record(hostRef('retired'), 'retired-blocked')]);
@@ -162,6 +325,82 @@ describe('provider host administration', () => {
       ownerIds: ['proxy-a'],
     });
   });
+
+  it('accepts a pre-containment reclamation failure without pid or process-group metadata', async () => {
+    const failed = reclamationFailedRecord(hostRef('pre-containment-failure'));
+    const service = new ProviderHostAdministrationService({ owners: () => [owner('coordinator', [failed])] });
+
+    await expect(service.list()).resolves.toEqual([{ ownerId: 'coordinator', ...failed }]);
+  });
+
+  it('rejects process-group metadata without a matching pid', async () => {
+    const failed = reclamationFailedRecord(hostRef('group-only-failure'));
+    const malformed = owner('coordinator', [], {
+      listProviderHosts: vi.fn(async () => [{ ...failed, host: { ...failed.host, processGroupId: 601 } }] as never),
+    });
+
+    await expect(new ProviderHostAdministrationService({ owners: () => [malformed] }).list()).rejects.toMatchObject({
+      code: 'provider_host_inventory_unavailable',
+      ownerIds: ['coordinator'],
+    });
+  });
+
+  it('rejects a coordinator process group that differs from its leader pid', async () => {
+    const failed = reclamationFailedRecord(hostRef('mismatched-group-failure'));
+    const malformed = owner('coordinator', [], {
+      listProviderHosts: vi.fn(
+        async () => [{ ...failed, host: { ...failed.host, pid: 601, processGroupId: 602 } }] as never,
+      ),
+    });
+
+    await expect(new ProviderHostAdministrationService({ owners: () => [malformed] }).list()).rejects.toMatchObject({
+      code: 'provider_host_inventory_unavailable',
+      ownerIds: ['coordinator'],
+    });
+  });
+
+  it.each([
+    ['only owner metadata', { owner: 'coordinator' }],
+    [
+      'no failure detail',
+      {
+        owner: 'coordinator',
+        hostKey: 'codex:shared:/workspace',
+        identityKey: 'codex:shared:/workspace:601',
+        ownerJobId: null,
+        reclamationRetryable: false,
+      },
+    ],
+  ])('rejects a reclamation-failed row with %s', async (_case, host) => {
+    const malformed = owner('coordinator', [], {
+      listProviderHosts: vi.fn(
+        async () => [{ ...record(hostRef('malformed-failure')), status: 'reclamation-failed', host }] as never,
+      ),
+    });
+    const service = new ProviderHostAdministrationService({ owners: () => [malformed] });
+
+    await expect(service.list()).rejects.toMatchObject({
+      code: 'provider_host_inventory_unavailable',
+      ownerIds: ['coordinator'],
+    });
+  });
+
+  it.each(['reclamationAttempts', 'reclamationFailure', 'reclamationRetryable'] as const)(
+    'rejects reclamation-failed metadata without required %s',
+    async (field) => {
+      const failed = reclamationFailedRecord(hostRef(`missing-${field}`));
+      const host = { ...failed.host } as Record<string, unknown>;
+      delete host[field];
+      const malformed = owner('coordinator', [], {
+        listProviderHosts: vi.fn(async () => [{ ...failed, host }] as never),
+      });
+
+      await expect(new ProviderHostAdministrationService({ owners: () => [malformed] }).list()).rejects.toMatchObject({
+        code: 'provider_host_inventory_unavailable',
+        ownerIds: ['coordinator'],
+      });
+    },
+  );
 
   it('never reroutes by cwd when the selected exact ref retires or its owner disappears', async () => {
     const selectedRef = hostRef('selected');

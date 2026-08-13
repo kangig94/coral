@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { errorMessage } from '../infra/error-format.js';
+import { canProbeProcessStartedAtSeconds } from '../infra/node-process.js';
 import type { CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 import type { HostRef, ProviderServerSpec } from './contract.js';
 import { decodeHostRef, encodeHostRef } from './host-ref-codec.js';
@@ -120,13 +121,52 @@ export class ProviderHostUnserviceableResponseError extends Error {
   }
 }
 
+const SIGNALABLE_PROCESS_GROUP_PLATFORMS: ReadonlySet<string> = new Set([
+  'aix',
+  'android',
+  'cygwin',
+  'darwin',
+  'freebsd',
+  'haiku',
+  'linux',
+  'netbsd',
+  'openbsd',
+  'sunos',
+]);
+
+export function canSignalProviderHostProcessGroup(platform: string): boolean {
+  return SIGNALABLE_PROCESS_GROUP_PLATFORMS.has(platform);
+}
+
+export class ProviderHostUnsupportedPlatformError extends Error {
+  readonly code = 'provider_host_platform_unsupported';
+  readonly platform: string;
+
+  constructor(platform: string) {
+    super(
+      `Provider host admission is unsupported on platform '${platform}': ` +
+        'Coral requires detached provider servers to form a signalable POSIX process group. ' +
+        'Run Coral on a supported POSIX platform.',
+    );
+    this.name = 'ProviderHostUnsupportedPlatformError';
+    this.platform = platform;
+    Object.setPrototypeOf(this, ProviderHostUnsupportedPlatformError.prototype);
+  }
+}
+
+export function assertProviderHostPlatformSupported(platform: string): void {
+  if (!canSignalProviderHostProcessGroup(platform) || !canProbeProcessStartedAtSeconds(platform)) {
+    throw new ProviderHostUnsupportedPlatformError(platform);
+  }
+}
+
 export type ProviderHostCanonicalSpecMetadata = Readonly<{
   provider: string;
   command: string;
   args: readonly string[];
   cwd: CanonicalWorkDir | null;
   leaseMode: 'shared' | 'job-exclusive';
-  idleRetirement: 'host-reported' | 'none' | null;
+  idleRetirement: 'unleased' | 'unleased-and-host-idle' | 'never' | null;
 }>;
 
 export type ProviderHostCanonicalOwnerMetadata = Readonly<Record<string, string | number | boolean | null>>;

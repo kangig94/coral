@@ -56,7 +56,7 @@ const providerSpec: ProviderServerSpec = {
   args: ['app-server'],
   cwd: fixtureCanonicalWorkDir('/workspace'),
   leaseMode: 'shared',
-  idleRetirement: 'none',
+  idleRetirement: 'never',
 };
 
 let cleanup: (() => Promise<void>) | undefined;

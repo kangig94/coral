@@ -141,19 +141,20 @@ function probeWindowsProcessStartedAtSeconds(pid: number): number | null {
   }
 }
 
+const PROCESS_START_TIME_PROBES: ReadonlyMap<string, (pid: number) => number | null> = new Map([
+  ['linux', probeLinuxProcessStartedAtSeconds],
+  ['darwin', probeMacProcessStartedAtSeconds],
+  ['win32', probeWindowsProcessStartedAtSeconds],
+]);
+
+export function canProbeProcessStartedAtSeconds(platform: string): boolean {
+  return PROCESS_START_TIME_PROBES.has(platform);
+}
+
 export function probeProcessStartedAtSeconds(pid: number, platform = process.platform): number | null {
   if (!Number.isInteger(pid) || pid <= 0) {
     return null;
   }
 
-  if (platform === 'linux') {
-    return probeLinuxProcessStartedAtSeconds(pid);
-  }
-  if (platform === 'darwin') {
-    return probeMacProcessStartedAtSeconds(pid);
-  }
-  if (platform === 'win32') {
-    return probeWindowsProcessStartedAtSeconds(pid);
-  }
-  return null;
+  return PROCESS_START_TIME_PROBES.get(platform)?.(pid) ?? null;
 }

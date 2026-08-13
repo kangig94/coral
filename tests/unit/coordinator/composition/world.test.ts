@@ -43,6 +43,7 @@ function createRuntime(env: Readonly<Record<string, string | undefined>>): Runti
     },
     time: {
       now: () => 123,
+      monotonicNow: () => 123n,
       sleep: async () => undefined,
       setTimeout: () => ({}),
       clearTimeout: () => undefined,

@@ -95,6 +95,7 @@ export interface ProcessPort {
   execSync(command: string, args: string[], options?: RuntimeExecOptions): ExecResult;
   kill(pid: number, signal: NodeJS.Signals | 0): boolean;
   isAlive(pid: number): boolean;
+  readProcessStartedAtSeconds(pid: number, platform: NodeJS.Platform): number | null;
   durable: DurableExecutionTransport;
 }
 

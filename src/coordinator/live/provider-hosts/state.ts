@@ -2,12 +2,21 @@ import { createHash } from 'node:crypto';
 
 import type { HostRef, ProviderServerSpec } from '../../../providers/contract.js';
 import type { TimePort } from '../../../infra/port-types.js';
-import type { ProviderServerHandle } from '../../../providers/app-server-transport.js';
+import type { ContainedProviderServerHandle } from '../../../providers/app-server-transport.js';
+import type { RecordedContainmentIdentity } from '../../../infra/process-containment.js';
 
 export type HostStatsState = {
   liveControllers: number;
   activeTurns: number;
 };
+
+/** Opaque identity for one live provider-host pin. */
+export type PinToken = symbol;
+
+/** Ownership metadata retained while a provider-host pin is live. */
+export type ProviderHostPin =
+  | Readonly<{ kind: 'acquisition'; jobId?: string }>
+  | Readonly<{ kind: 'attached-session' }>;
 
 export type ProviderHostEntry = {
   /** Concrete pool-entry key; unique for every job-exclusive process. */
@@ -18,15 +27,17 @@ export type ProviderHostEntry = {
   exactEnv: Readonly<Record<string, string>>;
   /** Owning job for a job-exclusive process. */
   jobId?: string;
-  handle: ProviderServerHandle | null;
+  handle: ContainedProviderServerHandle | null;
+  containment: RecordedContainmentIdentity | null;
   /** Opaque identity minted for the currently installed concrete process. */
   instanceId: string | null;
-  spawnPromise: Promise<ProviderServerHandle> | null;
+  spawnPromise: Promise<ContainedProviderServerHandle> | null;
   /** Open and attached sessions pin the concrete process until idempotent close. */
-  pinCount: number;
+  pins: Map<PinToken, ProviderHostPin>;
   closingError: Error | null;
   closePromise: Promise<void> | null;
   hostStats: HostStatsState | null;
+  /** Either the idle-retirement deadline or the recurring outstanding-pin diagnostic deadline. */
   idleTimer: ReturnType<TimePort['setTimeout']> | null;
   disposeHostNotifications: (() => void) | null;
 };

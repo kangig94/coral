@@ -163,6 +163,20 @@ describe('provider-host RPC authorization', () => {
     });
   });
 
+  it('names all three inventory statuses when no provider host matches', async () => {
+    const inspect = vi.fn(async () => {
+      throw Object.assign(new Error('provider_host_not_found'), { code: 'provider_host_not_found' });
+    });
+    const ports = { providerHosts: { list: vi.fn(), inspect, evict: vi.fn() } } as unknown as HttpHandlerPorts;
+
+    await expect(
+      executeCatalogRequest(providerHostInspectRpcSpec, { workDir: '.', projectRoot: process.cwd() }, ports, operator),
+    ).resolves.toMatchObject({
+      kind: 'unary',
+      body: { message: 'No live, retained-blocked, or reclamation-failed provider host matches the selector.' },
+    });
+  });
+
   it('returns every canonical matching token when work-directory resolution is ambiguous', async () => {
     const refs: readonly HostRef[] = [
       { provider: 'codex', fingerprint: 'a'.repeat(64), instanceId: 'first', leaseMode: 'shared' },

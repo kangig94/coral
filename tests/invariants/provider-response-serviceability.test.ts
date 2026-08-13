@@ -595,7 +595,7 @@ describe('provider response serviceability decision layers', () => {
     );
 
     const coordinatorOwnerCalls = callsNamed(parse(COORDINATOR_OWNER), 'spawnProviderServer');
-    expect(coordinatorOwnerCalls.some((call) => call.arguments.length === 3)).toBe(true);
+    expect(coordinatorOwnerCalls.some((call) => call.arguments.length === 4)).toBe(true);
     const coordinatorTransportCalls = callsNamed(parse(COORDINATOR_SPAWNER), 'spawnProviderServerTransport');
     expect(coordinatorTransportCalls.some((call) => objectArgumentHasProperty(call, 'observeProviderResponse'))).toBe(
       true,

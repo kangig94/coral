@@ -972,6 +972,59 @@ describe('attemptProviderProxySetInheritance', () => {
 describe('createProviderProxySetInheritance', () => {
   const identity = { instanceId: randomUUID(), buildSetId: BUILD_SET_ID, flavor: 'prod' as const };
 
+  it('stops reclamation after TERM when the bounded recovery signal aborts', async () => {
+    const reference = locator();
+    const record = proofRecord(reference, { pid: 104, processStartedAtSeconds: 1_003 });
+    if (!('providerRoot' in record)) throw new Error('proof record did not retain its provider root');
+    const db = proofDatabase([record]);
+    const controller = new AbortController();
+    const live = new Map<number, number>([
+      [-reference.locator.containment.processGroupId, reference.locator.containment.processStartedAtSeconds],
+      [reference.locator.containment.pid, reference.locator.containment.processStartedAtSeconds],
+      [record.providerRoot.pid, record.providerRoot.processStartedAtSeconds],
+    ]);
+    const signals: Array<{ pid: number; signal: NodeJS.Signals | 0 }> = [];
+    const base = createRealRuntime('prod');
+    const boundedRuntime = {
+      ...base,
+      process: {
+        ...base.process,
+        isAlive: (pid: number) => live.has(pid),
+        kill: (pid: number, signal: NodeJS.Signals | 0) => {
+          signals.push({ pid, signal });
+          if (signal === 'SIGKILL') live.clear();
+          return true;
+        },
+      },
+    };
+    mockedProbe.mockImplementation((pid) => live.get(pid) ?? null);
+    const inheritance = createProviderProxySetInheritance({
+      runtime: boundedRuntime,
+      identity,
+      operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
+      registerInheritedSet: () => undefined,
+    });
+
+    const proof = inheritance.proveContainmentAbsent(
+      providerProxySetIdentityFromRecord(reference),
+      db,
+      controller.signal,
+    );
+    expect(signals).toEqual([
+      { pid: -reference.locator.containment.processGroupId, signal: 'SIGTERM' },
+      { pid: record.providerRoot.pid, signal: 'SIGTERM' },
+    ]);
+    const observedProof = proof.catch((error: unknown) => error);
+    controller.abort(new Error('recovery authority expired during TERM grace'));
+    await expect(observedProof).resolves.toBeInstanceOf(Error);
+
+    expect(signals).toEqual([
+      { pid: -reference.locator.containment.processGroupId, signal: 'SIGTERM' },
+      { pid: record.providerRoot.pid, signal: 'SIGTERM' },
+    ]);
+    expect(signals.some(({ signal }) => signal === 'SIGKILL')).toBe(false);
+  });
+
   it('proves containment through the public factory without selecting an address-distinct root', async () => {
     const referenceA = locator();
     const referenceB = alternateLocator(referenceA);

@@ -227,7 +227,7 @@ describe('Claude appserver request mapping', () => {
 
     expect(brokerA).toEqual(brokerB);
     expect(brokerA.leaseMode).toBe('shared');
-    expect(brokerA.idleRetirement).toBe('host-reported');
+    expect(brokerA.idleRetirement).toBe('unleased-and-host-idle');
     expect(brokerA.env).not.toHaveProperty('CLAUDE_CONFIG_DIR');
     expect(brokerA.env).not.toHaveProperty('CORAL_CHILD_PRINCIPAL_HANDLE');
     expect(brokerA.env).not.toHaveProperty('CORAL_JOB_ID');

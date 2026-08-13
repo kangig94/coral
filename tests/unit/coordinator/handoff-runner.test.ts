@@ -278,6 +278,7 @@ describe('handoff-runner', () => {
     let confirmAlive: (() => void) | undefined;
     const time: TimePort = {
       now: () => 0,
+      monotonicNow: () => 0n,
       sleep: async () => {},
       setTimeout: vi.fn((fn: () => void, ms: number) => {
         confirmationDelays.push(ms);

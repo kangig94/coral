@@ -1,0 +1,17 @@
+declare function spawnRecursiveFactoryTransport(options: {
+  observeProviderResponse(fact: unknown): void;
+}): void;
+
+function recursiveObserverFactory(): (fact: unknown) => void {
+  return recursiveObserverFactory();
+}
+
+function invokeResponse(callback: (fact: unknown) => void): void {
+  callback({});
+}
+
+export function ownerRecursiveFactoryRoot(): void {
+  spawnRecursiveFactoryTransport({
+    observeProviderResponse: () => invokeResponse(recursiveObserverFactory()),
+  });
+}
