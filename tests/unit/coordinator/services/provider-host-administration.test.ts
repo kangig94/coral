@@ -13,6 +13,7 @@ import {
 } from '#src/coordinator/services/provider-host-administration.js';
 import {
   StubbedContainmentProviderHostManager,
+  noCarrierBlocksRetirement,
   createFakeProviderServerHandle,
   createSharedSpec,
   createSpawnProviderServerMock,
@@ -102,6 +103,7 @@ describe('provider host administration', () => {
     const errorLog = vi.spyOn(backendLog, 'error').mockImplementation(() => undefined);
     const server = createFakeProviderServerHandle({ generation: 501 });
     const manager = new StubbedContainmentProviderHostManager({
+      carrierBlocksRetirement: noCarrierBlocksRetirement,
       runtime,
       spawnProviderServer: createSpawnProviderServerMock(server.handle),
       reapContainment,
@@ -174,6 +176,7 @@ describe('provider host administration', () => {
     vi.spyOn(backendLog, 'error').mockImplementation(() => undefined);
     const server = createFakeProviderServerHandle({ generation: 502 });
     const manager = new StubbedContainmentProviderHostManager({
+      carrierBlocksRetirement: noCarrierBlocksRetirement,
       runtime,
       spawnProviderServer: createSpawnProviderServerMock(server.handle),
       reapContainment,
@@ -330,18 +333,24 @@ describe('provider host administration', () => {
     await expect(service.list()).resolves.toEqual([{ ownerId: 'coordinator', ...failed }]);
   });
 
-  it('accepts pid-only failure metadata before process-group authority is recorded', async () => {
-    const failed = reclamationFailedRecord(hostRef('pid-only-failure'));
-    const pidOnly = { ...failed, host: { ...failed.host, pid: 601 } };
-    const service = new ProviderHostAdministrationService({ owners: () => [owner('coordinator', [pidOnly])] });
-
-    await expect(service.list()).resolves.toEqual([{ ownerId: 'coordinator', ...pidOnly }]);
-  });
-
   it('rejects process-group metadata without a matching pid', async () => {
     const failed = reclamationFailedRecord(hostRef('group-only-failure'));
     const malformed = owner('coordinator', [], {
       listProviderHosts: vi.fn(async () => [{ ...failed, host: { ...failed.host, processGroupId: 601 } }] as never),
+    });
+
+    await expect(new ProviderHostAdministrationService({ owners: () => [malformed] }).list()).rejects.toMatchObject({
+      code: 'provider_host_inventory_unavailable',
+      ownerIds: ['coordinator'],
+    });
+  });
+
+  it('rejects a coordinator process group that differs from its leader pid', async () => {
+    const failed = reclamationFailedRecord(hostRef('mismatched-group-failure'));
+    const malformed = owner('coordinator', [], {
+      listProviderHosts: vi.fn(
+        async () => [{ ...failed, host: { ...failed.host, pid: 601, processGroupId: 602 } }] as never,
+      ),
     });
 
     await expect(new ProviderHostAdministrationService({ owners: () => [malformed] }).list()).rejects.toMatchObject({

@@ -646,10 +646,7 @@ export class DefaultProviderHostManager
             hostKey: entry.hostKey,
             identityKey: entry.identityKey,
             ownerJobId: entry.jobId ?? null,
-            ...(containment?.pid === undefined && entry.handle?.pid === undefined
-              ? {}
-              : { pid: containment?.pid ?? entry.handle?.pid }),
-            ...(containment?.processGroupId === undefined ? {} : { processGroupId: containment.processGroupId }),
+            ...(containment === null ? {} : { pid: containment.pid, processGroupId: containment.processGroupId }),
             reclamationAttempts: closing.attempt,
             reclamationFailure: closing.failure.message,
             reclamationRetryable: isRetryableReclamationFailure(closing.failure),

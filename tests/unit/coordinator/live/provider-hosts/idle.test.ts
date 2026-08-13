@@ -41,6 +41,7 @@ import type { BackendDefaultsPlan } from '#src/coordinator/composition/defaults.
 import type { CoordinatorStoreServices } from '#src/coordinator/composition/store-services-ref.js';
 import { applyBundledStoreSchema, type Database } from '#src/store/db.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
+import { backendLog } from '#src/infra/backend-log.js';
 import type { JobProjectionDetail } from '#src/jobs/read-queries.js';
 import type { JobRuntime, JobStatus } from '#src/jobs/records.js';
 import type { JobStore } from '#src/jobs/store.js';
@@ -250,7 +251,13 @@ describe('provider host idle properties', () => {
       { storeDb: {} as Database, progressStore: progressStore as unknown as JobStore, consumerDriver: null },
       { storeDbPath: ':memory:' },
     );
-    connectProviderHostRetirementReevaluation({ eventBus, storeServicesRef, operationRegistry, retirement });
+    connectProviderHostRetirementReevaluation({
+      eventBus,
+      storeServicesRef,
+      operationRegistry,
+      retirement,
+      time: runtime.time,
+    });
     operationRegistry.activate(
       record,
       { stop: async () => undefined },
@@ -260,6 +267,46 @@ describe('provider host idle properties', () => {
     operationRegistry.settled(record.operation);
 
     expect(retirement.reevaluateIdleRetirement).toHaveBeenCalledExactlyOnceWith(exactRef);
+  });
+
+  it('bounds retries when every retirement wake fails', async () => {
+    vi.useFakeTimers();
+    const eventBus = new TypedEventBus();
+    const storeServicesRef = createStoreServicesRef();
+    const operationRegistry = new LocalOperationRegistry();
+    const record = providerOperationRecord('executing');
+    if (record.phase !== 'executing') throw new Error('expected executing operation fixture');
+    const exactRef = record.activationAck.hostRef;
+    const progressStore = {
+      loadJobProjectionDetail: () => acquiredDetail(record.operation.jobId, exactRef),
+    };
+    setStoreServicesForTest(
+      storeServicesRef,
+      { storeDb: {} as Database, progressStore: progressStore as unknown as JobStore, consumerDriver: null },
+      { storeDbPath: ':memory:' },
+    );
+    const retirementWake = vi.fn(() => {
+      throw new Error('fixture persistent retirement wake failure');
+    });
+    vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
+    connectProviderHostRetirementReevaluation({
+      eventBus,
+      storeServicesRef,
+      operationRegistry,
+      retirement: { reevaluateIdleRetirement: retirementWake },
+      time: runtime.time,
+    });
+    operationRegistry.activate(
+      record,
+      { stop: async () => undefined },
+      { jobId: record.operation.jobId, pool: 'default' },
+    );
+
+    expect(() => operationRegistry.settled(record.operation)).not.toThrow();
+    await vi.runAllTimersAsync();
+
+    expect(retirementWake).toHaveBeenCalledTimes(3);
+    expect(retirementWake).toHaveBeenCalledWith(exactRef);
   });
 
   it('re-evaluates the real carrier guard after stream close, pin release, and terminal commit', async () => {
@@ -294,7 +341,18 @@ describe('provider host idle properties', () => {
       spawnProviderServer: createSpawnProviderServerMock(server.handle),
       carrierBlocksRetirement,
     });
-    connectProviderHostRetirementReevaluation({ eventBus, storeServicesRef, operationRegistry, retirement: manager });
+    const retirementWake = vi.fn((hostRef: HostRef) => {
+      if (retirementWake.mock.calls.length === 1) throw new Error('fixture transient retirement wake failure');
+      manager.reevaluateIdleRetirement(hostRef);
+    });
+    vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
+    connectProviderHostRetirementReevaluation({
+      eventBus,
+      storeServicesRef,
+      operationRegistry,
+      retirement: { reevaluateIdleRetirement: retirementWake },
+      time: runtime.time,
+    });
     const jobId = '00000000-0000-4000-8000-000000000601';
     const sessionId = 'idle-recheck-session';
     const order: string[] = [];
@@ -354,12 +412,19 @@ describe('provider host idle properties', () => {
       expect(server.closeMock).not.toHaveBeenCalled();
 
       order.push('terminal-commit');
-      commitJobTerminal(progressStore, jobId, sessionId, {
-        content: 'done',
-        durationMs: 0,
-        outcome: { kind: 'completed' },
-      });
+      expect(() =>
+        commitJobTerminal(progressStore, jobId, sessionId, {
+          content: 'done',
+          durationMs: 0,
+          outcome: { kind: 'completed' },
+        }),
+      ).not.toThrow();
       expect(progressStore.listStoredNonterminalJobIds()).not.toContain(jobId);
+      expect(server.closeMock).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(100);
+      expect(retirementWake).toHaveBeenCalledTimes(2);
+      expect(retirementWake).toHaveBeenNthCalledWith(1, managed.hostRef);
+      expect(retirementWake).toHaveBeenNthCalledWith(2, managed.hostRef);
       await vi.advanceTimersByTimeAsync(10);
 
       expect(order).toEqual(['stream-close', 'pin-release', 'terminal-commit']);

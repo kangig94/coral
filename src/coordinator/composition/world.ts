@@ -44,6 +44,8 @@ const REMOTE_BIND_OPT_IN_ENV = 'CORAL_BACKEND_ALLOW_REMOTE';
 const REMOTE_BIND_ADDRESS_ALLOWLIST_ENV = 'CORAL_BACKEND_REMOTE_ADDR_ALLOWLIST';
 const REMOTE_BIND_UNRESTRICTED_ENV = 'CORAL_BACKEND_REMOTE_UNRESTRICTED';
 const SYSTEM_PROVIDER_SCOPE_ENV = 'CORAL_SYSTEM_PROVIDER_SCOPE';
+const PROVIDER_HOST_RETIREMENT_REEVALUATION_ATTEMPTS = 3;
+const PROVIDER_HOST_RETIREMENT_REEVALUATION_RETRY_MS = 100;
 
 function isLoopbackBindHost(bindHost: string): boolean {
   const host = bindHost.trim().toLowerCase();
@@ -232,18 +234,40 @@ export function connectProviderHostRetirementReevaluation(options: {
   storeServicesRef: StoreServicesRef;
   operationRegistry: LocalOperationRegistry;
   retirement: ProviderHostRetirementReevaluation;
+  time: Pick<Runtime['time'], 'setTimeout'>;
 }): void {
-  const reevaluateForJob = (jobId: string): void => {
+  const pendingRetries = new Map<string, ReturnType<Runtime['time']['setTimeout']>>();
+
+  const attemptReevaluation = (jobId: string, attemptsRemaining: number): void => {
     try {
       const detail = options.storeServicesRef.tryGet()?.progressStore.loadJobProjectionDetail(jobId);
       const runtime = detail?.runtime;
       if (runtime?.transport !== 'app-server' || runtime.providerMeta.leaseState !== 'acquired') return;
       options.retirement.reevaluateIdleRetirement(runtime.providerMeta.hostRef);
     } catch (error: unknown) {
-      // The manager's carrier guard is fail-closed. A missed wake-up leaves the host alive; it must not make
-      // terminal publication or operation settlement fail after their authoritative state already changed.
       backendLog.warn(`Failed to re-evaluate provider-host retirement for job '${jobId}': ${errorMessage(error)}`);
+      if (attemptsRemaining <= 1 || pendingRetries.has(jobId)) return;
+
+      try {
+        const timer = options.time.setTimeout(() => {
+          pendingRetries.delete(jobId);
+          attemptReevaluation(jobId, attemptsRemaining - 1);
+        }, PROVIDER_HOST_RETIREMENT_REEVALUATION_RETRY_MS);
+        timer.unref?.();
+        pendingRetries.set(jobId, timer);
+      } catch (scheduleError: unknown) {
+        backendLog.warn(
+          `Failed to schedule provider-host retirement re-evaluation for job '${jobId}': ${errorMessage(scheduleError)}`,
+        );
+      }
     }
+  };
+
+  const reevaluateForJob = (jobId: string): void => {
+    // Terminal publication and operation settlement are already committed before this callback. Keep failures
+    // contained here, but preserve their liveness signal through a short bounded retry chain.
+    if (pendingRetries.has(jobId)) return;
+    attemptReevaluation(jobId, PROVIDER_HOST_RETIREMENT_REEVALUATION_ATTEMPTS);
   };
 
   // These are the two facts the carrier guard reads that can change after the last pin is released:
@@ -410,6 +434,7 @@ export function createCoordinatorWorld(
       storeServicesRef,
       operationRegistry,
       retirement: created,
+      time: runtime.time,
     });
     providerHostManager = created;
     providerProxyAuthority = created;

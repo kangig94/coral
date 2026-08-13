@@ -1,7 +1,18 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ProviderHostEntry } from '#src/coordinator/live/provider-hosts/index.js';
+import { createCarrierBlocksRetirement } from '#src/coordinator/composition/world.js';
+import { createStoreServicesRef } from '#src/coordinator/composition/store-services-ref.js';
+import { TypedEventBus } from '#src/coordinator/event-bus.js';
+import { LocalOperationRegistry } from '#src/coordinator/services/operation-registry.js';
+import { applyBundledStoreSchema } from '#src/store/db.js';
+import { currentCoralStoreFormat } from '#src/store-format.js';
+import { JobStore } from '#src/jobs/store.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { createDeferred } from '#tools/testing/deferred.js';
+import { newRawDatabase } from '#tests/helpers/test-db.js';
+import { setStoreServicesForTest } from '#tools/testing/store-services.js';
+import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import {
   StubbedContainmentProviderHostManager,
   createFakeProviderServerHandle,
@@ -38,7 +49,32 @@ describe('provider host idle close/acquire race', () => {
       if (containment === closingContainment) await closeWindow.promise;
     });
     const spawnProviderServer = createSpawnProviderServerMock(closingServer.handle, freshServer.handle);
+    const eventBus = new TypedEventBus();
+    const db = newRawDatabase(':memory:');
+    applyBundledStoreSchema(db, currentCoralStoreFormat());
+    const progressStore = new JobStore('provider-host-drain-race', runtime, createEventBodyCodec(), {
+      db,
+      eventBus,
+      providers: permissiveProviderLookupPort,
+    });
+    const storeServicesRef = createStoreServicesRef();
+    setStoreServicesForTest(
+      storeServicesRef,
+      { storeDb: db, progressStore, consumerDriver: null },
+      { storeDbPath: ':memory:' },
+    );
+    const operationRegistry = new LocalOperationRegistry();
+    const productionCarrierBlocksRetirement = createCarrierBlocksRetirement(storeServicesRef, {
+      getDb: () => db,
+      loadJobProjectionDetail: (jobId) => progressStore.loadJobProjectionDetail(jobId),
+      platform: runtime.env.platform() as NodeJS.Platform,
+      hasStartupRecoveryPassed: () => true,
+      isAdmittedByThisCoordinator: () => false,
+      registryStateForJob: (jobId) => operationRegistry.stateForJob(jobId),
+    });
+    const carrierBlocksRetirement = vi.fn(productionCarrierBlocksRetirement);
     const manager = new StubbedContainmentProviderHostManager({
+      carrierBlocksRetirement,
       runtime,
       spawnProviderServer,
       allocateProviderServerGeneration: (() => {
@@ -61,6 +97,9 @@ describe('provider host idle close/acquire race', () => {
     first.close();
     await vi.advanceTimersByTimeAsync(10);
 
+    expect(carrierBlocksRetirement).toHaveBeenCalledTimes(2);
+    expect(carrierBlocksRetirement).toHaveBeenNthCalledWith(1, first.hostRef);
+    expect(carrierBlocksRetirement).toHaveBeenNthCalledWith(2, first.hostRef);
     expect(reapContainment).toHaveBeenCalledWith(closingContainment, expect.any(AbortSignal));
     expect(closingEntry.closePromise).not.toBeNull();
     await expect(manager.openSession(spec)).rejects.toThrow(/^provider_host_draining:/u);
@@ -78,5 +117,6 @@ describe('provider host idle close/acquire race', () => {
     expect(internals(manager).entries.values().next().value?.containment).toBe(freshServer.handle.containmentIdentity);
     fresh.close();
     await manager.shutdown();
+    db.close();
   });
 });

@@ -8,6 +8,7 @@ import {
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
 import type { RecordedContainmentIdentity } from '#src/infra/process-containment.js';
 import type { SpawnProviderServerFn } from '#src/providers/app-server-transport.js';
+import type { HostRef } from '#src/providers/contract.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 import {
   StubbedContainmentProviderHostManager,
@@ -224,7 +225,10 @@ describe('provider host drain properties', () => {
               throw initializationError;
             })
           : createSpawnProviderServerMock(server.handle);
+      const carrierHostInstanceIds = new Set<string>();
+      const carrierBlocksRetirement = vi.fn((hostRef: HostRef) => carrierHostInstanceIds.has(hostRef.instanceId));
       const manager = new StubbedContainmentProviderHostManager({
+        carrierBlocksRetirement,
         runtime,
         spawnProviderServer,
         idleTimeoutMs: 10,
@@ -232,10 +236,12 @@ describe('provider host drain properties', () => {
       });
       const spec = createSharedSpec();
 
+      let openedHostRef: HostRef | null = null;
       if (terminalPath === 'initialization failure') {
         await expect(manager.openSession(spec)).rejects.toBe(initializationError);
       } else {
         const opened = await manager.openSession(spec);
+        openedHostRef = opened.hostRef;
         if (terminalPath === 'idle retirement') {
           opened.close();
           server.emitNotification({ method: 'host/stats', params: { liveControllers: 0, activeTurns: 0 } });
@@ -251,6 +257,13 @@ describe('provider host drain properties', () => {
 
       expect(reapContainment).toHaveBeenCalledOnce();
       expect(reapContainment).toHaveBeenCalledWith(containment, expect.any(AbortSignal));
+      if (terminalPath === 'idle retirement') {
+        expect(carrierBlocksRetirement).toHaveBeenCalledTimes(2);
+        expect(carrierBlocksRetirement).toHaveBeenNthCalledWith(1, openedHostRef);
+        expect(carrierBlocksRetirement).toHaveBeenNthCalledWith(2, openedHostRef);
+      } else {
+        expect(carrierBlocksRetirement).not.toHaveBeenCalled();
+      }
       await manager.shutdown();
       expect(reapContainment).toHaveBeenCalledOnce();
     },

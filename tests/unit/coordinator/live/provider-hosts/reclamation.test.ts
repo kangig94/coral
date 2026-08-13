@@ -4,9 +4,11 @@ import { backendLog } from '#src/infra/backend-log.js';
 import { ProcessContainmentError, type RecordedContainmentIdentity } from '#src/infra/process-containment.js';
 import type { ProviderHostEntry } from '#src/coordinator/live/provider-hosts/index.js';
 import type { SpawnProviderServerFn } from '#src/providers/app-server-transport.js';
+import { providerHostInventorySchema } from '#src/providers/host-inventory-schema.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 import {
   StubbedContainmentProviderHostManager,
+  noCarrierBlocksRetirement,
   createFakeProviderServerHandle,
   createSharedSpec,
   createSpawnProviderServerMock,
@@ -16,6 +18,7 @@ import {
 async function openReclamationTestHost(reapContainment: (identity: RecordedContainmentIdentity) => Promise<void>) {
   const server = createFakeProviderServerHandle({ generation: 491 });
   const manager = new StubbedContainmentProviderHostManager({
+    carrierBlocksRetirement: noCarrierBlocksRetirement,
     runtime,
     spawnProviderServer: createSpawnProviderServerMock(server.handle),
     reapContainment,
@@ -36,7 +39,7 @@ describe('provider host reclamation', () => {
     );
     const reapContainment = vi.fn().mockRejectedValue(identityFailure);
     vi.spyOn(backendLog, 'error').mockImplementation(() => undefined);
-    const { hostRef, manager } = await openReclamationTestHost(reapContainment);
+    const { hostRef, manager, server } = await openReclamationTestHost(reapContainment);
     expect(manager.listProviderHosts()).toMatchObject([{ status: 'live', ref: hostRef }]);
 
     const failedEviction = manager.evictHost(hostRef).catch((error: unknown) => error);
@@ -45,8 +48,16 @@ describe('provider host reclamation', () => {
 
     expect(reapContainment).toHaveBeenCalledOnce();
     expect(manager.listProviderHosts()).toMatchObject([
-      { status: 'reclamation-failed', host: { reclamationAttempts: 1 } },
+      {
+        status: 'reclamation-failed',
+        host: {
+          pid: server.handle.containmentIdentity.pid,
+          processGroupId: server.handle.containmentIdentity.processGroupId,
+          reclamationAttempts: 1,
+        },
+      },
     ]);
+    expect(() => providerHostInventorySchema.parse(manager.listProviderHosts())).not.toThrow();
   });
 
   it('clears failed reclamation state when a retry succeeds', async () => {
@@ -123,6 +134,7 @@ describe('provider host reclamation', () => {
     const reapContainment = vi.fn();
     vi.spyOn(backendLog, 'error').mockImplementation(() => undefined);
     const manager = new StubbedContainmentProviderHostManager({
+      carrierBlocksRetirement: noCarrierBlocksRetirement,
       runtime,
       spawnProviderServer,
       reapContainment,
@@ -146,6 +158,7 @@ describe('provider host reclamation', () => {
     ]);
     expect(manager.listProviderHosts()[0]?.host).not.toHaveProperty('pid');
     expect(manager.listProviderHosts()[0]?.host).not.toHaveProperty('processGroupId');
+    expect(() => providerHostInventorySchema.parse(manager.listProviderHosts())).not.toThrow();
     expect(reapContainment).not.toHaveBeenCalled();
 
     await expect(opening).resolves.toBeInstanceOf(Error);
@@ -169,6 +182,7 @@ describe('provider host reclamation', () => {
     });
     vi.spyOn(backendLog, 'error').mockImplementation(() => undefined);
     const manager = new StubbedContainmentProviderHostManager({
+      carrierBlocksRetirement: noCarrierBlocksRetirement,
       runtime,
       spawnProviderServer: createSpawnProviderServerMock(first.handle, second.handle),
       reapContainment,

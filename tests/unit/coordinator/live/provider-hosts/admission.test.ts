@@ -9,6 +9,7 @@ import type {
 import { createCoordinatorProviderHostAdmission } from '#src/coordinator/live/provider-host-admission.js';
 import {
   StubbedContainmentProviderHostManager,
+  noCarrierBlocksRetirement,
   createExclusiveSpec,
   createFakeProviderServerHandle,
   createSharedSpec,
@@ -51,6 +52,7 @@ describe('coordinator provider-host admission', () => {
     });
     let generation = 101;
     const manager = new StubbedContainmentProviderHostManager({
+      carrierBlocksRetirement: noCarrierBlocksRetirement,
       runtime,
       spawnProviderServer,
       admission: createCoordinatorProviderHostAdmission(),
@@ -138,6 +140,7 @@ describe('coordinator provider-host admission', () => {
     const finishReap = createDeferred<void>();
     let sink: ProviderResponseObservationSink | undefined;
     const manager = new StubbedContainmentProviderHostManager({
+      carrierBlocksRetirement: noCarrierBlocksRetirement,
       runtime,
       admission: createCoordinatorProviderHostAdmission(),
       spawnProviderServer: async (_options, observationSink, _generation, recordContainment) => {
@@ -178,6 +181,7 @@ describe('coordinator provider-host admission', () => {
     });
     let sink: ProviderResponseObservationSink | undefined;
     const manager = new StubbedContainmentProviderHostManager({
+      carrierBlocksRetirement: noCarrierBlocksRetirement,
       runtime,
       admission: createCoordinatorProviderHostAdmission(),
       spawnProviderServer: async (_options, observationSink, _generation, recordContainment) => {
@@ -218,6 +222,7 @@ describe('coordinator provider-host admission', () => {
     });
     let generation = 201;
     const manager = new StubbedContainmentProviderHostManager({
+      carrierBlocksRetirement: noCarrierBlocksRetirement,
       runtime,
       spawnProviderServer,
       admission: createCoordinatorProviderHostAdmission(),
@@ -275,6 +280,7 @@ describe('coordinator provider-host admission', () => {
     });
     let generation = 301;
     const manager = new StubbedContainmentProviderHostManager({
+      carrierBlocksRetirement: noCarrierBlocksRetirement,
       runtime,
       spawnProviderServer,
       admission: createCoordinatorProviderHostAdmission(),
@@ -328,6 +334,7 @@ describe('coordinator provider-host admission', () => {
     });
     let sink: ProviderResponseObservationSink | undefined;
     const manager = new StubbedContainmentProviderHostManager({
+      carrierBlocksRetirement: noCarrierBlocksRetirement,
       runtime,
       admission: createCoordinatorProviderHostAdmission(),
       spawnProviderServer: async (_options, observationSink, _generation, recordContainment) => {

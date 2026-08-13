@@ -89,14 +89,17 @@ const reclamationFailureMetadataShape = {
 };
 const reclamationFailureMetadataSchema = z.union([
   z.object(reclamationFailureMetadataShape).strict(),
-  z.object({ ...reclamationFailureMetadataShape, pid: positiveSafeIntegerSchema }).strict(),
   z
     .object({
       ...reclamationFailureMetadataShape,
       pid: positiveSafeIntegerSchema,
       processGroupId: positiveSafeIntegerSchema,
     })
-    .strict(),
+    .strict()
+    .refine(({ pid, processGroupId }) => processGroupId === pid, {
+      message: 'processGroupId must equal pid for a coordinator-owned provider host',
+      path: ['processGroupId'],
+    }),
 ]);
 
 export const liveProviderHostInventoryRecordSchema = z

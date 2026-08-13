@@ -4,6 +4,7 @@ import { ensureProviderServerHandle } from '#src/coordinator/live/provider-hosts
 import { createHostAdmissionCollection, type HostAdmissionCollection } from '#src/providers/host-admission.js';
 import {
   StubbedContainmentProviderHostManager,
+  noCarrierBlocksRetirement,
   createEntry,
   createExclusiveSpec,
   createFakeProviderServerHandle,
@@ -60,6 +61,7 @@ describe('provider host recovery', () => {
         ),
     };
     const manager = new StubbedContainmentProviderHostManager({
+      carrierBlocksRetirement: noCarrierBlocksRetirement,
       runtime,
       spawnProviderServer: createSpawnProviderServerMock(server.handle),
       admission,
@@ -80,6 +82,7 @@ describe('provider host recovery', () => {
     const sharedServer = createFakeProviderServerHandle({ generation: 31 });
     const exclusiveServer = createFakeProviderServerHandle({ generation: 32 });
     const manager = new StubbedContainmentProviderHostManager({
+      carrierBlocksRetirement: noCarrierBlocksRetirement,
       runtime,
       spawnProviderServer: createSpawnProviderServerMock(sharedServer.handle, exclusiveServer.handle),
     });
@@ -102,7 +105,11 @@ describe('provider host recovery', () => {
   it('attaches a live exclusive host only when the opaque reference matches', async () => {
     const server = createFakeProviderServerHandle({ generation: 41 });
     const spawnProviderServer = createSpawnProviderServerMock(server.handle);
-    const manager = new StubbedContainmentProviderHostManager({ runtime, spawnProviderServer });
+    const manager = new StubbedContainmentProviderHostManager({
+      carrierBlocksRetirement: noCarrierBlocksRetirement,
+      runtime,
+      spawnProviderServer,
+    });
 
     const spec = createExclusiveSpec();
     const lease = await manager.openSession(createLaunch(spec), { jobId: 'job-a' });
@@ -125,7 +132,11 @@ describe('provider host recovery', () => {
   it('passes initializeRequest from spec to spawnProviderServer options', async () => {
     const server = createFakeProviderServerHandle({ generation: 50 });
     const spawnProviderServer = createSpawnProviderServerMock(server.handle);
-    const manager = new StubbedContainmentProviderHostManager({ runtime, spawnProviderServer });
+    const manager = new StubbedContainmentProviderHostManager({
+      carrierBlocksRetirement: noCarrierBlocksRetirement,
+      runtime,
+      spawnProviderServer,
+    });
 
     const spec = createExclusiveSpec({
       initializeRequest: {
@@ -155,6 +166,7 @@ describe('provider host recovery', () => {
   it('fails closed for wrong instance, owner, and lease policy', async () => {
     const server = createFakeProviderServerHandle({ generation: 61 });
     const manager = new StubbedContainmentProviderHostManager({
+      carrierBlocksRetirement: noCarrierBlocksRetirement,
       runtime,
       spawnProviderServer: createSpawnProviderServerMock(server.handle),
     });
