@@ -314,6 +314,17 @@ function noCapsuleStorage(base: StoragePort): StoragePort {
  * time is always readable and never matches what the fixture recorded, which is the mismatch the reaper reads
  * as absence. Nothing here reaches the operating system.
  */
+/** A runtime that reaches neither the developer's capsules nor their process table, on the supplied clock. */
+function sandboxedRuntime(time: TimePort): Runtime {
+  const base = createRealRuntime('prod');
+  return {
+    ...base,
+    time,
+    storage: noCapsuleStorage(base.storage),
+    process: absentProcessPort(base.process),
+  } satisfies Runtime;
+}
+
 function absentProcessPort(base: ProcessPort): ProcessPort {
   return {
     ...base,
@@ -327,21 +338,21 @@ function composeProductionStartup(
   record: ProviderOperationRecord,
   inheritance: unknown,
   options: Readonly<{
+    /** For a case that stages capsules on disk: its storage is the fixture, so the sandbox steps aside. */
     runtime?: Runtime;
+    /** For a case that only wants to drive the clock, and should keep the sandbox. */
+    time?: TimePort;
     progressStore?: Partial<Pick<JobProgressStore, 'commit' | 'readStatus' | 'readLaunchProjection'>>;
   }> = {},
 ): ProductionStartupHarness {
   const db = createDb([record]);
-  const time = options.runtime?.time ?? new VirtualTime();
-  const baseRuntime = createRealRuntime('prod');
-  const runtime =
-    options.runtime ??
-    ({
-      ...baseRuntime,
-      time,
-      storage: noCapsuleStorage(baseRuntime.storage),
-      process: absentProcessPort(baseRuntime.process),
-    } satisfies Runtime);
+  // Wanting a clock and wanting the host's filesystem are different asks, and this used to conflate them:
+  // supplying a runtime for the clock also handed over real storage, so the one case that did read the
+  // developer's `gen2/run`, found a live daemon's handoff capsule, and attempted the redemption the fixture
+  // declares never happens. Only a case that stages capsules itself passes a runtime now; asking for a clock
+  // keeps the sandbox.
+  const runtime = options.runtime ?? sandboxedRuntime(options.time ?? new VirtualTime());
+  const { time } = runtime;
   const fatals = vi.fn();
   const lifecycleRef = new ProviderProxySetLifecycleRef();
   const progressStore = {
@@ -903,10 +914,7 @@ async function terminalizationUncertaintyStartupCase(mode: 'atomic-unknown' | 'u
             throw new Error('atomic-terminalization-sentinel');
           },
         };
-  const harness = composeProductionStartup(record, inheritance, {
-    runtime: { ...createRealRuntime('prod'), time },
-    progressStore,
-  });
+  const harness = composeProductionStartup(record, inheritance, { time, progressStore });
   const outcome = await productionStartupOutcome(harness);
   const snapshot = harness.lifecycleRef.get()?.snapshot();
   const result = {
