@@ -10,7 +10,12 @@
     {
       "name": "coral",
       "description": "Structured planning, execution, and review workflows for Copilot CLI — multi-round plan/review, verified execution loops, multi-agent discussion, and a persistent knowledge base.",
-      "source": "./clients"
+      "source": {
+        "source": "github",
+        "repo": "kangig94/coral",
+        "ref": "v0.10.5",
+        "path": "clients"
+      }
     }
   ]
 }

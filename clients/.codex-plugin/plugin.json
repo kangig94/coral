@@ -1,6 +1,6 @@
 {
   "name": "coral",
-  "version": "0.10.4",
+  "version": "0.10.5",
   "description": "Structured agents with Codex and Claude CLI bridges, plus deterministic workflow orchestration.",
   "author": {
     "name": "kangig94",
