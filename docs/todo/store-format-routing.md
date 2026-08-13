@@ -147,11 +147,12 @@ shipped in-process host teardown does not depend on them.
 
 ## Transferred in: durable containment recovery (2026-08-13)
 
-Provider-host reclamation (`leaked-mcp-child-reaping.md`) originally carried a second half — reclaiming a
-detached provider-host process group after a coordinator *crash* — and it is transferred here in full. It was
-cut from that work after eleven review rounds, not because it is unimportant, but because it is not solvable
-inside that scope: every attempt to make a durable containment record trustworthy ended up needing an answer
-to "which coordinator owns this record", which is exactly this document's domain.
+Provider-host reclamation — since shipped, and described by `architecture.md`'s containment paragraph —
+originally carried a second half: reclaiming a detached provider-host process group after a coordinator
+*crash*. That half is transferred here in full. It was cut from that work after eleven review rounds, not
+because it is unimportant, but because it is not solvable inside that scope: every attempt to make a durable
+containment record trustworthy ended up needing an answer to "which coordinator owns this record", which is
+exactly this document's domain.
 
 **The premise that made it look in-scope was false.** The plan treated `detached` as *creating* a new leak
 class, so it required a durable record to close it. But an **undetached** child is also orphaned when its

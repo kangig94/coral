@@ -2,8 +2,8 @@
 
 **Status**: open, and **half-built already**. The hard half — preserving the provider's native session file
 before deleting it — has been shipping since at least 2026-06-28. What does not exist is the restore
-direction. Scoped on 2026-08-13 after discovering the archive while designing
-[`leaked-mcp-child-reaping.md`](leaked-mcp-child-reaping.md); the two are independent.
+direction. Scoped on 2026-08-13 after discovering the archive while designing provider-host reclamation; the
+two are independent, because resumability is file-based and does not depend on a host still running.
 
 ## Why Coral deletes the native session file at all
 
