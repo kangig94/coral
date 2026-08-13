@@ -38,6 +38,21 @@ execFileSync('node', ['scripts/check-simulation.mjs'], { stdio: 'inherit' });
 
 const { version } = JSON.parse(readFileSync('package.json', 'utf8'));
 
+/**
+ * Copilot rejects the `git-subdir` object Claude Code uses — verified against Copilot CLI 1.0.78, where only
+ * `{source:"github", repo, ref, path}` installs — so the two marketplaces name the same tag in different
+ * shapes. The repo slug is read back out of the Claude manifest rather than repeated here, so a fork changes
+ * one URL and both clients follow.
+ */
+function pinnedCopilotSource(releaseVersion) {
+  const claudeUrl = JSON.parse(readFileSync('.claude-plugin/marketplace.json', 'utf8')).plugins?.[0]?.source?.url;
+  const repo = /github\.com[/:](?<slug>[^/]+\/[^/]+?)(?:\.git)?$/u.exec(claudeUrl ?? '')?.groups?.slug;
+  if (repo === undefined) {
+    throw new Error(`Cannot derive the Copilot marketplace repo from the Claude marketplace url: ${claudeUrl}`);
+  }
+  return { source: 'github', repo, ref: `v${releaseVersion}`, path: 'clients' };
+}
+
 // Sync manifest versions (single source of truth: package.json). The plugin
 // manifests live under clients/ (the plugin root); marketplace manifests stay
 // at the repo root and point back at ./clients. Each client reads a different
@@ -81,6 +96,18 @@ for (const path of [
         pluginSource.ref = releaseRef;
         changed = true;
       }
+    }
+  }
+
+  // Copilot's manifest is read from the default branch, so `main` must carry a source that installs today —
+  // a bare `./clients`, which resolves against that same branch. Pinning is therefore written by the release
+  // rather than committed: the release commit lands on `main`, so from then until the next release Copilot
+  // resolves the tag just built instead of whatever has since merged.
+  if (release && path === '.github/plugin/marketplace.json') {
+    const pinned = pinnedCopilotSource(version);
+    if (JSON.stringify(json.plugins?.[0]?.source) !== JSON.stringify(pinned)) {
+      json.plugins[0].source = pinned;
+      changed = true;
     }
   }
 
