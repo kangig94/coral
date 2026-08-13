@@ -6,7 +6,18 @@ import { backendLog } from '../../../infra/backend-log.js';
 import { activePinCount } from './lease.js';
 import { hostRefFromEntry, type HostStatsState, type ProviderHostEntry, type ProviderHostPin } from './state.js';
 
-const DEFAULT_BROKER_IDLE_MS = 300_000;
+/**
+ * What the window costs when it expires too soon is one app-server spawn, measured at 0.25-0.35 s to an
+ * `initialize` reply. What it costs while it holds is every child that host leaked staying resident — which
+ * for codex is MCP servers it never reaps (openai/codex#30408). The trade is that asymmetric, so the window
+ * is short.
+ *
+ * It does not buy session continuity, and lengthening it does not make follow-up turns cheaper. Every turn
+ * re-establishes its thread through `initializeThread`, so a live host still issues `thread/resume`, and a
+ * repeated resume on one warm process was measured at 6.5 s then 5.1 s for the same 71 MB thread — the
+ * rehydration is paid per turn either way.
+ */
+const DEFAULT_BROKER_IDLE_MS = 30_000;
 const MIN_OUTSTANDING_PIN_DIAGNOSTIC_MS = 1_000;
 
 export function parseIdleTimeoutMs(raw: string | undefined): number {

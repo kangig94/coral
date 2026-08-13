@@ -41,7 +41,7 @@ import { PROXY_CONTROL_RPC_TIMEOUT_MS, ProxyControlProtocolError } from '#src/pr
 import { providerHandoffCapsulePath } from '#src/infra/path/index.js';
 import type { StorageBigIntStat, StoragePort, TimePort, TimerHandle } from '#src/infra/port-types.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import type { Runtime } from '#src/runtime/ports.js';
+import type { ProcessPort, Runtime } from '#src/runtime/ports.js';
 import { ProviderOperationTerminalizationUnavailableError } from '#src/jobs/provider-operation-terminalization.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
@@ -297,8 +297,30 @@ type ProductionStartupHarness = Readonly<{
   services: ReturnType<typeof createExecutionServices>;
 }>;
 
+/** Later than every `processStartedAtSeconds` the shared fixture records, so no recorded identity can match. */
+const FIXTURE_PROCESS_LONG_GONE_STARTED_AT_SECONDS = 9_000;
+
 function noCapsuleStorage(base: StoragePort): StoragePort {
   return { ...base, readdirSync: (() => []) as StoragePort['readdirSync'] };
+}
+
+/**
+ * Startup reconciliation reaps recorded containment, and the real process port would answer that from the
+ * machine's own process table — where the fixture's pids 101-104 are low system pids that exist, whose
+ * `/proc` entries may or may not be readable, and whose readability decides whether the reaper stops at an
+ * identity mismatch or proceeds to signal. That makes the assertion depend on what else is running.
+ *
+ * These recorded processes are meant to be gone. Saying so directly keeps the reap deterministic: a start
+ * time is always readable and never matches what the fixture recorded, which is the mismatch the reaper reads
+ * as absence. Nothing here reaches the operating system.
+ */
+function absentProcessPort(base: ProcessPort): ProcessPort {
+  return {
+    ...base,
+    isAlive: () => false,
+    kill: () => false,
+    readProcessStartedAtSeconds: () => FIXTURE_PROCESS_LONG_GONE_STARTED_AT_SECONDS,
+  };
 }
 
 function composeProductionStartup(
@@ -313,7 +335,13 @@ function composeProductionStartup(
   const time = options.runtime?.time ?? new VirtualTime();
   const baseRuntime = createRealRuntime('prod');
   const runtime =
-    options.runtime ?? ({ ...baseRuntime, time, storage: noCapsuleStorage(baseRuntime.storage) } satisfies Runtime);
+    options.runtime ??
+    ({
+      ...baseRuntime,
+      time,
+      storage: noCapsuleStorage(baseRuntime.storage),
+      process: absentProcessPort(baseRuntime.process),
+    } satisfies Runtime);
   const fatals = vi.fn();
   const lifecycleRef = new ProviderProxySetLifecycleRef();
   const progressStore = {
