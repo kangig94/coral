@@ -332,16 +332,18 @@ function composeProductionStartup(
   }> = {},
 ): ProductionStartupHarness {
   const db = createDb([record]);
+  // A caller supplies a runtime to control time, never to opt out of the sandbox — so the isolation is layered
+  // on top of whatever it hands over rather than replaced by it. When this was an either/or, the one case that
+  // brought its own clock also silently read the developer's real `gen2/run`, found a live daemon's handoff
+  // capsule there, and attempted a redemption the fixture asserts never happens.
+  const base = options.runtime ?? createRealRuntime('prod');
   const time = options.runtime?.time ?? new VirtualTime();
-  const baseRuntime = createRealRuntime('prod');
-  const runtime =
-    options.runtime ??
-    ({
-      ...baseRuntime,
-      time,
-      storage: noCapsuleStorage(baseRuntime.storage),
-      process: absentProcessPort(baseRuntime.process),
-    } satisfies Runtime);
+  const runtime = {
+    ...base,
+    time,
+    storage: noCapsuleStorage(base.storage),
+    process: absentProcessPort(base.process),
+  } satisfies Runtime;
   const fatals = vi.fn();
   const lifecycleRef = new ProviderProxySetLifecycleRef();
   const progressStore = {
