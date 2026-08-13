@@ -18,6 +18,7 @@ import {
 } from '../../../providers/host-admission.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import { backendLog } from '../../../infra/backend-log.js';
+import { ProcessContainmentError, type RecordedContainmentIdentity } from '../../../infra/process-containment.js';
 import {
   acquireProviderHostPin,
   createProviderServerAttachment,
@@ -198,13 +199,41 @@ function waitForClose(operation: Promise<void>, signal: AbortSignal | undefined)
   });
 }
 
+const MAX_AUTOMATIC_RECLAMATION_ATTEMPTS = 3;
+const AUTOMATIC_RECLAMATION_RETRY_DELAY_MS = 1_000;
+
+type ProviderHostClosingRecord = Readonly<{
+  ref: HostRef;
+  operation: Promise<void>;
+  token: symbol;
+  attempt: number;
+  state: 'closing' | 'reclamation-failed';
+  failure: Error | null;
+  containment: RecordedContainmentIdentity | null;
+  diagnostics: ProviderHostDiagnosticsSnapshot;
+}>;
+
+function reclamationFailure(error: unknown): Error {
+  return error instanceof Error ? error : new Error('Provider host reclamation failed.', { cause: error });
+}
+
+function isRetryableReclamationFailure(error: Error): boolean {
+  if (!(error instanceof ProcessContainmentError)) return false;
+  switch (error.code) {
+    case 'process_containment_reap_failed':
+      return true;
+    case 'process_identity_unverified':
+      return false;
+  }
+}
+
 export class DefaultProviderHostManager
   implements ProviderHostManager, ProviderProxyAuthorityRegistry, ProviderProxySetRegistration
 {
   private readonly entries = new Map<string, ProviderHostEntry>();
   private readonly admission: HostAdmissionCollection;
   private readonly pendingCloses = new Set<Promise<void>>();
-  private readonly closingEntries = new Map<ProviderHostEntry, Readonly<{ ref: HostRef; operation: Promise<void> }>>();
+  private readonly closingEntries = new Map<ProviderHostEntry, ProviderHostClosingRecord>();
   private readonly lifecyclePolicies = new Map<string, string>();
   private nextProviderServerGeneration = 1;
   private acceptingAcquisitions = true;
@@ -536,11 +565,14 @@ export class DefaultProviderHostManager
 
   listProviderHosts(): readonly ProviderHostInventoryRecord[] {
     const snapshot = this.admission.snapshot();
-    const processEntries = new Set([...this.entries.values(), ...this.closingEntries.keys()]);
+    const closingRecords = [...this.closingEntries.entries()];
+    const isClosing = (ref: HostRef): boolean =>
+      closingRecords.some(([, closing]) => exactHostRefsMatch(closing.ref, ref));
     const records: ProviderHostInventoryRecord[] = [];
     for (const admissionEntry of snapshot.state.values()) {
       if (admissionEntry.phase === 'spawning' || admissionEntry.phase === 'retired-blocked') continue;
-      const matches = [...processEntries].filter((entry) => entryMatchesHostRef(entry, admissionEntry.ref));
+      if (isClosing(admissionEntry.ref)) continue;
+      const matches = [...this.entries.values()].filter((entry) => entryMatchesHostRef(entry, admissionEntry.ref));
       if (matches.length !== 1) {
         throw new Error('provider_host_inventory_unavailable: live coordinator host could not be revalidated');
       }
@@ -567,17 +599,42 @@ export class DefaultProviderHostManager
       );
     }
     records.push(
-      ...snapshot.tombstones.map((tombstone) =>
-        Object.freeze({
-          ref: tombstone.ref,
-          status: tombstone.phase,
-          spec: tombstone.spec,
-          host: tombstone.host,
-          diagnostics: tombstone.diagnostics,
-          diagnosticsRetention: tombstone.diagnosticsRetention,
-        }),
-      ),
+      ...snapshot.tombstones
+        .filter((tombstone) => !isClosing(tombstone.ref))
+        .map((tombstone) =>
+          Object.freeze({
+            ref: tombstone.ref,
+            status: tombstone.phase,
+            spec: tombstone.spec,
+            host: tombstone.host,
+            diagnostics: tombstone.diagnostics,
+            diagnosticsRetention: tombstone.diagnosticsRetention,
+          }),
+        ),
     );
+    for (const [entry, closing] of closingRecords) {
+      if (closing.state !== 'reclamation-failed' || closing.failure === null) continue;
+      const containment = entry.containment ?? closing.containment;
+      records.push(
+        Object.freeze({
+          ref: closing.ref,
+          status: 'reclamation-failed',
+          spec: canonicalProviderHostSpecMetadata(entry.spec),
+          host: Object.freeze({
+            owner: 'coordinator',
+            hostKey: entry.hostKey,
+            identityKey: entry.identityKey,
+            ownerJobId: entry.jobId ?? null,
+            pid: containment?.pid ?? entry.handle?.pid ?? null,
+            processGroupId: containment?.processGroupId ?? null,
+            reclamationAttempts: closing.attempt,
+            reclamationFailure: closing.failure.message,
+          }),
+          diagnostics: closing.diagnostics,
+          diagnosticsRetention: Object.freeze({ ownerBudgetTruncated: false }),
+        }),
+      );
+    }
     return Object.freeze(records);
   }
 
@@ -736,27 +793,39 @@ export class DefaultProviderHostManager
     if (entry.closePromise === null) {
       const priorClosing = this.closingEntries.get(entry);
       const ref = entry.instanceId === null ? (priorClosing?.ref ?? null) : hostRefFromEntry(entry);
-      const operation = closeEntry(entry, detail, {
-        runtime: this.runtime,
-        entries: this.entries,
-        shutdownHandle: (handle, spec, containment) => this.shutdownHandle(handle, spec, containment),
-        reapContainment: this.reapContainment,
-      });
+      const token = Symbol('provider-host-close');
+      const operation = this.closeWithReclamationRetries(entry, detail, token);
       entry.closePromise = operation;
       this.pendingCloses.add(operation);
-      if (ref !== null) this.closingEntries.set(entry, Object.freeze({ ref, operation }));
+      if (ref !== null) {
+        this.closingEntries.set(
+          entry,
+          Object.freeze({
+            ref,
+            operation,
+            token,
+            attempt: 1,
+            state: 'closing',
+            failure: null,
+            containment: entry.containment ?? priorClosing?.containment ?? null,
+            diagnostics: priorClosing?.diagnostics ?? entry.handle?.inspectDiagnostics() ?? emptyDiagnostics(),
+          }),
+        );
+      }
       void operation.then(
         () => {
           this.pendingCloses.delete(operation);
           if (this.closingEntries.get(entry)?.operation === operation) this.closingEntries.delete(entry);
         },
         (error: unknown) => {
-          const containment = entry.containment;
+          const closing = this.closingEntries.get(entry);
+          const failure = closing?.failure ?? reclamationFailure(error);
+          const containment = entry.containment ?? closing?.containment ?? null;
           const pid = containment?.pid ?? entry.handle?.pid ?? 'unknown';
           const processGroupId = containment?.processGroupId ?? 'unrecorded';
           backendLog.error(
-            `Provider host close/reap failed: provider=${entry.spec.provider} pid=${pid} pgid=${processGroupId} detail=${detail}`,
-            error,
+            `Provider host reclamation abandoned: provider=${entry.spec.provider} pid=${pid} pgid=${processGroupId} attempts=${closing?.attempt ?? 1} detail=${detail} failure=${failure.message}`,
+            failure,
           );
           this.pendingCloses.delete(operation);
           if (entry.closePromise === operation) entry.closePromise = null;
@@ -768,6 +837,46 @@ export class DefaultProviderHostManager
       await waitForClose(operation, options.signal);
     } catch (error: unknown) {
       if (options.confirmAbsence) throw error;
+    }
+  }
+
+  private async closeWithReclamationRetries(entry: ProviderHostEntry, detail: string, token: symbol): Promise<void> {
+    for (let attempt = 1; attempt <= MAX_AUTOMATIC_RECLAMATION_ATTEMPTS; attempt += 1) {
+      try {
+        await closeEntry(entry, detail, {
+          runtime: this.runtime,
+          entries: this.entries,
+          shutdownHandle: (handle, spec, containment) => this.shutdownHandle(handle, spec, containment),
+          reapContainment: this.reapContainment,
+        });
+        return;
+      } catch (error: unknown) {
+        const failure = reclamationFailure(error);
+        const closing = this.closingEntries.get(entry);
+        if (closing?.token === token) {
+          this.closingEntries.set(
+            entry,
+            Object.freeze({
+              ...closing,
+              attempt,
+              state: 'reclamation-failed',
+              failure,
+              containment: entry.containment ?? closing.containment,
+            }),
+          );
+        }
+        if (!isRetryableReclamationFailure(failure) || attempt === MAX_AUTOMATIC_RECLAMATION_ATTEMPTS) {
+          throw failure;
+        }
+        await this.runtime.time.sleep(AUTOMATIC_RECLAMATION_RETRY_DELAY_MS);
+        const retrying = this.closingEntries.get(entry);
+        if (retrying?.token === token) {
+          this.closingEntries.set(
+            entry,
+            Object.freeze({ ...retrying, attempt: attempt + 1, state: 'closing', failure: null }),
+          );
+        }
+      }
     }
   }
 

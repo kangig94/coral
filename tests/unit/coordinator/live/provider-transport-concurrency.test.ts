@@ -83,7 +83,7 @@ describe('provider transport concurrency hardening', () => {
     expect(runtime.spawner.killCalls).toEqual([{ pid: -20_000, signal: 0 }]);
 
     runtime.time.tick(1);
-    await flushMicrotasks(100);
+    await flushMicrotasks(200);
 
     expect(observed.settled).toBe(true);
     expect(observed.error).toBeInstanceOf(Error);
@@ -107,7 +107,7 @@ describe('provider transport concurrency hardening', () => {
     expect(observed.settled).toBe(false);
 
     runtime.time.tick(1);
-    await flushMicrotasks(100);
+    await flushMicrotasks(200);
 
     expect(observed.settled).toBe(true);
     expect((observed.error as Error | undefined)?.message).toContain('initialize timed out after 250ms');
@@ -131,7 +131,7 @@ describe('provider transport concurrency hardening', () => {
     expect(observed.settled).toBe(false);
 
     runtime.time.tick(1);
-    await flushMicrotasks(100);
+    await flushMicrotasks(200);
 
     expect(observed.settled).toBe(true);
     expect((observed.error as Error | undefined)?.message).toContain(

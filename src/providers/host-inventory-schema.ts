@@ -75,7 +75,7 @@ const providerHostMetadataValueSchema = z.union([z.string(), z.number(), z.boole
 export const providerHostInventoryRecordSchema = z
   .object({
     ref: hostRefSchema,
-    status: z.enum(['live', 'retired-blocked']),
+    status: z.enum(['live', 'retired-blocked', 'reclamation-failed']),
     spec: providerHostSpecSchema,
     host: z.record(providerHostMetadataValueSchema),
     diagnostics: providerHostDiagnosticsSchema,

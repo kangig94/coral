@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
 import { activePinCount, acquireProviderHostPin } from '#src/coordinator/live/provider-hosts/lease.js';
-import type { ProviderHostEntry } from '#src/coordinator/live/provider-hosts/index.js';
 import {
   closeProviderServerEntry,
   createProviderHostContainmentReaper,
@@ -9,8 +8,6 @@ import {
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
 import type { RecordedContainmentIdentity } from '#src/infra/process-containment.js';
 import type { SpawnProviderServerFn } from '#src/providers/app-server-transport.js';
-import { backendLog } from '#src/infra/backend-log.js';
-import { createDeferred } from '#tools/testing/deferred.js';
 import {
   StubbedContainmentProviderHostManager,
   createEntry,
@@ -214,70 +211,4 @@ describe('provider host drain properties', () => {
       expect(reapContainment).toHaveBeenCalledOnce();
     },
   );
-
-  it('retires idle host bookkeeping on process death even when containment reaping fails', async () => {
-    vi.useFakeTimers();
-    const reapFailure = new Error('fixture containment reap failed');
-    const firstReap = createDeferred<void>();
-    const reapContainment = vi
-      .fn<(identity: RecordedContainmentIdentity) => Promise<void>>()
-      .mockImplementationOnce(async () => firstReap.promise)
-      .mockResolvedValue(undefined);
-    const errorLog = vi.spyOn(backendLog, 'error').mockImplementation(() => undefined);
-    const server = createFakeProviderServerHandle({ generation: 491 });
-    const manager = new StubbedContainmentProviderHostManager({
-      runtime,
-      spawnProviderServer: createSpawnProviderServerMock(server.handle),
-      idleTimeoutMs: 10,
-      reapContainment,
-    });
-    const spec = createSharedSpec({
-      provider: 'codex',
-      command: 'codex',
-      args: ['app-server'],
-      idleRetirement: 'unleased',
-    });
-    const lease = await manager.openSession(spec);
-    const entry = [...(manager as unknown as { entries: Map<string, ProviderHostEntry> }).entries.values()][0];
-    if (entry === undefined) throw new Error('provider host entry was not installed');
-
-    lease.close();
-    await vi.advanceTimersByTimeAsync(10);
-    expect(reapContainment).toHaveBeenCalledWith(server.handle.containmentIdentity);
-    const failedOperation = entry.closePromise;
-    if (failedOperation === null) throw new Error('idle retirement did not start a close operation');
-
-    server.resolveClosed();
-    expect(manager.listProviderHosts()).toEqual([]);
-    await server.handle.closePromise;
-    await Promise.resolve();
-
-    expect(entry.handle).toBeNull();
-    expect(entry.instanceId).toBeNull();
-    expect(entry.containment).toBe(server.handle.containmentIdentity);
-    expect(manager.admissionSnapshot().state.size).toBe(0);
-    expect(manager.admissionSnapshot().tombstones).toEqual([]);
-    expect(manager.listProviderHosts()).toEqual([]);
-
-    const observedFailure = failedOperation.catch((error: unknown) => error);
-    firstReap.reject(reapFailure);
-    await expect(observedFailure).resolves.toBe(reapFailure);
-    await Promise.resolve();
-
-    expect(errorLog.mock.calls).toEqual([
-      [
-        `Provider host close/reap failed: provider=codex pid=${server.handle.pid} pgid=${server.handle.containmentIdentity.processGroupId} detail=idle timeout expired`,
-        reapFailure,
-      ],
-    ]);
-    expect(entry.handle).toBeNull();
-    expect(entry.instanceId).toBeNull();
-    expect(entry.containment).toBe(server.handle.containmentIdentity);
-    expect(manager.admissionSnapshot().state.size).toBe(0);
-    expect(manager.listProviderHosts()).toEqual([]);
-
-    await manager.shutdown();
-    expect(reapContainment).toHaveBeenCalledTimes(2);
-    expect(entry.containment).toBeNull();
-  });
 });

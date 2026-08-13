@@ -43,7 +43,7 @@ function containmentReaperWithClock<Scope extends symbol>(
       clock,
       process: runtime.process,
       platform: runtime.env.platform() as NodeJS.Platform,
-      ...(readProcessStartedAtSeconds === undefined ? {} : { readProcessStartedAtSeconds }),
+      readProcessStartedAtSeconds,
     });
 }
 

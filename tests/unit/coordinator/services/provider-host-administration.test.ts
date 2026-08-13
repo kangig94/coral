@@ -1,12 +1,23 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import { createDeferred } from '#tools/testing/deferred.js';
+import { backendLog } from '#src/infra/backend-log.js';
+import { ProcessContainmentError } from '#src/infra/process-containment.js';
 import type { HostRef } from '#src/providers/contract.js';
 import { canonicalWorkDirWireSchema } from '#src/runtime/canonical-work-dir.js';
+import type { ProviderHostEntry } from '#src/coordinator/live/provider-hosts/index.js';
 import {
   ProviderHostAdministrationService,
   type ProviderHostAdministrationOwner,
   type ProviderHostInventoryRecord,
 } from '#src/coordinator/services/provider-host-administration.js';
+import {
+  StubbedContainmentProviderHostManager,
+  createFakeProviderServerHandle,
+  createSharedSpec,
+  createSpawnProviderServerMock,
+  runtime,
+} from '#tests/unit/coordinator/live/provider-hosts/helpers.js';
 
 const fingerprint = 'a'.repeat(64);
 const workDir = canonicalWorkDirWireSchema.parse('/workspace');
@@ -61,6 +72,78 @@ function owner(
 }
 
 describe('provider host administration', () => {
+  it('keeps exhausted reclamation visible and operable through provider host administration', async () => {
+    vi.useFakeTimers();
+    const reapFailure = new ProcessContainmentError(
+      'process_containment_reap_failed',
+      'fixture containment reap failed',
+    );
+    const firstReap = createDeferred<void>();
+    const reapContainment = vi
+      .fn()
+      .mockImplementationOnce(async () => firstReap.promise)
+      .mockRejectedValue(reapFailure);
+    const errorLog = vi.spyOn(backendLog, 'error').mockImplementation(() => undefined);
+    const server = createFakeProviderServerHandle({ generation: 501 });
+    const manager = new StubbedContainmentProviderHostManager({
+      runtime,
+      spawnProviderServer: createSpawnProviderServerMock(server.handle),
+      reapContainment,
+      allocateProviderServerGeneration: () => 501,
+    });
+    const lease = await manager.openSession(createSharedSpec());
+    const entry = [...(manager as unknown as { entries: Map<string, ProviderHostEntry> }).entries.values()][0];
+    if (entry === undefined) throw new Error('provider host entry was not installed');
+    const local: ProviderHostAdministrationOwner = {
+      ownerId: 'coordinator:test',
+      listProviderHosts: () => manager.listProviderHosts(),
+      inspectProviderHost: (ref) => manager.inspectProviderHost(ref),
+      evictProviderHost: (ref) => manager.evictHost(ref),
+    };
+    const service = new ProviderHostAdministrationService({ owners: () => [local] });
+    await expect(service.list()).resolves.toMatchObject([{ status: 'live', ref: lease.hostRef }]);
+
+    server.resolveClosed();
+    await server.handle.closePromise;
+    await Promise.resolve();
+    const failedOperation = entry.closePromise;
+    if (failedOperation === null) throw new Error('process death did not start reclamation');
+    const observedFailure = failedOperation.catch((error: unknown) => error);
+    firstReap.reject(reapFailure);
+    await vi.advanceTimersByTimeAsync(2_000);
+    await expect(observedFailure).resolves.toBe(reapFailure);
+    await Promise.resolve();
+
+    expect(reapContainment).toHaveBeenCalledTimes(3);
+    expect(errorLog).toHaveBeenCalledOnce();
+    expect(errorLog).toHaveBeenCalledWith(expect.stringContaining('attempts=3'), reapFailure);
+
+    const failedRow = {
+      ownerId: 'coordinator:test',
+      ref: lease.hostRef,
+      status: 'reclamation-failed',
+      host: {
+        owner: 'coordinator',
+        pid: server.handle.containmentIdentity.pid,
+        processGroupId: server.handle.containmentIdentity.processGroupId,
+        reclamationAttempts: 3,
+        reclamationFailure: reapFailure.message,
+      },
+    };
+    await expect(service.list()).resolves.toMatchObject([failedRow]);
+    await expect(service.inspect({ hostRef: lease.hostRef })).resolves.toMatchObject(failedRow);
+
+    reapContainment.mockResolvedValue(undefined);
+    await expect(service.evict({ hostRef: lease.hostRef })).resolves.toEqual({
+      ownerId: 'coordinator:test',
+      hostRef: lease.hostRef,
+    });
+    await expect(service.list()).resolves.toEqual([]);
+    expect(entry.containment).toBeNull();
+    expect(reapContainment).toHaveBeenCalledTimes(4);
+    lease.close();
+  });
+
   it('returns one complete local-and-proxy snapshot including retained blocked tombstones', async () => {
     const local = owner('coordinator', [record(hostRef('live'))]);
     const proxy = owner('proxy-a', [record(hostRef('retired'), 'retired-blocked')]);
