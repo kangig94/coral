@@ -161,6 +161,81 @@ Two consequences for this document:
 Nothing here blocks routing, and routing does not block that work: the containment decision was
 made to be correct in both the current single-store world and the routed one.
 
+## Transferred in: durable containment recovery (2026-08-13)
+
+Provider-host reclamation (`leaked-mcp-child-reaping.md`) originally carried a second half — reclaiming a
+detached provider-host process group after a coordinator *crash* — and it is transferred here in full. It was
+cut from that work after eleven review rounds, not because it is unimportant, but because it is not solvable
+inside that scope: every attempt to make a durable containment record trustworthy ended up needing an answer
+to "which coordinator owns this record", which is exactly this document's domain.
+
+**The premise that made it look in-scope was false.** The plan treated `detached` as *creating* a new leak
+class, so it required a durable record to close it. But an **undetached** child is also orphaned when its
+parent is SIGKILLed — POSIX reparents it to init — and no boot-time reclamation of coordinator-local
+app-servers exists today (`src/coordinator/live/provider-hosts/recovery.ts` handles in-process spawn/abort
+only). The crash path already leaks everything. Detaching does not worsen it, so the shipped work is free to
+ignore it, and this remains a pre-existing defect rather than a new one.
+
+### What the design reached before it was cut
+
+Recorded so the next attempt starts from the end of the argument, not the beginning.
+
+- **A filesystem capsule, never SQLite.** Store routing may quarantine or reset the store *before* recovery
+  runs (`lifecycle.ts:924` vs `:1013`), so a record inside the store can be destroyed while the group it names
+  keeps running. Not the host inventory either — `captureInventory`
+  (`coordinator/services/provider-host-administration.ts:104`) assembles rows on demand from live owners.
+- **Per-owner records, shared primitive.** A proxy set is *inheritable* — a successor adopts it by redeeming a
+  handoff capsule (`provider-proxy/handoff-capsule.ts:195`), and recovery races redemption against containment
+  absence (`provider-proxy-set-lifecycle.ts:584`). A coordinator-local host is **never** redeemable; it is
+  always terminal. One record serving both would grant the local host authority it must not have.
+  `reapRecordedContainment` (`infra/process-containment.ts:312`) stays the shared primitive; only the
+  lifecycle record differs.
+- **The capsule must name its owning coordinator**, `{pid, processStartedAtSeconds}`, atomically with the
+  target identity, and recovery must reap only capsules whose owner is *positively absent*. This is what makes
+  the design tolerate concurrent coordinators instead of requiring exclusivity — and tolerating them is
+  mandatory, because forbidding them means an upgrade boundary, and **cold upgrade is not acceptable at any
+  price** (cross-version continuity exists precisely so a turn survives a coordinator swap).
+
+### Blocking findings — verified, do not re-derive
+
+1. **`probeCoordinator()` conflates "no evidence" with "absent."** It returns `null` when the identity cannot
+   be read (`infra/backend-discovery.ts:115-124`), and a caller that reads `null` as *dead* will reap a live
+   host. Owner liveness must be `present | absent | unknown`, and `unknown` must never authorize a reap — the
+   same three-valued discipline PR #300 established for serviceability. Sources of `unknown` include EPERM, a
+   missing `/proc` entry, a container PID namespace where the owner is invisible, and a probe returning null.
+2. **Node has no `flock`.** A round proposed a fixed-path kernel lease as the authority primitive; the `fs`
+   API exposes no such operation, verified by runtime inspection. Any future authority argument must use a
+   primitive that actually exists.
+3. **The socket is not an exclusion primitive today.** `socketPathForRunDir`
+   (`infra/path/coordinator.ts:36-43`) falls back to `join(env.tempDirectory, …)` when the run-dir socket path
+   exceeds the platform `sun_path` limit, and `tempDirectory` is `env.TMPDIR ?? tmpdir()` (`:53`). Two
+   processes with the **same state root** but different `TMPDIR` compute different socket paths and both bind.
+   This is a real defect in the current build, independent of any of this work. Threshold on Linux: a home
+   path of ~75 bytes or more (`<home>/.coral/gen2/run/coordinator.sock` ≥ 108). It is listed here because
+   fixing it is this document's business, not the containment work's.
+4. **A different `HOME` is not a race, it is a different instance.** `coralStateRoot` derives from the home
+   relative root, so a different `HOME` means a different journal, store, and run directory. Authority is one
+   canonical absolute state root plus flavor; relative or unresolvable roots should fail closed.
+5. **Second-resolution process birth time is the portable floor.** Darwin's source is `ps -o lstart=`
+   (`infra/node-process.ts:103-118`), which has no sub-second component; sub-second there needs `sysctl
+   KERN_PROC_PID` via native code. This repository ships no native addon and must not do different things on
+   different operating systems, so seconds is the identity contract everywhere. The compensating controls are
+   that the recorded identity also requires `processGroupId === pid` (an aliasing process must additionally be
+   a group leader) and that `reapRecordedContainment` revalidates immediately before each signal.
+6. **A wedged owner's records cannot be taken over on a timer.** If the owning coordinator is alive but
+   unresponsive, its capsules must be retained indefinitely rather than reclaimed after a timeout. Converting
+   "not answered" into "positively absent" is the inversion this codebase's serviceability work exists to
+   prevent. The cost — a wedged coordinator's groups are never reclaimed — is the honest price, and
+   diagnostics plus PR #300's eviction are the serviceability answer.
+
+### Why it belongs with routing
+
+Both turn on the same startup ordering, and both need a record that survives the moment a store's fate is
+decided. Under fingerprint-keyed routing a machine may hold several stores, so containment evidence must be
+format-neutral in the same way `active-format.json` is — one authority consulted regardless of which store
+ends up open. Designing them apart would repeat the conflict this document already records for cross-version
+continuity.
+
 ## Decisions already made
 
 - **Retention: operator-only prune.** Count has no semantic relationship to diagnostic

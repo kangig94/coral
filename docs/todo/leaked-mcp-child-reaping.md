@@ -62,14 +62,24 @@ identity-based answer to the same question resemblance-based reaping gets wrong.
 
 **Work**:
 
-1. `spawnProviderServerTransport` spawns `detached` (`src/providers/app-server-transport.ts:203-208`).
-2. The containment identity is recorded durably at spawn.
-3. Teardown reaps through `reapRecordedContainment` instead of the child-only `gracefulKill`.
-4. Boot recovery reaps records left by a coordinator that died without tearing down.
+1. `spawnProviderServerTransport` spawns `detached` (`src/providers/app-server-transport.ts:203-208`), for the
+   coordinator-local caller only — the proxy caller must not, or it nests a containment boundary inside the
+   proxy set's own group.
+2. The containment identity is recorded **on the host entry, in memory**.
+3. Teardown reaps through `reapRecordedContainment` instead of the child-only `gracefulKill`, on every terminal
+   path.
 
 **Touches**: `tests/invariants/timeout-kill-escalation.test.ts` and the containment rules in
-`.claude/rules/validation.md`. A detached group outlives its spawner by design, so step 4 is not optional —
-without it, Part A trades a leak of MCP children for a leak of whole app-servers.
+`.claude/rules/validation.md`.
+
+**Crash-path recovery is deliberately not here.** An earlier draft added a durable record plus a boot walk on
+the reasoning that "a detached group outlives its spawner, so without recovery Part A trades a leak of MCP
+children for a leak of whole app-servers." That reasoning is wrong: an **undetached** child is orphaned to
+init when its parent is SIGKILLed just the same, and no boot-time reclamation of coordinator-local app-servers
+exists today. The crash path already leaks everything, so detaching does not worsen it. Making it durable
+requires deciding which coordinator owns the record across generations, which is coordinator singleton-ness —
+transferred in full to [`store-format-routing.md`](store-format-routing.md), which records the design reached
+and the six verified findings that blocked it.
 
 ## Part B — let codex hosts retire when they are unpinned
 
