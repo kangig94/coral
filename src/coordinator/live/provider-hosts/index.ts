@@ -27,7 +27,6 @@ import {
 } from './lease.js';
 import { attachHostNotificationListener, clearIdleTimer, maybeArmIdleTimer, parseIdleTimeoutMs } from './idle.js';
 import {
-  closeAllProviderServerEntries,
   closeProviderServerEntry as closeEntry,
   createProviderHostContainmentReaper,
   shutdownHandle,
@@ -199,6 +198,10 @@ function waitForClose(operation: Promise<void>, signal: AbortSignal | undefined)
   });
 }
 
+// With Claude's built-in 3s shutdown RPC, each attempt can spend 3s on the RPC, 5s waiting for close, and
+// 12s reaping containment. Three attempts plus two 1s delays therefore have a standalone 62s envelope.
+// Lifecycle teardown intersects that envelope with its one shared deadline instead of adding budgets: hard
+// shutdown remains bounded by 10s and handoff by 30s, and unresolved containment makes expiry non-clean.
 const MAX_AUTOMATIC_RECLAMATION_ATTEMPTS = 3;
 const AUTOMATIC_RECLAMATION_RETRY_DELAY_MS = 1_000;
 
@@ -246,6 +249,7 @@ export class DefaultProviderHostManager
   private readonly proxySetAcquisitionConfig?: ProviderProxySetAcquisitionConfig;
   private readonly providerProxyLifecycleRef?: ProviderProxySetLifecycleRef;
   private readonly proxySetRotationEntries = new Map<string, ProviderHostEntry>();
+  private readonly reclamationStop = new AbortController();
   /**
    * Aborted by `stopAndClose` the instant it runs, before anything in it is awaited. Threaded into every
    * acquisition attempt (`ensureProxySetFor`) alongside that attempt's own internal deadline
@@ -435,6 +439,10 @@ export class DefaultProviderHostManager
             }),
             inspectDiagnostics: () => spawnedHandle?.inspectDiagnostics() ?? emptyDiagnostics(),
           });
+          const spawnSignal =
+            nextSpec.leaseMode === 'job-exclusive' && options?.signal !== undefined
+              ? AbortSignal.any([options.signal, this.reclamationStop.signal])
+              : this.reclamationStop.signal;
           const spawned = this.spawnProviderServer(
             {
               provider: nextSpec.provider,
@@ -442,7 +450,7 @@ export class DefaultProviderHostManager
               args: nextSpec.args,
               cwd: nextSpec.cwd,
               exactEnv: entry.exactEnv,
-              ...(nextSpec.leaseMode === 'job-exclusive' && options?.signal ? { signal: options.signal } : {}),
+              signal: spawnSignal,
               initializeRequest: nextSpec.initializeRequest,
               initializeTimeoutMs: nextSpec.initializeTimeoutMs,
             },
@@ -503,10 +511,18 @@ export class DefaultProviderHostManager
     }
     if (options?.signal !== undefined) throwIfAborted(options.signal, 'provider_host_acquire');
     const slot = this.admissionSlotFor(spec, options?.jobId);
-    return this.admission.withFreshPlacement(slot, async (reservation) => {
-      const { lease, entry } = await this.acquireHostLease(spec, options, { slot, reservation });
-      return this.managedSession(lease, hostRefFromEntry(entry));
-    });
+    try {
+      return await this.admission.withFreshPlacement(slot, async (reservation) => {
+        this.assertAdmissionSlotNotClosing(slot);
+        const { lease, entry } = await this.acquireHostLease(spec, options, { slot, reservation });
+        return this.managedSession(lease, hostRefFromEntry(entry));
+      });
+    } catch (error: unknown) {
+      // Admission refuses blocked candidates before invoking the placement delegate. Rechecking the retained
+      // close record translates that ordering into the lifecycle identity callers need during reclamation.
+      this.assertAdmissionSlotNotClosing(slot);
+      throw error;
+    }
   }
 
   async attachSession(
@@ -687,21 +703,22 @@ export class DefaultProviderHostManager
     // `proxySetAcquisitionStop`'s own doc for why this is what makes `liveSets()` safe for a caller to read
     // once this method returns, with no risk of a straggler acquisition adding to it afterward.
     this.proxySetAcquisitionStop.abort();
-    const previouslyClosingEntries = [...this.closingEntries.keys()];
-    const closeOptions = signal === undefined ? { confirmAbsence: true } : { signal, confirmAbsence: true };
-    await closeAllProviderServerEntries(
-      this.entries,
-      detail,
-      (entry, detail, options) => this.closeProviderServerEntry(entry, detail, options),
-      closeOptions,
-    );
-    await Promise.all(
-      previouslyClosingEntries.map((entry) => this.closeProviderServerEntry(entry, detail, closeOptions)),
-    );
-    await waitForClose(
-      Promise.all([...this.pendingCloses]).then(() => {}),
-      signal,
-    );
+    const stopReclamation = (): void => this.reclamationStop.abort(signal?.reason);
+    if (signal?.aborted) stopReclamation();
+    else signal?.addEventListener('abort', stopReclamation, { once: true });
+    try {
+      const closeOptions = signal === undefined ? { confirmAbsence: true } : { signal, confirmAbsence: true };
+      const entriesToClose = new Set([...this.entries.values(), ...this.closingEntries.keys()]);
+      const pendingBeforeClose = [...this.pendingCloses];
+      const outcomes = await Promise.allSettled([
+        ...[...entriesToClose].map((entry) => this.closeProviderServerEntry(entry, detail, closeOptions)),
+        ...pendingBeforeClose.map((operation) => waitForClose(operation, signal)),
+      ]);
+      const failed = outcomes.find((outcome) => outcome.status === 'rejected');
+      if (failed?.status === 'rejected') throw failed.reason;
+    } finally {
+      signal?.removeEventListener('abort', stopReclamation);
+    }
   }
 
   private getOrCreateProviderServerEntry(
@@ -785,6 +802,16 @@ export class DefaultProviderHostManager
     return admissionSlotKey(`${fingerprint}\u0000job-${jobId}`);
   }
 
+  private assertAdmissionSlotNotClosing(slot: AdmissionSlotKey): void {
+    const match = [...this.closingEntries.entries()].find(
+      ([entry]) => this.admissionSlotFor(entry.spec, entry.jobId) === slot,
+    );
+    if (match === undefined) return;
+    const [entry, closing] = match;
+    const cause = entry.closingError ?? closing.failure ?? new Error('Provider host reclamation is in progress.');
+    throw new Error(`provider_host_draining: ${cause.message}`, { cause });
+  }
+
   private async closeProviderServerEntry(
     entry: ProviderHostEntry,
     detail: string,
@@ -820,6 +847,17 @@ export class DefaultProviderHostManager
         (error: unknown) => {
           const closing = this.closingEntries.get(entry);
           const failure = closing?.failure ?? reclamationFailure(error);
+          if (closing?.operation === operation && closing.state !== 'reclamation-failed') {
+            this.closingEntries.set(
+              entry,
+              Object.freeze({
+                ...closing,
+                state: 'reclamation-failed',
+                failure,
+                containment: entry.containment ?? closing.containment,
+              }),
+            );
+          }
           const containment = entry.containment ?? closing?.containment ?? null;
           const pid = containment?.pid ?? entry.handle?.pid ?? 'unknown';
           const processGroupId = containment?.processGroupId ?? 'unrecorded';
@@ -841,13 +879,17 @@ export class DefaultProviderHostManager
   }
 
   private async closeWithReclamationRetries(entry: ProviderHostEntry, detail: string, token: symbol): Promise<void> {
+    const signal = this.reclamationStop.signal;
     for (let attempt = 1; attempt <= MAX_AUTOMATIC_RECLAMATION_ATTEMPTS; attempt += 1) {
+      throwIfAborted(signal, 'provider_host_reclamation');
       try {
         await closeEntry(entry, detail, {
           runtime: this.runtime,
           entries: this.entries,
-          shutdownHandle: (handle, spec, containment) => this.shutdownHandle(handle, spec, containment),
+          shutdownHandle: (handle, spec, containment, closeSignal) =>
+            this.shutdownHandle(handle, spec, containment, closeSignal),
           reapContainment: this.reapContainment,
+          signal,
         });
         return;
       } catch (error: unknown) {
@@ -868,7 +910,8 @@ export class DefaultProviderHostManager
         if (!isRetryableReclamationFailure(failure) || attempt === MAX_AUTOMATIC_RECLAMATION_ATTEMPTS) {
           throw failure;
         }
-        await this.runtime.time.sleep(AUTOMATIC_RECLAMATION_RETRY_DELAY_MS);
+        await this.runtime.time.sleep(AUTOMATIC_RECLAMATION_RETRY_DELAY_MS, { signal });
+        throwIfAborted(signal, 'provider_host_reclamation_retry');
         const retrying = this.closingEntries.get(entry);
         if (retrying?.token === token) {
           this.closingEntries.set(
@@ -884,8 +927,9 @@ export class DefaultProviderHostManager
     handle: ContainedProviderServerHandle,
     spec: ProviderServerSpec,
     containment: ContainedProviderServerHandle['containmentIdentity'],
+    signal?: AbortSignal,
   ): Promise<void> {
-    await shutdownHandle(handle, spec, containment, this.runtime.time, this.reapContainment);
+    await shutdownHandle(handle, spec, containment, this.runtime.time, this.reapContainment, signal);
   }
 }
 

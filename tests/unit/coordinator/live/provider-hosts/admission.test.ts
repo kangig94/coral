@@ -132,6 +132,41 @@ describe('coordinator provider-host admission', () => {
     await manager.shutdown();
   });
 
+  it('returns provider_host_draining when eviction is reclaiming a blocked-live host', async () => {
+    const server = createFakeProviderServerHandle({ generation: 103 });
+    const reapStarted = createDeferred<void>();
+    const finishReap = createDeferred<void>();
+    let sink: ProviderResponseObservationSink | undefined;
+    const manager = new StubbedContainmentProviderHostManager({
+      runtime,
+      admission: createCoordinatorProviderHostAdmission(),
+      spawnProviderServer: async (_options, observationSink, _generation, recordContainment) => {
+        sink = observationSink;
+        recordContainment?.(server.handle.containmentIdentity);
+        return server.handle;
+      },
+      reapContainment: async () => {
+        reapStarted.resolve();
+        await finishReap.promise;
+      },
+      allocateProviderServerGeneration: () => 103,
+    });
+    const hostSpec = createSharedSpec({ provider: 'codex', idleRetirement: 'never' });
+    const opened = await manager.openSession(hostSpec);
+    sink?.(rejectedConfigRead(103));
+    expect(manager.admissionSnapshot().state.values().next().value?.phase).toBe('blocked-live');
+
+    const eviction = manager.evictHost(opened.hostRef);
+    await reapStarted.promise;
+
+    await expect(manager.openSession(hostSpec)).rejects.toThrow(/^provider_host_draining:/u);
+
+    finishReap.resolve();
+    await expect(eviction).resolves.toBe(true);
+    opened.close();
+    await manager.shutdown();
+  });
+
   it('correlates an openSession RPC rejection to its exact blocked coordinator host', async () => {
     const providerCause = new Error('coordinator provider RPC rejected');
     const server = createFakeProviderServerHandle({
@@ -267,7 +302,7 @@ describe('coordinator provider-host admission', () => {
     await expect(
       manager.openSession(hostSpec, { jobId: 'job-a' }),
       'ref A admission reopened before ref A exact live close settled',
-    ).rejects.toMatchObject({ code: 'provider_host_unserviceable', hostRef: first.hostRef });
+    ).rejects.toThrow(/^provider_host_draining:/u);
     expect(untouched.closeMock, 'ref B was closed while evicting ref A').not.toHaveBeenCalled();
 
     evictedClose.resolve();
@@ -284,7 +319,7 @@ describe('coordinator provider-host admission', () => {
     await manager.shutdown();
   });
 
-  it('keeps coordinator admission blocked when exact live close fails', async () => {
+  it('keeps coordinator admission gated as draining when exact live close fails', async () => {
     const server = createFakeProviderServerHandle({
       generation: 401,
       close: async () => {
@@ -311,10 +346,7 @@ describe('coordinator provider-host admission', () => {
       ref: opened.hostRef,
       phase: 'blocked-live',
     });
-    await expect(manager.openSession(hostSpec)).rejects.toMatchObject({
-      code: 'provider_host_unserviceable',
-      hostRef: opened.hostRef,
-    });
+    await expect(manager.openSession(hostSpec)).rejects.toThrow(/^provider_host_draining:/u);
     opened.close();
   });
 });

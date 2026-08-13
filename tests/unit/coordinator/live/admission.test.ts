@@ -5,15 +5,33 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { DefaultProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
 import type { LaunchPool } from '#src/jobs/contracts/admission.js';
+import { canProbeProcessStartedAtSeconds } from '#src/infra/node-process.js';
 import type { ChildProcessLike } from '#src/infra/port-types.js';
 import type { ProcessPort, Runtime, RuntimeSpawnOptions } from '#src/runtime/ports.js';
-import { ProviderHostUnsupportedPlatformError } from '#src/providers/host-admission.js';
+import {
+  canSignalProviderHostProcessGroup,
+  ProviderHostUnsupportedPlatformError,
+} from '#src/providers/host-admission.js';
 import { createExclusiveSpec } from '#tests/unit/coordinator/live/provider-hosts/helpers.js';
 
 const ORIGINAL_MAX_CHILDREN = process.env.CORAL_MAX_WORKERS;
 const ORIGINAL_DISCUSS_MAX_CHILDREN = process.env.CORAL_DISCUSS_MAX_WORKERS;
 const TEST_PROVIDER_PID = 20_000;
 const TEST_PROVIDER_STARTED_AT_SECONDS = 1_700_000_000;
+
+const PLATFORM_CAPABILITIES = {
+  aix: { canProbeStartTime: false, canSignalProcessGroup: true },
+  android: { canProbeStartTime: false, canSignalProcessGroup: true },
+  cygwin: { canProbeStartTime: false, canSignalProcessGroup: true },
+  darwin: { canProbeStartTime: true, canSignalProcessGroup: true },
+  freebsd: { canProbeStartTime: false, canSignalProcessGroup: true },
+  haiku: { canProbeStartTime: false, canSignalProcessGroup: true },
+  linux: { canProbeStartTime: true, canSignalProcessGroup: true },
+  netbsd: { canProbeStartTime: false, canSignalProcessGroup: true },
+  openbsd: { canProbeStartTime: false, canSignalProcessGroup: true },
+  sunos: { canProbeStartTime: false, canSignalProcessGroup: true },
+  win32: { canProbeStartTime: true, canSignalProcessGroup: false },
+} satisfies Record<NodeJS.Platform, { readonly canProbeStartTime: boolean; readonly canSignalProcessGroup: boolean }>;
 
 function restoreEnv(name: 'CORAL_MAX_WORKERS' | 'CORAL_DISCUSS_MAX_WORKERS', value: string | undefined): void {
   if (value === undefined) delete process.env[name];
@@ -127,48 +145,41 @@ describe('launch admission', () => {
     await handle.close();
   });
 
-  it('admits a coordinator-local host normally on a POSIX platform', async () => {
-    const fake = createProviderProcessRuntime(TEST_PROVIDER_PID, true, 'linux');
-    const localCoordinator = new LaunchCoordinator({ runtime: fake.runtime });
-    const manager = new DefaultProviderHostManager({
-      runtime: fake.runtime,
-      spawnProviderServer: localCoordinator.spawnProviderServer.bind(localCoordinator),
-    });
+  it.each(Object.entries(PLATFORM_CAPABILITIES))(
+    'aligns coordinator-local host admission with %s platform capabilities',
+    async (platform, capabilities) => {
+      expect(canProbeProcessStartedAtSeconds(platform)).toBe(capabilities.canProbeStartTime);
+      expect(canSignalProviderHostProcessGroup(platform)).toBe(capabilities.canSignalProcessGroup);
+      const fake = createProviderProcessRuntime(TEST_PROVIDER_PID, true, platform);
+      const localCoordinator = new LaunchCoordinator({ runtime: fake.runtime });
+      const manager = new DefaultProviderHostManager({
+        runtime: fake.runtime,
+        spawnProviderServer: localCoordinator.spawnProviderServer.bind(localCoordinator),
+      });
 
-    const session = await manager.openSession(createExclusiveSpec({ command: 'fake-codex', args: ['app-server'] }), {
-      jobId: 'job-a',
-    });
+      const admission = manager.openSession(createExclusiveSpec({ command: 'fake-codex', args: ['app-server'] }), {
+        jobId: 'job-a',
+      });
 
-    expect(fake.platform).toHaveBeenCalled();
-    expect(fake.spawn).toHaveBeenCalledTimes(1);
-    session.close();
-    await manager.shutdown();
-  });
-
-  it('refuses coordinator-local host admission on a non-POSIX platform before spawning', async () => {
-    const fake = createProviderProcessRuntime(TEST_PROVIDER_PID, true, 'win32');
-    const localCoordinator = new LaunchCoordinator({ runtime: fake.runtime });
-    const manager = new DefaultProviderHostManager({
-      runtime: fake.runtime,
-      spawnProviderServer: localCoordinator.spawnProviderServer.bind(localCoordinator),
-    });
-
-    const admission = manager.openSession(createExclusiveSpec({ command: 'fake-codex', args: ['app-server'] }), {
-      jobId: 'job-a',
-    });
-
-    await expect(admission).rejects.toBeInstanceOf(ProviderHostUnsupportedPlatformError);
-    await expect(admission).rejects.toMatchObject({
-      name: 'ProviderHostUnsupportedPlatformError',
-      code: 'provider_host_platform_unsupported',
-      platform: 'win32',
-    });
-    expect(fake.platform).toHaveBeenCalled();
-    expect(fake.spawn).not.toHaveBeenCalled();
-    expect(fake.processKill).not.toHaveBeenCalled();
-    expect(fake.childKill).not.toHaveBeenCalled();
-    await manager.shutdown();
-  });
+      expect(fake.platform).toHaveBeenCalled();
+      if (capabilities.canProbeStartTime && capabilities.canSignalProcessGroup) {
+        const session = await admission;
+        expect(fake.spawn).toHaveBeenCalledTimes(1);
+        session.close();
+      } else {
+        await expect(admission).rejects.toBeInstanceOf(ProviderHostUnsupportedPlatformError);
+        await expect(admission).rejects.toMatchObject({
+          name: 'ProviderHostUnsupportedPlatformError',
+          code: 'provider_host_platform_unsupported',
+          platform,
+        });
+        expect(fake.spawn).not.toHaveBeenCalled();
+        expect(fake.processKill).not.toHaveBeenCalled();
+        expect(fake.childKill).not.toHaveBeenCalled();
+      }
+      await manager.shutdown();
+    },
+  );
 
   it('kills a coordinator-local provider spawn whose start time cannot be read', async () => {
     const fake = createProviderProcessRuntime(TEST_PROVIDER_PID, true, 'linux', null);

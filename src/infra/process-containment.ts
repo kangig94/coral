@@ -39,7 +39,18 @@ export type ProcessContainmentEnvironment<Scope extends symbol> = {
   };
   readonly platform: NodeJS.Platform;
   readonly readProcessStartedAtSeconds?: (pid: number, platform: NodeJS.Platform) => number | null;
+  readonly signal?: AbortSignal;
 };
+
+function containmentAbortError(signal: AbortSignal): Error {
+  return signal.reason instanceof Error
+    ? signal.reason
+    : new Error('Recorded containment reclamation was aborted.', { cause: signal.reason });
+}
+
+function assertContainmentAuthorized(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw containmentAbortError(signal);
+}
 
 /** Closed failures reported by recorded-containment teardown. */
 export type ProcessContainmentErrorCode = 'process_identity_unverified' | 'process_containment_reap_failed';
@@ -246,6 +257,7 @@ function signalRecordedSet<Scope extends symbol>(
   exitDeadline: MonotonicInstant<Scope>,
   environment: ProcessContainmentEnvironment<Scope>,
 ): void {
+  assertContainmentAuthorized(environment.signal);
   const callStartedAt = environment.clock.now();
   if (environment.clock.compare(callStartedAt, exitDeadline) >= 0) {
     throw reapFailure(`Recorded containment had no time remaining for ${signal}.`, {
@@ -258,6 +270,7 @@ function signalRecordedSet<Scope extends symbol>(
     // syscalls would otherwise exceed the per-call bound and abandon a reap that was progressing fine. The
     // sweep as a whole stays bounded by `exitDeadline`, which every step below still checks.
     const thisCallStartedAt = environment.clock.now();
+    assertContainmentAuthorized(environment.signal);
     assertSignalCallWithinBounds(thisCallStartedAt, exitDeadline, environment);
     environment.process.kill(pid, signal);
     assertSignalCallWithinBounds(thisCallStartedAt, exitDeadline, environment);
@@ -278,6 +291,33 @@ function signalRecordedSet<Scope extends symbol>(
   }
 }
 
+async function sleepWhileAuthorized<Scope extends symbol>(
+  milliseconds: number,
+  environment: ProcessContainmentEnvironment<Scope>,
+): Promise<void> {
+  const signal = environment.signal;
+  if (signal === undefined) {
+    await environment.clock.sleep(milliseconds);
+    return;
+  }
+  assertContainmentAuthorized(signal);
+  await new Promise<void>((resolve, reject) => {
+    const onAbort = (): void => reject(containmentAbortError(signal));
+    signal.addEventListener('abort', onAbort, { once: true });
+    void environment.clock.sleep(milliseconds).then(
+      () => {
+        signal.removeEventListener('abort', onAbort);
+        resolve();
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error instanceof Error ? error : new Error('Containment wait failed.', { cause: error }));
+      },
+    );
+  });
+  assertContainmentAuthorized(signal);
+}
+
 async function waitForAbsence<Scope extends symbol>(
   containment: RecordedContainmentIdentity,
   recordedRoots: readonly RecordedProcessIdentity[],
@@ -285,12 +325,13 @@ async function waitForAbsence<Scope extends symbol>(
   environment: ProcessContainmentEnvironment<Scope>,
 ): Promise<boolean> {
   while (true) {
+    assertContainmentAuthorized(environment.signal);
     if (allRecordedTargetsAbsent(observeRecordedSet(containment, recordedRoots, environment))) {
       return true;
     }
     const remainingMs = environment.clock.millisecondsBetween(environment.clock.now(), waitDeadline);
     if (remainingMs <= 0) return false;
-    await environment.clock.sleep(Math.min(ABSENCE_POLL_MS, remainingMs));
+    await sleepWhileAuthorized(Math.min(ABSENCE_POLL_MS, remainingMs), environment);
   }
 }
 
@@ -307,13 +348,14 @@ async function confirmAbsence<Scope extends symbol>(
   if (environment.clock.compare(confirmationDeadline, exitDeadline) > 0) return false;
 
   while (environment.clock.compare(environment.clock.now(), confirmationDeadline) < 0) {
+    assertContainmentAuthorized(environment.signal);
     if (!allRecordedTargetsAbsent(observeRecordedSet(containment, recordedRoots, environment))) {
       return false;
     }
     // Observing the set can outlast the remaining window; clamping keeps that from becoming a negative
     // sleep, which would throw outside this module's closed failure set and report an absent set as failed.
     const remainingMs = environment.clock.millisecondsBetween(environment.clock.now(), confirmationDeadline);
-    await environment.clock.sleep(Math.max(0, Math.min(ABSENCE_POLL_MS, remainingMs)));
+    await sleepWhileAuthorized(Math.max(0, Math.min(ABSENCE_POLL_MS, remainingMs)), environment);
   }
   return allRecordedTargetsAbsent(observeRecordedSet(containment, recordedRoots, environment));
 }
@@ -327,6 +369,7 @@ export async function reapRecordedContainment<Scope extends symbol>(
   exitDeadline: MonotonicInstant<Scope>,
   environment: ProcessContainmentEnvironment<Scope>,
 ): Promise<void> {
+  assertContainmentAuthorized(environment.signal);
   assertRecordedSet(containment, recordedRoots, environment.maxRecordedRoots);
 
   let observation = observeRecordedSet(containment, recordedRoots, environment);
@@ -345,6 +388,7 @@ export async function reapRecordedContainment<Scope extends symbol>(
     throw reapFailure('Recorded containment absence could not be confirmed before the exit deadline.');
   }
 
+  assertContainmentAuthorized(environment.signal);
   observation = observeRecordedSet(containment, recordedRoots, environment);
   signalRecordedSet(containment, recordedRoots, observation, 'SIGKILL', exitDeadline, environment);
   const killWaitDeadline = environment.clock.earlier(

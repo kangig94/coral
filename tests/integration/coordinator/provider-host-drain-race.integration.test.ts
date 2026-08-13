@@ -1,10 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { hostKeyFromSpec, type ProviderHostEntry } from '#src/coordinator/live/provider-hosts/index.js';
+import type { ProviderHostEntry } from '#src/coordinator/live/provider-hosts/index.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 import {
   StubbedContainmentProviderHostManager,
-  createEntry,
   createFakeProviderServerHandle,
   createSharedSpec,
   createSpawnProviderServerMock,
@@ -13,7 +12,6 @@ import {
 
 type ProviderHostManagerInternals = {
   entries: Map<string, ProviderHostEntry>;
-  maybeArmIdleTimer(entry: ProviderHostEntry): void;
 };
 
 function internals(manager: StubbedContainmentProviderHostManager): ProviderHostManagerInternals {
@@ -29,27 +27,8 @@ function createCodexSpec() {
   });
 }
 
-function seedIdleHost(
-  manager: StubbedContainmentProviderHostManager,
-  spec: ReturnType<typeof createCodexSpec>,
-  server: ReturnType<typeof createFakeProviderServerHandle>,
-): ProviderHostEntry {
-  const hostKey = hostKeyFromSpec(spec);
-  const entry = createEntry({
-    hostKey,
-    identityKey: hostKey,
-    spec,
-    handle: server.handle,
-    containment: server.handle.containmentIdentity,
-    instanceId: `instance-${server.handle.generation}`,
-  });
-  internals(manager).entries.set(hostKey, entry);
-  internals(manager).maybeArmIdleTimer(entry);
-  return entry;
-}
-
 describe('provider host idle close/acquire race', () => {
-  it('binds a fresh host when acquisition starts after idle close removes the reaped entry', async () => {
+  it('returns provider_host_draining when production admission races idle reclamation', async () => {
     vi.useFakeTimers();
     const closeWindow = createDeferred();
     const closingServer = createFakeProviderServerHandle({ generation: 811 });
@@ -58,27 +37,46 @@ describe('provider host idle close/acquire race', () => {
     const reapContainment = vi.fn(async (containment) => {
       if (containment === closingContainment) await closeWindow.promise;
     });
+    const spawnProviderServer = createSpawnProviderServerMock(closingServer.handle, freshServer.handle);
     const manager = new StubbedContainmentProviderHostManager({
       runtime,
-      spawnProviderServer: createSpawnProviderServerMock(freshServer.handle),
+      spawnProviderServer,
+      allocateProviderServerGeneration: (() => {
+        let generation = 811;
+        return () => generation++;
+      })(),
       idleTimeoutMs: 10,
       reapContainment,
     });
     const spec = createCodexSpec();
-    const closingEntry = seedIdleHost(manager, spec, closingServer);
+    const first = await manager.openSession(spec);
+    const closingEntry = internals(manager).entries.values().next().value;
+    if (closingEntry === undefined) throw new Error('production acquisition did not install a host entry');
+    expect(manager.admissionSnapshot().state.values().next().value).toMatchObject({
+      phase: 'live',
+      ref: first.hostRef,
+      generation: 811,
+    });
 
+    first.close();
     await vi.advanceTimersByTimeAsync(10);
 
-    expect(reapContainment).toHaveBeenCalledWith(closingContainment);
+    expect(reapContainment).toHaveBeenCalledWith(closingContainment, expect.any(AbortSignal));
     expect(closingEntry.closePromise).not.toBeNull();
-    const acquired = await manager.openSession(spec);
-    const acquiredEntry = internals(manager).entries.get(closingEntry.hostKey);
-    expect(acquiredEntry, 'acquirer received the entry whose process group is being reaped').not.toBe(closingEntry);
-    expect(acquiredEntry?.containment).toBe(freshServer.handle.containmentIdentity);
+    await expect(manager.openSession(spec)).rejects.toThrow(/^provider_host_draining:/u);
+    expect(manager.admissionSnapshot().state.values().next().value).toMatchObject({ ref: first.hostRef });
+    expect(spawnProviderServer).toHaveBeenCalledTimes(1);
+    expect(reapContainment).toHaveBeenCalledTimes(1);
 
     closeWindow.resolve();
     await closingEntry.closePromise;
-    acquired.close();
+    await Promise.resolve();
+
+    const fresh = await manager.openSession(spec);
+    expect(fresh.hostRef).not.toEqual(first.hostRef);
+    expect(spawnProviderServer).toHaveBeenCalledTimes(2);
+    expect(internals(manager).entries.values().next().value?.containment).toBe(freshServer.handle.containmentIdentity);
+    fresh.close();
     await manager.shutdown();
   });
 });

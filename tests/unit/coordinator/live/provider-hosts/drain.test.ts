@@ -8,6 +8,7 @@ import {
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
 import type { RecordedContainmentIdentity } from '#src/infra/process-containment.js';
 import type { SpawnProviderServerFn } from '#src/providers/app-server-transport.js';
+import { createDeferred } from '#tools/testing/deferred.js';
 import {
   StubbedContainmentProviderHostManager,
   createEntry,
@@ -166,6 +167,49 @@ describe('provider host drain properties', () => {
     expect(server.closeMock).not.toHaveBeenCalled();
   });
 
+  it('stops containment escalation when lifecycle cancellation aborts the reap', async () => {
+    let elapsedMs = 0;
+    const sleepStarted = createDeferred<void>();
+    const releaseSleep = createDeferred<void>();
+    const signals: Array<readonly [number, NodeJS.Signals | 0]> = [];
+    const clock = createMonotonicClock(Symbol('provider-host-reaper-cancellation-test'), {
+      readMilliseconds: () => BigInt(elapsedMs),
+      sleep: async (milliseconds) => {
+        sleepStarted.resolve();
+        await releaseSleep.promise;
+        elapsedMs += milliseconds;
+      },
+    });
+    const reaper = createProviderHostContainmentReaper(
+      {
+        env: { ...runtime.env, platform: () => 'linux' },
+        process: {
+          ...runtime.process,
+          isAlive: (pid) => pid === containment.pid || pid === -containment.processGroupId,
+          kill: (pid, signal) => {
+            signals.push([pid, signal]);
+            return true;
+          },
+        },
+      },
+      {
+        clock,
+        readProcessStartedAtSeconds: (pid) => (pid === containment.pid ? containment.processStartedAtSeconds : null),
+      },
+    );
+    const lifecycle = new AbortController();
+
+    const reaping = reaper(containment, lifecycle.signal).catch((error: unknown) => error);
+    await sleepStarted.promise;
+    expect(signals).toEqual([[-containment.processGroupId, 'SIGTERM']]);
+
+    lifecycle.abort();
+    await expect(reaping).resolves.toMatchObject({ name: 'AbortError' });
+    releaseSleep.resolve();
+    await Promise.resolve();
+    expect(signals).toEqual([[-containment.processGroupId, 'SIGTERM']]);
+  });
+
   it.each(['idle retirement', 'eviction', 'drainForHandoff', 'shutdown', 'initialization failure'] as const)(
     'routes %s through the recorded containment reaper',
     async (terminalPath) => {
@@ -206,7 +250,7 @@ describe('provider host drain properties', () => {
       }
 
       expect(reapContainment).toHaveBeenCalledOnce();
-      expect(reapContainment).toHaveBeenCalledWith(containment);
+      expect(reapContainment).toHaveBeenCalledWith(containment, expect.any(AbortSignal));
       await manager.shutdown();
       expect(reapContainment).toHaveBeenCalledOnce();
     },

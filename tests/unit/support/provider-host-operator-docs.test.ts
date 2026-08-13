@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const cliErrors = readFileSync(join(process.cwd(), 'docs', 'cli-errors.md'), 'utf8');
+const configuration = readFileSync(join(process.cwd(), 'docs', 'configuration.md'), 'utf8');
 const architecture = readFileSync(join(process.cwd(), 'docs', 'architecture.md'), 'utf8');
 
 function catalogEntry(code: string): string {
@@ -45,6 +46,19 @@ describe('provider-host operator documentation', () => {
     );
     expect(catalogEntry('provider_host_identity_integrity')).toContain('duplicate owner IDs before selecting a host');
     expect(catalogEntry('provider_host_identity_integrity')).toContain('exact host reference collided');
+  });
+
+  it('documents failed reclamation as an unreclaimed recorded group with an eviction retry', () => {
+    for (const document of [configuration, cliErrors]) {
+      expect(document).toContain('reclamation-failed');
+      expect(document).toContain('recorded process group');
+      expect(document).toContain('pid');
+      expect(document).toContain('processGroupId');
+      expect(document).toContain('reclamationAttempts');
+      expect(document).toContain('reclamationFailure');
+      expect(document).toContain('joins an in-flight');
+    }
+    expect(catalogEntry('provider_host_not_found')).toContain('reclamation-failed');
   });
 
   it('places authorization at the RPC boundary, not in the administration service', () => {

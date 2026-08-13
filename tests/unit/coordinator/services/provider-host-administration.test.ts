@@ -144,6 +144,67 @@ describe('provider host administration', () => {
     lease.close();
   });
 
+  it('joins an in-flight reclamation retry when eviction arrives through provider-host administration', async () => {
+    vi.useFakeTimers();
+    const reapFailure = new ProcessContainmentError(
+      'process_containment_reap_failed',
+      'fixture first reclamation failed',
+    );
+    const retryReap = createDeferred<void>();
+    const reapContainment = vi
+      .fn()
+      .mockRejectedValueOnce(reapFailure)
+      .mockImplementationOnce(async () => retryReap.promise);
+    vi.spyOn(backendLog, 'error').mockImplementation(() => undefined);
+    const server = createFakeProviderServerHandle({ generation: 502 });
+    const manager = new StubbedContainmentProviderHostManager({
+      runtime,
+      spawnProviderServer: createSpawnProviderServerMock(server.handle),
+      reapContainment,
+      allocateProviderServerGeneration: () => 502,
+    });
+    const lease = await manager.openSession(createSharedSpec());
+    const evictionStarted = createDeferred<void>();
+    const local: ProviderHostAdministrationOwner = {
+      ownerId: 'coordinator:test',
+      listProviderHosts: () => manager.listProviderHosts(),
+      inspectProviderHost: (ref) => manager.inspectProviderHost(ref),
+      evictProviderHost: (ref) => {
+        evictionStarted.resolve();
+        return manager.evictHost(ref);
+      },
+    };
+    const service = new ProviderHostAdministrationService({ owners: () => [local] });
+
+    server.resolveClosed();
+    await server.handle.closePromise;
+    for (let round = 0; round < 8; round += 1) await Promise.resolve();
+    await expect(service.list()).resolves.toMatchObject([
+      { status: 'reclamation-failed', host: { reclamationAttempts: 1 } },
+    ]);
+    const eviction = service.evict({ hostRef: lease.hostRef });
+    await evictionStarted.promise;
+    let settled = false;
+    void eviction.finally(() => {
+      settled = true;
+    });
+
+    expect(reapContainment).toHaveBeenCalledOnce();
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(999);
+    expect(reapContainment).toHaveBeenCalledOnce();
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(reapContainment).toHaveBeenCalledTimes(2);
+    expect(settled).toBe(false);
+
+    retryReap.resolve();
+    await expect(eviction).resolves.toEqual({ ownerId: 'coordinator:test', hostRef: lease.hostRef });
+    await expect(service.list()).resolves.toEqual([]);
+    expect(reapContainment).toHaveBeenCalledTimes(2);
+    lease.close();
+  });
+
   it('returns one complete local-and-proxy snapshot including retained blocked tombstones', async () => {
     const local = owner('coordinator', [record(hostRef('live'))]);
     const proxy = owner('proxy-a', [record(hostRef('retired'), 'retired-blocked')]);

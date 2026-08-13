@@ -17,6 +17,7 @@ import {
 } from '../../../infra/process-constants.js';
 import { clearIdleTimer } from './idle.js';
 import type { ProviderHostEntry } from './state.js';
+import { AbortError, throwIfAborted } from '../../../runtime/abort.js';
 
 const GRACEFUL_CLOSE_FOLLOWUP_TIMEOUT_MS = 5_000;
 const providerHostContainmentClockScope = Symbol('provider-host-containment');
@@ -27,7 +28,10 @@ const PROVIDER_HOST_REAP_DEADLINE_MS =
   2 * CONTAINMENT_PROCESS_CONTROL_CALL_MAX_MS;
 
 /** Reaps one coordinator-owned provider-host group by its recorded identity. */
-export type ProviderHostContainmentReaper = (containment: RecordedContainmentIdentity) => Promise<void>;
+export type ProviderHostContainmentReaper = (
+  containment: RecordedContainmentIdentity,
+  signal?: AbortSignal,
+) => Promise<void>;
 
 type ProviderHostContainmentRuntime = Pick<Runtime, 'env' | 'process'>;
 type ProviderHostContainmentRuntimeWithTime = Pick<Runtime, 'env' | 'process' | 'time'>;
@@ -37,13 +41,14 @@ function containmentReaperWithClock<Scope extends symbol>(
   clock: MonotonicClock<Scope>,
   readProcessStartedAtSeconds: (pid: number, platform: NodeJS.Platform) => number | null,
 ): ProviderHostContainmentReaper {
-  return (containment) =>
+  return (containment, signal) =>
     reapRecordedContainment(containment, [], clock.shiftMilliseconds(clock.now(), PROVIDER_HOST_REAP_DEADLINE_MS), {
       maxRecordedRoots: 0,
       clock,
       process: runtime.process,
       platform: runtime.env.platform() as NodeJS.Platform,
       readProcessStartedAtSeconds,
+      ...(signal === undefined ? {} : { signal }),
     });
 }
 
@@ -92,22 +97,34 @@ function waitForCloseWithin(
   closed: Promise<Error | void>,
   timeoutMs: number,
   time: Pick<TimePort, 'setTimeout' | 'clearTimeout'>,
+  signal?: AbortSignal,
 ): Promise<boolean> {
-  return raceTimeout(closed, timeoutMs, time);
+  return waitWhileAuthorized(raceTimeout(closed, timeoutMs, time), signal, 'provider_host_graceful_close_wait');
 }
 
-export async function closeAllProviderServerEntries(
-  entries: Map<string, ProviderHostEntry>,
-  detail: string,
-  closeProviderServerEntry: (
-    entry: ProviderHostEntry,
-    detail: string,
-    options?: { signal?: AbortSignal; confirmAbsence?: boolean },
-  ) => Promise<void>,
-  options: { signal?: AbortSignal; confirmAbsence?: boolean } = {},
-): Promise<void> {
-  const snapshot = [...entries.values()];
-  await Promise.all(snapshot.map((entry) => closeProviderServerEntry(entry, detail, options)));
+function waitWhileAuthorized<Result>(
+  operation: Promise<Result>,
+  signal: AbortSignal | undefined,
+  stage: string,
+): Promise<Result> {
+  if (signal === undefined) return operation;
+  if (signal.aborted) {
+    return Promise.reject(new AbortError({ stage, reason: signal.reason }));
+  }
+  return new Promise<Result>((resolve, reject) => {
+    const onAbort = (): void => reject(new AbortError({ stage, reason: signal.reason }));
+    signal.addEventListener('abort', onAbort, { once: true });
+    operation.then(
+      (result) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(result);
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error instanceof Error ? error : new Error('Provider host close wait failed.', { cause: error }));
+      },
+    );
+  });
 }
 
 export async function closeProviderServerEntry(
@@ -120,8 +137,10 @@ export async function closeProviderServerEntry(
       handle: ContainedProviderServerHandle,
       spec: ProviderServerSpec,
       containment: RecordedContainmentIdentity,
+      signal?: AbortSignal,
     ) => Promise<void>;
     reapContainment: ProviderHostContainmentReaper;
+    signal?: AbortSignal;
   },
 ): Promise<void> {
   clearIdleTimer(entry, options.runtime.time);
@@ -134,8 +153,14 @@ export async function closeProviderServerEntry(
   }
 
   const installedHandle = entry.handle;
-  const spawnedHandle =
-    installedHandle === null && entry.spawnPromise !== null ? await entry.spawnPromise.catch(() => null) : null;
+  let spawnedHandle: ContainedProviderServerHandle | null = null;
+  if (installedHandle === null && entry.spawnPromise !== null) {
+    try {
+      spawnedHandle = await waitWhileAuthorized(entry.spawnPromise, options.signal, 'provider_host_spawn_during_close');
+    } catch (error: unknown) {
+      if (options.signal?.aborted) throw error;
+    }
+  }
   const handle = installedHandle ?? spawnedHandle ?? entry.handle;
   const containment = entry.containment;
   if (containment === null) {
@@ -147,9 +172,9 @@ export async function closeProviderServerEntry(
       );
     }
   } else if (handle === null) {
-    await options.reapContainment(containment);
+    await options.reapContainment(containment, options.signal);
   } else {
-    await options.shutdownHandle(handle, entry.spec, containment);
+    await options.shutdownHandle(handle, entry.spec, containment, options.signal);
   }
 
   if (entry.containment === containment) entry.containment = null;
@@ -161,15 +186,18 @@ export async function shutdownHandle(
   containment: RecordedContainmentIdentity,
   time: Pick<Runtime['time'], 'setTimeout' | 'clearTimeout'>,
   reapContainment: ProviderHostContainmentReaper,
+  signal?: AbortSignal,
 ): Promise<void> {
+  if (signal !== undefined) throwIfAborted(signal, 'provider_host_shutdown');
   const capability = spec.shutdownCapability;
   if (capability) {
-    await tryGracefulShutdown(handle, capability, time);
+    await tryGracefulShutdown(handle, capability, time, signal);
   } else {
     handle.markExpectedClose();
   }
 
-  await reapContainment(containment);
+  await reapContainment(containment, signal);
+  if (signal !== undefined) throwIfAborted(signal, 'provider_host_finish_close');
   await handle.finishCloseAfterReap();
 }
 
@@ -177,23 +205,29 @@ async function tryGracefulShutdown(
   handle: ContainedProviderServerHandle,
   capability: NonNullable<ProviderServerSpec['shutdownCapability']>,
   time: Pick<Runtime['time'], 'setTimeout' | 'clearTimeout'>,
+  signal?: AbortSignal,
 ): Promise<boolean> {
   handle.markExpectedClose();
 
   try {
-    const outcome = await Promise.race([
-      handle.rpc.request(capability.method, {}).then(() => 'rpc' as const),
-      handle.closePromise.then(() => 'closed' as const),
-      waitForTimeout(capability.timeoutMs, 'timeout' as const, time),
-    ]);
+    const outcome = await waitWhileAuthorized(
+      Promise.race([
+        handle.rpc.request(capability.method, {}).then(() => 'rpc' as const),
+        handle.closePromise.then(() => 'closed' as const),
+        waitForTimeout(capability.timeoutMs, 'timeout' as const, time),
+      ]),
+      signal,
+      'provider_host_graceful_shutdown',
+    );
     if (outcome === 'timeout') {
       return false;
     }
     if (outcome === 'rpc') {
-      return waitForCloseWithin(handle.closePromise, GRACEFUL_CLOSE_FOLLOWUP_TIMEOUT_MS, time);
+      return waitForCloseWithin(handle.closePromise, GRACEFUL_CLOSE_FOLLOWUP_TIMEOUT_MS, time, signal);
     }
     return true;
-  } catch {
-    return waitForCloseWithin(handle.closePromise, capability.timeoutMs, time);
+  } catch (error: unknown) {
+    if (signal?.aborted) throw error;
+    return waitForCloseWithin(handle.closePromise, capability.timeoutMs, time, signal);
   }
 }

@@ -608,7 +608,7 @@ describe('provider host pool', () => {
 
     expect(otherLease.hostRef.instanceId).toBe(readyLease.hostRef.instanceId);
     expect(spawnProviderServer).toHaveBeenCalledTimes(1);
-    expect(spawnProviderServer.mock.calls[0]?.[0]).not.toHaveProperty('signal');
+    expect(spawnProviderServer.mock.calls[0]?.[0]).toMatchObject({ signal: { aborted: false } });
     otherLease.close();
     readyLease.close();
     await manager.shutdown();
@@ -636,7 +636,7 @@ describe('provider host pool', () => {
     await vi.advanceTimersByTimeAsync(10);
 
     expect(spawnProviderServer).toHaveBeenCalledTimes(1);
-    expect(spawnProviderServer.mock.calls[0]?.[0]).not.toHaveProperty('signal');
+    expect(spawnProviderServer.mock.calls[0]?.[0]).toMatchObject({ signal: { aborted: false } });
     expect(server.closeMock).not.toHaveBeenCalled();
 
     server.emitNotification({ method: 'host/stats', params: { liveControllers: 0, activeTurns: 0 } });
@@ -877,7 +877,7 @@ describe('provider host pool', () => {
     expect(() => session.close()).not.toThrow();
   });
 
-  it('continues close cleanup after an aborted drain wait and lets shutdown await completion', async () => {
+  it('cancels close cleanup after an aborted drain and leaves the unreclaimed group visible', async () => {
     const server = createFakeProviderServerHandle({ generation: 93 });
     const close = createDeferred<void>();
     server.closeMock.mockImplementation(async () => {
@@ -899,18 +899,13 @@ describe('provider host pool', () => {
       stage: 'provider_host_close_wait',
       reason: 'caller-stopped-waiting',
     });
-    let shutDown = false;
-    const shutdown = manager.shutdown().then(() => {
-      shutDown = true;
-    });
-    await Promise.resolve();
-    expect(shutDown).toBe(false);
-    expect(server.closeMock).toHaveBeenCalledTimes(1);
-
+    await vi.waitFor(() =>
+      expect(manager.listProviderHosts()).toMatchObject([
+        { status: 'reclamation-failed', host: { reclamationAttempts: 1 } },
+      ]),
+    );
+    expect(server.closeMock).not.toHaveBeenCalled();
     close.resolve();
-    await shutdown;
-    expect(shutDown).toBe(true);
-    expect(server.closeMock).toHaveBeenCalledTimes(1);
   });
 
   it('aborts the final wait for an exclusive close removed before drain while shutdown still awaits it once', async () => {
