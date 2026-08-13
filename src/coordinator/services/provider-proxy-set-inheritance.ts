@@ -333,6 +333,7 @@ async function proveProviderProxySetContainmentAbsent(
       clock,
       process: runtime.process,
       platform,
+      signal,
     },
   );
   signal.throwIfAborted();

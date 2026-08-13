@@ -155,6 +155,7 @@ describe('launch admission', () => {
       const manager = new DefaultProviderHostManager({
         runtime: fake.runtime,
         spawnProviderServer: localCoordinator.spawnProviderServer.bind(localCoordinator),
+        carrierBlocksRetirement: () => false,
       });
 
       const admission = manager.openSession(createExclusiveSpec({ command: 'fake-codex', args: ['app-server'] }), {
@@ -187,6 +188,7 @@ describe('launch admission', () => {
     const manager = new DefaultProviderHostManager({
       runtime: fake.runtime,
       spawnProviderServer: localCoordinator.spawnProviderServer.bind(localCoordinator),
+      carrierBlocksRetirement: () => false,
     });
 
     await expect(
@@ -218,6 +220,7 @@ describe('launch admission', () => {
     const manager = new DefaultProviderHostManager({
       runtime,
       spawnProviderServer: localCoordinator.spawnProviderServer.bind(localCoordinator),
+      carrierBlocksRetirement: () => false,
     });
 
     await expect(
@@ -240,6 +243,7 @@ describe('launch admission', () => {
     const manager = new DefaultProviderHostManager({
       runtime: fake.runtime,
       spawnProviderServer: localCoordinator.spawnProviderServer.bind(localCoordinator),
+      carrierBlocksRetirement: () => false,
     });
 
     await expect(

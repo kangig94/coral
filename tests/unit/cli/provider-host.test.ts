@@ -80,4 +80,16 @@ describe('provider-host CLI contracts', () => {
     expect(help).toContain('refuses on ambiguity');
     expect(help).toContain('may end work already attached to that host');
   });
+
+  it('names every inventory status in list and inspect help', () => {
+    const program = new Command().name('coral-cli');
+    registerBackendCommands(program);
+
+    for (const operation of ['list', 'inspect']) {
+      const help = findCommand(program, 'backend', 'provider-host', operation).helpInformation();
+      expect(help).toContain('live');
+      expect(help).toContain('retained-blocked');
+      expect(help).toContain('reclamation-failed');
+    }
+  });
 });

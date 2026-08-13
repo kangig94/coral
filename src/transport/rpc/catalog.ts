@@ -55,7 +55,11 @@ import { sessionCreateSchema } from '../../sessions/command-schemas.js';
 import type { RpcPorts } from './ports.js';
 import { workflowRequestSchema } from './workflow.js';
 import { hostRefSchema } from '../../providers/host-ref-schema.js';
-import { providerHostInventoryRecordSchema } from '../../providers/host-inventory-schema.js';
+import {
+  liveProviderHostInventoryRecordSchema,
+  reclamationFailedProviderHostInventoryRecordSchema,
+  retiredBlockedProviderHostInventoryRecordSchema,
+} from '../../providers/host-inventory-schema.js';
 
 export interface RpcMethodSpec<Req, _Res> {
   readonly name: string;
@@ -92,11 +96,12 @@ export const recoveryQuarantineClearResultSchema = recoveryQuarantineClearReques
   })
   .strict();
 
-export const providerHostInventoryRowSchema = providerHostInventoryRecordSchema
-  .extend({
-    ownerId: z.string().min(1),
-  })
-  .strict();
+const providerHostOwnerShape = { ownerId: z.string().min(1) };
+export const providerHostInventoryRowSchema = z.discriminatedUnion('status', [
+  liveProviderHostInventoryRecordSchema.extend(providerHostOwnerShape).strict(),
+  retiredBlockedProviderHostInventoryRecordSchema.extend(providerHostOwnerShape).strict(),
+  reclamationFailedProviderHostInventoryRecordSchema.extend(providerHostOwnerShape).strict(),
+]);
 
 export const providerHostListRequestSchema = z.object({}).strict();
 export const providerHostSelectorRequestSchema = z.union([

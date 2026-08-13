@@ -46,6 +46,7 @@ function registryKey(jobId: string, operationId: string): string {
 export class LocalOperationRegistry {
   private readonly entries = new Map<string, RegistryEntry>();
   private cleanupPort: ProviderOperationCleanupPort = { release: () => undefined };
+  private settlementObserver: (jobId: string) => void = () => undefined;
   // A job carries at most one live operation at a time, so a job id alone finds "whichever operation is
   // currently live for it" — the shape `stop()` needs, since the abort registry only ever knows a job id
   // (registration happens in `activateCommittedProviderLaunch`, before an operation id even exists — see
@@ -54,6 +55,10 @@ export class LocalOperationRegistry {
 
   connectCleanup(port: ProviderOperationCleanupPort): void {
     this.cleanupPort = port;
+  }
+
+  connectSettlementObserver(observer: (jobId: string) => void): void {
+    this.settlementObserver = observer;
   }
 
   private register(
@@ -107,7 +112,11 @@ export class LocalOperationRegistry {
     if (entry === undefined) return;
     this.entries.delete(key);
     if (this.liveJobIndex.get(identity.jobId) === key) this.liveJobIndex.delete(identity.jobId);
-    this.cleanupPort.release(entry.cleanup);
+    try {
+      this.cleanupPort.release(entry.cleanup);
+    } finally {
+      this.settlementObserver(identity.jobId);
+    }
   }
 
   /**

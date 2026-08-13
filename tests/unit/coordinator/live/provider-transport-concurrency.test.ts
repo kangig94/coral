@@ -63,6 +63,7 @@ function createHostManager(
   return new DefaultProviderHostManager({
     runtime,
     spawnProviderServer: launchCoordinator.spawnProviderServer.bind(launchCoordinator),
+    carrierBlocksRetirement: () => false,
     reapContainment: createProviderHostContainmentReaper(runtime, { clock }),
   });
 }

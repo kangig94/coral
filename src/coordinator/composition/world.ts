@@ -7,6 +7,7 @@ import type { HostRef } from '../../providers/contract.js';
 import { providerScopeSchema, type ProviderScope } from '../../infra/provider-scope.js';
 import { writeAuditEvent } from '../../infra/audit-log.js';
 import { backendLog } from '../../infra/backend-log.js';
+import { errorMessage } from '../../infra/error-format.js';
 import { readBuildFlavor, readBundleHash, resolveStrictBundleIdentity } from '../../infra/bundle-manifest.js';
 import { assertRemoteAddressLiteral } from '../../infra/remote-address.js';
 import type { RemoteHttpAccessPolicy } from '../../transport/server-ports.js';
@@ -16,7 +17,11 @@ import type { CoordinatorCoreOptions } from './types.js';
 import { createDiscussContextRegistry, type DiscussContextRegistry } from '../../discuss/shell/live-registry.js';
 
 import { LaunchCoordinator } from '../live/admission.js';
-import { createProviderHostManager, type ProviderHostManager } from '../live/provider-hosts/index.js';
+import {
+  createProviderHostManager,
+  type ProviderHostManager,
+  type ProviderHostRetirementReevaluation,
+} from '../live/provider-hosts/index.js';
 import { createHostAdmissionCollection, exactHostRefsMatch } from '../../providers/host-admission.js';
 import type { ProviderProxyAuthorityRegistry } from '../live/provider-proxy/authority.js';
 import { LocalOperationRegistry } from '../services/operation-registry.js';
@@ -178,6 +183,76 @@ export function createStartupRecoveryBarrier(): Readonly<{
   });
 }
 
+export function createCarrierBlocksRetirement(
+  storeServicesRef: StoreServicesRef,
+  localCarrierRegistries: Parameters<typeof classifyLocalCarriers>[1],
+): (hostRef: HostRef) => boolean {
+  return (hostRef) => {
+    const storeServices = storeServicesRef.tryGet();
+    if (storeServices === null) return true;
+
+    try {
+      const progressStore = storeServices.progressStore;
+      const matchingJobIds: string[] = [];
+      for (const jobId of progressStore.listStoredNonterminalJobIds()) {
+        const detail = progressStore.loadJobProjectionDetail(jobId);
+        if (detail.status === null) return true;
+        const jobRuntime = detail.runtime;
+        if (jobRuntime?.transport !== 'app-server' || jobRuntime.providerMeta.leaseState !== 'acquired') {
+          continue;
+        }
+
+        const storedHostRef = jobRuntime.providerMeta.hostRef;
+        if (storedHostRef.leaseMode === 'job-exclusive' && storedHostRef.ownerJobId !== jobId) return true;
+        if (exactHostRefsMatch(storedHostRef, hostRef)) matchingJobIds.push(jobId);
+      }
+      if (matchingJobIds.length === 0) return false;
+
+      const observedMaxJournalSeq =
+        progressStore.getDb().prepare<[], { seq: number }>('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get()
+          ?.seq ?? 0;
+      const observations = classifyLocalCarriers(matchingJobIds, localCarrierRegistries, observedMaxJournalSeq);
+      if (
+        observations.length !== matchingJobIds.length ||
+        observations.some(({ observation }) => !isLivePhase(observation.storedPhase))
+      ) {
+        return true;
+      }
+      return observations.some(
+        ({ observation }) => observation.liveness === 'live' || observation.liveness === 'unknown',
+      );
+    } catch {
+      return true;
+    }
+  };
+}
+
+export function connectProviderHostRetirementReevaluation(options: {
+  eventBus: TypedEventBus;
+  storeServicesRef: StoreServicesRef;
+  operationRegistry: LocalOperationRegistry;
+  retirement: ProviderHostRetirementReevaluation;
+}): void {
+  const reevaluateForJob = (jobId: string): void => {
+    try {
+      const detail = options.storeServicesRef.tryGet()?.progressStore.loadJobProjectionDetail(jobId);
+      const runtime = detail?.runtime;
+      if (runtime?.transport !== 'app-server' || runtime.providerMeta.leaseState !== 'acquired') return;
+      options.retirement.reevaluateIdleRetirement(runtime.providerMeta.hostRef);
+    } catch (error: unknown) {
+      // The manager's carrier guard is fail-closed. A missed wake-up leaves the host alive; it must not make
+      // terminal publication or operation settlement fail after their authoritative state already changed.
+      backendLog.warn(`Failed to re-evaluate provider-host retirement for job '${jobId}': ${errorMessage(error)}`);
+    }
+  };
+
+  // These are the two facts the carrier guard reads that can change after the last pin is released:
+  // durable terminal publication removes the job from the nonterminal set, while registry settlement drops
+  // this generation's live-operation evidence. Both re-enter the one guarded manager decision above.
+  options.eventBus.on('job:completed', ({ jobId }) => reevaluateForJob(jobId));
+  options.operationRegistry.connectSettlementObserver(reevaluateForJob);
+}
+
 export interface CoordinatorWorld {
   readonly identity: CoordinatorIdentity;
   readonly namespace: string;
@@ -304,44 +379,7 @@ export function createCoordinatorWorld(
     isAdmittedByThisCoordinator: (jobId: string) => admittedByThisCoordinator(launchCoordinator, jobId),
     registryStateForJob: (jobId: string) => operationRegistry.stateForJob(jobId),
   };
-  const carrierBlocksRetirement = (hostRef: HostRef): boolean => {
-    const storeServices = storeServicesRef.tryGet();
-    if (storeServices === null) return true;
-
-    try {
-      const progressStore = storeServices.progressStore;
-      const matchingJobIds: string[] = [];
-      for (const jobId of progressStore.listStoredNonterminalJobIds()) {
-        const detail = progressStore.loadJobProjectionDetail(jobId);
-        if (detail.status === null) return true;
-        const jobRuntime = detail.runtime;
-        if (jobRuntime?.transport !== 'app-server' || jobRuntime.providerMeta.leaseState !== 'acquired') {
-          continue;
-        }
-
-        const storedHostRef = jobRuntime.providerMeta.hostRef;
-        if (storedHostRef.leaseMode === 'job-exclusive' && storedHostRef.ownerJobId !== jobId) return true;
-        if (exactHostRefsMatch(storedHostRef, hostRef)) matchingJobIds.push(jobId);
-      }
-      if (matchingJobIds.length === 0) return false;
-
-      const observedMaxJournalSeq =
-        progressStore.getDb().prepare<[], { seq: number }>('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get()
-          ?.seq ?? 0;
-      const observations = classifyLocalCarriers(matchingJobIds, localCarrierRegistries, observedMaxJournalSeq);
-      if (
-        observations.length !== matchingJobIds.length ||
-        observations.some(({ observation }) => !isLivePhase(observation.storedPhase))
-      ) {
-        return true;
-      }
-      return observations.some(
-        ({ observation }) => observation.liveness === 'live' || observation.liveness === 'unknown',
-      );
-    } catch {
-      return true;
-    }
-  };
+  const carrierBlocksRetirement = createCarrierBlocksRetirement(storeServicesRef, localCarrierRegistries);
   // A caller-supplied `providerHostManager` (every test that fakes provider hosts) never carries live
   // guardian/reaper/proxy sets, so `providerProxyAuthority` stays absent rather than reporting on a
   // substitute it played no part in creating — matching `runShutdownSequence`'s own `undefined` default.
@@ -366,6 +404,12 @@ export function createCoordinatorWorld(
           : { onProviderEvent: options.buildProviderEventHandler }),
       },
       providerProxyLifecycleRef,
+    });
+    connectProviderHostRetirementReevaluation({
+      eventBus,
+      storeServicesRef,
+      operationRegistry,
+      retirement: created,
     });
     providerHostManager = created;
     providerProxyAuthority = created;

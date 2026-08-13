@@ -113,6 +113,22 @@ describe('LocalOperationRegistry', () => {
     expect(release).toHaveBeenCalledTimes(1);
   });
 
+  it('publishes settlement only after registry and admission cleanup are complete', () => {
+    const order: string[] = [];
+    const registry = new LocalOperationRegistry();
+    registry.connectCleanup({ release: () => order.push('cleanup') });
+    registry.connectSettlementObserver((jobId) => {
+      expect(registry.stateForJob(jobId)).toBeNull();
+      order.push('settlement-observer');
+    });
+    const m = meta();
+    registry.activate(m, fakeControl().control, cleanupFor(m));
+
+    registry.settled(identityFor(m));
+
+    expect(order).toEqual(['cleanup', 'settlement-observer']);
+  });
+
   it('settled() on an identity this registry never activated is a silent no-op', () => {
     const registry = new LocalOperationRegistry();
     // A real, unrelated entry in the registry — proves the unknown identity is genuinely ignored rather than

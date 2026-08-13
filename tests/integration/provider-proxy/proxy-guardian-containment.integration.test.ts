@@ -1339,6 +1339,7 @@ describe('provider proxy cumulative root rotation', () => {
     const manager = new DefaultProviderHostManager({
       runtime,
       spawnProviderServer: async () => localHandle.handle,
+      carrierBlocksRetirement: () => false,
       reapContainment: async () => {},
       proxySetAcquisition: {
         pluginRoot: '/plugin',

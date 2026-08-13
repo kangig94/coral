@@ -67,6 +67,11 @@ export interface ProviderHostManager {
 
 export type ProviderHostLifecycle = Pick<ProviderHostManager, 'drainForHandoff' | 'shutdown'>;
 
+/** Re-evaluates one host after a durable carrier fact changes. */
+export interface ProviderHostRetirementReevaluation {
+  reevaluateIdleRetirement(hostRef: HostRef): void;
+}
+
 export interface ProviderHostAdministrationAuthority {
   admissionSnapshot(): HostAdmissionSnapshot;
   listProviderHosts(): readonly ProviderHostInventoryRecord[];
@@ -266,7 +271,7 @@ export class DefaultProviderHostManager
     idleTimeoutMs?: number;
     spawnProviderServer: SpawnProviderServerFn;
     allocateProviderServerGeneration?: () => number;
-    carrierBlocksRetirement?: (hostRef: HostRef) => boolean;
+    carrierBlocksRetirement: (hostRef: HostRef) => boolean;
     proxySetAcquisition?: ProviderProxySetAcquisitionConfig;
     providerProxyLifecycleRef?: ProviderProxySetLifecycleRef;
     admission?: HostAdmissionCollection;
@@ -278,7 +283,7 @@ export class DefaultProviderHostManager
     this.reapContainment = options.reapContainment ?? createProviderHostContainmentReaper(this.runtime);
     this.allocateProviderServerGeneration =
       options.allocateProviderServerGeneration ?? (() => this.nextProviderServerGeneration++);
-    this.carrierBlocksRetirement = options.carrierBlocksRetirement ?? (() => false);
+    this.carrierBlocksRetirement = options.carrierBlocksRetirement;
     this.proxySetAcquisitionConfig = options.proxySetAcquisition;
     this.providerProxyLifecycleRef = options.providerProxyLifecycleRef;
     this.admission = options.admission ?? createHostAdmissionCollection({ classify: () => 'unknown' });
@@ -641,10 +646,13 @@ export class DefaultProviderHostManager
             hostKey: entry.hostKey,
             identityKey: entry.identityKey,
             ownerJobId: entry.jobId ?? null,
-            pid: containment?.pid ?? entry.handle?.pid ?? null,
-            processGroupId: containment?.processGroupId ?? null,
+            ...(containment?.pid === undefined && entry.handle?.pid === undefined
+              ? {}
+              : { pid: containment?.pid ?? entry.handle?.pid }),
+            ...(containment?.processGroupId === undefined ? {} : { processGroupId: containment.processGroupId }),
             reclamationAttempts: closing.attempt,
             reclamationFailure: closing.failure.message,
+            reclamationRetryable: isRetryableReclamationFailure(closing.failure),
           }),
           diagnostics: closing.diagnostics,
           diagnosticsRetention: Object.freeze({ ownerBudgetTruncated: false }),
@@ -767,6 +775,12 @@ export class DefaultProviderHostManager
       return;
     }
     void this.closeProviderServerEntry(entry, 'job-exclusive host unpinned').catch(() => {});
+  }
+
+  reevaluateIdleRetirement(hostRef: HostRef): void {
+    if (!isExactHostRef(hostRef)) return;
+    const entry = [...this.entries.values()].find((candidate) => entryMatchesHostRef(candidate, hostRef));
+    if (entry !== undefined) this.maybeArmIdleTimer(entry);
   }
 
   private attachHostNotificationListener(entry: ProviderHostEntry, handle: ProviderServerHandle): void {
@@ -939,10 +953,11 @@ export function createProviderHostManager(options: {
   spawnProviderServer: SpawnProviderServerFn;
   admission: HostAdmissionCollection;
   allocateProviderServerGeneration?: () => number;
-  carrierBlocksRetirement?: (hostRef: HostRef) => boolean;
+  carrierBlocksRetirement: (hostRef: HostRef) => boolean;
   proxySetAcquisition?: ProviderProxySetAcquisitionConfig;
   providerProxyLifecycleRef?: ProviderProxySetLifecycleRef;
 }): ProviderHostManager &
+  ProviderHostRetirementReevaluation &
   ProviderHostAdministrationAuthority &
   ProviderProxyAuthorityRegistry &
   ProviderProxySetRegistration {

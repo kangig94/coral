@@ -72,6 +72,7 @@ export type CarrierReapDeps<Scope extends symbol> = Readonly<{
   platform: NodeJS.Platform;
   db: Database;
   clock: MonotonicClock<Scope>;
+  signal: AbortSignal;
   /** Tests replace the platform probe so ambiguous process identity can be exercised without real children. */
   readProcessStartedAtSeconds?(pid: number, platform: NodeJS.Platform): number | null;
 }>;
@@ -105,6 +106,7 @@ export async function reapProviderOperationCarrier<Scope extends symbol>(
     clock: deps.clock,
     process: deps.process,
     platform: deps.platform,
+    signal: deps.signal,
     ...(deps.readProcessStartedAtSeconds === undefined
       ? {}
       : { readProcessStartedAtSeconds: deps.readProcessStartedAtSeconds }),

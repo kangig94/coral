@@ -67,10 +67,9 @@ describe('provider host reclamation', () => {
     await vi.advanceTimersByTimeAsync(1);
 
     await expect(eviction).resolves.toBe(true);
-    await Promise.resolve();
+    await vi.waitFor(() => expect(manager.listProviderHosts()).toEqual([]));
     expect(reapContainment).toHaveBeenCalledTimes(2);
     expect(entry.containment).toBeNull();
-    expect(manager.listProviderHosts()).toEqual([]);
   });
 
   it('stops an already-running reclamation retry when lifecycle cancellation aborts the retry delay', async () => {
@@ -142,9 +141,11 @@ describe('provider host reclamation', () => {
     expect(manager.listProviderHosts()).toMatchObject([
       {
         status: 'reclamation-failed',
-        host: { reclamationAttempts: 1 },
+        host: { reclamationAttempts: 1, reclamationRetryable: false },
       },
     ]);
+    expect(manager.listProviderHosts()[0]?.host).not.toHaveProperty('pid');
+    expect(manager.listProviderHosts()[0]?.host).not.toHaveProperty('processGroupId');
     expect(reapContainment).not.toHaveBeenCalled();
 
     await expect(opening).resolves.toBeInstanceOf(Error);
@@ -192,7 +193,9 @@ describe('provider host reclamation', () => {
       },
     );
     await vi.waitFor(() => expect(reapContainment).toHaveBeenCalledTimes(2));
-    await Promise.resolve();
+    await vi.waitFor(() =>
+      expect(manager.listProviderHosts().filter(({ status }) => status === 'reclamation-failed')).toHaveLength(2),
+    );
     expect(settled).toBe(false);
 
     lifecycle.abort('lifecycle-deadline');

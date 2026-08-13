@@ -261,6 +261,7 @@ function createService(
       runtime,
       spawnProviderServer,
       admission: createHostAdmissionCollection({ classify: () => 'unknown' }),
+      carrierBlocksRetirement: () => false,
     });
   providerRegistry.connectAppServerHost(providerHostManager);
   const getCurrentJournalSeq = () =>

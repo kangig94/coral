@@ -53,6 +53,22 @@ function record(ref: HostRef, status: 'live' | 'retired-blocked' = 'live'): Prov
   };
 }
 
+function reclamationFailedRecord(ref: HostRef): Extract<ProviderHostInventoryRecord, { status: 'reclamation-failed' }> {
+  return {
+    ...record(ref),
+    status: 'reclamation-failed',
+    host: {
+      owner: 'coordinator',
+      hostKey: 'codex:shared:/workspace',
+      identityKey: 'codex:shared:/workspace:601',
+      ownerJobId: null,
+      reclamationAttempts: 1,
+      reclamationFailure: 'close was cancelled before containment was established',
+      reclamationRetryable: false,
+    },
+  };
+}
+
 function owner(
   ownerId: string,
   records: readonly ProviderHostInventoryRecord[],
@@ -306,6 +322,76 @@ describe('provider host administration', () => {
       ownerIds: ['proxy-a'],
     });
   });
+
+  it('accepts a pre-containment reclamation failure without pid or process-group metadata', async () => {
+    const failed = reclamationFailedRecord(hostRef('pre-containment-failure'));
+    const service = new ProviderHostAdministrationService({ owners: () => [owner('coordinator', [failed])] });
+
+    await expect(service.list()).resolves.toEqual([{ ownerId: 'coordinator', ...failed }]);
+  });
+
+  it('accepts pid-only failure metadata before process-group authority is recorded', async () => {
+    const failed = reclamationFailedRecord(hostRef('pid-only-failure'));
+    const pidOnly = { ...failed, host: { ...failed.host, pid: 601 } };
+    const service = new ProviderHostAdministrationService({ owners: () => [owner('coordinator', [pidOnly])] });
+
+    await expect(service.list()).resolves.toEqual([{ ownerId: 'coordinator', ...pidOnly }]);
+  });
+
+  it('rejects process-group metadata without a matching pid', async () => {
+    const failed = reclamationFailedRecord(hostRef('group-only-failure'));
+    const malformed = owner('coordinator', [], {
+      listProviderHosts: vi.fn(async () => [{ ...failed, host: { ...failed.host, processGroupId: 601 } }] as never),
+    });
+
+    await expect(new ProviderHostAdministrationService({ owners: () => [malformed] }).list()).rejects.toMatchObject({
+      code: 'provider_host_inventory_unavailable',
+      ownerIds: ['coordinator'],
+    });
+  });
+
+  it.each([
+    ['only owner metadata', { owner: 'coordinator' }],
+    [
+      'no failure detail',
+      {
+        owner: 'coordinator',
+        hostKey: 'codex:shared:/workspace',
+        identityKey: 'codex:shared:/workspace:601',
+        ownerJobId: null,
+        reclamationRetryable: false,
+      },
+    ],
+  ])('rejects a reclamation-failed row with %s', async (_case, host) => {
+    const malformed = owner('coordinator', [], {
+      listProviderHosts: vi.fn(
+        async () => [{ ...record(hostRef('malformed-failure')), status: 'reclamation-failed', host }] as never,
+      ),
+    });
+    const service = new ProviderHostAdministrationService({ owners: () => [malformed] });
+
+    await expect(service.list()).rejects.toMatchObject({
+      code: 'provider_host_inventory_unavailable',
+      ownerIds: ['coordinator'],
+    });
+  });
+
+  it.each(['reclamationAttempts', 'reclamationFailure', 'reclamationRetryable'] as const)(
+    'rejects reclamation-failed metadata without required %s',
+    async (field) => {
+      const failed = reclamationFailedRecord(hostRef(`missing-${field}`));
+      const host = { ...failed.host } as Record<string, unknown>;
+      delete host[field];
+      const malformed = owner('coordinator', [], {
+        listProviderHosts: vi.fn(async () => [{ ...failed, host }] as never),
+      });
+
+      await expect(new ProviderHostAdministrationService({ owners: () => [malformed] }).list()).rejects.toMatchObject({
+        code: 'provider_host_inventory_unavailable',
+        ownerIds: ['coordinator'],
+      });
+    },
+  );
 
   it('never reroutes by cwd when the selected exact ref retires or its owner disappears', async () => {
     const selectedRef = hostRef('selected');

@@ -48,15 +48,20 @@ describe('provider-host operator documentation', () => {
     expect(catalogEntry('provider_host_identity_integrity')).toContain('exact host reference collided');
   });
 
-  it('documents failed reclamation as an unreclaimed recorded group with an eviction retry', () => {
+  it('documents conditional containment and retryability for failed close or reclamation', () => {
     for (const document of [configuration, cliErrors]) {
       expect(document).toContain('reclamation-failed');
-      expect(document).toContain('recorded process group');
+      expect(document).toContain('did not complete a provider-host close or recorded-containment reclamation');
       expect(document).toContain('pid');
       expect(document).toContain('processGroupId');
       expect(document).toContain('reclamationAttempts');
       expect(document).toContain('reclamationFailure');
-      expect(document).toContain('joins an in-flight');
+      expect(document).toContain('reclamationRetryable');
+      expect(document).toContain('only `pid` is present');
+      expect(document).toContain('recorded containment carries both values');
+      expect(document).toContain('pre-containment');
+      expect(document).toContain('eviction cannot');
+      expect(document).toContain('escalate rather than discarding that evidence by restarting');
     }
     expect(catalogEntry('provider_host_not_found')).toContain('reclamation-failed');
   });

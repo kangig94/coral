@@ -17,8 +17,11 @@ import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 export const runtime = createRealRuntime('prod');
 
 export class StubbedContainmentProviderHostManager extends ProductionProviderHostManager {
-  constructor(options: ConstructorParameters<typeof ProductionProviderHostManager>[0]) {
-    super({ reapContainment: async () => {}, ...options });
+  constructor(
+    options: Omit<ConstructorParameters<typeof ProductionProviderHostManager>[0], 'carrierBlocksRetirement'> &
+      Partial<Pick<ConstructorParameters<typeof ProductionProviderHostManager>[0], 'carrierBlocksRetirement'>>,
+  ) {
+    super({ reapContainment: async () => {}, carrierBlocksRetirement: () => false, ...options });
   }
 }
 

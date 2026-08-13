@@ -71,17 +71,61 @@ const providerHostSpecSchema = z
   })
   .strict();
 const providerHostMetadataValueSchema = z.union([z.string(), z.number(), z.boolean(), z.null()]);
+const providerHostInventoryCommonShape = {
+  ref: hostRefSchema,
+  spec: providerHostSpecSchema,
+  diagnostics: providerHostDiagnosticsSchema,
+  diagnosticsRetention: z.object({ ownerBudgetTruncated: z.boolean() }).strict(),
+};
+const positiveSafeIntegerSchema = z.number().int().positive().safe();
+const reclamationFailureMetadataShape = {
+  owner: z.literal('coordinator'),
+  hostKey: z.string(),
+  identityKey: z.string(),
+  ownerJobId: z.string().nullable(),
+  reclamationAttempts: positiveSafeIntegerSchema,
+  reclamationFailure: z.string(),
+  reclamationRetryable: z.boolean(),
+};
+const reclamationFailureMetadataSchema = z.union([
+  z.object(reclamationFailureMetadataShape).strict(),
+  z.object({ ...reclamationFailureMetadataShape, pid: positiveSafeIntegerSchema }).strict(),
+  z
+    .object({
+      ...reclamationFailureMetadataShape,
+      pid: positiveSafeIntegerSchema,
+      processGroupId: positiveSafeIntegerSchema,
+    })
+    .strict(),
+]);
 
-export const providerHostInventoryRecordSchema = z
+export const liveProviderHostInventoryRecordSchema = z
   .object({
-    ref: hostRefSchema,
-    status: z.enum(['live', 'retired-blocked', 'reclamation-failed']),
-    spec: providerHostSpecSchema,
+    ...providerHostInventoryCommonShape,
+    status: z.literal('live'),
     host: z.record(providerHostMetadataValueSchema),
-    diagnostics: providerHostDiagnosticsSchema,
-    diagnosticsRetention: z.object({ ownerBudgetTruncated: z.boolean() }).strict(),
   })
   .strict();
+export const retiredBlockedProviderHostInventoryRecordSchema = z
+  .object({
+    ...providerHostInventoryCommonShape,
+    status: z.literal('retired-blocked'),
+    host: z.record(providerHostMetadataValueSchema),
+  })
+  .strict();
+export const reclamationFailedProviderHostInventoryRecordSchema = z
+  .object({
+    ...providerHostInventoryCommonShape,
+    status: z.literal('reclamation-failed'),
+    host: reclamationFailureMetadataSchema,
+  })
+  .strict();
+
+export const providerHostInventoryRecordSchema = z.discriminatedUnion('status', [
+  liveProviderHostInventoryRecordSchema,
+  retiredBlockedProviderHostInventoryRecordSchema,
+  reclamationFailedProviderHostInventoryRecordSchema,
+]);
 
 export const providerHostInventorySchema = z.array(providerHostInventoryRecordSchema);
 
@@ -91,9 +135,4 @@ type DeepReadonly<Value> = Value extends readonly (infer Entry)[]
     ? { readonly [Key in keyof Value]: DeepReadonly<Value[Key]> }
     : Value;
 
-export type ProviderHostDiagnosticsWire = DeepReadonly<z.output<typeof providerHostDiagnosticsSchema>>;
-export type ProviderHostInventoryRecordWire = Omit<
-  DeepReadonly<z.output<typeof providerHostInventoryRecordSchema>>,
-  'diagnostics'
-> &
-  Readonly<{ diagnostics: ProviderHostDiagnosticsWire }>;
+export type ProviderHostInventoryRecordWire = DeepReadonly<z.output<typeof providerHostInventoryRecordSchema>>;

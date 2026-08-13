@@ -413,7 +413,7 @@ function providerHostAdministrationCopy(
       };
     case 'provider_host_not_found':
       return {
-        message: 'No live or retained-blocked provider host matches the selector.',
+        message: 'No live, retained-blocked, or reclamation-failed provider host matches the selector.',
         remediation: 'Rerun `coral-cli backend provider-host list`, then use a currently listed reference.',
       };
     case 'provider_host_ambiguous':
