@@ -8,6 +8,11 @@ import type { Runtime } from '../runtime/ports.js';
 import { AbortError } from '../runtime/abort.js';
 import { gracefulKill, requirePipedHandles } from '../infra/process-supervision.js';
 import {
+  assertRecordedContainmentIdentity,
+  ProcessContainmentError,
+  type RecordedContainmentIdentity,
+} from '../infra/process-containment.js';
+import {
   appendProviderHostLog,
   createProviderHostDiagnostics,
   currentProviderHostLogSeq,
@@ -126,6 +131,14 @@ export type ProviderServerHandle = {
   close: () => Promise<void>;
 };
 
+/** A provider server handle whose detached process-group identity was verified at spawn. */
+export type ContainedProviderServerHandle = ProviderServerHandle &
+  Readonly<{
+    containmentIdentity: RecordedContainmentIdentity;
+    /** Finalizes transport state after the owner has already confirmed the recorded group absent. */
+    finishCloseAfterReap: () => Promise<void>;
+  }>;
+
 type ProviderServerEntry = {
   provider: string;
   child: ChildProcessLike;
@@ -165,7 +178,8 @@ export type SpawnProviderServerFn = (
   options: SpawnProviderServerOptions,
   observeProviderResponse: ProviderResponseObservationSink,
   generation: number,
-) => Promise<ProviderServerHandle>;
+  recordContainment?: (containment: RecordedContainmentIdentity) => void,
+) => Promise<ContainedProviderServerHandle>;
 
 function resolveProviderServerInitializeTimeoutMs(timeoutMs: number | undefined): number {
   return timeoutMs !== undefined && Number.isFinite(timeoutMs) && timeoutMs > 0
@@ -173,27 +187,45 @@ function resolveProviderServerInitializeTimeoutMs(timeoutMs: number | undefined)
     : PROVIDER_SERVER_INITIALIZE_TIMEOUT_MS;
 }
 
-export async function spawnProviderServerTransport(params: {
+type SpawnProviderServerTransportParams = {
   runtime: Runtime;
   options: SpawnProviderServerOptions;
   generation: number;
   observeProviderResponse: ProviderResponseObservationSink;
-}): Promise<ProviderServerHandle> {
+  detached?: boolean;
+  recordContainment?: (containment: RecordedContainmentIdentity) => void;
+};
+
+export function spawnProviderServerTransport(
+  params: SpawnProviderServerTransportParams & { detached: true },
+): Promise<ContainedProviderServerHandle>;
+export function spawnProviderServerTransport(params: SpawnProviderServerTransportParams): Promise<ProviderServerHandle>;
+export async function spawnProviderServerTransport(
+  params: SpawnProviderServerTransportParams,
+): Promise<ProviderServerHandle> {
   const spawned = spawnProviderServerProcess(params);
   bindProviderServerEvents(spawned.entry, spawned.pipes, params.runtime);
+  const containmentIdentity =
+    params.detached === true ? establishDetachedProviderServerIdentity(spawned.entry, params.runtime) : undefined;
+  if (containmentIdentity !== undefined) {
+    params.recordContainment?.(containmentIdentity);
+  }
   const rpc = createProviderServerRpc(spawned.entry, params.runtime);
-  await initializeSpawnedProviderServer(spawned.entry, rpc, params.options, params.runtime);
-  return exposeProviderServerHandle(spawned.entry, rpc, params.runtime);
+  await initializeSpawnedProviderServer(
+    spawned.entry,
+    rpc,
+    params.options,
+    params.runtime,
+    containmentIdentity === undefined || params.recordContainment === undefined,
+  );
+  return exposeProviderServerHandle(spawned.entry, rpc, params.runtime, containmentIdentity);
 }
 
 type ProviderServerPipes = ReturnType<typeof requirePipedHandles>;
 
-function spawnProviderServerProcess(params: {
-  runtime: Runtime;
-  options: SpawnProviderServerOptions;
-  generation: number;
-  observeProviderResponse: ProviderResponseObservationSink;
-}): Readonly<{ entry: ProviderServerEntry; pipes: ProviderServerPipes }> {
+function spawnProviderServerProcess(
+  params: SpawnProviderServerTransportParams,
+): Readonly<{ entry: ProviderServerEntry; pipes: ProviderServerPipes }> {
   const { runtime, options, generation, observeProviderResponse } = params;
   if (options.signal?.aborted) {
     throw createProviderServerSpawnAbortError(options.provider, options.signal);
@@ -206,6 +238,7 @@ function spawnProviderServerProcess(params: {
     cwd: options.cwd === '' ? undefined : options.cwd,
     shell: shouldUseWindowsCommandShell(command, runtime.env.platform()),
     ...(options.exactEnv ? { env: options.exactEnv } : { envAdditions: options.extraEnv }),
+    ...(params.detached === undefined ? {} : { detached: params.detached }),
   });
   const pipes = requirePipedHandles(child, options.command);
   const pid = child.pid;
@@ -240,6 +273,59 @@ function spawnProviderServerProcess(params: {
     closeOutcome: undefined,
   };
   return Object.freeze({ entry, pipes });
+}
+
+function establishDetachedProviderServerIdentity(
+  entry: ProviderServerEntry,
+  runtime: Runtime,
+): RecordedContainmentIdentity {
+  let processStartedAtSeconds: number | null;
+  try {
+    processStartedAtSeconds = runtime.process.readProcessStartedAtSeconds(
+      entry.pid,
+      runtime.env.platform() as NodeJS.Platform,
+    );
+  } catch {
+    processStartedAtSeconds = null;
+  }
+  if (processStartedAtSeconds === null) {
+    gracefulKill(entry.child, runtime);
+    throw new ProcessContainmentError(
+      'process_identity_unverified',
+      `Could not read the start time of the spawned ${entry.provider} provider server (pid ${entry.pid}).`,
+      { provider: entry.provider, pid: entry.pid },
+    );
+  }
+
+  // Signal 0 tests existence and permission without delivering a signal. Addressing -pid proves a signalable
+  // process group with that id exists; it does not prove the group contains only this host's descendants.
+  let processGroupIsSignalable: boolean;
+  try {
+    processGroupIsSignalable = runtime.process.kill(-entry.pid, 0);
+  } catch {
+    processGroupIsSignalable = false;
+  }
+  if (!processGroupIsSignalable) {
+    gracefulKill(entry.child, runtime);
+    throw new ProcessContainmentError(
+      'process_identity_unverified',
+      `The spawned ${entry.provider} provider server (pid ${entry.pid}) is not a process-group leader.`,
+      { provider: entry.provider, pid: entry.pid },
+    );
+  }
+
+  const containmentIdentity = Object.freeze({
+    pid: entry.pid,
+    processStartedAtSeconds,
+    processGroupId: entry.pid,
+  });
+  try {
+    assertRecordedContainmentIdentity(containmentIdentity);
+  } catch (error: unknown) {
+    gracefulKill(entry.child, runtime);
+    throw error;
+  }
+  return containmentIdentity;
 }
 
 function bindProviderServerEvents(entry: ProviderServerEntry, pipes: ProviderServerPipes, runtime: Runtime): void {
@@ -325,6 +411,7 @@ async function initializeSpawnedProviderServer(
   rpc: ProviderServerRpc,
   options: SpawnProviderServerOptions,
   runtime: Runtime,
+  killOnFailure: boolean,
 ): Promise<void> {
   if (options.initializeRequest === undefined) return;
   try {
@@ -337,11 +424,13 @@ async function initializeSpawnedProviderServer(
       signal: options.signal,
     });
   } catch (error) {
-    // The child is alive but rejected `initialize` (protocol/version/auth mismatch). Nothing upstream owns this
-    // handle yet, so kill and detach it here before rethrowing — otherwise the OS process leaks per failure.
+    // A detached caller records containment before initialization and owns the group from that point onward.
+    // Uncontained callers still need this layer to reap the child because no upstream owner can target it.
     const initError = error instanceof Error ? error : createProviderHostFault(entry, `initialize failed`);
     detachProviderServer(entry, initError);
-    gracefulKill(entry.child, runtime);
+    if (killOnFailure) {
+      gracefulKill(entry.child, runtime);
+    }
     throw initError;
   }
 }
@@ -350,11 +439,21 @@ function exposeProviderServerHandle(
   entry: ProviderServerEntry,
   rpc: ProviderServerRpc,
   runtime: Runtime,
+  containmentIdentity?: RecordedContainmentIdentity,
 ): ProviderServerHandle {
   return {
     pid: entry.pid,
     child: entry.child,
     generation: entry.generation,
+    ...(containmentIdentity === undefined
+      ? {}
+      : {
+          containmentIdentity,
+          finishCloseAfterReap: async (): Promise<void> => {
+            beginProviderServerShutdown(entry, 'closed');
+            await entry.closePromise;
+          },
+        }),
     rpc,
     onNotification: (handler) => {
       if (entry.closed) return () => {};

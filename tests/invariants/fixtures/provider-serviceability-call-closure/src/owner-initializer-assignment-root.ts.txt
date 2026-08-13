@@ -1,0 +1,24 @@
+declare function spawnAssignedProviderTransport(options: {
+  observeProviderResponse(fact: unknown): void;
+}): void;
+
+function invokeResponse(callback: () => void): void {
+  callback();
+}
+
+class AssignedObserver {
+  observeProviderResponse = (): void => {
+    this.handle.close();
+  };
+
+  constructor(private readonly handle: { close(): void }) {
+    this.observeProviderResponse = (): void => {};
+  }
+}
+
+export function ownerInitializerAssignmentRoot(handle: { close(): void }): void {
+  const observer = new AssignedObserver(handle);
+  spawnAssignedProviderTransport({
+    observeProviderResponse: () => invokeResponse(observer.observeProviderResponse),
+  });
+}

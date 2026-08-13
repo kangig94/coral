@@ -91,7 +91,7 @@ export function buildClaudeProviderServerSpec(host: ClaudeBrokerHostPlan): Provi
     cwd: host.cwd,
     env: { ...host.environment },
     leaseMode: 'shared',
-    idleRetirement: 'host-reported',
+    idleRetirement: 'unleased-and-host-idle',
     shutdownCapability: {
       method: 'broker/shutdown',
       timeoutMs: 3_000,

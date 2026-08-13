@@ -1,20 +1,13 @@
 import type { AppServerTransport } from '../../../providers/contract.js';
 import type { ProviderServerHandle } from '../../../providers/app-server-transport.js';
-import type { ProviderHostEntry } from './state.js';
+import type { PinToken, ProviderHostEntry, ProviderHostPin } from './state.js';
 
 export function createProviderServerLease(handle: ProviderServerHandle, releasePin: () => void): ProviderServerLease {
-  let released = false;
   return {
     rpc: <R = unknown>(method: string, params: Record<string, unknown>) => handle.rpc.request<R>(method, params),
     subscribe: (handler: (msg: { method: string; params?: Record<string, unknown> }) => void) =>
       handle.onNotification(handler),
-    release: () => {
-      if (released) {
-        return;
-      }
-      released = true;
-      releasePin();
-    },
+    release: releasePin,
     closed: handle.closePromise,
     generation: handle.generation,
   };
@@ -29,19 +22,21 @@ export function createProviderServerAttachment(handle: ProviderServerHandle): Ap
   };
 }
 
-export function acquireProviderHostPin(entry: ProviderHostEntry): void {
-  entry.pinCount += 1;
-}
-
-export function releaseProviderHostPin(entry: ProviderHostEntry): void {
-  if (entry.pinCount === 0) {
-    throw new Error(`Provider host '${entry.hostKey}' pin count underflow.`);
-  }
-  entry.pinCount -= 1;
+export function acquireProviderHostPin(
+  entry: ProviderHostEntry,
+  pin: ProviderHostPin,
+  onLastRelease: () => void,
+): () => void {
+  const token: PinToken = Symbol(pin.kind);
+  entry.pins.set(token, pin);
+  return () => {
+    if (!entry.pins.delete(token)) return;
+    if (entry.pins.size === 0) onLastRelease();
+  };
 }
 
 export function activePinCount(entry: ProviderHostEntry): number {
-  return entry.pinCount;
+  return entry.pins.size;
 }
 export interface ProviderServerLease extends AppServerTransport {
   release(): void;

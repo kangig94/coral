@@ -28,7 +28,7 @@ const host = {
     args: ['app-server'],
     cwd: fixtureCanonicalWorkDir('/workspace'),
     leaseMode: 'shared' as const,
-    idleRetirement: 'none' as const,
+    idleRetirement: 'never' as const,
   },
   host: { owner: 'coordinator' },
   diagnostics: {

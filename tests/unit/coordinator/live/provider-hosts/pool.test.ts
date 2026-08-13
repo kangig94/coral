@@ -10,7 +10,7 @@ vi.mock('#src/coordinator/live/provider-hosts/proxy-set-acquisition.js', () => (
   ensureProviderProxySet: vi.fn(),
 }));
 
-import { DefaultProviderHostManager, hostKeyFromSpec } from '#src/coordinator/live/provider-hosts/index.js';
+import { hostKeyFromSpec } from '#src/coordinator/live/provider-hosts/index.js';
 import type { ProviderHostEntry } from '#src/coordinator/live/provider-hosts/index.js';
 import { MAX_COORDINATOR_PROXY_SET_SLOTS } from '#src/coordinator/services/provider-proxy-set-lifecycle.js';
 import { ensureProviderProxySet } from '#src/coordinator/live/provider-hosts/proxy-set-acquisition.js';
@@ -20,10 +20,12 @@ import type {
   ProviderProxyOperationAuthority,
 } from '#src/coordinator/live/provider-proxy/operation-route.js';
 import type { ProviderServerSpec } from '#src/providers/contract.js';
+import { backendLog } from '#src/infra/backend-log.js';
 import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set-claim-mirror.js';
 import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set-lifecycle.js';
 import { ProviderProxySetLifecycleRef } from '#src/coordinator/services/provider-proxy-set-lifecycle-ref.js';
 import {
+  StubbedContainmentProviderHostManager,
   createExclusiveSpec,
   createFakeProviderServerHandle,
   createLaunch,
@@ -151,12 +153,12 @@ describe('provider host pool', () => {
   it.each([
     [{ ...createSharedSpec(), idleRetirement: undefined }, 'shared hosts require idleRetirement'],
     [{ ...createSharedSpec(), idleRetirement: 'implicit-timeout' }, 'shared hosts require idleRetirement'],
-    [{ ...createExclusiveSpec(), idleRetirement: 'none' }, 'job-exclusive hosts cannot declare idleRetirement'],
+    [{ ...createExclusiveSpec(), idleRetirement: 'never' }, 'job-exclusive hosts cannot declare idleRetirement'],
     [{ ...createExclusiveSpec(), leaseMode: 'unknown' }, "leaseMode must be 'shared' or 'job-exclusive'"],
   ])('rejects malformed runtime lifecycle policy before spawning', async (spec, expected) => {
     const server = createFakeProviderServerHandle();
     const spawnProviderServer = createSpawnProviderServerMock(server.handle);
-    const manager = new DefaultProviderHostManager({ runtime, spawnProviderServer });
+    const manager = new StubbedContainmentProviderHostManager({ runtime, spawnProviderServer });
 
     await expect(manager.openSession(spec as never, { jobId: 'job-a' })).rejects.toThrow(expected);
     expect(spawnProviderServer).not.toHaveBeenCalled();
@@ -194,7 +196,7 @@ describe('provider host pool', () => {
       hostKeyFromSpec({ ...base, env: { CODEX_HOME: '/accounts/b' } }),
     );
     const shared = createSharedSpec();
-    expect(hostKeyFromSpec({ ...shared, idleRetirement: 'none' })).toBe(hostKeyFromSpec(shared));
+    expect(hostKeyFromSpec({ ...shared, idleRetirement: 'never' })).toBe(hostKeyFromSpec(shared));
     const initialized = createExclusiveSpec({
       initializeRequest: { method: 'initialize', params: { beta: 2, alpha: { y: 2, x: 1 } } },
       initializeTimeoutMs: 1_000,
@@ -223,7 +225,7 @@ describe('provider host pool', () => {
     });
     resolveClosed = server.resolveClosed;
     const spawnProviderServer = createSpawnProviderServerMock(server.handle);
-    const manager = new DefaultProviderHostManager({ runtime, spawnProviderServer });
+    const manager = new StubbedContainmentProviderHostManager({ runtime, spawnProviderServer });
     const spec = createSharedSpec({
       args: ['broker-original'],
       env: { PATH: '/bin/original' },
@@ -284,7 +286,7 @@ describe('provider host pool', () => {
     const first = createFakeProviderServerHandle({ generation: 41 });
     const second = createFakeProviderServerHandle({ generation: 42 });
     const spawnProviderServer = createSpawnProviderServerMock(first.handle, second.handle);
-    const manager = new DefaultProviderHostManager({ runtime, spawnProviderServer });
+    const manager = new StubbedContainmentProviderHostManager({ runtime, spawnProviderServer });
     const spec = createExclusiveSpec({ env: { CODEX_HOME: '/accounts/a' } });
 
     const leaseA = await manager.openSession(createLaunch(spec), { jobId: 'job-a' });
@@ -303,7 +305,7 @@ describe('provider host pool', () => {
   it('single-flights one job-exclusive placement for equal specs with the same owner job', async () => {
     const first = createFakeProviderServerHandle({ generation: 41 });
     const second = createFakeProviderServerHandle({ generation: 41 });
-    const manager = new DefaultProviderHostManager({
+    const manager = new StubbedContainmentProviderHostManager({
       runtime,
       spawnProviderServer: createSpawnProviderServerMock(first.handle, second.handle),
     });
@@ -325,7 +327,7 @@ describe('provider host pool', () => {
 
   it('classifies an already-closed handle as stale before its cleanup microtask runs', async () => {
     const server = createFakeProviderServerHandle({ generation: 51 });
-    const manager = new DefaultProviderHostManager({
+    const manager = new StubbedContainmentProviderHostManager({
       runtime,
       spawnProviderServer: createSpawnProviderServerMock(server.handle),
     });
@@ -343,7 +345,7 @@ describe('provider host pool', () => {
     ['job-exclusive', 'shared'],
   ] as const)('fails closed when one executable identity changes lease policy from %s to %s', async (first, second) => {
     const handle = createFakeProviderServerHandle();
-    const manager = new DefaultProviderHostManager({
+    const manager = new StubbedContainmentProviderHostManager({
       runtime,
       spawnProviderServer: createSpawnProviderServerMock(handle.handle),
     });
@@ -372,7 +374,7 @@ describe('provider host pool', () => {
 
   it('remembers an executable identity lease policy after its concrete entry closes', async () => {
     const server = createFakeProviderServerHandle({ generation: 10 });
-    const manager = new DefaultProviderHostManager({
+    const manager = new StubbedContainmentProviderHostManager({
       runtime,
       spawnProviderServer: createSpawnProviderServerMock(server.handle),
     });
@@ -394,13 +396,13 @@ describe('provider host pool', () => {
 
   it('rejects conflicting shared-host idle policies for one executable identity', async () => {
     const server = createFakeProviderServerHandle({ generation: 10 });
-    const manager = new DefaultProviderHostManager({
+    const manager = new StubbedContainmentProviderHostManager({
       runtime,
       spawnProviderServer: createSpawnProviderServerMock(server.handle),
     });
     const hostReportedSpec = createSharedSpec();
     const lease = await manager.openSession(createLaunch(hostReportedSpec));
-    const noRetirementSpec = createSharedSpec({ idleRetirement: 'none' });
+    const noRetirementSpec = createSharedSpec({ idleRetirement: 'never' });
 
     await expect(manager.openSession(createLaunch(noRetirementSpec))).rejects.toThrow('provider_host_policy_conflict');
     await expect(manager.attachSession(lease.hostRef, expectedHost(noRetirementSpec))).resolves.toBeNull();
@@ -418,7 +420,7 @@ describe('provider host pool', () => {
       secondHandle.handle,
       thirdHandle.handle,
     );
-    const manager = new DefaultProviderHostManager({ runtime, spawnProviderServer });
+    const manager = new StubbedContainmentProviderHostManager({ runtime, spawnProviderServer });
 
     const sharedSpec = createSharedSpec();
     const codexSpecA = createExclusiveSpec({
@@ -448,7 +450,7 @@ describe('provider host pool', () => {
 
   it('keeps an exclusive host alive until its original and recovered pins are all closed', async () => {
     const server = createFakeProviderServerHandle({ generation: 34 });
-    const manager = new DefaultProviderHostManager({
+    const manager = new StubbedContainmentProviderHostManager({
       runtime,
       spawnProviderServer: createSpawnProviderServerMock(server.handle),
     });
@@ -474,7 +476,7 @@ describe('provider host pool', () => {
   it('does not idle-evict a shared host while a recovered attachment still pins it', async () => {
     vi.useFakeTimers();
     const server = createFakeProviderServerHandle({ generation: 35 });
-    const manager = new DefaultProviderHostManager({
+    const manager = new StubbedContainmentProviderHostManager({
       runtime,
       spawnProviderServer: createSpawnProviderServerMock(server.handle),
       idleTimeoutMs: 10,
@@ -494,14 +496,54 @@ describe('provider host pool', () => {
     await manager.shutdown();
   });
 
+  it('logs every outstanding codex pin when no live job owns the host without closing it', async () => {
+    vi.useFakeTimers();
+    const warning = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
+    const server = createFakeProviderServerHandle({ generation: 35 });
+    const liveCodexJobBlocksRetirement = vi.fn(() => false);
+    const manager = new StubbedContainmentProviderHostManager({
+      runtime,
+      spawnProviderServer: createSpawnProviderServerMock(server.handle),
+      idleTimeoutMs: 10,
+      carrierBlocksRetirement: liveCodexJobBlocksRetirement,
+    });
+    const spec = createSharedSpec({
+      provider: 'codex',
+      command: 'codex',
+      args: ['app-server'],
+      idleRetirement: 'unleased',
+    });
+    const original = await manager.openSession(createLaunch(spec), { jobId: 'job-acquisition' });
+    const attached = await manager.attachSession(original.hostRef, expectedHost(spec, 'job-acquisition'));
+
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    const hostLabel = `Provider host codex ${original.hostRef.instanceId} (${spec.cwd})`;
+    expect(warning.mock.calls).toEqual([
+      [
+        `${hostLabel} has an outstanding pin while no live Codex job owns it: origin.kind=acquisition, origin.jobId=job-acquisition`,
+      ],
+      [
+        `${hostLabel} has an outstanding pin while no live Codex job owns it: origin.kind=attached-session, origin.jobId=none (attached session, no job)`,
+      ],
+    ]);
+    expect(liveCodexJobBlocksRetirement).toHaveBeenCalledOnce();
+    expect(liveCodexJobBlocksRetirement).toHaveBeenCalledWith(original.hostRef);
+    expect(server.closeMock).not.toHaveBeenCalled();
+
+    original.close();
+    attached?.close();
+    await manager.shutdown();
+  });
+
   it('scopes opaque host references to one concrete manager-owned process instance', async () => {
     const first = createFakeProviderServerHandle({ generation: 36 });
     const second = createFakeProviderServerHandle({ generation: 36 });
-    const managerA = new DefaultProviderHostManager({
+    const managerA = new StubbedContainmentProviderHostManager({
       runtime,
       spawnProviderServer: createSpawnProviderServerMock(first.handle),
     });
-    const managerB = new DefaultProviderHostManager({
+    const managerB = new StubbedContainmentProviderHostManager({
       runtime,
       spawnProviderServer: createSpawnProviderServerMock(second.handle),
     });
@@ -528,7 +570,7 @@ describe('provider host pool', () => {
     const first = createFakeProviderServerHandle({ generation: 51 });
     const second = createFakeProviderServerHandle({ generation: 52 });
     const spawnProviderServer = createSpawnProviderServerMock(first.handle, second.handle);
-    const manager = new DefaultProviderHostManager({ runtime, spawnProviderServer });
+    const manager = new StubbedContainmentProviderHostManager({ runtime, spawnProviderServer });
     const spec = createExclusiveSpec();
 
     const firstLease = await manager.openSession(createLaunch(spec), { jobId: 'job-a' });
@@ -547,7 +589,7 @@ describe('provider host pool', () => {
     const server = createFakeProviderServerHandle({ generation: 71 });
     const spawn = createDeferred<typeof server.handle>();
     const spawnProviderServer = vi.fn(async (_options: unknown) => spawn.promise);
-    const manager = new DefaultProviderHostManager({ runtime, spawnProviderServer });
+    const manager = new StubbedContainmentProviderHostManager({ runtime, spawnProviderServer });
     const launch = createLaunch(createSharedSpec());
 
     const creatorAbort = new AbortController();
@@ -577,7 +619,7 @@ describe('provider host pool', () => {
     const server = createFakeProviderServerHandle({ generation: 73 });
     const spawn = createDeferred<typeof server.handle>();
     const spawnProviderServer = vi.fn(async (_options: unknown) => spawn.promise);
-    const manager = new DefaultProviderHostManager({ runtime, spawnProviderServer, idleTimeoutMs: 10 });
+    const manager = new StubbedContainmentProviderHostManager({ runtime, spawnProviderServer, idleTimeoutMs: 10 });
     const creatorAbort = new AbortController();
 
     const creatorAcquisition = manager.openSession(createLaunch(createSharedSpec()), {
@@ -604,15 +646,42 @@ describe('provider host pool', () => {
     expect(server.closeMock).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps shared hosts with idle retirement disabled alive regardless of pins or host notifications', async () => {
+  it('closes an unpinned shared codex host on the idle timer without a host stats report', async () => {
     vi.useFakeTimers();
     const server = createFakeProviderServerHandle({ generation: 74 });
-    const manager = new DefaultProviderHostManager({
+    const manager = new StubbedContainmentProviderHostManager({
       runtime,
       spawnProviderServer: createSpawnProviderServerMock(server.handle),
       idleTimeoutMs: 10,
     });
-    const lease = await manager.openSession(createLaunch(createSharedSpec({ idleRetirement: 'none' })));
+    const lease = await manager.openSession(
+      createLaunch(
+        createSharedSpec({
+          provider: 'codex',
+          command: 'codex',
+          args: ['app-server'],
+          idleRetirement: 'unleased',
+        }),
+      ),
+    );
+
+    lease.close();
+    expect(server.closeMock).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(server.closeMock).toHaveBeenCalledTimes(1);
+    await manager.shutdown();
+  });
+
+  it('keeps shared hosts with idle retirement disabled alive regardless of pins or host notifications', async () => {
+    vi.useFakeTimers();
+    const server = createFakeProviderServerHandle({ generation: 74 });
+    const manager = new StubbedContainmentProviderHostManager({
+      runtime,
+      spawnProviderServer: createSpawnProviderServerMock(server.handle),
+      idleTimeoutMs: 10,
+    });
+    const lease = await manager.openSession(createLaunch(createSharedSpec({ idleRetirement: 'never' })));
 
     lease.close();
     server.emitNotification({ method: 'host/stats', params: { liveControllers: 0, activeTurns: 0 } });
@@ -626,7 +695,7 @@ describe('provider host pool', () => {
   it('does not let unrelated provider notifications postpone an evidenced idle deadline', async () => {
     vi.useFakeTimers();
     const server = createFakeProviderServerHandle({ generation: 75 });
-    const manager = new DefaultProviderHostManager({
+    const manager = new StubbedContainmentProviderHostManager({
       runtime,
       spawnProviderServer: createSpawnProviderServerMock(server.handle),
       idleTimeoutMs: 10,
@@ -645,7 +714,7 @@ describe('provider host pool', () => {
   it('rejects an already-aborted caller before returning an already-live shared host', async () => {
     const server = createFakeProviderServerHandle({ generation: 72 });
     const spawnProviderServer = createSpawnProviderServerMock(server.handle);
-    const manager = new DefaultProviderHostManager({ runtime, spawnProviderServer });
+    const manager = new StubbedContainmentProviderHostManager({ runtime, spawnProviderServer });
     const launch = createLaunch(createSharedSpec());
     const liveLease = await manager.openSession(launch);
     const aborted = new AbortController();
@@ -668,7 +737,10 @@ describe('provider host pool', () => {
       env: { get: runtime.env.get.bind(runtime.env), platform: () => 'win32' },
     } as const;
     const spawnProviderServer = createSpawnProviderServerMock(createFakeProviderServerHandle().handle);
-    const manager = new DefaultProviderHostManager({ runtime: windowsRuntime as never, spawnProviderServer });
+    const manager = new StubbedContainmentProviderHostManager({
+      runtime: windowsRuntime as never,
+      spawnProviderServer,
+    });
 
     await expect(
       manager.openSession(
@@ -690,7 +762,7 @@ describe('provider host pool', () => {
       await close.promise;
       server.resolveClosed();
     });
-    const manager = new DefaultProviderHostManager({
+    const manager = new StubbedContainmentProviderHostManager({
       runtime,
       spawnProviderServer: createSpawnProviderServerMock(server.handle),
     });
@@ -712,7 +784,7 @@ describe('provider host pool', () => {
     expect(drained).toBe(true);
   });
 
-  it('awaits a pending spawn and its close when drain races initial acquisition', async () => {
+  it('preserves provider_host_draining identity when drain overtakes a pending cold spawn', async () => {
     const server = createFakeProviderServerHandle({ generation: 91 });
     const spawn = createDeferred<typeof server.handle>();
     const close = createDeferred<void>();
@@ -720,12 +792,18 @@ describe('provider host pool', () => {
       await close.promise;
       server.resolveClosed();
     });
-    const manager = new DefaultProviderHostManager({
+    const manager = new StubbedContainmentProviderHostManager({
       runtime,
-      spawnProviderServer: vi.fn(async () => spawn.promise),
+      spawnProviderServer: vi.fn(async (_options, _sink, _generation, recordContainment) => {
+        const handle = await spawn.promise;
+        recordContainment?.(handle.containmentIdentity);
+        return handle;
+      }),
     });
 
     const acquisition = manager.openSession(createLaunch(createSharedSpec())).catch((error: unknown) => error);
+    const entry = [...(manager as unknown as { entries: Map<string, ProviderHostEntry> }).entries.values()][0];
+    if (entry === undefined) throw new Error('pending acquisition did not create a host entry');
     let drained = false;
     const drain = manager.drainForHandoff().then(() => {
       drained = true;
@@ -742,7 +820,10 @@ describe('provider host pool', () => {
     await drain;
     expect(drained).toBe(true);
     expect(server.closeMock).toHaveBeenCalledTimes(1);
-    await expect(acquisition).resolves.toMatchObject({ message: expect.stringContaining('drained') });
+    const failure = await acquisition;
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toBe('provider_host_draining: Provider server claude drained');
+    expect((failure as Error).cause).toBe(entry.closingError);
   });
 
   it('does not expose a ready shared lease when same-tick drain wins before lease return', async () => {
@@ -752,7 +833,7 @@ describe('provider host pool', () => {
       await close.promise;
       server.resolveClosed();
     });
-    const manager = new DefaultProviderHostManager({
+    const manager = new StubbedContainmentProviderHostManager({
       runtime,
       spawnProviderServer: createSpawnProviderServerMock(server.handle),
     });
@@ -781,7 +862,7 @@ describe('provider host pool', () => {
       await close.promise;
       server.resolveClosed();
     });
-    const manager = new DefaultProviderHostManager({
+    const manager = new StubbedContainmentProviderHostManager({
       runtime,
       spawnProviderServer: createSpawnProviderServerMock(server.handle),
     });
@@ -803,7 +884,7 @@ describe('provider host pool', () => {
       await close.promise;
       server.resolveClosed();
     });
-    const manager = new DefaultProviderHostManager({
+    const manager = new StubbedContainmentProviderHostManager({
       runtime,
       spawnProviderServer: createSpawnProviderServerMock(server.handle),
     });
@@ -839,7 +920,7 @@ describe('provider host pool', () => {
       await close.promise;
       server.resolveClosed();
     });
-    const manager = new DefaultProviderHostManager({
+    const manager = new StubbedContainmentProviderHostManager({
       runtime,
       spawnProviderServer: createSpawnProviderServerMock(server.handle),
     });
@@ -879,7 +960,7 @@ describe('provider host pool proxy set registry', () => {
 
   it('never attempts proxy set acquisition when constructed without proxySetAcquisition', async () => {
     const server = createFakeProviderServerHandle();
-    const manager = new DefaultProviderHostManager({
+    const manager = new StubbedContainmentProviderHostManager({
       runtime,
       spawnProviderServer: createSpawnProviderServerMock(server.handle),
     });
@@ -894,7 +975,7 @@ describe('provider host pool proxy set registry', () => {
 
   it('single-flights one acquisition attempt per entry across repeated openSession calls', async () => {
     const server = createFakeProviderServerHandle();
-    const manager = new DefaultProviderHostManager({
+    const manager = new StubbedContainmentProviderHostManager({
       runtime,
       spawnProviderServer: createSpawnProviderServerMock(server.handle),
       proxySetAcquisition,
@@ -915,7 +996,7 @@ describe('provider host pool proxy set registry', () => {
 
   it('exposes an acquired set through liveSets() once the attempt settles, and does not re-acquire once live', async () => {
     const server = createFakeProviderServerHandle();
-    const manager = new DefaultProviderHostManager({
+    const manager = new StubbedContainmentProviderHostManager({
       runtime,
       spawnProviderServer: createSpawnProviderServerMock(server.handle),
       proxySetAcquisition,
@@ -939,7 +1020,7 @@ describe('provider host pool proxy set registry', () => {
 
   it('a failed acquisition does not fail openSession and leaves liveSets() empty', async () => {
     const server = createFakeProviderServerHandle();
-    const manager = new DefaultProviderHostManager({
+    const manager = new StubbedContainmentProviderHostManager({
       runtime,
       spawnProviderServer: createSpawnProviderServerMock(server.handle),
       proxySetAcquisition,
@@ -961,7 +1042,7 @@ describe('provider host pool proxy set registry', () => {
     // it elsewhere in this file checks the negative case (no live set yet). Replacing its body with
     // `return null;` would fail nothing else here.
     const server = createFakeProviderServerHandle();
-    const manager = new DefaultProviderHostManager({
+    const manager = new StubbedContainmentProviderHostManager({
       runtime,
       spawnProviderServer: createSpawnProviderServerMock(server.handle),
       proxySetAcquisition,
@@ -989,7 +1070,7 @@ describe('provider host pool proxy set registry', () => {
     // fresh sequence number every acquisition, and nothing retires a set before coordinator shutdown, so a
     // long-lived daemon would accumulate three processes per job.
     const server = createFakeProviderServerHandle();
-    const manager = new DefaultProviderHostManager({
+    const manager = new StubbedContainmentProviderHostManager({
       runtime,
       spawnProviderServer: createSpawnProviderServerMock(server.handle),
       proxySetAcquisition,
@@ -1016,7 +1097,7 @@ describe('provider host pool proxy set registry', () => {
 
   it('reserves at most four set slots across pending acquisitions (C3-M7)', async () => {
     const servers = Array.from({ length: 5 }, (_, index) => createFakeProviderServerHandle({ generation: index + 1 }));
-    const manager = new DefaultProviderHostManager({
+    const manager = new StubbedContainmentProviderHostManager({
       runtime,
       spawnProviderServer: createSpawnProviderServerMock(...servers.map(({ handle }) => handle)),
       proxySetAcquisition,
@@ -1074,7 +1155,7 @@ describe('provider host pool proxy set registry', () => {
     const providerProxyLifecycleRef = createProxySetLifecycleRef((routeKey) =>
       manager.providerProxySlotReleased(routeKey),
     );
-    const manager = new DefaultProviderHostManager({
+    const manager = new StubbedContainmentProviderHostManager({
       runtime,
       spawnProviderServer: createSpawnProviderServerMock(...servers.map(({ handle }) => handle)),
       proxySetAcquisition,
@@ -1116,7 +1197,7 @@ describe('provider host pool proxy set registry', () => {
     // after a caller (`runShutdownSequence`) has already read it. `stopAndClose` must sever it instead of
     // merely outliving it.
     const server = createFakeProviderServerHandle();
-    const manager = new DefaultProviderHostManager({
+    const manager = new StubbedContainmentProviderHostManager({
       runtime,
       spawnProviderServer: createSpawnProviderServerMock(server.handle),
       proxySetAcquisition,
@@ -1156,7 +1237,7 @@ describe('provider host pool proxy set registration', () => {
   });
 
   it('folds an inherited set into liveSets() alongside acquired sets, without routing new sessions onto it', async () => {
-    const manager = new DefaultProviderHostManager({
+    const manager = new StubbedContainmentProviderHostManager({
       runtime,
       spawnProviderServer: createSpawnProviderServerMock(createFakeProviderServerHandle().handle),
       proxySetAcquisition,
@@ -1174,7 +1255,7 @@ describe('provider host pool proxy set registration', () => {
   });
 
   it('coexists with an acquired set for a different proxy — liveSets() reports both', async () => {
-    const manager = new DefaultProviderHostManager({
+    const manager = new StubbedContainmentProviderHostManager({
       runtime,
       spawnProviderServer: createSpawnProviderServerMock(createFakeProviderServerHandle().handle),
       proxySetAcquisition,

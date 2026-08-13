@@ -37,6 +37,7 @@ describe('simulation runtime', () => {
   it('advances virtual time with tick, sleep, intervals, and same-deadline FIFO ordering', async () => {
     const time = new VirtualTime(100);
     const events: string[] = [];
+    expect(time.monotonicNow()).toBe(100n);
 
     const interval = time.setInterval(() => {
       events.push(`interval:${time.now()}`);
@@ -64,6 +65,7 @@ describe('simulation runtime', () => {
     await sleep;
 
     expect(time.now()).toBe(115);
+    expect(time.monotonicNow()).toBe(115n);
     expect(events).toEqual(['interval:105', 'timeout:a', 'timeout:b', 'interval:110', 'sleep']);
   });
 

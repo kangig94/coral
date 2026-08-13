@@ -1,5 +1,9 @@
 import type { AppServerTransport, HostRef, ProviderServerSpec } from '../../../providers/contract.js';
-import type { ProviderServerHandle, SpawnProviderServerFn } from '../../../providers/app-server-transport.js';
+import type {
+  ContainedProviderServerHandle,
+  ProviderServerHandle,
+  SpawnProviderServerFn,
+} from '../../../providers/app-server-transport.js';
 import type { ProviderHostDiagnosticsSnapshot } from '../../../providers/host-diagnostics.js';
 import type { ProviderHostInventoryRecord } from '../../services/provider-host-administration.js';
 import {
@@ -18,11 +22,16 @@ import {
   acquireProviderHostPin,
   createProviderServerAttachment,
   createProviderServerLease,
-  releaseProviderHostPin,
   type ProviderServerLease,
 } from './lease.js';
 import { attachHostNotificationListener, clearIdleTimer, maybeArmIdleTimer, parseIdleTimeoutMs } from './idle.js';
-import { closeAllProviderServerEntries, closeProviderServerEntry as closeEntry, shutdownHandle } from './drain.js';
+import {
+  closeAllProviderServerEntries,
+  closeProviderServerEntry as closeEntry,
+  createProviderHostContainmentReaper,
+  shutdownHandle,
+  type ProviderHostContainmentReaper,
+} from './drain.js';
 import { cloneSpec, ensureProviderServerHandle } from './recovery.js';
 import { ensureProviderProxySet, type ProviderProxySetAcquisitionConfig } from './proxy-set-acquisition.js';
 import { hostFingerprintFromSpec, hostKeyFromSpec, hostRefFromEntry, type ProviderHostEntry } from './state.js';
@@ -100,8 +109,16 @@ function compileLaunchEnvironment(spec: ProviderServerSpec, platform: string): R
 function assertProviderHostPolicy(spec: ProviderServerSpec): void {
   const value = spec as unknown as Record<string, unknown>;
   if (value.leaseMode === 'shared') {
-    if (value.idleRetirement === 'host-reported' || value.idleRetirement === 'none') return;
-    throw new Error("provider_host_policy_invalid: shared hosts require idleRetirement 'host-reported' or 'none'");
+    if (
+      value.idleRetirement === 'unleased' ||
+      value.idleRetirement === 'unleased-and-host-idle' ||
+      value.idleRetirement === 'never'
+    ) {
+      return;
+    }
+    throw new Error(
+      "provider_host_policy_invalid: shared hosts require idleRetirement 'unleased', 'unleased-and-host-idle', or 'never'",
+    );
   }
   if (value.leaseMode === 'job-exclusive') {
     if (!Object.hasOwn(value, 'idleRetirement')) return;
@@ -195,6 +212,7 @@ export class DefaultProviderHostManager
   private readonly spawnProviderServer: SpawnProviderServerFn;
   private readonly allocateProviderServerGeneration: () => number;
   private readonly runtime: Runtime;
+  private readonly reapContainment: ProviderHostContainmentReaper;
   private readonly carrierBlocksRetirement: (hostRef: HostRef) => boolean;
   private readonly proxySetAcquisitionConfig?: ProviderProxySetAcquisitionConfig;
   private readonly providerProxyLifecycleRef?: ProviderProxySetLifecycleRef;
@@ -219,10 +237,12 @@ export class DefaultProviderHostManager
     proxySetAcquisition?: ProviderProxySetAcquisitionConfig;
     providerProxyLifecycleRef?: ProviderProxySetLifecycleRef;
     admission?: HostAdmissionCollection;
+    reapContainment?: ProviderHostContainmentReaper;
   }) {
     this.runtime = options.runtime;
     this.idleTimeoutMs = options.idleTimeoutMs ?? parseIdleTimeoutMs(this.runtime.env.get('CORAL_BROKER_IDLE_MS'));
     this.spawnProviderServer = options.spawnProviderServer;
+    this.reapContainment = options.reapContainment ?? createProviderHostContainmentReaper(this.runtime);
     this.allocateProviderServerGeneration =
       options.allocateProviderServerGeneration ?? (() => this.nextProviderServerGeneration++);
     this.carrierBlocksRetirement = options.carrierBlocksRetirement ?? (() => false);
@@ -353,18 +373,24 @@ export class DefaultProviderHostManager
     const exactEnv = compileLaunchEnvironment(spec, this.runtime.env.platform());
     const entry = this.getOrCreateProviderServerEntry(spec, exactEnv, options?.jobId);
     this.clearIdleTimer(entry);
-    acquireProviderHostPin(entry);
-    this.ensureProxySetFor(entry);
+    const releasePin = acquireProviderHostPin(
+      entry,
+      {
+        kind: 'acquisition',
+        ...(options?.jobId === undefined ? {} : { jobId: options.jobId }),
+      },
+      () => this.onLastRelease(entry),
+    );
+    this.maybeArmIdleTimer(entry);
 
     try {
-      let reservedRef: HostRef | null = null;
+      this.ensureProxySetFor(entry);
       const handle = await ensureProviderServerHandle(entry, {
         spawnProviderServer: (nextSpec) => {
           if (admission === undefined) {
             throw new Error('provider_host_admission_missing: fresh placement requires an admission reservation');
           }
           const hostRef = hostRefFromEntry(entry);
-          reservedRef = hostRef;
           const generation = this.allocateProviderServerGeneration();
           let spawnedHandle: ProviderServerHandle | null = null;
           admission.reservation.reserveCandidate({
@@ -393,6 +419,9 @@ export class DefaultProviderHostManager
             },
             (fact) => this.admission.observe(admission.slot, hostRef, fact),
             generation,
+            (containment) => {
+              entry.containment = containment;
+            },
           );
           void spawned.then(
             (handle) => {
@@ -402,16 +431,12 @@ export class DefaultProviderHostManager
           );
           return spawned;
         },
-        runtime: this.runtime,
-        shutdownHandle: (handle, nextSpec) => this.shutdownHandle(handle, nextSpec),
+        closeEntry: (nextEntry, detail) => this.closeProviderServerEntry(nextEntry, detail, { confirmAbsence: true }),
         attachHostNotificationListener: (nextEntry, handle) => this.attachHostNotificationListener(nextEntry, handle),
-        clearIdleTimer: (nextEntry) => this.clearIdleTimer(nextEntry),
-        removeEntry: (nextEntry) => {
-          if (this.entries.get(nextEntry.hostKey) === nextEntry) this.entries.delete(nextEntry.hostKey);
-        },
         createInstanceId: () => this.runtime.ids.uuid(),
-        observeRetired: () => {
-          if (reservedRef !== null) admission?.reservation.observeRetired(reservedRef, 'closed');
+        observeRetired: (nextEntry, instanceId) => {
+          if (nextEntry.instanceId !== instanceId) return;
+          this.admission.observeRetired(hostRefFromEntry(nextEntry), 'closed');
         },
         ...(options?.signal === undefined ? {} : { signal: options.signal }),
       });
@@ -424,15 +449,18 @@ export class DefaultProviderHostManager
         entry.closingError !== null ||
         entry.handle !== handle
       ) {
-        throw entry.closingError ?? new Error('provider_host_draining: provider host acquisition lost drain race');
+        const cause = entry.closingError;
+        throw cause === null
+          ? new Error('provider_host_draining: provider host acquisition lost drain race')
+          : new Error(`provider_host_draining: ${cause.message}`, { cause });
       }
       admission?.reservation.markLive(hostRefFromEntry(entry), handle.generation);
       return Object.freeze({
-        lease: createProviderServerLease(handle, () => this.releaseHostPin(entry)),
+        lease: createProviderServerLease(handle, releasePin),
         entry,
       });
     } catch (error) {
-      this.releaseHostPin(entry);
+      releasePin();
       throw error;
     }
   }
@@ -480,16 +508,12 @@ export class DefaultProviderHostManager
     const entry = candidates[0];
     if (entry === undefined) return null;
     this.clearIdleTimer(entry);
-    acquireProviderHostPin(entry);
-    let closed = false;
+    const releasePin = acquireProviderHostPin(entry, { kind: 'attached-session' }, () => this.onLastRelease(entry));
+    this.maybeArmIdleTimer(entry);
     return Object.freeze({
       session: createProviderServerAttachment(handle),
       hostRef,
-      close: () => {
-        if (closed) return;
-        closed = true;
-        this.releaseHostPin(entry);
-      },
+      close: releasePin,
     });
   }
 
@@ -522,9 +546,10 @@ export class DefaultProviderHostManager
       }
       const entry = matches[0];
       const handle = entry.handle;
-      if (handle === null || handle.isClosed()) {
+      if (handle === null) {
         throw new Error('provider_host_inventory_unavailable: live coordinator host process is unavailable');
       }
+      if (handle.isClosed()) continue;
       records.push(
         Object.freeze({
           ref: admissionEntry.ref,
@@ -605,11 +630,16 @@ export class DefaultProviderHostManager
     // `proxySetAcquisitionStop`'s own doc for why this is what makes `liveSets()` safe for a caller to read
     // once this method returns, with no risk of a straggler acquisition adding to it afterward.
     this.proxySetAcquisitionStop.abort();
+    const previouslyClosingEntries = [...this.closingEntries.keys()];
+    const closeOptions = signal === undefined ? { confirmAbsence: true } : { signal, confirmAbsence: true };
     await closeAllProviderServerEntries(
       this.entries,
       detail,
       (entry, detail, options) => this.closeProviderServerEntry(entry, detail, options),
-      signal === undefined ? {} : { signal },
+      closeOptions,
+    );
+    await Promise.all(
+      previouslyClosingEntries.map((entry) => this.closeProviderServerEntry(entry, detail, closeOptions)),
     );
     await waitForClose(
       Promise.all([...this.pendingCloses]).then(() => {}),
@@ -642,9 +672,10 @@ export class DefaultProviderHostManager
       exactEnv: Object.freeze({ ...exactEnv }),
       ...(spec.leaseMode === 'job-exclusive' && jobId !== undefined ? { jobId } : {}),
       handle: null,
+      containment: null,
       instanceId: null,
       spawnPromise: null,
-      pinCount: 0,
+      pins: new Map(),
       closingError: null,
       closePromise: null,
       hostStats: null,
@@ -655,9 +686,8 @@ export class DefaultProviderHostManager
     return created;
   }
 
-  private releaseHostPin(entry: ProviderHostEntry): void {
-    releaseProviderHostPin(entry);
-    if (entry.pinCount > 0 || entry.closingError !== null) return;
+  private onLastRelease(entry: ProviderHostEntry): void {
+    if (entry.closingError !== null) return;
     if (entry.spec.leaseMode === 'shared') {
       this.maybeArmIdleTimer(entry);
       return;
@@ -704,11 +734,13 @@ export class DefaultProviderHostManager
     options: { signal?: AbortSignal; confirmAbsence?: boolean } = {},
   ): Promise<void> {
     if (entry.closePromise === null) {
-      const ref = entry.instanceId === null ? null : hostRefFromEntry(entry);
+      const priorClosing = this.closingEntries.get(entry);
+      const ref = entry.instanceId === null ? (priorClosing?.ref ?? null) : hostRefFromEntry(entry);
       const operation = closeEntry(entry, detail, {
         runtime: this.runtime,
         entries: this.entries,
-        shutdownHandle: (handle, spec) => this.shutdownHandle(handle, spec),
+        shutdownHandle: (handle, spec, containment) => this.shutdownHandle(handle, spec, containment),
+        reapContainment: this.reapContainment,
       });
       entry.closePromise = operation;
       this.pendingCloses.add(operation);
@@ -718,7 +750,14 @@ export class DefaultProviderHostManager
           this.pendingCloses.delete(operation);
           if (this.closingEntries.get(entry)?.operation === operation) this.closingEntries.delete(entry);
         },
-        () => {
+        (error: unknown) => {
+          const containment = entry.containment;
+          const pid = containment?.pid ?? entry.handle?.pid ?? 'unknown';
+          const processGroupId = containment?.processGroupId ?? 'unrecorded';
+          backendLog.error(
+            `Provider host close/reap failed: provider=${entry.spec.provider} pid=${pid} pgid=${processGroupId} detail=${detail}`,
+            error,
+          );
           this.pendingCloses.delete(operation);
           if (entry.closePromise === operation) entry.closePromise = null;
         },
@@ -732,8 +771,12 @@ export class DefaultProviderHostManager
     }
   }
 
-  private async shutdownHandle(handle: ProviderServerHandle, spec: ProviderServerSpec): Promise<void> {
-    await shutdownHandle(handle, spec, this.runtime.time);
+  private async shutdownHandle(
+    handle: ContainedProviderServerHandle,
+    spec: ProviderServerSpec,
+    containment: ContainedProviderServerHandle['containmentIdentity'],
+  ): Promise<void> {
+    await shutdownHandle(handle, spec, containment, this.runtime.time, this.reapContainment);
   }
 }
 

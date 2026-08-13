@@ -6,9 +6,14 @@ import type {
   ProviderResponseDiagnosticFact,
   ProviderResponseObservationSink,
 } from '#src/providers/host-diagnostics.js';
-import { DefaultProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
 import { createCoordinatorProviderHostAdmission } from '#src/coordinator/live/provider-host-admission.js';
-import { createExclusiveSpec, createFakeProviderServerHandle, createSharedSpec, runtime } from './helpers.js';
+import {
+  StubbedContainmentProviderHostManager,
+  createExclusiveSpec,
+  createFakeProviderServerHandle,
+  createSharedSpec,
+  runtime,
+} from './helpers.js';
 
 function rejectedConfigRead(generation: number): ProviderResponseDiagnosticFact {
   return Object.freeze({
@@ -37,20 +42,21 @@ describe('coordinator provider-host admission', () => {
     });
     const handles = [first.handle, second.handle];
     const sinks: ProviderResponseObservationSink[] = [];
-    const spawnProviderServer = vi.fn<SpawnProviderServerFn>(async (_options, sink) => {
+    const spawnProviderServer = vi.fn<SpawnProviderServerFn>(async (_options, sink, _generation, recordContainment) => {
       sinks.push(sink);
       const handle = handles.shift();
       if (handle === undefined) throw new Error('unexpected replacement spawn');
+      recordContainment?.(handle.containmentIdentity);
       return handle;
     });
     let generation = 101;
-    const manager = new DefaultProviderHostManager({
+    const manager = new StubbedContainmentProviderHostManager({
       runtime,
       spawnProviderServer,
       admission: createCoordinatorProviderHostAdmission(),
       allocateProviderServerGeneration: () => generation++,
     });
-    const hostSpec = createSharedSpec({ provider: 'codex', idleRetirement: 'none' });
+    const hostSpec = createSharedSpec({ provider: 'codex', idleRetirement: 'never' });
 
     const opened = await manager.openSession(hostSpec);
     sinks[0]?.(rejectedConfigRead(101));
@@ -136,16 +142,17 @@ describe('coordinator provider-host admission', () => {
       },
     });
     let sink: ProviderResponseObservationSink | undefined;
-    const manager = new DefaultProviderHostManager({
+    const manager = new StubbedContainmentProviderHostManager({
       runtime,
       admission: createCoordinatorProviderHostAdmission(),
-      spawnProviderServer: async (_options, observationSink) => {
+      spawnProviderServer: async (_options, observationSink, _generation, recordContainment) => {
         sink = observationSink;
+        recordContainment?.(server.handle.containmentIdentity);
         return server.handle;
       },
       allocateProviderServerGeneration: () => 151,
     });
-    const opened = await manager.openSession(createSharedSpec({ provider: 'codex', idleRetirement: 'none' }));
+    const opened = await manager.openSession(createSharedSpec({ provider: 'codex', idleRetirement: 'never' }));
     sink?.(rejectedConfigRead(151));
 
     const rejection = await opened.session.rpc('turn/start', {}).catch((error: unknown) => error);
@@ -167,14 +174,15 @@ describe('coordinator provider-host admission', () => {
     const second = createFakeProviderServerHandle({ generation: 202 });
     const sinks: ProviderResponseObservationSink[] = [];
     const handles = [first.handle, second.handle];
-    const spawnProviderServer = vi.fn<SpawnProviderServerFn>(async (_options, sink) => {
+    const spawnProviderServer = vi.fn<SpawnProviderServerFn>(async (_options, sink, _generation, recordContainment) => {
       sinks.push(sink);
       const handle = handles.shift();
       if (handle === undefined) throw new Error('unexpected third spawn');
+      recordContainment?.(handle.containmentIdentity);
       return handle;
     });
     let generation = 201;
-    const manager = new DefaultProviderHostManager({
+    const manager = new StubbedContainmentProviderHostManager({
       runtime,
       spawnProviderServer,
       admission: createCoordinatorProviderHostAdmission(),
@@ -223,14 +231,15 @@ describe('coordinator provider-host admission', () => {
     const replacement = createFakeProviderServerHandle({ generation: 303 });
     const handles = [evicted.handle, untouched.handle, replacement.handle];
     const sinks: ProviderResponseObservationSink[] = [];
-    const spawnProviderServer = vi.fn<SpawnProviderServerFn>(async (_options, sink) => {
+    const spawnProviderServer = vi.fn<SpawnProviderServerFn>(async (_options, sink, _generation, recordContainment) => {
       sinks.push(sink);
       const handle = handles.shift();
       if (handle === undefined) throw new Error('unexpected fourth spawn');
+      recordContainment?.(handle.containmentIdentity);
       return handle;
     });
     let generation = 301;
-    const manager = new DefaultProviderHostManager({
+    const manager = new StubbedContainmentProviderHostManager({
       runtime,
       spawnProviderServer,
       admission: createCoordinatorProviderHostAdmission(),
@@ -283,16 +292,17 @@ describe('coordinator provider-host admission', () => {
       },
     });
     let sink: ProviderResponseObservationSink | undefined;
-    const manager = new DefaultProviderHostManager({
+    const manager = new StubbedContainmentProviderHostManager({
       runtime,
       admission: createCoordinatorProviderHostAdmission(),
-      spawnProviderServer: async (_options, observationSink) => {
+      spawnProviderServer: async (_options, observationSink, _generation, recordContainment) => {
         sink = observationSink;
+        recordContainment?.(server.handle.containmentIdentity);
         return server.handle;
       },
       allocateProviderServerGeneration: () => 401,
     });
-    const hostSpec = createSharedSpec({ provider: 'codex', idleRetirement: 'none' });
+    const hostSpec = createSharedSpec({ provider: 'codex', idleRetirement: 'never' });
     const opened = await manager.openSession(hostSpec);
     sink?.(rejectedConfigRead(401));
 

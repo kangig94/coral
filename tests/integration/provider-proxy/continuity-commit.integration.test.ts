@@ -462,6 +462,7 @@ async function createHarness(
           ...runtime,
           time: {
             now: () => runtime.time.now(),
+            monotonicNow: () => runtime.time.monotonicNow(),
             sleep: (ms, sleepOptions) => {
               if (ms !== SEMANTIC_OPERATION_CANCELLATION_TIMEOUT_MS) {
                 return runtime.time.sleep(ms, sleepOptions);

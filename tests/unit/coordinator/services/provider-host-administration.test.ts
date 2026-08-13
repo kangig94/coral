@@ -30,7 +30,7 @@ function record(ref: HostRef, status: 'live' | 'retired-blocked' = 'live'): Prov
       args: ['app-server'],
       cwd: workDir,
       leaseMode: ref.leaseMode,
-      idleRetirement: ref.leaseMode === 'shared' ? 'none' : null,
+      idleRetirement: ref.leaseMode === 'shared' ? 'never' : null,
     },
     host: { owner: status === 'live' ? 'coordinator' : 'provider-proxy' },
     diagnostics: {

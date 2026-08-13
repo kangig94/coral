@@ -27,10 +27,9 @@ vi.mock('#src/coordinator/live/provider-hosts/index.js', async (importOriginal) 
   };
 });
 
-import { acquireProviderHostPin, releaseProviderHostPin } from '#src/coordinator/live/provider-hosts/lease.js';
+import { activePinCount, acquireProviderHostPin } from '#src/coordinator/live/provider-hosts/lease.js';
 import { maybeArmIdleTimer } from '#src/coordinator/live/provider-hosts/idle.js';
 import { hostRefFromEntry } from '#src/coordinator/live/provider-hosts/state.js';
-import { DefaultProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
 import { createCoordinatorWorld } from '#src/coordinator/composition/world.js';
 import type { BackendDefaultsPlan } from '#src/coordinator/composition/defaults.js';
 import type { CoordinatorStoreServices } from '#src/coordinator/composition/store-services-ref.js';
@@ -43,6 +42,7 @@ import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-superviso
 import { setStoreServicesForTest } from '#tools/testing/store-services.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import {
+  StubbedContainmentProviderHostManager,
   createEntry,
   createFakeProviderServerHandle,
   createLaunch,
@@ -144,6 +144,36 @@ beforeEach(() => {
 });
 
 describe('provider host idle properties', () => {
+  it.each(['unleased', 'unleased-and-host-idle', 'never'] as const)(
+    'does not retire a pinned host under the %s idle policy',
+    async (idleRetirement) => {
+      vi.useFakeTimers();
+      const server = createFakeProviderServerHandle();
+      const entry = createEntry({
+        spec: createSharedSpec({ idleRetirement }),
+        handle: server.handle,
+        hostStats: { liveControllers: 0, activeTurns: 0 },
+      });
+      const closeProviderServerEntry = vi.fn(async () => undefined);
+      const releasePin = acquireProviderHostPin(entry, { kind: 'acquisition' }, () => {});
+
+      try {
+        maybeArmIdleTimer(entry, {
+          runtime,
+          idleTimeoutMs: 5,
+          entries: new Map([[entry.hostKey, entry]]),
+          carrierBlocksRetirement: () => false,
+          closeProviderServerEntry,
+        });
+        await vi.advanceTimersByTimeAsync(10);
+
+        expect(closeProviderServerEntry).not.toHaveBeenCalled();
+      } finally {
+        releasePin();
+      }
+    },
+  );
+
   it('never evicts a currently-acquired lease across 100 random idle sequences', async () => {
     vi.useFakeTimers();
 
@@ -154,6 +184,7 @@ describe('provider host idle properties', () => {
         hostStats: { liveControllers: 0, activeTurns: 0 },
       });
       const entries = new Map([[entry.hostKey, entry]]);
+      const releasePins: Array<() => void> = [];
       let evictedWhileHeld = false;
 
       const arm = () =>
@@ -163,7 +194,7 @@ describe('provider host idle properties', () => {
           entries,
           carrierBlocksRetirement: () => false,
           closeProviderServerEntry: async () => {
-            if (entry.pinCount > 0) {
+            if (activePinCount(entry) > 0) {
               evictedWhileHeld = true;
             }
           },
@@ -172,13 +203,13 @@ describe('provider host idle properties', () => {
       for (const step of randomSequence(seed)) {
         switch (step % 4) {
           case 0:
-            acquireProviderHostPin(entry);
+            releasePins.push(acquireProviderHostPin(entry, { kind: 'acquisition' }, () => {}));
             break;
           case 1:
-            if (entry.pinCount === 0) {
-              acquireProviderHostPin(entry);
+            if (activePinCount(entry) === 0) {
+              releasePins.push(acquireProviderHostPin(entry, { kind: 'acquisition' }, () => {}));
             } else {
-              releaseProviderHostPin(entry);
+              releasePins.pop()?.();
             }
             arm();
             break;
@@ -195,7 +226,7 @@ describe('provider host idle properties', () => {
             break;
         }
 
-        if (entry.pinCount > 0) {
+        if (activePinCount(entry) > 0) {
           await vi.advanceTimersByTimeAsync(5);
           expect(evictedWhileHeld).toBe(false);
         }
@@ -291,7 +322,7 @@ describe('provider host idle properties', () => {
     const rows = new Map<string, JobProjectionDetail>();
     const { predicate, db } = composeProductionPredicate(rows);
     const carrierBlocksRetirement = vi.fn(predicate);
-    const manager = new DefaultProviderHostManager({
+    const manager = new StubbedContainmentProviderHostManager({
       runtime,
       idleTimeoutMs: 5,
       spawnProviderServer: createSpawnProviderServerMock(server.handle),

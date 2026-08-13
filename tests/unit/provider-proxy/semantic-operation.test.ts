@@ -1566,7 +1566,7 @@ function sharedSpec(overrides: Partial<ProviderServerSpec> = {}): ProviderServer
     args: ['app-server'],
     cwd: '/workspace',
     leaseMode: 'shared',
-    idleRetirement: 'host-reported',
+    idleRetirement: 'unleased-and-host-idle',
     ...overrides,
   } as ProviderServerSpec;
 }
@@ -1613,6 +1613,7 @@ describe('semantic-operation: createProxyAppServerHostAuthority (host pool)', ()
     const second = await secondScope.openSession(spec);
 
     expect(spawnProviderServerTransport).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(spawnProviderServerTransport).mock.calls[0]?.[0]).not.toHaveProperty('detached');
     expect(first.hostRef.instanceId).toBe(second.hostRef.instanceId);
     first.close();
     second.close();
@@ -2158,7 +2159,7 @@ describe('semantic-operation: specIdentityKey / specFingerprint', () => {
     // `env`) lists its keys in the opposite order — proving the key is order-independent, not merely
     // insensitive to `env`'s own ordering.
     const reversedInsertionOrder: ProviderServerSpec = {
-      idleRetirement: 'host-reported',
+      idleRetirement: 'unleased-and-host-idle',
       leaseMode: 'shared',
       env: { B_VAR: '2', A_VAR: '1' },
       cwd: fixtureCanonicalWorkDir('/workspace'),
@@ -2178,13 +2179,17 @@ describe('semantic-operation: specIdentityKey / specFingerprint', () => {
   // once (the layering ban applies to `src/`, not `tests/`), so this is the one thing that makes the
   // "mirrors" claim in both modules' doc comments self-enforcing rather than merely asserted.
   it('agrees byte-for-byte with the coordinator-side hostKeyFromSpec / hostFingerprintFromSpec', () => {
+    const sharedRetirementPolicies = ['unleased', 'unleased-and-host-idle', 'never'] as const;
     const specs: ProviderServerSpec[] = [
-      sharedSpec({
-        env: { CORAL_ACCOUNT: 'account-a' },
-        initializeRequest: { method: 'initialize', params: { clientInfo: { name: 'proxy' } } },
-        initializeTimeoutMs: 5_000,
-        shutdownCapability: { method: 'shutdown', timeoutMs: 1_000 },
-      }),
+      ...sharedRetirementPolicies.map((idleRetirement) =>
+        sharedSpec({
+          env: { CORAL_ACCOUNT: 'account-a' },
+          initializeRequest: { method: 'initialize', params: { clientInfo: { name: 'proxy' } } },
+          initializeTimeoutMs: 5_000,
+          shutdownCapability: { method: 'shutdown', timeoutMs: 1_000 },
+          idleRetirement,
+        }),
+      ),
       exclusiveSpec({ initializeTimeoutMs: 2_500 }),
     ];
 

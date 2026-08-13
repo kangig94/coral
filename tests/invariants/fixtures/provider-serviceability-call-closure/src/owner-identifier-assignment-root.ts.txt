@@ -1,0 +1,17 @@
+declare function spawnIdentifierAssignmentTransport(options: {
+  observeProviderResponse(fact: unknown): void;
+}): void;
+
+function invokeResponse(callback: () => void): void {
+  callback();
+}
+
+export function ownerIdentifierAssignmentRoot(handle: { close(): void }): void {
+  let selected = (): void => {};
+  selected = (): void => {
+    handle.close();
+  };
+  spawnIdentifierAssignmentTransport({
+    observeProviderResponse: () => invokeResponse(selected),
+  });
+}

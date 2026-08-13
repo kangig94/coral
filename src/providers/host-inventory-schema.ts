@@ -67,7 +67,7 @@ const providerHostSpecSchema = z
     args: z.array(z.string()),
     cwd: canonicalWorkDirWireSchema.nullable(),
     leaseMode: z.enum(['shared', 'job-exclusive']),
-    idleRetirement: z.enum(['host-reported', 'none']).nullable(),
+    idleRetirement: z.enum(['unleased', 'unleased-and-host-idle', 'never']).nullable(),
   })
   .strict();
 const providerHostMetadataValueSchema = z.union([z.string(), z.number(), z.boolean(), z.null()]);

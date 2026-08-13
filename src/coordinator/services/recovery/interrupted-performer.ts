@@ -94,13 +94,13 @@ export async function reapProviderOperationCarrier<Scope extends symbol>(
     processStartedAtSeconds: locator.containment.processStartedAtSeconds,
     processGroupId: locator.containment.processGroupId,
   };
-  const providerRoots: readonly RecordedProcessIdentity[] = [record.providerRoot];
+  const recordedRoots: readonly RecordedProcessIdentity[] = [record.providerRoot];
   const exitDeadline = deps.clock.shiftMilliseconds(
     deps.clock.now(),
     DEFAULT_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS + PROXY_TEARDOWN_RESERVE_MS,
   );
 
-  await reapRecordedContainment(containment, providerRoots, exitDeadline, {
+  await reapRecordedContainment(containment, recordedRoots, exitDeadline, {
     maxRecordedRoots: MAX_PROXY_RECORDED_PROVIDER_ROOTS,
     clock: deps.clock,
     process: deps.process,

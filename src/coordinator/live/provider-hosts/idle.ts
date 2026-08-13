@@ -2,10 +2,12 @@ import type { ProviderServerHandle } from '../../../providers/app-server-transpo
 import type { TimePort } from '../../../infra/port-types.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { HostRef } from '../../../providers/contract.js';
+import { backendLog } from '../../../infra/backend-log.js';
 import { activePinCount } from './lease.js';
-import { hostRefFromEntry, type HostStatsState, type ProviderHostEntry } from './state.js';
+import { hostRefFromEntry, type HostStatsState, type ProviderHostEntry, type ProviderHostPin } from './state.js';
 
 const DEFAULT_BROKER_IDLE_MS = 300_000;
+const MIN_OUTSTANDING_PIN_DIAGNOSTIC_MS = 1_000;
 
 export function parseIdleTimeoutMs(raw: string | undefined): number {
   if (!raw) {
@@ -49,16 +51,64 @@ export function clearIdleTimer(entry: ProviderHostEntry, time: Pick<TimePort, 'c
 }
 
 function retiresOnHostReport(entry: ProviderHostEntry): boolean {
-  return entry.spec.leaseMode === 'shared' && entry.spec.idleRetirement === 'host-reported';
+  return entry.spec.leaseMode === 'shared' && entry.spec.idleRetirement === 'unleased-and-host-idle';
 }
 
 function neverRetiresWhenIdle(entry: ProviderHostEntry): boolean {
-  return entry.spec.leaseMode === 'shared' && entry.spec.idleRetirement === 'none';
+  return entry.spec.leaseMode === 'shared' && entry.spec.idleRetirement === 'never';
 }
 
 function isHostIdleFromStats(entry: ProviderHostEntry): boolean {
   const hostStats = entry.hostStats;
   return hostStats !== null && hostStats.liveControllers === 0 && hostStats.activeTurns === 0;
+}
+
+function describePinOrigin(pin: ProviderHostPin): string {
+  if (pin.kind === 'attached-session') {
+    return 'origin.kind=attached-session, origin.jobId=none (attached session, no job)';
+  }
+  return `origin.kind=acquisition, origin.jobId=${pin.jobId ?? 'none (acquisition pin without a job id)'}`;
+}
+
+function logOutstandingPinsWithoutLiveCodexJob(
+  entry: ProviderHostEntry,
+  carrierBlocksRetirement: (hostRef: HostRef) => boolean,
+): 'reported' | 'live-job' {
+  let hostRef: HostRef;
+  try {
+    hostRef = hostRefFromEntry(entry);
+    if (carrierBlocksRetirement(hostRef)) return 'live-job';
+  } catch {
+    return 'live-job';
+  }
+
+  for (const pin of entry.pins.values()) {
+    backendLog.warn(
+      `Provider host ${hostRef.provider} ${hostRef.instanceId} (${entry.spec.cwd}) has an outstanding pin while no live Codex job owns it: ${describePinOrigin(pin)}`,
+    );
+  }
+  return 'reported';
+}
+
+function armOutstandingPinDiagnostic(
+  entry: ProviderHostEntry,
+  options: {
+    runtime: Pick<Runtime, 'time'>;
+    idleTimeoutMs: number;
+    carrierBlocksRetirement: (hostRef: HostRef) => boolean;
+  },
+): void {
+  clearIdleTimer(entry, options.runtime.time);
+  entry.idleTimer = options.runtime.time.setTimeout(
+    () => {
+      entry.idleTimer = null;
+      if (!entry.handle || entry.closingError || activePinCount(entry) === 0) return;
+      if (logOutstandingPinsWithoutLiveCodexJob(entry, options.carrierBlocksRetirement) === 'reported') return;
+      armOutstandingPinDiagnostic(entry, options);
+    },
+    Math.max(options.idleTimeoutMs, MIN_OUTSTANDING_PIN_DIAGNOSTIC_MS),
+  );
+  entry.idleTimer.unref?.();
 }
 
 function canCloseIdleHost(
@@ -99,6 +149,9 @@ export function maybeArmIdleTimer(
     return;
   }
   if (activePinCount(entry) > 0) {
+    if (entry.spec.provider === 'codex') {
+      armOutstandingPinDiagnostic(entry, options);
+    }
     return;
   }
   if (neverRetiresWhenIdle(entry)) {
@@ -139,6 +192,7 @@ export function attachHostNotificationListener(
 
   if (!retiresOnHostReport(entry)) {
     entry.hostStats = null;
+    maybeArmIdleTimer(entry, options);
     return;
   }
 

@@ -1157,7 +1157,7 @@ describe('provider proxy cancellation relinquishment against a real guardian pai
       },
       prepareExecution: () => ({
         kind: 'app-server' as const,
-        hostSpec: { ...ROTATION_HOST_SPEC, leaseMode: 'shared' as const, idleRetirement: 'none' as const },
+        hostSpec: { ...ROTATION_HOST_SPEC, leaseMode: 'shared' as const, idleRetirement: 'never' as const },
         execute: async function* (executionRuntime: { signal: AbortSignal; onHostRef(ref: HostRef): void }) {
           executionRuntime.onHostRef(hostRef);
           await new Promise<void>((resolve) => {
@@ -1339,6 +1339,7 @@ describe('provider proxy cumulative root rotation', () => {
     const manager = new DefaultProviderHostManager({
       runtime,
       spawnProviderServer: async () => localHandle.handle,
+      reapContainment: async () => {},
       proxySetAcquisition: {
         pluginRoot: '/plugin',
         identity: { instanceId: randomUUID(), buildSetId: randomUUID(), flavor: 'prod' },

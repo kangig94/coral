@@ -6,7 +6,11 @@ import type { StrictBundleIdentityResult } from '../infra/bundle-manifest.js';
 import { createMonotonicClock, type MonotonicClock } from '../infra/monotonic-clock.js';
 import { probeProcessStartedAtSeconds } from '../infra/node-process.js';
 import { providerProxyBootstrapCapsulePath, providerReaperBootstrapCapsulePath } from '../infra/path/index.js';
-import { PROXY_DISAPPEARANCE_CONFIRM_MS, SIGKILL_GRACE_MS, SIGTERM_GRACE_MS } from '../infra/process-constants.js';
+import {
+  CONTAINMENT_DISAPPEARANCE_CONFIRM_MS,
+  SIGKILL_GRACE_MS,
+  SIGTERM_GRACE_MS,
+} from '../infra/process-constants.js';
 import {
   ABSENCE_POLL_MS,
   type ProcessContainmentEnvironment,
@@ -272,7 +276,7 @@ async function signalAndConfirmAbsence<Scope extends symbol>(
   }
   if (environment.process.isAlive(target)) return false;
 
-  const confirmDeadline = clock.shiftMilliseconds(clock.now(), PROXY_DISAPPEARANCE_CONFIRM_MS);
+  const confirmDeadline = clock.shiftMilliseconds(clock.now(), CONTAINMENT_DISAPPEARANCE_CONFIRM_MS);
   while (clock.compare(clock.now(), confirmDeadline) < 0) {
     if (environment.process.isAlive(target)) return false;
     const remainingMs = clock.millisecondsBetween(clock.now(), confirmDeadline);

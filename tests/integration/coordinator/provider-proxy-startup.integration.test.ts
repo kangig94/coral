@@ -67,6 +67,7 @@ function controlledRecoveryDeadline(base: VirtualTime): Readonly<{
   let deadlineCallback: (() => void) | null = null;
   const time: TimePort = {
     now: () => base.now(),
+    monotonicNow: () => base.monotonicNow(),
     sleep: (ms, options) => base.sleep(ms, options),
     setTimeout: (callback, ms) => {
       if (ms !== 45_000) return base.setTimeout(callback, ms);

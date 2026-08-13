@@ -113,7 +113,7 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
   let teardownInFlight: Promise<EnforcementOutcome> | null = null;
   let settledOutcome: EnforcementOutcome | null = null;
 
-  const orderedRoots = (): readonly RecordedProcessIdentity[] => [...roots.values()];
+  const orderedRecordedRoots = (): readonly RecordedProcessIdentity[] => [...roots.values()];
   const wouldExceedRootCap = (root: RecordedProcessIdentity): boolean =>
     !roots.has(rootKey(root)) && roots.size >= MAX_PROXY_RECORDED_PROVIDER_ROOTS;
 
@@ -130,14 +130,14 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
     // the set were still adoptable.
     deadlines.latchTeardown();
     try {
-      await reapRecordedContainment(containment, orderedRoots(), exitDeadline, containmentEnvironment);
+      await reapRecordedContainment(containment, orderedRecordedRoots(), exitDeadline, containmentEnvironment);
     } catch (error: unknown) {
       return settle({ kind: 'reap-failed', reason: error instanceof Error ? error.message : 'reap failed' });
     }
     deadlines.markContainmentAbsent();
     return settle({
       kind: 'containment-absent',
-      disappearanceReceipt: providerProxyDisappearanceReceipt(containment, orderedRoots()),
+      disappearanceReceipt: providerProxyDisappearanceReceipt(containment, orderedRecordedRoots()),
     });
   };
 
@@ -197,7 +197,7 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
     },
     wouldExceedProviderRootCap: wouldExceedRootCap,
     recordedRoots(): readonly RecordedProcessIdentity[] {
-      return orderedRoots();
+      return orderedRecordedRoots();
     },
     stopAndReap(exitDeadline: MonotonicInstant<Scope>): Promise<EnforcementOutcome> {
       if (handle !== null) {

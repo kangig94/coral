@@ -132,34 +132,18 @@ tenancy lets the successor recover stored work, and `pluginRootNamespace` stays 
 rather than ownership. `pluginRootNamespace()` must **not** enter the store path — it hashes
 installation provenance, not storage compatibility.
 
-## Constraint added by provider-host containment (2026-08-13)
+## Crash-path constraint from provider-host containment (2026-08-13)
 
-**Whatever routing does at startup, it happens after the coordinator has already reclaimed its
-local provider hosts.** This is a live ordering constraint, not a preference, and a routing
-design that ignores it reintroduces an unreclaimable process leak.
+Durable recovery for coordinator-local provider hosts is not shipped. When it is added, it must run after
+coordinator authority is established but before store routing can discard the only evidence naming an orphaned
+group. `routeOrOpenBackendStoreAtStartup` (`src/coordinator/lifecycle.ts:924`) currently runs before
+`runStartupRecovery` (`:1013`) and may quarantine or reset the store, so a containment record inside that store
+could disappear while the detached app-server and its MCP children remain alive.
 
-`routeOrOpenBackendStoreAtStartup` (`src/coordinator/lifecycle.ts:924`) runs **before**
-`runStartupRecovery` (`:1013`) and may quarantine or reset the store. A coordinator-local
-provider host is a detached process group whose identity must survive that: if the only record
-of the group lived in the store, a reset would destroy the evidence while the group — an
-app-server plus the MCP children it leaks — kept running with nothing left that could name it.
-So `docs/todo/leaked-mcp-child-reaping.md` puts that record in a filesystem capsule under the
-generation run dir and runs its recovery walk **before** store routing, after canonical socket
-authority and provider validation.
-
-Two consequences for this document:
-
-1. **The pre-routing window is now load-bearing.** Any redesign of what happens before a store
-   is chosen must preserve "non-inheritable local hosts are already disposed of by this point",
-   including on the paths where the build goes on to hand off or reset.
-2. **Multiple stores make the outside-the-store choice more right, not less.** Once a machine
-   can hold several fingerprint-keyed stores, a record written into any one of them is invisible
-   from the others. Containment evidence therefore stays format-neutral by construction, in the
-   same category as `active-format.json` — one authority consulted regardless of which store
-   ends up open.
-
-Nothing here blocks routing, and routing does not block that work: the containment decision was
-made to be correct in both the current single-store world and the routed one.
+The design therefore needs a format-neutral record and a pre-routing recovery window. Multiple
+fingerprint-keyed stores strengthen that constraint: a record written into any one store is invisible from the
+others. The authority and ordering questions are the durable-containment remainder described below; the
+shipped in-process host teardown does not depend on them.
 
 ## Transferred in: durable containment recovery (2026-08-13)
 
@@ -172,8 +156,9 @@ to "which coordinator owns this record", which is exactly this document's domain
 **The premise that made it look in-scope was false.** The plan treated `detached` as *creating* a new leak
 class, so it required a durable record to close it. But an **undetached** child is also orphaned when its
 parent is SIGKILLed — POSIX reparents it to init — and no boot-time reclamation of coordinator-local
-app-servers exists today (`src/coordinator/live/provider-hosts/recovery.ts` handles in-process spawn/abort
-only). The crash path already leaks everything. Detaching does not worsen it, so the shipped work is free to
+app-servers exists today (`src/coordinator/live/provider-hosts/recovery.ts` handles only the current process's
+host lifecycle; it performs no boot-time reclamation). The crash path already leaks everything. Detaching does
+not worsen it, so the shipped work is free to
 ignore it, and this remains a pre-existing defect rather than a new one.
 
 ### What the design reached before it was cut
@@ -188,7 +173,7 @@ Recorded so the next attempt starts from the end of the argument, not the beginn
   handoff capsule (`provider-proxy/handoff-capsule.ts:195`), and recovery races redemption against containment
   absence (`provider-proxy-set-lifecycle.ts:584`). A coordinator-local host is **never** redeemable; it is
   always terminal. One record serving both would grant the local host authority it must not have.
-  `reapRecordedContainment` (`infra/process-containment.ts:312`) stays the shared primitive; only the
+  `reapRecordedContainment` (`infra/process-containment.ts`) stays the shared primitive; only the
   lifecycle record differs.
 - **The capsule must name its owning coordinator**, `{pid, processStartedAtSeconds}`, atomically with the
   target identity, and recovery must reap only capsules whose owner is *positively absent*. This is what makes

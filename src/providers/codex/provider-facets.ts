@@ -162,7 +162,7 @@ export const codexAppServerLifecycle: ProviderAppServerCapability<CodexExecution
     cwd: host.cwd,
     env: { ...compileCodexHostEnvironment(host) },
     leaseMode: host.leaseMode,
-    idleRetirement: 'none',
+    idleRetirement: 'unleased',
     initializeRequest: {
       method: 'initialize',
       params: { clientInfo: { name: 'coral', version: 'unknown' } },

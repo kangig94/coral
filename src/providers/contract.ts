@@ -138,11 +138,11 @@ export type ProviderServerSpec = ProviderServerSpecBase &
     | {
         leaseMode: 'shared';
         /**
-         * What retires an unpinned shared host. `'host-reported'` retires it once the host itself
-         * reports no live controllers and no active turns; `'none'` keeps it until an explicit
-         * shutdown, so idleness alone never ends its lifetime.
+         * The condition under which a shared host retires. `'unleased'` requires no active Coral pin;
+         * `'unleased-and-host-idle'` additionally requires the host to report no live controllers and no
+         * active turns; `'never'` keeps the host until explicit shutdown.
          */
-        idleRetirement: 'host-reported' | 'none';
+        idleRetirement: 'unleased' | 'unleased-and-host-idle' | 'never';
       }
     | {
         leaseMode: 'job-exclusive';

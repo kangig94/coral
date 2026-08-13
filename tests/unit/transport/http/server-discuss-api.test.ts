@@ -123,6 +123,7 @@ async function openHttpStream(url: string, headers: Record<string, string>): Pro
 function realTimePort(): Runtime['time'] {
   return {
     now: () => Date.now(),
+    monotonicNow: () => process.hrtime.bigint() / 1_000_000n,
     sleep: (ms) =>
       new Promise<void>((resolve) => {
         setTimeout(resolve, ms).unref();

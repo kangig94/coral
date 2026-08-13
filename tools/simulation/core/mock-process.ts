@@ -38,6 +38,7 @@ type ProcessExitOutcome = {
 
 type RegisteredProcess = {
   pid: number;
+  processStartedAtSeconds: number;
   processGroupId: number | null;
   alive: boolean;
   closed: boolean;
@@ -321,7 +322,12 @@ export class MockProcessSpawner {
   }
 
   isAlive(pid: number): boolean {
-    return this.processes.get(pid)?.alive === true;
+    return this.resolveKillTargets(pid).some((record) => record.alive);
+  }
+
+  readProcessStartedAtSeconds(pid: number): number | null {
+    const record = this.processes.get(pid);
+    return record && !record.closed ? record.processStartedAtSeconds : null;
   }
 
   setAlive(pid: number, alive: boolean): void {
@@ -450,6 +456,7 @@ export class MockProcessSpawner {
   ): RegisteredProcess {
     const record: RegisteredProcess = {
       pid,
+      processStartedAtSeconds: Math.floor(this.time.now() / 1_000),
       processGroupId,
       alive: true,
       closed: false,

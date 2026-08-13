@@ -114,8 +114,8 @@ the workflow concludes — the discard is *deferred*, so the native file is simp
 
 It is worth noticing what that mechanism proves: **Coral's resumability has always been file-based.** Nothing
 about it depends on a provider host still running. That is also why this work is independent of
-[`leaked-mcp-child-reaping.md`](leaked-mcp-child-reaping.md), whose Part B retires idle codex hosts — host
-lifetime does not affect whether a session can be resumed.
+[provider-host idle retirement](../architecture.md#provider-host-serviceability-and-recovery) — host lifetime
+does not affect whether a session can be resumed.
 
 ## Do not re-derive these
 
