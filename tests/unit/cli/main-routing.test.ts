@@ -816,7 +816,56 @@ describe('cli main routing', () => {
     await program.parseAsync(['node', 'coral-cli', 'jobs', 'detail', 'job-1']);
 
     expect(mockState.detailJob).toHaveBeenCalledWith('job-1');
+    expect(mockState.listJobs).not.toHaveBeenCalled();
     expect(stdout).toBe(`${formatJobDetail(result)}\n`);
+    expect(stderr).toBe('');
+  });
+
+  it('loads durable child rows when showing workflow detail', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+    const workflowJobId = '22222222-2222-4222-8222-222222222222';
+    const childJobId = '11111111-1111-4111-8111-111111111111';
+    const unrelatedChildJobId = '33333333-3333-4333-8333-333333333333';
+    const result = makeJobDetailResponse();
+    result.status = {
+      ...result.status,
+      jobId: workflowJobId,
+      owner: { kind: 'workflow', id: workflowJobId },
+      sessionId: null,
+      provider: null,
+      jobKind: 'workflow',
+    };
+    const child = {
+      jobId: childJobId,
+      status: {
+        ...makeJobsListResponse([childJobId]).jobs[0].status,
+        owner: { kind: 'workflow' as const, id: workflowJobId },
+        parentWorkflowJobId: workflowJobId,
+        workflowSlotId: `${workflowJobId}:0:0`,
+        workflowSlotGeneration: 0,
+      },
+    };
+    const unrelatedChild = {
+      jobId: unrelatedChildJobId,
+      status: {
+        ...makeJobsListResponse([unrelatedChildJobId]).jobs[0].status,
+        owner: { kind: 'workflow' as const, id: 'another-workflow' },
+        parentWorkflowJobId: 'another-workflow',
+        workflowSlotId: 'another-workflow:0:0',
+        workflowSlotGeneration: 0,
+      },
+    };
+    mockState.detailJob.mockResolvedValueOnce(result);
+    mockState.listJobs.mockResolvedValueOnce({ jobs: [unrelatedChild, child] });
+
+    await program.parseAsync(['node', 'coral-cli', 'jobs', 'detail', workflowJobId]);
+
+    expect(mockState.detailJob).toHaveBeenCalledWith(workflowJobId);
+    expect(mockState.listJobs).toHaveBeenCalledWith({ allProjects: true, all: true });
+    expect(stdout).toBe(`${formatJobDetail(result, undefined, [child])}\n`);
+    expect(stdout).toContain(childJobId);
+    expect(stdout).not.toContain(unrelatedChildJobId);
     expect(stderr).toBe('');
   });
 

@@ -9,6 +9,7 @@ import { applyBundledStoreSchema } from '#src/store/db.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { isLivePhase } from '#src/jobs/phase.js';
 import { JobStore } from '#src/jobs/store.js';
+import { writeResultArtifact } from '#src/jobs/terminal/export.js';
 import type { JobStatus, JobTerminal } from '#src/jobs/records.js';
 import type { CoralEventInput } from '#src/store/envelope.js';
 import { commitJobInput, commitJobInputs, commitJobTerminal } from '#tests/helpers/job-commits.js';
@@ -268,7 +269,7 @@ describe('JobStore', () => {
     expect(store.loadJobProjectionDetail(jobId).exit?.diagnostics.byteCounts).toEqual({ stdout: 123, stderr: 45 });
   });
 
-  it('attributes an opaque workflow child result artifact to its durable slot identity', () => {
+  it('rebuilds a pre-existing raw workflow child artifact with its durable slot identity', () => {
     const { runtime, store } = createStore();
     const childJobId = '11111111-1111-4111-8111-111111111111';
     const workflowJobId = '22222222-2222-4222-8222-222222222222';
@@ -300,6 +301,7 @@ describe('JobStore', () => {
         replacedJobId,
         childJobId,
       );
+    writeResultArtifact(runtime.storage, runtime.paths.coral.exports.jobsRoot, childJobId, 'Critic result');
 
     const resultPath = store.ensureResultArtifact(childJobId);
 

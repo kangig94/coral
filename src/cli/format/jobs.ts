@@ -27,6 +27,8 @@ export type JobsListDisplayFilters = {
 
 export type CauseRefDescriber = (ref: CauseRef) => string;
 
+type WorkflowChildJob = JobsListResponse['jobs'][number];
+
 const MAX_INLINE = 10_000;
 
 export function truncatePreview(text: string): string {
@@ -128,7 +130,7 @@ export function formatAbortResult(result: AbortResult): string {
   ]);
 }
 
-export function formatWorkflowSlot(
+function formatWorkflowSlotId(
   status: Pick<JobStatus, 'parentWorkflowJobId' | 'workflowSlotId' | 'workflowSlotGeneration'>,
 ): string | null {
   if (status.workflowSlotId === undefined) {
@@ -140,6 +142,17 @@ export function formatWorkflowSlot(
     parentPrefix !== null && status.workflowSlotId.startsWith(parentPrefix)
       ? status.workflowSlotId.slice(parentPrefix.length)
       : status.workflowSlotId;
+  return slot;
+}
+
+export function formatWorkflowSlot(
+  status: Pick<JobStatus, 'parentWorkflowJobId' | 'workflowSlotId' | 'workflowSlotGeneration'>,
+): string | null {
+  const slot = formatWorkflowSlotId(status);
+  if (slot === null) {
+    return null;
+  }
+
   return status.workflowSlotGeneration === undefined ? slot : `${slot} (g${status.workflowSlotGeneration})`;
 }
 
@@ -173,7 +186,37 @@ function terminalOutcomeText(result: JobTerminal, describeCauseRef?: CauseRefDes
   }
 }
 
-export function formatJobDetail(response: JobDetailResponse, describeCauseRef?: CauseRefDescriber): string {
+function formatWorkflowChildren(children: ReadonlyArray<WorkflowChildJob>): string | undefined {
+  if (children.length === 0) {
+    return undefined;
+  }
+
+  const ordered = [...children].sort(
+    (left, right) =>
+      (formatWorkflowSlotId(left.status) ?? '').localeCompare(formatWorkflowSlotId(right.status) ?? '') ||
+      (left.status.workflowSlotGeneration ?? 0) - (right.status.workflowSlotGeneration ?? 0) ||
+      left.jobId.localeCompare(right.jobId),
+  );
+
+  return joinLines([
+    'Workflow children:',
+    formatTable(
+      ['SLOT', 'GEN', 'CHILD JOB ID', 'REPLACES'],
+      ordered.map(({ jobId, status }) => [
+        formatWorkflowSlotId(status) ?? '-',
+        status.workflowSlotGeneration?.toString() ?? '-',
+        jobId,
+        status.replacesWorkflowJobId ?? '-',
+      ]),
+    ),
+  ]);
+}
+
+export function formatJobDetail(
+  response: JobDetailResponse,
+  describeCauseRef?: CauseRefDescriber,
+  workflowChildren: ReadonlyArray<WorkflowChildJob> = [],
+): string {
   const status = response.status;
   const usage = formatUsageSegment(response.exit?.diagnostics.usage, {
     verbose: true,
@@ -191,6 +234,7 @@ export function formatJobDetail(response: JobDetailResponse, describeCauseRef?: 
     status.workflowSlotId === undefined ? undefined : `Workflow slot: ${status.workflowSlotId}`,
     status.workflowSlotGeneration === undefined ? undefined : `Workflow generation: ${status.workflowSlotGeneration}`,
     status.replacesWorkflowJobId === undefined ? undefined : `Replaces workflow job: ${status.replacesWorkflowJobId}`,
+    formatWorkflowChildren(workflowChildren),
     status.sessionId === null ? undefined : `Provider session: ${status.sessionId}`,
     `Project: ${status.projectRoot}`,
     `Updated: ${status.updatedAt}`,

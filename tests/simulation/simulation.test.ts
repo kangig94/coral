@@ -275,7 +275,11 @@ describe('deterministic simulation lifecycle replay', () => {
       exitCode: 0,
       signal: null,
     });
-    expect(world.readArtifact(launch.jobId, 'result', { freshness: 'cached' })).toBe('final simulation result');
+    // Terminated with the trailing newline every other artifact already carries: the normal completion path
+    // used to write this file raw while terminal wait wrote it through the materializer, so the same job
+    // could yield two different byte sequences depending on which route finished it. One materializer owns
+    // it now, and this is the shape it has always produced.
+    expect(world.readArtifact(launch.jobId, 'result', { freshness: 'cached' })).toBe('final simulation result\n');
     expect(world.readArtifact(launch.jobId, 'stdout', { freshness: 'cached' })).toBe('durable-progress\n');
     expect(world.readArtifact(launch.jobId, 'stderr', { freshness: 'cached' })).toBe('durable-warning\n');
 

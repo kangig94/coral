@@ -26,7 +26,6 @@ import type { RetentionPolicy, ProviderSession } from '../../sessions/entry.js';
 import { type AbortReason, type JobAbortedBody, type JobLaunchRejected } from '../outcome.js';
 import type { JobQueueAdmittedBody, JobQueueQueuedBody } from '../event-bodies.js';
 import { type AbortRegistry } from './abort-registry.js';
-import { writeResultArtifact } from '../terminal/export.js';
 import { CliBusyError } from '../../runtime/cli-busy.js';
 import { isAbortError } from '../../runtime/abort.js';
 import type {
@@ -1168,12 +1167,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     }
 
     try {
-      writeResultArtifact(
-        this.deps.runtime.storage,
-        this.deps.runtime.paths.coral.exports.jobsRoot,
-        jobId,
-        event.terminal.content,
-      );
+      this.deps.progressStore.ensureResultArtifact(jobId);
     } catch (error: unknown) {
       backendLog.warn(`Writing terminal artifacts failed for ${jobId}: ${errorMessage(error)}`);
     }

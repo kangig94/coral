@@ -155,7 +155,10 @@ export function ensureResultMarkdownArtifact(
 ): string {
   const targetPath = resultPathFor(jobsRoot, jobId);
   if (storage.existsSync(targetPath)) {
-    return targetPath;
+    const projection = readProjectionJobRow(db, jobId);
+    if (projection === null || projection.parent_workflow_job_id === null) {
+      return targetPath;
+    }
   }
 
   materializeResultMarkdown(db, jobId, jobsRoot, storage, ctx);

@@ -334,16 +334,17 @@ function stubRecoverableWorkflow(
   }
 
   const slot = plan.slots[0];
-  const sessionId = `${options.workflowId}-session`;
+  const childJobId = runtime.ids.uuid();
+  const sessionId = `${childJobId}-session`;
   seedTestSessionProjection(progressStore.getDb(), {
     sessionId,
     provider: slot.provider,
     projectRoot: options.projectRoot,
     backendNamespace: options.backendNamespace,
-    activeJobId: slot.slotId,
+    activeJobId: childJobId,
   });
-  progressStore.appendLaunchRequested(slot.slotId, {
-    jobId: slot.slotId,
+  progressStore.appendLaunchRequested(childJobId, {
+    jobId: childJobId,
     owner: { kind: 'workflow', id: options.workflowId },
     sessionId,
     provider: slot.provider,
@@ -364,7 +365,7 @@ function stubRecoverableWorkflow(
     },
     createdAt: new Date(runtime.time.now()).toISOString(),
   });
-  commitJobTerminal(progressStore, slot.slotId, sessionId, {
+  commitJobTerminal(progressStore, childJobId, sessionId, {
     content: 'recovered output',
     outcome: { kind: 'completed' },
     durationMs: 0,

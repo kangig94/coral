@@ -1026,12 +1026,124 @@ describe('cli follow', () => {
         }),
       ).resolves.toBe(0);
 
-      expect(stdout).toContain('slot 0:0 (g0) - Architect running');
-      expect(stdout).toContain('slot 0:1 (g0) - Critic running');
+      expect(stdout).toContain('j0 · slot 0:0 (g0) - Architect running');
+      expect(stdout).toContain('j1 · slot 0:1 (g0) - Critic running');
       expect(stdout).toContain(`Job ${architectJobId} (slot 0:0 (g0)) completed`);
       expect(stdout).toContain(`Job ${criticJobId} (slot 0:1 (g0)) completed`);
-      expect(stdout).not.toContain('j0 -');
-      expect(stdout).not.toContain('j1 -');
+    } finally {
+      if (originalHome === undefined) delete process.env.HOME;
+      else process.env.HOME = originalHome;
+      if (originalTmpdir === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = originalTmpdir;
+      fixture.cleanup();
+    }
+  });
+
+  it('keeps identical slot positions unique when waiting across workflows', async () => {
+    const firstWorkflowJobId = '22222222-2222-4222-8222-222222222222';
+    const secondWorkflowJobId = '44444444-4444-4444-8444-444444444444';
+    const firstJobId = '11111111-1111-4111-8111-111111111111';
+    const secondJobId = '33333333-3333-4333-8333-333333333333';
+    const fixture = createCauseRenderFixture([
+      {
+        jobId: firstJobId,
+        workflowJobId: firstWorkflowJobId,
+        workflowSlotId: `${firstWorkflowJobId}:0:0`,
+        generation: 0,
+      },
+      {
+        jobId: secondJobId,
+        workflowJobId: secondWorkflowJobId,
+        workflowSlotId: `${secondWorkflowJobId}:0:0`,
+        generation: 0,
+      },
+    ]);
+    const originalHome = process.env.HOME;
+    const originalTmpdir = process.env.TMPDIR;
+
+    try {
+      process.env.HOME = fixture.home;
+      process.env.TMPDIR = fixture.home;
+      const { followJobs } = await loadFollowModuleFresh();
+      const connect = vi
+        .fn()
+        .mockResolvedValueOnce({
+          kind: 'subscription' as const,
+          subscription: makeSubscription(async function* () {
+            yield { ...makeProgressEvent('First workflow running'), jobId: firstJobId };
+            yield { ...makeProgressEvent('Second workflow running'), jobId: secondJobId, seq: 2 };
+            yield makeTerminalEvent({}, { jobId: firstJobId, seq: 3, remainingJobIds: [secondJobId] });
+          }),
+        })
+        .mockResolvedValueOnce({
+          kind: 'subscription' as const,
+          subscription: makeSubscription(async function* () {
+            yield makeTerminalEvent({}, { jobId: secondJobId, seq: 4, remainingJobIds: [] });
+          }),
+        });
+
+      await expect(
+        followJobs({
+          start: { kind: 'jobs', jobIds: [firstJobId, secondJobId] },
+          reconnectPolicy: 'until-terminal',
+          projectRoot: '/project/root',
+          emitError: vi.fn(),
+          render: { isTTY: false, columns: 120, embed: false, verbose: false },
+          abortJobs: vi.fn(),
+          connect,
+        }),
+      ).resolves.toBe(0);
+
+      expect(stdout).toContain('j0 · slot 0:0 (g0) - First workflow running');
+      expect(stdout).toContain('j1 · slot 0:0 (g0) - Second workflow running');
+    } finally {
+      if (originalHome === undefined) delete process.env.HOME;
+      else process.env.HOME = originalHome;
+      if (originalTmpdir === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = originalTmpdir;
+      fixture.cleanup();
+    }
+  });
+
+  it('labels progress and terminal output for a single workflow child', async () => {
+    const workflowJobId = '22222222-2222-4222-8222-222222222222';
+    const childJobId = '11111111-1111-4111-8111-111111111111';
+    const fixture = createCauseRenderFixture([
+      {
+        jobId: childJobId,
+        workflowJobId,
+        workflowSlotId: `${workflowJobId}:0:0`,
+        generation: 0,
+      },
+    ]);
+    const originalHome = process.env.HOME;
+    const originalTmpdir = process.env.TMPDIR;
+
+    try {
+      process.env.HOME = fixture.home;
+      process.env.TMPDIR = fixture.home;
+      const { followJobs } = await loadFollowModuleFresh();
+
+      await expect(
+        followJobs({
+          start: { kind: 'jobs', jobIds: [childJobId] },
+          reconnectPolicy: 'until-terminal',
+          projectRoot: '/project/root',
+          emitError: vi.fn(),
+          render: { isTTY: false, columns: 120, embed: false, verbose: false },
+          abortJobs: vi.fn(),
+          connect: async () => ({
+            kind: 'subscription',
+            subscription: makeSubscription(async function* () {
+              yield { ...makeProgressEvent('Only child running'), jobId: childJobId };
+              yield makeTerminalEvent({}, { jobId: childJobId, seq: 2, remainingJobIds: [] });
+            }),
+          }),
+        }),
+      ).resolves.toBe(0);
+
+      expect(stdout).toContain('slot 0:0 (g0) - Only child running');
+      expect(stdout).toContain(`Job ${childJobId} (slot 0:0 (g0)) completed`);
     } finally {
       if (originalHome === undefined) delete process.env.HOME;
       else process.env.HOME = originalHome;
