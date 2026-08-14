@@ -1514,12 +1514,10 @@ describe('ExecutionService launch', () => {
 
     expect(decision.jobId).not.toBe(workflowSlotId);
     expect(runtime.storage.readFileSync(_jobResultPath(decision.jobId), 'utf-8')).toBe('ok\n');
-    expect(JSON.parse(runtime.storage.readFileSync(_jobWorkflowPath(decision.jobId), 'utf-8'))).toMatchObject({
+    expect(JSON.parse(runtime.storage.readFileSync(_jobWorkflowPath(decision.jobId), 'utf-8'))).toEqual({
       parentWorkflowJobId: workflowJobId,
       workflowSlotId,
       workflowSlotGeneration: 0,
-      stepIndex: 0,
-      atomIndex: 0,
     });
   });
 

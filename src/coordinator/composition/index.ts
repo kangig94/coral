@@ -902,24 +902,7 @@ export function createCoordinatorCore(
           .waitStream(request),
       list: (filters) => {
         const progressStore = getProgressStore();
-        const jobs: ReturnType<typeof progressStore.listJobProjections> = [];
-        for (const entry of progressStore.listJobProjections()) {
-          if (filters.all !== true && !isLivePhase(entry.status.phase)) {
-            continue;
-          }
-          if (filters.projectRoot !== undefined && entry.status.projectRoot !== filters.projectRoot) {
-            continue;
-          }
-          if (filters.phase !== undefined && entry.status.phase !== filters.phase) {
-            continue;
-          }
-          if (filters.provider !== undefined && entry.status.provider !== filters.provider) {
-            continue;
-          }
-          jobs.push(entry);
-        }
-
-        return labelWorkflowStatuses(progressStore.getDb(), jobs);
+        return labelWorkflowStatuses(progressStore.getDb(), progressStore.listJobProjections(filters));
       },
       detail: (jobId) => {
         const progressStore = getProgressStore();

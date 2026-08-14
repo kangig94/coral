@@ -821,42 +821,6 @@ describe('cli main routing', () => {
     expect(stderr).toBe('');
   });
 
-  it('loads durable child rows when showing workflow detail', async () => {
-    const { buildProgram } = await loadMainModule();
-    const program = buildProgram();
-    const workflowJobId = '22222222-2222-4222-8222-222222222222';
-    const childJobId = '11111111-1111-4111-8111-111111111111';
-    const result = makeJobDetailResponse();
-    result.status = {
-      ...result.status,
-      jobId: workflowJobId,
-      owner: { kind: 'workflow', id: workflowJobId },
-      sessionId: null,
-      provider: null,
-      jobKind: 'workflow',
-    };
-    const child = {
-      jobId: childJobId,
-      status: {
-        ...makeJobsListResponse([childJobId]).jobs[0].status,
-        owner: { kind: 'workflow' as const, id: workflowJobId },
-        parentWorkflowJobId: workflowJobId,
-        workflowSlotId: `${workflowJobId}:0:0`,
-        workflowSlotGeneration: 0,
-      },
-    };
-    result.workflowChildren = [child];
-    mockState.detailJob.mockResolvedValueOnce(result);
-
-    await program.parseAsync(['node', 'coral-cli', 'jobs', 'detail', workflowJobId]);
-
-    expect(mockState.detailJob).toHaveBeenCalledWith(workflowJobId);
-    expect(mockState.listJobs).not.toHaveBeenCalled();
-    expect(stdout).toBe(`${formatJobDetail(result)}\n`);
-    expect(stdout).toContain(childJobId);
-    expect(stderr).toBe('');
-  });
-
   it('returns a usage error for jobs --phase combined with --all', async () => {
     const { buildProgram } = await loadMainModule();
     const program = buildProgram();

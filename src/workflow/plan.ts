@@ -1,8 +1,9 @@
 import { z } from 'zod';
 
-import { truncate } from '../infra/text.js';
+import { singleLineDisplayText, truncate } from '../infra/text.js';
 import type { IdPort } from '../runtime/ports.js';
 import type { PipelineAST } from './ast.js';
+import { workflowSlotId } from './slot-id.js';
 
 export type PlanSlot = {
   slotId: string;
@@ -26,7 +27,9 @@ export type CompiledPlanSlot = PlanSlot & {
 };
 
 export function workflowSlotLabel(slot: PlanSlot, atomIndex: number): string {
-  return slot.agent ?? `prompt#${atomIndex}(${truncate(slot.instruction, 20)})`;
+  return slot.agent === undefined
+    ? `prompt#${atomIndex}(${truncate(singleLineDisplayText(slot.instruction), 20)})`
+    : truncate(singleLineDisplayText(slot.agent), 20);
 }
 
 const planSlotSchema = z
@@ -62,7 +65,7 @@ export function buildWorkflowPlan(
 
     for (let atomIndex = 0; atomIndex < step.length; atomIndex += 1) {
       const atom = step[atomIndex];
-      const slotId = `${workflowId}:${stepIndex}:${atomIndex}`;
+      const slotId = workflowSlotId(workflowId, stepIndex, atomIndex);
       stepSlotIds.push(slotId);
       slots.push({
         slotId,

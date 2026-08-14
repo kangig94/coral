@@ -5,8 +5,11 @@ export const jobPhaseSchema = z.enum(JOB_PHASES);
 
 export type JobPhase = (typeof JOB_PHASES)[number];
 
-export function isLivePhase(phase: JobPhase | string): phase is Extract<JobPhase, 'queued' | 'launching' | 'running'> {
-  return phase === 'queued' || phase === 'launching' || phase === 'running';
+/** The phases a job occupies while it can still make progress. SQL predicates bind these rather than restating them. */
+export const LIVE_JOB_PHASES = ['queued', 'launching', 'running'] as const satisfies readonly JobPhase[];
+
+export function isLivePhase(phase: JobPhase | string): phase is (typeof LIVE_JOB_PHASES)[number] {
+  return (LIVE_JOB_PHASES as readonly string[]).includes(phase);
 }
 
 export function isTerminalPhase(

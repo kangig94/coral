@@ -12,7 +12,7 @@ import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { workflowPlanDeclaredEvent, workflowRegistry } from '#src/workflow/events.js';
-import { compileWorkflowPlan, type PlanSlot, type WorkflowPlan } from '#src/workflow/plan.js';
+import { compileWorkflowPlan, workflowSlotLabel, type PlanSlot, type WorkflowPlan } from '#src/workflow/plan.js';
 import { seedTestSessionProjection } from '#tests/helpers/session.js';
 import { TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
@@ -110,6 +110,25 @@ describe('compileWorkflowPlan', () => {
     expect(() => compileWorkflowPlan(workflowPlan, { jobIds: new Map() })).toThrow(
       `Workflow plan slot '${workflowPlan.slots[0].slotId}' has no resolved job id.`,
     );
+  });
+
+  it('normalizes terminal controls and bounds prompt and agent display labels', () => {
+    expect(
+      workflowSlotLabel(
+        slot('workflow-label', 0, 0, {
+          instruction: '\u001b[31mFirst\nResult path: /tmp/fake\tlast\u007f',
+        }),
+        0,
+      ),
+    ).toBe('prompt#0(First Result path: /...)');
+    expect(
+      workflowSlotLabel(
+        slot('workflow-label', 0, 1, {
+          agent: `critic\u001b]0;owned\u0007\n${'x'.repeat(40)}`,
+        }),
+        1,
+      ),
+    ).toBe('critic xxxxxxxxxxxxx...');
   });
 });
 

@@ -1,6 +1,6 @@
 import type { ProjectionJobStoredRow } from '../../jobs/projection-row.js';
 import { PROJECTION_JOB_COLUMNS } from '../../jobs/projection-row.js';
-import { sqlPlaceholders, type Database } from '../../store/db.js';
+import type { Database } from '../../store/db.js';
 import type { EventsRow } from '../../store/schema.js';
 import {
   canonicalRecoveryRevision,
@@ -71,24 +71,37 @@ function inputRevisionFields(
   return fields;
 }
 
-function readEvents(db: Database, streamKind: EventsRow['stream_kind'], streamIds: readonly string[]): EventsRow[] {
-  if (streamIds.length === 0) return [];
+function readStreamEvents(db: Database, streamKind: EventsRow['stream_kind'], streamId: string): EventsRow[] {
   return db
-    .prepare<unknown[], EventsRow>(
+    .prepare<[EventsRow['stream_kind'], string], EventsRow>(
       `SELECT ${EVENT_COLUMNS}
          FROM events
         WHERE stream_kind = ?
-          AND stream_id IN (${sqlPlaceholders(streamIds.length)})
+          AND stream_id = ?
         ORDER BY seq ASC`,
     )
-    .all(streamKind, ...streamIds);
+    .all(streamKind, streamId);
+}
+
+function readOwnedJobEvents(db: Database, executionOwner: string): EventsRow[] {
+  return db
+    .prepare<[string], EventsRow>(
+      `SELECT events.*
+         FROM events
+         JOIN projection_jobs ON projection_jobs.job_id = events.stream_id
+        WHERE events.stream_kind = 'job'
+          AND projection_jobs.execution_owner = ?
+        ORDER BY events.seq ASC`,
+    )
+    .all(executionOwner);
 }
 
 function readCandidateEnvelope(
   db: Database,
   discussion: RawDiscussionCandidateEnvelope['discussion'],
 ): RawDiscussionCandidateEnvelope {
-  const discussionEvents = readEvents(db, 'discuss', [discussion.discuss_id]);
+  const discussionEvents = readStreamEvents(db, 'discuss', discussion.discuss_id);
+  const executionOwner = JSON.stringify({ kind: 'discussion', id: discussion.discuss_id });
   const projections = db
     .prepare<[string], ProjectionJobStoredRow>(
       `SELECT ${PROJECTION_JOB_COLUMNS}
@@ -96,12 +109,8 @@ function readCandidateEnvelope(
         WHERE execution_owner = ?
         ORDER BY job_id ASC`,
     )
-    .all(JSON.stringify({ kind: 'discussion', id: discussion.discuss_id }));
-  const jobEvents = readEvents(
-    db,
-    'job',
-    projections.map((projection) => projection.job_id),
-  );
+    .all(executionOwner);
+  const jobEvents = readOwnedJobEvents(db, executionOwner);
   const eventsByJob = new Map<string, EventsRow[]>();
   for (const event of jobEvents) {
     const events = eventsByJob.get(event.stream_id) ?? [];

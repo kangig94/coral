@@ -17,7 +17,6 @@ import {
 import type { SessionAllocateOptions } from '../../sessions/contracts.js';
 import { describeSessionInterrupted, type SessionInterruptedFault } from '../../sessions/fault.js';
 import type { Runtime } from '../../runtime/ports.js';
-import type { StepDetail } from '../../workflow/execution-contract.js';
 import { SESSION_CONTROLLER_PROFILE_FIELDS, type RetentionPolicy } from '../../sessions/entry.js';
 import { CONTEXT_ENV_KEY } from '../../transport/context-profile.js';
 
@@ -163,24 +162,6 @@ export function buildInterruptedAppServerReport(fault: SessionInterruptedFault, 
       : 'Session was interrupted before completion. The existing conversation reference was preserved.',
   );
   return lines.join('\n');
-}
-
-export function serializeWorkflowResult(details: StepDetail[]): {
-  markdown: string;
-} {
-  const lines: string[] = [];
-
-  for (const detail of details) {
-    lines.push(`# Step ${detail.stepIndex}.${detail.atomIndex}: ${detail.label}`);
-    lines.push('');
-    const contentLines = detail.output.split('\n');
-    lines.push(...contentLines);
-    lines.push('');
-  }
-
-  return {
-    markdown: lines.join('\n'),
-  };
 }
 
 export function toPreflightRuntime(

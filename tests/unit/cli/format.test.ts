@@ -307,6 +307,7 @@ describe('cli format', () => {
       expect(detail).toContain(`Parent workflow: ${workflowJobId}`);
       expect(detail).toContain(`Workflow slot: ${workflowSlotId}`);
       expect(detail).toContain('Workflow generation: 1');
+      expect(detail.split('\n')).toContain('Workflow atom: critic');
       expect(detail).toContain(`Replaces workflow job: ${replacedJobId}`);
     });
 

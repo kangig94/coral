@@ -4,7 +4,7 @@ import type { HostRef, UsageSummary } from '../providers/contract.js';
 import { jobTerminalRecordedBodySchema, jobDiagnosticsSchema, normalizeJobTerminal } from './terminal/result.js';
 import { jobProgressBodySchema, jobRuntimeStartedBodySchema } from './event-bodies.js';
 import { jobLaunchRequestBodySchema } from './launch.js';
-import { isLivePhase, type JobPhase } from './phase.js';
+import { LIVE_JOB_PHASES, type JobPhase } from './phase.js';
 import {
   emptyJobDiagnostics,
   isWorkflowJobKind,
@@ -34,7 +34,7 @@ export type JobProjectionDetail = {
 };
 import { decodeBody, type StoreReadContext } from '../store/body-codec.js';
 import { decodeEventRefs, rowToCoralEvent } from '../store/envelope.js';
-import { prepareCached, sqlPlaceholders } from '../store/db.js';
+import { prepareCached, sqlParameterBatches, sqlPlaceholders } from '../store/db.js';
 import { readLatestEvent } from '../store/event-queries.js';
 import type { EventsRow } from '../store/schema.js';
 import { aggregateWorkflowUsage } from './workflow-usage.js';
@@ -147,41 +147,56 @@ function readProjectionRows(db: Database, jobIds: string[]): Map<string, Project
     return new Map();
   }
 
-  const rows = prepareCached<unknown[], unknown>(
-    db,
-    `SELECT ${PROJECTION_JOB_COLUMNS}
-       FROM projection_jobs
-      WHERE job_id IN (${sqlPlaceholders(jobIds.length)})`,
-  ).all(...jobIds);
-
   const projectionsByJob = new Map<string, ProjectionRow>();
-  for (const row of rows) {
-    const decoded = decodeProjectionJobStoredRow(row);
-    projectionsByJob.set(decoded.job_id, decoded);
+  for (const batch of sqlParameterBatches(jobIds)) {
+    const rows = prepareCached<unknown[], unknown>(
+      db,
+      `SELECT ${PROJECTION_JOB_COLUMNS}
+         FROM projection_jobs
+        WHERE job_id IN (${sqlPlaceholders(batch.length)})`,
+    ).all(...batch);
+    for (const row of rows) {
+      const decoded = decodeProjectionJobStoredRow(row);
+      projectionsByJob.set(decoded.job_id, decoded);
+    }
   }
   return projectionsByJob;
 }
 
+function jobsListSqlFilter(filters?: JobsListFilters, qualifier = ''): { sql: string; parameters: unknown[] } {
+  const column = (name: string) => `${qualifier}${name}`;
+  const clauses: string[] = [];
+  const parameters: unknown[] = [];
+  if (filters !== undefined && filters.all !== true) {
+    clauses.push(`${column('phase')} IN (${sqlPlaceholders(LIVE_JOB_PHASES.length)})`);
+    parameters.push(...LIVE_JOB_PHASES);
+  }
+  if (filters?.projectRoot !== undefined) {
+    clauses.push(`(${column('project_root')} = ? OR ${column('job_kind')} = 'kb')`);
+    parameters.push(filters.projectRoot);
+  }
+  if (filters?.phase !== undefined) {
+    clauses.push(`${column('phase')} = ?`);
+    parameters.push(filters.phase);
+  }
+  if (filters?.provider !== undefined) {
+    clauses.push(`${column('provider')} = ?`);
+    parameters.push(filters.provider);
+  }
+  return { sql: clauses.length === 0 ? '' : `WHERE ${clauses.join(' AND ')}`, parameters };
+}
+
 function readOrderedProjectionRows(db: Database, filters?: JobsListFilters): ProjectionRow[] {
-  const rows = prepareCached<[], unknown>(
+  const filter = jobsListSqlFilter(filters);
+  return prepareCached<unknown[], unknown>(
     db,
     `SELECT ${PROJECTION_JOB_COLUMNS}
        FROM projection_jobs
+       ${filter.sql}
       ORDER BY job_id ASC`,
   )
-    .all()
+    .all(...filter.parameters)
     .map(decodeProjectionJobStoredRow);
-
-  return rows.filter((row) => {
-    if (filters && filters.all !== true && !isLivePhase(row.phase)) return false;
-    // KB jobs belong to no single project and remain visible from every project.
-    if (filters?.projectRoot !== undefined && row.project_root !== filters.projectRoot && row.job_kind !== 'kb') {
-      return false;
-    }
-    if (filters?.phase !== undefined && row.phase !== filters.phase) return false;
-    if (filters?.provider !== undefined && row.provider !== filters.provider) return false;
-    return true;
-  });
 }
 
 function readLatestEventsForJobs(db: Database, jobIds: string[], type: string): Map<string, EventRow> {
@@ -189,30 +204,28 @@ function readLatestEventsForJobs(db: Database, jobIds: string[], type: string): 
     return new Map();
   }
 
-  const rows = prepareCached<unknown[], EventsRow>(
-    db,
-    `SELECT *
-       FROM events
-      WHERE type = ?
-        AND stream_id IN (${sqlPlaceholders(jobIds.length)})
-      ORDER BY stream_id ASC, seq DESC`,
-  ).all(type, ...jobIds);
-
   const eventsByJob = new Map<string, EventRow>();
-  for (const row of rows) {
-    rowToCoralEvent(row, null);
-    if (eventsByJob.has(row.stream_id)) {
-      continue;
+  for (const batch of sqlParameterBatches(jobIds, 1)) {
+    const rows = prepareCached<unknown[], EventsRow>(
+      db,
+      `SELECT *
+         FROM events
+        WHERE type = ?
+          AND stream_id IN (${sqlPlaceholders(batch.length)})
+        ORDER BY stream_id ASC, seq DESC`,
+    ).all(type, ...batch);
+    for (const row of rows) {
+      rowToCoralEvent(row, null);
+      if (eventsByJob.has(row.stream_id)) continue;
+      eventsByJob.set(row.stream_id, {
+        seq: row.seq,
+        ts: row.ts,
+        type: row.type,
+        stream_kind: row.stream_kind,
+        refs: row.refs,
+        body: row.body,
+      });
     }
-
-    eventsByJob.set(row.stream_id, {
-      seq: row.seq,
-      ts: row.ts,
-      type: row.type,
-      stream_kind: row.stream_kind,
-      refs: row.refs,
-      body: row.body,
-    });
   }
 
   return eventsByJob;
@@ -223,20 +236,42 @@ function readLatestProjectionStatusEvents(db: Database, jobIds: string[]): Map<s
     return new Map();
   }
 
+  const eventsByJob = new Map<string, JobStatusEventsByType>();
+  for (const batch of sqlParameterBatches(jobIds)) {
+    const rows = prepareCached<unknown[], EventsRow & { type: ProjectionStatusEventType }>(
+      db,
+      `SELECT seq, ts, type, stream_kind, stream_id, namespace, project,
+              correlation_id, causation_seq, refs, body
+         FROM (
+           SELECT *,
+                  ROW_NUMBER() OVER (PARTITION BY stream_id, type ORDER BY seq DESC) AS row_number
+             FROM events
+            WHERE type IN ('job.launch.rejected', 'job.runtime.started', 'job.terminal.recorded')
+              AND stream_id IN (${sqlPlaceholders(batch.length)})
+         )
+        WHERE row_number = 1`,
+    ).all(...batch);
+    for (const [jobId, events] of indexProjectionStatusEvents(rows)) eventsByJob.set(jobId, events);
+  }
+  return eventsByJob;
+}
+
+function readLatestListStatusEvents(db: Database, filters?: JobsListFilters): Map<string, JobStatusEventsByType> {
+  const filter = jobsListSqlFilter(filters, 'projection_jobs.');
   const rows = prepareCached<unknown[], EventsRow & { type: ProjectionStatusEventType }>(
     db,
     `SELECT seq, ts, type, stream_kind, stream_id, namespace, project,
             correlation_id, causation_seq, refs, body
        FROM (
-         SELECT *,
-                ROW_NUMBER() OVER (PARTITION BY stream_id, type ORDER BY seq DESC) AS row_number
+         SELECT events.*,
+                ROW_NUMBER() OVER (PARTITION BY events.stream_id, events.type ORDER BY events.seq DESC) AS row_number
            FROM events
-          WHERE type IN ('job.launch.rejected', 'job.runtime.started', 'job.terminal.recorded')
-            AND stream_id IN (${sqlPlaceholders(jobIds.length)})
+           JOIN projection_jobs ON projection_jobs.job_id = events.stream_id
+          ${filter.sql.length === 0 ? 'WHERE' : `${filter.sql} AND`}
+            events.type IN ('job.launch.rejected', 'job.runtime.started', 'job.terminal.recorded')
        )
       WHERE row_number = 1`,
-  ).all(...jobIds);
-
+  ).all(...filter.parameters);
   return indexProjectionStatusEvents(rows);
 }
 
@@ -643,11 +678,7 @@ export function listJobProjections(
   filters?: JobsListFilters,
 ): Array<{ jobId: string; status: JobStatus }> {
   const projections = readOrderedProjectionRows(db, filters);
-  const jobIds: string[] = [];
-  for (const projection of projections) {
-    jobIds.push(projection.job_id);
-  }
-  const statusEventsByJob = readLatestProjectionStatusEvents(db, jobIds);
+  const statusEventsByJob = readLatestListStatusEvents(db, filters);
   const jobs: Array<{ jobId: string; status: JobStatus }> = [];
 
   for (const projection of projections) {

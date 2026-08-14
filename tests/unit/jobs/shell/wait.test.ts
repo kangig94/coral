@@ -70,6 +70,9 @@ import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { encodeHostRef } from '#src/providers/host-ref-codec.js';
 import { providerHostUnserviceableTerminalWarning } from '#src/providers/host-admission.js';
+import { createCauseRefRenderer } from '#src/causality/render.js';
+import { defaultEventDescribers } from '#src/read-model/event-describers.js';
+import { getEvent } from '#src/store/event-queries.js';
 
 const progressTiming = {
   origin: 'runtime',
@@ -134,11 +137,20 @@ let runtime: ReturnType<typeof createRealRuntime>;
 let JOBS_DIR = '';
 
 function createProgressStore(namespace = 'test-ns'): JobStore {
-  return new JobStore(namespace, runtime, createEventBodyCodec(), {
-    db: openTestStoreDb(runtime),
+  const db = openTestStoreDb(runtime);
+  const reducers = composeReducers(jobsRegistry, workflowRegistry);
+  const bodyCodec = createEventBodyCodec();
+  const readCtx = { schemas: reducers.schemas, streamKinds: reducers.streamKinds, bodyCodec };
+  const causeRefRenderer = createCauseRefRenderer(defaultEventDescribers);
+  return new JobStore(namespace, runtime, bodyCodec, {
+    db,
     eventBus,
     providers: permissiveProviderLookupPort,
-    reducers: composeReducers(jobsRegistry, workflowRegistry),
+    reducers,
+    describeCauseRef: (ref) =>
+      causeRefRenderer.describe(ref, {
+        getEvent: (stream, seq) => getEvent(db, stream, seq, readCtx),
+      }),
   });
 }
 

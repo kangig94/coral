@@ -1,7 +1,7 @@
 import type { Database } from '../store/db.js';
 import { join } from 'node:path';
 
-import type { CauseRefToken } from '../causality/cause-ref.js';
+import { renderCauseRefFallback, type CauseRef, type CauseRefToken } from '../causality/cause-ref.js';
 import type { ProviderLookupPort } from '../providers/catalog.js';
 import {
   commit as commitJournalEvents,
@@ -20,10 +20,11 @@ import {
   listWorkflowChildProjections,
   loadJobProjectionDetail,
   readJobEvents,
+  type JobsListFilters,
 } from './read-queries.js';
 import type { Runtime } from '../runtime/ports.js';
 import { jobsDir } from './paths.js';
-import { ensureResultMarkdownArtifact, materializeResultMarkdownArtifact } from './terminal/export.js';
+import { ensureResultMarkdownArtifact, materializeResultMarkdownArtifact, resultPathFor } from './terminal/export.js';
 import type { DurableProcessExit } from '../runtime/durable-runtime.js';
 import { nowDate, nowIsoString } from '../infra/time.js';
 import { createNoopJobEventBus, jobCreatedEvent, type JobEventBus } from './event-bus.js';
@@ -69,6 +70,14 @@ export type JobStoreOptions = {
    */
   providers: ProviderLookupPort;
   observer?: PostCommitObserver;
+  describeCauseRef?: (ref: CauseRef) => string;
+  materializeWorkflowResultArtifact?: (
+    db: Database,
+    workflowJobId: string,
+    jobsRoot: string,
+    storage: Runtime['storage'],
+    ctx: StoreReadContext,
+  ) => string;
 };
 
 export type RawJobRecoveryProjection = {
@@ -411,6 +420,8 @@ export class JobStore implements JobProgressStore {
 
   private readonly namespace: string;
   private readonly runtime: Pick<Runtime, 'storage' | 'paths' | 'time' | 'env'>;
+  private readonly describeCauseRef: (ref: CauseRef) => string;
+  private readonly materializeWorkflowResultArtifact?: JobStoreOptions['materializeWorkflowResultArtifact'];
   constructor(
     namespace: string,
     runtime: Pick<Runtime, 'storage' | 'paths' | 'time' | 'env'>,
@@ -427,6 +438,8 @@ export class JobStore implements JobProgressStore {
     this.streamKinds = reducers.streamKinds;
     this.bodyCodec = bodyCodec;
     this.db = db;
+    this.describeCauseRef = options.describeCauseRef ?? renderCauseRefFallback;
+    this.materializeWorkflowResultArtifact = options.materializeWorkflowResultArtifact;
     this.commitEvents = (cb) =>
       commitJournalEvents(this.db, cb, {
         now: () => nowDate(this.runtime.time),
@@ -538,17 +551,41 @@ export class JobStore implements JobProgressStore {
   }
 
   ensureResultArtifact(jobId: string): string {
+    const status = this.readStatus(jobId);
+    if (status?.jobKind === 'workflow') {
+      const targetPath = resultPathFor(this.runtime.paths.coral.exports.jobsRoot, jobId);
+      if (this.runtime.storage.existsSync(targetPath)) return targetPath;
+      return this.materializeWorkflowResultArtifactFor(jobId);
+    }
     return ensureResultMarkdownArtifact(
       this.db,
       jobId,
       this.runtime.paths.coral.exports.jobsRoot,
       this.runtime.storage,
       this,
+      this.describeCauseRef,
     );
   }
 
   materializeResultArtifact(jobId: string): string {
+    if (this.readStatus(jobId)?.jobKind === 'workflow') {
+      return this.materializeWorkflowResultArtifactFor(jobId);
+    }
     return materializeResultMarkdownArtifact(
+      this.db,
+      jobId,
+      this.runtime.paths.coral.exports.jobsRoot,
+      this.runtime.storage,
+      this,
+      this.describeCauseRef,
+    );
+  }
+
+  private materializeWorkflowResultArtifactFor(jobId: string): string {
+    if (this.materializeWorkflowResultArtifact === undefined) {
+      throw new Error(`Cannot materialize workflow result artifact for ${jobId}: workflow materializer is missing.`);
+    }
+    return this.materializeWorkflowResultArtifact(
       this.db,
       jobId,
       this.runtime.paths.coral.exports.jobsRoot,
@@ -557,8 +594,8 @@ export class JobStore implements JobProgressStore {
     );
   }
 
-  listJobProjections() {
-    return listJobProjections(this.db, this).map(({ jobId, status }) => ({
+  listJobProjections(filters?: JobsListFilters) {
+    return listJobProjections(this.db, this, filters).map(({ jobId, status }) => ({
       jobId,
       status: this.applyNamespaceOverrideToStatus(jobId, status),
     }));

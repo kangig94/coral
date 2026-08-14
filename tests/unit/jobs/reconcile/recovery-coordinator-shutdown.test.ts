@@ -28,6 +28,7 @@ import { testProjectPrincipal } from '#tests/helpers/principal.js';
 import { createBoundIpcLifecycleDeps } from '#tests/helpers/bound-ipc-lifecycle.js';
 import type { WorkflowExecutionPort } from '#src/workflow/execution-contract.js';
 import type { WorkflowFinalizationIntent } from '#src/workflow/finalization.js';
+import { withNoopWorkflowArtifactEnsure } from '#tests/helpers/workflow-recovery-finalizer.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -727,7 +728,7 @@ describe('recovery coordinator shutdown', () => {
     const failedProjectRoot = createProjectRoot('project-workflow-failure');
     const resumedProjectRoot = createProjectRoot('project-workflow-resumed');
     const backendNamespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
-    const finalizeWorkflow = vi.fn<(intent: WorkflowFinalizationIntent) => void>();
+    const finalizeWorkflow = withNoopWorkflowArtifactEnsure(vi.fn<(intent: WorkflowFinalizationIntent) => void>());
     const recoveryLog = vi.fn<(message: string) => void>();
     const getExecutionService = vi.fn((ctx: { projectRoot: string }) => {
       if (ctx.projectRoot === failedProjectRoot) {

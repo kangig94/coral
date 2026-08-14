@@ -234,7 +234,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_JOB_RETENTION_DAYS = 14;
 
 /**
- * Resolve the terminal-job export retention window from `CORAL_JOBS_RETENTION_DAYS`
+ * Resolve the terminal-job runtime-scratch retention window from `CORAL_JOBS_RETENTION_DAYS`
  * (default 14 days) to milliseconds. Invalid/non-positive values fall back to the
  * default.
  */
@@ -530,11 +530,9 @@ export function createCrashedJobTerminalizationRetryPlan(
 }
 
 /**
- * Prune terminal jobs' export artifacts (`<exports>/jobs/<id>/`). These dirs are a
- * rebuildable cache of durable state — `JobStore.ensureResultArtifact` regenerates
- * `result.md` from the journal terminal event and workflow-child metadata from
- * journal-derived projections on the next read — so pruning only reclaims disk;
- * `jobs list`/`detail` keep working from the journal projection.
+ * Prune terminal jobs' temporary runtime scratch (`<tmpdir>/coral-jobs/<id>/`) and
+ * matching durable CLI-process metadata. Persistent exports under
+ * `<exports>/jobs/<id>/` are outside this cleanup and are never pruned here.
  * A terminal job is pruned when it is left over from a previous bundle version OR
  * older than the retention window. Live jobs are never touched.
  */

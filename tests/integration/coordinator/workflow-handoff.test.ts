@@ -30,6 +30,7 @@ import type { WaitStreamEvent, WaitStreamRequest } from '#src/jobs/wait.js';
 import type { WorkflowExecutionPort } from '#src/workflow/execution-contract.js';
 
 import { createHandoffCoresHarness, type HandoffCoresHarness } from './handoff-cores-harness.js';
+import { withNoopWorkflowArtifactEnsure } from '#tests/helpers/workflow-recovery-finalizer.js';
 
 const PROJECT_ROOT = mkdtempSync(join(tmpdir(), 'coral-handoff-workflow-project-'));
 const WORKFLOW_ID = 'workflow-handoff-1';
@@ -169,7 +170,7 @@ describe('workflow handoff (cross-domain integration)', () => {
     expect(incumbent.core.runtimeState.getLifecycle()).toBe('stopped');
 
     const waitRequests: WaitStreamRequest[] = [];
-    const finalizeWorkflow = vi.fn();
+    const finalizeWorkflow = withNoopWorkflowArtifactEnsure(vi.fn());
     const resumedIds: string[] = [];
 
     const replacement = await harness.bootCore({

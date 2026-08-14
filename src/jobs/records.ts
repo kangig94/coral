@@ -248,6 +248,10 @@ export type JobsListResponse = {
   jobs: Array<{ jobId: string; status: JobStatus }>;
 };
 
+/**
+ * Durable workflow child row across every recorded slot generation, not only the current slot head.
+ * `status.workflowLabel` is absent when the workflow plan or slot label cannot be resolved.
+ */
 export type WorkflowChildJobSummary = JobsListResponse['jobs'][number];
 
 /** Response shape for jobs.detail. Includes:

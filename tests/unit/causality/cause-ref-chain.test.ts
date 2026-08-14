@@ -9,6 +9,11 @@ import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { composeReducers, defineDomainEvent } from '#src/store/reducers.js';
 import { createCauseRefRenderer } from '#src/causality/render.js';
 import { defaultEventDescribers } from '#src/read-model/event-describers.js';
+import { resultPathFor } from '#src/jobs/terminal/export.js';
+import { JobStore } from '#src/jobs/store.js';
+import { jobTerminalRecordedBodySchema } from '#src/jobs/terminal/result.js';
+import { SimulationRuntime } from '#tools/simulation/runtime.js';
+import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { z } from 'zod';
 
 const renderer = createCauseRefRenderer(defaultEventDescribers);
@@ -18,13 +23,16 @@ const causeFixtureBodySchema = z.object({}).passthrough();
 const causeFixtureRegistry = composeReducers(
   {
     streamKind: 'job',
-    entries: ['job.progress.emitted', 'job.terminal.recorded'].map((type) =>
-      defineDomainEvent({ type, schema: causeFixtureBodySchema }),
-    ),
+    entries: [
+      defineDomainEvent({ type: 'job.progress.emitted', schema: causeFixtureBodySchema }),
+      defineDomainEvent({ type: 'job.terminal.recorded', schema: jobTerminalRecordedBodySchema }),
+    ],
   },
   {
     streamKind: 'session',
-    entries: [defineDomainEvent({ type: 'session.provider_failed', schema: causeFixtureBodySchema })],
+    entries: ['session.provider_failed', 'session.interrupted'].map((type) =>
+      defineDomainEvent({ type, schema: causeFixtureBodySchema }),
+    ),
   },
   {
     streamKind: 'workflow',
@@ -34,15 +42,23 @@ const causeFixtureRegistry = composeReducers(
   },
 );
 
-function createStore(): { db: Database; store: CoralStore } {
+function createStore(runtime = new SimulationRuntime()): { db: Database; store: CoralStore; jobStore: JobStore } {
   const db = newRawDatabase(':memory:');
   applyBundledStoreSchema(db, currentCoralStoreFormat());
+  const bodyCodec = createEventBodyCodec();
+  const store = new CoralStore(db, {
+    schemas: causeFixtureRegistry.schemas,
+    streamKinds: causeFixtureRegistry.streamKinds,
+    bodyCodec,
+  });
   return {
     db,
-    store: new CoralStore(db, {
-      schemas: causeFixtureRegistry.schemas,
-      streamKinds: causeFixtureRegistry.streamKinds,
-      bodyCodec: createEventBodyCodec(),
+    store,
+    jobStore: new JobStore('cause-ref-test', runtime, bodyCodec, {
+      db,
+      reducers: causeFixtureRegistry,
+      providers: permissiveProviderLookupPort,
+      describeCauseRef: (ref) => renderer.describe(ref, store),
     }),
   };
 }
@@ -71,6 +87,90 @@ function insertEvent(
 }
 
 describe('describeCauseRef', () => {
+  it('materializes empty failures with canonical session, workflow, missing-link, and cycle descriptions', () => {
+    const runtime = new SimulationRuntime();
+    const { db, jobStore } = createStore(runtime);
+    const insertTerminal = (seq: number, jobId: string, causeRef: unknown) => {
+      insertEvent(db, {
+        seq,
+        type: 'job.terminal.recorded',
+        stream: { kind: 'job', id: jobId },
+        body: {
+          terminal: { content: '', durationMs: 10, outcome: { kind: 'failed', causeRef } },
+        },
+      });
+    };
+    const materialize = (jobId: string) => {
+      jobStore.materializeResultArtifact(jobId);
+      return runtime.storage.readFileSync(resultPathFor(runtime.paths.coral.exports.jobsRoot, jobId), 'utf-8');
+    };
+
+    try {
+      insertEvent(db, {
+        seq: 1,
+        type: 'session.interrupted',
+        stream: { kind: 'session', id: 'session-interrupted' },
+        body: { trigger: 'restart', continuity: 'pre_checkpoint_preserved' },
+      });
+      insertTerminal(2, 'job-session', { stream: { kind: 'session', id: 'session-interrupted' }, seq: 1 });
+
+      insertEvent(db, {
+        seq: 3,
+        type: 'workflow.lifecycle_fault',
+        stream: { kind: 'workflow', id: 'workflow-failed' },
+        body: { kind: 'wrapper_crashed', message: 'executor broke', stack: 'STACK: workflow executor' },
+      });
+      insertEvent(db, {
+        seq: 4,
+        type: 'workflow.completed',
+        stream: { kind: 'workflow', id: 'workflow-failed' },
+        body: {
+          outcome: 'failed',
+          causeRef: { stream: { kind: 'workflow', id: 'workflow-failed' }, seq: 3 },
+          failureLocation: { stepIndex: 2, atomLabel: 'critic', slotId: 'workflow-failed:2:0' },
+          stepDetails: [],
+        },
+      });
+      insertTerminal(5, 'job-workflow', { stream: { kind: 'workflow', id: 'workflow-failed' }, seq: 4 });
+
+      insertTerminal(6, 'job-missing', { stream: { kind: 'session', id: 'missing-session' }, seq: 999 });
+
+      insertEvent(db, {
+        seq: 7,
+        type: 'job.progress.emitted',
+        stream: { kind: 'job', id: 'cycle-a' },
+        body: {
+          kind: 'message',
+          message: 'cycle a',
+          causeRef: { stream: { kind: 'session', id: 'cycle-b' }, seq: 8 },
+        },
+      });
+      insertEvent(db, {
+        seq: 8,
+        type: 'session.provider_failed',
+        stream: { kind: 'session', id: 'cycle-b' },
+        body: {
+          provider: 'codex',
+          reason: 'request_failed',
+          message: 'cycle b',
+          causeRef: { stream: { kind: 'job', id: 'cycle-a' }, seq: 7 },
+        },
+      });
+      insertTerminal(9, 'job-cycle', { stream: { kind: 'job', id: 'cycle-a' }, seq: 7 });
+
+      expect(materialize('job-session')).toContain(
+        'App-server restarted during the turn; existing conversation reference was preserved.',
+      );
+      const workflow = materialize('job-workflow');
+      expect(workflow).toContain("Workflow failed. Failure at step 2, atom 'critic', slot workflow-failed:2:0.");
+      expect(workflow).toContain('STACK: workflow executor');
+      expect(materialize('job-missing')).toContain('<missing session/missing-session/999>');
+      expect(materialize('job-cycle')).toContain('<cycle detected at job/cycle-a/7>');
+    } finally {
+      db.close();
+    }
+  });
+
   it('walks a four-link jobs -> session -> jobs -> workflow chain', () => {
     const { db, store } = createStore();
     try {

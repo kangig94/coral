@@ -28,6 +28,8 @@ import { buildWorkflowPlan, type PlanSlot, type WorkflowPlan } from '#src/workfl
 import { loadJobProjectionDetails } from '#src/jobs/read-queries.js';
 import { resumeAll } from '#src/workflow/recover.js';
 import type { WorkflowExecutionPort } from '#src/workflow/execution-contract.js';
+import type { WorkflowRecoveryFinalizer } from '#src/workflow/recover.js';
+import { withNoopWorkflowArtifactEnsure } from '#tests/helpers/workflow-recovery-finalizer.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
@@ -314,6 +316,7 @@ function createWorkflowProgressStore(db: Db, runtime: SimulationRuntime): JobSto
     db,
     reducers: composeReducers(jobsRegistry, workflowRegistry),
     providers: permissiveProviderLookupPort,
+    materializeWorkflowResultArtifact: () => '/jobs/workflow-result.md',
   });
 }
 
@@ -526,21 +529,21 @@ function createRecoveryInvocationContext(projectRoot: string): InvocationContext
 
 function captureWorkflowIntents(delegate: (intent: WorkflowFinalizationIntent) => void = () => {}): {
   intents: WorkflowFinalizationIntent[];
-  finalizeWorkflow(intent: WorkflowFinalizationIntent): void;
+  finalizeWorkflow: WorkflowRecoveryFinalizer;
 } {
   const intents: WorkflowFinalizationIntent[] = [];
   return {
     intents,
-    finalizeWorkflow(intent) {
+    finalizeWorkflow: withNoopWorkflowArtifactEnsure((intent) => {
       intents.push(intent);
       delegate(intent);
-    },
+    }),
   };
 }
 
 async function resumeRecoveryHarness(
   harness: WorkflowRecoveryHarness,
-  finalizeWorkflow: (intent: WorkflowFinalizationIntent) => void,
+  finalizeWorkflow: WorkflowRecoveryFinalizer,
   executionSvc: WorkflowExecutionPort = harness.executionSvc,
 ): Promise<string[]> {
   return resumeAll({

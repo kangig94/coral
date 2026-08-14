@@ -18,7 +18,7 @@ import { applyBundledStoreSchema } from '#src/store/db.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { decodeEventBody, encodeEventBody } from '#src/store/body-codec.js';
 import { parseExpression } from '#src/workflow/parser.js';
-import { workflowPlanDeclaredEvent, workflowRegistry } from '#src/workflow/events.js';
+import { workflowCompletedEvent, workflowPlanDeclaredEvent, workflowRegistry } from '#src/workflow/events.js';
 import { buildWorkflowPlan, type WorkflowPlan } from '#src/workflow/plan.js';
 import { commitWorkflowEvents } from '#src/workflow/projections.js';
 import { loadJobProjectionDetails } from '#src/jobs/read-queries.js';
@@ -37,12 +37,16 @@ import { jobLaunchRequestedEvent } from '#src/jobs/store.js';
 import type { ProviderSession } from '#src/sessions/entry.js';
 import { createProjectionSessionLookup } from '#src/sessions/lookup.js';
 import { createWorkflowRecoveryFinalizer } from '#src/coordinator/services/workflow-recovery-finalizer.js';
+import { composeWorkflowFinalization } from '#src/coordinator/services/workflow-finalization.js';
+import { materializeWorkflowResultArtifact } from '#src/workflow/result-artifact.js';
+import { resultPathFor } from '#src/jobs/terminal/export.js';
 import { createRecoveryCoordinator } from '#src/coordinator/services/recovery/index.js';
 import { createFailedWorkflowDescendantReleaser } from '#src/coordinator/services/workflow-recovery-descendants.js';
 import { seedTestSessionProjection } from '#tests/helpers/session.js';
 import { createBoundJobsRecoveryHarness } from '#tests/helpers/bound-jobs-recovery.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { canonicalizeWorkDir, type CanonicalWorkDir } from '#src/runtime/canonical-work-dir.js';
+import { withNoopWorkflowArtifactEnsure } from '#tests/helpers/workflow-recovery-finalizer.js';
 
 // NOTE: "running" and "queued" branches today share the same code path
 // (both hit waitForAtoms). We retain two tests so that if phase-differentiated
@@ -138,6 +142,7 @@ function createHarness(options: {
     db,
     providers: permissiveProviderLookupPort,
     reducers: composeReducers(jobsRegistry, sessionsRegistry, workflowRegistry),
+    materializeWorkflowResultArtifact,
   });
   const plan = createWorkflowPlan(options.expression);
   const jobIdsBySlot = new Map<string, string>();
@@ -372,6 +377,68 @@ function setPendingReplacementLease(
 }
 
 describe('workflow recovery branch rules', () => {
+  it('rebuilds a terminal workflow-root report through the job artifact ensure seam', () => {
+    const harness = createHarness({ atomPhase: 'running', projectionPhase: 'running' });
+    const stepDetails = [{ stepIndex: 0, atomIndex: 0, label: 'architect', output: 'durable workflow answer' }];
+    harness.progressStore.commit((commit) => {
+      composeWorkflowFinalization(
+        commit,
+        'workflow-1',
+        { outcome: 'completed', workflowJobId: 'workflow-1', finalOutput: 'durable workflow answer', stepDetails },
+        { durationMs: 1 },
+      );
+      return undefined;
+    });
+    const resultPath = resultPathFor(harness.runtime.paths.coral.exports.jobsRoot, 'workflow-1');
+    expect(harness.progressStore.readStatus('workflow-1')?.phase).toBe('completed');
+    expect(harness.runtime.storage.existsSync(resultPath)).toBe(false);
+
+    try {
+      expect(harness.progressStore.ensureResultArtifact('workflow-1')).toBe(resultPath);
+      expect(harness.runtime.storage.readFileSync(resultPath, 'utf-8')).toBe(
+        '# Step 0.0: architect\n\ndurable workflow answer\n',
+      );
+    } finally {
+      harness.db.close();
+    }
+  });
+
+  it('ensures a report before clearing an already-completed live workflow recovery', async () => {
+    const harness = createHarness({ atomPhase: 'running', projectionPhase: 'running' });
+    const stepDetails = [{ stepIndex: 0, atomIndex: 0, label: 'architect', output: 'durable workflow answer' }];
+    harness.progressStore.commit((commit) => {
+      commit.append(workflowCompletedEvent('workflow-1', { outcome: 'completed', stepDetails }));
+      return undefined;
+    });
+    const resultPath = resultPathFor(harness.runtime.paths.coral.exports.jobsRoot, 'workflow-1');
+    const finalizeWorkflow = createWorkflowRecoveryFinalizer({
+      runtime: harness.runtime,
+      progressStore: harness.progressStore,
+      coordinatorCommit: (callback) => harness.progressStore.commit(callback),
+    });
+
+    try {
+      await expect(
+        resumeAll({
+          db: harness.db,
+          progressStore: harness.progressStore,
+          loadJobDetails: loadJobProjectionDetails,
+          getExecutionService: () => harness.executionSvc,
+          createInvocationContext: harness.createInvocationContext,
+          finalizeWorkflow,
+          releaseFailedWorkflowDescendants: noFailedWorkflowDescendants,
+          time: fixedTime,
+        }),
+      ).resolves.toEqual([]);
+      expect(harness.runtime.storage.readFileSync(resultPath, 'utf-8')).toBe(
+        '# Step 0.0: architect\n\ndurable workflow answer\n',
+      );
+      expect(harness.executionSvc.waitStream).not.toHaveBeenCalled();
+    } finally {
+      harness.db.close();
+    }
+  });
+
   it('constructs recovery context from the canonical target of a persisted symlink root', async () => {
     const root = mkdtempSync(join(tmpdir(), 'coral-workflow-recovery-canonical-'));
     const physicalProject = join(root, 'physical-project');
@@ -395,7 +462,7 @@ describe('workflow recovery branch rules', () => {
           contextRoots.push(projectRoot);
           return harness.createInvocationContext(projectRoot);
         },
-        finalizeWorkflow: vi.fn(),
+        finalizeWorkflow: withNoopWorkflowArtifactEnsure(vi.fn()),
         releaseFailedWorkflowDescendants: noFailedWorkflowDescendants,
         time: fixedTime,
       });
@@ -424,7 +491,7 @@ describe('workflow recovery branch rules', () => {
         loadJobDetails: loadJobProjectionDetails,
         getExecutionService: () => harness.executionSvc,
         createInvocationContext: harness.createInvocationContext,
-        finalizeWorkflow: vi.fn(),
+        finalizeWorkflow: withNoopWorkflowArtifactEnsure(vi.fn()),
         releaseFailedWorkflowDescendants: noFailedWorkflowDescendants,
         time: fixedTime,
       });
@@ -561,7 +628,7 @@ describe('workflow recovery branch rules', () => {
       );
       return { kind: 'provider-session', status: 'running', jobId: 'replacement-1', sessionId: sessionId };
     });
-    const finalizeWorkflow = vi.fn<(intent: WorkflowFinalizationIntent) => void>();
+    const finalizeWorkflow = withNoopWorkflowArtifactEnsure(vi.fn<(intent: WorkflowFinalizationIntent) => void>());
 
     try {
       const resumed = await resumeAll({
@@ -612,7 +679,7 @@ describe('workflow recovery branch rules', () => {
           loadJobDetails: loadJobProjectionDetails,
           getExecutionService: () => harness.executionSvc,
           createInvocationContext: harness.createInvocationContext,
-          finalizeWorkflow: vi.fn(),
+          finalizeWorkflow: withNoopWorkflowArtifactEnsure(vi.fn()),
           releaseFailedWorkflowDescendants: noFailedWorkflowDescendants,
           time: fixedTime,
         }),
@@ -667,7 +734,7 @@ describe('workflow recovery branch rules', () => {
           loadJobDetails: loadJobProjectionDetails,
           getExecutionService: () => harness.executionSvc,
           createInvocationContext: harness.createInvocationContext,
-          finalizeWorkflow: vi.fn(),
+          finalizeWorkflow: withNoopWorkflowArtifactEnsure(vi.fn()),
           releaseFailedWorkflowDescendants: noFailedWorkflowDescendants,
           time: fixedTime,
         }),
@@ -700,7 +767,7 @@ describe('workflow recovery branch rules', () => {
           loadJobDetails: loadJobProjectionDetails,
           getExecutionService: () => harness.executionSvc,
           createInvocationContext: harness.createInvocationContext,
-          finalizeWorkflow: vi.fn(),
+          finalizeWorkflow: withNoopWorkflowArtifactEnsure(vi.fn()),
           releaseFailedWorkflowDescendants: noFailedWorkflowDescendants,
           time: fixedTime,
         }),
@@ -743,7 +810,7 @@ describe('workflow recovery branch rules', () => {
         harness.jobIdForSlot(slot.slotId),
         '2026-04-27T00:00:02.000Z',
       );
-    const finalizeWorkflow = vi.fn<(intent: WorkflowFinalizationIntent) => void>();
+    const finalizeWorkflow = withNoopWorkflowArtifactEnsure(vi.fn<(intent: WorkflowFinalizationIntent) => void>());
 
     try {
       await expect(
@@ -783,7 +850,7 @@ describe('workflow recovery branch rules', () => {
         loadJobDetails: loadJobProjectionDetails,
         getExecutionService: () => harness.executionSvc,
         createInvocationContext: harness.createInvocationContext,
-        finalizeWorkflow: vi.fn(),
+        finalizeWorkflow: withNoopWorkflowArtifactEnsure(vi.fn()),
         releaseFailedWorkflowDescendants: noFailedWorkflowDescendants,
         time: fixedTime,
       });
@@ -811,7 +878,7 @@ describe('workflow recovery branch rules', () => {
         loadJobDetails: loadJobProjectionDetails,
         getExecutionService: () => harness.executionSvc,
         createInvocationContext: harness.createInvocationContext,
-        finalizeWorkflow: vi.fn(),
+        finalizeWorkflow: withNoopWorkflowArtifactEnsure(vi.fn()),
         releaseFailedWorkflowDescendants: noFailedWorkflowDescendants,
         time: fixedTime,
       });
@@ -847,7 +914,7 @@ describe('workflow recovery branch rules', () => {
         loadJobDetails: loadJobProjectionDetails,
         getExecutionService,
         createInvocationContext: createReplacementContext,
-        finalizeWorkflow: vi.fn(),
+        finalizeWorkflow: withNoopWorkflowArtifactEnsure(vi.fn()),
         releaseFailedWorkflowDescendants: noFailedWorkflowDescendants,
         ids,
         time: fixedTime,
@@ -904,7 +971,7 @@ describe('workflow recovery branch rules', () => {
     const pendingJobId = harness.jobIdForSlot(pendingSlot.slotId);
     const missingJobId = randomUUID();
     const ids = { uuid: vi.fn(() => missingJobId) };
-    const finalizeWorkflow = vi.fn<(intent: WorkflowFinalizationIntent) => void>();
+    const finalizeWorkflow = withNoopWorkflowArtifactEnsure(vi.fn<(intent: WorkflowFinalizationIntent) => void>());
     // eslint-disable-next-line @typescript-eslint/no-misused-promises
     harness.executionSvc.coralDispatch.mockImplementation(async (_provider, _coralName, input) => {
       const jobId = String(input.jobId);
@@ -1007,7 +1074,7 @@ describe('workflow recovery branch rules', () => {
     const [pendingSlot, missingSlot] = harness.plan.slots;
     const pendingJobId = harness.jobIdForSlot(pendingSlot.slotId);
     const missingJobId = randomUUID();
-    const finalizeWorkflow = vi.fn<(intent: WorkflowFinalizationIntent) => void>();
+    const finalizeWorkflow = withNoopWorkflowArtifactEnsure(vi.fn<(intent: WorkflowFinalizationIntent) => void>());
     harness.executionSvc.coralDispatch.mockResolvedValue({
       status: 'rejected',
       message: 'launch capacity unavailable',
@@ -1088,7 +1155,7 @@ describe('workflow recovery branch rules', () => {
     });
     const [completedSlot] = harness.plan.slots;
     const completedJobId = harness.jobIdForSlot(completedSlot.slotId);
-    const finalizeWorkflow = vi.fn<(intent: WorkflowFinalizationIntent) => void>();
+    const finalizeWorkflow = withNoopWorkflowArtifactEnsure(vi.fn<(intent: WorkflowFinalizationIntent) => void>());
     harness.executionSvc.coralDispatch.mockResolvedValue({
       status: 'rejected',
       message: 'launch capacity unavailable',
@@ -1138,7 +1205,7 @@ describe('workflow recovery branch rules', () => {
         0: { content: '', outcome: { kind: 'provider_exit', code: 1 }, durationMs: 0 },
       },
     });
-    const finalizeWorkflow = vi.fn<(intent: WorkflowFinalizationIntent) => void>();
+    const finalizeWorkflow = withNoopWorkflowArtifactEnsure(vi.fn<(intent: WorkflowFinalizationIntent) => void>());
     try {
       await expect(
         resumeAll({
@@ -1181,7 +1248,7 @@ describe('workflow recovery branch rules', () => {
         1: { content: '', outcome: { kind: 'provider_exit', code: 1 }, durationMs: 0 },
       },
     });
-    const finalizeWorkflow = vi.fn<(intent: WorkflowFinalizationIntent) => void>();
+    const finalizeWorkflow = withNoopWorkflowArtifactEnsure(vi.fn<(intent: WorkflowFinalizationIntent) => void>());
     try {
       await expect(
         resumeAll({
@@ -1222,7 +1289,7 @@ describe('workflow recovery branch rules', () => {
   it('fails closed when a durable workflow slot job is not owned by its workflow', async () => {
     const harness = createHarness({ atomPhase: 'running', projectionPhase: 'running' });
     const slot = harness.plan.slots[0];
-    const finalizeWorkflow = vi.fn<(intent: WorkflowFinalizationIntent) => void>();
+    const finalizeWorkflow = withNoopWorkflowArtifactEnsure(vi.fn<(intent: WorkflowFinalizationIntent) => void>());
     const row = harness.db
       .prepare(
         "SELECT seq, body FROM events WHERE stream_kind = 'job' AND stream_id = ? AND type = 'job.launch.requested'",
@@ -1264,7 +1331,7 @@ describe('workflow recovery branch rules', () => {
   it('fails closed when a durable workflow slot has no real provider session', async () => {
     const harness = createHarness({ atomPhase: 'running', projectionPhase: 'running' });
     const slot = harness.plan.slots[0];
-    const finalizeWorkflow = vi.fn<(intent: WorkflowFinalizationIntent) => void>();
+    const finalizeWorkflow = withNoopWorkflowArtifactEnsure(vi.fn<(intent: WorkflowFinalizationIntent) => void>());
     harness.db.prepare('DELETE FROM projection_sessions WHERE session_id = ?').run('session-atom-1');
 
     try {
@@ -1304,7 +1371,7 @@ describe('workflow recovery branch rules', () => {
     const harness = createHarness({ atomPhase: 'running', projectionPhase: 'running' });
     appendRecoverableWorkflowRoot(harness.progressStore, 'workflow-2', PROJECT_ROOT);
     harness.db.prepare(`UPDATE projection_workflows SET ${column} = ? WHERE workflow_id = ?`).run(value, 'workflow-1');
-    const finalizeWorkflow = vi.fn<(intent: WorkflowFinalizationIntent) => void>();
+    const finalizeWorkflow = withNoopWorkflowArtifactEnsure(vi.fn<(intent: WorkflowFinalizationIntent) => void>());
     const releaseFailedWorkflowDescendants = vi.fn(() => []);
 
     try {
@@ -1350,7 +1417,7 @@ describe('workflow recovery branch rules', () => {
   it('contains invocation-context construction failure and visits the next workflow', async () => {
     const harness = createHarness({ atomPhase: 'running', projectionPhase: 'running' });
     appendRecoverableWorkflowRoot(harness.progressStore, 'workflow-2', PROJECT_ROOT);
-    const finalizeWorkflow = vi.fn<(intent: WorkflowFinalizationIntent) => void>();
+    const finalizeWorkflow = withNoopWorkflowArtifactEnsure(vi.fn<(intent: WorkflowFinalizationIntent) => void>());
     const releaseFailedWorkflowDescendants = vi.fn(() => []);
     const getExecutionService = vi.fn(() => harness.executionSvc);
 
@@ -1709,7 +1776,7 @@ describe('workflow recovery branch rules', () => {
         },
       },
     });
-    const finalizeWorkflow = vi.fn<(intent: WorkflowFinalizationIntent) => void>();
+    const finalizeWorkflow = withNoopWorkflowArtifactEnsure(vi.fn<(intent: WorkflowFinalizationIntent) => void>());
     const releaseFailedWorkflowDescendants = vi.fn(() => []);
 
     try {
@@ -1743,7 +1810,7 @@ describe('workflow recovery branch rules', () => {
         0: { content: '', outcome: { kind: 'aborted', reason: 'user_abort' }, durationMs: 0 },
       },
     });
-    const finalizeWorkflow = vi.fn<(intent: WorkflowFinalizationIntent) => void>();
+    const finalizeWorkflow = withNoopWorkflowArtifactEnsure(vi.fn<(intent: WorkflowFinalizationIntent) => void>());
     const releaseFailedWorkflowDescendants = vi.fn(() => []);
     const log = vi.fn<(message: string) => void>();
 
@@ -1775,7 +1842,7 @@ describe('workflow recovery branch rules', () => {
 
   it('contains a thrown workflow execution abort and emits an aborted finalization intent', async () => {
     const harness = createHarness({ atomPhase: 'running', projectionPhase: 'running' });
-    const finalizeWorkflow = vi.fn<(intent: WorkflowFinalizationIntent) => void>();
+    const finalizeWorkflow = withNoopWorkflowArtifactEnsure(vi.fn<(intent: WorkflowFinalizationIntent) => void>());
     const releaseFailedWorkflowDescendants = vi.fn(() => []);
     const workflowAbort = createWorkflowExecutionError('workflow child aborted', true, []);
 
@@ -1805,7 +1872,7 @@ describe('workflow recovery branch rules', () => {
 
   it('contains an item-local AbortError while the coordinator signal is live', async () => {
     const harness = createHarness({ atomPhase: 'running', projectionPhase: 'running' });
-    const finalizeWorkflow = vi.fn<(intent: WorkflowFinalizationIntent) => void>();
+    const finalizeWorkflow = withNoopWorkflowArtifactEnsure(vi.fn<(intent: WorkflowFinalizationIntent) => void>());
     const releaseFailedWorkflowDescendants = vi.fn(() => []);
     const localAbort = new AbortError({ stage: 'workflow child lookup' });
 
@@ -1924,9 +1991,11 @@ describe('workflow recovery branch rules', () => {
   it('defers a failed durable close and keeps its intended finalization authoritative', async () => {
     const harness = createHarness({ atomPhase: 'running', projectionPhase: 'running' });
     const finalizerError = new Error('workflow finalizer unavailable');
-    const finalizeWorkflow = vi.fn<(intent: WorkflowFinalizationIntent) => void>(() => {
-      throw finalizerError;
-    });
+    const finalizeWorkflow = withNoopWorkflowArtifactEnsure(
+      vi.fn<(intent: WorkflowFinalizationIntent) => void>(() => {
+        throw finalizerError;
+      }),
+    );
     const releaseFailedWorkflowDescendants = vi.fn(() => []);
 
     try {
@@ -2002,7 +2071,7 @@ describe('workflow recovery branch rules', () => {
 
   it('propagates coordinator cancellation without invoking the workflow finalizer', async () => {
     const harness = createHarness({ atomPhase: 'running', projectionPhase: 'running' });
-    const finalizeWorkflow = vi.fn<(intent: WorkflowFinalizationIntent) => void>();
+    const finalizeWorkflow = withNoopWorkflowArtifactEnsure(vi.fn<(intent: WorkflowFinalizationIntent) => void>());
     const releaseFailedWorkflowDescendants = vi.fn(() => []);
     const cancellation = new Error('coordinator stopped workflow recovery');
     const controller = new AbortController();

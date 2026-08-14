@@ -58,6 +58,7 @@ import { getInternals } from '#tests/unit/jobs/shell/__helpers__/service-fixture
 import { workflowPlanDeclaredEvent, workflowRegistry } from '#src/workflow/events.js';
 import { buildWorkflowPlan } from '#src/workflow/plan.js';
 import { readWorkflowView } from '#src/workflow/read-queries.js';
+import { materializeWorkflowResultArtifact } from '#src/workflow/result-artifact.js';
 import { aggregateWorkflowUsage } from '#src/jobs/workflow-usage.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
@@ -134,6 +135,7 @@ function createProgressStore(namespace = 'test-ns'): JobStore {
     eventBus,
     reducers: composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry),
     providers: permissiveProviderLookupPort,
+    materializeWorkflowResultArtifact,
   });
 }
 
@@ -1200,6 +1202,8 @@ describe('ExecutionService', () => {
     );
 
     const service = createService(ctx);
+    const { progressStore } = getInternals(service);
+    const materializeResultArtifact = vi.spyOn(progressStore, 'materializeResultArtifact');
     const decision = await service.executeWorkflow(
       'codex',
       parseExpression('architect -> resolver'),
@@ -1219,13 +1223,11 @@ describe('ExecutionService', () => {
 
     const terminal = await waitForTerminalEvent(service, decision.jobId);
     const markdownAtTerminal = readFileSync(terminal.resultPath, 'utf-8');
-    const { progressStore } =
-      /* @intentional-private-access — seed or inspect execution internals with no public test seam */
-      getInternals(service);
     const status = progressStore.readStatus(decision.jobId);
     const workflow = readWorkflowView(progressStore.getDb(), decision.jobId, createDefaultStoreReadContext());
 
     expect(existsSync(terminal.resultPath)).toBe(true);
+    expect(materializeResultArtifact).toHaveBeenCalledExactlyOnceWith(decision.jobId);
     expect(markdownAtTerminal).toBe(
       ['# Step 0.0: architect', '', 'ARCH', '', '# Step 1.0: resolver', '', 'FINAL', ''].join('\n'),
     );
@@ -1376,6 +1378,8 @@ describe('ExecutionService', () => {
     );
 
     const service = createService(ctx);
+    const { progressStore } = getInternals(service);
+    const materializeResultArtifact = vi.spyOn(progressStore, 'materializeResultArtifact');
     const decision = await service.executeWorkflow(
       'codex',
       parseExpression('architect -> resolver'),
@@ -1395,13 +1399,11 @@ describe('ExecutionService', () => {
 
     const terminal = await waitForTerminalEvent(service, decision.jobId);
     const markdownAtTerminal = readFileSync(terminal.resultPath, 'utf-8');
-    const { progressStore } =
-      /* @intentional-private-access — seed or inspect execution internals with no public test seam */
-      getInternals(service);
     const status = progressStore.readStatus(decision.jobId);
     const workflow = readWorkflowView(progressStore.getDb(), decision.jobId, createDefaultStoreReadContext());
 
     expect(markdownAtTerminal).toBe('# Step 0.0: architect\n\nARCH\n');
+    expect(materializeResultArtifact).toHaveBeenCalledExactlyOnceWith(decision.jobId);
     expect(terminal.result).toMatchObject({
       content: '',
       outcome: {
@@ -1455,6 +1457,8 @@ describe('ExecutionService', () => {
     );
 
     const service = createService(ctx);
+    const { progressStore } = getInternals(service);
+    const materializeResultArtifact = vi.spyOn(progressStore, 'materializeResultArtifact');
     const decision = await service.executeWorkflow(
       'codex',
       parseExpression('architect -> resolver'),
@@ -1474,13 +1478,11 @@ describe('ExecutionService', () => {
 
     const terminal = await waitForTerminalEvent(service, decision.jobId);
     const markdownAtTerminal = readFileSync(terminal.resultPath, 'utf-8');
-    const { progressStore } =
-      /* @intentional-private-access — seed or inspect execution internals with no public test seam */
-      getInternals(service);
     const status = progressStore.readStatus(decision.jobId);
     const workflow = readWorkflowView(progressStore.getDb(), decision.jobId, createDefaultStoreReadContext());
 
     expect(markdownAtTerminal).toBe('# Step 0.0: architect\n\nARCH\n');
+    expect(materializeResultArtifact).toHaveBeenCalledExactlyOnceWith(decision.jobId);
     expect(terminal.result).toMatchObject({
       content: '',
       outcome: {

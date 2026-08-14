@@ -1,8 +1,8 @@
 import type { Database } from '../store/db.js';
 import type { JobStatus, WorkflowChildJobSummary } from '../jobs/records.js';
-import { parseWorkflowSlotId } from '../infra/identifiers.js';
 import { workflowSlotLabel } from './plan.js';
 import { readWorkflowProjection } from './read-queries.js';
+import { parseWorkflowSlotId } from './slot-id.js';
 
 function workflowLabels(db: Database, workflowJobId: string): ReadonlyMap<string, string> {
   const workflow = readWorkflowProjection(db, workflowJobId);

@@ -4,7 +4,7 @@ import { assertNever } from '../../infra/error-format.js';
 import type { AbortResult } from '../../jobs/contracts/abort-registry.js';
 import type { JobDetailResponse, JobStatus, JobTerminal, JobsListResponse } from '../../jobs/records.js';
 import type { AcceptedLaunchResponse } from '../../jobs/launch.js';
-import { compareWorkflowSlotIds } from '../../infra/identifiers.js';
+import { compareWorkflowSlotIds } from '../../workflow/slot-id.js';
 import { formatTable, joinLines } from './text.js';
 import { formatUsageSegment } from './usage.js';
 

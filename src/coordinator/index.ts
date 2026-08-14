@@ -39,7 +39,10 @@ import type { KbCorpusPublication, KbCorpusSnapshot } from '../kb/contract.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
 import { createWorkflowRecoveryFinalizer } from './services/workflow-recovery-finalizer.js';
 import { createFailedWorkflowDescendantReleaser } from './services/workflow-recovery-descendants.js';
-import { assertDescriberCoverage } from '../read-model/event-describers.js';
+import { assertDescriberCoverage, defaultEventDescribers } from '../read-model/event-describers.js';
+import { createCauseRefRenderer } from '../causality/render.js';
+import { getEvent } from '../store/event-queries.js';
+import { materializeWorkflowResultArtifact } from '../workflow/result-artifact.js';
 import { aggregateWorkflowUsage } from '../jobs/workflow-usage.js';
 import { JobStore } from '../jobs/store.js';
 import { createJobsStartupRunner } from '../jobs/startup.js';
@@ -257,6 +260,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   assertDescriberCoverage(reducers.describerKeys);
   const bodyCodec = createEventBodyCodec();
   const readCtx = { schemas: reducers.schemas, streamKinds: reducers.streamKinds, bodyCodec };
+  const causeRefRenderer = createCauseRefRenderer(defaultEventDescribers);
   let core: CoordinatorCoreResult | null = null;
   const bootFreshnessTimeoutMs = resolveBootFreshnessTimeoutMs(runtime);
   const textProjectionHealth = createTextProjectionHealthTracker();
@@ -341,6 +345,11 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       reducers,
       providers: providerLookupPortFromCatalog(providerRegistry),
       observer: lifecycleReactor.observe,
+      describeCauseRef: (ref) =>
+        causeRefRenderer.describe(ref, {
+          getEvent: (stream, seq) => getEvent(storeDb, stream, seq, readCtx),
+        }),
+      materializeWorkflowResultArtifact,
     });
     const consumerDriver = new ConsumerDriver({
       db: storeDb,

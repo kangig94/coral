@@ -34,7 +34,7 @@ import {
   DEFAULT_STALE_CHECK_INTERVAL_MS,
   DEFAULT_STALE_TIMEOUT_MS,
 } from './execution-constants.js';
-import { compareWorkflowSlotIds } from '../infra/identifiers.js';
+import { compareWorkflowSlotIds } from './slot-id.js';
 import {
   compileWorkflowPlan,
   maxStepIndex,
@@ -103,6 +103,7 @@ export type WorkflowRecoveryAtomicClose = {
 
 export type WorkflowRecoveryFinalizer = ((intent: WorkflowFinalizationIntent) => void) & {
   atomicClose?(request: WorkflowRecoveryAtomicClose): readonly WorkflowRecoveryDescendantRelease[];
+  ensureArtifact(workflowJobId: string): void;
 };
 
 export type FailedWorkflowDescendantReleaser = ((
@@ -1330,7 +1331,7 @@ type ResumeAllOptions = {
   loadJobDetails: unknown;
   getExecutionService: (ctx: InvocationContext) => WorkflowExecutionPort;
   createInvocationContext: (projectRoot: CanonicalWorkDir) => InvocationContext;
-  finalizeWorkflow: (intent: WorkflowFinalizationIntent) => void;
+  finalizeWorkflow: WorkflowRecoveryFinalizer;
   releaseFailedWorkflowDescendants: (workflowId: string) => readonly WorkflowRecoveryDescendantRelease[];
   signal?: AbortSignal;
   log?: (message: string) => void;
@@ -1376,7 +1377,7 @@ function closeRecoveredWorkflow(
 ): void {
   item.deferredReason = 'close-failed';
   const releaseDescendants = atomicReleaser(options.releaseFailedWorkflowDescendants);
-  const finalizer = options.finalizeWorkflow as WorkflowRecoveryFinalizer;
+  const finalizer = options.finalizeWorkflow;
   if (finalizer.atomicClose !== undefined && releaseDescendants !== null) {
     item.descendantReleases = finalizer.atomicClose({
       intent,
@@ -1501,6 +1502,7 @@ async function settleWorkflowRecovery(
   }
 
   if (recovered === null) {
+    options.finalizeWorkflow.ensureArtifact(item.envelope.subject.key);
     if (!clearWorkflowContinuation(item, quarantine)) {
       throw new Error(`Workflow recovery continuation changed for '${item.envelope.subject.key}'.`);
     }

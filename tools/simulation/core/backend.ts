@@ -50,6 +50,7 @@ import { jobsRegistry } from '../../../src/jobs/events.js';
 import { sessionsRegistry } from '../../../src/sessions/events.js';
 import { discussRegistry as discussStoreRegistry } from '../../../src/discuss/event-registry.js';
 import { workflowRegistry } from '../../../src/workflow/events.js';
+import { materializeWorkflowResultArtifact } from '../../../src/workflow/result-artifact.js';
 import type { StoragePort } from '../../../src/infra/port-types.js';
 import { createCoordinatorCore } from '../../../src/coordinator/composition/index.js';
 import type { CoordinatorCoreResult, CreateServerFn, FetchFn } from '../../../src/coordinator/composition/types.js';
@@ -63,6 +64,9 @@ import { createFailedWorkflowDescendantReleaser } from '../../../src/coordinator
 import { openStoreDatabase } from '../../../src/store/db.js';
 import { createEventBodyCodec } from '../../../src/store/event-body-codec.js';
 import { composeReducers } from '../../../src/store/reducers.js';
+import { getEvent } from '../../../src/store/event-queries.js';
+import { createCauseRefRenderer } from '../../../src/causality/render.js';
+import { defaultEventDescribers } from '../../../src/read-model/event-describers.js';
 import { workflowRecover } from '../../../src/workflow/recover.js';
 import { setStoreServicesForTest } from '../../testing/store-services.js';
 import type { MockDurableScript, MockSpawnScript } from './mock-script-types.js';
@@ -597,11 +601,20 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
     storage: runtime.storage,
     storeFormat,
   });
-  const progressStore = new JobStore(namespace, runtime, createEventBodyCodec(), {
+  const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussStoreRegistry, workflowRegistry);
+  const bodyCodec = createEventBodyCodec();
+  const readCtx = { schemas: reducers.schemas, streamKinds: reducers.streamKinds, bodyCodec };
+  const causeRefRenderer = createCauseRefRenderer(defaultEventDescribers);
+  const progressStore = new JobStore(namespace, runtime, bodyCodec, {
     eventBus,
     db: storeDb,
-    reducers: composeReducers(jobsRegistry, sessionsRegistry, discussStoreRegistry, workflowRegistry),
+    reducers,
     providers: providerLookupPortFromCatalog(providerRegistry),
+    describeCauseRef: (ref) =>
+      causeRefRenderer.describe(ref, {
+        getEvent: (stream, seq) => getEvent(storeDb, stream, seq, readCtx),
+      }),
+    materializeWorkflowResultArtifact,
   });
   const storeServices: CoordinatorStoreServices = {
     storeDb,

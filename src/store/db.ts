@@ -464,3 +464,18 @@ export function sqlPlaceholders(count: number): string {
   }
   return placeholders.join(', ');
 }
+
+const SQLITE_SAFE_VARIABLE_BATCH_SIZE = 900;
+
+/** Splits caller-supplied bind values below SQLite's variable limit, reserving fixed parameters when needed. */
+export function sqlParameterBatches<T>(values: readonly T[], reservedVariables = 0): T[][] {
+  const batchSize = SQLITE_SAFE_VARIABLE_BATCH_SIZE - reservedVariables;
+  if (batchSize < 1) {
+    throw new RangeError('SQL parameter batch has no room after reserved variables.');
+  }
+  const batches: T[][] = [];
+  for (let offset = 0; offset < values.length; offset += batchSize) {
+    batches.push(values.slice(offset, offset + batchSize));
+  }
+  return batches;
+}

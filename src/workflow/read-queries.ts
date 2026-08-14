@@ -8,7 +8,7 @@ import {
   type ProjectionJobStoredRow,
 } from '../jobs/projection-row.js';
 import { workflowCompletedBodySchema } from './events.js';
-import { compareWorkflowSlotIds } from '../infra/identifiers.js';
+import { compareWorkflowSlotIds } from './slot-id.js';
 import { workflowPlanSchema, type WorkflowPlan } from './plan.js';
 import { decodeBody, type StoreReadContext } from '../store/body-codec.js';
 import { providerScopeSchema, type ProviderScope } from '../infra/provider-scope.js';

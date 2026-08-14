@@ -330,9 +330,7 @@ describe('jobs queries', () => {
     });
   });
 
-  it('decodes complete projection rows before applying list filters', () => {
-    const prepareSpy = vi.spyOn(db, 'prepare');
-
+  it('applies list filters while decoding complete projection rows', () => {
     const jobs = listJobs(
       db,
       {
@@ -343,15 +341,16 @@ describe('jobs queries', () => {
       readCtx,
     );
 
-    expect(jobs.map((entry) => entry.jobId)).toEqual(['job-queued']);
-
-    const projectionQuery = prepareSpy.mock.calls
-      .map(([sql]) => sql)
-      .find((sql) => sql.includes('FROM projection_jobs'));
-
-    expect(projectionQuery).not.toContain('WHERE');
-    expect(projectionQuery).toContain('execution_owner');
-    expect(projectionQuery).toContain('workflow_slot_generation');
+    expect(jobs).toEqual([
+      expect.objectContaining({
+        jobId: 'job-queued',
+        status: expect.objectContaining({
+          phase: 'queued',
+          provider: 'codex',
+          owner: { kind: 'provider-session', id: 'session-queued' },
+        }),
+      }),
+    ]);
   });
 
   it('keeps KB jobs visible from any project while scoping other projects out', () => {

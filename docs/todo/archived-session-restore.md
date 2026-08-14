@@ -77,20 +77,12 @@ already what every codex turn issues — `src/providers/codex/thread-kernel.ts:8
    with an owner and a terminal — but "who owns a restored session, and what ends it" needs deciding before
    anything is built.
 
-2. **The archive can vanish before it is wanted.** The whole job directory — `provider-artifacts/` included —
-   is removed by `cleanupStaleJobs` (`src/coordinator/lifecycle.ts:381-414`) once the job is terminal **and**
-   either aged out or written by a different bundle:
-
-   ```ts
-   const fromOldBundle = item.bundleHash !== undefined && item.bundleHash !== currentBundleHash;
-   const agedOut = isAgedOut(item.updatedAt, nowMs, retentionMs);
-   ```
-
-   `retentionMs` defaults to **14 days** (`DEFAULT_JOB_RETENTION_DAYS`, overridable with
-   `CORAL_JOBS_RETENTION_DAYS`). The bundle rule is the sharp one: **a terminal job's archive is pruned on the
-   first boot after any Coral version change**, regardless of age. Since Coral upgrades often, the practical
-   restore window is "until the next upgrade", not two weeks. Either the archive moves out of job-export
-   lifetime, or the restore feature ships with that window stated plainly.
+2. **The archive has no retention policy.** `provider-artifacts/` lives under the persistent
+   `~/.coral/exports/jobs/<jobId>/` or `~/.coral/exports-dev/jobs/<jobId>/` tree. `cleanupStaleJobs`
+   (`src/coordinator/lifecycle.ts`) prunes only `<tmpdir>/coral-jobs/<jobId>/` runtime scratch and matching
+   durable CLI-process metadata; `CORAL_JOBS_RETENTION_DAYS` does not remove exports. A restore design must
+   decide whether archives remain indefinite or gain their own explicit retention policy. See
+   [persistent job-export retention](persistent-job-export-retention.md).
 
 3. **Does the provider need the file at its original path?** `locateCodexRolloutArtifact`
    (`src/providers/codex/artifacts.ts:28`) finds rollouts by scanning `sessionsRoot` up to depth 4 and matching
@@ -122,5 +114,5 @@ does not affect whether a session can be resumed.
 - The archive already exists, is byte-complete, and carries identity + sha256. It is not a metadata stub.
 - `provider-artifact-archive.ts` is one-way; there is no restore export to find.
 - Workflow is the only launcher that chooses discard; everything else retains by default.
-- Job export directories, and therefore archives, are pruned on bundle change as well as by age.
+- Job export directories, and therefore archives, have no retention policy and are never pruned.
 - Resumability is file-based, not host-based.

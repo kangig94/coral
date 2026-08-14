@@ -1,6 +1,5 @@
 import { PROJECTION_JOB_COLUMNS, type ProjectionJobStoredRow } from '../jobs/projection-row.js';
 import type { Database } from '../store/db.js';
-import { sqlPlaceholders } from '../store/db.js';
 import type { EventsRow } from '../store/schema.js';
 import {
   canonicalRecoveryRevision,
@@ -11,7 +10,6 @@ import {
 } from '../recovery/containment.js';
 import {
   EVENT_COLUMNS,
-  PROJECTION_SESSION_COLUMNS,
   continuationRevisionFields,
   eventRevisionFields,
   projectionJobRevisionFields,
@@ -46,17 +44,69 @@ export type RawWorkflowRecoveryEnvelope = {
   readonly subject: RecoverySubject;
 };
 
-function readEvents(db: Database, streamKind: EventsRow['stream_kind'], streamIds: readonly string[]): EventsRow[] {
-  if (streamIds.length === 0) return [];
+function readStreamEvents(db: Database, streamKind: EventsRow['stream_kind'], streamId: string): EventsRow[] {
   return db
-    .prepare<unknown[], EventsRow>(
+    .prepare<[EventsRow['stream_kind'], string], EventsRow>(
       `SELECT ${EVENT_COLUMNS}
          FROM events
         WHERE stream_kind = ?
-          AND stream_id IN (${sqlPlaceholders(streamIds.length)})
+          AND stream_id = ?
         ORDER BY seq ASC`,
     )
-    .all(streamKind, ...streamIds);
+    .all(streamKind, streamId);
+}
+
+function readWorkflowJobEvents(db: Database, workflowId: string): EventsRow[] {
+  return db
+    .prepare<[string, string], EventsRow>(
+      `SELECT events.*
+         FROM events
+        WHERE events.stream_kind = 'job'
+          AND (
+            events.stream_id = ?
+            OR EXISTS (
+              SELECT 1
+                FROM projection_jobs
+               WHERE projection_jobs.job_id = events.stream_id
+                 AND projection_jobs.parent_workflow_job_id = ?
+            )
+          )
+        ORDER BY events.seq ASC`,
+    )
+    .all(workflowId, workflowId);
+}
+
+function readWorkflowProviderSessions(db: Database, workflowId: string): RawSessionProjectionRow[] {
+  return db
+    .prepare<[string], RawSessionProjectionRow>(
+      `SELECT projection_sessions.*
+         FROM projection_sessions
+        WHERE EXISTS (
+          SELECT 1
+            FROM projection_jobs
+           WHERE projection_jobs.session_id = projection_sessions.session_id
+             AND projection_jobs.parent_workflow_job_id = ?
+        )
+        ORDER BY projection_sessions.session_id ASC`,
+    )
+    .all(workflowId);
+}
+
+function readWorkflowSessionEvents(db: Database, workflowId: string): EventsRow[] {
+  return db
+    .prepare<[string], EventsRow>(
+      `SELECT events.*
+         FROM events
+        WHERE events.stream_kind = 'session'
+          AND EXISTS (
+            SELECT 1
+              FROM projection_jobs
+             WHERE projection_jobs.session_id = events.stream_id
+               AND projection_jobs.parent_workflow_job_id = ?
+          )
+        ORDER BY events.seq ASC`,
+    )
+    .all(workflowId);
 }
 
 function workflowRevisionFields(workflowId: string, row: RawWorkflowProjectionRow | null): RecoveryRevisionField[] {
@@ -107,7 +157,7 @@ function readWorkflowEnvelope(db: Database, projection: ProjectionJobStoredRow):
         ORDER BY job_id ASC`,
     )
     .all(workflowId);
-  const jobEvents = readEvents(db, 'job', [workflowId, ...childProjections.map((row) => row.job_id)]);
+  const jobEvents = readWorkflowJobEvents(db, workflowId);
   const eventsByJob = new Map<string, EventsRow[]>();
   for (const event of jobEvents) {
     const rows = eventsByJob.get(event.stream_id) ?? [];
@@ -118,24 +168,7 @@ function readWorkflowEnvelope(db: Database, projection: ProjectionJobStoredRow):
     projection: child,
     events: eventsByJob.get(child.job_id) ?? [],
   }));
-  const sessionIds = [
-    ...new Set(
-      childProjections
-        .map((child) => child.session_id)
-        .filter((sessionId): sessionId is string => typeof sessionId === 'string' && sessionId.length > 0),
-    ),
-  ].sort();
-  const providerSessions =
-    sessionIds.length === 0
-      ? []
-      : db
-          .prepare<unknown[], RawSessionProjectionRow>(
-            `SELECT ${PROJECTION_SESSION_COLUMNS}
-               FROM projection_sessions
-              WHERE session_id IN (${sqlPlaceholders(sessionIds.length)})
-              ORDER BY session_id ASC`,
-          )
-          .all(...sessionIds);
+  const providerSessions = readWorkflowProviderSessions(db, workflowId);
   const continuation =
     db
       .prepare<[string, string], RawWorkflowRecoveryContinuationRow>(
@@ -149,10 +182,10 @@ function readWorkflowEnvelope(db: Database, projection: ProjectionJobStoredRow):
   const raw = {
     job: { projection, events: eventsByJob.get(workflowId) ?? [] },
     workflow,
-    workflowEvents: readEvents(db, 'workflow', [workflowId]),
+    workflowEvents: readStreamEvents(db, 'workflow', workflowId),
     children,
     providerSessions,
-    sessionEvents: readEvents(db, 'session', sessionIds),
+    sessionEvents: readWorkflowSessionEvents(db, workflowId),
     continuation,
   };
   const fields = envelopeRevisionFields(raw);

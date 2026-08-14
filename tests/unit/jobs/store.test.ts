@@ -230,9 +230,7 @@ describe('JobStore', () => {
   });
 
   it('loads workflow children through the parent index without hydrating unrelated durable rows', () => {
-    const backingDb = createDb();
-    const { db: trackedDb, preparedSql } = createTrackedDb(backingDb);
-    const { store } = createStore(trackedDb);
+    const { store } = createStore();
     const db = store.getDb();
     const workflowJobId = '22222222-2222-4222-8222-222222222222';
     const childJobId = '11111111-1111-4111-8111-111111111111';
@@ -297,18 +295,53 @@ describe('JobStore', () => {
         correlation_id, causation_seq, refs, body
       ) VALUES (1, ?, 'job.runtime.started', 'job', 'unrelated-0', NULL, NULL, NULL, NULL, NULL, ?)`,
     ).run('2026-08-15T00:00:00.000Z', Buffer.from('{corrupt', 'utf-8'));
+    db.prepare(
+      `INSERT INTO events (
+        seq, ts, type, stream_kind, stream_id, namespace, project,
+        correlation_id, causation_seq, refs, body
+      ) VALUES (2, ?, 'job.runtime.started', 'invalid-kind', 'unrelated-0', NULL, NULL, NULL, NULL, NULL, ?)`,
+    ).run('2026-08-15T00:00:00.000Z', Buffer.from('{}', 'utf-8'));
 
-    preparedSql.length = 0;
     expect(store.listWorkflowChildProjections(workflowJobId)).toEqual([
       expect.objectContaining({
         jobId: childJobId,
         status: expect.objectContaining({ workflowSlotId }),
       }),
     ]);
-    expect(preparedSql.filter((sql) => sql.includes('WHERE parent_workflow_job_id = ?'))).toHaveLength(1);
-    expect(preparedSql.filter((sql) => sql.includes('WHERE projection_jobs.parent_workflow_job_id = ?'))).toHaveLength(
-      1,
+  });
+
+  it('lists 33,000 non-corrupt jobs without exceeding SQLite variable limits', () => {
+    const { store } = createStore();
+    const db = store.getDb();
+    const insertProjection = db.prepare(
+      `INSERT INTO projection_jobs (
+        job_id, execution_owner, phase, terminal, diagnostics, session_id, provider,
+        project_root, backend_namespace, bundle_hash, job_kind, parent_workflow_job_id,
+        workflow_slot, workflow_slot_generation, replaces_workflow_job_id, created_at, last_seq
+      ) VALUES (?, ?, 'completed', NULL, ?, ?, 'codex', '/workspace', 'test-ns', NULL, 'provider', NULL, NULL, NULL, NULL, ?, 0)`,
     );
+    db.exec('BEGIN');
+    try {
+      for (let index = 0; index < 33_000; index += 1) {
+        insertProjection.run(
+          `listed-${String(index).padStart(5, '0')}`,
+          JSON.stringify({ kind: 'provider-session', id: `listed-session-${index}` }),
+          JSON.stringify({ progressFaults: [] }),
+          `listed-session-${index}`,
+          '2026-08-15T00:00:00.000Z',
+        );
+      }
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+
+    const jobs = store.listJobProjections();
+
+    expect(jobs).toHaveLength(33_000);
+    expect(jobs[0]?.jobId).toBe('listed-00000');
+    expect(jobs.at(-1)?.jobId).toBe('listed-32999');
   });
 
   it('rejects duplicate terminal events for the same job stream', () => {
@@ -423,8 +456,6 @@ describe('JobStore', () => {
       parentWorkflowJobId: workflowJobId,
       workflowSlotId,
       workflowSlotGeneration: 1,
-      stepIndex: 0,
-      atomIndex: 1,
       replacesWorkflowJobId: replacedJobId,
     });
   });

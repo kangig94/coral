@@ -1,4 +1,4 @@
-import { sqlPlaceholders, type Database } from '../store/db.js';
+import { sqlParameterBatches, sqlPlaceholders, type Database } from '../store/db.js';
 
 import type { ReadonlyDatabase } from '../store/read-port.js';
 import { CoralSetupError } from '../runtime/errors.js';
@@ -434,27 +434,28 @@ export function readProjectionSessionEntriesById(
     return new Map();
   }
 
-  const rows = db
-    .prepare(
-      `SELECT session_id, controller, resumable, conversation_ref, scope_key, entry, last_seq
-         FROM projection_sessions
-        WHERE session_id IN (${sqlPlaceholders(uniqueSessionIds.length)})`,
-    )
-    .all(...uniqueSessionIds);
-
   const entries = new Map<string, ProviderSession>();
-  for (const rawRow of rows) {
-    try {
-      const { row, entry } = decodeProjectionSessionAuthorityRow(rawRow);
-      entries.set(row.session_id, entry);
-    } catch (error: unknown) {
-      const sessionId =
-        typeof rawRow === 'object' &&
-        rawRow !== null &&
-        typeof (rawRow as { session_id?: unknown }).session_id === 'string'
-          ? (rawRow as { session_id: string }).session_id
-          : null;
-      onInvalidRow?.(sessionId, error);
+  for (const batch of sqlParameterBatches(uniqueSessionIds)) {
+    const rows = db
+      .prepare(
+        `SELECT session_id, controller, resumable, conversation_ref, scope_key, entry, last_seq
+           FROM projection_sessions
+          WHERE session_id IN (${sqlPlaceholders(batch.length)})`,
+      )
+      .all(...batch);
+    for (const rawRow of rows) {
+      try {
+        const { row, entry } = decodeProjectionSessionAuthorityRow(rawRow);
+        entries.set(row.session_id, entry);
+      } catch (error: unknown) {
+        const sessionId =
+          typeof rawRow === 'object' &&
+          rawRow !== null &&
+          typeof (rawRow as { session_id?: unknown }).session_id === 'string'
+            ? (rawRow as { session_id: string }).session_id
+            : null;
+        onInvalidRow?.(sessionId, error);
+      }
     }
   }
   return entries;

@@ -4,15 +4,11 @@ import type { Database } from '../../store/db.js';
 
 import type { StoragePort } from '../../infra/port-types.js';
 import { decodeBody, type StoreReadContext } from '../../store/body-codec.js';
-import { getEvent } from '../../store/event-queries.js';
 import type { EventsRow } from '../../store/schema.js';
-import { extractCauseRef, renderCauseRefFallback, type CauseRef } from '../../causality/cause-ref.js';
-import type { CoralEvent } from '../../store/envelope.js';
-import { isRecord } from '../../infra/json.js';
+import type { CauseRef } from '../../causality/cause-ref.js';
 import { jobTerminalRecordedBodySchema } from './result.js';
 import { describeTerminalOutcome } from '../outcome.js';
 import { readProjectionJobRow } from '../projection-row.js';
-import { parseWorkflowSlotId } from '../../infra/identifiers.js';
 
 export function resultPathFor(jobsRoot: string, jobId: string): string {
   return join(jobsRoot, jobId, 'result.md');
@@ -36,71 +32,12 @@ export function workflowMetadataPathFor(jobsRoot: string, jobId: string): string
   return join(jobsRoot, jobId, 'workflow.json');
 }
 
-function describeKnownEvent(event: CoralEvent): string {
-  const body = event.body;
-  if (event.type === 'workflow.completed' && isRecord(body) && typeof body.outcome === 'string') {
-    return `Workflow ${body.outcome}.`;
-  }
-
-  if (
-    event.type === 'workflow.lifecycle_fault' &&
-    isRecord(body) &&
-    typeof body.kind === 'string' &&
-    typeof body.message === 'string'
-  ) {
-    return `Workflow lifecycle fault (${body.kind}): ${body.message}.`;
-  }
-
-  if (event.type === 'job.terminal.recorded') {
-    const parsed = jobTerminalRecordedBodySchema.safeParse(body);
-    if (parsed.success) {
-      return describeTerminalOutcome(parsed.data.terminal.outcome, {
-        describeCauseRef: renderCauseRefFallback,
-      });
-    }
-  }
-
-  return event.type;
-}
-
-function describeCauseRefChain(
-  db: Database,
-  ctx: StoreReadContext,
-  ref: CauseRef,
-  visited: Set<string>,
-): string | null {
-  const key = `${ref.stream.kind}:${ref.stream.id}:${ref.seq}`;
-  if (visited.has(key)) {
-    return null;
-  }
-  visited.add(key);
-
-  const event = getEvent(db, ref.stream, ref.seq, ctx);
-  if (!event) {
-    return null;
-  }
-
-  const localDescription = describeKnownEvent(event);
-  const nextRef = extractCauseRef(event.body);
-  if (!nextRef) {
-    return localDescription;
-  }
-
-  const nextDescription = describeCauseRefChain(db, ctx, nextRef, visited);
-  return nextDescription === null ? null : `${localDescription} Caused by: ${nextDescription}`;
-}
-
-function describeResolvedCauseRef(db: Database, ctx: StoreReadContext, ref: CauseRef): string {
-  return describeCauseRefChain(db, ctx, ref, new Set()) ?? renderCauseRefFallback(ref);
-}
-
 function workflowMetadataJson(db: Database, jobId: string): string | null {
   const projection = readProjectionJobRow(db, jobId);
   if (projection === null || projection.parent_workflow_job_id === null) {
     return null;
   }
 
-  const slot = projection.workflow_slot === null ? null : parseWorkflowSlotId(projection.workflow_slot);
   // `result.md` is intentionally result-only. Workflow identity belongs beside it so consumers that diff or
   // parse job results never receive coordinator metadata mixed into the payload.
   return `${JSON.stringify(
@@ -108,7 +45,6 @@ function workflowMetadataJson(db: Database, jobId: string): string | null {
       parentWorkflowJobId: projection.parent_workflow_job_id,
       workflowSlotId: projection.workflow_slot,
       workflowSlotGeneration: projection.workflow_slot_generation,
-      ...(slot === null ? {} : { stepIndex: slot.stepIndex, atomIndex: slot.atomIndex }),
       ...(projection.replaces_workflow_job_id === null
         ? {}
         : { replacesWorkflowJobId: projection.replaces_workflow_job_id }),
@@ -118,7 +54,12 @@ function workflowMetadataJson(db: Database, jobId: string): string | null {
   )}\n`;
 }
 
-function buildResultMarkdown(db: Database, jobId: string, ctx: StoreReadContext): string | null {
+function buildResultMarkdown(
+  db: Database,
+  jobId: string,
+  ctx: StoreReadContext,
+  describeCauseRef: (ref: CauseRef) => string,
+): string | null {
   const event = db
     .prepare(
       `SELECT type, body, stream_kind, stream_id
@@ -140,7 +81,7 @@ function buildResultMarkdown(db: Database, jobId: string, ctx: StoreReadContext)
   }
 
   return `${describeTerminalOutcome(body.terminal.outcome, {
-    describeCauseRef: (ref) => describeResolvedCauseRef(db, ctx, ref),
+    describeCauseRef,
   })}\n`;
 }
 
@@ -150,8 +91,9 @@ export function materializeResultMarkdownArtifact(
   jobsRoot: string,
   storage: Pick<StoragePort, 'mkdirSync' | 'writeAtomicSync'>,
   ctx: StoreReadContext,
+  describeCauseRef: (ref: CauseRef) => string,
 ): string {
-  const markdown = buildResultMarkdown(db, jobId, ctx);
+  const markdown = buildResultMarkdown(db, jobId, ctx, describeCauseRef);
   if (markdown === null) {
     throw new Error(`Cannot materialize result artifact for ${jobId}: terminal record is missing.`);
   }
@@ -173,6 +115,7 @@ export function ensureResultMarkdownArtifact(
   jobsRoot: string,
   storage: Pick<StoragePort, 'existsSync' | 'mkdirSync' | 'writeAtomicSync'>,
   ctx: StoreReadContext,
+  describeCauseRef: (ref: CauseRef) => string,
 ): string {
   const targetPath = resultPathFor(jobsRoot, jobId);
   if (storage.existsSync(targetPath)) {
@@ -182,5 +125,5 @@ export function ensureResultMarkdownArtifact(
     }
   }
 
-  return materializeResultMarkdownArtifact(db, jobId, jobsRoot, storage, ctx);
+  return materializeResultMarkdownArtifact(db, jobId, jobsRoot, storage, ctx, describeCauseRef);
 }

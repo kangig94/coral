@@ -31,6 +31,7 @@ import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { withNoopWorkflowArtifactEnsure } from '#tests/helpers/workflow-recovery-finalizer.js';
 import type {
   RecoverPersistedDiscussFn,
   RunStartupRecoveryFn,
@@ -1366,6 +1367,7 @@ describe('lifecycle recovery', () => {
         modules.workflowEventsModule.workflowRegistry,
         modules.sessionsEventsModule.sessionsRegistry,
       ),
+      materializeWorkflowResultArtifact: () => '/jobs/workflow-result.md',
     });
     seedWorkflowRecoveryRoot(progressStore, {
       workflowId: faultWorkflowId,
@@ -1516,6 +1518,7 @@ describe('lifecycle recovery', () => {
         modules.workflowEventsModule.workflowRegistry,
         modules.sessionsEventsModule.sessionsRegistry,
       ),
+      materializeWorkflowResultArtifact: () => '/jobs/workflow-result.md',
     });
     seedWorkflowRecoveryRoot(progressStore, {
       workflowId: malformedWorkflowId,
@@ -3251,7 +3254,7 @@ describe('lifecycle recovery', () => {
         projectRoot,
         backendNamespace: namespace,
       });
-      const finalizeWorkflow = vi.fn();
+      const finalizeWorkflow = withNoopWorkflowArtifactEnsure(vi.fn());
       await expect(
         modules.workflowRecoverModule.resumeAll({
           db,
