@@ -18,7 +18,12 @@ import type {
 } from '../store/consumer-contract.js';
 import type { ConsumerCursorRepository } from './persistence.js';
 import type { ConsumerState } from './state.js';
-import { isCorpusAuthoritativeFreshness, isKbCorpusSnapshot, toConsumerApplyError } from './state.js';
+import {
+  isCorpusAuthoritativeFreshness,
+  isKbCorpusSnapshot,
+  repeatsPreviousApplyFailure,
+  toConsumerApplyError,
+} from './state.js';
 
 const EMPTY_PROJECTION_INPUT: KbProjectionInput = {
   index: {
@@ -284,6 +289,7 @@ async function runCorpusApply(
       deps.repository.repairCorpusCursor(reg, authoritativeFreshness.appliedSnapshot);
       recordCorpusFreshness(state, projectionInput, options.forceGeneration);
       deps.resolveWaiters(state, authoritativeFreshness.appliedSnapshot);
+      clearLastApplyError(state);
       return true;
     }
 
@@ -300,9 +306,7 @@ async function runCorpusApply(
         signal: controller.signal,
       });
       if (applyResult !== undefined && 'advance' in applyResult && applyResult.advance === false) {
-        if (state.kind === 'corpus') {
-          state.lastApplyError = null;
-        }
+        clearLastApplyError(state);
         return true;
       }
       const appliedSnapshot =
@@ -313,6 +317,7 @@ async function runCorpusApply(
       deps.repository.advanceCorpusCursor(reg, appliedSnapshot);
       recordCorpusFreshness(state, projectionInput, options.forceGeneration);
       deps.resolveWaiters(state, appliedSnapshot);
+      clearLastApplyError(state);
       return true;
     } finally {
       if (trackTextProjection) {
@@ -321,10 +326,21 @@ async function runCorpusApply(
     }
   } catch (err) {
     const applyError = toConsumerApplyError(err, deps.now().toISOString());
+    // The failure callback exists so a consumer can ask for the repair that would let the next attempt
+    // succeed. An identical failure twice in a row means the previous repair changed nothing, so asking for
+    // it again can only produce the same failure — and when that repair is itself "apply again", the two
+    // form a cycle with no timer, no backoff and no attempt limit in it. Orama's default callback did
+    // exactly that against an artifact ahead of the corpus authority, and the daemon spent an hour at 100%
+    // CPU running ~50k applies a second, each one certain to fail the same way.
+    //
+    // One notification per distinct failure is all the callback can act on, so that is what it gets.
+    const repeatedFailure = state.kind === 'corpus' && repeatsPreviousApplyFailure(state.lastApplyError, applyError);
     if (state.kind === 'corpus') {
       state.lastApplyError = applyError;
     }
-    invokeApplyFailureCallback(state, applyError);
+    if (!repeatedFailure) {
+      invokeApplyFailureCallback(state, applyError);
+    }
     deps.rejectWaiters(state, applyError);
     backendLog.error(`ConsumerDriver apply failed (${reg.id})`, err);
     return false;
@@ -396,6 +412,16 @@ async function prepareCorpusProjectionInput(
           generatedCommunityDocsHash: generatedCommunityFreshness.generatedCommunityDocsHash,
         }),
   });
+}
+
+/**
+ * Cleared on every path that ends in progress, so that "the same failure as last time" stays a statement
+ * about consecutive failures. A success between two identical failures makes the second one news again.
+ */
+function clearLastApplyError(state: ConsumerState): void {
+  if (state.kind === 'corpus') {
+    state.lastApplyError = null;
+  }
 }
 
 function invokeApplyFailureCallback(state: ConsumerState, applyError: ConsumerApplyError): void {

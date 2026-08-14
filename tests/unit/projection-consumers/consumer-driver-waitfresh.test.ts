@@ -394,7 +394,7 @@ describe('ConsumerDriver waitFreshUntil', () => {
     }
   });
 
-  it.each(['malformed', 'probe-failed', 'ahead-of-authority'] as const)(
+  it.each(['malformed', 'probe-failed'] as const)(
     'fails closed and rejects waiters when authoritative freshness is unavailable: %s',
     async (reason) => {
       const apply = vi.fn(async () => {});
@@ -439,6 +439,76 @@ describe('ConsumerDriver waitFreshUntil', () => {
       }
     },
   );
+
+  /**
+   * An artifact ahead of the authority is a cache from a corpus history the authority no longer has — what a
+   * store reset leaves behind. Classified `unavailable` it was a hard apply error, so the cursor could never
+   * move past it and every retry hit the same wall. It is a rebuildable cache: rebuild it.
+   */
+  it('rebuilds instead of failing when the artifact is ahead of the authority', async () => {
+    const apply = vi.fn(async () => {});
+    const onApplyFailure = vi.fn();
+    const snapshot = buildSnapshot({ snapshotId: 'ahead', contentSeq: 4, metadataSeq: 4 });
+    const { db, driver, consumerId, handle } = createCorpusDriver(
+      apply,
+      REAL_CONSUMER_DRIVER_TIMERS,
+      onApplyFailure,
+      undefined,
+      async () => ({ kind: 'stale', reason: 'ahead-of-authority' }),
+    );
+
+    try {
+      const waitResult = driver.waitFreshUntil('corpus', snapshot, consumerId, 5000);
+      driver.notify('corpus', snapshot);
+      await driver.drainAll();
+
+      await expect(waitResult).resolves.toBeUndefined();
+      expect(apply).toHaveBeenCalledTimes(1);
+      expect(onApplyFailure).not.toHaveBeenCalled();
+      expect(handle.status()).toMatchObject({ authority: 'corpus', snapshotId: 'ahead', pending: false });
+    } finally {
+      await driver.shutdown();
+      db.close();
+    }
+  });
+
+  /**
+   * The load-bearing one. Orama's default failure callback asks for a reconcile, and a reconcile schedules
+   * another apply of the same consumer — so a failure that repeats identically is a cycle with no timer in
+   * it. That is how a KB daemon came to run ~50k applies per second for an hour. A callback that fires once
+   * per *distinct* failure keeps the repair request and drops the cycle.
+   */
+  it('notifies the failure callback once per distinct failure, not once per identical retry', async () => {
+    const onApplyFailure = vi.fn();
+    const snapshot = buildSnapshot({ snapshotId: 'repeat', contentSeq: 2, metadataSeq: 2 });
+    let failure = 'first failure';
+    const { db, driver } = createCorpusDriver(
+      async () => {
+        throw new Error(failure);
+      },
+      REAL_CONSUMER_DRIVER_TIMERS,
+      onApplyFailure,
+    );
+    const errorSpy = vi.spyOn(backendLog, 'error').mockImplementation((): void => {});
+
+    try {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        driver.notify('corpus', snapshot);
+        await driver.drainAll();
+      }
+      expect(onApplyFailure).toHaveBeenCalledTimes(1);
+
+      // A different failure is news the callback has not acted on yet.
+      failure = 'second failure';
+      driver.notify('corpus', snapshot);
+      await driver.drainAll();
+      expect(onApplyFailure).toHaveBeenCalledTimes(2);
+    } finally {
+      errorSpy.mockRestore();
+      await driver.shutdown();
+      db.close();
+    }
+  });
 
   it('fails closed when a consumer returns a false current proof', async () => {
     const apply = vi.fn(async () => {});

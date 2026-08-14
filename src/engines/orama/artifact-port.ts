@@ -519,7 +519,7 @@ export class OramaArtifactPort implements EngineArtifactPort {
       const { metadata } = readOramaProjectionArtifact(this.files, artifactPath, metadataPath);
       const lanes = corpusLanes(target.corpusInterest);
       if (lanes.some((lane) => corpusLaneAhead(metadata, target.snapshot, lane))) {
-        return { kind: 'unavailable', reason: 'ahead-of-authority' };
+        return { kind: 'stale', reason: 'ahead-of-authority' };
       }
       if (
         lanes.some((lane) => !corpusLaneMatches(metadata, target.snapshot, lane)) ||

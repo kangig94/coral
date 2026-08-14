@@ -310,6 +310,31 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
   let operation: Promise<unknown> | null = null;
   let probeOperation: Promise<KbDaemonHealthSnapshot> | null = null;
   let stderrBuffer = '';
+  let lastStderrLine: string | null = null;
+  let repeatedStderrLines = 0;
+  /**
+   * The retained buffer alone is a diagnostic nobody reads: it is capped, cleared on every restart, and
+   * surfaced only when someone thinks to ask the supervisor for it. A KB daemon once announced its own
+   * failure 8.4 million times into it while the backend log stayed completely empty, which turned a message
+   * the daemon had already written into an hour of `/proc` forensics. So the daemon's stderr goes to the log
+   * an operator actually reads.
+   *
+   * Consecutive identical lines collapse into a count because that same incident is what forwarding has to
+   * survive: 8.4 million copies of one sentence is a 1.4 GB log file, and replacing a silent failure with a
+   * full disk is not an improvement. Every *distinct* line is still emitted.
+   */
+  const forwardDaemonStderrLine = (line: string): void => {
+    if (line === lastStderrLine) {
+      repeatedStderrLines += 1;
+      return;
+    }
+    if (repeatedStderrLines > 0) {
+      log(`[kb-daemon] previous line repeated ${repeatedStderrLines} more time(s)`);
+      repeatedStderrLines = 0;
+    }
+    lastStderrLine = line;
+    log(`[kb-daemon] ${line}`);
+  };
   let nextRequestId = 1;
   const pendingRequests = new Map<string, PendingRequest>();
   const activeParentRequests = new Map<string, { generation: number; controller: AbortController }>();
@@ -848,6 +873,9 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
     lastError = undefined;
     lastSetupError = undefined;
     stderrBuffer = '';
+    // A fresh process repeating what the previous one said is news, not a repeat.
+    lastStderrLine = null;
+    repeatedStderrLines = 0;
     lastHeartbeatAt = undefined;
     lastHeartbeatLatencyMs = undefined;
     daemonUptimeMs = undefined;
@@ -968,7 +996,14 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
       });
 
       stderr.on('data', (chunk) => {
-        stderrBuffer = appendBuffer(stderrBuffer, String(chunk));
+        const text = String(chunk);
+        stderrBuffer = appendBuffer(stderrBuffer, text);
+        for (const line of text.split('\n')) {
+          const trimmed = line.trim();
+          if (trimmed.length > 0) {
+            forwardDaemonStderrLine(trimmed);
+          }
+        }
       });
 
       spawned.on('error', (error) => {
