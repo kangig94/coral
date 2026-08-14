@@ -35,7 +35,21 @@ import { canonicalizeWorkDir, type CanonicalWorkDir, WorkDirectoryError } from '
 
 const DEFAULT_PARENT_WATCHDOG_INTERVAL_MS = 1_000;
 
+/**
+ * How long cooperative disposal is given before its signal is aborted, and how long the whole teardown is
+ * given before this process exits regardless.
+ *
+ * Set here rather than derived from the shared signal-escalation constants. Those measure grace around a
+ * signal sent to some other process — and `SIGKILL_GRACE_MS` in particular is time to confirm a disappearance
+ * *after* SIGKILL, not grace before one. Borrowing them would assert an alignment with the supervisor's own
+ * stop timeout that nothing keeps true, since that timeout is a separately hard-coded value. The durations
+ * happen to coincide today; that is arithmetic, not a shared schedule.
+ */
+const DEFAULT_DISPOSE_ABORT_MS = 5_000;
+const DEFAULT_TERMINAL_EXIT_MS = 10_000;
+
 type IntervalHandle = ReturnType<typeof setInterval>;
+type TimeoutHandle = ReturnType<typeof setTimeout>;
 
 type PendingParentRequest = {
   resolve: (response: KbDaemonParentResponseMessage) => void;
@@ -206,6 +220,92 @@ export function startKbDaemonParentWatchdog(options: KbDaemonParentWatchdogOptio
   return handle;
 }
 
+/** One opened window. The deadline is already running; this is the part of it a caller can observe. */
+export type KbDaemonTerminalWindow = Readonly<{
+  /**
+   * Aborted at the cooperative mark, so the joins that do observe a signal get their chance to unwind before
+   * the process is taken out from under them.
+   *
+   * Not every join observes it. Disposal's `initPromise` join, a corpus mutation-lock wait already queued
+   * behind another writer, and an expansion `stop()` already in flight each finish on their own schedule.
+   * That is exactly why the exit is not made conditional on disposal having noticed.
+   */
+  signal: AbortSignal;
+}>;
+
+/** Seams for the window's two timers. Every field defaults to the real process-level behaviour. */
+export type KbDaemonTerminalWindowOptions = {
+  disposeAbortMs?: number;
+  terminalExitMs?: number;
+  setTimeoutFn?: (fn: () => void, ms: number) => TimeoutHandle;
+  exit?: (code: number) => void;
+  log?: (message: string) => void;
+};
+
+/** Holds a process's single window, so that opening it is something every stop trigger may attempt. */
+export type KbDaemonTerminalWindowAuthority = Readonly<{
+  /**
+   * Opens the window, or returns the one already open. Idempotence is the contract, not an optimisation: a
+   * teardown that is overrunning must not be able to buy itself more time by being asked to stop again, so
+   * the deadline belongs to the first request and every later one inherits it.
+   */
+  open(exitCode: number): KbDaemonTerminalWindow;
+}>;
+
+/**
+ * The authority over the window within which this process must cease to exist.
+ *
+ * A stop request used to be five triggers sharing one latch: whichever arrived first ran the cleanup, and the
+ * other four became no-ops. Cleanup that never finished was therefore never escalated by anything — five
+ * detectors, no enforcer. This window is the missing half. It is opened by the first trigger and is not itself
+ * a trigger, so no later arrival can disarm it and none is needed to enforce it.
+ *
+ * The deadline is never cleared. A teardown that finishes cleanly usually reaches exit before the window
+ * closes — though not always, since a daemon whose parent pipe is still open has nothing else that ends it,
+ * and this timer is then what does.
+ *
+ * What this buys: an enforcement point that is reached on any stop where the event loop keeps making progress.
+ * That covers the case that stranded a daemon in production, whose SIGTERM handler did run, found the stop
+ * already latched, and returned.
+ *
+ * What it is not: a wall-clock bound. A timer fires when it becomes *eligible*, so a long synchronous stretch
+ * inside disposal, or heavy timer starvation, delays the exit by however long that stretch lasts — and a loop
+ * blocked indefinitely never reaches either timer at all. Nothing inside this process can close that; only an
+ * enforcer outside it can.
+ */
+export function createKbDaemonTerminalWindowAuthority(
+  options: KbDaemonTerminalWindowOptions = {},
+): KbDaemonTerminalWindowAuthority {
+  const disposeAbortMs = options.disposeAbortMs ?? DEFAULT_DISPOSE_ABORT_MS;
+  const terminalExitMs = options.terminalExitMs ?? DEFAULT_TERMINAL_EXIT_MS;
+  const setTimeoutFn = options.setTimeoutFn ?? setTimeout;
+  const exit = options.exit ?? ((code: number) => process.exit(code));
+  const log = options.log ?? ((message: string) => void process.stderr.write(message));
+  let window: KbDaemonTerminalWindow | null = null;
+
+  return Object.freeze({
+    open: (exitCode: number): KbDaemonTerminalWindow => {
+      if (window !== null) {
+        return window;
+      }
+      const controller = new AbortController();
+      const abortTimer = setTimeoutFn(() => {
+        controller.abort(new Error(`KB daemon disposal exceeded its ${disposeAbortMs}ms cooperative window.`));
+      }, disposeAbortMs);
+      const exitTimer = setTimeoutFn(() => {
+        log(`[kb-daemon] teardown did not complete within ${terminalExitMs}ms; exiting.\n`);
+        exit(exitCode);
+      }, terminalExitMs);
+      // Unref'd so the window can never itself be why the process is still alive: it exists to end a
+      // lifetime, not to hold one open.
+      (abortTimer as { unref?: () => void }).unref?.();
+      (exitTimer as { unref?: () => void }).unref?.();
+      window = Object.freeze({ signal: controller.signal });
+      return window;
+    },
+  });
+}
+
 export async function runKbDaemonMain(options: KbDaemonMainOptions = {}): Promise<number> {
   const startedAt = Date.now();
   const pluginRoot = options.pluginRoot ?? process.cwd();
@@ -334,12 +434,16 @@ export async function runKbDaemonMain(options: KbDaemonMainOptions = {}): Promis
     resolveShutdown = resolve;
   });
   let stopPromise: Promise<void> | null = null;
+  const terminal = createKbDaemonTerminalWindowAuthority();
   const stop = (code: number): void => {
-    stopPromise ??= stopAsync(code).finally(() => {
+    // Opened outside the `settled` latch deliberately. The latch belongs to the cleanup, which must run once;
+    // the window belongs to the lifetime, which must end regardless of how that cleanup goes.
+    const window = terminal.open(code);
+    stopPromise ??= stopAsync(code, window.signal).finally(() => {
       stopPromise = null;
     });
   };
-  const stopAsync = async (code: number): Promise<void> => {
+  const stopAsync = async (code: number, signal: AbortSignal): Promise<void> => {
     if (settled) {
       return;
     }
@@ -349,12 +453,14 @@ export async function runKbDaemonMain(options: KbDaemonMainOptions = {}): Promis
       clearInterval(parentWatchdog);
     }
     parentWatchdog = null;
+    // Before disposal, not after it. Cleanup can await work that is itself waiting on a parent response, and
+    // a cancellation sequenced after that await can never be the thing that releases it.
+    cancelPendingParentRequests('KB daemon is shutting down.');
     try {
-      await kbWriteHost.dispose();
+      await kbWriteHost.dispose({ signal });
     } catch (error: unknown) {
       process.stderr.write(`[kb-daemon] write runtime dispose failed: ${errorMessage(error)}\n`);
     } finally {
-      cancelPendingParentRequests('KB daemon is shutting down.');
       resolveShutdown(code);
     }
   };

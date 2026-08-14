@@ -1133,6 +1133,14 @@ async function runLifecycleStartup({
     idleTimer.stopWatching();
     state.ownershipCheckerTeardown?.();
     state.ownershipCheckerTeardown = null;
+    // The KB daemon is started fire-and-forget above, so a failure at any later startup step can find a child
+    // already spawned. Everything else this block closes is in-process and dies with us; the daemon is the one
+    // piece that outlives this coordinator when it is skipped.
+    try {
+      await kbDaemonSupervisor?.dispose('coordinator startup failed');
+    } catch {
+      // best effort
+    }
     try {
       await closeServerFn(server);
     } catch {
