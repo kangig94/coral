@@ -16,7 +16,7 @@
         "source": "git-subdir",
         "url": "https://github.com/kangig94/coral.git",
         "path": "clients",
-        "ref": "v0.10.6"
+        "ref": "v0.10.7"
       },
       "category": "productivity",
       "homepage": "https://github.com/kangig94/coral",
@@ -29,5 +29,5 @@
       ]
     }
   ],
-  "version": "0.10.6"
+  "version": "0.10.7"
 }
