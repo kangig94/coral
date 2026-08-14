@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { KB_DAEMON_EXIT_DIAGNOSTIC_MAX_CHARS } from '#src/coordinator/live/kb-daemon-supervisor.js';
 import {
   PROVIDER_HOST_TOMBSTONE_DIAGNOSTIC_BYTE_BUDGET,
   PROVIDER_HOST_TOMBSTONE_DIAGNOSTIC_FACT_BUDGET,
@@ -47,5 +48,19 @@ describe('provider-host diagnostics fit one IPC frame', () => {
   it('bounds retained facts as well as bytes, so neither alone can fill a frame', () => {
     expect(PROVIDER_HOST_TOMBSTONE_DIAGNOSTIC_FACT_BUDGET).toBeGreaterThan(0);
     expect(Number.isSafeInteger(PROVIDER_HOST_TOMBSTONE_DIAGNOSTIC_FACT_BUDGET)).toBe(true);
+  });
+
+  /**
+   * The provider host log was not the only place this equality lived. A dead KB daemon's whole retained
+   * stderr — capped at `MAX_BUFFER`, which is also ten mebibytes — became its `lastError`, so the health
+   * response overflowed a frame by exactly its own envelope and every operator command that reads daemon
+   * health failed at the moment the diagnostic mattered. Budgeted in characters rather than bytes, so the
+   * headroom has to absorb multi-byte output too.
+   */
+  it('keeps a dead daemon’s exit diagnostic well under the transport frame cap', () => {
+    const WORST_CASE_UTF8_BYTES_PER_CHAR = 4;
+    expect(KB_DAEMON_EXIT_DIAGNOSTIC_MAX_CHARS * WORST_CASE_UTF8_BYTES_PER_CHAR).toBeLessThan(
+      MAX_FRAME_BYTES * ENVELOPE_HEADROOM_RATIO,
+    );
   });
 });

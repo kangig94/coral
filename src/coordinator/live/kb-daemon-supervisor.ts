@@ -116,6 +116,31 @@ type KbDaemonSupervisorOptions = {
   log?: (message: string) => void;
 };
 
+/**
+ * How much of a dead daemon's output may travel as its exit diagnostic.
+ *
+ * The retained stderr buffer is capped at `MAX_BUFFER`, which is the same ten mebibytes as the transport's
+ * `MAX_FRAME_BYTES`. Handing the whole buffer to `lastError` therefore produced a health response that
+ * overflowed one IPC frame by exactly the JSON around it — `frame_too_large` at 10,486,912 bytes against a
+ * 10,485,760 limit — and every operator command that reads daemon health failed while the diagnostic was
+ * needed most. `PROVIDER_HOST_LOG_MAX_BYTES` was the same equality in the provider host log; this is the
+ * second place it lived.
+ *
+ * The tail, not the head: the output that explains an exit is the output nearest to it.
+ */
+export const KB_DAEMON_EXIT_DIAGNOSTIC_MAX_CHARS = 64 * 1024;
+
+function daemonExitDiagnostic(stderr: string): string {
+  const trimmed = stderr.trim();
+  if (trimmed.length === 0) {
+    return 'daemon exited';
+  }
+  if (trimmed.length <= KB_DAEMON_EXIT_DIAGNOSTIC_MAX_CHARS) {
+    return trimmed;
+  }
+  return `[earlier output truncated]\n${trimmed.slice(-KB_DAEMON_EXIT_DIAGNOSTIC_MAX_CHARS)}`;
+}
+
 const DEFAULT_START_TIMEOUT_MS = 5_000;
 const DEFAULT_STOP_TIMEOUT_MS = 5_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 2_000;
@@ -1031,7 +1056,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
             phase = 'stopped';
           } else {
             phase = 'failed';
-            lastError = stderrBuffer.trim().length > 0 ? stderrBuffer.trim() : 'daemon exited';
+            lastError = daemonExitDiagnostic(stderrBuffer);
             lastSetupError = undefined;
           }
           notifyExitListeners();
