@@ -62,9 +62,10 @@ import {
   type ProviderProxySetIdentity,
 } from './provider-proxy-set-identity.js';
 import type { ProviderOperationRecoveryAcceptance } from './recovery/index.js';
-import type {
-  ContainmentAbsenceAcceptance,
-  ContainmentAbsenceOperationalIncident,
+import {
+  providerProxySetReference,
+  type ContainmentAbsenceAcceptance,
+  type ContainmentAbsenceOperationalIncident,
 } from './provider-proxy-set-lifecycle.js';
 import {
   containmentDisappearanceNoticeSchema,
@@ -1490,6 +1491,7 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
         record.phase === 'activation-resolution-pending' ||
         record.phase === 'executing'
       ) {
+        const reference = providerProxySetReference(notice.setIdentity);
         const directive =
           record.phase === 'activation-resolution-pending'
             ? record.activationIndeterminate
@@ -1502,7 +1504,7 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
               : {
                   kind: 'terminal-failed' as const,
                   code: 'provider_lost',
-                  reason: `Provider execution was interrupted when its containment disappeared (${notice.disappearanceReceipt}).`,
+                  reason: `The provider became unavailable, so this job stopped before completion. Retry the job. Reference: ${reference}.`,
                 };
         const terminalized = await this.#terminalizeDisappearance(record, directive);
         if (terminalized.kind === 'operational-failure') return terminalized;

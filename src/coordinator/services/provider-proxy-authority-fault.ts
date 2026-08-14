@@ -1,6 +1,5 @@
 import type { ControlClient, ControlClientError } from '../../provider-proxy/control-client.js';
 import type { ProxyControlProtocolErrorCode } from '../../provider-proxy/protocol.js';
-import type { ProviderProxySetIdentity } from './provider-proxy-set-identity.js';
 
 export type ProviderOperationSagaPhase =
   | 'prepare-pending'
@@ -58,58 +57,6 @@ export type ProviderProxyOperationIncident = Readonly<{
   policy: RetrySafeControlCallPolicy;
   error: unknown;
 }>;
-
-/** The lifecycle decision retained at the provider-proxy-set action boundary. */
-export type ProviderProxySetDecision =
-  | Readonly<{
-      action: 'preserve';
-      reason: 'retry_safe_operation_control_failure';
-      fault: 'operation-control-failed';
-      policy: RetrySafeControlCallPolicy;
-      error: string;
-      liveClaims: number;
-      setIdentity: ProviderProxySetIdentity;
-    }>
-  | Readonly<{
-      action: 'stop-and-reap';
-      reason: 'provider_authority_lost';
-      fault: 'operation-control-failed';
-      policy: ContainmentRequiredControlCallPolicy;
-      error: string;
-      liveClaims: number;
-      setIdentity: ProviderProxySetIdentity;
-    }>
-  | Readonly<{
-      action: 'stop-and-reap';
-      reason: 'provider_authority_lost';
-      fault: 'control-channel-fault';
-      role: ProviderProxyRole;
-      error: string;
-      liveClaims: number;
-      setIdentity: ProviderProxySetIdentity;
-    }>
-  | Readonly<{
-      action: 'stop-and-reap';
-      reason: 'provider_authority_lost';
-      fault: 'heartbeat-failed';
-      role: ProviderProxyRole;
-      method: ProviderProxyHeartbeatMethod;
-      error: string;
-      liveClaims: number;
-      setIdentity: ProviderProxySetIdentity;
-    }>
-  | Readonly<{
-      action: 'drain';
-      reason: 'graceful_idle' | 'excess_capacity' | 'unclaimed_discovery';
-      liveClaims: number;
-      setIdentity: ProviderProxySetIdentity;
-    }>
-  | Readonly<{
-      action: 'stop-and-reap';
-      reason: 'graceful_idle' | 'excess_capacity' | 'unclaimed_discovery';
-      liveClaims: 0;
-      setIdentity: ProviderProxySetIdentity;
-    }>;
 
 export type ProviderProxyRoleClients<TClient> = Readonly<{
   proxy: TClient;

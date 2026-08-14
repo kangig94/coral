@@ -1422,6 +1422,10 @@ describe('ProviderOperationReconciler publication', () => {
       resolveAttach = resolve;
     });
     const harness = createHarness({ attachOperation: () => attachBlocked });
+    const terminalize = harness.terminalization.terminalize;
+    const terminalization = vi
+      .spyOn(harness.terminalization, 'terminalize')
+      .mockImplementation((record, directive) => terminalize(record, directive));
     const recovered = providerOperationRecord('executing');
     insertProviderOperation(harness.db, recovered);
 
@@ -1442,6 +1446,15 @@ describe('ProviderOperationReconciler publication', () => {
     if (accepted === 'acceptance-timed-out') throw new Error('disappearance acceptance did not preempt attach');
     if (accepted.kind !== 'accepted') throw new Error('disappearance terminalization unexpectedly requested retry');
     expect(accepted.acceptance.disposition).toBe('terminalization-committed');
+    const setIdentity = providerProxySetIdentityFromRecord(recovered);
+    const reference = `proxyInstanceId=${setIdentity.proxyInstanceId},buildSetId=${setIdentity.buildSetId}`;
+    expect(terminalization).toHaveBeenCalledWith(
+      recovered,
+      expect.objectContaining({
+        code: 'provider_lost',
+        reason: `The provider became unavailable, so this job stopped before completion. Retry the job. Reference: ${reference}.`,
+      }),
+    );
     expect(readProviderOperation(harness.db, recovered.operation)).toBeNull();
     expect(harness.registry.attach).not.toHaveBeenCalled();
 

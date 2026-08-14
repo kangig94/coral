@@ -1,5 +1,5 @@
 import type { TimePort, TimerHandle } from '../../infra/port-types.js';
-import { formatError } from '../../infra/error-format.js';
+import { errorMessage } from '../../infra/error-format.js';
 import type { OperationIdentity } from '../../provider-proxy/protocol.js';
 import type { HandoffCapsule, HandoffCapsuleV1, HandoffCapsuleV2 } from '../../provider-proxy/handoff-capsule.js';
 import type { DurableProviderProxyOperationAuthority } from '../live/provider-proxy/operation-route.js';
@@ -11,9 +11,12 @@ import type {
 } from './provider-containment-disappearance.js';
 import type { ProviderProxySetClaimMirror } from './provider-proxy-set-claim-mirror.js';
 import type {
+  ContainmentRequiredControlCallPolicy,
   ProviderProxyAuthorityFault,
   ProviderProxyOperationIncident,
-  ProviderProxySetDecision,
+  ProviderProxyHeartbeatMethod,
+  ProviderProxyRole,
+  RetrySafeControlCallPolicy,
 } from './provider-proxy-authority-fault.js';
 import type {
   ProviderProxyRecoveryDispatcher,
@@ -36,17 +39,102 @@ const CONTAINMENT_ATTEMPT_MS = 30_000;
 
 type CapacityClass = 'retained' | 'excess';
 type EstablishmentIntent = 'serve' | 'contain-unclaimed-discovery';
-type ProviderProxySetRetirementReason = Extract<ProviderProxySetDecision, Readonly<{ action: 'drain' }>>['reason'];
-type ProviderProxySetDrainDecision = Extract<ProviderProxySetDecision, Readonly<{ action: 'drain' }>>;
-type ProviderProxySetAuthorityStopDecision = Extract<
-  ProviderProxySetDecision,
-  Readonly<{ action: 'stop-and-reap'; reason: 'provider_authority_lost' }>
+
+type FaultlessDecisionFields = Readonly<{
+  fault?: never;
+  role?: never;
+  method?: never;
+  policy?: never;
+  error?: never;
+}>;
+
+export type ProviderProxySetRetirementReason = 'graceful_idle' | 'excess_capacity' | 'unclaimed_discovery';
+export type ProviderProxySetClaimBearingRetirementReason = Exclude<
+  ProviderProxySetRetirementReason,
+  'unclaimed_discovery'
 >;
-type ProviderProxySetRetirementStopDecision = Extract<
-  ProviderProxySetDecision,
-  Readonly<{ action: 'stop-and-reap'; reason: ProviderProxySetRetirementReason }>
->;
-type ProviderProxySetContainmentDecision = Extract<ProviderProxySetDecision, Readonly<{ action: 'stop-and-reap' }>>;
+
+export type ProviderProxySetPreserveDecision = Readonly<{
+  action: 'preserve';
+  reason: 'retry_safe_operation_control_failure';
+  fault: 'operation-control-failed';
+  policy: RetrySafeControlCallPolicy;
+  role?: never;
+  method?: never;
+  error: string;
+  liveClaims: number;
+  setIdentity: ProviderProxySetIdentity;
+}>;
+
+export type ProviderProxySetOperationFaultStopDecision = Readonly<{
+  action: 'stop-and-reap';
+  reason: 'provider_authority_lost';
+  fault: 'operation-control-failed';
+  policy: ContainmentRequiredControlCallPolicy;
+  role?: never;
+  method?: never;
+  error: string;
+  liveClaims: number;
+  setIdentity: ProviderProxySetIdentity;
+}>;
+
+export type ProviderProxySetControlChannelFaultStopDecision = Readonly<{
+  action: 'stop-and-reap';
+  reason: 'provider_authority_lost';
+  fault: 'control-channel-fault';
+  role: ProviderProxyRole;
+  method?: never;
+  policy?: never;
+  error: string;
+  liveClaims: number;
+  setIdentity: ProviderProxySetIdentity;
+}>;
+
+export type ProviderProxySetHeartbeatFaultStopDecision = Readonly<{
+  action: 'stop-and-reap';
+  reason: 'provider_authority_lost';
+  fault: 'heartbeat-failed';
+  role: ProviderProxyRole;
+  method: ProviderProxyHeartbeatMethod;
+  policy?: never;
+  error: string;
+  liveClaims: number;
+  setIdentity: ProviderProxySetIdentity;
+}>;
+
+export type ProviderProxySetDrainDecision = FaultlessDecisionFields &
+  Readonly<{
+    action: 'drain';
+    // Discovery may already have live durable claims, so it must remain available instead of being retired.
+    reason: ProviderProxySetClaimBearingRetirementReason;
+    liveClaims: number;
+    setIdentity: ProviderProxySetIdentity;
+  }>;
+
+export type ProviderProxySetRetirementStopDecision = FaultlessDecisionFields &
+  Readonly<{
+    action: 'stop-and-reap';
+    // Faultless destruction is safe only after every durable claim has left the set.
+    reason: ProviderProxySetRetirementReason;
+    liveClaims: 0;
+    setIdentity: ProviderProxySetIdentity;
+  }>;
+
+export type ProviderProxySetAuthorityStopDecision =
+  | ProviderProxySetOperationFaultStopDecision
+  | ProviderProxySetControlChannelFaultStopDecision
+  | ProviderProxySetHeartbeatFaultStopDecision;
+
+export type ProviderProxySetContainmentDecision =
+  | ProviderProxySetAuthorityStopDecision
+  | ProviderProxySetRetirementStopDecision;
+
+export type ProviderProxySetDecision =
+  | ProviderProxySetPreserveDecision
+  | ProviderProxySetContainmentDecision
+  | ProviderProxySetDrainDecision;
+
+export type ProviderProxySetDecisionSeverity = 'info' | 'warn';
 
 type EstablishedSlot = {
   kind: 'available' | 'draining' | 'containing' | 'containment-wait';
@@ -189,6 +277,7 @@ export type ProviderProxySetLifecycleDeps = Readonly<{
   time: Pick<TimePort, 'now' | 'setTimeout' | 'clearTimeout'>;
   recoveryDispatcher: ProviderProxyRecoveryDispatcher;
   onProgressPremiseViolation?: (violation: ProviderProxySetLifecycleProgressViolation) => void;
+  onDecision?: (severity: ProviderProxySetDecisionSeverity, message: string) => void;
   onError?: (message: string) => void;
   onSlotReleased?: (routeKey: string) => void;
 }>;
@@ -201,6 +290,14 @@ export type FreshProxySetAdmission =
 
 function operationKey(operation: OperationIdentity): string {
   return JSON.stringify([operation.jobId, operation.operationId, operation.proxyInstanceId, operation.buildSetId]);
+}
+
+export function providerProxySetReference(identity: ProviderProxySetIdentity): string {
+  return `proxyInstanceId=${identity.proxyInstanceId},buildSetId=${identity.buildSetId}`;
+}
+
+function singleLineErrorSummary(error: unknown): string {
+  return JSON.stringify(errorMessage(error)).slice(1, -1);
 }
 
 function retryDelayMs(completedAttempts: number): number {
@@ -397,19 +494,7 @@ export class ProviderProxySetLifecycle {
   beginGracefulDrain(identity: ProviderProxySetIdentity): void {
     const slot = this.#slots.get(providerProxySetKey(identity));
     if (slot?.kind !== 'available') return;
-    const liveClaims = this.#deps.claims.claimsFor(slot.identity).length;
-    const decision =
-      liveClaims === 0
-        ? this.#retirementStopDecision(slot, 'graceful_idle', liveClaims)
-        : this.#drainDecision(slot, 'graceful_idle', liveClaims);
-    if (decision.action === 'stop-and-reap') {
-      this.#beginRetirementContainment(slot, decision);
-      return;
-    }
-    slot.retirementDecision = decision;
-    this.#recordDecision(slot, decision);
-    slot.kind = 'draining';
-    this.#removeRoute(slot);
+    this.#retireAvailableSlot(slot, 'graceful_idle');
   }
 
   claimsChanged(identity: ProviderProxySetIdentity): void {
@@ -442,13 +527,13 @@ export class ProviderProxySetLifecycle {
       reason: 'retry_safe_operation_control_failure',
       fault: incident.kind,
       policy: incident.policy,
-      error: formatError(incident.error),
+      error: singleLineErrorSummary(incident.error),
       liveClaims: this.#deps.claims.claimsFor(slot.identity).length,
       setIdentity: slot.identity,
     });
   }
 
-  faultAuthority(identity: ProviderProxySetIdentity, fault: ProviderProxyAuthorityFault): void {
+  #faultAuthority(identity: ProviderProxySetIdentity, fault: ProviderProxyAuthorityFault): void {
     const slot = this.#slots.get(providerProxySetKey(identity));
     if (
       slot === undefined ||
@@ -469,6 +554,10 @@ export class ProviderProxySetLifecycle {
     const commit = this.#commitContainmentAbsence(identity, disappearanceReceipt);
     if (commit.kind === 'unchanged') return this.#absenceAcceptance(commit.pending);
     const { pending, authorityToClose } = commit;
+    this.#report(
+      'info',
+      `Provider proxy containment disappeared set=${providerProxySetReference(pending.identity)} receipt=${JSON.stringify(disappearanceReceipt).slice(1, -1)}`,
+    );
 
     if (authorityToClose !== null) {
       void authorityToClose
@@ -833,7 +922,7 @@ export class ProviderProxySetLifecycle {
       retirementDecision: null,
     };
     this.#slots.set(key, slot);
-    authority.onFault((fault) => this.faultAuthority(identity, fault));
+    authority.onFault((fault) => this.#faultAuthority(identity, fault));
     authority.onIncident((incident) => this.recordAuthorityIncident(identity, incident));
     this.#classifyCapacity();
     if (intent === 'contain-unclaimed-discovery' && slot.kind === 'available') {
@@ -859,20 +948,21 @@ export class ProviderProxySetLifecycle {
     for (const [index, slot] of addressed.entries()) slot.capacityClass = index < 4 ? 'retained' : 'excess';
     for (const slot of addressed) {
       if (slot.capacityClass !== 'excess' || slot.kind !== 'available') continue;
-      const liveClaims = this.#deps.claims.claimsFor(slot.identity).length;
-      const decision =
-        liveClaims === 0
-          ? this.#retirementStopDecision(slot, 'excess_capacity', liveClaims)
-          : this.#drainDecision(slot, 'excess_capacity', liveClaims);
-      if (decision.action === 'stop-and-reap') {
-        this.#beginRetirementContainment(slot, decision);
-        continue;
-      }
-      slot.retirementDecision = decision;
-      this.#recordDecision(slot, decision);
-      slot.kind = 'draining';
-      this.#removeRoute(slot);
+      this.#retireAvailableSlot(slot, 'excess_capacity');
     }
+  }
+
+  #retireAvailableSlot(slot: EstablishedSlot, reason: ProviderProxySetClaimBearingRetirementReason): void {
+    const liveClaims = this.#deps.claims.claimsFor(slot.identity).length;
+    if (liveClaims === 0) {
+      this.#beginRetirementContainment(slot, this.#retirementStopDecision(slot, reason, liveClaims));
+      return;
+    }
+    const decision = this.#drainDecision(slot, reason, liveClaims);
+    slot.retirementDecision = decision;
+    this.#recordDecision(slot, decision);
+    slot.kind = 'draining';
+    this.#removeRoute(slot);
   }
 
   #removeRoute(slot: EstablishedSlot): void {
@@ -903,12 +993,41 @@ export class ProviderProxySetLifecycle {
 
   #recordDecision(slot: EstablishedSlot, decision: ProviderProxySetDecision): void {
     slot.decision = decision;
-    const fault = 'fault' in decision ? decision.fault : 'none';
-    const subject = 'policy' in decision ? decision.policy.method : 'role' in decision ? decision.role : 'retirement';
-    const error = 'error' in decision ? decision.error : 'none';
-    this.#deps.onError?.(
-      `Provider proxy set action=${decision.action} reason=${decision.reason} fault=${fault} subject=${subject} liveClaims=${decision.liveClaims} set=${slot.key} error=${error}`,
+    const severity: ProviderProxySetDecisionSeverity = decision.reason === 'provider_authority_lost' ? 'warn' : 'info';
+    let fault: string;
+    let subject: string;
+    let error: string;
+    switch (decision.reason) {
+      case 'retry_safe_operation_control_failure':
+        fault = decision.fault;
+        subject = decision.policy.method;
+        error = decision.error;
+        break;
+      case 'provider_authority_lost':
+        fault = decision.fault;
+        subject = decision.fault === 'operation-control-failed' ? decision.policy.method : decision.role;
+        error = decision.error;
+        break;
+      case 'graceful_idle':
+      case 'excess_capacity':
+      case 'unclaimed_discovery':
+        fault = 'none';
+        subject = 'retirement';
+        error = 'none';
+        break;
+    }
+    this.#report(
+      severity,
+      `Provider proxy set action=${decision.action} reason=${decision.reason} fault=${fault} subject=${subject} liveClaims=${decision.liveClaims} set=${providerProxySetReference(slot.identity)} error=${error}`,
     );
+  }
+
+  #report(severity: ProviderProxySetDecisionSeverity, message: string): void {
+    try {
+      this.#deps.onDecision?.(severity, message);
+    } catch {
+      // Observability is not part of the authority transition and cannot be allowed to strand the set.
+    }
   }
 
   #authorityFaultDecision(
@@ -918,7 +1037,7 @@ export class ProviderProxySetLifecycle {
     const context = {
       action: 'stop-and-reap' as const,
       reason: 'provider_authority_lost' as const,
-      error: formatError(fault.error),
+      error: singleLineErrorSummary(fault.error),
       liveClaims: this.#deps.claims.claimsFor(slot.identity).length,
       setIdentity: slot.identity,
     };
@@ -934,7 +1053,7 @@ export class ProviderProxySetLifecycle {
 
   #drainDecision(
     slot: EstablishedSlot,
-    reason: ProviderProxySetRetirementReason,
+    reason: ProviderProxySetClaimBearingRetirementReason,
     liveClaims: number,
   ): ProviderProxySetDrainDecision {
     return {

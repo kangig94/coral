@@ -45,7 +45,7 @@ export interface ProviderProxyOperationActivationDeps {
   readonly setIdentity: ProviderProxySetIdentity;
   readonly mutationRpcTimeoutMs: number;
   readonly faultAuthority: (fault: ProviderProxyAuthorityFault) => void;
-  readonly reportIncident?: (incident: ProviderProxyOperationIncident) => void;
+  readonly reportIncident: (incident: ProviderProxyOperationIncident) => void;
 }
 
 export type PrepareProviderOperationResult = z.output<typeof proxyOperationPrepareResultSchema>;
@@ -64,7 +64,7 @@ async function callStrict<TResult>(
   timeoutMs: number,
   resultSchema: z.ZodType<TResult, z.ZodTypeDef, unknown>,
   faultAuthority: (fault: ProviderProxyAuthorityFault) => void,
-  reportIncident: ((incident: ProviderProxyOperationIncident) => void) | undefined,
+  reportIncident: (incident: ProviderProxyOperationIncident) => void,
 ): Promise<TResult> {
   let raw: unknown;
   try {
@@ -86,7 +86,7 @@ function routeControlCallFailure(
   policy: ControlCallPolicy,
   error: unknown,
   faultAuthority: (fault: ProviderProxyAuthorityFault) => void,
-  reportIncident: ((incident: ProviderProxyOperationIncident) => void) | undefined,
+  reportIncident: (incident: ProviderProxyOperationIncident) => void,
 ): void {
   if (controlClientErrorCode(error) === 'control_client_closed') {
     faultAuthority({ kind: 'control-channel-fault', role, error: error as ControlClientError });
@@ -96,7 +96,7 @@ function routeControlCallFailure(
   const protocolCode = controlProtocolErrorCode(error);
   if (protocolCode !== null && policy.preEffectProtocolCodes.has(protocolCode)) return;
   if (policy.indeterminate === 'retry-safe') {
-    reportIncident?.({ kind: 'operation-control-failed', policy, error });
+    reportIncident({ kind: 'operation-control-failed', policy, error });
     return;
   }
   faultAuthority({ kind: 'operation-control-failed', policy, error });

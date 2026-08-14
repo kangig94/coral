@@ -3,9 +3,9 @@ import type {
   ControlCallPolicy,
   ProviderProxyAuthorityFaultLatch,
   ProviderProxyOperationIncident,
-  ProviderProxySetDecision,
   RetrySafeControlCallPolicy,
 } from '#src/coordinator/services/provider-proxy-authority-fault.js';
+import type { ProviderProxySetDecision } from '#src/coordinator/services/provider-proxy-set-lifecycle.js';
 import type { ProviderProxySetIdentity } from '#src/coordinator/services/provider-proxy-set-identity.js';
 
 declare const setIdentity: ProviderProxySetIdentity;
@@ -46,6 +46,32 @@ declare const claimBearingRetirement: Readonly<{
 // @ts-expect-error faultless retirement cannot cross the destructive boundary while claims remain live.
 const invalidRetirementDecision: ProviderProxySetDecision = claimBearingRetirement;
 void invalidRetirementDecision;
+
+declare const fakeFaultRetirement: Readonly<{
+  action: 'drain';
+  reason: 'graceful_idle';
+  fault: 'heartbeat-failed';
+  role: 'proxy';
+  method: 'control.heartbeat.v1';
+  error: string;
+  liveClaims: 1;
+  setIdentity: ProviderProxySetIdentity;
+}>;
+
+// @ts-expect-error faultless retirement forbids fault-only evidence so it cannot be logged as authority loss.
+const invalidFakeFaultRetirement: ProviderProxySetDecision = fakeFaultRetirement;
+void invalidFakeFaultRetirement;
+
+declare const liveClaimUnclaimedDiscoveryDrain: Readonly<{
+  action: 'drain';
+  reason: 'unclaimed_discovery';
+  liveClaims: 3;
+  setIdentity: ProviderProxySetIdentity;
+}>;
+
+// @ts-expect-error discovered sets with durable claims must remain available instead of entering retirement.
+const invalidUnclaimedDiscoveryDrain: ProviderProxySetDecision = liveClaimUnclaimedDiscoveryDrain;
+void invalidUnclaimedDiscoveryDrain;
 
 declare const retrySafeOperationFault: Readonly<{
   kind: 'operation-control-failed';

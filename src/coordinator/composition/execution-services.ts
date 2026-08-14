@@ -252,6 +252,7 @@ export function createExecutionServices({
       backendLog.warn(
         `Provider proxy lifecycle ${violation.stage} woke ${violation.latenessMs}ms after its requested time.`,
       ),
+    onDecision: (severity, message) => backendLog[severity](message),
     onError: (message) => backendLog.warn(message),
     onSlotReleased: (routeKey) => world.providerHostManager.providerProxySlotReleased?.(routeKey),
   });

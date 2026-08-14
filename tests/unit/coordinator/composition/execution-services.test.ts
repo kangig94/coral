@@ -16,7 +16,6 @@ import {
 import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set-claim-mirror.js';
 import {
   providerProxySetIdentityFromRecord,
-  providerProxySetKey,
   type ProviderProxySetIdentity,
 } from '#src/coordinator/services/provider-proxy-set-identity.js';
 import { ProviderProxySetLifecycleRef } from '#src/coordinator/services/provider-proxy-set-lifecycle-ref.js';
@@ -36,6 +35,10 @@ import { seedTestSessionProjection } from '#tests/helpers/session.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 
 type SharedSetControl = 'settlement-timeout' | 'control-channel-fault' | 'heartbeat-failed';
+
+function setReference(identity: ProviderProxySetIdentity): string {
+  return `proxyInstanceId=${identity.proxyInstanceId},buildSetId=${identity.buildSetId}`;
+}
 
 async function createSharedSetHarness(control: SharedSetControl) {
   const namespace = `execution-services-shared-set-${control}`;
@@ -94,11 +97,8 @@ async function createSharedSetHarness(control: SharedSetControl) {
   ];
   const records = [...siblings, settlement];
   const setIdentity = providerProxySetIdentityFromRecord(settlement);
-  const formattedTimeout = 'Error: settlement timed out';
-  const timeout = Object.assign(new Error('settlement timed out'), {
-    code: 'control_call_failed',
-    stack: formattedTimeout,
-  });
+  const formattedTimeout = 'settlement timed out';
+  const timeout = Object.assign(new Error(formattedTimeout), { code: 'control_call_failed' });
   const proxyClient = {
     call: vi.fn(async (method: string, params: unknown) => {
       if (method === 'operation.attach.v1') {
@@ -404,7 +404,7 @@ describe('execution services provider-proxy proof composition', () => {
       stopAndReap,
       timeout,
     } = harness;
-    const warning = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
+    const info = vi.spyOn(backendLog, 'info').mockImplementation(() => undefined);
 
     try {
       const report = await services.reconcileProviderOperationsAtStartup(new AbortController().signal);
@@ -446,16 +446,18 @@ describe('execution services provider-proxy proof composition', () => {
         liveClaims: 3,
         setIdentity,
       });
+      const decisionRecords = info.mock.calls.filter(([message]) => message.startsWith('Provider proxy set action='));
       expect
-        .soft(warning.mock.calls.filter(([message]) => message.startsWith('Provider proxy set action=')))
+        .soft(decisionRecords)
         .toEqual([
           [
-            `Provider proxy set action=preserve reason=retry_safe_operation_control_failure fault=operation-control-failed subject=operation.settle.v1 liveClaims=3 set=${providerProxySetKey(setIdentity)} error=${formattedTimeout}`,
+            `Provider proxy set action=preserve reason=retry_safe_operation_control_failure fault=operation-control-failed subject=operation.settle.v1 liveClaims=3 set=${setReference(setIdentity)} error=${formattedTimeout}`,
           ],
         ]);
+      expect(decisionRecords[0]?.[0].split(/\r?\n/u)).toHaveLength(1);
     } finally {
       services.stopProviderOperationReconciler();
-      warning.mockRestore();
+      info.mockRestore();
     }
   });
 
@@ -464,6 +466,7 @@ describe('execution services provider-proxy proof composition', () => {
     async (control) => {
       const harness = await createSharedSetHarness(control);
       const disappearance = vi.spyOn(ProviderOperationReconciler.prototype, 'containmentDisappeared');
+      const warning = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
       try {
         const fault: ProviderProxyAuthorityFault =
           control === 'control-channel-fault'
@@ -491,6 +494,9 @@ describe('execution services provider-proxy proof composition', () => {
         });
 
         expect(harness.stopAndReap).toHaveBeenCalledOnce();
+        expect(warning.mock.calls.filter(([message]) => message.startsWith('Provider proxy set action='))).toEqual([
+          [expect.stringContaining('action=stop-and-reap reason=provider_authority_lost')],
+        ]);
         expect(acceptances).toEqual(
           expect.arrayContaining([
             {
@@ -512,6 +518,7 @@ describe('execution services provider-proxy proof composition', () => {
         );
         expect(acceptances).toHaveLength(3);
       } finally {
+        warning.mockRestore();
         disappearance.mockRestore();
         harness.services.stopProviderOperationReconciler();
       }

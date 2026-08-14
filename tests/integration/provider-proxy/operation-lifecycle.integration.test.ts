@@ -718,6 +718,7 @@ function activationDepsFor(set: ProxyUnderTest): ProviderProxyOperationActivatio
     proxyClient: set.control,
     guardianClient: set.control,
     faultAuthority: () => undefined,
+    reportIncident: () => undefined,
     setIdentity: {
       buildSetId: set.shared.buildSetId,
       hostFingerprint: FINGERPRINT,
