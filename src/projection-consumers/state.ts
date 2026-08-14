@@ -193,12 +193,13 @@ export function isCorpusAuthoritativeFreshness(value: unknown): value is CorpusA
       reason === 'artifact-missing' ||
       reason === 'lane-behind' ||
       reason === 'generated-community-changed' ||
-      reason === 'projection-identity-changed'
+      reason === 'projection-identity-changed' ||
+      reason === 'ahead-of-authority'
     );
   }
   if (freshness.kind === 'unavailable') {
     const reason = (value as Extract<CorpusAuthoritativeFreshness, { kind: 'unavailable' }>).reason;
-    return reason === 'malformed' || reason === 'probe-failed' || reason === 'ahead-of-authority';
+    return reason === 'malformed' || reason === 'probe-failed';
   }
   return false;
 }
@@ -230,6 +231,15 @@ export function toConsumerApplyError(err: unknown, at: string): ConsumerApplyErr
     return { message: err, at, cause: err };
   }
   return { message: 'Consumer apply failed', at, cause: err };
+}
+
+/**
+ * Whether a failure says nothing the previous one did not already say. Compared on the message alone: `at` is
+ * a timestamp that differs by construction, and `cause` carries the original error object, which is a fresh
+ * instance every throw. The message is what the failure callback would act on.
+ */
+export function repeatsPreviousApplyFailure(previous: ConsumerApplyError | null, current: ConsumerApplyError): boolean {
+  return previous !== null && previous.message === current.message;
 }
 
 export function consumerNotRegisteredError(consumerId: string): CoralSetupError {

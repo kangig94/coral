@@ -116,6 +116,31 @@ type KbDaemonSupervisorOptions = {
   log?: (message: string) => void;
 };
 
+/**
+ * How much of a dead daemon's output may travel as its exit diagnostic.
+ *
+ * The retained stderr buffer is capped at `MAX_BUFFER`, which is the same ten mebibytes as the transport's
+ * `MAX_FRAME_BYTES`. Handing the whole buffer to `lastError` therefore produced a health response that
+ * overflowed one IPC frame by exactly the JSON around it — `frame_too_large` at 10,486,912 bytes against a
+ * 10,485,760 limit — and every operator command that reads daemon health failed while the diagnostic was
+ * needed most. `PROVIDER_HOST_LOG_MAX_BYTES` was the same equality in the provider host log; this is the
+ * second place it lived.
+ *
+ * The tail, not the head: the output that explains an exit is the output nearest to it.
+ */
+export const KB_DAEMON_EXIT_DIAGNOSTIC_MAX_CHARS = 64 * 1024;
+
+function daemonExitDiagnostic(stderr: string): string {
+  const trimmed = stderr.trim();
+  if (trimmed.length === 0) {
+    return 'daemon exited';
+  }
+  if (trimmed.length <= KB_DAEMON_EXIT_DIAGNOSTIC_MAX_CHARS) {
+    return trimmed;
+  }
+  return `[earlier output truncated]\n${trimmed.slice(-KB_DAEMON_EXIT_DIAGNOSTIC_MAX_CHARS)}`;
+}
+
 const DEFAULT_START_TIMEOUT_MS = 5_000;
 const DEFAULT_STOP_TIMEOUT_MS = 5_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 2_000;
@@ -310,6 +335,31 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
   let operation: Promise<unknown> | null = null;
   let probeOperation: Promise<KbDaemonHealthSnapshot> | null = null;
   let stderrBuffer = '';
+  let lastStderrLine: string | null = null;
+  let repeatedStderrLines = 0;
+  /**
+   * The retained buffer alone is a diagnostic nobody reads: it is capped, cleared on every restart, and
+   * surfaced only when someone thinks to ask the supervisor for it. A KB daemon once announced its own
+   * failure 8.4 million times into it while the backend log stayed completely empty, which turned a message
+   * the daemon had already written into an hour of `/proc` forensics. So the daemon's stderr goes to the log
+   * an operator actually reads.
+   *
+   * Consecutive identical lines collapse into a count because that same incident is what forwarding has to
+   * survive: 8.4 million copies of one sentence is a 1.4 GB log file, and replacing a silent failure with a
+   * full disk is not an improvement. Every *distinct* line is still emitted.
+   */
+  const forwardDaemonStderrLine = (line: string): void => {
+    if (line === lastStderrLine) {
+      repeatedStderrLines += 1;
+      return;
+    }
+    if (repeatedStderrLines > 0) {
+      log(`[kb-daemon] previous line repeated ${repeatedStderrLines} more time(s)`);
+      repeatedStderrLines = 0;
+    }
+    lastStderrLine = line;
+    log(`[kb-daemon] ${line}`);
+  };
   let nextRequestId = 1;
   const pendingRequests = new Map<string, PendingRequest>();
   const activeParentRequests = new Map<string, { generation: number; controller: AbortController }>();
@@ -848,6 +898,9 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
     lastError = undefined;
     lastSetupError = undefined;
     stderrBuffer = '';
+    // A fresh process repeating what the previous one said is news, not a repeat.
+    lastStderrLine = null;
+    repeatedStderrLines = 0;
     lastHeartbeatAt = undefined;
     lastHeartbeatLatencyMs = undefined;
     daemonUptimeMs = undefined;
@@ -968,7 +1021,14 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
       });
 
       stderr.on('data', (chunk) => {
-        stderrBuffer = appendBuffer(stderrBuffer, String(chunk));
+        const text = String(chunk);
+        stderrBuffer = appendBuffer(stderrBuffer, text);
+        for (const line of text.split('\n')) {
+          const trimmed = line.trim();
+          if (trimmed.length > 0) {
+            forwardDaemonStderrLine(trimmed);
+          }
+        }
       });
 
       spawned.on('error', (error) => {
@@ -996,7 +1056,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
             phase = 'stopped';
           } else {
             phase = 'failed';
-            lastError = stderrBuffer.trim().length > 0 ? stderrBuffer.trim() : 'daemon exited';
+            lastError = daemonExitDiagnostic(stderrBuffer);
             lastSetupError = undefined;
           }
           notifyExitListeners();

@@ -518,7 +518,10 @@ describe('Orama authoritative freshness', () => {
     });
   });
 
-  it('classifies metadata ahead of authority as unavailable', async () => {
+  // Stale, not unavailable: an artifact recording more applied than the authority ever had belongs to a
+  // corpus history this authority no longer has — a store reset leaves exactly this. As `unavailable` it was
+  // a hard apply error the cursor could never move past, so the retry that followed it never terminated.
+  it('classifies metadata ahead of authority as stale, so the projection rebuilds', async () => {
     const kb = createRuntime(allocateRoot('coral-orama-ahead-of-authority-'));
     await applyCurrentSnapshot(kb);
     const artifactPort = createOramaArtifactPort(kb.projectionArtifacts.files, kb.projectionArtifacts.runtimeDir, []);
@@ -527,7 +530,7 @@ describe('Orama authoritative freshness', () => {
     writeMetadata(kb, { ...metadata, contentSeq: metadata.contentSeq + 1 });
 
     await expect(artifactPort.readAuthoritativeFreshness(target)).resolves.toEqual({
-      kind: 'unavailable',
+      kind: 'stale',
       reason: 'ahead-of-authority',
     });
   });

@@ -135,11 +135,21 @@ export type CorpusAuthoritativeFreshness =
         | 'artifact-missing'
         | 'lane-behind'
         | 'generated-community-changed'
-        | 'projection-identity-changed';
+        | 'projection-identity-changed'
+        /**
+         * The artifact records applying further than the authority has ever reached — it belongs to a corpus
+         * history this authority no longer has, which is what a store reset leaves behind.
+         *
+         * Stale, not unavailable, because the consumer is a rebuildable cache: an artifact from a history that
+         * no longer exists is worth exactly what a missing one is worth, and rebuilding costs only CPU. It was
+         * classified `unavailable` — a hard apply error — which meant the cursor could never advance past it.
+         * Nothing about retrying changed that, so the retry ran forever.
+         */
+        | 'ahead-of-authority';
     }
   | {
       readonly kind: 'unavailable';
-      readonly reason: 'malformed' | 'probe-failed' | 'ahead-of-authority';
+      readonly reason: 'malformed' | 'probe-failed';
     };
 
 export interface JournalConsumerReadPort {
