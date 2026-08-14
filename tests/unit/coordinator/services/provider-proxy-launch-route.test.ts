@@ -59,6 +59,7 @@ function authority(): DurableProviderProxyOperationAuthority {
     proxyInstanceId,
     faulted: new Promise<never>(() => {}),
     onFault: () => () => undefined,
+    onIncident: () => () => undefined,
     setIdentity: {
       buildSetId,
       hostFingerprint: 'a'.repeat(64),

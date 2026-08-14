@@ -87,6 +87,8 @@ function recordingFaultLatch(): { latch: ProviderProxyAuthorityFaultLatch; fault
       observeControlClient: () => undefined,
       latch: (fault) => faults.push(fault),
       onFault: () => () => undefined,
+      reportIncident: () => undefined,
+      onIncident: () => () => undefined,
     },
     faults,
   };

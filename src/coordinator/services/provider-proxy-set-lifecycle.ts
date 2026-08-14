@@ -1,4 +1,5 @@
 import type { TimePort, TimerHandle } from '../../infra/port-types.js';
+import { formatError } from '../../infra/error-format.js';
 import type { OperationIdentity } from '../../provider-proxy/protocol.js';
 import type { HandoffCapsule, HandoffCapsuleV1, HandoffCapsuleV2 } from '../../provider-proxy/handoff-capsule.js';
 import type { DurableProviderProxyOperationAuthority } from '../live/provider-proxy/operation-route.js';
@@ -9,6 +10,11 @@ import type {
   DisappearanceDeliveryAttemptOutcome,
 } from './provider-containment-disappearance.js';
 import type { ProviderProxySetClaimMirror } from './provider-proxy-set-claim-mirror.js';
+import type {
+  ProviderProxyAuthorityFault,
+  ProviderProxyOperationIncident,
+  ProviderProxySetDecision,
+} from './provider-proxy-authority-fault.js';
 import type {
   ProviderProxyRecoveryDispatcher,
   ProviderProxySetLifecycleFatalError,
@@ -30,6 +36,17 @@ const CONTAINMENT_ATTEMPT_MS = 30_000;
 
 type CapacityClass = 'retained' | 'excess';
 type EstablishmentIntent = 'serve' | 'contain-unclaimed-discovery';
+type ProviderProxySetRetirementReason = Extract<ProviderProxySetDecision, Readonly<{ action: 'drain' }>>['reason'];
+type ProviderProxySetDrainDecision = Extract<ProviderProxySetDecision, Readonly<{ action: 'drain' }>>;
+type ProviderProxySetAuthorityStopDecision = Extract<
+  ProviderProxySetDecision,
+  Readonly<{ action: 'stop-and-reap'; reason: 'provider_authority_lost' }>
+>;
+type ProviderProxySetRetirementStopDecision = Extract<
+  ProviderProxySetDecision,
+  Readonly<{ action: 'stop-and-reap'; reason: ProviderProxySetRetirementReason }>
+>;
+type ProviderProxySetContainmentDecision = Extract<ProviderProxySetDecision, Readonly<{ action: 'stop-and-reap' }>>;
 
 type EstablishedSlot = {
   kind: 'available' | 'draining' | 'containing' | 'containment-wait';
@@ -43,6 +60,8 @@ type EstablishedSlot = {
   completedAttempts: number;
   attemptToken: number;
   retryTimer: TimerHandle | null;
+  decision: ProviderProxySetDecision | null;
+  retirementDecision: ProviderProxySetDrainDecision | null;
 };
 
 type ProviderProxySetSlot =
@@ -360,24 +379,76 @@ export class ProviderProxySetLifecycle {
     );
   }
 
+  decisionFor(identity: ProviderProxySetIdentity): ProviderProxySetDecision | null {
+    const slot = this.#slots.get(providerProxySetKey(identity));
+    if (
+      slot === undefined ||
+      slot.kind === 'acquiring' ||
+      slot.kind === 'capsule-recovering' ||
+      slot.kind === 'capsule-opaque' ||
+      slot.kind === 'recovering' ||
+      slot.kind === 'absence-delivery-pending'
+    ) {
+      return null;
+    }
+    return slot.decision;
+  }
+
   beginGracefulDrain(identity: ProviderProxySetIdentity): void {
     const slot = this.#slots.get(providerProxySetKey(identity));
     if (slot?.kind !== 'available') return;
+    const liveClaims = this.#deps.claims.claimsFor(slot.identity).length;
+    const decision =
+      liveClaims === 0
+        ? this.#retirementStopDecision(slot, 'graceful_idle', liveClaims)
+        : this.#drainDecision(slot, 'graceful_idle', liveClaims);
+    if (decision.action === 'stop-and-reap') {
+      this.#beginRetirementContainment(slot, decision);
+      return;
+    }
+    slot.retirementDecision = decision;
+    this.#recordDecision(slot, decision);
     slot.kind = 'draining';
     this.#removeRoute(slot);
-    if (this.#deps.claims.claimsFor(slot.identity).length === 0) {
-      this.#beginContainment(slot, 'graceful_idle');
-    }
   }
 
   claimsChanged(identity: ProviderProxySetIdentity): void {
     const slot = this.#slots.get(providerProxySetKey(identity));
-    if (slot?.kind === 'draining' && this.#deps.claims.claimsFor(slot.identity).length === 0) {
-      this.#beginContainment(slot, 'graceful_idle');
-    }
+    if (slot?.kind !== 'draining' || slot.retirementDecision === null) return;
+    const liveClaims = this.#deps.claims.claimsFor(slot.identity).length;
+    if (liveClaims !== 0) return;
+    this.#beginRetirementContainment(
+      slot,
+      this.#retirementStopDecision(slot, slot.retirementDecision.reason, liveClaims),
+    );
   }
 
-  faultAuthority(identity: ProviderProxySetIdentity): void {
+  recordAuthorityIncident(identity: ProviderProxySetIdentity, incident: ProviderProxyOperationIncident): void {
+    const slot = this.#slots.get(providerProxySetKey(identity));
+    if (
+      slot === undefined ||
+      slot.kind === 'acquiring' ||
+      slot.kind === 'capsule-recovering' ||
+      slot.kind === 'capsule-opaque' ||
+      slot.kind === 'recovering' ||
+      slot.kind === 'absence-delivery-pending' ||
+      slot.kind === 'containing' ||
+      slot.kind === 'containment-wait'
+    ) {
+      return;
+    }
+    this.#recordDecision(slot, {
+      action: 'preserve',
+      reason: 'retry_safe_operation_control_failure',
+      fault: incident.kind,
+      policy: incident.policy,
+      error: formatError(incident.error),
+      liveClaims: this.#deps.claims.claimsFor(slot.identity).length,
+      setIdentity: slot.identity,
+    });
+  }
+
+  faultAuthority(identity: ProviderProxySetIdentity, fault: ProviderProxyAuthorityFault): void {
     const slot = this.#slots.get(providerProxySetKey(identity));
     if (
       slot === undefined ||
@@ -391,7 +462,7 @@ export class ProviderProxySetLifecycle {
     if (slot.kind === 'absence-delivery-pending' || slot.kind === 'containing' || slot.kind === 'containment-wait') {
       return;
     }
-    this.#beginContainment(slot, 'provider_authority_lost');
+    this.#beginFaultContainment(slot, this.#authorityFaultDecision(slot, fault));
   }
 
   containmentAbsent(identity: ProviderProxySetIdentity, disappearanceReceipt: string): ContainmentAbsenceAcceptance {
@@ -758,12 +829,18 @@ export class ProviderProxySetLifecycle {
       completedAttempts: 0,
       attemptToken: 0,
       retryTimer: null,
+      decision: null,
+      retirementDecision: null,
     };
     this.#slots.set(key, slot);
-    authority.onFault(() => this.faultAuthority(identity));
+    authority.onFault((fault) => this.faultAuthority(identity, fault));
+    authority.onIncident((incident) => this.recordAuthorityIncident(identity, incident));
     this.#classifyCapacity();
     if (intent === 'contain-unclaimed-discovery' && slot.kind === 'available') {
-      this.#beginContainment(slot, 'unclaimed_discovery');
+      const liveClaims = this.#deps.claims.claimsFor(slot.identity).length;
+      if (liveClaims === 0) {
+        this.#beginRetirementContainment(slot, this.#retirementStopDecision(slot, 'unclaimed_discovery', liveClaims));
+      }
     }
     if (slot.kind === 'available' && routeKey !== null) {
       this.#routeIndex.set(routeKey, key);
@@ -782,11 +859,19 @@ export class ProviderProxySetLifecycle {
     for (const [index, slot] of addressed.entries()) slot.capacityClass = index < 4 ? 'retained' : 'excess';
     for (const slot of addressed) {
       if (slot.capacityClass !== 'excess' || slot.kind !== 'available') continue;
+      const liveClaims = this.#deps.claims.claimsFor(slot.identity).length;
+      const decision =
+        liveClaims === 0
+          ? this.#retirementStopDecision(slot, 'excess_capacity', liveClaims)
+          : this.#drainDecision(slot, 'excess_capacity', liveClaims);
+      if (decision.action === 'stop-and-reap') {
+        this.#beginRetirementContainment(slot, decision);
+        continue;
+      }
+      slot.retirementDecision = decision;
+      this.#recordDecision(slot, decision);
       slot.kind = 'draining';
       this.#removeRoute(slot);
-      if (this.#deps.claims.claimsFor(slot.identity).length === 0) {
-        this.#beginContainment(slot, 'excess_capacity');
-      }
     }
   }
 
@@ -796,17 +881,84 @@ export class ProviderProxySetLifecycle {
     }
   }
 
-  #beginContainment(
-    slot: EstablishedSlot,
-    _reason: 'provider_authority_lost' | 'graceful_idle' | 'excess_capacity' | 'unclaimed_discovery',
-  ): void {
+  #beginFaultContainment(slot: EstablishedSlot, decision: ProviderProxySetAuthorityStopDecision): void {
+    this.#beginContainment(slot, decision);
+  }
+
+  #beginRetirementContainment(slot: EstablishedSlot, decision: ProviderProxySetRetirementStopDecision): void {
+    this.#beginContainment(slot, decision);
+  }
+
+  #beginContainment(slot: EstablishedSlot, decision: ProviderProxySetContainmentDecision): void {
+    if (this.#slots.get(slot.key) !== slot || slot.kind === 'containing' || slot.kind === 'containment-wait') {
+      return;
+    }
+    this.#recordDecision(slot, decision);
+    slot.retirementDecision = null;
     this.#removeRoute(slot);
     slot.kind = 'containing';
     slot.authority.stopHeartbeats();
-    void this.#runContainmentAttempt(slot);
+    void this.#runContainmentAttempt(slot, decision);
   }
 
-  #runContainmentAttempt(slot: EstablishedSlot): void {
+  #recordDecision(slot: EstablishedSlot, decision: ProviderProxySetDecision): void {
+    slot.decision = decision;
+    const fault = 'fault' in decision ? decision.fault : 'none';
+    const subject = 'policy' in decision ? decision.policy.method : 'role' in decision ? decision.role : 'retirement';
+    const error = 'error' in decision ? decision.error : 'none';
+    this.#deps.onError?.(
+      `Provider proxy set action=${decision.action} reason=${decision.reason} fault=${fault} subject=${subject} liveClaims=${decision.liveClaims} set=${slot.key} error=${error}`,
+    );
+  }
+
+  #authorityFaultDecision(
+    slot: EstablishedSlot,
+    fault: ProviderProxyAuthorityFault,
+  ): ProviderProxySetAuthorityStopDecision {
+    const context = {
+      action: 'stop-and-reap' as const,
+      reason: 'provider_authority_lost' as const,
+      error: formatError(fault.error),
+      liveClaims: this.#deps.claims.claimsFor(slot.identity).length,
+      setIdentity: slot.identity,
+    };
+    switch (fault.kind) {
+      case 'operation-control-failed':
+        return { ...context, fault: fault.kind, policy: fault.policy };
+      case 'control-channel-fault':
+        return { ...context, fault: fault.kind, role: fault.role };
+      case 'heartbeat-failed':
+        return { ...context, fault: fault.kind, role: fault.role, method: fault.method };
+    }
+  }
+
+  #drainDecision(
+    slot: EstablishedSlot,
+    reason: ProviderProxySetRetirementReason,
+    liveClaims: number,
+  ): ProviderProxySetDrainDecision {
+    return {
+      action: 'drain',
+      reason,
+      liveClaims,
+      setIdentity: slot.identity,
+    };
+  }
+
+  #retirementStopDecision(
+    slot: EstablishedSlot,
+    reason: ProviderProxySetRetirementReason,
+    liveClaims: 0,
+  ): ProviderProxySetRetirementStopDecision {
+    return {
+      action: 'stop-and-reap',
+      reason,
+      liveClaims,
+      setIdentity: slot.identity,
+    };
+  }
+
+  #runContainmentAttempt(slot: EstablishedSlot, decision: ProviderProxySetContainmentDecision): void {
     if (this.#slots.get(slot.key) !== slot || (slot.kind !== 'containing' && slot.kind !== 'containment-wait')) {
       return;
     }
@@ -825,6 +977,7 @@ export class ProviderProxySetLifecycle {
             if (typeof value === 'object' && value !== null && 'disappearanceReceipt' in value) {
               this.#finishContainmentAttempt(
                 slot,
+                decision,
                 token,
                 abort,
                 (value as { disappearanceReceipt: string }).disappearanceReceipt,
@@ -832,7 +985,7 @@ export class ProviderProxySetLifecycle {
             }
             return;
           }
-          if (value !== null) this.#finishContainmentAttempt(slot, token, abort, value as string);
+          if (value !== null) this.#finishContainmentAttempt(slot, decision, token, abort, value as string);
         },
         retry: (retry) => {
           this.#deps.onError?.(`Provider containment source '${retry.producerId}' is temporarily unavailable.`);
@@ -845,7 +998,7 @@ export class ProviderProxySetLifecycle {
       slot.retryTimer = null;
       this.#recordLateness('containment-attempt-deadline', requestedWakeMs);
       turn.cancel(new Error('provider_proxy_containment_attempt_deadline'));
-      this.#finishContainmentAttempt(slot, token, abort, null);
+      this.#finishContainmentAttempt(slot, decision, token, abort, null);
     }, CONTAINMENT_ATTEMPT_MS);
     slot.retryTimer.unref?.();
     turn.start({
@@ -864,6 +1017,7 @@ export class ProviderProxySetLifecycle {
 
   #finishContainmentAttempt(
     slot: EstablishedSlot,
+    decision: ProviderProxySetContainmentDecision,
     token: number,
     abort: AbortController,
     receipt: string | null,
@@ -886,7 +1040,7 @@ export class ProviderProxySetLifecycle {
     slot.retryTimer = this.#deps.time.setTimeout(() => {
       slot.retryTimer = null;
       this.#recordLateness('containment-retry', requestedRetryMs);
-      this.#runContainmentAttempt(slot);
+      this.#runContainmentAttempt(slot, decision);
     }, delayMs);
     slot.retryTimer.unref?.();
   }

@@ -471,6 +471,7 @@ function createHarness(
     proxyInstanceId: record.operation.proxyInstanceId,
     faulted: new Promise<never>(() => {}),
     onFault: () => () => undefined,
+    onIncident: () => () => undefined,
     setIdentity: {
       buildSetId: record.operation.buildSetId,
       hostFingerprint: record.locator.hostFingerprint,

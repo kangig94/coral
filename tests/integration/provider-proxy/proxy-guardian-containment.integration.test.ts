@@ -77,7 +77,10 @@ import { LocalOperationRegistry } from '#src/coordinator/services/operation-regi
 import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set-claim-mirror.js';
 import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set-lifecycle.js';
 import { ProviderProxySetLifecycleRef } from '#src/coordinator/services/provider-proxy-set-lifecycle-ref.js';
-import { createProviderProxyAuthorityFaultLatch } from '#src/coordinator/services/provider-proxy-authority-fault.js';
+import {
+  createProviderProxyAuthorityFaultLatch,
+  type ProviderProxyAuthorityFault,
+} from '#src/coordinator/services/provider-proxy-authority-fault.js';
 import { DefaultProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
 import {
   createProviderProxyOperationAuthority,
@@ -523,6 +526,7 @@ function establishActivationRoute(setIdentity: ProviderProxySetIdentity) {
     setIdentity,
     faulted: new Promise<never>(() => undefined),
     onFault: () => () => undefined,
+    onIncident: () => () => undefined,
     stopHeartbeats: () => undefined,
     stopAndReap: () => new Promise<never>(() => undefined),
     initiateControlClose: async () => undefined,
@@ -966,9 +970,9 @@ describe('provider proxy activation against a real guardian', () => {
       guardianClient: set.control,
       setIdentity: set.setIdentity,
       mutationRpcTimeoutMs: 5_000,
-      faultAuthority: (fault: unknown) => {
+      faultAuthority: (fault: ProviderProxyAuthorityFault) => {
         faults.push(fault);
-        lifecycle.faultAuthority(set.setIdentity);
+        lifecycle.faultAuthority(set.setIdentity, fault);
       },
     };
     const operation = {
@@ -1014,9 +1018,9 @@ describe('provider proxy activation against a real guardian', () => {
       guardianClient: set.control,
       setIdentity: set.setIdentity,
       mutationRpcTimeoutMs: 5_000,
-      faultAuthority: (fault: unknown) => {
+      faultAuthority: (fault: ProviderProxyAuthorityFault) => {
         faults.push(fault);
-        lifecycle.faultAuthority(set.setIdentity);
+        lifecycle.faultAuthority(set.setIdentity, fault);
       },
     };
     const operation = {

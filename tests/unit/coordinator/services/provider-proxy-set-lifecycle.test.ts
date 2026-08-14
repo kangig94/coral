@@ -5,7 +5,14 @@ import { describe, expect, it, vi } from 'vitest';
 import type { TimerHandle } from '#src/infra/port-types.js';
 import type { HandoffCapsule, HandoffCapsuleV1, HandoffCapsuleV2 } from '#src/provider-proxy/handoff-capsule.js';
 import type { DurableProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
-import type { ProviderProxyAuthorityFault } from '#src/coordinator/services/provider-proxy-authority-fault.js';
+import {
+  createProviderProxyAuthorityFaultLatch,
+  type ContainmentRequiredControlCallPolicy,
+  type ProviderProxyAuthorityFault,
+  type ProviderProxyAuthorityFaultLatch,
+  type ProviderProxyOperationIncident,
+  type RetrySafeControlCallPolicy,
+} from '#src/coordinator/services/provider-proxy-authority-fault.js';
 import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set-claim-mirror.js';
 import {
   ProviderProxySetLifecycle,
@@ -22,7 +29,10 @@ import type {
   ProviderProxySetLifecycleFatalError,
 } from '#src/coordinator/services/provider-proxy-recovery-policy.js';
 import { isProviderProxyRecoveryFatalError } from '#src/coordinator/services/provider-proxy-recovery-policy.js';
-import { providerProxySetIdentityFromRecord } from '#src/coordinator/services/provider-proxy-set-identity.js';
+import {
+  providerProxySetIdentityFromRecord,
+  providerProxySetKey,
+} from '#src/coordinator/services/provider-proxy-set-identity.js';
 import type { ProviderProxySetRedemptionOutcome } from '#src/coordinator/services/provider-proxy-set-inheritance.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
@@ -31,6 +41,29 @@ import type { ProviderOperationTerminalDirective } from '#src/store/provider-ope
 
 const noContainmentProof = async (): Promise<null> => null;
 const ignoreControlEstablished = (): void => undefined;
+const operationPolicy: RetrySafeControlCallPolicy = {
+  method: 'operation.settle.v1',
+  phase: 'settlement-pending',
+  effect: 'mutation',
+  indeterminate: 'retry-safe',
+  preEffectProtocolCodes: new Set(),
+};
+const containmentOperationPolicy: ContainmentRequiredControlCallPolicy = {
+  method: 'operation.cancel.v1',
+  phase: 'prestart-cleanup-pending',
+  effect: 'mutation',
+  indeterminate: 'requires-containment',
+  preEffectProtocolCodes: new Set(),
+};
+
+function terminalAuthorityFault(): ProviderProxyAuthorityFault {
+  return {
+    kind: 'heartbeat-failed',
+    role: 'proxy',
+    method: 'control.heartbeat.v1',
+    error: 'control closed',
+  };
+}
 
 type ProviderProxySetLifecycleFixtureDeps = Omit<ProviderProxySetLifecycleDeps, 'recoveryDispatcher'> &
   Readonly<{
@@ -131,6 +164,7 @@ function fakeAuthority(
   options: {
     record?: ReturnType<typeof providerOperationRecord>;
     fault?: ReturnType<typeof deferred<ProviderProxyAuthorityFault>>;
+    faults?: ProviderProxyAuthorityFaultLatch;
     stopAndReap?: DurableProviderProxyOperationAuthority['stopAndReap'];
   } = {},
 ): DurableProviderProxyOperationAuthority {
@@ -139,11 +173,14 @@ function fakeAuthority(
   return {
     proxyInstanceId: record.operation.proxyInstanceId,
     setIdentity: providerProxySetIdentityFromRecord(record),
-    faulted: fault.promise,
-    onFault: (listener) => {
-      void fault.promise.then(listener);
-      return () => undefined;
-    },
+    faulted: options.faults?.faulted ?? fault.promise,
+    onFault:
+      options.faults?.onFault ??
+      ((listener) => {
+        void fault.promise.then(listener);
+        return () => undefined;
+      }),
+    onIncident: options.faults?.onIncident ?? (() => () => undefined),
     registerSuccessionOperation: async () => undefined,
     stopAndReap: options.stopAndReap ?? (async () => ({ unconfirmed: 'not proved' })),
     stopHeartbeats: () => undefined,
@@ -215,6 +252,234 @@ function capsuleV2For(authority: DurableProviderProxyOperationAuthority): Handof
 }
 
 describe('ProviderProxySetLifecycle', () => {
+  it('reports repeated operation incidents without consuming the terminal fault latch', async () => {
+    const faults = createProviderProxyAuthorityFaultLatch();
+    const incident = {
+      kind: 'operation-control-failed',
+      policy: operationPolicy,
+      error: 'settlement timeout',
+    } as const;
+    const incidents: ProviderProxyOperationIncident[] = [];
+    let terminalFaultObserved = false;
+    void faults.faulted.then(() => {
+      terminalFaultObserved = true;
+    });
+    faults.onIncident((next) => incidents.push(next));
+
+    faults.reportIncident(incident);
+    faults.reportIncident(incident);
+    await Promise.resolve();
+
+    expect(incidents).toEqual([incident, incident]);
+    expect(terminalFaultObserved).toBe(false);
+
+    const terminalFault = terminalAuthorityFault();
+    faults.latch(terminalFault);
+    await expect(faults.faulted).resolves.toEqual(terminalFault);
+  });
+
+  it('retains an exact preserve decision for an operation incident', () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const stopAndReap = vi.fn(async () => ({ unconfirmed: 'unused' }) as const);
+    const onError = vi.fn();
+    const faults = createProviderProxyAuthorityFaultLatch();
+    const authority = fakeAuthority({ record, faults, stopAndReap });
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: new ManualClock(),
+      proveContainmentAbsent: noContainmentProof,
+      onError,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.registerInheritedSet(authority);
+
+    faults.reportIncident({
+      kind: 'operation-control-failed',
+      policy: operationPolicy,
+      error: 'settlement timeout',
+    });
+
+    expect(lifecycle.decisionFor(authority.setIdentity)).toEqual({
+      action: 'preserve',
+      reason: 'retry_safe_operation_control_failure',
+      fault: 'operation-control-failed',
+      policy: operationPolicy,
+      error: 'settlement timeout',
+      liveClaims: 1,
+      setIdentity: authority.setIdentity,
+    });
+    expect(stopAndReap).not.toHaveBeenCalled();
+    expect(onError.mock.calls).toEqual([
+      [
+        `Provider proxy set action=preserve reason=retry_safe_operation_control_failure fault=operation-control-failed subject=operation.settle.v1 liveClaims=1 set=${providerProxySetKey(authority.setIdentity)} error=settlement timeout`,
+      ],
+    ]);
+  });
+
+  it('retains an exact stop-and-reap decision for a containment-qualified operation fault', () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const stopAndReap = vi.fn(async () => ({ unconfirmed: 'still live' }) as const);
+    const authority = fakeAuthority({ record, stopAndReap });
+    const onError = vi.fn();
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: new ManualClock(),
+      proveContainmentAbsent: noContainmentProof,
+      onError,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.registerInheritedSet(authority);
+
+    lifecycle.faultAuthority(authority.setIdentity, {
+      kind: 'operation-control-failed',
+      policy: containmentOperationPolicy,
+      error: 'mutation outcome unknown',
+    });
+
+    expect(lifecycle.decisionFor(authority.setIdentity)).toEqual({
+      action: 'stop-and-reap',
+      reason: 'provider_authority_lost',
+      fault: 'operation-control-failed',
+      policy: containmentOperationPolicy,
+      error: 'mutation outcome unknown',
+      liveClaims: 1,
+      setIdentity: authority.setIdentity,
+    });
+    expect(stopAndReap).toHaveBeenCalledOnce();
+    expect(onError.mock.calls).toEqual([
+      [
+        `Provider proxy set action=stop-and-reap reason=provider_authority_lost fault=operation-control-failed subject=operation.cancel.v1 liveClaims=1 set=${providerProxySetKey(authority.setIdentity)} error=mutation outcome unknown`,
+      ],
+    ]);
+  });
+
+  it('reaps live claims after a control-channel fault', () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const stopAndReap = vi.fn(async () => ({ unconfirmed: 'still live' }) as const);
+    const authority = fakeAuthority({ record, stopAndReap });
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: new ManualClock(),
+      proveContainmentAbsent: noContainmentProof,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.registerInheritedSet(authority);
+
+    lifecycle.faultAuthority(authority.setIdentity, {
+      kind: 'control-channel-fault',
+      role: 'guardian',
+      error: new Error('guardian channel closed') as never,
+    });
+
+    expect(stopAndReap).toHaveBeenCalledOnce();
+    expect(lifecycle.decisionFor(authority.setIdentity)).toEqual(
+      expect.objectContaining({
+        action: 'stop-and-reap',
+        fault: 'control-channel-fault',
+        role: 'guardian',
+        liveClaims: 1,
+      }),
+    );
+  });
+
+  it.each([{ winner: 'role-control' as const }, { winner: 'containment-proof' as const }])(
+    'races containment sources and preserves every disappearance notice when $winner reports first',
+    async ({ winner }) => {
+      const first = providerOperationRecord('executing');
+      const second = providerOperationRecord('executing', {
+        operation: { ...first.operation, jobId: randomUUID(), operationId: randomUUID() },
+        locator: first.locator,
+      });
+      const claims = new ProviderProxySetClaimMirror();
+      claims.initialize([first, second]);
+      const roleControlResult = deferred<Awaited<ReturnType<DurableProviderProxyOperationAuthority['stopAndReap']>>>();
+      const absenceResult = deferred<string | null>();
+      const signals: { roleControl?: AbortSignal; containmentProof?: AbortSignal } = {};
+      const stopAndReap = vi.fn((signal: AbortSignal) => {
+        signals.roleControl = signal;
+        return roleControlResult.promise;
+      });
+      const proveContainmentAbsent = vi.fn(
+        (_identity: ReturnType<typeof providerProxySetIdentityFromRecord>, signal: AbortSignal) => {
+          signals.containmentProof = signal;
+          return absenceResult.promise;
+        },
+      );
+      const notices: Parameters<ProviderContainmentDisappearanceConsumer['containmentDisappeared']>[0][] = [];
+      const containmentDisappeared = vi.fn(
+        async (notice: Parameters<ProviderContainmentDisappearanceConsumer['containmentDisappeared']>[0]) => {
+          notices.push(notice);
+          return {
+            kind: 'accepted' as const,
+            acceptance: {
+              kind: 'accepted' as const,
+              operation: notice.operation,
+              disposition: 'terminalization-committed' as const,
+            },
+          };
+        },
+      );
+      const authority = fakeAuthority({ record: first, stopAndReap });
+      const lifecycle = lifecycleFor({
+        claims,
+        controlEstablished: ignoreControlEstablished,
+        disappearanceConsumer: { containmentDisappeared },
+        time: new ManualClock(),
+        proveContainmentAbsent,
+      });
+      lifecycle.initializeClaimSlots();
+      lifecycle.completeStartupDiscovery();
+      lifecycle.registerInheritedSet(authority);
+
+      lifecycle.faultAuthority(authority.setIdentity, terminalAuthorityFault());
+
+      expect(stopAndReap).toHaveBeenCalledOnce();
+      expect(proveContainmentAbsent).toHaveBeenCalledOnce();
+      const disappearanceReceipt = 'guardian:guardian-receipt;reaper:reaper-receipt';
+      if (winner === 'role-control') {
+        roleControlResult.resolve({ disappearanceReceipt });
+      } else {
+        absenceResult.resolve(disappearanceReceipt);
+      }
+      await vi.waitFor(() => expect(notices).toHaveLength(2));
+
+      expect(signals.roleControl?.aborted).toBe(true);
+      expect(signals.containmentProof?.aborted).toBe(true);
+      expect(notices).toEqual(
+        expect.arrayContaining([
+          { operation: first.operation, setIdentity: authority.setIdentity, disappearanceReceipt },
+          { operation: second.operation, setIdentity: authority.setIdentity, disappearanceReceipt },
+        ]),
+      );
+
+      if (winner === 'role-control') {
+        absenceResult.resolve('guardian:late-guardian;reaper:late-reaper');
+      } else {
+        roleControlResult.resolve({
+          disappearanceReceipt: 'guardian:late-guardian;reaper:late-reaper',
+        });
+      }
+      await drainMicrotasks();
+      expect(containmentDisappeared).toHaveBeenCalledTimes(2);
+      await vi.waitFor(() => expect(lifecycle.snapshot().represented).toBe(0));
+    },
+  );
+
   it('reconstructs a zero-claim capsule before admitting an overlapping fresh set', async () => {
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([]);
@@ -253,6 +518,7 @@ describe('ProviderProxySetLifecycle', () => {
     claims.initialize([]);
     const authority = fakeAuthority();
     const established = vi.fn();
+    const onError = vi.fn();
     const rewriteCapsule = vi.fn(async (_path: string, capsule: HandoffCapsuleV2) => {
       expect(capsule).toMatchObject({
         version: 2,
@@ -268,6 +534,7 @@ describe('ProviderProxySetLifecycle', () => {
       proveContainmentAbsent: noContainmentProof,
       redeemCapsule: async () => ({ kind: 'redeemed', set: authority }),
       rewriteCapsule,
+      onError,
     });
     lifecycle.initializeClaimSlots();
 
@@ -277,6 +544,47 @@ describe('ProviderProxySetLifecycle', () => {
     expect(established).not.toHaveBeenCalled();
     expect(lifecycle.authorityFor(authority.setIdentity)).toBeNull();
     expect(rewriteCapsule).toHaveBeenCalledOnce();
+    expect(onError.mock.calls).toEqual([
+      [
+        `Provider proxy set action=stop-and-reap reason=unclaimed_discovery fault=none subject=retirement liveClaims=0 set=${providerProxySetKey(authority.setIdentity)} error=none`,
+      ],
+    ]);
+  });
+
+  it('preserves an unclaimed discovery that gains a claim while redemption is in flight', async () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([]);
+    const stopAndReap = vi.fn(async () => ({ unconfirmed: 'still claimed' }) as const);
+    const authority = fakeAuthority({ record, stopAndReap });
+    const redemption = deferred<ProviderProxySetRedemptionOutcome>();
+    const established = vi.fn();
+    const rewriteCapsule = vi.fn(async () => undefined);
+    const onError = vi.fn();
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: established,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: new ManualClock(),
+      proveContainmentAbsent: noContainmentProof,
+      redeemCapsule: () => redemption.promise,
+      rewriteCapsule,
+      onError,
+    });
+    lifecycle.initializeClaimSlots();
+
+    lifecycle.installDiscoveredCapsules([
+      { path: '/capsules/claim-race.handoff.json', capsule: capsuleFor(authority) },
+    ]);
+    claims.applyMutation({ kind: 'upserted', record });
+    redemption.resolve({ kind: 'redeemed', set: authority });
+    await vi.waitFor(() => expect(rewriteCapsule).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(lifecycle.authorityFor(authority.setIdentity)).toBe(authority));
+
+    expect(stopAndReap).not.toHaveBeenCalled();
+    expect(established).toHaveBeenCalledWith(authority);
+    expect(lifecycle.snapshot().states).toEqual(['available']);
+    expect(onError).not.toHaveBeenCalled();
   });
 
   it('retires an unmatched exact v2 capsule after independent absence proof', async () => {
@@ -502,24 +810,37 @@ describe('ProviderProxySetLifecycle', () => {
   });
   it('removes routing immediately when the operation authority fault latch resolves', async () => {
     const clock = new ManualClock();
+    const record = providerOperationRecord('executing');
     const claims = new ProviderProxySetClaimMirror();
-    claims.initialize([]);
+    claims.initialize([record]);
     const fault = deferred<ProviderProxyAuthorityFault>();
     const faultListeners = new Set<(next: ProviderProxyAuthorityFault) => void>();
+    const stopHeartbeats = vi.fn();
+    const stopAndReap = vi.fn(async () => ({ unconfirmed: 'still live' }) as const);
     const authority: DurableProviderProxyOperationAuthority = {
-      ...fakeAuthority({ fault }),
+      ...fakeAuthority({ record, fault, stopAndReap }),
+      stopHeartbeats,
       onFault: (listener) => {
         faultListeners.add(listener);
         return () => faultListeners.delete(listener);
       },
     };
+    // The callback observes the very lifecycle it is passed into, so the reference is published after
+    // construction through a holder rather than forward-declared.
+    const constructed: { lifecycle: ProviderProxySetLifecycle | null } = { lifecycle: null };
+    const onError = vi.fn(() => {
+      expect(constructed.lifecycle?.routeFor('codex-route')).toBe(authority);
+      expect(stopHeartbeats).not.toHaveBeenCalled();
+    });
     const lifecycle = lifecycleFor({
       claims,
       controlEstablished: ignoreControlEstablished,
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
       time: clock,
       proveContainmentAbsent: noContainmentProof,
+      onError,
     });
+    constructed.lifecycle = lifecycle;
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
     const admission = lifecycle.beginFreshAcquisition('codex-route');
@@ -531,12 +852,30 @@ describe('ProviderProxySetLifecycle', () => {
       kind: 'heartbeat-failed',
       role: 'proxy',
       method: 'control.heartbeat.v1',
-      error: new Error('control closed'),
+      error: 'control closed',
     };
+    for (const listener of faultListeners) listener(authorityFault);
     for (const listener of faultListeners) listener(authorityFault);
 
     expect(lifecycle.routeFor('codex-route')).toBeNull();
     expect(lifecycle.snapshot().states).toEqual(['containing']);
+    expect(stopHeartbeats).toHaveBeenCalledOnce();
+    expect(stopAndReap).toHaveBeenCalledOnce();
+    expect(onError.mock.calls).toEqual([
+      [
+        `Provider proxy set action=stop-and-reap reason=provider_authority_lost fault=heartbeat-failed subject=proxy liveClaims=1 set=${providerProxySetKey(authority.setIdentity)} error=control closed`,
+      ],
+    ]);
+    expect(lifecycle.decisionFor(authority.setIdentity)).toEqual({
+      action: 'stop-and-reap',
+      reason: 'provider_authority_lost',
+      fault: 'heartbeat-failed',
+      role: 'proxy',
+      method: 'control.heartbeat.v1',
+      error: 'control closed',
+      liveClaims: 1,
+      setIdentity: authority.setIdentity,
+    });
     fault.resolve(authorityFault);
     await authority.faulted;
   });
@@ -564,7 +903,7 @@ describe('ProviderProxySetLifecycle', () => {
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
     lifecycle.registerInheritedSet(authority);
-    lifecycle.faultAuthority(authority.setIdentity);
+    lifecycle.faultAuthority(authority.setIdentity, terminalAuthorityFault());
 
     lifecycle.containmentAbsent(authority.setIdentity, 'public-proof-receipt');
 
@@ -607,7 +946,7 @@ describe('ProviderProxySetLifecycle', () => {
     lifecycle.completeStartupDiscovery();
     const authority = fakeAuthority({ record });
     lifecycle.registerInheritedSet(authority);
-    lifecycle.faultAuthority(authority.setIdentity);
+    lifecycle.faultAuthority(authority.setIdentity, terminalAuthorityFault());
 
     const acceptance = lifecycle.containmentAbsent(authority.setIdentity, 'corrupt-disappearance-identity');
     const outcome = await acceptance.initialDisposition.then(
@@ -685,7 +1024,7 @@ describe('ProviderProxySetLifecycle', () => {
     lifecycle.completeStartupDiscovery();
     const authority = fakeAuthority({ record });
     lifecycle.registerInheritedSet(authority);
-    lifecycle.faultAuthority(authority.setIdentity);
+    lifecycle.faultAuthority(authority.setIdentity, terminalAuthorityFault());
 
     const acceptance = lifecycle.containmentAbsent(authority.setIdentity, 'nested-disappearance-fatal');
     const outcome = await acceptance.initialDisposition.then(
@@ -762,7 +1101,7 @@ describe('ProviderProxySetLifecycle', () => {
     });
     lifecycle.registerInheritedSet(authority, '/capsules/set.handoff.json');
 
-    lifecycle.faultAuthority(authority.setIdentity);
+    lifecycle.faultAuthority(authority.setIdentity, terminalAuthorityFault());
     await vi.waitFor(() => expect(lifecycle.snapshot().pendingOperationCounts).toEqual([1]));
     expect(lifecycle.snapshot().represented).toBe(1);
     expect(retireCapsule).not.toHaveBeenCalled();
@@ -805,7 +1144,7 @@ describe('ProviderProxySetLifecycle', () => {
     lifecycle.completeStartupDiscovery();
     lifecycle.registerInheritedSet(authority, '/capsules/set.handoff.json');
 
-    lifecycle.faultAuthority(authority.setIdentity);
+    lifecycle.faultAuthority(authority.setIdentity, terminalAuthorityFault());
     const acceptance = lifecycle.containmentAbsent(authority.setIdentity, 'exact-absence');
     await vi.waitFor(() => expect(retireCapsule).toHaveBeenCalledOnce());
     expect(lifecycle.snapshot()).toEqual(
@@ -833,6 +1172,7 @@ describe('ProviderProxySetLifecycle', () => {
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([]);
     const violations: ProviderProxySetLifecycleProgressViolation[] = [];
+    const errors: string[] = [];
     let attempts = 0;
     const authority = fakeAuthority({
       stopAndReap: async () => {
@@ -847,13 +1187,15 @@ describe('ProviderProxySetLifecycle', () => {
       time: clock,
       proveContainmentAbsent: noContainmentProof,
       onProgressPremiseViolation: (violation) => violations.push(violation),
+      onError: (message) => errors.push(message),
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
     const admission = lifecycle.beginFreshAcquisition('route');
     if (admission.kind !== 'accepted') throw new Error('expected acquisition admission');
     lifecycle.acquisitionSucceeded(admission.slotId, authority);
-    lifecycle.faultAuthority(authority.setIdentity);
+    lifecycle.faultAuthority(authority.setIdentity, terminalAuthorityFault());
+    lifecycle.faultAuthority(authority.setIdentity, terminalAuthorityFault());
     expect(attempts).toBe(1);
 
     clock.elapse(30_500);
@@ -870,6 +1212,9 @@ describe('ProviderProxySetLifecycle', () => {
     expect(violations).toEqual([
       expect.objectContaining({ stage: 'containment-attempt-deadline', latenessMs: 500 }),
       expect.objectContaining({ stage: 'containment-retry', latenessMs: 500 }),
+    ]);
+    expect(errors.filter((message) => message.startsWith('Provider proxy set action='))).toEqual([
+      `Provider proxy set action=stop-and-reap reason=provider_authority_lost fault=heartbeat-failed subject=proxy liveClaims=0 set=${providerProxySetKey(authority.setIdentity)} error=control closed`,
     ]);
   });
 
@@ -892,7 +1237,7 @@ describe('ProviderProxySetLifecycle', () => {
     const admission = lifecycle.beginFreshAcquisition('route');
     if (admission.kind !== 'accepted') throw new Error('expected acquisition admission');
     lifecycle.acquisitionSucceeded(admission.slotId, authority);
-    lifecycle.faultAuthority(authority.setIdentity);
+    lifecycle.faultAuthority(authority.setIdentity, terminalAuthorityFault());
 
     clock.elapse(30_000);
     clock.runDue();
@@ -906,23 +1251,12 @@ describe('ProviderProxySetLifecycle', () => {
     expect(consumer).not.toHaveBeenCalled();
   });
 
-  it('represents a fifth inherited set as excess without admitting fresh capacity', () => {
-    const claims = new ProviderProxySetClaimMirror();
-    claims.initialize([]);
-    const lifecycle = lifecycleFor({
-      claims,
-      controlEstablished: ignoreControlEstablished,
-      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
-      time: new ManualClock(),
-      proveContainmentAbsent: noContainmentProof,
-    });
-    lifecycle.initializeClaimSlots();
-    lifecycle.completeStartupDiscovery();
-
-    for (let index = 1; index <= 5; index += 1) {
+  it('drains a claim-bearing fifth inherited set until its claim reaches zero', () => {
+    const records = Array.from({ length: 5 }, (_, offset) => {
+      const index = offset + 1;
       const base = providerOperationRecord('executing');
       const proxyInstanceId = randomUUID();
-      const record = providerOperationRecord('executing', {
+      return providerOperationRecord('executing', {
         operation: {
           ...base.operation,
           jobId: randomUUID(),
@@ -950,41 +1284,153 @@ describe('ProviderProxySetLifecycle', () => {
           },
         },
       });
-      lifecycle.registerInheritedSet(fakeAuthority({ record }));
-    }
-
-    expect(lifecycle.snapshot()).toEqual(
-      expect.objectContaining({ represented: 5, available: 4, states: expect.arrayContaining(['containing']) }),
-    );
-    expect(lifecycle.beginFreshAcquisition('new-route')).toEqual({
-      kind: 'capacity',
-      code: 'provider_proxy_set_capacity',
     });
-  });
-
-  it('keeps a graceful drain live while a durable executing claim exists before attachment', async () => {
-    const record = providerOperationRecord('executing');
     const claims = new ProviderProxySetClaimMirror();
-    claims.initialize([record]);
+    claims.initialize(records);
     const stopAndReap = vi.fn(async () => ({ unconfirmed: 'still claimed' }) as const);
-    const authority = fakeAuthority({ record, stopAndReap });
+    const onError = vi.fn();
     const lifecycle = lifecycleFor({
       claims,
       controlEstablished: ignoreControlEstablished,
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
       time: new ManualClock(),
       proveContainmentAbsent: noContainmentProof,
+      onError,
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
-    lifecycle.registerInheritedSet(authority);
+
+    const authorities = records.map((record) => fakeAuthority({ record, stopAndReap }));
+    for (const authority of authorities) lifecycle.registerInheritedSet(authority);
+    const excessIndex = authorities.findIndex(
+      (authority) => lifecycle.decisionFor(authority.setIdentity)?.reason === 'excess_capacity',
+    );
+    const excessAuthority = authorities[excessIndex];
+    const excessRecord = records[excessIndex];
+    if (excessAuthority === undefined || excessRecord === undefined) throw new Error('expected excess authority');
+
+    expect(lifecycle.snapshot()).toEqual(
+      expect.objectContaining({ represented: 5, available: 4, states: expect.arrayContaining(['draining']) }),
+    );
+    expect(lifecycle.beginFreshAcquisition('new-route')).toEqual({
+      kind: 'capacity',
+      code: 'provider_proxy_set_capacity',
+    });
+    expect(stopAndReap).not.toHaveBeenCalled();
+    expect(lifecycle.decisionFor(excessAuthority.setIdentity)).toEqual({
+      action: 'drain',
+      reason: 'excess_capacity',
+      liveClaims: 1,
+      setIdentity: excessAuthority.setIdentity,
+    });
+
+    claims.applyMutation({ kind: 'deleted', record: excessRecord });
+    lifecycle.claimsChanged(excessAuthority.setIdentity);
+
+    expect(stopAndReap).toHaveBeenCalledOnce();
+    expect(lifecycle.decisionFor(excessAuthority.setIdentity)).toEqual({
+      action: 'stop-and-reap',
+      reason: 'excess_capacity',
+      liveClaims: 0,
+      setIdentity: excessAuthority.setIdentity,
+    });
+    expect(onError.mock.calls).toEqual([
+      [
+        `Provider proxy set action=drain reason=excess_capacity fault=none subject=retirement liveClaims=1 set=${providerProxySetKey(excessAuthority.setIdentity)} error=none`,
+      ],
+      [
+        `Provider proxy set action=stop-and-reap reason=excess_capacity fault=none subject=retirement liveClaims=0 set=${providerProxySetKey(excessAuthority.setIdentity)} error=none`,
+      ],
+    ]);
+  });
+
+  it('completes a graceful drain after a retry-safe incident replaces the observable decision', async () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const stopAndReap = vi.fn(async () => ({ unconfirmed: 'still claimed' }) as const);
+    const stopHeartbeats = vi.fn();
+    const faults = createProviderProxyAuthorityFaultLatch();
+    const authority: DurableProviderProxyOperationAuthority = {
+      ...fakeAuthority({ record, faults, stopAndReap }),
+      stopHeartbeats,
+    };
+    const decisionObservations: Array<Readonly<{ message: string; route: boolean; stopped: boolean }>> = [];
+    // The observer reads the very lifecycle it is passed into, so the reference is published after
+    // construction through a holder rather than forward-declared.
+    const constructed: { lifecycle: ProviderProxySetLifecycle | null } = { lifecycle: null };
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: new ManualClock(),
+      proveContainmentAbsent: noContainmentProof,
+      onError: (message) =>
+        decisionObservations.push({
+          message,
+          route: constructed.lifecycle?.routeFor('graceful-route') === authority,
+          stopped: stopHeartbeats.mock.calls.length > 0,
+        }),
+    });
+    constructed.lifecycle = lifecycle;
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    const admission = lifecycle.beginFreshAcquisition('graceful-route');
+    if (admission.kind !== 'accepted') throw new Error('expected acquisition admission');
+    lifecycle.acquisitionSucceeded(admission.slotId, authority);
 
     lifecycle.beginGracefulDrain(authority.setIdentity);
     expect(stopAndReap).not.toHaveBeenCalled();
     expect(lifecycle.snapshot().states).toEqual(['draining']);
+    expect(lifecycle.routeFor('graceful-route')).toBeNull();
+    expect(lifecycle.decisionFor(authority.setIdentity)).toEqual({
+      action: 'drain',
+      reason: 'graceful_idle',
+      liveClaims: 1,
+      setIdentity: authority.setIdentity,
+    });
+
+    faults.reportIncident({
+      kind: 'operation-control-failed',
+      policy: operationPolicy,
+      error: 'settlement timeout',
+    });
+    expect(lifecycle.decisionFor(authority.setIdentity)).toEqual({
+      action: 'preserve',
+      reason: 'retry_safe_operation_control_failure',
+      fault: 'operation-control-failed',
+      policy: operationPolicy,
+      error: 'settlement timeout',
+      liveClaims: 1,
+      setIdentity: authority.setIdentity,
+    });
 
     claims.applyMutation({ kind: 'deleted', record });
     lifecycle.claimsChanged(authority.setIdentity);
     expect(stopAndReap).toHaveBeenCalledOnce();
+    expect(lifecycle.decisionFor(authority.setIdentity)).toEqual({
+      action: 'stop-and-reap',
+      reason: 'graceful_idle',
+      liveClaims: 0,
+      setIdentity: authority.setIdentity,
+    });
+    expect(decisionObservations).toEqual([
+      {
+        message: `Provider proxy set action=drain reason=graceful_idle fault=none subject=retirement liveClaims=1 set=${providerProxySetKey(authority.setIdentity)} error=none`,
+        route: true,
+        stopped: false,
+      },
+      {
+        message: `Provider proxy set action=preserve reason=retry_safe_operation_control_failure fault=operation-control-failed subject=operation.settle.v1 liveClaims=1 set=${providerProxySetKey(authority.setIdentity)} error=settlement timeout`,
+        route: false,
+        stopped: false,
+      },
+      {
+        message: `Provider proxy set action=stop-and-reap reason=graceful_idle fault=none subject=retirement liveClaims=0 set=${providerProxySetKey(authority.setIdentity)} error=none`,
+        route: false,
+        stopped: false,
+      },
+    ]);
+    expect(stopHeartbeats).toHaveBeenCalledOnce();
   });
 });

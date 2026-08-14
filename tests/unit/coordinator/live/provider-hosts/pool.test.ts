@@ -89,6 +89,7 @@ function fakeDurableProxySet(
     ...inherited,
     faulted: new Promise<never>(() => {}),
     onFault: () => () => undefined,
+    onIncident: () => () => undefined,
     prepareOperation:
       options.prepareOperation ??
       (async () => {

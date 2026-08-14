@@ -23,6 +23,7 @@ import type { OperationStopControl } from '../../services/operation-registry.js'
 import type {
   ProviderProxyAuthorityFault,
   ProviderProxyAuthorityFaultLatch,
+  ProviderProxyOperationIncident,
   ProviderProxyRoleClients,
 } from '../../services/provider-proxy-authority-fault.js';
 import type { ProviderProxySetIdentity } from '../../services/provider-proxy-set-identity.js';
@@ -36,6 +37,7 @@ export interface ProviderProxyOperationAuthority extends ProviderProxySetAuthori
 export interface DurableProviderProxyOperationAuthority extends ProviderProxyOperationAuthority {
   readonly faulted: Promise<ProviderProxyAuthorityFault>;
   onFault(listener: (fault: ProviderProxyAuthorityFault) => void): () => void;
+  onIncident(listener: (incident: ProviderProxyOperationIncident) => void): () => void;
   prepareOperation(attempt: ProviderOperationPrepareAttempt): Promise<PrepareProviderOperationResult>;
   inspectOperation(operation: OperationIdentity, prepareAttemptKey: string): Promise<InspectProviderOperationResult>;
   authorizeOperation(
@@ -85,6 +87,7 @@ export function isProviderProxyOperationAuthority(
     candidate.setIdentity !== undefined &&
     candidate.faulted instanceof Promise &&
     typeof candidate.onFault === 'function' &&
+    typeof candidate.onIncident === 'function' &&
     typeof candidate.prepareOperation === 'function' &&
     typeof candidate.inspectOperation === 'function' &&
     typeof candidate.authorizeOperation === 'function' &&
@@ -109,11 +112,13 @@ export function createProviderProxyOperationAuthority(deps: {
     setIdentity: deps.setIdentity,
     mutationRpcTimeoutMs: deps.mutationRpcTimeoutMs,
     faultAuthority: deps.faults.latch,
+    reportIncident: deps.faults.reportIncident,
   };
   return {
     ...deps.base,
     faulted: deps.faults.faulted,
     onFault: deps.faults.onFault,
+    onIncident: deps.faults.onIncident,
     setIdentity: deps.setIdentity,
     prepareOperation: (attempt) => prepareProviderOperation(activationDeps, attempt),
     inspectOperation: (operation, prepareAttemptKey) =>

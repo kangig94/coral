@@ -1,5 +1,6 @@
 import type { z } from 'zod';
 
+import type { ControlClientError } from '../../provider-proxy/control-client.js';
 import { operationPrepareAttemptKey } from '../../provider-proxy/ledger.js';
 import {
   guardianOperationActivateParamsSchema,
@@ -28,8 +29,9 @@ import type { ProviderStopCause } from '../../providers/contract.js';
 import type { OperationStopControl } from './operation-registry.js';
 import type {
   ControlCallPolicy,
-  ProviderOperationSagaPhase,
   ProviderProxyAuthorityFault,
+  ProviderProxyOperationIncident,
+  ProviderProxyRole,
 } from './provider-proxy-authority-fault.js';
 import type { ProviderProxySetIdentity } from './provider-proxy-set-identity.js';
 
@@ -43,6 +45,7 @@ export interface ProviderProxyOperationActivationDeps {
   readonly setIdentity: ProviderProxySetIdentity;
   readonly mutationRpcTimeoutMs: number;
   readonly faultAuthority: (fault: ProviderProxyAuthorityFault) => void;
+  readonly reportIncident?: (incident: ProviderProxyOperationIncident) => void;
 }
 
 export type PrepareProviderOperationResult = z.output<typeof proxyOperationPrepareResultSchema>;
@@ -55,33 +58,48 @@ export type AttachProviderOperationResult = z.output<typeof proxyOperationAttach
 
 async function callStrict<TResult>(
   client: OperationControlClient,
+  role: ProviderProxyRole,
   policy: ControlCallPolicy,
   params: unknown,
   timeoutMs: number,
   resultSchema: z.ZodType<TResult, z.ZodTypeDef, unknown>,
   faultAuthority: (fault: ProviderProxyAuthorityFault) => void,
+  reportIncident: ((incident: ProviderProxyOperationIncident) => void) | undefined,
 ): Promise<TResult> {
   let raw: unknown;
   try {
     raw = await client.call(policy.method, params, timeoutMs);
   } catch (error: unknown) {
-    if (controlCallFaultsAuthority(policy, error)) {
-      faultAuthority({ kind: 'operation-control-failed', policy, error });
-    }
+    routeControlCallFailure(role, policy, error, faultAuthority, reportIncident);
     throw error;
   }
   try {
     return resultSchema.parse(raw);
   } catch (error: unknown) {
-    if (policy.effect === 'mutation') faultAuthority({ kind: 'operation-control-failed', policy, error });
+    routeControlCallFailure(role, policy, error, faultAuthority, reportIncident);
     throw error;
   }
 }
 
-function controlCallFaultsAuthority(policy: ControlCallPolicy, error: unknown): boolean {
-  if (policy.effect === 'observation') return controlClientErrorCode(error) === 'control_client_closed';
+function routeControlCallFailure(
+  role: ProviderProxyRole,
+  policy: ControlCallPolicy,
+  error: unknown,
+  faultAuthority: (fault: ProviderProxyAuthorityFault) => void,
+  reportIncident: ((incident: ProviderProxyOperationIncident) => void) | undefined,
+): void {
+  if (controlClientErrorCode(error) === 'control_client_closed') {
+    faultAuthority({ kind: 'control-channel-fault', role, error: error as ControlClientError });
+    return;
+  }
+  if (policy.effect === 'observation') return;
   const protocolCode = controlProtocolErrorCode(error);
-  return protocolCode === null || !policy.preEffectProtocolCodes.has(protocolCode);
+  if (protocolCode !== null && policy.preEffectProtocolCodes.has(protocolCode)) return;
+  if (policy.indeterminate === 'retry-safe') {
+    reportIncident?.({ kind: 'operation-control-failed', policy, error });
+    return;
+  }
+  faultAuthority({ kind: 'operation-control-failed', policy, error });
 }
 
 function controlClientErrorCode(error: unknown): string | null {
@@ -104,13 +122,8 @@ const ACTIVATE_PRE_EFFECT_PROTOCOL_CODES: ReadonlySet<ProxyControlProtocolErrorC
   'unauthorized_control',
 ]);
 
-function policy(
-  method: string,
-  phase: ProviderOperationSagaPhase,
-  effect: ControlCallPolicy['effect'],
-  preEffectProtocolCodes: ReadonlySet<ProxyControlProtocolErrorCode> = NO_PRE_EFFECT_PROTOCOL_CODES,
-): ControlCallPolicy {
-  return Object.freeze({ method, phase, effect, preEffectProtocolCodes });
+function policy(definition: ControlCallPolicy): ControlCallPolicy {
+  return Object.freeze(definition);
 }
 
 export function providerOperationErrorIsAmbiguous(error: unknown): boolean {
@@ -165,11 +178,19 @@ export async function prepareProviderOperation(
   }
   return callStrict(
     deps.proxyClient,
-    policy('operation.prepare.v1', 'prepare-pending', 'mutation'),
+    'proxy',
+    policy({
+      method: 'operation.prepare.v1',
+      phase: 'prepare-pending',
+      effect: 'mutation',
+      indeterminate: 'requires-containment',
+      preEffectProtocolCodes: NO_PRE_EFFECT_PROTOCOL_CODES,
+    }),
     request,
     deps.mutationRpcTimeoutMs,
     proxyOperationPrepareResultSchema,
     deps.faultAuthority,
+    deps.reportIncident,
   );
 }
 
@@ -181,11 +202,18 @@ export async function inspectProviderOperation(
   const params = proxyOperationInspectParamsSchema.parse({ operation, prepareAttemptKey });
   return callStrict(
     deps.proxyClient,
-    policy('operation.inspect.v1', 'prepare-pending', 'observation'),
+    'proxy',
+    policy({
+      method: 'operation.inspect.v1',
+      phase: 'prepare-pending',
+      effect: 'observation',
+      preEffectProtocolCodes: NO_PRE_EFFECT_PROTOCOL_CODES,
+    }),
     params,
     deps.mutationRpcTimeoutMs,
     proxyOperationInspectResultSchema,
     deps.faultAuthority,
+    deps.reportIncident,
   );
 }
 
@@ -201,11 +229,19 @@ export async function authorizeProviderOperation(
   const params = guardianOperationActivateParamsSchema.parse({ operation, ...evidence });
   return callStrict(
     deps.guardianClient,
-    policy('guardian.operation-activate.v1', 'guardian-activation-pending', 'mutation'),
+    'guardian',
+    policy({
+      method: 'guardian.operation-activate.v1',
+      phase: 'guardian-activation-pending',
+      effect: 'mutation',
+      indeterminate: 'requires-containment',
+      preEffectProtocolCodes: NO_PRE_EFFECT_PROTOCOL_CODES,
+    }),
     params,
     deps.mutationRpcTimeoutMs,
     guardianOperationActivateResultSchema,
     deps.faultAuthority,
+    deps.reportIncident,
   );
 }
 
@@ -221,11 +257,19 @@ export async function activateProviderOperation(
   const params = proxyOperationActivateParamsSchema.parse({ operation, ...evidence });
   return callStrict(
     deps.proxyClient,
-    policy('operation.activate.v1', 'proxy-activation-pending', 'mutation', ACTIVATE_PRE_EFFECT_PROTOCOL_CODES),
+    'proxy',
+    policy({
+      method: 'operation.activate.v1',
+      phase: 'proxy-activation-pending',
+      effect: 'mutation',
+      indeterminate: 'requires-containment',
+      preEffectProtocolCodes: ACTIVATE_PRE_EFFECT_PROTOCOL_CODES,
+    }),
     params,
     deps.mutationRpcTimeoutMs,
     proxyOperationActivationOutcomeSchema,
     deps.faultAuthority,
+    deps.reportIncident,
   );
 }
 
@@ -237,11 +281,19 @@ export async function attachProviderOperation(
   const params = proxyOperationAttachParamsSchema.parse({ operation, committedThroughProviderSeq });
   return callStrict(
     deps.proxyClient,
-    policy('operation.attach.v1', 'executing', 'mutation'),
+    'proxy',
+    policy({
+      method: 'operation.attach.v1',
+      phase: 'executing',
+      effect: 'mutation',
+      indeterminate: 'retry-safe',
+      preEffectProtocolCodes: NO_PRE_EFFECT_PROTOCOL_CODES,
+    }),
     params,
     deps.mutationRpcTimeoutMs,
     proxyOperationAttachResultSchema,
     deps.faultAuthority,
+    deps.reportIncident,
   );
 }
 
@@ -254,11 +306,19 @@ export async function cancelProviderOperation(
   const params = proxyOperationCancelParamsSchema.parse({ operation, prepareAttemptNumber, prepareAttemptKey });
   return callStrict(
     deps.proxyClient,
-    policy('operation.cancel.v1', 'prestart-cleanup-pending', 'mutation'),
+    'proxy',
+    policy({
+      method: 'operation.cancel.v1',
+      phase: 'prestart-cleanup-pending',
+      effect: 'mutation',
+      indeterminate: 'requires-containment',
+      preEffectProtocolCodes: NO_PRE_EFFECT_PROTOCOL_CODES,
+    }),
     params,
     deps.mutationRpcTimeoutMs,
     proxyOperationCancelResultSchema,
     deps.faultAuthority,
+    deps.reportIncident,
   );
 }
 
@@ -270,11 +330,19 @@ export async function settleProviderOperation(
   const params = proxyOperationSettleParamsSchema.parse({ operation, finalProviderSeq });
   return callStrict(
     deps.proxyClient,
-    policy('operation.settle.v1', 'settlement-pending', 'mutation'),
+    'proxy',
+    policy({
+      method: 'operation.settle.v1',
+      phase: 'settlement-pending',
+      effect: 'mutation',
+      indeterminate: 'retry-safe',
+      preEffectProtocolCodes: NO_PRE_EFFECT_PROTOCOL_CODES,
+    }),
     params,
     deps.mutationRpcTimeoutMs,
     proxyOperationSettleResultSchema,
     deps.faultAuthority,
+    deps.reportIncident,
   );
 }
 
@@ -287,11 +355,19 @@ export function buildProviderOperationControl(
       const params = proxyOperationStopParamsSchema.parse({ operation, cause });
       await callStrict(
         deps.proxyClient,
-        policy('operation.stop.v1', 'executing', 'mutation'),
+        'proxy',
+        policy({
+          method: 'operation.stop.v1',
+          phase: 'executing',
+          effect: 'mutation',
+          indeterminate: 'retry-safe',
+          preEffectProtocolCodes: NO_PRE_EFFECT_PROTOCOL_CODES,
+        }),
         params,
         deps.mutationRpcTimeoutMs,
         proxyOperationStopResultSchema,
         deps.faultAuthority,
+        deps.reportIncident,
       );
     },
   };
