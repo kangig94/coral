@@ -1,6 +1,6 @@
-import type { OperationIdentity } from '../../provider-proxy/protocol.js';
-import type { ProviderOperationRecord } from '../../store/provider-operation-record.js';
-import type { ProviderOperationMutation } from '../../store/provider-operation-journal.js';
+import type { OperationIdentity } from '../../../provider-proxy/protocol.js';
+import type { ProviderOperationRecord } from '../../../store/provider-operation-record.js';
+import type { ProviderOperationMutation } from '../../../store/provider-operation-journal.js';
 import {
   ProviderProxySetIdentityIndex,
   providerProxySetIdentitiesEqual,
@@ -8,7 +8,7 @@ import {
   providerProxySetKey,
   type ProviderProxySetIdentity,
   type ProviderProxySetKey,
-} from './provider-proxy-set-identity.js';
+} from './identity.js';
 
 export type ProviderProxySetOperationClaim = Readonly<{
   operation: OperationIdentity;

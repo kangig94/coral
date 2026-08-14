@@ -21,7 +21,7 @@ import { insertProviderOperation, readProviderOperation } from '#src/store/provi
 import { providerOperationRecordSchema, type ProviderOperationRecord } from '#src/store/provider-operation-record.js';
 import { ProviderOperationReconciler } from '#src/coordinator/services/provider-operation-reconciler.js';
 import type { DurableProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
-import { providerProxySetIdentityFromRecord } from '#src/coordinator/services/provider-proxy-set-identity.js';
+import { providerProxySetIdentityFromRecord } from '#src/coordinator/services/provider-proxy-set/identity.js';
 
 import { providerOperationRecord } from '../../../store/provider-operation-fixtures.js';
 

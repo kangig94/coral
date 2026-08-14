@@ -9,8 +9,8 @@ import {
   type ProviderProxyAuthorityFault,
   type ProviderProxyOperationIncident,
 } from '#src/coordinator/services/provider-proxy-authority-fault.js';
-import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set-claim-mirror.js';
-import { providerProxySetIdentityFromRecord } from '#src/coordinator/services/provider-proxy-set-identity.js';
+import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set/claim-mirror.js';
+import { providerProxySetIdentityFromRecord } from '#src/coordinator/services/provider-proxy-set/identity.js';
 import { JobStore } from '#src/jobs/store.js';
 import type { ControlClient } from '#src/provider-proxy/control-client.js';
 import { createRealRuntime } from '#src/runtime/real.js';

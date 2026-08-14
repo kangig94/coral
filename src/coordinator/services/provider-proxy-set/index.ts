@@ -1,27 +1,32 @@
-import type { TimePort, TimerHandle } from '../../infra/port-types.js';
-import { errorMessage } from '../../infra/error-format.js';
-import type { OperationIdentity } from '../../provider-proxy/protocol.js';
-import type { HandoffCapsule, HandoffCapsuleV1, HandoffCapsuleV2 } from '../../provider-proxy/handoff-capsule.js';
-import type { DurableProviderProxyOperationAuthority } from '../live/provider-proxy/operation-route.js';
-import type { ProviderHandoffCapsuleRetirementOutcome } from './provider-proxy-capsule-discovery.js';
-import type { ProviderProxySetRedemptionOutcome } from './provider-proxy-set-inheritance.js';
+import type { TimePort, TimerHandle } from '../../../infra/port-types.js';
+import { errorMessage } from '../../../infra/error-format.js';
+import type { OperationIdentity } from '../../../provider-proxy/protocol.js';
+import type { HandoffCapsule, HandoffCapsuleV1, HandoffCapsuleV2 } from '../../../provider-proxy/handoff-capsule.js';
+import type { DurableProviderProxyOperationAuthority } from '../../live/provider-proxy/operation-route.js';
+import type { ProviderHandoffCapsuleRetirementOutcome } from '../provider-proxy-capsule-discovery.js';
+import type { ProviderProxySetRedemptionOutcome } from './inheritance.js';
 import type {
   ContainmentDisappearanceNotice,
   DisappearanceDeliveryAttemptOutcome,
-} from './provider-containment-disappearance.js';
-import type { ProviderProxySetClaimMirror } from './provider-proxy-set-claim-mirror.js';
-import type {
-  ContainmentRequiredControlCallPolicy,
-  ProviderProxyAuthorityFault,
-  ProviderProxyOperationIncident,
-  ProviderProxyHeartbeatMethod,
-  ProviderProxyRole,
-  RetrySafeControlCallPolicy,
-} from './provider-proxy-authority-fault.js';
+} from '../provider-containment-disappearance.js';
+import type { ProviderProxySetClaimMirror } from './claim-mirror.js';
+import type { ProviderProxyAuthorityFault, ProviderProxyOperationIncident } from '../provider-proxy-authority-fault.js';
 import type {
   ProviderProxyRecoveryDispatcher,
   ProviderProxySetLifecycleFatalError,
-} from './provider-proxy-recovery-policy.js';
+} from '../provider-proxy-recovery-policy.js';
+import {
+  renderProviderProxySetDecision,
+  type ProviderProxySetAuthorityStopDecision,
+  type ProviderProxySetClaimBearingRetirementReason,
+  type ProviderProxySetContainmentDecision,
+  type ProviderProxySetDecision,
+  type ProviderProxySetDrainDecision,
+  type ProviderProxySetLogSeverity,
+  type ProviderProxySetPreserveDecision,
+  type ProviderProxySetRetirementReason,
+  type ProviderProxySetRetirementStopDecision,
+} from './decisions.js';
 import {
   ProviderProxySetIdentityIndex,
   providerProxySetAddress,
@@ -29,112 +34,17 @@ import {
   providerProxySetIdentitiesEqual,
   providerProxySetIdentityFromCapsule,
   providerProxySetKey,
+  providerProxySetReference,
   type ProviderProxySetAddress,
   type ProviderProxySetIdentity,
   type ProviderProxySetKey,
-} from './provider-proxy-set-identity.js';
+} from './identity.js';
 
 export const MAX_COORDINATOR_PROXY_SET_SLOTS = 4;
 const CONTAINMENT_ATTEMPT_MS = 30_000;
 
 type CapacityClass = 'retained' | 'excess';
 type EstablishmentIntent = 'serve' | 'contain-unclaimed-discovery';
-
-type FaultlessDecisionFields = Readonly<{
-  fault?: never;
-  role?: never;
-  method?: never;
-  policy?: never;
-  error?: never;
-}>;
-
-export type ProviderProxySetRetirementReason = 'graceful_idle' | 'excess_capacity' | 'unclaimed_discovery';
-export type ProviderProxySetClaimBearingRetirementReason = Exclude<
-  ProviderProxySetRetirementReason,
-  'unclaimed_discovery'
->;
-
-export type ProviderProxySetPreserveDecision = Readonly<{
-  action: 'preserve';
-  reason: 'retry_safe_operation_control_failure';
-  fault: 'operation-control-failed';
-  policy: RetrySafeControlCallPolicy;
-  role?: never;
-  method?: never;
-  error: string;
-  liveClaims: number;
-  setIdentity: ProviderProxySetIdentity;
-}>;
-
-export type ProviderProxySetOperationFaultStopDecision = Readonly<{
-  action: 'stop-and-reap';
-  reason: 'provider_authority_lost';
-  fault: 'operation-control-failed';
-  policy: ContainmentRequiredControlCallPolicy;
-  role?: never;
-  method?: never;
-  error: string;
-  liveClaims: number;
-  setIdentity: ProviderProxySetIdentity;
-}>;
-
-export type ProviderProxySetControlChannelFaultStopDecision = Readonly<{
-  action: 'stop-and-reap';
-  reason: 'provider_authority_lost';
-  fault: 'control-channel-fault';
-  role: ProviderProxyRole;
-  method?: never;
-  policy?: never;
-  error: string;
-  liveClaims: number;
-  setIdentity: ProviderProxySetIdentity;
-}>;
-
-export type ProviderProxySetHeartbeatFaultStopDecision = Readonly<{
-  action: 'stop-and-reap';
-  reason: 'provider_authority_lost';
-  fault: 'heartbeat-failed';
-  role: ProviderProxyRole;
-  method: ProviderProxyHeartbeatMethod;
-  policy?: never;
-  error: string;
-  liveClaims: number;
-  setIdentity: ProviderProxySetIdentity;
-}>;
-
-export type ProviderProxySetDrainDecision = FaultlessDecisionFields &
-  Readonly<{
-    action: 'drain';
-    // Discovery may already have live durable claims, so it must remain available instead of being retired.
-    reason: ProviderProxySetClaimBearingRetirementReason;
-    liveClaims: number;
-    setIdentity: ProviderProxySetIdentity;
-  }>;
-
-export type ProviderProxySetRetirementStopDecision = FaultlessDecisionFields &
-  Readonly<{
-    action: 'stop-and-reap';
-    // Faultless destruction is safe only after every durable claim has left the set.
-    reason: ProviderProxySetRetirementReason;
-    liveClaims: 0;
-    setIdentity: ProviderProxySetIdentity;
-  }>;
-
-export type ProviderProxySetAuthorityStopDecision =
-  | ProviderProxySetOperationFaultStopDecision
-  | ProviderProxySetControlChannelFaultStopDecision
-  | ProviderProxySetHeartbeatFaultStopDecision;
-
-export type ProviderProxySetContainmentDecision =
-  | ProviderProxySetAuthorityStopDecision
-  | ProviderProxySetRetirementStopDecision;
-
-export type ProviderProxySetDecision =
-  | ProviderProxySetPreserveDecision
-  | ProviderProxySetContainmentDecision
-  | ProviderProxySetDrainDecision;
-
-export type ProviderProxySetLogSeverity = 'info' | 'warn';
 
 type PreserveReportState = {
   decision: ProviderProxySetPreserveDecision;
@@ -296,10 +206,6 @@ export type FreshProxySetAdmission =
 
 function operationKey(operation: OperationIdentity): string {
   return JSON.stringify([operation.jobId, operation.operationId, operation.proxyInstanceId, operation.buildSetId]);
-}
-
-export function providerProxySetReference(identity: ProviderProxySetIdentity): string {
-  return `proxyInstanceId=${identity.proxyInstanceId},buildSetId=${identity.buildSetId}`;
 }
 
 function singleLineErrorSummary(error: unknown): string {
@@ -1022,33 +928,8 @@ export class ProviderProxySetLifecycle {
   }
 
   #reportDecision(decision: ProviderProxySetDecision, summary?: string): void {
-    const severity: ProviderProxySetLogSeverity = decision.reason === 'provider_authority_lost' ? 'warn' : 'info';
-    let fault: string;
-    let subject: string;
-    let error: string;
-    switch (decision.reason) {
-      case 'retry_safe_operation_control_failure':
-        fault = decision.fault;
-        subject = decision.policy.method;
-        error = decision.error;
-        break;
-      case 'provider_authority_lost':
-        fault = decision.fault;
-        subject = decision.fault === 'operation-control-failed' ? decision.policy.method : decision.role;
-        error = decision.error;
-        break;
-      case 'graceful_idle':
-      case 'excess_capacity':
-      case 'unclaimed_discovery':
-        fault = 'none';
-        subject = 'retirement';
-        error = 'none';
-        break;
-    }
-    this.#report(
-      severity,
-      `Provider proxy set action=${decision.action} reason=${decision.reason} fault=${fault} subject=${subject} liveClaims=${decision.liveClaims} set=${providerProxySetReference(decision.setIdentity)} error=${error}${summary === undefined ? '' : ` ${summary}`}`,
-    );
+    const report = renderProviderProxySetDecision(decision, summary);
+    this.#report(report.severity, report.message);
   }
 
   #report(severity: ProviderProxySetLogSeverity, message: string): void {

@@ -33,7 +33,7 @@ import type {
   ProviderProxyOperationIncident,
   ProviderProxyRole,
 } from './provider-proxy-authority-fault.js';
-import type { ProviderProxySetIdentity } from './provider-proxy-set-identity.js';
+import type { ProviderProxySetIdentity } from './provider-proxy-set/identity.js';
 
 export interface OperationControlClient {
   call(method: string, params: unknown, timeoutMs: number): Promise<unknown>;

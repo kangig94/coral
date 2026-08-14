@@ -139,12 +139,12 @@ import { isProviderProxyOperationAuthority } from '#src/coordinator/live/provide
 import { createProviderProxyAuthorityHeartbeatAssembly } from '#src/coordinator/live/provider-proxy/heartbeat.js';
 import { establishRoleControl } from '#src/coordinator/live/provider-proxy/role-control.js';
 import { createProviderProxyAuthorityFaultLatch } from '#src/coordinator/services/provider-proxy-authority-fault.js';
-import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set-claim-mirror.js';
-import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set-lifecycle.js';
+import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set/claim-mirror.js';
+import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set/index.js';
 import {
   attemptProviderProxySetInheritance,
   type ProviderProxySetLocator,
-} from '#src/coordinator/services/provider-proxy-set-inheritance.js';
+} from '#src/coordinator/services/provider-proxy-set/inheritance.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { insertProviderOperation } from '#src/store/provider-operation-journal.js';

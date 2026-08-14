@@ -8,8 +8,8 @@ import { providerHandoffCapsulePath } from '#src/infra/path/index.js';
 import { writeHandoffCapsuleFile, type HandoffCapsule } from '#src/provider-proxy/handoff-capsule.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { StoragePort } from '#src/infra/port-types.js';
-import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set-claim-mirror.js';
-import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set-lifecycle.js';
+import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set/claim-mirror.js';
+import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set/index.js';
 import {
   discoverProviderHandoffCapsules,
   retireProviderHandoffCapsule,

@@ -5,8 +5,8 @@ import type {
   ProviderProxyOperationIncident,
   RetrySafeControlCallPolicy,
 } from '#src/coordinator/services/provider-proxy-authority-fault.js';
-import type { ProviderProxySetDecision } from '#src/coordinator/services/provider-proxy-set-lifecycle.js';
-import type { ProviderProxySetIdentity } from '#src/coordinator/services/provider-proxy-set-identity.js';
+import type { ProviderProxySetDecision } from '#src/coordinator/services/provider-proxy-set/decisions.js';
+import type { ProviderProxySetIdentity } from '#src/coordinator/services/provider-proxy-set/identity.js';
 
 declare const setIdentity: ProviderProxySetIdentity;
 declare const retrySafePolicy: RetrySafeControlCallPolicy;

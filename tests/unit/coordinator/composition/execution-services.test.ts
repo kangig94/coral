@@ -13,12 +13,12 @@ import {
   createProviderProxyAuthorityFaultLatch,
   type ProviderProxyAuthorityFault,
 } from '#src/coordinator/services/provider-proxy-authority-fault.js';
-import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set-claim-mirror.js';
+import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set/claim-mirror.js';
 import {
   providerProxySetIdentityFromRecord,
   type ProviderProxySetIdentity,
-} from '#src/coordinator/services/provider-proxy-set-identity.js';
-import { ProviderProxySetLifecycleRef } from '#src/coordinator/services/provider-proxy-set-lifecycle-ref.js';
+} from '#src/coordinator/services/provider-proxy-set/identity.js';
+import { ProviderProxySetLifecycleRef } from '#src/coordinator/services/provider-proxy-set/lifecycle-ref.js';
 import { backendLog } from '#src/infra/backend-log.js';
 import { JobStore } from '#src/jobs/store.js';
 import type { ControlClient } from '#src/provider-proxy/control-client.js';

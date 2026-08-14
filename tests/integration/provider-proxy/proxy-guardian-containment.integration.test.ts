@@ -70,13 +70,13 @@ import {
   providerOperationErrorCode,
   providerOperationPrepareAttempt,
 } from '#src/coordinator/services/provider-proxy-operation-activation.js';
-import type { ProviderProxySetIdentity } from '#src/coordinator/services/provider-proxy-set-identity.js';
+import type { ProviderProxySetIdentity } from '#src/coordinator/services/provider-proxy-set/identity.js';
 import { createAppServerProxyRoute } from '#src/coordinator/services/provider-proxy-launch-route.js';
 import { ProviderOperationReconciler } from '#src/coordinator/services/provider-operation-reconciler.js';
 import { LocalOperationRegistry } from '#src/coordinator/services/operation-registry.js';
-import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set-claim-mirror.js';
-import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set-lifecycle.js';
-import { ProviderProxySetLifecycleRef } from '#src/coordinator/services/provider-proxy-set-lifecycle-ref.js';
+import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set/claim-mirror.js';
+import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set/index.js';
+import { ProviderProxySetLifecycleRef } from '#src/coordinator/services/provider-proxy-set/lifecycle-ref.js';
 import { createProviderProxyAuthorityFaultLatch } from '#src/coordinator/services/provider-proxy-authority-fault.js';
 import { DefaultProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
 import {

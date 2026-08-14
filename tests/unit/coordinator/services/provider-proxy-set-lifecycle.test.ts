@@ -13,13 +13,13 @@ import {
   type ProviderProxyOperationIncident,
   type RetrySafeControlCallPolicy,
 } from '#src/coordinator/services/provider-proxy-authority-fault.js';
-import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set-claim-mirror.js';
+import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set/claim-mirror.js';
 import {
   ProviderProxySetLifecycle,
   type CapsuleRetirementAttemptOutcome,
   type ProviderProxySetLifecycleDeps,
   type ProviderProxySetLifecycleProgressViolation,
-} from '#src/coordinator/services/provider-proxy-set-lifecycle.js';
+} from '#src/coordinator/services/provider-proxy-set/index.js';
 import type {
   DisappearanceDeliveryAttemptOutcome,
   ProviderContainmentDisappearanceConsumer,
@@ -29,8 +29,8 @@ import type {
   ProviderProxySetLifecycleFatalError,
 } from '#src/coordinator/services/provider-proxy-recovery-policy.js';
 import { isProviderProxyRecoveryFatalError } from '#src/coordinator/services/provider-proxy-recovery-policy.js';
-import { providerProxySetIdentityFromRecord } from '#src/coordinator/services/provider-proxy-set-identity.js';
-import type { ProviderProxySetRedemptionOutcome } from '#src/coordinator/services/provider-proxy-set-inheritance.js';
+import { providerProxySetIdentityFromRecord } from '#src/coordinator/services/provider-proxy-set/identity.js';
+import type { ProviderProxySetRedemptionOutcome } from '#src/coordinator/services/provider-proxy-set/inheritance.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
 import { ProviderOperationTerminalMetadataError } from '#src/jobs/provider-operation-terminalization.js';

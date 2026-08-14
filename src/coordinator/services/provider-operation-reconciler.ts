@@ -58,15 +58,15 @@ import {
   providerProxySetIdentitiesEqual,
   ProviderProxySetIdentityIndex,
   providerProxySetIdentityFromRecord,
+  providerProxySetReference,
   type ProviderProxySetKey,
   type ProviderProxySetIdentity,
-} from './provider-proxy-set-identity.js';
+} from './provider-proxy-set/identity.js';
 import type { ProviderOperationRecoveryAcceptance } from './recovery/index.js';
 import {
-  providerProxySetReference,
   type ContainmentAbsenceAcceptance,
   type ContainmentAbsenceOperationalIncident,
-} from './provider-proxy-set-lifecycle.js';
+} from './provider-proxy-set/index.js';
 import {
   containmentDisappearanceNoticeSchema,
   type ContainmentDisappearanceAcceptance,

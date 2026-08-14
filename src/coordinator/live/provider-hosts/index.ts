@@ -42,7 +42,7 @@ import {
   type DurableProviderProxyOperationAuthority,
   type ProviderProxyOperationAuthority,
 } from '../provider-proxy/operation-route.js';
-import type { ProviderProxySetLifecycleRef } from '../../services/provider-proxy-set-lifecycle-ref.js';
+import type { ProviderProxySetLifecycleRef } from '../../services/provider-proxy-set/lifecycle-ref.js';
 export type { ProviderHostEntry } from './state.js';
 
 export interface ProviderHostManager {
@@ -84,7 +84,7 @@ export interface ProviderHostAdministrationAuthority {
  * mechanism itself — reading a standing recovery capsule and attaching its operations — needs the
  * durable saga and jobs cleanup vocabulary that `coordinator/live/**` may not compose directly
  * (`architecture-layering.test.ts`'s coordinator-contract-entrypoint rule), so it lives in
- * `coordinator/services/provider-proxy-set-inheritance.ts` and calls back into this narrow, domain-free seam
+ * `coordinator/services/provider-proxy-set/inheritance.ts` and calls back into this narrow, domain-free seam
  * once it already holds a live, connected set.
  */
 export interface ProviderProxySetRegistration {

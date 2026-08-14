@@ -172,7 +172,7 @@ Recorded so the next attempt starts from the end of the argument, not the beginn
   (`coordinator/services/provider-host-administration.ts:104`) assembles rows on demand from live owners.
 - **Per-owner records, shared primitive.** A proxy set is *inheritable* — a successor adopts it by redeeming a
   handoff capsule (`provider-proxy/handoff-capsule.ts:195`), and recovery races redemption against containment
-  absence (`provider-proxy-set-lifecycle.ts:584`). A coordinator-local host is **never** redeemable; it is
+  absence (`provider-proxy-set/index.ts:460`). A coordinator-local host is **never** redeemable; it is
   always terminal. One record serving both would grant the local host authority it must not have.
   `reapRecordedContainment` (`infra/process-containment.ts`) stays the shared primitive; only the
   lifecycle record differs.

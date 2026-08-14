@@ -28,7 +28,7 @@ import {
   type ProviderProxyAuthorityFault,
   type ProviderProxyOperationIncident,
 } from '#src/coordinator/services/provider-proxy-authority-fault.js';
-import type { ProviderProxySetIdentity } from '#src/coordinator/services/provider-proxy-set-identity.js';
+import type { ProviderProxySetIdentity } from '#src/coordinator/services/provider-proxy-set/identity.js';
 import { readProviderOperation } from '#src/store/provider-operation-journal.js';
 
 const SET_IDENTITY: ProviderProxySetIdentity = {

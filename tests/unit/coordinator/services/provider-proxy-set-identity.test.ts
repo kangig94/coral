@@ -8,7 +8,7 @@ import {
   providerProxySetIdentityFromCapsule,
   providerProxySetIdentityFromRecord,
   providerProxySetKey,
-} from '#src/coordinator/services/provider-proxy-set-identity.js';
+} from '#src/coordinator/services/provider-proxy-set/identity.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 
 describe('complete provider proxy set identity', () => {

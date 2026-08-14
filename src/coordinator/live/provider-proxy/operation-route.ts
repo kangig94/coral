@@ -26,7 +26,7 @@ import type {
   ProviderProxyOperationIncident,
   ProviderProxyRoleClients,
 } from '../../services/provider-proxy-authority-fault.js';
-import type { ProviderProxySetIdentity } from '../../services/provider-proxy-set-identity.js';
+import type { ProviderProxySetIdentity } from '../../services/provider-proxy-set/identity.js';
 import type { ProviderProxySetAuthority, ProviderProxySetRecoveryAuthority } from './authority.js';
 
 export interface ProviderProxyOperationAuthority extends ProviderProxySetAuthority {

@@ -11,7 +11,7 @@ import {
   activateProviderOperation,
   providerOperationErrorCode,
 } from '#src/coordinator/services/provider-proxy-operation-activation.js';
-import type { ProviderProxySetIdentity } from '#src/coordinator/services/provider-proxy-set-identity.js';
+import type { ProviderProxySetIdentity } from '#src/coordinator/services/provider-proxy-set/identity.js';
 import {
   createControlEndpoint,
   type ControlChallenge,

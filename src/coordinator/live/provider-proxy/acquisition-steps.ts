@@ -50,7 +50,7 @@ import { establishRoleControl } from './role-control.js';
 import { createProviderProxySetAuthority } from './set-authority.js';
 import { buildGuardianSpawnUndo } from './spawn-undo.js';
 import { createProviderProxyOperationAuthority, type ProviderProxyOperationAuthority } from './operation-route.js';
-import type { ProviderProxySetIdentity } from '../../services/provider-proxy-set-identity.js';
+import type { ProviderProxySetIdentity } from '../../services/provider-proxy-set/identity.js';
 import { createProviderProxyAuthorityFaultLatch } from '../../services/provider-proxy-authority-fault.js';
 
 /**
@@ -66,7 +66,7 @@ import { createProviderProxyAuthorityFaultLatch } from '../../services/provider-
  * `createProviderProxySetAuthority`'s `stopAndReap`, `set-authority.ts`).
  */
 
-// Exported for `services/provider-proxy-set-inheritance.ts`: redemption dials the same three role endpoints this
+// Exported for `services/provider-proxy-set/inheritance.ts`: redemption dials the same three role endpoints this
 // file's own `establishControl` does, on the identical connect-retry budget, so a redeemed tenancy and a
 // freshly spawned one time out the same way rather than silently drifting apart.
 export const ESTABLISH_CONTROL_CONNECT_TIMEOUT_MS = 2_000;

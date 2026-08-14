@@ -1,4 +1,4 @@
-import type { ProviderProxySetLifecycle } from './provider-proxy-set-lifecycle.js';
+import type { ProviderProxySetLifecycle } from './index.js';
 
 export class ProviderProxySetLifecycleRef {
   #lifecycle: ProviderProxySetLifecycle | null = null;
