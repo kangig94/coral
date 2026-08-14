@@ -12,7 +12,7 @@ import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { workflowPlanDeclaredEvent, workflowRegistry } from '#src/workflow/events.js';
-import type { PlanSlot, WorkflowPlan } from '#src/workflow/plan.js';
+import { compileWorkflowPlan, type PlanSlot, type WorkflowPlan } from '#src/workflow/plan.js';
 import { seedTestSessionProjection } from '#tests/helpers/session.js';
 import { TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
@@ -102,6 +102,16 @@ function expectWorkflowPlanInvalid(run: () => unknown, reason: string): CoralApp
 
   throw new Error(`Expected workflow_plan_invalid ${reason}`);
 }
+
+describe('compileWorkflowPlan', () => {
+  it('rejects a slot whose job id was not resolved', () => {
+    const workflowPlan = plan([slot('workflow-1', 0, 0)]);
+
+    expect(() => compileWorkflowPlan(workflowPlan, { jobIds: new Map() })).toThrow(
+      `Workflow plan slot '${workflowPlan.slots[0].slotId}' has no resolved job id.`,
+    );
+  });
+});
 
 function eventCount(db: Database): number {
   return (db.prepare('SELECT COUNT(*) AS n FROM events').get() as { n: number }).n;

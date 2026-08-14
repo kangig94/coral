@@ -297,6 +297,39 @@ describe('jobs queries', () => {
     expect(prepareCallCount).toBeLessThanOrEqual(4);
   });
 
+  it('projects durable workflow identity for an opaque child job id', () => {
+    const childJobId = '11111111-1111-4111-8111-111111111111';
+    const workflowJobId = '22222222-2222-4222-8222-222222222222';
+    const replacedJobId = '33333333-3333-4333-8333-333333333333';
+    const workflowSlotId = `${workflowJobId}:0:1`;
+
+    db.prepare(
+      `INSERT INTO projection_jobs (
+         job_id, execution_owner, phase, terminal, diagnostics, session_id, provider,
+         project_root, backend_namespace, bundle_hash, job_kind, parent_workflow_job_id,
+         workflow_slot, workflow_slot_generation, replaces_workflow_job_id, created_at, last_seq
+       ) VALUES (?, ?, 'running', NULL, ?, ?, 'codex', ?, 'tests', NULL, 'provider', ?, ?, 1, ?, ?, 0)`,
+    ).run(
+      childJobId,
+      JSON.stringify({ kind: 'workflow', id: workflowJobId }),
+      JSON.stringify({ progressFaults: [] }),
+      'session-child',
+      '/workspace/coral',
+      workflowJobId,
+      workflowSlotId,
+      replacedJobId,
+      '2026-04-20T00:03:00.000Z',
+    );
+
+    expect(loadJobProjectionDetail(db, childJobId, readCtx).status).toMatchObject({
+      jobId: childJobId,
+      parentWorkflowJobId: workflowJobId,
+      workflowSlotId,
+      workflowSlotGeneration: 1,
+      replacesWorkflowJobId: replacedJobId,
+    });
+  });
+
   it('decodes complete projection rows before applying list filters', () => {
     const prepareSpy = vi.spyOn(db, 'prepare');
 

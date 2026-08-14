@@ -249,9 +249,23 @@ describe('createAppServerProxyRoute', () => {
     });
     const workflowSlotId = `${randomUUID()}:0:0`;
 
-    await expect(route.activate({ ...request, jobId: workflowSlotId }, new AbortController().signal)).rejects.toThrow(
-      `Provider proxy launch rejected operation identity for job '${workflowSlotId}': jobId: String must contain exactly 36 character(s) (+1 more issues).`,
-    );
+    try {
+      await route.activate({ ...request, jobId: workflowSlotId }, new AbortController().signal);
+      throw new Error('Expected proxy identity validation to reject the workflow slot id.');
+    } catch (error: unknown) {
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain(
+        `Provider proxy launch rejected operation identity for job '${workflowSlotId}'.`,
+      );
+      expect((error as Error).message).toContain('jobId');
+      expect((error as Error).message).toContain('queued workflow child created before the job-id upgrade');
+
+      const cause = (error as Error & { cause?: unknown }).cause as
+        | { issues?: Array<{ path: PropertyKey[] }> }
+        | undefined;
+      expect(cause?.issues).toEqual(expect.any(Array));
+      expect(cause?.issues?.some((issue) => issue.path.length === 1 && issue.path[0] === 'jobId')).toBe(true);
+    }
   });
 
   it('fails closed when a selected set lacks durable replay operations', async () => {

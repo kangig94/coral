@@ -9,7 +9,7 @@ import type * as NodeOs from 'node:os';
 import type * as AgentResolutionMod from '#src/jobs/agent-resolution.js';
 import type * as ContinuityConsumerMod from '#src/jobs/shell/continuity-consumer.js';
 import type { JobPhase } from '#src/jobs/phase.js';
-import type { JobEvent, JobStatus } from '#src/jobs/records.js';
+import type { JobEvent, JobLaunch, JobStatus } from '#src/jobs/records.js';
 import type { WaitStreamEvent } from '#src/jobs/wait.js';
 import {
   providerContinuityEvent,
@@ -64,6 +64,7 @@ import { rpcCatalog } from '#src/transport/rpc/catalog.js';
 import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
 import {
+  TEST_CODEX_BINDING,
   TEST_CODEX_SCOPE,
   TEST_CODEX_SCOPE_INPUT,
   TEST_SYSTEM_PROVIDER_SCOPE,
@@ -1441,6 +1442,73 @@ describe('ExecutionService launch', () => {
   });
 
   describe("executeJob's 'proxied' branch", () => {
+    it('recovers a pre-upgrade queued workflow child locally when a live proxy route is configured', async () => {
+      const { provider, execute } = makeAppServerProvider();
+      mockState.getNewProvider.mockReturnValue(provider);
+      const activate = vi.fn(async () => {
+        throw new Error('A live proxy must never receive the pre-upgrade slot-shaped identity.');
+      });
+      const service = createService(ctx, {
+        appServerProxyRoute: { activate },
+        appServerHostAuthority: fakeAppServerHostAuthority(),
+      });
+      const { progressStore, sessionManager } = getInternals(service);
+      const workflowId = randomUUID();
+      const legacySlotJobId = `${workflowId}:0:0`;
+      const session = sessionManager.allocate({
+        binding: TEST_CODEX_BINDING,
+        name: 'legacy-workflow-child',
+        model: 'test-model',
+        cwd: ctx.projectRoot,
+        projectRoot: ctx.projectRoot,
+        backendNamespace: TEST_BACKEND_NAMESPACE,
+        retention: 'discard_provider_artifacts_on_terminal',
+      });
+      expect(sessionManager.claimForJobSync(session.sessionId, legacySlotJobId)).toBe(true);
+      const launchRecord: JobLaunch = {
+        jobId: legacySlotJobId,
+        owner: { kind: 'workflow', id: workflowId },
+        sessionId: session.sessionId,
+        provider: 'codex',
+        projectRoot: ctx.projectRoot,
+        backendNamespace: TEST_BACKEND_NAMESPACE,
+        jobKind: 'provider',
+        pool: 'default',
+        enqueueSequence: 1,
+        providerAction: 'exec',
+        parentWorkflowJobId: workflowId,
+        workflowSlotId: legacySlotJobId,
+        workflowSlotGeneration: 0,
+        request: {
+          prompt: 'recover the queued workflow child',
+          cwd: ctx.projectRoot,
+          bypassPermissions: false,
+          coralEnv: {},
+        },
+        createdAt: new Date(runtime.time.now()).toISOString(),
+      };
+      progressStore.appendLaunchRequested(legacySlotJobId, launchRecord);
+      trackJob(legacySlotJobId);
+      const captured = await service.captureProviderRecoveryAuthority(launchRecord);
+      if (!captured.ok) throw new Error(`Expected recovery authority: ${captured.failure.reason}`);
+      const blockerJobId = randomUUID();
+      launchCoordinator.restoreActiveLaunch(
+        blockerJobId,
+        'codex',
+        { kind: 'provider-session', id: `session-${blockerJobId}` },
+        'default',
+      );
+
+      await expect(service.recoverQueuedJob(captured.authority)).resolves.toBe(legacySlotJobId);
+      launchCoordinator.releaseLaunch(blockerJobId, 'default');
+      await waitForTerminalEvent(service, legacySlotJobId);
+
+      expect(legacySlotJobId).toHaveLength(40);
+      expect(activate).not.toHaveBeenCalled();
+      expect(progressStore.readTerminalProjection(legacySlotJobId)?.outcome).toEqual({ kind: 'completed' });
+      expect(execute).toHaveBeenCalledOnce();
+    });
+
     it('takes the proxied branch exclusively: consumeJobStream and completeConsumedJob are never reached for an operation the proxy already owns', async () => {
       const { provider, execute } = makeAppServerProvider();
       mockState.getNewProvider.mockReturnValue(provider);
@@ -1473,6 +1541,35 @@ describe('ExecutionService launch', () => {
       // exactly what this exclusivity exists to prevent — this is what its absence would fail to show if the
       // branch above had accidentally also run the local finalization path.
       expect(getInternals(service).progressStore.readTerminalProjection(decision.jobId)).toBeNull();
+    });
+
+    it('persists complete proxy identity diagnostics in the recorded provider failure', async () => {
+      const { provider, execute } = makeAppServerProvider();
+      mockState.getNewProvider.mockReturnValue(provider);
+      let failureMessage = '';
+      const activate = vi.fn(async (request: Parameters<AppServerProxyRoute['activate']>[0]) => {
+        failureMessage =
+          `Provider proxy launch rejected operation identity for job '${request.jobId}'. ` +
+          'Invalid fields: jobId: invalid UUID; operationId: invalid UUID. ' +
+          'If this is a queued workflow child created before the job-id upgrade, restart it under the upgraded coordinator.';
+        throw new Error(failureMessage, { cause: { issues: [{ path: ['jobId'] }, { path: ['operationId'] }] } });
+      });
+      const service = createService(ctx, { appServerProxyRoute: { activate } });
+
+      const decision = await service.start('codex', { prompt: 'hello' }, ctx);
+      expect(decision.status).toBe('running');
+      if (decision.status !== 'running') throw new Error('expected running launch');
+      trackJob(decision.jobId);
+      await waitForTerminalEvent(service, decision.jobId);
+
+      expect(getInternals(service).progressStore.readTerminalProjection(decision.jobId)?.outcome).toEqual({
+        kind: 'job_fault',
+        fault: { kind: 'wrapper_crashed', cause: { message: failureMessage } },
+      });
+      expect(failureMessage).toContain('jobId');
+      expect(failureMessage).toContain('operationId');
+      expect(failureMessage).toContain('queued workflow child created before the job-id upgrade');
+      expect(execute).not.toHaveBeenCalled();
     });
 
     it('with no appServerProxyRoute configured, an app-server job runs the exact local path it always did', async () => {

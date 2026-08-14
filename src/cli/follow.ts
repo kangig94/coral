@@ -4,7 +4,7 @@ import { BackendToolHttpError } from '../transport/http/errors.js';
 import type { AcceptedLaunchResponse } from '../jobs/launch.js';
 import type { CauseRef } from '../causality/cause-ref.js';
 import type { TerminalOutcome } from '../jobs/outcome.js';
-import type { JobTerminal } from '../jobs/records.js';
+import type { JobStatus, JobTerminal } from '../jobs/records.js';
 import { parseSerializedWaitCursor, serializeWaitCursor, type WaitCursor, type WaitStreamEvent } from '../jobs/wait.js';
 import { advanceWaitRenderCursor, parseWaitStreamEventValue } from '../jobs/wait-stream-event.js';
 import { HEALTH_TIMEOUT_MS } from '../transport/http/sse.js';
@@ -14,8 +14,9 @@ import { isRecord } from '../infra/json.js';
 import { ensure } from '../transport/ipc/ensure.js';
 import { childPrincipalAuthFromEnv, childPrincipalAuthOptions } from '../transport/ipc/child-principal-auth.js';
 import { runHandoff, type HandoffOutcome } from '../coordinator/handoff-runner.js';
-import { formatLaunch } from './format/jobs.js';
+import { formatLaunch, formatWorkflowSlot } from './format/jobs.js';
 import { openCliCauseRefRenderer } from './cause-renderer.js';
+import { getSharedReadCoralStore } from './read-store.js';
 import { errorCodeToExit, WaitResumeError } from './errors.js';
 import { renderHandoffNotice } from './handoff-notice.js';
 import { mapWaitSubscriptionError } from './wait-stream-error.js';
@@ -112,10 +113,49 @@ function initialSerializedCursor(start: FollowStart): string | undefined {
   return start.kind === 'jobs' ? start.serializedCursor : undefined;
 }
 
+function readJobStatuses(projectRoot: string, jobIds: readonly string[]): Map<string, JobStatus> {
+  try {
+    const store = getSharedReadCoralStore(projectRoot, { announceMissing: false });
+    return new Map(
+      jobIds.flatMap((jobId) => {
+        const status = store.jobs.detail(jobId)?.status;
+        return status === undefined ? [] : [[jobId, status] as const];
+      }),
+    );
+  } catch {
+    return new Map();
+  }
+}
+
+type JobLabel = Readonly<{
+  stream: string;
+  terminal: string;
+}>;
+
+function jobLabelsFor(projectRoot: string, jobIds: readonly string[]): Map<string, JobLabel> | null {
+  const statuses = readJobStatuses(projectRoot, jobIds);
+  const labels = new Map<string, JobLabel>();
+  let hasWorkflowLabel = false;
+
+  jobIds.forEach((jobId, index) => {
+    const workflowSlot = formatWorkflowSlot(statuses.get(jobId) ?? {});
+    if (workflowSlot === null) {
+      labels.set(jobId, { stream: `j${index}`, terminal: jobId });
+      return;
+    }
+
+    hasWorkflowLabel = true;
+    const slotLabel = `slot ${workflowSlot}`;
+    labels.set(jobId, { stream: slotLabel, terminal: `${jobId} (${slotLabel})` });
+  });
+
+  return jobIds.length > 1 || hasWorkflowLabel ? labels : null;
+}
+
 function emitWaitEvent(
   event: WaitStreamEvent,
   cursor: string | null,
-  jobLabels: ReadonlyMap<string, string> | null,
+  jobLabels: ReadonlyMap<string, JobLabel> | null,
   resumeJobIds: readonly string[],
   renderOptions: FollowJobsOptions['render'],
   renderCauseRef?: (ref: CauseRef, terminalOutcomeDiagnostic?: TerminalOutcome) => string,
@@ -123,20 +163,28 @@ function emitWaitEvent(
   let line: string;
   switch (event.type) {
     case 'progress':
-      line = formatWaitProgress(event, jobLabels?.get(event.jobId));
+      line = formatWaitProgress(event, jobLabels?.get(event.jobId)?.stream);
       break;
     case 'queued':
-      line = formatWaitQueued(event, jobLabels?.get(event.jobId));
+      line = formatWaitQueued(event, jobLabels?.get(event.jobId)?.stream);
       break;
     case 'terminal':
-      line = formatWaitTerminal(event, cursor, renderOptions.embed, {
-        describeCauseRef: renderCauseRef ? (ref) => renderCauseRef(ref, event.result.outcome) : undefined,
-        verbose: renderOptions.verbose,
-        exitCode: toExitCode(event.result),
-      });
+      line = formatWaitTerminal(
+        { ...event, jobId: jobLabels?.get(event.jobId)?.terminal ?? event.jobId },
+        cursor,
+        renderOptions.embed,
+        {
+          describeCauseRef: renderCauseRef ? (ref) => renderCauseRef(ref, event.result.outcome) : undefined,
+          verbose: renderOptions.verbose,
+          exitCode: toExitCode(event.result),
+        },
+      );
       break;
     case 'interrupted':
-      line = formatWaitCarrierInterrupted(event);
+      line = formatWaitCarrierInterrupted({
+        ...event,
+        jobId: jobLabels?.get(event.jobId)?.terminal ?? event.jobId,
+      });
       break;
     case 'waiting':
       line = formatWaitWaiting(event, cursor, resumeJobIds);
@@ -235,7 +283,7 @@ export async function followJobs(options: FollowJobsOptions): Promise<number> {
 
   const currentCursor: WaitCursor = parsedCursor ?? { afterSeq: 0 };
   const controller = new AbortController();
-  const jobLabels = allJobIds.length > 1 ? new Map(allJobIds.map((id, index) => [id, `j${index}`])) : null;
+  const jobLabels = jobLabelsFor(options.projectRoot, allJobIds);
   const deadlineMs = Date.now() + FOLLOW_TIMEOUT_SECONDS * 1_000;
   const causeRenderer = openCliCauseRefRenderer(options.projectRoot);
   let remainingJobIds = allJobIds;

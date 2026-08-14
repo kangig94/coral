@@ -35,9 +35,9 @@ import {
   DEFAULT_STALE_TIMEOUT_MS,
 } from './execution-constants.js';
 import {
-  assignWorkflowJobIds,
   compileWorkflowPlan,
   maxStepIndex,
+  resolveWorkflowJobIds,
   type CompiledPlanSlot,
   type WorkflowPlan,
 } from './plan.js';
@@ -122,7 +122,7 @@ export type AtomicFailedWorkflowDescendantReleaser = FailedWorkflowDescendantRel
   cleanup(descendants: readonly WorkflowRecoveryDescendant[]): void;
 };
 
-type ResumeWorkflowDeps = {
+type ResumeWorkflowContext = {
   progressStore: StoreReadContext;
   executionSvc: WorkflowExecutionPort;
   ctx: InvocationContext;
@@ -132,8 +132,6 @@ type ResumeWorkflowDeps = {
   slotDetailsByJob: Map<string, JobProjectionDetail>;
   providerSessionsById: ReadonlyMap<string, ProviderSession>;
   eventsBySeq: ReadonlyMap<number, EventsRow>;
-  jobIds: Map<string, string>;
-  replacementJobIds: Map<string, string>;
   completion: ReturnType<typeof workflowCompletedBodySchema.parse> | null;
   drain: ReturnType<typeof workflowDrainEnteredBodySchema.parse> | null;
   time: Pick<TimePort, 'now'>;
@@ -142,6 +140,10 @@ type ResumeWorkflowDeps = {
   staleCheckIntervalMs: number;
   staleAbortTimeoutMs: number;
   drainDeadlineMs: number;
+};
+
+type ResumeWorkflowDeps = ResumeWorkflowContext & {
+  jobIds: ReadonlyMap<string, string>;
 };
 
 type RecoverySummary = {
@@ -238,11 +240,11 @@ type ActiveStepLaunchState =
   | { kind: 'all-never-launched'; neverLaunchedSlots: CompiledPlanSlot[] }
   | { kind: 'mixed'; neverLaunchedSlots: CompiledPlanSlot[] };
 
-function readSlotJobIds(
+function validateAndReadCurrentSlotJobIds(
   rows: readonly ProjectionJobStoredRow[],
   workflowId: string,
   plan: WorkflowPlan,
-): Map<string, string> {
+): ReadonlyMap<string, string> {
   const slotIds = new Set<string>();
   for (const slot of plan.slots) {
     slotIds.add(slot.slotId);
@@ -289,8 +291,11 @@ function readSlotJobIds(
   return selected;
 }
 
-async function resumePendingReplacementIntents(deps: ResumeWorkflowDeps): Promise<void> {
-  const slotJobs = readSlotJobIds(deps.childRows, deps.workflowId, deps.plan);
+async function resumePendingReplacementIntents(
+  deps: ResumeWorkflowContext,
+  slotJobs: ReadonlyMap<string, string>,
+): Promise<ReadonlyMap<string, string>> {
+  const replacementJobIds = new Map<string, string>();
   const details = deps.slotDetailsByJob;
   for (const slot of deps.plan.slots) {
     const jobId = slotJobs.get(slot.slotId);
@@ -372,7 +377,7 @@ async function resumePendingReplacementIntents(deps: ResumeWorkflowDeps): Promis
     if (readiness === 'error') {
       throw new Error(`Workflow recovery replacement '${resumed.jobId}' failed to launch for slot '${slot.slotId}'.`);
     }
-    deps.replacementJobIds.set(slot.slotId, resumed.jobId);
+    replacementJobIds.set(slot.slotId, resumed.jobId);
     deps.slotDetailsByJob.set(resumed.jobId, {
       status: {
         ...(detail.status ?? {
@@ -398,14 +403,24 @@ async function resumePendingReplacementIntents(deps: ResumeWorkflowDeps): Promis
       exit: null,
     });
   }
+  return replacementJobIds;
 }
 
-function replacementRecoveryLeaseExpiresAt(deps: ResumeWorkflowDeps): string {
+async function resolveWorkflowRecoveryJobIds(
+  deps: ResumeWorkflowContext,
+  currentSlotJobIds: ReadonlyMap<string, string>,
+  ids: Pick<IdPort, 'uuid'>,
+): Promise<ReadonlyMap<string, string>> {
+  const replacementJobIds = await resumePendingReplacementIntents(deps, currentSlotJobIds);
+  return resolveWorkflowJobIds(deps.plan, ids, new Map([...currentSlotJobIds, ...replacementJobIds]));
+}
+
+function replacementRecoveryLeaseExpiresAt(deps: ResumeWorkflowContext): string {
   const minimumTtlMs = 60_000;
   return nowIsoString(deps.time.now() + Math.max(minimumTtlMs, deps.staleAbortTimeoutMs + BOOTSTRAP_TIMEOUT_MS));
 }
 
-function isRecoverableReplacementCrash(deps: ResumeWorkflowDeps, outcome: TerminalOutcome): boolean {
+function isRecoverableReplacementCrash(deps: ResumeWorkflowContext, outcome: TerminalOutcome): boolean {
   if (outcome.kind === 'aborted') return true;
   if (outcome.kind === 'job_fault') {
     return outcome.fault.kind === 'ghost_launch' || outcome.fault.kind === 'wrapper_lost';
@@ -675,7 +690,7 @@ function recoveryIntentFromError(workflowId: string, error: unknown): WorkflowFi
   };
 }
 
-function detectExistingCompletion(deps: ResumeWorkflowDeps): boolean {
+function detectExistingCompletion(deps: ResumeWorkflowContext): boolean {
   return deps.completion !== null;
 }
 
@@ -700,9 +715,7 @@ function completedFinalization(deps: ResumeWorkflowDeps, summary: RecoverySummar
 }
 
 function isNeverLaunchedSlot(deps: ResumeWorkflowDeps, snapshot: RecoverySnapshot, slot: CompiledPlanSlot): boolean {
-  const projection =
-    deps.childRows.find((row) => row.job_id === slot.jobId) ??
-    ([...deps.replacementJobIds.values()].includes(slot.jobId) ? { job_id: slot.jobId } : null);
+  const projection = deps.childRows.find((row) => row.job_id === slot.jobId) ?? null;
   const detail = detailForJob(snapshot.slotDetailsByJob, slot.jobId);
   return projection === null && detail.status === null;
 }
@@ -951,13 +964,18 @@ async function waitAndFinalize(
   return continueAfterRecoveredStep(deps, snapshot.summary, plan, stepResults);
 }
 
-async function resumeWorkflow(deps: ResumeWorkflowDeps): Promise<RecoveredWorkflowFinalization | null> {
-  if (detectExistingCompletion(deps)) {
+async function resumeWorkflow(
+  context: ResumeWorkflowContext,
+  currentSlotJobIds: ReadonlyMap<string, string>,
+  ids: Pick<IdPort, 'uuid'>,
+): Promise<RecoveredWorkflowFinalization | null> {
+  if (detectExistingCompletion(context)) {
     return null;
   }
-
-  await resumePendingReplacementIntents(deps);
-  for (const [slotId, jobId] of deps.replacementJobIds) deps.jobIds.set(slotId, jobId);
+  const deps: ResumeWorkflowDeps = {
+    ...context,
+    jobIds: await resolveWorkflowRecoveryJobIds(context, currentSlotJobIds, ids),
+  };
 
   const snapshot = loadRecoverySnapshot(deps);
   if (snapshot.summary.activeStepIndex > maxStepIndex(deps.plan)) {
@@ -1431,34 +1449,32 @@ async function settleWorkflowRecovery(
     }
     const baseCtx = options.createInvocationContext(item.rootProjectRoot);
     const ctx: InvocationContext = { ...baseCtx, providerScope: projection.providerScope };
-    const jobIds = assignWorkflowJobIds(
-      projection.plan,
+    const currentSlotJobIds = validateAndReadCurrentSlotJobIds(item.childRows, status.jobId, projection.plan);
+    recovered = await resumeWorkflow(
+      {
+        progressStore: options.progressStore,
+        executionSvc: executionWithUnknownOutcome(options.getExecutionService(ctx), (error) => {
+          unknownExternalOutcome ??= error;
+        }),
+        ctx,
+        workflowId: status.jobId,
+        plan: projection.plan,
+        childRows: item.childRows,
+        slotDetailsByJob: item.slotDetailsByJob,
+        providerSessionsById: item.providerSessionsById,
+        eventsBySeq: item.eventsBySeq,
+        completion: item.completion,
+        drain: item.drain,
+        onProgress: options.onProgress ?? (() => {}),
+        staleTimeoutMs: options.staleTimeoutMs ?? DEFAULT_STALE_TIMEOUT_MS,
+        staleCheckIntervalMs: options.staleCheckIntervalMs ?? DEFAULT_STALE_CHECK_INTERVAL_MS,
+        staleAbortTimeoutMs: options.staleAbortTimeoutMs ?? DEFAULT_STALE_ABORT_TIMEOUT_MS,
+        drainDeadlineMs: options.drainDeadlineMs ?? DEFAULT_DRAIN_DEADLINE_MS,
+        time: options.time,
+      },
+      currentSlotJobIds,
       options.ids,
-      readSlotJobIds(item.childRows, status.jobId, projection.plan),
     );
-    recovered = await resumeWorkflow({
-      progressStore: options.progressStore,
-      executionSvc: executionWithUnknownOutcome(options.getExecutionService(ctx), (error) => {
-        unknownExternalOutcome ??= error;
-      }),
-      ctx,
-      workflowId: status.jobId,
-      plan: projection.plan,
-      childRows: item.childRows,
-      slotDetailsByJob: item.slotDetailsByJob,
-      providerSessionsById: item.providerSessionsById,
-      eventsBySeq: item.eventsBySeq,
-      jobIds,
-      replacementJobIds: new Map(),
-      completion: item.completion,
-      drain: item.drain,
-      onProgress: options.onProgress ?? (() => {}),
-      staleTimeoutMs: options.staleTimeoutMs ?? DEFAULT_STALE_TIMEOUT_MS,
-      staleCheckIntervalMs: options.staleCheckIntervalMs ?? DEFAULT_STALE_CHECK_INTERVAL_MS,
-      staleAbortTimeoutMs: options.staleAbortTimeoutMs ?? DEFAULT_STALE_ABORT_TIMEOUT_MS,
-      drainDeadlineMs: options.drainDeadlineMs ?? DEFAULT_DRAIN_DEADLINE_MS,
-      time: options.time,
-    });
     // eslint-disable-next-line @typescript-eslint/only-throw-error -- the callback captures an Error subclass that TypeScript does not track across the await; preserve that exact instance
     if (unknownExternalOutcome !== null) throw unknownExternalOutcome;
   } catch (error: unknown) {

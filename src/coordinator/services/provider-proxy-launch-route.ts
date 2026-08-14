@@ -36,14 +36,12 @@ export function createAppServerProxyRoute(deps: {
         buildSetId: authority.setIdentity.buildSetId,
       });
       if (!parsedOperation.success) {
-        const firstIssue = parsedOperation.error.issues[0];
-        const reason =
-          firstIssue === undefined
-            ? 'unknown schema violation'
-            : `${firstIssue.path.join('.') || 'identity'}: ${firstIssue.message}`;
-        const additionalIssues = parsedOperation.error.issues.length - 1;
+        const issues = parsedOperation.error.issues
+          .map((issue) => `${issue.path.join('.') || 'identity'}: ${issue.message}`)
+          .join('; ');
         throw new Error(
-          `Provider proxy launch rejected operation identity for job '${request.jobId}': ${reason}${additionalIssues > 0 ? ` (+${additionalIssues} more issues)` : ''}.`,
+          `Provider proxy launch rejected operation identity for job '${request.jobId}'. Invalid fields: ${issues || 'unknown schema violation'}. ` +
+            'If this is a queued workflow child created before the job-id upgrade, restart it under the upgraded coordinator; verified legacy workflow-slot children are recovered with local placement.',
           { cause: parsedOperation.error },
         );
       }

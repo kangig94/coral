@@ -23,9 +23,9 @@ import {
   DEFAULT_STALE_TIMEOUT_MS,
 } from './execution-constants.js';
 import {
-  assignWorkflowJobIds,
   buildWorkflowPlan,
   compileWorkflowPlan,
+  resolveWorkflowJobIds,
   type CompiledPlanSlot,
   type WorkflowPlan,
 } from './plan.js';
@@ -299,7 +299,7 @@ export async function executePipeline(
     buildWorkflowPlan(workflowId, ast, {
       defaultProvider: defaultProviderName,
     });
-  const jobIds = assignWorkflowJobIds(plan, options.ids);
+  const jobIds = resolveWorkflowJobIds(plan, options.ids);
 
   if (options.journal && options.declaredPlan === undefined) {
     const workflowJobId = options.workflowJobId;

@@ -432,11 +432,20 @@ describe('planRecovery', () => {
     expect(plan.cleanup).toEqual([]);
   });
 
-  it('returns registerQueued for queued recoverable jobs', () => {
-    const launchRecord = makeLaunch('queued-job', { enqueueSequence: 7 });
+  it('preserves the durable workflow relation for a pre-upgrade queued child', () => {
+    const workflowId = '00000000-0000-4000-8000-000000000100';
+    const legacySlotJobId = `${workflowId}:0:0`;
+    const owner = { kind: 'workflow' as const, id: workflowId };
+    const launchRecord = makeLaunch(legacySlotJobId, {
+      owner,
+      enqueueSequence: 7,
+      parentWorkflowJobId: workflowId,
+      workflowSlotId: legacySlotJobId,
+      workflowSlotGeneration: 0,
+    });
     const snapshot = new InMemoryRecoverySnapshot().addJob({
-      jobId: 'queued-job',
-      status: makeStatus('queued-job', 'queued'),
+      jobId: legacySlotJobId,
+      status: makeStatus(legacySlotJobId, 'queued', { owner }),
       launch: launchRecord,
       hasLaunchRequest: true,
       hasRuntimeStart: false,
@@ -446,7 +455,7 @@ describe('planRecovery', () => {
     expect(plan.register).toEqual([
       {
         type: 'registerQueued',
-        jobId: 'queued-job',
+        jobId: legacySlotJobId,
         launchRecord,
       },
     ]);

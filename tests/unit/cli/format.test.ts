@@ -25,6 +25,7 @@ import {
   formatAbortResult,
   formatDetachedLaunchStatus,
   formatJobDetail,
+  formatJobsList,
   formatLaunch,
   formatLaunchWaitHint,
   renderJobsList,
@@ -276,6 +277,56 @@ describe('cli format', () => {
   });
 
   describe('formatJobDetail', () => {
+    it('renders durable workflow identity for an opaque child job id in list and detail views', () => {
+      const childJobId = '11111111-1111-4111-8111-111111111111';
+      const workflowJobId = '22222222-2222-4222-8222-222222222222';
+      const replacedJobId = '33333333-3333-4333-8333-333333333333';
+      const workflowSlotId = `${workflowJobId}:0:1`;
+      const child = {
+        ...jobDetailResponse,
+        status: {
+          ...jobDetailResponse.status,
+          jobId: childJobId,
+          owner: { kind: 'workflow' as const, id: workflowJobId },
+          parentWorkflowJobId: workflowJobId,
+          workflowSlotId,
+          workflowSlotGeneration: 1,
+          replacesWorkflowJobId: replacedJobId,
+        },
+      } satisfies JobDetailResponse;
+
+      const list = renderJobsList(
+        formatJobsList({ jobs: [{ jobId: childJobId, status: child.status }] }, Date.parse(child.status.updatedAt)),
+        { cwd: child.status.projectRoot },
+      );
+      const detail = formatJobDetail(child);
+
+      expect(list).toContain('SLOT');
+      expect(list).toContain('0:1 (g1)');
+      expect(detail).toContain(`Parent workflow: ${workflowJobId}`);
+      expect(detail).toContain(`Workflow slot: ${workflowSlotId}`);
+      expect(detail).toContain('Workflow generation: 1');
+      expect(detail).toContain(`Replaces workflow job: ${replacedJobId}`);
+    });
+
+    /**
+     * A workflow child's job id is a uuid that says nothing about which atom ran, so the slot has to be
+     * visible — but most jobs occupy no slot, and a column of dashes on every ordinary listing is a cost paid
+     * by everyone to inform no one.
+     */
+    it('omits the slot column entirely when no listed job occupies a workflow slot', () => {
+      const list = renderJobsList(
+        formatJobsList(
+          { jobs: [{ jobId: jobDetailResponse.status.jobId, status: jobDetailResponse.status }] },
+          Date.parse(jobDetailResponse.status.updatedAt),
+        ),
+        { cwd: jobDetailResponse.status.projectRoot },
+      );
+
+      expect(list).not.toContain('SLOT');
+      expect(list).toContain('JOB ID');
+    });
+
     it('renders the 4-tier usage breakdown with the full cache-read billing annotation', () => {
       expect(formatJobDetail(jobDetailResponse)).toMatchInlineSnapshot(`
         "Job job-1
@@ -1506,6 +1557,7 @@ describe('renderJobsList grouping', () => {
     provider: jobKind === 'kb' ? 'kb' : 'codex',
     cwd,
     jobKind,
+    workflowSlot: '-',
     age: '1m ago',
   });
 
