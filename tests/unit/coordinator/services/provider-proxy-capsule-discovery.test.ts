@@ -110,6 +110,7 @@ describe('provider proxy capsule discovery', () => {
       recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
         'capsule-redemption': () => new Promise<never>(() => undefined),
       }),
+      reportLifecycle: () => undefined,
     });
     lifecycle.initializeClaimSlots();
     lifecycle.installDiscoveredCapsules(discovered);

@@ -84,7 +84,7 @@ export function createExecutionServices({
   connectProviderOperationRecovery: (recoveryCoordinator: RecoveryCoordinator) => void;
   reconcileProviderOperationsAtStartup: (signal: AbortSignal) => Promise<StartupReconciliationReport>;
   startProviderOperationReconciler: () => void;
-  stopProviderOperationReconciler: () => void;
+  stopProviderOperationReconciler: (phase?: 'quiesce' | 'drain') => void | Promise<void>;
 } {
   const services = new Map<string, ProjectRequestPort>();
   let providerOperationRecovery: RecoveryCoordinator | null = null;
@@ -252,7 +252,7 @@ export function createExecutionServices({
       backendLog.warn(
         `Provider proxy lifecycle ${violation.stage} woke ${violation.latenessMs}ms after its requested time.`,
       ),
-    onDecision: (severity, message) => backendLog[severity](message),
+    reportLifecycle: (severity, message) => backendLog[severity](message),
     onError: (message) => backendLog.warn(message),
     onSlotReleased: (routeKey) => world.providerHostManager.providerProxySlotReleased?.(routeKey),
   });
@@ -291,6 +291,11 @@ export function createExecutionServices({
       );
     }
     providerProxyLifecycleInitialized = true;
+  };
+
+  const quiesceProviderOperationReconciler = (): void => {
+    unsubscribeProviderProxyControlEstablished();
+    providerOperationReconciler.stop();
   };
 
   function getExecutionService(ctx: InvocationContext): ProjectRequestPort {
@@ -372,11 +377,13 @@ export function createExecutionServices({
       return providerOperationReconciler.reconcileAtStartup(signal);
     },
     startProviderOperationReconciler: () => providerOperationReconciler.start(),
-    stopProviderOperationReconciler: () => {
-      unsubscribeProviderProxyControlEstablished();
-      unsubscribeProviderOperationMutations?.();
-      unsubscribeProviderOperationMutations = null;
-      providerOperationReconciler.stop();
+    stopProviderOperationReconciler: (phase = 'drain') => {
+      quiesceProviderOperationReconciler();
+      if (phase === 'quiesce') return;
+      return providerOperationReconciler.waitForIdle().finally(() => {
+        unsubscribeProviderOperationMutations?.();
+        unsubscribeProviderOperationMutations = null;
+      });
     },
   };
 }

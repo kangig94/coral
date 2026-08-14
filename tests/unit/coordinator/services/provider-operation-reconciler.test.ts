@@ -147,6 +147,7 @@ function lifecycleForSchedule(
         throw error;
       },
     ),
+    reportLifecycle: () => undefined,
   });
   lifecycle.initializeClaimSlots();
   lifecycle.completeStartupDiscovery();
@@ -679,14 +680,14 @@ const cleanupRetryCases = [
 ] as const;
 
 describe('provider host unserviceable refusal durability', () => {
-  function expectStructuredTerminal(appended: readonly unknown[]): void {
+  function expectStructuredTerminal(appended: readonly unknown[], message = hostUnserviceableRefusal.reason): void {
     expect(appended).toEqual([
       expect.objectContaining({
         type: 'job.progress.emitted',
         body: {
           kind: 'domain',
           stage: 'provider_operation_failed',
-          message: hostUnserviceableRefusal.reason,
+          message,
           detail: hostUnserviceableDetail,
         },
       }),
@@ -778,7 +779,11 @@ describe('provider host unserviceable refusal durability', () => {
       kind: 'accepted',
       acceptance: { disposition: 'terminalization-committed' },
     });
-    expectStructuredTerminal(disappearance.appended);
+    const disappearanceSet = providerProxySetIdentityFromRecord(disappearanceRecord);
+    expectStructuredTerminal(
+      disappearance.appended,
+      `${hostUnserviceableRefusal.reason} Reference: proxyInstanceId=${disappearanceSet.proxyInstanceId},buildSetId=${disappearanceSet.buildSetId}.`,
+    );
     expect(disappearanceRecovery).not.toHaveBeenCalled();
   });
 
@@ -822,7 +827,11 @@ describe('provider host unserviceable refusal durability', () => {
         acceptance: { disposition: 'terminalization-committed' },
       });
       expect(terminalizeCalls).toHaveBeenCalledTimes(2);
-      expectStructuredTerminal(disappearance.harness.appended);
+      const disappearanceSet = providerProxySetIdentityFromRecord(disappearance.retried);
+      expectStructuredTerminal(
+        disappearance.harness.appended,
+        `${hostUnserviceableRefusal.reason} Reference: proxyInstanceId=${disappearanceSet.proxyInstanceId},buildSetId=${disappearanceSet.buildSetId}.`,
+      );
     },
   );
 });
@@ -1464,6 +1473,46 @@ describe('ProviderOperationReconciler publication', () => {
     await Promise.resolve();
     expect(harness.registry.attach).not.toHaveBeenCalled();
     expect(readProviderOperation(harness.db, recovered.operation)).toBeNull();
+  });
+
+  it.each([
+    'proxy-activation-pending',
+    'activation-resolution-pending',
+    'executing',
+    'prestart-cleanup-pending',
+  ] as const)('adds the proxy-set reference to %s disappearance terminalization', async (phase) => {
+    const harness = createHarness();
+    const fixture = providerOperationRecord(phase);
+    const record =
+      phase === 'prestart-cleanup-pending'
+        ? providerOperationRecordSchema.parse({
+            ...fixture,
+            afterRelease: {
+              kind: 'terminal-failed',
+              code: 'provider_host_unserviceable',
+              reason: 'The provider host could not start the operation.',
+            },
+          })
+        : fixture;
+    insertProviderOperation(harness.db, record);
+    const terminalize = vi.spyOn(harness.terminalization, 'terminalize');
+    const setIdentity = providerProxySetIdentityFromRecord(record);
+    const reference = `proxyInstanceId=${setIdentity.proxyInstanceId},buildSetId=${setIdentity.buildSetId}`;
+
+    await expect(
+      harness.reconciler.containmentDisappeared({
+        operation: record.operation,
+        setIdentity,
+        disappearanceReceipt: `${phase}-absence`,
+      }),
+    ).resolves.toMatchObject({
+      kind: 'accepted',
+      acceptance: { disposition: 'terminalization-committed' },
+    });
+    expect(terminalize).toHaveBeenCalledWith(
+      record,
+      expect.objectContaining({ reason: expect.stringContaining(`Reference: ${reference}.`) }),
+    );
   });
 
   it('retains retry-safe disappearance delivery without forgetting the notice', async () => {

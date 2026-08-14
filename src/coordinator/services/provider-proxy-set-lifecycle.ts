@@ -134,7 +134,13 @@ export type ProviderProxySetDecision =
   | ProviderProxySetContainmentDecision
   | ProviderProxySetDrainDecision;
 
-export type ProviderProxySetDecisionSeverity = 'info' | 'warn';
+export type ProviderProxySetLogSeverity = 'info' | 'warn';
+
+type PreserveReportState = {
+  decision: ProviderProxySetPreserveDecision;
+  lastReportedAtMs: number;
+  suppressed: number;
+};
 
 type EstablishedSlot = {
   kind: 'available' | 'draining' | 'containing' | 'containment-wait';
@@ -148,8 +154,8 @@ type EstablishedSlot = {
   completedAttempts: number;
   attemptToken: number;
   retryTimer: TimerHandle | null;
-  decision: ProviderProxySetDecision | null;
   retirementDecision: ProviderProxySetDrainDecision | null;
+  preserveReports: Map<string, PreserveReportState>;
 };
 
 type ProviderProxySetSlot =
@@ -277,7 +283,7 @@ export type ProviderProxySetLifecycleDeps = Readonly<{
   time: Pick<TimePort, 'now' | 'setTimeout' | 'clearTimeout'>;
   recoveryDispatcher: ProviderProxyRecoveryDispatcher;
   onProgressPremiseViolation?: (violation: ProviderProxySetLifecycleProgressViolation) => void;
-  onDecision?: (severity: ProviderProxySetDecisionSeverity, message: string) => void;
+  reportLifecycle(severity: ProviderProxySetLogSeverity, message: string): void;
   onError?: (message: string) => void;
   onSlotReleased?: (routeKey: string) => void;
 }>;
@@ -303,6 +309,8 @@ function singleLineErrorSummary(error: unknown): string {
 function retryDelayMs(completedAttempts: number): number {
   return Math.min(1_000 * 2 ** Math.min(Math.max(completedAttempts - 1, 0), 5), 30_000);
 }
+
+const PRESERVE_REPORT_INTERVAL_MS = 60_000;
 
 function createInitialDispositionLatch(): InitialDispositionLatch {
   let accept!: (value: ContainmentAbsenceInitialDisposition) => void;
@@ -474,21 +482,6 @@ export class ProviderProxySetLifecycle {
         ? [slot.authority]
         : [],
     );
-  }
-
-  decisionFor(identity: ProviderProxySetIdentity): ProviderProxySetDecision | null {
-    const slot = this.#slots.get(providerProxySetKey(identity));
-    if (
-      slot === undefined ||
-      slot.kind === 'acquiring' ||
-      slot.kind === 'capsule-recovering' ||
-      slot.kind === 'capsule-opaque' ||
-      slot.kind === 'recovering' ||
-      slot.kind === 'absence-delivery-pending'
-    ) {
-      return null;
-    }
-    return slot.decision;
   }
 
   beginGracefulDrain(identity: ProviderProxySetIdentity): void {
@@ -918,8 +911,8 @@ export class ProviderProxySetLifecycle {
       completedAttempts: 0,
       attemptToken: 0,
       retryTimer: null,
-      decision: null,
       retirementDecision: null,
+      preserveReports: new Map(),
     };
     this.#slots.set(key, slot);
     authority.onFault((fault) => this.#faultAuthority(identity, fault));
@@ -992,8 +985,44 @@ export class ProviderProxySetLifecycle {
   }
 
   #recordDecision(slot: EstablishedSlot, decision: ProviderProxySetDecision): void {
-    slot.decision = decision;
-    const severity: ProviderProxySetDecisionSeverity = decision.reason === 'provider_authority_lost' ? 'warn' : 'info';
+    if (decision.reason === 'retry_safe_operation_control_failure') {
+      this.#recordPreserveDecision(slot, decision);
+      return;
+    }
+    this.#flushPreserveReports(slot);
+    this.#reportDecision(decision);
+  }
+
+  #recordPreserveDecision(slot: EstablishedSlot, decision: ProviderProxySetPreserveDecision): void {
+    const now = this.#deps.time.now();
+    const key = JSON.stringify([decision.policy.method, decision.error]);
+    const report = slot.preserveReports.get(key);
+    if (report === undefined) {
+      slot.preserveReports.set(key, { decision, lastReportedAtMs: now, suppressed: 0 });
+      this.#reportDecision(decision);
+      return;
+    }
+    report.decision = decision;
+    if (now - report.lastReportedAtMs < PRESERVE_REPORT_INTERVAL_MS) {
+      report.suppressed += 1;
+      return;
+    }
+    this.#reportDecision(decision, `summary=periodic suppressed=${report.suppressed}`);
+    report.lastReportedAtMs = now;
+    report.suppressed = 0;
+  }
+
+  #flushPreserveReports(slot: EstablishedSlot): void {
+    for (const report of slot.preserveReports.values()) {
+      if (report.suppressed > 0) {
+        this.#reportDecision(report.decision, `summary=closed suppressed=${report.suppressed}`);
+      }
+    }
+    slot.preserveReports.clear();
+  }
+
+  #reportDecision(decision: ProviderProxySetDecision, summary?: string): void {
+    const severity: ProviderProxySetLogSeverity = decision.reason === 'provider_authority_lost' ? 'warn' : 'info';
     let fault: string;
     let subject: string;
     let error: string;
@@ -1018,13 +1047,13 @@ export class ProviderProxySetLifecycle {
     }
     this.#report(
       severity,
-      `Provider proxy set action=${decision.action} reason=${decision.reason} fault=${fault} subject=${subject} liveClaims=${decision.liveClaims} set=${providerProxySetReference(slot.identity)} error=${error}`,
+      `Provider proxy set action=${decision.action} reason=${decision.reason} fault=${fault} subject=${subject} liveClaims=${decision.liveClaims} set=${providerProxySetReference(decision.setIdentity)} error=${error}${summary === undefined ? '' : ` ${summary}`}`,
     );
   }
 
-  #report(severity: ProviderProxySetDecisionSeverity, message: string): void {
+  #report(severity: ProviderProxySetLogSeverity, message: string): void {
     try {
-      this.#deps.onDecision?.(severity, message);
+      this.#deps.reportLifecycle(severity, message);
     } catch {
       // Observability is not part of the authority transition and cannot be allowed to strand the set.
     }

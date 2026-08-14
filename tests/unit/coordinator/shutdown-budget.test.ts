@@ -96,6 +96,9 @@ function buildHarness(opts: {
     waitForInflightDrain: async () => {
       callLog.push('waitForInflightDrain');
     },
+    stopProviderOperationReconciler: async () => {
+      callLog.push('stopProviderOperationReconciler');
+    },
     server,
     ipcServer,
     streamResponses: new Set<ServerResponse>(),
@@ -149,6 +152,19 @@ async function flush(rounds = 16): Promise<void> {
 }
 
 describe('runShutdownSequence drain budget', () => {
+  it('drains active provider-operation serializers after accepted requests and before host retirement', async () => {
+    const harness = buildHarness({ hooksOnShutdown: async () => {} });
+
+    await runShutdownSequence(harness.ctx);
+
+    expect(harness.callLog.indexOf('stopProviderOperationReconciler')).toBeGreaterThan(
+      harness.callLog.indexOf('waitForInflightDrain'),
+    );
+    expect(harness.callLog.indexOf('stopProviderOperationReconciler')).toBeLessThan(
+      harness.callLog.indexOf('drainForHandoff'),
+    );
+  });
+
   it('returns within drainTimeout + small slack when an async-cooperative finalizer hangs', async () => {
     // Hooks.onShutdown never resolves and ignores the abort signal — the
     // budget timer must end the race for `runShutdownSequence` to return.

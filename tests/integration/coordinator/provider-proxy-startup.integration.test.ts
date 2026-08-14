@@ -209,6 +209,7 @@ function lifecycleFor(
     controlEstablished: () => undefined,
     time: options.time,
     recoveryDispatcher,
+    reportLifecycle: () => undefined,
   });
   lifecycle.initializeClaimSlots();
   return lifecycle;

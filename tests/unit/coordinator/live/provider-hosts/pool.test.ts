@@ -138,6 +138,7 @@ function createProxySetLifecycleRef(onSlotReleased?: (routeKey: string) => void)
     recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
       'containment-proof': async () => null,
     }),
+    reportLifecycle: () => undefined,
     ...(onSlotReleased === undefined ? {} : { onSlotReleased }),
   });
   lifecycle.initializeClaimSlots();

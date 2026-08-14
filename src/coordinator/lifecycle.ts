@@ -675,7 +675,7 @@ export type LifecycleDeps = {
   readonly connectProviderOperationRecovery?: (recoveryCoordinator: RecoveryCoordinator) => void;
   readonly reconcileProviderOperationsAtStartup?: (signal: AbortSignal) => Promise<StartupReconciliationReport>;
   readonly startProviderOperationReconciler?: () => void;
-  readonly stopProviderOperationReconciler?: () => void;
+  readonly stopProviderOperationReconciler?: (phase?: 'quiesce' | 'drain') => void | Promise<void>;
   /**
    * Optional only for narrow lifecycle harnesses; production composition supplies the sole publishing facet
    * so carrier readers cannot advance the startup boundary themselves.
@@ -1231,10 +1231,13 @@ export function createLifecycle(
     // reason would propagate as a bare string and lose the `name`
     // discriminator.
     state.startupAbort?.abort();
-    stopProviderOperationReconciler?.();
+    void stopProviderOperationReconciler?.('quiesce');
 
     state.shutdownPromise = (async () => {
-      if (runtimeState.getLifecycle() === 'stopped') return;
+      if (runtimeState.getLifecycle() === 'stopped') {
+        await stopProviderOperationReconciler?.('drain');
+        return;
+      }
 
       await runShutdownSequence({
         reason,
@@ -1246,6 +1249,9 @@ export function createLifecycle(
         idleTimer,
         closeServerFn,
         waitForInflightDrain,
+        stopProviderOperationReconciler: async () => {
+          await stopProviderOperationReconciler?.('drain');
+        },
         server,
         closeIpcServerFn,
         ipcServer,

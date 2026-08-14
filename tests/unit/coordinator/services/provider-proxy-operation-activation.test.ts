@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
+import { createProviderOperationRetryHarness } from '#tests/helpers/provider-operation-retry-harness.js';
 
 import { describe, expect, it } from 'vitest';
 
@@ -28,6 +29,7 @@ import {
   type ProviderProxyOperationIncident,
 } from '#src/coordinator/services/provider-proxy-authority-fault.js';
 import type { ProviderProxySetIdentity } from '#src/coordinator/services/provider-proxy-set-identity.js';
+import { readProviderOperation } from '#src/store/provider-operation-journal.js';
 
 const SET_IDENTITY: ProviderProxySetIdentity = {
   buildSetId: randomUUID(),
@@ -112,7 +114,10 @@ function deps(proxy: OperationControlClient, guardian: OperationControlClient): 
   };
 }
 
-function faultRoutingDeps(client: OperationControlClient): Readonly<{
+function faultRoutingDeps(
+  client: OperationControlClient,
+  guardianClient: OperationControlClient = client,
+): Readonly<{
   activationDeps: ProviderProxyOperationActivationDeps;
   faults: ProviderProxyAuthorityFault[];
   incidents: ProviderProxyOperationIncident[];
@@ -124,7 +129,7 @@ function faultRoutingDeps(client: OperationControlClient): Readonly<{
   latch.onIncident((incident) => incidents.push(incident));
   return {
     activationDeps: {
-      ...deps(client, scriptedClient({}).client),
+      ...deps(client, guardianClient),
       faultAuthority: latch.latch,
       reportIncident: latch.reportIncident,
     },
@@ -133,34 +138,98 @@ function faultRoutingDeps(client: OperationControlClient): Readonly<{
   };
 }
 
-async function expectRetrySafeFailureKeepsAuthorityLatchAvailable(
-  method: 'operation.attach.v1' | 'operation.stop.v1',
-  failure: Error,
-  invoke: (activationDeps: ProviderProxyOperationActivationDeps) => Promise<unknown>,
-): Promise<void> {
-  const closed = Object.assign(new Error('control client closed'), { code: 'control_client_closed' });
-  const failures = [failure, closed];
-  const routing = faultRoutingDeps({
-    call: () => {
-      const nextFailure = failures.shift();
-      return Promise.reject(nextFailure instanceof Error ? nextFailure : new Error('unexpected extra call'));
-    },
-  });
+type PolicyFailureCase = Readonly<{
+  method: string;
+  phase:
+    | 'prepare-pending'
+    | 'guardian-activation-pending'
+    | 'proxy-activation-pending'
+    | 'executing'
+    | 'prestart-cleanup-pending'
+    | 'settlement-pending';
+  effect: 'observation' | 'mutation';
+  indeterminate: 'retry-safe' | 'requires-containment' | null;
+  channel: 'terminal-fault' | 'incident' | 'observation';
+  invoke: (activationDeps: ProviderProxyOperationActivationDeps) => Promise<unknown>;
+}>;
 
-  await expect(invoke(routing.activationDeps)).rejects.toBe(failure);
-  expect(routing.faults).toEqual([]);
-  expect(routing.incidents).toEqual([
-    {
-      kind: 'operation-control-failed',
-      policy: expect.objectContaining({ method, effect: 'mutation', indeterminate: 'retry-safe' }),
-      error: failure,
-    },
-  ]);
-
-  await expect(invoke(routing.activationDeps)).rejects.toBe(closed);
-  expect(routing.faults).toEqual([{ kind: 'control-channel-fault', role: 'proxy', error: closed }]);
-  expect(routing.incidents).toHaveLength(1);
-}
+const POLICY_FAILURE_CASES = [
+  {
+    method: 'operation.prepare.v1',
+    phase: 'prepare-pending',
+    effect: 'mutation',
+    indeterminate: 'requires-containment',
+    channel: 'terminal-fault',
+    invoke: (activationDeps) =>
+      prepareProviderOperation(activationDeps, providerOperationPrepareAttempt(activationDeps, OPERATION, PREPARED)),
+  },
+  {
+    method: 'operation.inspect.v1',
+    phase: 'prepare-pending',
+    effect: 'observation',
+    indeterminate: null,
+    channel: 'observation',
+    invoke: (activationDeps) => inspectProviderOperation(activationDeps, OPERATION, 'b'.repeat(64)),
+  },
+  {
+    method: 'guardian.operation-activate.v1',
+    phase: 'guardian-activation-pending',
+    effect: 'mutation',
+    indeterminate: 'requires-containment',
+    channel: 'terminal-fault',
+    invoke: (activationDeps) =>
+      authorizeProviderOperation(activationDeps, OPERATION, {
+        reservation: randomUUID(),
+        providerRoot: { pid: 701, processStartedAtSeconds: 800 },
+        jointContainmentReceipt: 'joint-1',
+      }),
+  },
+  {
+    method: 'operation.activate.v1',
+    phase: 'proxy-activation-pending',
+    effect: 'mutation',
+    indeterminate: 'requires-containment',
+    channel: 'terminal-fault',
+    invoke: (activationDeps) =>
+      activateProviderOperation(activationDeps, OPERATION, {
+        reservation: randomUUID(),
+        jointContainmentReceipt: 'joint-1',
+        jointActivationReceipt: 'joint-activation-1',
+      }),
+  },
+  {
+    method: 'operation.attach.v1',
+    phase: 'executing',
+    effect: 'mutation',
+    indeterminate: 'retry-safe',
+    channel: 'incident',
+    invoke: (activationDeps) => attachProviderOperation(activationDeps, OPERATION, 7),
+  },
+  {
+    method: 'operation.cancel.v1',
+    phase: 'prestart-cleanup-pending',
+    effect: 'mutation',
+    indeterminate: 'requires-containment',
+    channel: 'terminal-fault',
+    invoke: (activationDeps) => cancelProviderOperation(activationDeps, OPERATION, 1, 'b'.repeat(64)),
+  },
+  {
+    method: 'operation.settle.v1',
+    phase: 'settlement-pending',
+    effect: 'mutation',
+    indeterminate: 'retry-safe',
+    channel: 'incident',
+    invoke: (activationDeps) => settleProviderOperation(activationDeps, OPERATION, 7),
+  },
+  {
+    method: 'operation.stop.v1',
+    phase: 'executing',
+    effect: 'mutation',
+    indeterminate: 'retry-safe',
+    channel: 'incident',
+    invoke: (activationDeps) => buildProviderOperationControl(activationDeps, OPERATION).stop('user_abort'),
+  },
+] as const satisfies readonly PolicyFailureCase[];
 
 describe('provider proxy operation mutations', () => {
   it('routes every closed operation client call as a role-specific channel fault', async () => {
@@ -206,6 +275,45 @@ describe('provider proxy operation mutations', () => {
       { kind: 'control-channel-fault', role: 'proxy', error: closed },
     ]);
   });
+
+  it.each(POLICY_FAILURE_CASES)(
+    'routes $method ($phase, $effect, $indeterminate) through $channel for an indeterminate call failure',
+    async ({ method, phase, effect, indeterminate, channel, invoke }) => {
+      const failure = Object.assign(new Error(`${method} failed indeterminately`), { code: 'control_call_failed' });
+      const calledMethods: string[] = [];
+      const routing = faultRoutingDeps({
+        call: (calledMethod) => {
+          calledMethods.push(calledMethod);
+          return Promise.reject(failure);
+        },
+      });
+      const expectedPolicy = {
+        method,
+        phase,
+        effect,
+        ...(indeterminate === null ? {} : { indeterminate }),
+      };
+
+      await expect(invoke(routing.activationDeps)).rejects.toBe(failure);
+
+      expect(calledMethods).toEqual([method]);
+      if (channel === 'terminal-fault') {
+        expect(routing.faults).toEqual([
+          { kind: 'operation-control-failed', policy: expect.objectContaining(expectedPolicy), error: failure },
+        ]);
+        expect(routing.incidents).toEqual([]);
+      } else if (channel === 'incident') {
+        expect(routing.faults).toEqual([]);
+        expect(routing.incidents).toEqual([
+          { kind: 'operation-control-failed', policy: expect.objectContaining(expectedPolicy), error: failure },
+        ]);
+      } else {
+        expect(expectedPolicy).toEqual({ method, phase, effect: 'observation' });
+        expect(routing.faults).toEqual([]);
+        expect(routing.incidents).toEqual([]);
+      }
+    },
+  );
 
   it('derives one stable prepare attempt and validates the exact prepare reply', async () => {
     const pending = {
@@ -391,27 +499,78 @@ describe('provider proxy operation mutations', () => {
     expect(routing.incidents).toHaveLength(1);
   });
 
-  it.each(['timeout before effect', 'response loss after effect'])(
-    'routes attach %s as retry-safe without consuming the authority latch',
-    async (ordering) => {
-      const failure = Object.assign(new Error(`attach ${ordering}`), { code: 'control_call_failed' });
+  it.each([
+    { method: 'attach', ordering: 'before-effect' },
+    { method: 'attach', ordering: 'after-effect' },
+    { method: 'stop', ordering: 'before-effect' },
+    { method: 'stop', ordering: 'after-effect' },
+  ] as const)(
+    'reconciles $method after a lost $ordering response without losing retry ownership',
+    async ({ method, ordering }) => {
+      const harness = createProviderOperationRetryHarness(method, ordering);
+      const { authority, claims, endpoint, incidents, progressStore, reconciler, record, registry } = harness;
 
-      // The routing seam cannot distinguish the orderings; replaying the durable watermark keeps attach retry-owned.
-      await expectRetrySafeFailureKeepsAuthorityLatchAvailable('operation.attach.v1', failure, (activationDeps) =>
-        attachProviderOperation(activationDeps, OPERATION, 7),
-      );
-    },
-  );
+      try {
+        await reconciler.reconcile(record, authority);
+        const retryOwned = readProviderOperation(progressStore.getDb(), record.operation);
 
-  it.each(['timeout before effect', 'response loss after effect'])(
-    'routes stop %s as retry-safe without consuming the authority latch',
-    async (ordering) => {
-      const failure = Object.assign(new Error(`stop ${ordering}`), { code: 'control_call_failed' });
+        expect(retryOwned).toEqual(
+          expect.objectContaining({
+            phase: 'executing',
+            committedThroughProviderSeq: record.committedThroughProviderSeq,
+            controlIntent: record.controlIntent,
+            retryCount: 1,
+            retryNotBeforeMs: expect.any(Number),
+            lastError: expect.objectContaining({
+              code: endpoint.failure.code,
+              message: endpoint.failure.message,
+            }),
+          }),
+        );
+        expect(retryOwned?.retryNotBeforeMs).toBeGreaterThan(100);
+        expect(claims.claimFor(record.operation)).not.toBeNull();
+        expect(harness.terminalFaults).toEqual([]);
+        expect(incidents).toEqual([
+          {
+            kind: 'operation-control-failed',
+            policy: expect.objectContaining({
+              method: method === 'attach' ? 'operation.attach.v1' : 'operation.stop.v1',
+              phase: 'executing',
+              effect: 'mutation',
+              indeterminate: 'retry-safe',
+            }),
+            error: endpoint.failure,
+          },
+        ]);
+        expect(harness.stopAndReap).not.toHaveBeenCalled();
 
-      // The routing seam cannot distinguish the orderings; executing attachment replays durable stop intent.
-      await expectRetrySafeFailureKeepsAuthorityLatchAvailable('operation.stop.v1', failure, (activationDeps) =>
-        buildProviderOperationControl(activationDeps, OPERATION).stop('user_abort'),
-      );
+        if (retryOwned?.phase !== 'executing') throw new Error('retry did not retain the executing record');
+        await reconciler.reconcile(retryOwned, authority);
+        const converged = readProviderOperation(progressStore.getDb(), record.operation);
+
+        expect(converged).toEqual(
+          expect.objectContaining({
+            phase: 'executing',
+            committedThroughProviderSeq: record.committedThroughProviderSeq,
+            controlIntent: record.controlIntent,
+            retryCount: 0,
+            retryNotBeforeMs: 100,
+            lastError: null,
+          }),
+        );
+        expect(claims.claimFor(record.operation)).not.toBeNull();
+        expect(endpoint.attachmentWatermarks).toEqual([
+          record.committedThroughProviderSeq,
+          record.committedThroughProviderSeq,
+        ]);
+        expect(endpoint.stopIntents).toEqual(method === 'stop' ? ['user_abort', 'user_abort'] : []);
+        expect(endpoint.attachmentEffectCount()).toBe(1);
+        expect(endpoint.stopEffectCount()).toBe(method === 'stop' ? 1 : 0);
+        expect(registry.attach).toHaveBeenCalledOnce();
+        expect(harness.stopAndReap).not.toHaveBeenCalled();
+      } finally {
+        harness.unsubscribeClaims();
+      }
     },
   );
 

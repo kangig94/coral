@@ -296,6 +296,7 @@ describe('createProviderProxyAcquisitionSteps', () => {
           acceptance: { kind: 'accepted', operation: notice.operation, disposition: 'record-absent' },
         }),
       }),
+      reportLifecycle: () => undefined,
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();

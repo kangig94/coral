@@ -50,6 +50,7 @@ type RunShutdownSequenceContext = {
     timeoutMs: number,
     time: Pick<Runtime['time'], 'clearInterval' | 'now' | 'setInterval'>,
   ) => Promise<void>;
+  stopProviderOperationReconciler: () => Promise<void>;
   server: Server;
   ipcServer?: IpcListener;
   streamResponses: Set<ServerResponse>;
@@ -320,6 +321,7 @@ export async function runShutdownSequence({
   closeServerFn,
   closeIpcServerFn,
   waitForInflightDrain,
+  stopProviderOperationReconciler,
   server,
   ipcServer,
   streamResponses,
@@ -380,6 +382,7 @@ export async function runShutdownSequence({
     Promise.resolve().then(() => closeServerFn(server)),
   );
   await runStep('inflight drain', () => waitForInflightDrain(idleTimer, remainingDrain(), runtime.time));
+  await runStep('provider operation reconciler drain', stopProviderOperationReconciler);
   await runStep('server connection close', () => server.closeAllConnections());
   for (const stream of streamResponses) {
     await runStep('stream response close', () => stream.end());

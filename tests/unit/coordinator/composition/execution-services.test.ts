@@ -189,7 +189,7 @@ async function createSharedSetHarness(control: SharedSetControl) {
 }
 
 describe('execution services provider-proxy proof composition', () => {
-  it('does not invoke the disappearance consumer producer during assembly', () => {
+  it('does not invoke the disappearance consumer producer during assembly', async () => {
     const runtime = createRealRuntime('prod');
     const claims = new ProviderProxySetClaimMirror();
     const lifecycleRef = new ProviderProxySetLifecycleRef();
@@ -227,7 +227,7 @@ describe('execution services provider-proxy proof composition', () => {
       proofCalls: proveContainmentAbsent.mock.calls.length,
       lifecycleComposed: lifecycleRef.get() !== null,
     }).toEqual({ inheritanceCalls: 0, redemptionCalls: 0, proofCalls: 0, lifecycleComposed: true });
-    services.stopProviderOperationReconciler();
+    await services.stopProviderOperationReconciler();
   });
 
   it('does not publish a stored-fault authority through the production subscriber', async () => {
@@ -298,7 +298,7 @@ describe('execution services provider-proxy proof composition', () => {
       attachOperationCalls: attachOperation.mock.calls.length,
       states: lifecycle.snapshot().states,
     }).toEqual({ authority: null, attachOperationCalls: 0, states: ['containing'] });
-    services.stopProviderOperationReconciler();
+    await services.stopProviderOperationReconciler();
   });
 
   it('publishes an accepted fresh authority once through the production subscriber', async () => {
@@ -386,24 +386,137 @@ describe('execution services provider-proxy proof composition', () => {
     expect(buildOperationControl).toHaveBeenCalledTimes(1);
     expect(readLaunchProjection).toHaveBeenCalledWith(record.operation.jobId);
     warning.mockRestore();
-    services.stopProviderOperationReconciler();
+    await services.stopProviderOperationReconciler();
+  });
+
+  it('keeps the claim mirror subscribed while a shutdown-era drive commits and times out attaching', async () => {
+    const time = new VirtualTime();
+    const runtime = { ...createRealRuntime('prod'), time };
+    const db = newRawDatabase(':memory:');
+    applyBundledStoreSchema(db, currentCoralStoreFormat());
+    const namespace = 'execution-services-shutdown-drive-test';
+    const progressStore = new JobStore(namespace, runtime, createEventBodyCodec(), {
+      db,
+      providers: permissiveProviderLookupPort,
+    });
+    const claims = new ProviderProxySetClaimMirror();
+    const lifecycleRef = new ProviderProxySetLifecycleRef();
+    const operationRegistry = new LocalOperationRegistry();
+    const world = {
+      storeServicesRef: { tryGet: () => ({ progressStore }) },
+      operationRegistry,
+      providerProxyClaims: claims,
+      providerProxyLifecycleRef: lifecycleRef,
+      providerHostManager: {},
+    } as never;
+    const recordReconciler = vi.fn<(reconciler: ProviderOperationReconciler) => void>();
+    const originalControlEstablished = ProviderOperationReconciler.prototype.onControlEstablished;
+    const captureReconciler = vi
+      .spyOn(ProviderOperationReconciler.prototype, 'onControlEstablished')
+      .mockImplementation(function (this: ProviderOperationReconciler, authority) {
+        recordReconciler(this);
+        return originalControlEstablished.call(this, authority);
+      });
+    const services = createExecutionServices({
+      world,
+      runtime,
+      bundleHash: namespace,
+      backendNamespace: namespace,
+      onProviderProxyLifecycleFatal: (error) => {
+        throw error;
+      },
+      createExecutionService: (() => {
+        throw new Error('execution service creation was not expected');
+      }) as never,
+    });
+    await services.reconcileProviderOperationsAtStartup(new AbortController().signal);
+    const record = providerOperationRecord('proxy-activation-pending');
+    if (record.phase !== 'proxy-activation-pending') throw new Error('expected proxy activation fixture');
+    const setIdentity = providerProxySetIdentityFromRecord(record);
+    const attachTimeout = Object.assign(new Error('attach timed out during shutdown'), {
+      code: 'control_call_failed',
+    });
+    const stopAndReap = vi.fn(async () => ({ unconfirmed: 'must drain live claim' }) as const);
+    const authority = {
+      proxyInstanceId: setIdentity.proxyInstanceId,
+      setIdentity,
+      faulted: new Promise<never>(() => undefined),
+      onFault: () => () => undefined,
+      onIncident: () => () => undefined,
+      registerSuccessionOperation: async () => undefined,
+      stopAndReap,
+      stopHeartbeats: () => undefined,
+      initiateControlClose: async () => undefined,
+      activatePreparedOperation: async () => ({
+        state: 'executing' as const,
+        activationFingerprint: 'c'.repeat(64),
+        startedAt: '2026-08-09T12:34:56.000Z',
+        hostRef: {
+          provider: 'codex',
+          fingerprint: setIdentity.hostFingerprint,
+          instanceId: 'shutdown-drive-host',
+          leaseMode: 'job-exclusive' as const,
+          ownerJobId: record.operation.jobId,
+        },
+        committedThroughProviderSeq: 0,
+      }),
+      attachOperation: async () => Promise.reject(attachTimeout),
+      buildOperationControl: () => ({ stop: async () => undefined }),
+    } as unknown as DurableProviderProxyOperationAuthority;
+    const lifecycle = lifecycleRef.get();
+    if (lifecycle === null) throw new Error('provider proxy lifecycle was not composed');
+    const admission = lifecycle.beginFreshAcquisition('shutdown-drive');
+    if (admission.kind !== 'accepted') throw new Error(`fresh set was not admitted: ${admission.kind}`);
+    lifecycle.acquisitionSucceeded(admission.slotId, authority);
+    const reconciler = recordReconciler.mock.lastCall?.[0];
+    if (reconciler === undefined) throw new Error('provider operation reconciler was not captured');
+    const sessionId = randomUUID();
+    seedTestSessionProjection(db, {
+      sessionId,
+      provider: 'codex',
+      projectRoot: process.cwd(),
+      backendNamespace: namespace,
+      activeJobId: record.operation.jobId,
+    });
+    progressStore.appendLaunchRequested(record.operation.jobId, {
+      jobId: record.operation.jobId,
+      owner: { kind: 'provider-session', id: sessionId },
+      sessionId,
+      provider: 'codex',
+      projectRoot: process.cwd(),
+      backendNamespace: namespace,
+      jobKind: 'provider',
+      pool: 'default',
+      enqueueSequence: 1,
+      providerAction: 'exec',
+      request: { prompt: 'test', cwd: process.cwd(), bypassPermissions: false, coralEnv: {} },
+      createdAt: '2026-08-09T12:34:55.000Z',
+    });
+
+    try {
+      await services.stopProviderOperationReconciler('quiesce');
+      insertProviderOperation(db, record);
+      await reconciler.reconcile(record, authority);
+
+      expect(readProviderOperation(db, record.operation)).toMatchObject({
+        phase: 'executing',
+        retryCount: 1,
+        lastError: expect.objectContaining({ message: attachTimeout.message }),
+      });
+      expect(claims.claimFor(record.operation)).not.toBeNull();
+      lifecycle.beginGracefulDrain(setIdentity);
+      expect(lifecycle.snapshot().states).toEqual(['draining']);
+      expect(stopAndReap).not.toHaveBeenCalled();
+    } finally {
+      await services.stopProviderOperationReconciler('drain');
+      captureReconciler.mockRestore();
+    }
   });
 
   it('preserves sibling operations when settlement times out on their shared proxy set', async () => {
     const harness = await createSharedSetHarness('settlement-timeout');
-    const {
-      claims,
-      db,
-      formattedTimeout,
-      lifecycle,
-      records,
-      services,
-      settlement,
-      setIdentity,
-      siblings,
-      stopAndReap,
-      timeout,
-    } = harness;
+    const { claims, db, formattedTimeout, records, services, settlement, setIdentity, siblings, stopAndReap, timeout } =
+      harness;
     const info = vi.spyOn(backendLog, 'info').mockImplementation(() => undefined);
 
     try {
@@ -431,21 +544,6 @@ describe('execution services provider-proxy proof composition', () => {
       expect(records.every((record) => claims.claimFor(record.operation) !== null)).toBe(true);
       expect(stopAndReap).not.toHaveBeenCalled();
       expect(storedSiblings.map((record) => record?.phase)).toEqual(['executing', 'executing']);
-      expect.soft(lifecycle.decisionFor(setIdentity)).toEqual({
-        action: 'preserve',
-        reason: 'retry_safe_operation_control_failure',
-        fault: 'operation-control-failed',
-        policy: {
-          method: 'operation.settle.v1',
-          phase: 'settlement-pending',
-          effect: 'mutation',
-          indeterminate: 'retry-safe',
-          preEffectProtocolCodes: new Set(),
-        },
-        error: formattedTimeout,
-        liveClaims: 3,
-        setIdentity,
-      });
       const decisionRecords = info.mock.calls.filter(([message]) => message.startsWith('Provider proxy set action='));
       expect
         .soft(decisionRecords)
@@ -456,7 +554,7 @@ describe('execution services provider-proxy proof composition', () => {
         ]);
       expect(decisionRecords[0]?.[0].split(/\r?\n/u)).toHaveLength(1);
     } finally {
-      services.stopProviderOperationReconciler();
+      await services.stopProviderOperationReconciler();
       info.mockRestore();
     }
   });
@@ -520,7 +618,7 @@ describe('execution services provider-proxy proof composition', () => {
       } finally {
         warning.mockRestore();
         disappearance.mockRestore();
-        harness.services.stopProviderOperationReconciler();
+        await harness.services.stopProviderOperationReconciler();
       }
     },
   );
@@ -693,6 +791,6 @@ describe('execution services provider-proxy proof composition', () => {
       states: ['acquiring', 'acquiring', 'acquiring', 'acquiring'],
       acceptedAdmissions: 4,
     });
-    services.stopProviderOperationReconciler();
+    await services.stopProviderOperationReconciler();
   });
 });

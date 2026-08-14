@@ -516,6 +516,7 @@ function establishActivationRoute(setIdentity: ProviderProxySetIdentity) {
     recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
       'containment-proof': () => new Promise<never>(() => undefined),
     }),
+    reportLifecycle: () => undefined,
   });
   lifecycle.initializeClaimSlots();
   lifecycle.completeStartupDiscovery();
@@ -1329,6 +1330,7 @@ describe('provider proxy cumulative root rotation', () => {
       recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
         'containment-proof': async () => null,
       }),
+      reportLifecycle: () => undefined,
       onSlotReleased: (routeKey) => manager.providerProxySlotReleased(routeKey),
     });
     lifecycle.initializeClaimSlots();

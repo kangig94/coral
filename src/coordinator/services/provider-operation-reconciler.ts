@@ -369,7 +369,7 @@ type LatchedContainmentDisappearance = {
 type OperationSerializer = {
   epoch: number;
   activeAbort: AbortController | null;
-  inFlight: Promise<void> | null;
+  inFlight: Readonly<{ join: Promise<void>; result: Promise<void> }> | null;
   disappearance: LatchedContainmentDisappearance | null;
 };
 
@@ -448,6 +448,16 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
     if (this.#timer !== null) {
       this.#deps.time.clearTimeout(this.#timer);
       this.#timer = null;
+    }
+  }
+
+  async waitForIdle(): Promise<void> {
+    for (;;) {
+      const active = [...this.#serializers.values()].flatMap((serializer) =>
+        serializer.inFlight === null ? [] : [serializer.inFlight.join],
+      );
+      if (active.length === 0) return;
+      await Promise.all(active);
     }
   }
 
@@ -704,7 +714,7 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
         break;
     }
 
-    const active = serializer.inFlight ?? Promise.resolve();
+    const active = serializer.inFlight?.join ?? Promise.resolve();
     const consume = async (): Promise<DisappearanceDeliveryAttemptOutcome> => {
       const outcome = await this.#driveContext.exit(() => this.#consumeContainmentDisappearance(parsed));
       return outcome.kind === 'operational-failure' ? outcome : { kind: 'accepted', acceptance: outcome };
@@ -746,7 +756,7 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
           break;
       }
     }
-    if (serializer.inFlight !== null) return serializer.inFlight;
+    if (serializer.inFlight !== null) return serializer.inFlight.result;
     serializer.epoch += 1;
     const abort = new AbortController();
     serializer.activeAbort = abort;
@@ -756,19 +766,30 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
       abort,
       signal: signal === undefined ? abort.signal : AbortSignal.any([abort.signal, signal]),
     };
+    let resolveResult!: () => void;
+    let rejectResult!: (error: unknown) => void;
+    const result = new Promise<void>((resolve, reject) => {
+      resolveResult = resolve;
+      rejectResult = reject;
+    });
+    let resultFailure: { error: unknown } | null = null;
     const running = this.#driveContext
       .run(context, () => this.#drive(record, preferredAuthority, context.signal))
       .catch((error: unknown) => {
         if (error instanceof ContainmentDriveFencedError) return;
-        throw error;
+        resultFailure = { error };
       })
       .finally(() => {
-        if (serializer.inFlight === running) serializer.inFlight = null;
+        if (serializer.inFlight?.join === running) serializer.inFlight = null;
         if (serializer.activeAbort === abort) serializer.activeAbort = null;
         if (record.phase !== 'settlement-pending' && this.#settlements.has(key)) this.wake();
+      })
+      .then(() => {
+        if (resultFailure === null) resolveResult();
+        else rejectResult(resultFailure.error);
       });
-    serializer.inFlight = running;
-    return running;
+    serializer.inFlight = { join: running, result };
+    return result;
   }
 
   #serializerFor(key: string): OperationSerializer {
@@ -1491,7 +1512,6 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
         record.phase === 'activation-resolution-pending' ||
         record.phase === 'executing'
       ) {
-        const reference = providerProxySetReference(notice.setIdentity);
         const directive =
           record.phase === 'activation-resolution-pending'
             ? record.activationIndeterminate
@@ -1504,7 +1524,7 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
               : {
                   kind: 'terminal-failed' as const,
                   code: 'provider_lost',
-                  reason: `The provider became unavailable, so this job stopped before completion. Retry the job. Reference: ${reference}.`,
+                  reason: 'The provider became unavailable, so this job stopped before completion. Retry the job.',
                 };
         const terminalized = await this.#terminalizeDisappearance(record, directive);
         if (terminalized.kind === 'operational-failure') return terminalized;
@@ -1561,9 +1581,22 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
       turn.start({
         sourceId: 'terminalization',
         producerId: 'disappearance-terminalization',
-        input: { record, directive },
+        input: {
+          record,
+          directive: this.#withProviderProxySetReference(directive, providerProxySetIdentityFromRecord(record)),
+        },
       });
     });
+  }
+
+  #withProviderProxySetReference(
+    directive: ProviderOperationTerminalDirective,
+    identity: ProviderProxySetIdentity,
+  ): ProviderOperationTerminalDirective {
+    if (directive.kind === 'terminal-aborted') return directive;
+    const reference = providerProxySetReference(identity);
+    if (directive.reason.includes(`Reference: ${reference}.`)) return directive;
+    return { ...directive, reason: `${directive.reason} Reference: ${reference}.` };
   }
 
   async #commitExecuting(

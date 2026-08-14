@@ -1147,6 +1147,7 @@ describe('createProviderProxySetInheritance', () => {
       recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
         'containment-proof': async () => null,
       }),
+      reportLifecycle: () => undefined,
     });
     lifecycle.initializeClaimSlots();
     lifecycle.installDiscoveredCapsules([{ path: '/capsules/claim-backed.handoff.json', capsule }]);
@@ -1208,6 +1209,7 @@ describe('createProviderProxySetInheritance', () => {
       recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
         'containment-proof': async () => null,
       }),
+      reportLifecycle: () => undefined,
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
@@ -1277,6 +1279,7 @@ describe('createProviderProxySetInheritance', () => {
           acceptance: { kind: 'accepted', operation: notice.operation, disposition: 'record-absent' },
         }),
       }),
+      reportLifecycle: () => undefined,
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
@@ -1338,6 +1341,7 @@ describe('createProviderProxySetInheritance', () => {
           acceptance: { kind: 'accepted', operation: notice.operation, disposition: 'record-absent' },
         }),
       }),
+      reportLifecycle: () => undefined,
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
