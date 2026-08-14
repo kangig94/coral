@@ -84,7 +84,7 @@ export function createExecutionServices({
   connectProviderOperationRecovery: (recoveryCoordinator: RecoveryCoordinator) => void;
   reconcileProviderOperationsAtStartup: (signal: AbortSignal) => Promise<StartupReconciliationReport>;
   startProviderOperationReconciler: () => void;
-  stopProviderOperationReconciler: (phase?: 'quiesce' | 'drain', signal?: AbortSignal) => void | Promise<void>;
+  stopProviderOperationReconciler: () => void;
 } {
   const services = new Map<string, ProjectRequestPort>();
   let providerOperationRecovery: RecoveryCoordinator | null = null;
@@ -293,11 +293,6 @@ export function createExecutionServices({
     providerProxyLifecycleInitialized = true;
   };
 
-  const quiesceProviderOperationReconciler = (): void => {
-    unsubscribeProviderProxyControlEstablished();
-    providerOperationReconciler.stop();
-  };
-
   function getExecutionService(ctx: InvocationContext): ProjectRequestPort {
     const key = ctx.projectRoot;
     const existing = services.get(key);
@@ -377,13 +372,11 @@ export function createExecutionServices({
       return providerOperationReconciler.reconcileAtStartup(signal);
     },
     startProviderOperationReconciler: () => providerOperationReconciler.start(),
-    stopProviderOperationReconciler: (phase = 'drain', signal = new AbortController().signal) => {
-      quiesceProviderOperationReconciler();
-      if (phase === 'quiesce') return;
-      return providerOperationReconciler.waitForIdle(signal).finally(() => {
-        unsubscribeProviderOperationMutations?.();
-        unsubscribeProviderOperationMutations = null;
-      });
+    stopProviderOperationReconciler: () => {
+      unsubscribeProviderProxyControlEstablished();
+      unsubscribeProviderOperationMutations?.();
+      unsubscribeProviderOperationMutations = null;
+      providerOperationReconciler.stop();
     },
   };
 }

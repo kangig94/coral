@@ -355,7 +355,6 @@ type ContainmentDisappearanceDeliveryState =
   | Readonly<{
       kind: 'delivering';
       promise: Promise<DisappearanceDeliveryAttemptOutcome>;
-      join: Promise<void>;
     }>
   | Readonly<{
       kind: 'consumed';
@@ -370,7 +369,7 @@ type LatchedContainmentDisappearance = {
 type OperationSerializer = {
   epoch: number;
   activeAbort: AbortController | null;
-  inFlight: Readonly<{ join: Promise<void>; result: Promise<void> }> | null;
+  inFlight: Promise<void> | null;
   disappearance: LatchedContainmentDisappearance | null;
 };
 
@@ -419,10 +418,7 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
   readonly #driveContext = new AsyncLocalStorage<AuthorityDriveContext>();
   #unsubscribeSettlement: (() => void) | null = null;
   #timer: TimerHandle | null = null;
-  #pollJoin: Promise<void> | null = null;
-  readonly #controlEstablishedJoins = new Set<Promise<void>>();
   #started = false;
-  #quiesced = false;
   #polling = false;
   #pollRequested = false;
   #fatal = false;
@@ -437,7 +433,7 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
   }
 
   start(): void {
-    if (this.#started || this.#quiesced || this.#fatal) return;
+    if (this.#started || this.#fatal) return;
     this.#started = true;
     const listener = (identity: ProviderOperationIdentity): void => this.settlementPending(identity);
     settlementListeners.add(listener);
@@ -446,7 +442,6 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
   }
 
   stop(): void {
-    this.#quiesced = true;
     this.#started = false;
     this.#unsubscribeSettlement?.();
     this.#unsubscribeSettlement = null;
@@ -454,37 +449,6 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
       this.#deps.time.clearTimeout(this.#timer);
       this.#timer = null;
     }
-  }
-
-  async waitForIdle(signal: AbortSignal): Promise<void> {
-    const fenceActiveDrives = (): void => {
-      for (const serializer of this.#serializers.values()) {
-        serializer.activeAbort?.abort(new ContainmentDriveFencedError());
-      }
-    };
-    if (signal.aborted) fenceActiveDrives();
-    else signal.addEventListener('abort', fenceActiveDrives, { once: true });
-    try {
-      for (;;) {
-        const active = this.#trackedWork();
-        if (active.length === 0) return;
-        await Promise.all(active);
-      }
-    } finally {
-      signal.removeEventListener('abort', fenceActiveDrives);
-    }
-  }
-
-  #trackedWork(): Promise<void>[] {
-    const active = [...this.#controlEstablishedJoins];
-    if (this.#pollJoin !== null) active.push(this.#pollJoin);
-    for (const serializer of this.#serializers.values()) {
-      if (serializer.inFlight !== null) active.push(serializer.inFlight.join);
-      if (serializer.disappearance?.delivery.kind === 'delivering') {
-        active.push(serializer.disappearance.delivery.join);
-      }
-    }
-    return active;
   }
 
   async reconcileAtStartup(signal: AbortSignal): Promise<StartupReconciliationReport> {
@@ -633,9 +597,6 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
   }
 
   begin(input: BeginProviderOperationPublication): Promise<AppServerProxyPlacementResult> {
-    if (this.#quiesced) {
-      return Promise.reject(new Error('Provider operation reconciler is quiesced.'));
-    }
     const key = operationKey(input.record.operation);
     if (this.#publications.has(key)) {
       return Promise.reject(new Error('Provider operation publication is already active.'));
@@ -694,35 +655,28 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
   }
 
   onControlEstablished(authority: DurableProviderProxyOperationAuthority): void {
-    if (this.#quiesced) return;
-    const task = this.#reconcileActiveForAuthority(authority).catch((error: unknown) => {
+    void this.#reconcileActiveForAuthority(authority).catch((error: unknown) => {
       this.#deps.onError?.(
         `Provider operation control-established reconciliation failed: ${providerOperationErrorReason(error)}`,
       );
     });
-    const join = task.finally(() => this.#controlEstablishedJoins.delete(join));
-    this.#controlEstablishedJoins.add(join);
   }
 
   settlementPending(identity: ProviderOperationIdentity): void {
-    if (this.#quiesced) return;
     this.#settlements.set(operationKey(identity), identity);
     this.wake();
   }
 
   wake(): void {
-    if (this.#quiesced || this.#fatal) return;
+    if (this.#fatal) return;
     if (this.#polling) {
       this.#pollRequested = true;
       return;
     }
-    this.#startPoll();
+    void this.#poll();
   }
 
   containmentDisappeared(notice: ContainmentDisappearanceNotice): Promise<DisappearanceDeliveryAttemptOutcome> {
-    if (this.#quiesced) {
-      return Promise.reject(new Error('Provider operation reconciler is quiesced.'));
-    }
     const parsed = containmentDisappearanceNoticeSchema.parse(notice);
     if (
       parsed.operation.buildSetId !== parsed.setIdentity.buildSetId ||
@@ -750,34 +704,26 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
         break;
     }
 
-    const active = serializer.inFlight?.join ?? Promise.resolve();
+    const active = serializer.inFlight ?? Promise.resolve();
     const consume = async (): Promise<DisappearanceDeliveryAttemptOutcome> => {
       const outcome = await this.#driveContext.exit(() => this.#consumeContainmentDisappearance(parsed));
       return outcome.kind === 'operational-failure' ? outcome : { kind: 'accepted', acceptance: outcome };
     };
     const promise = active.then(consume, consume);
-    let resolveJoin!: () => void;
-    const join = new Promise<void>((resolve) => {
-      resolveJoin = resolve;
-    });
-    disappearance.delivery = { kind: 'delivering', promise, join };
+    disappearance.delivery = { kind: 'delivering', promise };
     void promise.then(
       (outcome) => {
-        if (disappearance.delivery.kind === 'delivering' && disappearance.delivery.promise === promise) {
-          if (outcome.kind === 'operational-failure') {
-            disappearance.delivery = { kind: 'ready' };
-          } else {
-            disappearance.delivery = { kind: 'consumed', acceptance: outcome.acceptance };
-            this.wake();
-          }
+        if (disappearance.delivery.kind !== 'delivering' || disappearance.delivery.promise !== promise) return;
+        if (outcome.kind === 'operational-failure') {
+          disappearance.delivery = { kind: 'ready' };
+          return;
         }
-        resolveJoin();
+        disappearance.delivery = { kind: 'consumed', acceptance: outcome.acceptance };
+        this.wake();
       },
       () => {
-        if (disappearance.delivery.kind === 'delivering' && disappearance.delivery.promise === promise) {
-          disappearance.delivery = { kind: 'ready' };
-        }
-        resolveJoin();
+        if (disappearance.delivery.kind !== 'delivering' || disappearance.delivery.promise !== promise) return;
+        disappearance.delivery = { kind: 'ready' };
       },
     );
     return promise;
@@ -788,7 +734,6 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
     preferredAuthority?: DurableProviderProxyOperationAuthority,
     signal?: AbortSignal,
   ): Promise<void> {
-    if (this.#quiesced) return Promise.resolve();
     const key = operationKey(record.operation);
     const serializer = this.#serializerFor(key);
     if (serializer.disappearance !== null) {
@@ -801,7 +746,7 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
           break;
       }
     }
-    if (serializer.inFlight !== null) return serializer.inFlight.result;
+    if (serializer.inFlight !== null) return serializer.inFlight;
     serializer.epoch += 1;
     const abort = new AbortController();
     serializer.activeAbort = abort;
@@ -811,30 +756,19 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
       abort,
       signal: signal === undefined ? abort.signal : AbortSignal.any([abort.signal, signal]),
     };
-    let resolveResult!: () => void;
-    let rejectResult!: (error: unknown) => void;
-    const result = new Promise<void>((resolve, reject) => {
-      resolveResult = resolve;
-      rejectResult = reject;
-    });
-    let resultFailure: { error: unknown } | null = null;
     const running = this.#driveContext
       .run(context, () => this.#drive(record, preferredAuthority, context.signal))
       .catch((error: unknown) => {
         if (error instanceof ContainmentDriveFencedError) return;
-        resultFailure = { error };
+        throw error;
       })
       .finally(() => {
-        if (serializer.inFlight?.join === running) serializer.inFlight = null;
+        if (serializer.inFlight === running) serializer.inFlight = null;
         if (serializer.activeAbort === abort) serializer.activeAbort = null;
         if (record.phase !== 'settlement-pending' && this.#settlements.has(key)) this.wake();
-      })
-      .then(() => {
-        if (resultFailure === null) resolveResult();
-        else rejectResult(resultFailure.error);
       });
-    serializer.inFlight = { join: running, result };
-    return result;
+    serializer.inFlight = running;
+    return running;
   }
 
   #serializerFor(key: string): OperationSerializer {
@@ -2037,7 +1971,7 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
   }
 
   async #poll(preferredAuthority?: DurableProviderProxyOperationAuthority): Promise<void> {
-    if (this.#quiesced || this.#fatal) return;
+    if (this.#fatal) return;
     if (this.#polling) {
       this.#pollRequested = true;
       return;
@@ -2095,9 +2029,9 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
       this.#polling = false;
       const pollRequested = this.#pollRequested;
       this.#pollRequested = false;
-      if (!this.#quiesced && !this.#fatal) {
+      if (!this.#fatal) {
         if (pollRequested) {
-          this.#startPoll();
+          void this.#poll();
         } else if (this.#started) {
           this.#schedule(TIMER_MAX_MS);
         }
@@ -2194,21 +2128,13 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
     }
   }
 
-  #startPoll(preferredAuthority?: DurableProviderProxyOperationAuthority): void {
-    if (this.#quiesced || this.#fatal) return;
-    const join = this.#poll(preferredAuthority).finally(() => {
-      if (this.#pollJoin === join) this.#pollJoin = null;
-    });
-    this.#pollJoin = join;
-  }
-
   #schedule(delayMs: number): void {
-    if (!this.#started || this.#quiesced || this.#fatal) return;
+    if (!this.#started || this.#fatal) return;
     if (this.#timer !== null) this.#deps.time.clearTimeout(this.#timer);
     this.#timer = this.#deps.time.setTimeout(
       () => {
         this.#timer = null;
-        this.#startPoll();
+        void this.#poll();
       },
       Math.max(TIMER_MIN_MS, Math.min(delayMs, TIMER_MAX_MS)),
     );

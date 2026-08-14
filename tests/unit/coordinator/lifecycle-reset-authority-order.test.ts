@@ -286,9 +286,6 @@ function makeLifecycleDeps(): { deps: LifecycleDeps; servicesRef: ReturnType<typ
       getExecutionService: vi.fn() as never,
       getRecoveryService: vi.fn() as never,
       listExecutionServices: () => [],
-      stopProviderOperationReconciler: vi.fn(async (phase = 'drain') => {
-        mockState.events.push(`providerOperationReconciler:${phase}`);
-      }),
       getDiscussStoreForSource: vi.fn() as never,
       knownDiscussSources: () => new Set(),
       getDiscussContext: vi.fn() as never,
@@ -562,27 +559,6 @@ describe('lifecycle reset authority and finalizer order', () => {
       mockState.events.indexOf('storeDb.close'),
     );
     expect(servicesRef.tryGet()).toBeNull();
-  });
-
-  it('quiesces provider-operation scheduling before draining serializers after accepted requests', async () => {
-    const { deps } = makeLifecycleDeps();
-    const lifecycle = createLifecycle(deps, async () => []);
-
-    await lifecycle.start();
-    await lifecycle.shutdown('unit-hard-stop');
-
-    const stopProviderOperationReconciler = deps.stopProviderOperationReconciler;
-    if (stopProviderOperationReconciler === undefined) throw new Error('expected reconciler shutdown seam');
-    expect(vi.mocked(stopProviderOperationReconciler).mock.calls).toEqual([
-      ['quiesce'],
-      ['drain', expect.any(AbortSignal)],
-    ]);
-    expect(mockState.events.indexOf('providerOperationReconciler:quiesce')).toBeLessThan(
-      mockState.events.indexOf('providerOperationReconciler:drain'),
-    );
-    expect(mockState.events.indexOf('providerOperationReconciler:drain')).toBeLessThan(
-      mockState.events.indexOf('providerHostManager:shutdown'),
-    );
   });
 
   it('passes the composed provider proxy authority into the shutdown sequence and reaps its live sets', async () => {

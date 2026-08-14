@@ -50,7 +50,6 @@ type RunShutdownSequenceContext = {
     timeoutMs: number,
     time: Pick<Runtime['time'], 'clearInterval' | 'now' | 'setInterval'>,
   ) => Promise<void>;
-  stopProviderOperationReconciler: (signal: AbortSignal) => Promise<void>;
   server: Server;
   ipcServer?: IpcListener;
   streamResponses: Set<ServerResponse>;
@@ -113,18 +112,6 @@ async function withBudget<T>(
   } finally {
     timeoutAbort.abort();
   }
-}
-
-/** Run one standalone shutdown finalizer against a fixed time budget. */
-export function runBudgetedStep(
-  label: string,
-  task: (signal: AbortSignal) => Promise<void>,
-  timeoutMs: number,
-  time: Pick<TimePort, 'now' | 'sleep'>,
-  log: (message: string) => void,
-): Promise<void> {
-  const deadline = time.now() + timeoutMs;
-  return withBudget(label, task, () => Math.max(0, deadline - time.now()), time, log).then(() => undefined);
 }
 
 /**
@@ -333,7 +320,6 @@ export async function runShutdownSequence({
   closeServerFn,
   closeIpcServerFn,
   waitForInflightDrain,
-  stopProviderOperationReconciler,
   server,
   ipcServer,
   streamResponses,
@@ -394,7 +380,6 @@ export async function runShutdownSequence({
     Promise.resolve().then(() => closeServerFn(server)),
   );
   await runStep('inflight drain', () => waitForInflightDrain(idleTimer, remainingDrain(), runtime.time));
-  await runBudgetedStep('provider operation reconciler drain', stopProviderOperationReconciler);
   await runStep('server connection close', () => server.closeAllConnections());
   for (const stream of streamResponses) {
     await runStep('stream response close', () => stream.end());

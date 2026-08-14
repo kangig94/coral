@@ -195,17 +195,47 @@ function shutdownAwaitViolation(node: ts.AwaitExpression, shutdownPath: NamedFun
   return `await ${awaitedExpressionLabel(node)} bypasses shutdown containment`;
 }
 
+function containmentSequenceEntryPoint(
+  shutdownPath: NamedFunction,
+  containmentSequence: NamedFunction | undefined,
+): ts.AwaitExpression | null {
+  const containmentSequenceName = containmentSequence && functionName(containmentSequence);
+  if (containmentSequenceName === null || containmentSequenceName === undefined) return null;
+
+  const matches: ts.AwaitExpression[] = [];
+  function visit(node: ts.Node): void {
+    if (ts.isAwaitExpression(node)) {
+      const expression = unwrapExpression(node.expression);
+      if (ts.isCallExpression(expression) && expressionName(expression.expression) === containmentSequenceName) {
+        matches.push(node);
+        return;
+      }
+    }
+    ts.forEachChild(node, visit);
+  }
+
+  if (shutdownPath.body) visit(shutdownPath.body);
+  return matches.length === 1 ? matches[0] : null;
+}
+
 function formatViolation(functionNode: NamedFunction, node: ts.Node, detail: string): string {
   const sourceFile = functionNode.getSourceFile();
   const { line } = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
   return `${sourceFile.fileName}:${line + 1} ${functionName(functionNode)}: ${detail}`;
 }
 
-function shutdownAwaitViolations(sourceFile: ts.SourceFile, functionName = 'runShutdownSequence'): string[] {
-  const shutdownSequence = findFunction(sourceFile, functionName);
+function shutdownAwaitViolations(
+  sourceFile: ts.SourceFile,
+  pathFunctionName = 'runShutdownSequence',
+  containmentSequence?: NamedFunction,
+): string[] {
+  const shutdownSequence = findFunction(sourceFile, pathFunctionName);
+  const sequenceEntryPoint = containmentSequenceEntryPoint(shutdownSequence, containmentSequence);
   const violations: string[] = [];
 
   function visit(node: ts.Node): void {
+    // The delegating path starts containment here. Its callbacks are checked where the sequence invokes them.
+    if (node === sequenceEntryPoint) return;
     if (ts.isAwaitExpression(node)) {
       const violation = shutdownAwaitViolation(node, shutdownSequence);
       if (violation !== null) violations.push(formatViolation(shutdownSequence, node, violation));
@@ -289,9 +319,11 @@ function childTerminationViolations(sourceFile: ts.SourceFile): string[] {
 
 describe('shutdown teardown containment invariant', () => {
   it('contains every awaited shutdown finalizer or names an exact non-finalizer await', () => {
+    const shutdownSource = readSource(SHUTDOWN_PATH);
+    const shutdownSequence = findFunction(shutdownSource, 'runShutdownSequence');
     expect([
-      ...shutdownAwaitViolations(readSource(SHUTDOWN_PATH)),
-      ...shutdownAwaitViolations(readSource(LIFECYCLE_PATH), 'shutdown'),
+      ...shutdownAwaitViolations(shutdownSource),
+      ...shutdownAwaitViolations(readSource(LIFECYCLE_PATH), 'shutdown', shutdownSequence),
     ]).toEqual([]);
   });
 
@@ -325,6 +357,23 @@ describe('shutdown teardown containment invariant', () => {
     );
     expect(shutdownAwaitViolations(mutation, 'shutdown')).toEqual([
       `${LIFECYCLE_PATH}:3 shutdown: await stopProviderOperationReconciler() bypasses shutdown containment`,
+    ]);
+  });
+
+  it('does not silently exempt multiple entries into a containment sequence', () => {
+    const containmentSource = parseSource(SHUTDOWN_PATH, 'async function runShutdownSequence() {}');
+    const mutation = parseSource(
+      LIFECYCLE_PATH,
+      `async function shutdown() {
+        await runShutdownSequence();
+        await runShutdownSequence();
+      }`,
+    );
+    expect(
+      shutdownAwaitViolations(mutation, 'shutdown', findFunction(containmentSource, 'runShutdownSequence')),
+    ).toEqual([
+      `${LIFECYCLE_PATH}:2 shutdown: await runShutdownSequence() bypasses shutdown containment`,
+      `${LIFECYCLE_PATH}:3 shutdown: await runShutdownSequence() bypasses shutdown containment`,
     ]);
   });
 
