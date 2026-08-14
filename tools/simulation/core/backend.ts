@@ -831,6 +831,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
           log: identity.log,
         }),
         signal,
+        ids: runtime.ids,
         time: runtime.time,
       });
       signal.throwIfAborted();

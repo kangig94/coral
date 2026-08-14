@@ -755,6 +755,7 @@ describe('recovery coordinator shutdown', () => {
           finalizeWorkflow,
           releaseFailedWorkflowDescendants: () => [],
           log: recoveryLog,
+          ids: runtime.ids,
           time: runtime.time,
         });
       },

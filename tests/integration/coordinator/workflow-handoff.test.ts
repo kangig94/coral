@@ -220,6 +220,7 @@ describe('workflow handoff (cross-domain integration)', () => {
           createInvocationContext,
           finalizeWorkflow,
           releaseFailedWorkflowDescendants: () => [],
+          ids: harness.runtime.ids,
           time: harness.runtime.time,
         });
         resumedIds.push(...resumed);

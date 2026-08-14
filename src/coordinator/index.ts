@@ -597,6 +597,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
         }),
         signal,
         log: identity.log,
+        ids: runtime.ids,
         time: runtime.time,
         drainDeadlineMs: resolveDrainDeadlineMs(runtime.env),
         staleAbortTimeoutMs: resolveStaleAbortTimeoutMs(runtime.env),
