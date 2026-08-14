@@ -309,6 +309,51 @@ describe('cli format', () => {
       expect(detail).toContain(`Replaces workflow job: ${replacedJobId}`);
     });
 
+    it('renders workflow child ids and replacement lineage in workflow detail', () => {
+      const workflowJobId = '22222222-2222-4222-8222-222222222222';
+      const firstChildJobId = '11111111-1111-4111-8111-111111111111';
+      const replacementJobId = '33333333-3333-4333-8333-333333333333';
+      const workflow = {
+        ...jobDetailResponse,
+        status: {
+          ...jobDetailResponse.status,
+          jobId: workflowJobId,
+          owner: { kind: 'workflow' as const, id: workflowJobId },
+          sessionId: null,
+          provider: null,
+          jobKind: 'workflow' as const,
+        },
+      } satisfies JobDetailResponse;
+      const firstChild = {
+        jobId: firstChildJobId,
+        status: {
+          ...jobDetailResponse.status,
+          jobId: firstChildJobId,
+          owner: { kind: 'workflow' as const, id: workflowJobId },
+          parentWorkflowJobId: workflowJobId,
+          workflowSlotId: `${workflowJobId}:0:0`,
+          workflowSlotGeneration: 0,
+        },
+      };
+      const replacement = {
+        jobId: replacementJobId,
+        status: {
+          ...firstChild.status,
+          jobId: replacementJobId,
+          workflowSlotGeneration: 1,
+          replacesWorkflowJobId: firstChildJobId,
+        },
+      };
+
+      const detail = formatJobDetail(workflow, undefined, [replacement, firstChild]);
+
+      expect(detail).toContain('Workflow children:');
+      expect(detail).toContain('SLOT  GEN  CHILD JOB ID');
+      expect(detail).toMatch(new RegExp(`0:0\\s+0\\s+${firstChildJobId}`));
+      expect(detail).toMatch(new RegExp(`0:0\\s+1\\s+${replacementJobId}\\s+${firstChildJobId}`));
+      expect(detail.indexOf(firstChildJobId)).toBeLessThan(detail.indexOf(replacementJobId));
+    });
+
     /**
      * A workflow child's job id is a uuid that says nothing about which atom ran, so the slot has to be
      * visible — but most jobs occupy no slot, and a column of dashes on every ordinary listing is a cost paid

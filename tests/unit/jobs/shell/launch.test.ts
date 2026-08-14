@@ -29,6 +29,8 @@ import { appendJobTerminalRecorded } from '#src/jobs/terminal/recording.js';
 import { jobsDir } from '#src/jobs/paths.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { parseExpression as _parseExpression } from '#src/workflow/parser.js';
+import { buildWorkflowPlan } from '#src/workflow/plan.js';
+import { workflowPlanDeclaredEvent } from '#src/workflow/events.js';
 import {
   AgentNamespaceNotFoundError,
   AgentNotFoundError,
@@ -39,7 +41,10 @@ import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
 import { getMaxWorkers } from '#src/coordinator/live/worker-limits.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
-import { JobStore } from '#src/jobs/store.js';
+import { hydrateJobRecoveryProjection, JobStore } from '#src/jobs/store.js';
+import { PROJECTION_JOB_COLUMNS, type ProjectionJobStoredRow } from '#src/jobs/projection-row.js';
+import { EVENT_COLUMNS } from '#src/recovery/row-revision-fields.js';
+import type { EventsRow } from '#src/store/schema.js';
 import type { ProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { SessionManager } from '#src/sessions/shell.js';
@@ -67,6 +72,7 @@ import {
   TEST_CODEX_BINDING,
   TEST_CODEX_SCOPE,
   TEST_CODEX_SCOPE_INPUT,
+  TEST_PROVIDER_SCOPE,
   TEST_SYSTEM_PROVIDER_SCOPE,
   withTestProfileLocation,
 } from '#tests/helpers/provider-credentials.js';
@@ -137,6 +143,30 @@ function createProgressStore(namespace = 'test-ns'): JobStore {
     eventBus,
     providers: permissiveProviderLookupPort,
   });
+}
+
+function loadPersistedRecoveryLaunch(progressStore: JobStore, jobId: string): JobLaunch {
+  const db = progressStore.getDb();
+  const projection = db
+    .prepare<[string], ProjectionJobStoredRow>(
+      `SELECT ${PROJECTION_JOB_COLUMNS}
+         FROM projection_jobs
+        WHERE job_id = ?`,
+    )
+    .get(jobId);
+  if (projection === undefined) throw new Error(`Expected a persisted projection for ${jobId}.`);
+  const events = db
+    .prepare<[string], EventsRow>(
+      `SELECT ${EVENT_COLUMNS}
+         FROM events
+        WHERE stream_kind = 'job'
+          AND stream_id = ?
+        ORDER BY seq ASC`,
+    )
+    .all(jobId);
+  const launch = hydrateJobRecoveryProjection({ projection, events }, progressStore).launch;
+  if (launch === null) throw new Error(`Expected the persisted launch for ${jobId} to rehydrate.`);
+  return launch;
 }
 
 function _jobResultPath(jobId: string): string {
@@ -1441,6 +1471,52 @@ describe('ExecutionService launch', () => {
     );
   });
 
+  it('writes durable workflow identity into an ordinary local completion artifact', async () => {
+    const { provider } = makeProvider();
+    mockState.getNewProvider.mockReturnValue(provider);
+    mockState.resolveAgent.mockReturnValue(
+      createResolvedAgent({ namespace: 'coral', name: 'architect' }, 'Injected coral architect content'),
+    );
+    const service = createService(ctx);
+    const { progressStore } = getInternals(service);
+    const workflowJobId = randomUUID();
+    const plan = buildWorkflowPlan(workflowJobId, _parseExpression('architect'), { defaultProvider: 'codex' });
+    createTestJobJournalDeps(progressStore, runtime).coordinatorCommit((commit) => {
+      commit.append(workflowPlanDeclaredEvent(workflowJobId, plan, TEST_PROVIDER_SCOPE));
+      return undefined;
+    });
+    const [slot] = plan.slots;
+    if (slot === undefined) throw new Error('Expected a workflow slot.');
+    const workflowSlotId = slot.slotId;
+
+    const decision = await service.coralDispatch(
+      'codex',
+      'architect',
+      {
+        prompt: 'hello',
+        owner: { kind: 'workflow', id: workflowJobId },
+        parentWorkflowJobId: workflowJobId,
+        workflowSlotId,
+        workflowSlotGeneration: 0,
+      },
+      ctx,
+    );
+
+    expect(decision.status).toBe('running');
+    if (decision.status !== 'running') throw new Error('expected running launch');
+    trackJob(decision.jobId);
+    await vi.waitFor(() => expect(progressStore.readTerminalProjection(decision.jobId)).not.toBeNull());
+    await vi.waitFor(() => expect(runtime.storage.existsSync(_jobResultPath(decision.jobId))).toBe(true));
+
+    expect(decision.jobId).not.toBe(workflowSlotId);
+    expect(runtime.storage.readFileSync(_jobResultPath(decision.jobId), 'utf-8')).toBe(
+      `> Parent workflow: ${workflowJobId}\n` +
+        `> Workflow slot: ${workflowSlotId}\n` +
+        '> Workflow generation: 0\n\n' +
+        'ok\n',
+    );
+  });
+
   describe("executeJob's 'proxied' branch", () => {
     it('recovers a pre-upgrade queued workflow child locally when a live proxy route is configured', async () => {
       const { provider, execute } = makeAppServerProvider();
@@ -1489,7 +1565,12 @@ describe('ExecutionService launch', () => {
       };
       progressStore.appendLaunchRequested(legacySlotJobId, launchRecord);
       trackJob(legacySlotJobId);
-      const captured = await service.captureProviderRecoveryAuthority(launchRecord);
+      const recoveredLaunch = loadPersistedRecoveryLaunch(progressStore, legacySlotJobId);
+      expect(recoveredLaunch).toMatchObject({
+        parentWorkflowJobId: workflowId,
+        workflowSlotId: legacySlotJobId,
+      });
+      const captured = await service.captureProviderRecoveryAuthority(recoveredLaunch);
       if (!captured.ok) throw new Error(`Expected recovery authority: ${captured.failure.reason}`);
       const blockerJobId = randomUUID();
       launchCoordinator.restoreActiveLaunch(
@@ -1507,6 +1588,68 @@ describe('ExecutionService launch', () => {
       expect(activate).not.toHaveBeenCalled();
       expect(progressStore.readTerminalProjection(legacySlotJobId)?.outcome).toEqual({ kind: 'completed' });
       expect(execute).toHaveBeenCalledOnce();
+    });
+
+    it('proxies a slot-shaped queued job without a durable workflow relation', async () => {
+      const { provider, execute } = makeAppServerProvider();
+      mockState.getNewProvider.mockReturnValue(provider);
+      const activate = vi.fn(async () => ({ kind: 'remote-executing' as const }));
+      const service = createService(ctx, { appServerProxyRoute: { activate } });
+      const { progressStore, sessionManager } = getInternals(service);
+      const workflowId = randomUUID();
+      const slotShapedJobId = `${workflowId}:0:0`;
+      const session = sessionManager.allocate({
+        binding: TEST_CODEX_BINDING,
+        name: 'slot-shaped-unrelated-job',
+        model: 'test-model',
+        cwd: ctx.projectRoot,
+        projectRoot: ctx.projectRoot,
+        backendNamespace: TEST_BACKEND_NAMESPACE,
+        retention: 'discard_provider_artifacts_on_terminal',
+      });
+      expect(sessionManager.claimForJobSync(session.sessionId, slotShapedJobId)).toBe(true);
+      const launchRecord: JobLaunch = {
+        jobId: slotShapedJobId,
+        owner: { kind: 'provider-session', id: session.sessionId },
+        sessionId: session.sessionId,
+        provider: 'codex',
+        projectRoot: ctx.projectRoot,
+        backendNamespace: TEST_BACKEND_NAMESPACE,
+        jobKind: 'provider',
+        pool: 'default',
+        enqueueSequence: 1,
+        providerAction: 'exec',
+        request: {
+          prompt: 'recover a slot-shaped job without workflow refs',
+          cwd: ctx.projectRoot,
+          bypassPermissions: false,
+          coralEnv: {},
+        },
+        createdAt: new Date(runtime.time.now()).toISOString(),
+      };
+      progressStore.appendLaunchRequested(slotShapedJobId, launchRecord);
+      trackJob(slotShapedJobId);
+      const recoveredLaunch = loadPersistedRecoveryLaunch(progressStore, slotShapedJobId);
+      expect(recoveredLaunch).not.toMatchObject({
+        parentWorkflowJobId: workflowId,
+        workflowSlotId: slotShapedJobId,
+      });
+      const captured = await service.captureProviderRecoveryAuthority(recoveredLaunch);
+      if (!captured.ok) throw new Error(`Expected recovery authority: ${captured.failure.reason}`);
+      const blockerJobId = randomUUID();
+      launchCoordinator.restoreActiveLaunch(
+        blockerJobId,
+        'codex',
+        { kind: 'provider-session', id: `session-${blockerJobId}` },
+        'default',
+      );
+
+      await expect(service.recoverQueuedJob(captured.authority)).resolves.toBe(slotShapedJobId);
+      launchCoordinator.releaseLaunch(blockerJobId, 'default');
+      await vi.waitFor(() => expect(activate).toHaveBeenCalled());
+
+      expect(activate).toHaveBeenCalledWith(expect.objectContaining({ jobId: slotShapedJobId }), expect.anything());
+      expect(execute).not.toHaveBeenCalled();
     });
 
     it('takes the proxied branch exclusively: consumeJobStream and completeConsumedJob are never reached for an operation the proxy already owns', async () => {

@@ -118,7 +118,7 @@ KB request failures (`kb_initializing`, `kb_offline`, `kb_disabled`) come from t
 
 Five invariants enforce the contract: `runtime-component-contract-singleton`, `kb-daemon-error-codes`, `lifecycle-phase-monotonic`, `abort-signal-threading`, `no-kb-status-accessors`.
 
-Workflow plans persist only semantic slots: slot id, dependencies, provider, instruction, and optional agent. Step indexes, display labels, and atom keys are derived from that semantic plan. Child job ids are separate runtime identities: initial execution mints them through the runtime `ids` port, while recovery maps each `workflowSlotId` to the `job_id` in its durable child row and mints only for a slot without a row.
+Workflow plans persist only semantic slots: slot id, dependencies, provider, instruction, and optional agent. Step indexes, display labels, and atom keys are derived from that semantic plan. Child job ids are separate runtime identities: initial execution mints them through the runtime `ids` port. Recovery reconstructs the current mapping by reusing the durable `job_id` for a `workflowSlotId` with a current child row, mints an id for a slot without a row, and mints a new id for the next replacement generation when a pending continuation lease requires one.
 
 ## Infrastructure
 

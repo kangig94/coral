@@ -146,7 +146,10 @@ function jobLabelsFor(projectRoot: string, jobIds: readonly string[]): Map<strin
 
     hasWorkflowLabel = true;
     const slotLabel = `slot ${workflowSlot}`;
-    labels.set(jobId, { stream: slotLabel, terminal: `${jobId} (${slotLabel})` });
+    labels.set(jobId, {
+      stream: jobIds.length > 1 ? `j${index} · ${slotLabel}` : slotLabel,
+      terminal: `${jobId} (${slotLabel})`,
+    });
   });
 
   return jobIds.length > 1 || hasWorkflowLabel ? labels : null;
