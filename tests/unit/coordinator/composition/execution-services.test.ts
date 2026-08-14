@@ -36,6 +36,14 @@ import { providerOperationRecord } from '#tests/unit/store/provider-operation-fi
 
 type SharedSetControl = 'settlement-timeout' | 'control-channel-fault' | 'heartbeat-failed';
 
+function deferredValue<T>(): Readonly<{ promise: Promise<T>; resolve(value: T): void }> {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((accept) => {
+    resolve = accept;
+  });
+  return { promise, resolve };
+}
+
 function setReference(identity: ProviderProxySetIdentity): string {
   return `proxyInstanceId=${identity.proxyInstanceId},buildSetId=${identity.buildSetId}`;
 }
@@ -436,6 +444,20 @@ describe('execution services provider-proxy proof composition', () => {
     const attachTimeout = Object.assign(new Error('attach timed out during shutdown'), {
       code: 'control_call_failed',
     });
+    const activation = deferredValue<{
+      state: 'executing';
+      activationFingerprint: string;
+      startedAt: string;
+      hostRef: {
+        provider: string;
+        fingerprint: string;
+        instanceId: string;
+        leaseMode: 'job-exclusive';
+        ownerJobId: string;
+      };
+      committedThroughProviderSeq: number;
+    }>();
+    const activatePreparedOperation = vi.fn(async () => activation.promise);
     const stopAndReap = vi.fn(async () => ({ unconfirmed: 'must drain live claim' }) as const);
     const authority = {
       proxyInstanceId: setIdentity.proxyInstanceId,
@@ -447,19 +469,7 @@ describe('execution services provider-proxy proof composition', () => {
       stopAndReap,
       stopHeartbeats: () => undefined,
       initiateControlClose: async () => undefined,
-      activatePreparedOperation: async () => ({
-        state: 'executing' as const,
-        activationFingerprint: 'c'.repeat(64),
-        startedAt: '2026-08-09T12:34:56.000Z',
-        hostRef: {
-          provider: 'codex',
-          fingerprint: setIdentity.hostFingerprint,
-          instanceId: 'shutdown-drive-host',
-          leaseMode: 'job-exclusive' as const,
-          ownerJobId: record.operation.jobId,
-        },
-        committedThroughProviderSeq: 0,
-      }),
+      activatePreparedOperation,
       attachOperation: async () => Promise.reject(attachTimeout),
       buildOperationControl: () => ({ stop: async () => undefined }),
     } as unknown as DurableProviderProxyOperationAuthority;
@@ -494,16 +504,42 @@ describe('execution services provider-proxy proof composition', () => {
     });
 
     try {
-      await services.stopProviderOperationReconciler('quiesce');
       insertProviderOperation(db, record);
-      await reconciler.reconcile(record, authority);
+      const drive = reconciler.reconcile(record, authority);
+      await vi.waitFor(() => expect(activatePreparedOperation).toHaveBeenCalledOnce());
+      let drained = false;
+      const drain = Promise.resolve(services.stopProviderOperationReconciler('drain')).then(() => {
+        drained = true;
+        return {
+          record: readProviderOperation(db, record.operation),
+          claim: claims.claimFor(record.operation),
+        };
+      });
+      await flushMicrotasks();
+      expect(drained).toBe(false);
 
-      expect(readProviderOperation(db, record.operation)).toMatchObject({
+      activation.resolve({
+        state: 'executing',
+        activationFingerprint: 'c'.repeat(64),
+        startedAt: '2026-08-09T12:34:56.000Z',
+        hostRef: {
+          provider: 'codex',
+          fingerprint: setIdentity.hostFingerprint,
+          instanceId: 'shutdown-drive-host',
+          leaseMode: 'job-exclusive',
+          ownerJobId: record.operation.jobId,
+        },
+        committedThroughProviderSeq: 0,
+      });
+      await drive;
+      const observedAtDrain = await drain;
+
+      expect(observedAtDrain.record).toMatchObject({
         phase: 'executing',
         retryCount: 1,
         lastError: expect.objectContaining({ message: attachTimeout.message }),
       });
-      expect(claims.claimFor(record.operation)).not.toBeNull();
+      expect(observedAtDrain.claim).not.toBeNull();
       lifecycle.beginGracefulDrain(setIdentity);
       expect(lifecycle.snapshot().states).toEqual(['draining']);
       expect(stopAndReap).not.toHaveBeenCalled();

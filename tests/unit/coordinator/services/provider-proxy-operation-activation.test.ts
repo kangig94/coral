@@ -514,6 +514,8 @@ describe('provider proxy operation mutations', () => {
         await reconciler.reconcile(record, authority);
         const retryOwned = readProviderOperation(progressStore.getDb(), record.operation);
 
+        const targetEffectCount = method === 'attach' ? endpoint.attachmentEffectCount() : endpoint.stopEffectCount();
+        expect(targetEffectCount).toBe(ordering === 'before-effect' ? 0 : 1);
         expect(retryOwned).toEqual(
           expect.objectContaining({
             phase: 'executing',

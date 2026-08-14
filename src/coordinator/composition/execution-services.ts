@@ -84,7 +84,7 @@ export function createExecutionServices({
   connectProviderOperationRecovery: (recoveryCoordinator: RecoveryCoordinator) => void;
   reconcileProviderOperationsAtStartup: (signal: AbortSignal) => Promise<StartupReconciliationReport>;
   startProviderOperationReconciler: () => void;
-  stopProviderOperationReconciler: (phase?: 'quiesce' | 'drain') => void | Promise<void>;
+  stopProviderOperationReconciler: (phase?: 'quiesce' | 'drain', signal?: AbortSignal) => void | Promise<void>;
 } {
   const services = new Map<string, ProjectRequestPort>();
   let providerOperationRecovery: RecoveryCoordinator | null = null;
@@ -377,10 +377,10 @@ export function createExecutionServices({
       return providerOperationReconciler.reconcileAtStartup(signal);
     },
     startProviderOperationReconciler: () => providerOperationReconciler.start(),
-    stopProviderOperationReconciler: (phase = 'drain') => {
+    stopProviderOperationReconciler: (phase = 'drain', signal = new AbortController().signal) => {
       quiesceProviderOperationReconciler();
       if (phase === 'quiesce') return;
-      return providerOperationReconciler.waitForIdle().finally(() => {
+      return providerOperationReconciler.waitForIdle(signal).finally(() => {
         unsubscribeProviderOperationMutations?.();
         unsubscribeProviderOperationMutations = null;
       });

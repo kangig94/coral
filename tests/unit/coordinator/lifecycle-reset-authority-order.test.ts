@@ -573,7 +573,10 @@ describe('lifecycle reset authority and finalizer order', () => {
 
     const stopProviderOperationReconciler = deps.stopProviderOperationReconciler;
     if (stopProviderOperationReconciler === undefined) throw new Error('expected reconciler shutdown seam');
-    expect(vi.mocked(stopProviderOperationReconciler).mock.calls).toEqual([['quiesce'], ['drain']]);
+    expect(vi.mocked(stopProviderOperationReconciler).mock.calls).toEqual([
+      ['quiesce'],
+      ['drain', expect.any(AbortSignal)],
+    ]);
     expect(mockState.events.indexOf('providerOperationReconciler:quiesce')).toBeLessThan(
       mockState.events.indexOf('providerOperationReconciler:drain'),
     );

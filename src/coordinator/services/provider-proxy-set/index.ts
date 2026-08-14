@@ -50,6 +50,7 @@ type PreserveReportState = {
   decision: ProviderProxySetPreserveDecision;
   lastReportedAtMs: number;
   suppressed: number;
+  recoveryTimer: TimerHandle | null;
 };
 
 type EstablishedSlot = {
@@ -212,11 +213,35 @@ function singleLineErrorSummary(error: unknown): string {
   return JSON.stringify(errorMessage(error)).slice(1, -1);
 }
 
+function errorIdentityField(value: unknown): string | number | null {
+  return typeof value === 'string' || typeof value === 'number' ? value : null;
+}
+
+function preserveErrorIdentity(error: unknown): string {
+  if (typeof error !== 'object' || error === null) return typeof error;
+  const details = error as Record<string, unknown>;
+  const remoteFailure =
+    typeof details.remoteFailure === 'object' && details.remoteFailure !== null
+      ? (details.remoteFailure as Record<string, unknown>)
+      : {};
+  return JSON.stringify([
+    error instanceof Error ? error.name : 'object',
+    errorIdentityField(details.kind),
+    errorIdentityField(details.code),
+    errorIdentityField(details.origin),
+    errorIdentityField(remoteFailure.kind),
+    errorIdentityField(remoteFailure.jsonRpcCode),
+    errorIdentityField(remoteFailure.protocolCode),
+    errorIdentityField(remoteFailure.admissionReason),
+  ]);
+}
+
 function retryDelayMs(completedAttempts: number): number {
   return Math.min(1_000 * 2 ** Math.min(Math.max(completedAttempts - 1, 0), 5), 30_000);
 }
 
 const PRESERVE_REPORT_INTERVAL_MS = 60_000;
+const MAX_PRESERVE_REPORTS_PER_SET = 32;
 
 function createInitialDispositionLatch(): InitialDispositionLatch {
   let accept!: (value: ContainmentAbsenceInitialDisposition) => void;
@@ -421,15 +446,19 @@ export class ProviderProxySetLifecycle {
     ) {
       return;
     }
-    this.#recordDecision(slot, {
-      action: 'preserve',
-      reason: 'retry_safe_operation_control_failure',
-      fault: incident.kind,
-      policy: incident.policy,
-      error: singleLineErrorSummary(incident.error),
-      liveClaims: this.#deps.claims.claimsFor(slot.identity).length,
-      setIdentity: slot.identity,
-    });
+    this.#recordDecision(
+      slot,
+      {
+        action: 'preserve',
+        reason: 'retry_safe_operation_control_failure',
+        fault: incident.kind,
+        policy: incident.policy,
+        error: singleLineErrorSummary(incident.error),
+        liveClaims: this.#deps.claims.claimsFor(slot.identity).length,
+        setIdentity: slot.identity,
+      },
+      preserveErrorIdentity(incident.error),
+    );
   }
 
   #faultAuthority(identity: ProviderProxySetIdentity, fault: ProviderProxyAuthorityFault): void {
@@ -890,36 +919,74 @@ export class ProviderProxySetLifecycle {
     void this.#runContainmentAttempt(slot, decision);
   }
 
-  #recordDecision(slot: EstablishedSlot, decision: ProviderProxySetDecision): void {
+  #recordDecision(slot: EstablishedSlot, decision: ProviderProxySetDecision, errorIdentity?: string): void {
     if (decision.reason === 'retry_safe_operation_control_failure') {
-      this.#recordPreserveDecision(slot, decision);
+      this.#recordPreserveDecision(slot, decision, errorIdentity ?? preserveErrorIdentity(decision.error));
       return;
     }
     this.#flushPreserveReports(slot);
     this.#reportDecision(decision);
   }
 
-  #recordPreserveDecision(slot: EstablishedSlot, decision: ProviderProxySetPreserveDecision): void {
+  #recordPreserveDecision(
+    slot: EstablishedSlot,
+    decision: ProviderProxySetPreserveDecision,
+    errorIdentity: string,
+  ): void {
     const now = this.#deps.time.now();
-    const key = JSON.stringify([decision.policy.method, decision.error]);
+    const key = JSON.stringify([decision.policy.method, errorIdentity]);
     const report = slot.preserveReports.get(key);
     if (report === undefined) {
-      slot.preserveReports.set(key, { decision, lastReportedAtMs: now, suppressed: 0 });
+      this.#makeRoomForPreserveReport(slot);
+      const newReport: PreserveReportState = {
+        decision,
+        lastReportedAtMs: now,
+        suppressed: 0,
+        recoveryTimer: null,
+      };
+      slot.preserveReports.set(key, newReport);
       this.#reportDecision(decision);
+      this.#schedulePreserveRecovery(slot, key, newReport);
       return;
     }
     report.decision = decision;
+    slot.preserveReports.delete(key);
+    slot.preserveReports.set(key, report);
     if (now - report.lastReportedAtMs < PRESERVE_REPORT_INTERVAL_MS) {
       report.suppressed += 1;
+      this.#schedulePreserveRecovery(slot, key, report);
       return;
     }
     this.#reportDecision(decision, `summary=periodic suppressed=${report.suppressed}`);
     report.lastReportedAtMs = now;
     report.suppressed = 0;
+    this.#schedulePreserveRecovery(slot, key, report);
+  }
+
+  #makeRoomForPreserveReport(slot: EstablishedSlot): void {
+    if (slot.preserveReports.size < MAX_PRESERVE_REPORTS_PER_SET) return;
+    const oldest = slot.preserveReports.entries().next().value;
+    if (oldest === undefined) return;
+    const [key, report] = oldest;
+    if (report.recoveryTimer !== null) this.#deps.time.clearTimeout(report.recoveryTimer);
+    slot.preserveReports.delete(key);
+    this.#reportDecision(report.decision, `summary=evicted suppressed=${report.suppressed}`);
+  }
+
+  #schedulePreserveRecovery(slot: EstablishedSlot, key: string, report: PreserveReportState): void {
+    if (report.recoveryTimer !== null) this.#deps.time.clearTimeout(report.recoveryTimer);
+    report.recoveryTimer = this.#deps.time.setTimeout(() => {
+      report.recoveryTimer = null;
+      if (slot.preserveReports.get(key) !== report) return;
+      slot.preserveReports.delete(key);
+      this.#reportDecision(report.decision, `summary=recovered suppressed=${report.suppressed}`);
+    }, PRESERVE_REPORT_INTERVAL_MS);
+    report.recoveryTimer.unref?.();
   }
 
   #flushPreserveReports(slot: EstablishedSlot): void {
     for (const report of slot.preserveReports.values()) {
+      if (report.recoveryTimer !== null) this.#deps.time.clearTimeout(report.recoveryTimer);
       if (report.suppressed > 0) {
         this.#reportDecision(report.decision, `summary=closed suppressed=${report.suppressed}`);
       }

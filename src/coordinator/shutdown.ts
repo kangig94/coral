@@ -50,7 +50,7 @@ type RunShutdownSequenceContext = {
     timeoutMs: number,
     time: Pick<Runtime['time'], 'clearInterval' | 'now' | 'setInterval'>,
   ) => Promise<void>;
-  stopProviderOperationReconciler: () => Promise<void>;
+  stopProviderOperationReconciler: (signal: AbortSignal) => Promise<void>;
   server: Server;
   ipcServer?: IpcListener;
   streamResponses: Set<ServerResponse>;
@@ -113,6 +113,18 @@ async function withBudget<T>(
   } finally {
     timeoutAbort.abort();
   }
+}
+
+/** Run one standalone shutdown finalizer against a fixed time budget. */
+export function runBudgetedStep(
+  label: string,
+  task: (signal: AbortSignal) => Promise<void>,
+  timeoutMs: number,
+  time: Pick<TimePort, 'now' | 'sleep'>,
+  log: (message: string) => void,
+): Promise<void> {
+  const deadline = time.now() + timeoutMs;
+  return withBudget(label, task, () => Math.max(0, deadline - time.now()), time, log).then(() => undefined);
 }
 
 /**
@@ -382,13 +394,13 @@ export async function runShutdownSequence({
     Promise.resolve().then(() => closeServerFn(server)),
   );
   await runStep('inflight drain', () => waitForInflightDrain(idleTimer, remainingDrain(), runtime.time));
-  await runStep('provider operation reconciler drain', stopProviderOperationReconciler);
+  await runBudgetedStep('provider operation reconciler drain', stopProviderOperationReconciler);
   await runStep('server connection close', () => server.closeAllConnections());
   for (const stream of streamResponses) {
     await runStep('stream response close', () => stream.end());
   }
   await waitForObservedShutdownTask(serverClosed);
-  await runStep('recovery coordinator teardown', teardownRecoveryCoordinator);
+  await runBudgetedStep('recovery coordinator teardown', teardownRecoveryCoordinator);
   await runStep('ownership checker teardown', () => state.ownershipCheckerTeardown?.());
   state.ownershipCheckerTeardown = null;
 
@@ -434,7 +446,10 @@ export async function runShutdownSequence({
       quiescePorts = handoffQuiescePorts();
     });
     for (const port of quiescePorts) {
-      await runStep('app-server handoff quiesce', () => port.quiesceAppServerJobsForHandoff());
+      await runRequiredBudgetedStep('app-server handoff quiesce', async () => {
+        await port.quiesceAppServerJobsForHandoff();
+        return { confirmed: true };
+      });
     }
     await runRequiredBudgetedStep('provider host drain for handoff', async (signal) => {
       await providerHostManager.drainForHandoff(signal);
@@ -450,7 +465,7 @@ export async function runShutdownSequence({
   for (const [source, store] of discussStores) {
     await runStep(`discuss store '${source}' dispose`, () => store.dispose());
   }
-  await runStep('lifecycle reactor dispose', disposeLifecycleReactor);
+  await runBudgetedStep('lifecycle reactor dispose', async () => disposeLifecycleReactor());
 
   // Socket release is the last step before lifecycle stop / process exit.
   // No async work may run between this resolution and `onStopped()`; that

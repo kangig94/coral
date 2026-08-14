@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { TimerHandle } from '#src/infra/port-types.js';
 import type { HandoffCapsule, HandoffCapsuleV1, HandoffCapsuleV2 } from '#src/provider-proxy/handoff-capsule.js';
+import { ControlClientError } from '#src/provider-proxy/control-client.js';
 import type { DurableProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
 import {
   createProviderProxyAuthorityFaultLatch,
@@ -349,15 +350,156 @@ describe('ProviderProxySetLifecycle', () => {
     ]);
   });
 
-  it('coalesces repeated preserve reports by set, method, and error signature', () => {
+  it('keys preserve reports by set and method and flushes a suppressed count before authority loss', () => {
+    const firstRecord = providerOperationRecord('executing');
+    const secondProxyInstanceId = randomUUID();
+    const secondRecord = providerOperationRecord('executing', {
+      operation: {
+        ...firstRecord.operation,
+        jobId: randomUUID(),
+        operationId: randomUUID(),
+        proxyInstanceId: secondProxyInstanceId,
+        buildSetId: randomUUID(),
+      },
+      locator: {
+        ...firstRecord.locator,
+        hostFingerprint: 'b'.repeat(64),
+        proxy: {
+          ...firstRecord.locator.proxy,
+          instanceId: secondProxyInstanceId,
+          controlEndpoint: '/tmp/second-proxy.sock',
+        },
+        guardian: {
+          ...firstRecord.locator.guardian,
+          instanceId: randomUUID(),
+          controlEndpoint: '/tmp/second-guardian.sock',
+        },
+        reaper: {
+          ...firstRecord.locator.reaper,
+          instanceId: randomUUID(),
+          controlEndpoint: '/tmp/second-reaper.sock',
+        },
+      },
+    });
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([firstRecord, secondRecord]);
+    const clock = new ManualClock();
+    const reportLifecycle = vi.fn();
+    const firstFaults = createProviderProxyAuthorityFaultLatch();
+    const secondFaults = createProviderProxyAuthorityFaultLatch();
+    const stopAndReap = vi.fn(async () => ({ unconfirmed: 'still live' }) as const);
+    const firstAuthority = fakeAuthority({ record: firstRecord, faults: firstFaults, stopAndReap });
+    const secondAuthority = fakeAuthority({ record: secondRecord, faults: secondFaults, stopAndReap });
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+      reportLifecycle,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.registerInheritedSet(firstAuthority);
+    lifecycle.registerInheritedSet(secondAuthority);
+
+    const otherMethodPolicy: RetrySafeControlCallPolicy = {
+      ...operationPolicy,
+      method: 'operation.cancel.v1',
+      phase: 'prestart-cleanup-pending',
+    };
+    const report = (faults: ProviderProxyAuthorityFaultLatch, policy: RetrySafeControlCallPolicy): void =>
+      faults.reportIncident({
+        kind: 'operation-control-failed',
+        policy,
+        error: 'settlement timeout',
+      });
+    report(firstFaults, operationPolicy);
+    report(firstFaults, otherMethodPolicy);
+    report(secondFaults, operationPolicy);
+    report(secondFaults, otherMethodPolicy);
+    report(firstFaults, operationPolicy);
+    firstFaults.latch(terminalAuthorityFault());
+
+    const firstReference = setReference(firstAuthority.setIdentity);
+    const secondReference = setReference(secondAuthority.setIdentity);
+    expect(reportLifecycle.mock.calls).toEqual([
+      [
+        'info',
+        `Provider proxy set action=preserve reason=retry_safe_operation_control_failure fault=operation-control-failed subject=operation.settle.v1 liveClaims=1 set=${firstReference} error=settlement timeout`,
+      ],
+      [
+        'info',
+        `Provider proxy set action=preserve reason=retry_safe_operation_control_failure fault=operation-control-failed subject=operation.cancel.v1 liveClaims=1 set=${firstReference} error=settlement timeout`,
+      ],
+      [
+        'info',
+        `Provider proxy set action=preserve reason=retry_safe_operation_control_failure fault=operation-control-failed subject=operation.settle.v1 liveClaims=1 set=${secondReference} error=settlement timeout`,
+      ],
+      [
+        'info',
+        `Provider proxy set action=preserve reason=retry_safe_operation_control_failure fault=operation-control-failed subject=operation.cancel.v1 liveClaims=1 set=${secondReference} error=settlement timeout`,
+      ],
+      [
+        'info',
+        `Provider proxy set action=preserve reason=retry_safe_operation_control_failure fault=operation-control-failed subject=operation.settle.v1 liveClaims=1 set=${firstReference} error=settlement timeout summary=closed suppressed=1`,
+      ],
+      [
+        'warn',
+        `Provider proxy set action=stop-and-reap reason=provider_authority_lost fault=heartbeat-failed subject=proxy liveClaims=1 set=${firstReference} error=control closed`,
+      ],
+    ]);
+    expect(stopAndReap).toHaveBeenCalledOnce();
+  });
+
+  it('coalesces changing remote messages that have the same normalized error identity', () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const reportLifecycle = vi.fn();
+    const faults = createProviderProxyAuthorityFaultLatch();
+    const authority = fakeAuthority({ record, faults });
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: new ManualClock(),
+      proveContainmentAbsent: noContainmentProof,
+      reportLifecycle,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.registerInheritedSet(authority);
+
+    const remoteFailure = {
+      kind: 'json-rpc-error' as const,
+      jsonRpcCode: -32_603,
+      protocolCode: null,
+      admissionReason: null,
+    };
+    faults.reportIncident({
+      kind: 'operation-control-failed',
+      policy: operationPolicy,
+      error: new ControlClientError('control_call_failed', 'remote failure 1', 'remote-response', remoteFailure),
+    });
+    faults.reportIncident({
+      kind: 'operation-control-failed',
+      policy: operationPolicy,
+      error: new ControlClientError('control_call_failed', 'remote failure 2', 'remote-response', remoteFailure),
+    });
+
+    expect(reportLifecycle).toHaveBeenCalledOnce();
+    expect(reportLifecycle).toHaveBeenCalledWith('info', expect.stringContaining('error=remote failure 1'));
+  });
+
+  it('reports suppressed preserve failures after the signature becomes inactive', () => {
     const record = providerOperationRecord('executing');
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([record]);
     const clock = new ManualClock();
     const reportLifecycle = vi.fn();
     const faults = createProviderProxyAuthorityFaultLatch();
-    const stopAndReap = vi.fn(async () => ({ unconfirmed: 'still live' }) as const);
-    const authority = fakeAuthority({ record, faults, stopAndReap });
+    const authority = fakeAuthority({ record, faults });
     const lifecycle = lifecycleFor({
       claims,
       controlEstablished: ignoreControlEstablished,
@@ -370,44 +512,64 @@ describe('ProviderProxySetLifecycle', () => {
     lifecycle.completeStartupDiscovery();
     lifecycle.registerInheritedSet(authority);
 
-    const repeat = (): void =>
+    const incident: ProviderProxyOperationIncident = {
+      kind: 'operation-control-failed',
+      policy: operationPolicy,
+      error: 'settlement timeout',
+    };
+    faults.reportIncident(incident);
+    clock.elapse(30_000);
+    faults.reportIncident(incident);
+    clock.elapse(30_000);
+    clock.runDue();
+
+    expect(reportLifecycle).toHaveBeenCalledOnce();
+
+    clock.elapse(30_000);
+    clock.runDue();
+
+    expect(reportLifecycle.mock.calls).toEqual([
+      ['info', expect.stringContaining('error=settlement timeout')],
+      ['info', expect.stringContaining('error=settlement timeout summary=recovered suppressed=1')],
+    ]);
+  });
+
+  it('bounds preserve report signatures and records eviction', () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const reportLifecycle = vi.fn();
+    const faults = createProviderProxyAuthorityFaultLatch();
+    const authority = fakeAuthority({ record, faults });
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: new ManualClock(),
+      proveContainmentAbsent: noContainmentProof,
+      reportLifecycle,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.registerInheritedSet(authority);
+
+    for (let code = 0; code < 33; code += 1) {
       faults.reportIncident({
         kind: 'operation-control-failed',
         policy: operationPolicy,
-        error: 'settlement timeout',
+        error: new ControlClientError('control_call_failed', `remote failure ${code}`, 'remote-response', {
+          kind: 'json-rpc-error',
+          jsonRpcCode: code,
+          protocolCode: null,
+          admissionReason: null,
+        }),
       });
-    repeat();
-    repeat();
-    repeat();
-    faults.reportIncident({
-      kind: 'operation-control-failed',
-      policy: operationPolicy,
-      error: 'malformed settlement reply',
-    });
-    clock.elapse(60_000);
-    repeat();
-    faults.latch(terminalAuthorityFault());
+    }
 
-    const reference = setReference(authority.setIdentity);
-    expect(reportLifecycle.mock.calls).toEqual([
-      [
-        'info',
-        `Provider proxy set action=preserve reason=retry_safe_operation_control_failure fault=operation-control-failed subject=operation.settle.v1 liveClaims=1 set=${reference} error=settlement timeout`,
-      ],
-      [
-        'info',
-        `Provider proxy set action=preserve reason=retry_safe_operation_control_failure fault=operation-control-failed subject=operation.settle.v1 liveClaims=1 set=${reference} error=malformed settlement reply`,
-      ],
-      [
-        'info',
-        `Provider proxy set action=preserve reason=retry_safe_operation_control_failure fault=operation-control-failed subject=operation.settle.v1 liveClaims=1 set=${reference} error=settlement timeout summary=periodic suppressed=2`,
-      ],
-      [
-        'warn',
-        `Provider proxy set action=stop-and-reap reason=provider_authority_lost fault=heartbeat-failed subject=proxy liveClaims=1 set=${reference} error=control closed`,
-      ],
+    expect(reportLifecycle).toHaveBeenCalledTimes(34);
+    expect(reportLifecycle.mock.calls.filter(([, message]) => message.includes('summary=evicted'))).toEqual([
+      ['info', expect.stringContaining('error=remote failure 0 summary=evicted suppressed=0')],
     ]);
-    expect(stopAndReap).toHaveBeenCalledOnce();
   });
 
   it('reports an exact stop-and-reap decision for a containment-qualified operation fault', () => {

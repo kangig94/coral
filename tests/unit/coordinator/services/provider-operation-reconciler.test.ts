@@ -1,7 +1,10 @@
+import type { Server, ServerResponse } from 'node:http';
+
 import { describe, expect, it, vi } from 'vitest';
 
 import type { JobProgressStore } from '#src/jobs/contracts/job-store.js';
 import type { TimePort } from '#src/infra/port-types.js';
+import type { Runtime } from '#src/runtime/ports.js';
 import type { ProviderProxyRecoveryProducerPorts } from '#src/coordinator/services/provider-proxy-recovery-policy.js';
 import type { DurableProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
 import { providerOperationPrepareAttempt } from '#src/coordinator/services/provider-proxy-operation-activation.js';
@@ -18,6 +21,7 @@ import {
   type ProviderOperationReconciliationEvidence,
 } from '#src/coordinator/services/provider-operation-reconciler.js';
 import type { ProviderOperationReconcilerFatalError } from '#src/coordinator/services/provider-operation-reconciler.js';
+import { HANDOFF_DRAIN_TIMEOUT_MS, runShutdownSequence } from '#src/coordinator/shutdown.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import {
@@ -49,6 +53,7 @@ import {
   asJointContainmentReceipt,
   asReservation,
 } from '#tests/helpers/provider-proxy-correlation.js';
+import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 
 function proxyHeartbeatFault(error: unknown): ProviderProxyAuthorityFault {
   return { kind: 'heartbeat-failed', role: 'proxy', method: 'control.heartbeat.v1', error };
@@ -837,6 +842,22 @@ describe('provider host unserviceable refusal durability', () => {
 });
 
 describe('ProviderOperationReconciler publication', () => {
+  it('rejects a request-driven begin after quiescence without inserting a durable claim', async () => {
+    const harness = createHarness();
+
+    harness.reconciler.stop();
+
+    await expect(harness.begin()).rejects.toThrow('Provider operation reconciler is quiesced.');
+    await expect(
+      harness.reconciler.containmentDisappeared({
+        operation: harness.record.operation,
+        setIdentity: providerProxySetIdentityFromRecord(harness.record),
+        disappearanceReceipt: 'too-late-for-admission',
+      }),
+    ).rejects.toThrow('Provider operation reconciler is quiesced.');
+    expect(readProviderOperation(harness.db, harness.record.operation)).toBeNull();
+  });
+
   it.each([128, 129])(
     'persists the real proxy activation sender provider at registry-supported length %i',
     async (providerLength) => {
@@ -1404,25 +1425,131 @@ describe('ProviderOperationReconciler publication', () => {
         throw sentinel;
       }
     });
-    let completionOutcome: 'rejected-sentinel' | 'fulfilled' = 'fulfilled';
+    const drive = harness.reconciler.reconcile(recovered, harness.authority);
+    const idle = harness.reconciler.waitForIdle(new AbortController().signal);
     try {
-      await harness.reconciler.reconcile(recovered, harness.authority).catch((error: unknown) => {
-        if (error !== sentinel) throw error;
-        completionOutcome = 'rejected-sentinel';
-      });
+      await expect(drive).rejects.toBe(sentinel);
+      await expect(idle).resolves.toBeUndefined();
     } finally {
       unsubscribe();
     }
 
     expect({
-      completionOutcome,
       record: readProviderOperation(harness.db, recovered.operation),
       dueRows: readProviderOperationsDue(harness.db, Number.MAX_SAFE_INTEGER, 1),
     }).toMatchObject({
-      completionOutcome: 'rejected-sentinel',
       record: { phase: 'executing', retryCount: 0, lastError: null },
       dueRows: [],
     });
+  });
+
+  it('keeps a blocked disappearance delivery in the idle drain until its mutation commits', async () => {
+    const deliveryGate = deferred();
+    const deliver: ProviderProxyRecoveryProducerPorts['disappearance-terminalization'] = ({ record, directive }) =>
+      harness.terminalization.terminalize(record, directive);
+    const harness = createHarness({
+      disappearanceTerminalization: async (input) => {
+        await deliveryGate.promise;
+        return deliver(input);
+      },
+    });
+    const recovered = providerOperationRecord('executing');
+    insertProviderOperation(harness.db, recovered);
+
+    const delivery = harness.reconciler.containmentDisappeared({
+      operation: recovered.operation,
+      setIdentity: providerProxySetIdentityFromRecord(recovered),
+      disappearanceReceipt: 'blocked-disappearance-delivery',
+    });
+    harness.reconciler.stop();
+    let drained = false;
+    const drain = harness.reconciler.waitForIdle(new AbortController().signal).then(() => {
+      drained = true;
+    });
+    await nextEventLoopTurn();
+    expect(drained).toBe(false);
+
+    deliveryGate.resolve();
+    await expect(delivery).resolves.toMatchObject({
+      kind: 'accepted',
+      acceptance: { disposition: 'terminalization-committed' },
+    });
+    await drain;
+    expect(readProviderOperation(harness.db, recovered.operation)).toBeNull();
+  });
+
+  it('completes shutdown within the drain budget when an authority drive never settles', async () => {
+    const attachOperation = vi.fn(() => new Promise<never>(() => undefined));
+    const harness = createHarness({ attachOperation });
+    const recovered = providerOperationRecord('executing');
+    insertProviderOperation(harness.db, recovered);
+    const drive = harness.reconciler.reconcile(recovered, harness.authority);
+    await vi.waitFor(() => expect(attachOperation).toHaveBeenCalledOnce());
+
+    const time = new VirtualTime();
+    const shutdownStartedAt = time.now();
+    let drainSignal: AbortSignal | null = null;
+    let ipcReleased = false;
+    const shutdown = runShutdownSequence({
+      reason: 'replaced',
+      state: { ownershipCheckerTeardown: null },
+      teardownRecoveryCoordinator: async () => undefined,
+      runtimeState: {
+        setLifecycle: () => undefined,
+        components: {
+          register: () => undefined,
+          initAll: () => undefined,
+          disposeAll: async () => undefined,
+          list: () => [],
+          status: () => null,
+        },
+      },
+      idleTimer: { stopWatching: () => undefined } as never,
+      closeServerFn: async () => undefined,
+      closeIpcServerFn: async () => {
+        ipcReleased = true;
+      },
+      waitForInflightDrain: async () => undefined,
+      stopProviderOperationReconciler: async (signal) => {
+        drainSignal = signal;
+        harness.reconciler.stop();
+        await harness.reconciler.waitForIdle(signal);
+      },
+      server: { closeAllConnections: () => undefined } as unknown as Server,
+      ipcServer: {} as never,
+      streamResponses: new Set<ServerResponse>(),
+      runtime: { time } as unknown as Runtime,
+      markJobsAsErrorFn: async () => undefined,
+      providerHostManager: {
+        drainForHandoff: async () => undefined,
+        shutdown: async () => undefined,
+      },
+      storeServicesRef: { tryGet: () => null } as never,
+      terminateAllFn: () => undefined,
+      handoffQuiescePorts: () => [],
+      disposeLifecycleReactor: () => undefined,
+      hooks: { onShutdown: async () => undefined },
+      discussStores: new Map(),
+      log: () => undefined,
+    }).catch((error: unknown) => error);
+    let settled = false;
+    void shutdown.then(() => {
+      settled = true;
+    });
+
+    for (let elapsed = 0; elapsed <= HANDOFF_DRAIN_TIMEOUT_MS + 1_000 && !settled; elapsed += 100) {
+      await Promise.resolve();
+      time.tick(100);
+      for (let turn = 0; turn < 8; turn += 1) await Promise.resolve();
+    }
+
+    expect(settled).toBe(true);
+    expect(time.now() - shutdownStartedAt).toBeLessThanOrEqual(HANDOFF_DRAIN_TIMEOUT_MS + 500);
+    expect(drainSignal).not.toBeNull();
+    expect((drainSignal as unknown as AbortSignal).aborted).toBe(true);
+    expect(ipcReleased).toBe(true);
+    await expect(drive).resolves.toBeUndefined();
+    await shutdown;
   });
 
   it('fences a blocked executing attach and acknowledges disappearance only after terminalization', async () => {

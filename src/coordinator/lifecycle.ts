@@ -37,6 +37,8 @@ import {
   type LifecycleWiringState,
   type ShutdownMode,
   HANDOFF_DRAIN_TIMEOUT_MS,
+  SHUTDOWN_DRAIN_TIMEOUT_MS,
+  runBudgetedStep,
 } from './shutdown.js';
 import type { HandoffQuiescePort } from './execution-service.js';
 import type { InterruptedAppServerReason } from '../jobs/reconcile/interrupted-reason.js';
@@ -675,7 +677,10 @@ export type LifecycleDeps = {
   readonly connectProviderOperationRecovery?: (recoveryCoordinator: RecoveryCoordinator) => void;
   readonly reconcileProviderOperationsAtStartup?: (signal: AbortSignal) => Promise<StartupReconciliationReport>;
   readonly startProviderOperationReconciler?: () => void;
-  readonly stopProviderOperationReconciler?: (phase?: 'quiesce' | 'drain') => void | Promise<void>;
+  readonly stopProviderOperationReconciler?: (
+    phase?: 'quiesce' | 'drain',
+    signal?: AbortSignal,
+  ) => void | Promise<void>;
   /**
    * Optional only for narrow lifecycle harnesses; production composition supplies the sole publishing facet
    * so carrier readers cannot advance the startup boundary themselves.
@@ -1233,43 +1238,43 @@ export function createLifecycle(
     state.startupAbort?.abort();
     void stopProviderOperationReconciler?.('quiesce');
 
-    state.shutdownPromise = (async () => {
-      if (runtimeState.getLifecycle() === 'stopped') {
-        await stopProviderOperationReconciler?.('drain');
-        return;
-      }
-
-      await runShutdownSequence({
-        reason,
-        state,
-        teardownRecoveryCoordinator: async () => {
-          await state.recoveryCoordinator?.teardown();
-        },
-        runtimeState,
-        idleTimer,
-        closeServerFn,
-        waitForInflightDrain,
-        stopProviderOperationReconciler: async () => {
-          await stopProviderOperationReconciler?.('drain');
-        },
-        server,
-        closeIpcServerFn,
-        ipcServer,
-        streamResponses,
-        runtime,
-        markJobsAsErrorFn,
-        providerHostManager,
-        providerProxyAuthority,
-        kbDaemonSupervisor,
-        storeServicesRef,
-        terminateAllFn,
-        handoffQuiescePorts: deps.handoffQuiescePorts,
-        disposeLifecycleReactor,
-        hooks,
-        discussStores,
-        log,
-      });
-    })()
+    const shutdownTask =
+      runtimeState.getLifecycle() === 'stopped'
+        ? runBudgetedStep(
+            'provider operation reconciler drain',
+            (signal) => Promise.resolve(stopProviderOperationReconciler?.('drain', signal)),
+            reason === 'replaced' || reason === 'sigterm' ? HANDOFF_DRAIN_TIMEOUT_MS : SHUTDOWN_DRAIN_TIMEOUT_MS,
+            runtime.time,
+            log,
+          )
+        : runShutdownSequence({
+            reason,
+            state,
+            teardownRecoveryCoordinator: () => state.recoveryCoordinator?.teardown() ?? Promise.resolve(),
+            runtimeState,
+            idleTimer,
+            closeServerFn,
+            waitForInflightDrain,
+            stopProviderOperationReconciler: (signal) =>
+              Promise.resolve(stopProviderOperationReconciler?.('drain', signal)),
+            server,
+            closeIpcServerFn,
+            ipcServer,
+            streamResponses,
+            runtime,
+            markJobsAsErrorFn,
+            providerHostManager,
+            providerProxyAuthority,
+            kbDaemonSupervisor,
+            storeServicesRef,
+            terminateAllFn,
+            handoffQuiescePorts: deps.handoffQuiescePorts,
+            disposeLifecycleReactor,
+            hooks,
+            discussStores,
+            log,
+          });
+    state.shutdownPromise = shutdownTask
       .catch((error) => {
         onFatalShutdownError?.(error);
         throw error;
