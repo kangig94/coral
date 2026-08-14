@@ -5,6 +5,7 @@ import { describeSessionJobClaimReleaseResult } from '../sessions/job-release.js
 import type { SessionJobClaimReleaseResult } from '../sessions/contracts.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import { canonicalizeWorkDir, type CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
+import type { IdPort } from '../runtime/ports.js';
 import type { TimePort } from '../infra/port-types.js';
 import { nowIsoString } from '../infra/time.js';
 import type { JobTerminal } from '../jobs/records.js';
@@ -33,7 +34,13 @@ import {
   DEFAULT_STALE_CHECK_INTERVAL_MS,
   DEFAULT_STALE_TIMEOUT_MS,
 } from './execution-constants.js';
-import { compileWorkflowPlan, maxStepIndex, type CompiledPlanSlot, type WorkflowPlan } from './plan.js';
+import {
+  assignWorkflowJobIds,
+  compileWorkflowPlan,
+  maxStepIndex,
+  type CompiledPlanSlot,
+  type WorkflowPlan,
+} from './plan.js';
 import { DEFAULT_STALE_ABORT_TIMEOUT_MS, recoverStaleAtom, STALE_RESUME_PROMPT } from './stale-recovery.js';
 
 import { waitForAtoms } from './wait.js';
@@ -125,6 +132,7 @@ type ResumeWorkflowDeps = {
   slotDetailsByJob: Map<string, JobProjectionDetail>;
   providerSessionsById: ReadonlyMap<string, ProviderSession>;
   eventsBySeq: ReadonlyMap<number, EventsRow>;
+  jobIds: Map<string, string>;
   replacementJobIds: Map<string, string>;
   completion: ReturnType<typeof workflowCompletedBodySchema.parse> | null;
   drain: ReturnType<typeof workflowDrainEnteredBodySchema.parse> | null;
@@ -413,10 +421,8 @@ function isRecoverableReplacementCrash(deps: ResumeWorkflowDeps, outcome: Termin
 }
 
 function compileSlotsForRecovery(deps: ResumeWorkflowDeps): CompiledPlanSlot[] {
-  const jobIds = readSlotJobIds(deps.childRows, deps.workflowId, deps.plan);
-  for (const [slotId, jobId] of deps.replacementJobIds) jobIds.set(slotId, jobId);
   return compileWorkflowPlan(deps.plan, {
-    jobIds,
+    jobIds: deps.jobIds,
   });
 }
 
@@ -821,6 +827,7 @@ async function executeRemainingSteps(
   return executePlannedSteps(deps.plan, initialPrompt, deps.executionSvc, deps.ctx, {
     startStepIndex,
     completedStepDetails,
+    jobIds: deps.jobIds,
     onProgress: (message) => deps.onProgress(deps.workflowId, message),
     staleTimeoutMs: deps.staleTimeoutMs,
     staleCheckIntervalMs: deps.staleCheckIntervalMs,
@@ -950,6 +957,7 @@ async function resumeWorkflow(deps: ResumeWorkflowDeps): Promise<RecoveredWorkfl
   }
 
   await resumePendingReplacementIntents(deps);
+  for (const [slotId, jobId] of deps.replacementJobIds) deps.jobIds.set(slotId, jobId);
 
   const snapshot = loadRecoverySnapshot(deps);
   if (snapshot.summary.activeStepIndex > maxStepIndex(deps.plan)) {
@@ -1312,6 +1320,7 @@ type ResumeAllOptions = {
   staleCheckIntervalMs?: number;
   staleAbortTimeoutMs?: number;
   drainDeadlineMs?: number;
+  ids: Pick<IdPort, 'uuid'>;
   time: Pick<TimePort, 'now'>;
 };
 
@@ -1422,6 +1431,11 @@ async function settleWorkflowRecovery(
     }
     const baseCtx = options.createInvocationContext(item.rootProjectRoot);
     const ctx: InvocationContext = { ...baseCtx, providerScope: projection.providerScope };
+    const jobIds = assignWorkflowJobIds(
+      projection.plan,
+      options.ids,
+      readSlotJobIds(item.childRows, status.jobId, projection.plan),
+    );
     recovered = await resumeWorkflow({
       progressStore: options.progressStore,
       executionSvc: executionWithUnknownOutcome(options.getExecutionService(ctx), (error) => {
@@ -1434,6 +1448,7 @@ async function settleWorkflowRecovery(
       slotDetailsByJob: item.slotDetailsByJob,
       providerSessionsById: item.providerSessionsById,
       eventsBySeq: item.eventsBySeq,
+      jobIds,
       replacementJobIds: new Map(),
       completion: item.completion,
       drain: item.drain,

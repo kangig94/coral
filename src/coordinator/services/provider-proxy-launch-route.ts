@@ -29,12 +29,25 @@ export function createAppServerProxyRoute(deps: {
         throw new Error('The selected proxy set does not support durable operation replay.');
       }
 
-      const operation: OperationIdentity = operationIdentitySchema.parse({
+      const parsedOperation = operationIdentitySchema.safeParse({
         jobId: request.jobId,
         operationId: request.operationId,
         proxyInstanceId: authority.proxyInstanceId,
         buildSetId: authority.setIdentity.buildSetId,
       });
+      if (!parsedOperation.success) {
+        const firstIssue = parsedOperation.error.issues[0];
+        const reason =
+          firstIssue === undefined
+            ? 'unknown schema violation'
+            : `${firstIssue.path.join('.') || 'identity'}: ${firstIssue.message}`;
+        const additionalIssues = parsedOperation.error.issues.length - 1;
+        throw new Error(
+          `Provider proxy launch rejected operation identity for job '${request.jobId}': ${reason}${additionalIssues > 0 ? ` (+${additionalIssues} more issues)` : ''}.`,
+          { cause: parsedOperation.error },
+        );
+      }
+      const operation: OperationIdentity = parsedOperation.data;
       const prepared: ProxyPreparedAppServerOperation = proxyPreparedAppServerOperationSchema.parse({
         version: 1,
         provider: request.provider,

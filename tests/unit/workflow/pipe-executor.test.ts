@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import { describe, expect, it, vi } from 'vitest';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import type { JobTerminal } from '#src/jobs/records.js';
@@ -35,6 +37,7 @@ const workflowTime = {
     return workflowClock;
   },
 };
+const workflowIds = { uuid: () => randomUUID() };
 const waitTiming = {
   origin: 'queued',
   originAt: '2026-07-03T08:00:00.000Z',
@@ -189,6 +192,7 @@ describe('workflow pipe executor', () => {
 
     const result = await executePipeline(parseExpression('architect -> resolver'), 'seed', 'codex', executionSvc, ctx, {
       workflowJobId: 'workflow-test-uuid',
+      ids: workflowIds,
       time: workflowTime,
     });
 
@@ -239,7 +243,7 @@ describe('workflow pipe executor', () => {
       'codex',
       executionSvc,
       ctx,
-      { context: 'SHARED', workflowJobId: 'workflow-test-uuid', time: workflowTime },
+      { context: 'SHARED', workflowJobId: 'workflow-test-uuid', ids: workflowIds, time: workflowTime },
     );
 
     expect(dispatched).toEqual([
@@ -282,7 +286,7 @@ describe('workflow pipe executor', () => {
       'codex',
       executionSvc,
       ctx,
-      { workflowJobId: 'workflow-test-uuid', time: workflowTime },
+      { workflowJobId: 'workflow-test-uuid', ids: workflowIds, time: workflowTime },
     );
 
     expect(prompts).toEqual(['Use A', 'Use B']);
@@ -506,6 +510,7 @@ describe('workflow pipe executor', () => {
 
     const result = await executePipeline(parseExpression('(architect, critic)'), 'seed', 'claude', executionSvc, ctx, {
       workflowJobId: 'workflow-test-uuid',
+      ids: workflowIds,
       time: workflowTime,
     });
 
@@ -546,7 +551,7 @@ describe('workflow pipe executor', () => {
       executePipeline(parseExpression('architect'), 'seed', 'claude', executionSvc, ctx, {
         signal: controller.signal,
         workflowJobId: 'workflow-test-uuid',
-
+        ids: workflowIds,
         time: workflowTime,
       }),
     ).rejects.toMatchObject({
@@ -582,6 +587,7 @@ describe('workflow pipe executor', () => {
     await expect(
       executePipeline(parseExpression('architect'), 'seed', 'claude', executionSvc, ctx, {
         workflowJobId: 'workflow-test-uuid',
+        ids: workflowIds,
         time: workflowTime,
       }),
     ).rejects.toMatchObject({
@@ -600,7 +606,7 @@ describe('workflow pipe executor', () => {
       executePipeline(parseExpression('architect'), 'seed', 'claude', executionSvc, ctx, {
         signal: controller.signal,
         workflowJobId: 'workflow-test-uuid',
-
+        ids: workflowIds,
         time: workflowTime,
       }),
     ).rejects.toMatchObject({ aborted: true });
@@ -621,6 +627,7 @@ describe('workflow pipe executor', () => {
 
     const result = await executePipeline(parseExpression('architect'), 'seed', 'codex', executionSvc, ctx, {
       workflowJobId: 'workflow-test-uuid',
+      ids: workflowIds,
       time: workflowTime,
     });
 
@@ -652,7 +659,7 @@ describe('workflow pipe executor', () => {
         staleTimeoutMs: 1,
         staleCheckIntervalMs: 1,
         workflowJobId: 'workflow-1',
-
+        ids: workflowIds,
         time: workflowTime,
       });
 
@@ -698,6 +705,7 @@ describe('workflow pipe executor', () => {
     await expect(
       executePipeline(parseExpression('(architect, critic)'), 'seed', 'codex', executionSvc, ctx, {
         workflowJobId: 'workflow-test-uuid',
+        ids: workflowIds,
         time: workflowTime,
       }),
     ).rejects.toMatchObject({
@@ -745,6 +753,7 @@ describe('workflow pipe executor', () => {
     await expect(
       executePipeline(parseExpression('(architect, critic)'), 'seed', 'codex', executionSvc, ctx, {
         workflowJobId: 'workflow-test-uuid',
+        ids: workflowIds,
         time: workflowTime,
       }),
     ).rejects.toMatchObject({
@@ -788,7 +797,7 @@ describe('workflow pipe executor', () => {
       executePipeline(parseExpression('architect -> resolver'), 'seed', 'codex', executionSvc, ctx, {
         signal: controller.signal,
         workflowJobId: 'workflow-test-uuid',
-
+        ids: workflowIds,
         time: workflowTime,
       }),
     ).rejects.toMatchObject({
@@ -826,6 +835,7 @@ describe('workflow pipe executor', () => {
 
     await executePipeline(parseExpression('architect -> "Apply this fixup"'), 'seed', 'codex', executionSvc, ctx, {
       workflowJobId: 'workflow-test-uuid',
+      ids: workflowIds,
       time: workflowTime,
     });
 

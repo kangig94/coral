@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { truncate } from '../infra/text.js';
+import type { IdPort } from '../runtime/ports.js';
 import type { PipelineAST } from './ast.js';
 
 export type PlanSlot = {
@@ -107,6 +108,18 @@ export function buildWorkflowPlan(
   }
 
   return { slots };
+}
+
+export function assignWorkflowJobIds(
+  plan: WorkflowPlan,
+  ids: Pick<IdPort, 'uuid'>,
+  existing: ReadonlyMap<string, string> = new Map(),
+): Map<string, string> {
+  const jobIds = new Map(existing);
+  for (const slot of plan.slots) {
+    if (!jobIds.has(slot.slotId)) jobIds.set(slot.slotId, ids.uuid());
+  }
+  return jobIds;
 }
 
 export function compileWorkflowPlan(

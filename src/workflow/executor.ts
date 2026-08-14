@@ -1,5 +1,6 @@
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
+import type { IdPort } from '../runtime/ports.js';
 import { errorMessage } from '../infra/error-format.js';
 import type { TimePort } from '../infra/port-types.js';
 import type { PipelineAST } from './ast.js';
@@ -21,13 +22,20 @@ import {
   DEFAULT_STALE_CHECK_INTERVAL_MS,
   DEFAULT_STALE_TIMEOUT_MS,
 } from './execution-constants.js';
-import { buildWorkflowPlan, compileWorkflowPlan, type CompiledPlanSlot, type WorkflowPlan } from './plan.js';
+import {
+  assignWorkflowJobIds,
+  buildWorkflowPlan,
+  compileWorkflowPlan,
+  type CompiledPlanSlot,
+  type WorkflowPlan,
+} from './plan.js';
 import type { WorkflowJournal } from './projections.js';
 import { DEFAULT_STALE_ABORT_TIMEOUT_MS, recoverStaleAtom } from './stale-recovery.js';
 import { waitForAtoms } from './wait.js';
 
 type ExecutePlannedStepsOptions = {
   time: Pick<TimePort, 'now'>;
+  jobIds: ReadonlyMap<string, string>;
   context?: string;
   workDir?: CanonicalWorkDir;
   signal?: AbortSignal;
@@ -191,7 +199,7 @@ export async function executePlannedSteps(
   const stepDetails: StepDetail[] = [...(options.completedStepDetails ?? [])];
   let stepPrompt = initialPrompt;
   const workingPlan = plan;
-  const compiledSlots = compileWorkflowPlan(workingPlan);
+  const compiledSlots = compileWorkflowPlan(workingPlan, { jobIds: options.jobIds });
   const slotsByStep = groupCompiledSlotsByStep(compiledSlots);
   const finalStepIndex = Math.max(-1, ...slotsByStep.keys());
   const startStepIndex = options.startStepIndex ?? 0;
@@ -275,6 +283,7 @@ export async function executePipeline(
     workflowJobId: string;
     journal?: WorkflowJournal;
     declaredPlan?: WorkflowPlan;
+    ids: Pick<IdPort, 'uuid'>;
     time: Pick<TimePort, 'now'>;
   },
 ): Promise<PipelineResult> {
@@ -290,6 +299,7 @@ export async function executePipeline(
     buildWorkflowPlan(workflowId, ast, {
       defaultProvider: defaultProviderName,
     });
+  const jobIds = assignWorkflowJobIds(plan, options.ids);
 
   if (options.journal && options.declaredPlan === undefined) {
     const workflowJobId = options.workflowJobId;
@@ -304,6 +314,7 @@ export async function executePipeline(
     workDir: options.workDir,
     signal: options.signal,
     onProgress,
+    jobIds,
     time,
     staleTimeoutMs,
     staleCheckIntervalMs,

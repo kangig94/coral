@@ -2,6 +2,7 @@ import { currentCoralStoreFormat } from '#src/store-format.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { TEST_PROVIDER_SCOPE, withTestProfileLocation } from '#tests/helpers/provider-credentials.js';
 import { describe, expect, it, vi } from 'vitest';
+import { randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -21,7 +22,7 @@ import { workflowPlanDeclaredEvent, workflowRegistry } from '#src/workflow/event
 import { buildWorkflowPlan, type WorkflowPlan } from '#src/workflow/plan.js';
 import { commitWorkflowEvents } from '#src/workflow/projections.js';
 import { loadJobProjectionDetails } from '#src/jobs/read-queries.js';
-import { resumeAll } from '#src/workflow/recover.js';
+import { resumeAll as resumeAllWorkflowRecovery } from '#src/workflow/recover.js';
 import { createWorkflowExecutionError, type WorkflowExecutionPort } from '#src/workflow/execution-contract.js';
 import type { WorkflowFinalizationIntent } from '#src/workflow/finalization.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
@@ -64,6 +65,13 @@ const fixedTime = {
 const PROJECT_ROOT = canonicalizeWorkDir(process.cwd(), process.cwd());
 const BACKEND_NAMESPACE = 'workflow-test-ns';
 const noFailedWorkflowDescendants = () => [];
+const recoveryIds = { uuid: () => randomUUID() };
+
+type ResumeAllOptions = Parameters<typeof resumeAllWorkflowRecovery>[0];
+
+function resumeAll(options: Omit<ResumeAllOptions, 'ids'> & Partial<Pick<ResumeAllOptions, 'ids'>>) {
+  return resumeAllWorkflowRecovery({ ids: recoveryIds, ...options });
+}
 
 function running(jobId: string, sessionId: string) {
   return {
@@ -811,6 +819,8 @@ describe('workflow recovery branch rules', () => {
 
   it('relaunches an absent step with persisted source A instead of replacement-daemon source B', async () => {
     const harness = createHarness({ atomPhase: null, projectionPhase: null });
+    const atomJobId = randomUUID();
+    const ids = { uuid: vi.fn(() => atomJobId) };
     const replacementCredentials = withTestProfileLocation(TEST_PROVIDER_SCOPE, 'codex', '/replacement/.codex-b');
     const createReplacementContext = (projectRoot: CanonicalWorkDir): InvocationContext => ({
       ...harness.createInvocationContext(projectRoot),
@@ -826,6 +836,7 @@ describe('workflow recovery branch rules', () => {
         createInvocationContext: createReplacementContext,
         finalizeWorkflow: vi.fn(),
         releaseFailedWorkflowDescendants: noFailedWorkflowDescendants,
+        ids,
         time: fixedTime,
       });
 
@@ -835,7 +846,7 @@ describe('workflow recovery branch rules', () => {
         'codex',
         'architect',
         expect.objectContaining({
-          jobId: harness.plan.slots[0].slotId,
+          jobId: atomJobId,
           workflowSlotId: harness.plan.slots[0].slotId,
           owner: { kind: 'workflow', id: 'workflow-1' },
         }),
@@ -845,8 +856,9 @@ describe('workflow recovery branch rules', () => {
         }),
       );
       expect(getExecutionService).toHaveBeenCalledWith(expect.objectContaining({ providerScope: TEST_PROVIDER_SCOPE }));
-      expect(harness.executionSvc.awaitLaunch).toHaveBeenCalledWith(harness.plan.slots[0].slotId, expect.any(Number));
+      expect(harness.executionSvc.awaitLaunch).toHaveBeenCalledWith(atomJobId, expect.any(Number));
       expect(harness.executionSvc.waitStream).toHaveBeenCalledTimes(1);
+      expect(ids.uuid).toHaveBeenCalledOnce();
     } finally {
       harness.db.close();
     }
@@ -875,11 +887,12 @@ describe('workflow recovery branch rules', () => {
       },
     });
     const [completedSlot, pendingSlot, missingSlot] = harness.plan.slots;
+    const missingJobId = randomUUID();
     const finalizeWorkflow = vi.fn<(intent: WorkflowFinalizationIntent) => void>();
     // eslint-disable-next-line @typescript-eslint/no-misused-promises
     harness.executionSvc.coralDispatch.mockImplementation(async (_provider, _coralName, input) => {
       const jobId = String(input.jobId);
-      if (jobId !== missingSlot.slotId) {
+      if (jobId !== missingJobId) {
         const error = new Error(`job_terminal_order_violation:${jobId}`);
         Object.assign(error, { code: 'job_terminal_order_violation' });
         throw error;
@@ -906,6 +919,7 @@ describe('workflow recovery branch rules', () => {
         createInvocationContext: harness.createInvocationContext,
         finalizeWorkflow,
         releaseFailedWorkflowDescendants: noFailedWorkflowDescendants,
+        ids: { uuid: () => missingJobId },
         time: fixedTime,
       });
 
@@ -915,7 +929,7 @@ describe('workflow recovery branch rules', () => {
         'codex',
         'verifier',
         expect.objectContaining({
-          jobId: missingSlot.slotId,
+          jobId: missingJobId,
           workflowSlotId: missingSlot.slotId,
           owner: { kind: 'workflow', id: 'workflow-1' },
         }),
@@ -938,7 +952,7 @@ describe('workflow recovery branch rules', () => {
       );
       expect(harness.executionSvc.waitStream).toHaveBeenCalledTimes(1);
       expect(harness.waitRequests[0]).toEqual({
-        jobIds: [pendingSlot.slotId, missingSlot.slotId],
+        jobIds: [pendingSlot.slotId, missingJobId],
         timeoutSeconds: 1,
         cursor: { afterSeq: 31 },
       });
@@ -976,6 +990,7 @@ describe('workflow recovery branch rules', () => {
       },
     });
     const [pendingSlot, missingSlot] = harness.plan.slots;
+    const missingJobId = randomUUID();
     const finalizeWorkflow = vi.fn<(intent: WorkflowFinalizationIntent) => void>();
     harness.executionSvc.coralDispatch.mockResolvedValue({
       status: 'rejected',
@@ -993,6 +1008,7 @@ describe('workflow recovery branch rules', () => {
           createInvocationContext: harness.createInvocationContext,
           finalizeWorkflow,
           releaseFailedWorkflowDescendants: noFailedWorkflowDescendants,
+          ids: { uuid: () => missingJobId },
           time: fixedTime,
         }),
       ).resolves.toEqual(['workflow-1']);
@@ -1002,7 +1018,7 @@ describe('workflow recovery branch rules', () => {
         'codex',
         'critic',
         expect.objectContaining({
-          jobId: missingSlot.slotId,
+          jobId: missingJobId,
           workflowSlotId: missingSlot.slotId,
           owner: { kind: 'workflow', id: 'workflow-1' },
         }),

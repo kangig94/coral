@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -115,6 +116,7 @@ describe('workflow cascade equivalence golden master', () => {
       {
         context: 'SHARED',
         workflowJobId: 'workflow-test-uuid',
+        ids: { uuid: () => randomUUID() },
         time: makeMonotonicTime(),
       },
     );

@@ -551,6 +551,7 @@ async function resumeRecoveryHarness(
     createInvocationContext: createRecoveryInvocationContext,
     finalizeWorkflow,
     releaseFailedWorkflowDescendants: () => [],
+    ids: harness.runtime.ids,
     time: harness.runtime.time,
   });
 }
@@ -744,35 +745,34 @@ describe('journal commit atomicity invariant', () => {
       const harness = createWorkflowRecoveryHarness(db, 'workflow-recover-relaunch');
       const [slot] = harness.plan.slots;
       if (slot === undefined) throw new Error('Expected a workflow slot.');
-      const executionSvc = createWorkflowExecutionPort({
-        terminalContentByJob: new Map([[slot.slotId, 'ARCH_RELAUNCHED']]),
-      });
+      const executionSvc = createWorkflowExecutionPort();
       const captured = captureWorkflowIntents();
 
       await expect(resumeRecoveryHarness(harness, captured.finalizeWorkflow, executionSvc)).resolves.toEqual([
         harness.workflowId,
       ]);
 
-      expect(executionSvc.dispatches).toEqual([
-        {
-          providerName: 'codex',
-          coralName: 'architect',
-          jobId: slot.slotId,
-          workflowSlotId: slot.slotId,
-        },
-      ]);
-      expect(executionSvc.waitRequests.map((request) => request.jobIds)).toEqual([[slot.slotId]]);
+      const [dispatch] = executionSvc.dispatches;
+      expect(dispatch).toEqual({
+        providerName: 'codex',
+        coralName: 'architect',
+        jobId: expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u),
+        workflowSlotId: slot.slotId,
+      });
+      if (dispatch === undefined) throw new Error('Expected a recovery dispatch.');
+      expect(dispatch.jobId).not.toBe(slot.slotId);
+      expect(executionSvc.waitRequests.map((request) => request.jobIds)).toEqual([[dispatch.jobId]]);
       expect(captured.intents).toEqual([
         {
           outcome: 'completed',
           workflowJobId: harness.workflowId,
-          finalOutput: 'ARCH_RELAUNCHED',
+          finalOutput: `result:${dispatch.jobId}`,
           stepDetails: [
             {
               stepIndex: 0,
               atomIndex: 0,
               label: 'architect',
-              output: 'ARCH_RELAUNCHED',
+              output: `result:${dispatch.jobId}`,
             },
           ],
         },
