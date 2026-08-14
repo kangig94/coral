@@ -85,6 +85,16 @@ function providerOperationEnvironment(input?: ProviderOperationEnvironmentInput)
   return { env: (input ?? {}) as Readonly<Record<string, string>> };
 }
 
+function isRecoveredLegacyWorkflowSlotJob(launch: JobLaunch): boolean {
+  return (
+    launch.jobKind === 'provider' &&
+    launch.owner.kind === 'workflow' &&
+    launch.parentWorkflowJobId === launch.owner.id &&
+    launch.workflowSlotId !== undefined &&
+    launch.jobId === launch.workflowSlotId
+  );
+}
+
 function missingContinuityMiddleware(method: keyof NonNullable<ProviderRuntime['continuityBridge']>): never {
   throw new Error(`runtime.continuityBridge.${method}() called without sessionContinuity() middleware.`);
 }
@@ -833,6 +843,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     const { abortRegistry, launchAdmission } = this.deps;
     const jobId = launchRecord.jobId;
     const sessionId = launchRecord.sessionId;
+    const forceLocalAppServerPlacement = isRecoveredLegacyWorkflowSlotJob(launchRecord);
     if (sessionId === null) {
       throw new Error(`Recovered queued job ${jobId} requires a provider session id.`);
     }
@@ -859,6 +870,9 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
         if (this.preserveAppServerJobForHandoff(provider, jobId)) return;
         this.appendJobEvent(jobId, sessionId, 'job.queue.admitted', {});
         this.appendProgressEvent(jobId, sessionId, 'dequeued, launching');
+        if (forceLocalAppServerPlacement) {
+          this.appendProgressEvent(jobId, sessionId, 'pre-upgrade workflow child recovered with local placement');
+        }
 
         const session = this.deps.sessionManager.get(provider.name, sessionId);
         if (session === null) {
@@ -872,6 +886,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
           executionSignal,
           pool,
           protectedEnv,
+          { forceLocalAppServerPlacement },
         );
         preserveOwnership = disposition === 'preserved';
         if (disposition === 'settled') permitAcquired = false;
@@ -971,6 +986,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     signal: AbortSignal,
     pool: LaunchPool,
     protectedEnv?: ProviderOperationEnvironmentInput,
+    options: { forceLocalAppServerPlacement?: boolean } = {},
   ): Promise<'settled' | 'preserved' | 'terminalized'> {
     const session = this.deps.sessionManager.get(provider.name, sessionId);
     if (!session) {
@@ -1042,6 +1058,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
         continuity.value,
         operationEnvironment,
         initialVersion,
+        options.forceLocalAppServerPlacement === true,
       );
       if (providerStream.kind === 'cancelled') {
         signal.throwIfAborted();
@@ -1316,6 +1333,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
       childAuthorization?: ProviderOperationChildAuthorization;
     }>,
     sessionVersion: number,
+    forceLocalAppServerPlacement: boolean,
   ): Promise<
     | Readonly<{ kind: 'local'; stream: AsyncIterable<ProviderEventBody> }>
     | Readonly<{ kind: 'proxied' }>
@@ -1323,7 +1341,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     | Readonly<{ kind: 'cancelled' }>
   > {
     if (prepared.kind === 'app-server') {
-      const route = this.deps.appServerProxyRoute;
+      const route = forceLocalAppServerPlacement ? undefined : this.deps.appServerProxyRoute;
       if (signal.aborted) return { kind: 'cancelled' };
       if (route !== undefined) {
         if (operationEnvironment.childAuthorization === undefined) {

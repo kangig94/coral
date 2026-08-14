@@ -75,6 +75,10 @@ export interface JobStatus {
   backendNamespace: string;
   bundleHash?: string;
   jobKind: JobKind;
+  parentWorkflowJobId?: string;
+  workflowSlotId?: string;
+  workflowSlotGeneration?: number;
+  replacesWorkflowJobId?: string;
   phase: JobPhase;
   updatedAt: string;
   lastSeq?: number;

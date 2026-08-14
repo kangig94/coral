@@ -155,7 +155,18 @@ function makeSubscription(generatorFactory: () => AsyncGenerator<WaitStreamEvent
   };
 }
 
-function createCauseRenderFixture(): { home: string; pluginRoot: string; cleanup(): void } {
+type WorkflowChildFixture = Readonly<{
+  jobId: string;
+  workflowJobId: string;
+  workflowSlotId: string;
+  generation: number;
+}>;
+
+function createCauseRenderFixture(workflowChildren: readonly WorkflowChildFixture[] = []): {
+  home: string;
+  pluginRoot: string;
+  cleanup(): void;
+} {
   const home = mkdtempSync(join(tmpdir(), 'coral-follow-home-'));
   const pluginRoot = mkdtempSync(join(tmpdir(), 'coral-follow-plugin-'));
 
@@ -218,6 +229,27 @@ function createCauseRenderFixture(): { home: string; pluginRoot: string; cleanup
         'utf-8',
       ),
     );
+
+    const insertProjection = db.prepare(
+      `INSERT INTO projection_jobs (
+        job_id, execution_owner, phase, terminal, diagnostics, session_id, provider,
+        project_root, backend_namespace, bundle_hash, job_kind, parent_workflow_job_id,
+        workflow_slot, workflow_slot_generation, replaces_workflow_job_id, created_at, last_seq
+      ) VALUES (?, ?, 'running', NULL, ?, ?, 'codex', ?, 'test-namespace', NULL, 'provider', ?, ?, ?, NULL, ?, 0)`,
+    );
+    for (const child of workflowChildren) {
+      insertProjection.run(
+        child.jobId,
+        JSON.stringify({ kind: 'workflow', id: child.workflowJobId }),
+        JSON.stringify({ progressFaults: [] }),
+        `session-${child.jobId}`,
+        '/project/root',
+        child.workflowJobId,
+        child.workflowSlotId,
+        child.generation,
+        '2026-03-21T00:00:00.000Z',
+      );
+    }
   } finally {
     db.close();
   }
@@ -946,6 +978,67 @@ describe('cli follow', () => {
     );
 
     await expect(launchAndFollow(makeOptions())).resolves.toBe(expected);
+  });
+
+  it('labels opaque workflow child ids with their durable slots while waiting on multiple jobs', async () => {
+    const workflowJobId = '22222222-2222-4222-8222-222222222222';
+    const architectJobId = '11111111-1111-4111-8111-111111111111';
+    const criticJobId = '33333333-3333-4333-8333-333333333333';
+    const architectSlot = `${workflowJobId}:0:0`;
+    const criticSlot = `${workflowJobId}:0:1`;
+    const fixture = createCauseRenderFixture([
+      { jobId: architectJobId, workflowJobId, workflowSlotId: architectSlot, generation: 0 },
+      { jobId: criticJobId, workflowJobId, workflowSlotId: criticSlot, generation: 0 },
+    ]);
+    const originalHome = process.env.HOME;
+    const originalTmpdir = process.env.TMPDIR;
+
+    try {
+      process.env.HOME = fixture.home;
+      process.env.TMPDIR = fixture.home;
+      const { followJobs } = await loadFollowModuleFresh();
+      const connect = vi
+        .fn()
+        .mockResolvedValueOnce({
+          kind: 'subscription' as const,
+          subscription: makeSubscription(async function* () {
+            yield { ...makeProgressEvent('Architect running'), jobId: architectJobId };
+            yield makeTerminalEvent({}, { jobId: architectJobId, seq: 2, remainingJobIds: [criticJobId] });
+          }),
+        })
+        .mockResolvedValueOnce({
+          kind: 'subscription' as const,
+          subscription: makeSubscription(async function* () {
+            yield { ...makeProgressEvent('Critic running'), jobId: criticJobId, seq: 3 };
+            yield makeTerminalEvent({}, { jobId: criticJobId, seq: 4, remainingJobIds: [] });
+          }),
+        });
+
+      await expect(
+        followJobs({
+          start: { kind: 'jobs', jobIds: [architectJobId, criticJobId] },
+          reconnectPolicy: 'until-terminal',
+          projectRoot: '/project/root',
+          emitError: vi.fn(),
+          render: { isTTY: false, columns: 120, embed: false, verbose: false },
+          abortJobs: vi.fn(),
+          connect,
+        }),
+      ).resolves.toBe(0);
+
+      expect(stdout).toContain('slot 0:0 (g0) - Architect running');
+      expect(stdout).toContain('slot 0:1 (g0) - Critic running');
+      expect(stdout).toContain(`Job ${architectJobId} (slot 0:0 (g0)) completed`);
+      expect(stdout).toContain(`Job ${criticJobId} (slot 0:1 (g0)) completed`);
+      expect(stdout).not.toContain('j0 -');
+      expect(stdout).not.toContain('j1 -');
+    } finally {
+      if (originalHome === undefined) delete process.env.HOME;
+      else process.env.HOME = originalHome;
+      if (originalTmpdir === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = originalTmpdir;
+      fixture.cleanup();
+    }
   });
 
   it.each([

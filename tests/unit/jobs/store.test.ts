@@ -268,6 +268,50 @@ describe('JobStore', () => {
     expect(store.loadJobProjectionDetail(jobId).exit?.diagnostics.byteCounts).toEqual({ stdout: 123, stderr: 45 });
   });
 
+  it('attributes an opaque workflow child result artifact to its durable slot identity', () => {
+    const { runtime, store } = createStore();
+    const childJobId = '11111111-1111-4111-8111-111111111111';
+    const workflowJobId = '22222222-2222-4222-8222-222222222222';
+    const replacedJobId = '33333333-3333-4333-8333-333333333333';
+    const workflowSlotId = `${workflowJobId}:0:1`;
+    const sessionId = 'session-workflow-child';
+
+    initProviderJob(store, childJobId, sessionId);
+    commitJobTerminal(store, childJobId, sessionId, {
+      content: 'Critic result',
+      outcome: { kind: 'completed' },
+      durationMs: 0,
+    });
+    store
+      .getDb()
+      .prepare(
+        `UPDATE projection_jobs
+            SET execution_owner = ?,
+                parent_workflow_job_id = ?,
+                workflow_slot = ?,
+                workflow_slot_generation = 1,
+                replaces_workflow_job_id = ?
+          WHERE job_id = ?`,
+      )
+      .run(
+        JSON.stringify({ kind: 'workflow', id: workflowJobId }),
+        workflowJobId,
+        workflowSlotId,
+        replacedJobId,
+        childJobId,
+      );
+
+    const resultPath = store.ensureResultArtifact(childJobId);
+
+    expect(runtime.storage.readFileSync(resultPath, 'utf-8')).toBe(
+      `> Parent workflow: ${workflowJobId}\n` +
+        `> Workflow slot: ${workflowSlotId}\n` +
+        '> Workflow generation: 1\n' +
+        `> Replaces workflow job: ${replacedJobId}\n\n` +
+        'Critic result\n',
+    );
+  });
+
   it('rejects progress after a terminal event has been recorded', () => {
     const { store } = createStore();
     const jobId = 'job-late-progress';
