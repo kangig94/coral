@@ -1,8 +1,12 @@
 import { z } from 'zod';
 
-import { canonicalEndpointSchema, canonicalUuidSchema, hostFingerprintSchema } from '../../provider-proxy/protocol.js';
-import type { HandoffCapsuleV2 } from '../../provider-proxy/handoff-capsule.js';
-import type { ProviderOperationRecord } from '../../store/provider-operation-record.js';
+import {
+  canonicalEndpointSchema,
+  canonicalUuidSchema,
+  hostFingerprintSchema,
+} from '../../../provider-proxy/protocol.js';
+import type { HandoffCapsuleV2 } from '../../../provider-proxy/handoff-capsule.js';
+import type { ProviderOperationRecord } from '../../../store/provider-operation-record.js';
 
 const nonNegativeSafeIntegerSchema = z.number().int().nonnegative().safe();
 
@@ -70,6 +74,10 @@ export function providerProxySetIdentitiesEqual(
   right: ProviderProxySetIdentity,
 ): boolean {
   return IDENTITY_FIELDS.every((field) => left[field] === right[field]);
+}
+
+export function providerProxySetReference(identity: ProviderProxySetIdentity): string {
+  return `proxyInstanceId=${identity.proxyInstanceId},buildSetId=${identity.buildSetId}`;
 }
 
 export function providerProxySetAddress(identity: ProviderProxySetIdentity): ProviderProxySetAddress {

@@ -1,27 +1,195 @@
+import { randomUUID } from 'node:crypto';
+
 import { describe, expect, it, vi } from 'vitest';
 
 import { createExecutionServices } from '#src/coordinator/composition/execution-services.js';
-import type { DurableProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
+import {
+  createProviderProxyOperationAuthority,
+  type DurableProviderProxyOperationAuthority,
+} from '#src/coordinator/live/provider-proxy/operation-route.js';
 import { LocalOperationRegistry } from '#src/coordinator/services/operation-registry.js';
-import type { ProviderProxyAuthorityFault } from '#src/coordinator/services/provider-proxy-authority-fault.js';
-import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set-claim-mirror.js';
+import { ProviderOperationReconciler } from '#src/coordinator/services/provider-operation-reconciler.js';
+import {
+  createProviderProxyAuthorityFaultLatch,
+  type ProviderProxyAuthorityFault,
+} from '#src/coordinator/services/provider-proxy-authority-fault.js';
+import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set/claim-mirror.js';
 import {
   providerProxySetIdentityFromRecord,
   type ProviderProxySetIdentity,
-} from '#src/coordinator/services/provider-proxy-set-identity.js';
-import { ProviderProxySetLifecycleRef } from '#src/coordinator/services/provider-proxy-set-lifecycle-ref.js';
+} from '#src/coordinator/services/provider-proxy-set/identity.js';
+import { ProviderProxySetLifecycleRef } from '#src/coordinator/services/provider-proxy-set/lifecycle-ref.js';
 import { backendLog } from '#src/infra/backend-log.js';
+import { JobStore } from '#src/jobs/store.js';
+import type { ControlClient } from '#src/provider-proxy/control-client.js';
 import type { Database } from '#src/store/db.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
-import { insertProviderOperation } from '#src/store/provider-operation-journal.js';
+import { insertProviderOperation, readProviderOperation } from '#src/store/provider-operation-journal.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { flushMicrotasks, VirtualTime } from '#tools/simulation/core/virtual-time.js';
+import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
+import { seedTestSessionProjection } from '#tests/helpers/session.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 
+type SharedSetControl = 'settlement-timeout' | 'control-channel-fault' | 'heartbeat-failed';
+
+function setReference(identity: ProviderProxySetIdentity): string {
+  return `proxyInstanceId=${identity.proxyInstanceId},buildSetId=${identity.buildSetId}`;
+}
+
+async function createSharedSetHarness(control: SharedSetControl) {
+  const namespace = `execution-services-shared-set-${control}`;
+  const time = new VirtualTime();
+  const runtime = { ...createRealRuntime('prod'), time };
+  const db = newRawDatabase(':memory:');
+  applyBundledStoreSchema(db, currentCoralStoreFormat());
+  const progressStore = new JobStore(namespace, runtime, createEventBodyCodec(), {
+    db,
+    providers: permissiveProviderLookupPort,
+  });
+  const claims = new ProviderProxySetClaimMirror();
+  const lifecycleRef = new ProviderProxySetLifecycleRef();
+  const operationRegistry = new LocalOperationRegistry();
+  const world = {
+    storeServicesRef: { tryGet: () => ({ progressStore }) },
+    operationRegistry,
+    providerProxyClaims: claims,
+    providerProxyLifecycleRef: lifecycleRef,
+    providerHostManager: {},
+  } as never;
+  const services = createExecutionServices({
+    world,
+    runtime,
+    bundleHash: namespace,
+    backendNamespace: namespace,
+    onProviderProxyLifecycleFatal: (error) => {
+      throw error;
+    },
+    createExecutionService: (() => {
+      throw new Error('execution service creation was not expected');
+    }) as never,
+  });
+  await services.reconcileProviderOperationsAtStartup(new AbortController().signal);
+
+  const settlement = providerOperationRecord('settlement-pending');
+  const siblings = [
+    providerOperationRecord('executing', {
+      operation: {
+        jobId: randomUUID(),
+        operationId: randomUUID(),
+        proxyInstanceId: settlement.operation.proxyInstanceId,
+        buildSetId: settlement.operation.buildSetId,
+      },
+      locator: settlement.locator,
+    }),
+    providerOperationRecord('executing', {
+      operation: {
+        jobId: randomUUID(),
+        operationId: randomUUID(),
+        proxyInstanceId: settlement.operation.proxyInstanceId,
+        buildSetId: settlement.operation.buildSetId,
+      },
+      locator: settlement.locator,
+    }),
+  ];
+  const records = [...siblings, settlement];
+  const setIdentity = providerProxySetIdentityFromRecord(settlement);
+  const formattedTimeout = 'settlement timed out';
+  const timeout = Object.assign(new Error(formattedTimeout), { code: 'control_call_failed' });
+  const proxyClient = {
+    call: vi.fn(async (method: string, params: unknown) => {
+      if (method === 'operation.attach.v1') {
+        const committedThroughProviderSeq = (params as { committedThroughProviderSeq: number })
+          .committedThroughProviderSeq;
+        return { state: 'attached', replayFromProviderSeq: committedThroughProviderSeq + 1 };
+      }
+      if (method === 'operation.settle.v1' && control === 'settlement-timeout') throw timeout;
+      throw new Error(`unexpected proxy control call: ${method}`);
+    }),
+    faulted: new Promise<never>(() => undefined),
+    onFault: () => () => undefined,
+    close: () => undefined,
+  } satisfies ControlClient;
+  const idleClient = {
+    call: async (method: string) => {
+      throw new Error(`unexpected role control call: ${method}`);
+    },
+    faulted: new Promise<never>(() => undefined),
+    onFault: () => () => undefined,
+    close: () => undefined,
+  } satisfies ControlClient;
+  const stopAndReap = vi.fn(async () =>
+    control === 'settlement-timeout'
+      ? ({ unconfirmed: 'unexpected settlement containment' } as const)
+      : ({ disappearanceReceipt: `${control}-containment-absent` } as const),
+  );
+  const faults = createProviderProxyAuthorityFaultLatch();
+  const authority = createProviderProxyOperationAuthority({
+    base: {
+      proxyInstanceId: setIdentity.proxyInstanceId,
+      stopAndReap,
+      stopHeartbeats: () => undefined,
+      initiateControlClose: async () => undefined,
+      registerSuccessionOperation: async () => undefined,
+    },
+    setIdentity,
+    clients: { proxy: proxyClient, guardian: idleClient, reaper: idleClient },
+    faults,
+    mutationRpcTimeoutMs: 5_000,
+  });
+  const lifecycle = lifecycleRef.get();
+  if (lifecycle === null) throw new Error('provider proxy lifecycle was not composed');
+  const admission = lifecycle.beginFreshAcquisition(`shared-set-${control}`);
+  if (admission.kind !== 'accepted') throw new Error(`fresh set was not admitted: ${admission.kind}`);
+  lifecycle.acquisitionSucceeded(admission.slotId, authority);
+
+  for (const record of records) {
+    const sessionId = randomUUID();
+    seedTestSessionProjection(db, {
+      sessionId,
+      provider: 'codex',
+      projectRoot: process.cwd(),
+      backendNamespace: namespace,
+      activeJobId: record.operation.jobId,
+    });
+    progressStore.appendLaunchRequested(record.operation.jobId, {
+      jobId: record.operation.jobId,
+      owner: { kind: 'provider-session', id: sessionId },
+      sessionId,
+      provider: 'codex',
+      projectRoot: process.cwd(),
+      backendNamespace: namespace,
+      jobKind: 'provider',
+      pool: 'default',
+      enqueueSequence: 1,
+      providerAction: 'exec',
+      request: { prompt: 'test', cwd: process.cwd(), bypassPermissions: false, coralEnv: {} },
+      createdAt: '2026-08-09T12:34:55.000Z',
+    });
+    insertProviderOperation(db, record);
+  }
+
+  return {
+    claims,
+    db,
+    faults,
+    formattedTimeout,
+    lifecycle,
+    records,
+    services,
+    settlement,
+    setIdentity,
+    siblings,
+    stopAndReap,
+    timeout,
+  };
+}
+
 describe('execution services provider-proxy proof composition', () => {
-  it('does not invoke the disappearance consumer producer during assembly', () => {
+  it('does not invoke the disappearance consumer producer during assembly', async () => {
     const runtime = createRealRuntime('prod');
     const claims = new ProviderProxySetClaimMirror();
     const lifecycleRef = new ProviderProxySetLifecycleRef();
@@ -114,6 +282,7 @@ describe('execution services provider-proxy proof composition', () => {
         listener(fault);
         return () => undefined;
       },
+      onIncident: () => () => undefined,
       attachOperation,
       stopAndReap: async () => ({ unconfirmed: 'stored fault' }),
       stopHeartbeats: () => undefined,
@@ -192,6 +361,7 @@ describe('execution services provider-proxy proof composition', () => {
       setIdentity: providerProxySetIdentityFromRecord(record),
       faulted: new Promise<never>(() => undefined),
       onFault: () => () => undefined,
+      onIncident: () => () => undefined,
       attachOperation,
       stopAndReap: async () => ({ unconfirmed: 'not requested' }),
       stopHeartbeats: () => undefined,
@@ -218,6 +388,116 @@ describe('execution services provider-proxy proof composition', () => {
     warning.mockRestore();
     services.stopProviderOperationReconciler();
   });
+
+  it('preserves sibling operations when settlement times out on their shared proxy set', async () => {
+    const harness = await createSharedSetHarness('settlement-timeout');
+    const { claims, db, formattedTimeout, records, services, settlement, setIdentity, siblings, stopAndReap, timeout } =
+      harness;
+    const info = vi.spyOn(backendLog, 'info').mockImplementation(() => undefined);
+
+    try {
+      const report = await services.reconcileProviderOperationsAtStartup(new AbortController().signal);
+      const storedSettlement = readProviderOperation(db, settlement.operation);
+      const storedSiblings = siblings.map((record) => readProviderOperation(db, record.operation));
+
+      expect(report.incidents).toEqual([
+        {
+          kind: 'operation-retry-scheduled',
+          setIdentity,
+          operation: settlement.operation,
+          reason: timeout.message,
+          nextAttemptAtMs: storedSettlement?.retryNotBeforeMs,
+        },
+      ]);
+      expect(storedSettlement).toEqual(
+        expect.objectContaining({
+          phase: 'settlement-pending',
+          retryCount: 1,
+          lastError: expect.objectContaining({ code: timeout.code, message: timeout.message }),
+        }),
+      );
+      expect(claims.size).toBe(3);
+      expect(records.every((record) => claims.claimFor(record.operation) !== null)).toBe(true);
+      expect(stopAndReap).not.toHaveBeenCalled();
+      expect(storedSiblings.map((record) => record?.phase)).toEqual(['executing', 'executing']);
+      const decisionRecords = info.mock.calls.filter(([message]) => message.startsWith('Provider proxy set action='));
+      expect
+        .soft(decisionRecords)
+        .toEqual([
+          [
+            `Provider proxy set action=preserve reason=retry_safe_operation_control_failure fault=operation-control-failed subject=operation.settle.v1 liveClaims=3 set=${setReference(setIdentity)} error=${formattedTimeout}`,
+          ],
+        ]);
+      expect(decisionRecords[0]?.[0].split(/\r?\n/u)).toHaveLength(1);
+    } finally {
+      services.stopProviderOperationReconciler();
+      info.mockRestore();
+    }
+  });
+
+  it.each(['control-channel-fault', 'heartbeat-failed'] as const)(
+    'contains and reconciles shared-set claims after a %s authority loss',
+    async (control) => {
+      const harness = await createSharedSetHarness(control);
+      const disappearance = vi.spyOn(ProviderOperationReconciler.prototype, 'containmentDisappeared');
+      const warning = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
+      try {
+        const fault: ProviderProxyAuthorityFault =
+          control === 'control-channel-fault'
+            ? { kind: control, role: 'proxy', error: new Error('control channel lost') as never }
+            : {
+                kind: control,
+                role: 'proxy',
+                method: 'control.heartbeat.v1',
+                error: new Error('heartbeat failed'),
+              };
+
+        expect(harness.claims.size).toBe(3);
+        expect(harness.records.every((record) => harness.claims.claimFor(record.operation) !== null)).toBe(true);
+        harness.faults.latch(fault);
+        await vi.waitFor(() => expect(disappearance).toHaveBeenCalledTimes(3));
+        const outcomes = await Promise.all(
+          disappearance.mock.results.map((result) => {
+            if (result.type !== 'return') throw new Error('disappearance reconciliation did not return');
+            return result.value;
+          }),
+        );
+        const acceptances = outcomes.map((outcome) => {
+          if (outcome.kind !== 'accepted') throw new Error(`disappearance was not accepted: ${outcome.kind}`);
+          return outcome.acceptance;
+        });
+
+        expect(harness.stopAndReap).toHaveBeenCalledOnce();
+        expect(warning.mock.calls.filter(([message]) => message.startsWith('Provider proxy set action='))).toEqual([
+          [expect.stringContaining('action=stop-and-reap reason=provider_authority_lost')],
+        ]);
+        expect(acceptances).toEqual(
+          expect.arrayContaining([
+            {
+              kind: 'accepted',
+              operation: harness.siblings[0].operation,
+              disposition: 'terminalization-committed',
+            },
+            {
+              kind: 'accepted',
+              operation: harness.siblings[1].operation,
+              disposition: 'terminalization-committed',
+            },
+            {
+              kind: 'accepted',
+              operation: harness.settlement.operation,
+              disposition: 'settlement-deleted',
+            },
+          ]),
+        );
+        expect(acceptances).toHaveLength(3);
+      } finally {
+        warning.mockRestore();
+        disappearance.mockRestore();
+        harness.services.stopProviderOperationReconciler();
+      }
+    },
+  );
 
   it('reaches the public independent proof after a closed control path', async () => {
     const time = new VirtualTime();
@@ -280,6 +560,7 @@ describe('execution services provider-proxy proof composition', () => {
           faultSubscription.listener = null;
         };
       },
+      onIncident: () => () => undefined,
       stopAndReap: async () => {
         stopAttempts += 1;
         return { unconfirmed: 'control_client_closed' } as const;

@@ -58,14 +58,15 @@ import {
   providerProxySetIdentitiesEqual,
   ProviderProxySetIdentityIndex,
   providerProxySetIdentityFromRecord,
+  providerProxySetReference,
   type ProviderProxySetKey,
   type ProviderProxySetIdentity,
-} from './provider-proxy-set-identity.js';
+} from './provider-proxy-set/identity.js';
 import type { ProviderOperationRecoveryAcceptance } from './recovery/index.js';
-import type {
-  ContainmentAbsenceAcceptance,
-  ContainmentAbsenceOperationalIncident,
-} from './provider-proxy-set-lifecycle.js';
+import {
+  type ContainmentAbsenceAcceptance,
+  type ContainmentAbsenceOperationalIncident,
+} from './provider-proxy-set/index.js';
 import {
   containmentDisappearanceNoticeSchema,
   type ContainmentDisappearanceAcceptance,
@@ -1502,7 +1503,7 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
               : {
                   kind: 'terminal-failed' as const,
                   code: 'provider_lost',
-                  reason: `Provider execution was interrupted when its containment disappeared (${notice.disappearanceReceipt}).`,
+                  reason: 'The provider became unavailable, so this job stopped before completion. Retry the job.',
                 };
         const terminalized = await this.#terminalizeDisappearance(record, directive);
         if (terminalized.kind === 'operational-failure') return terminalized;
@@ -1559,9 +1560,22 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
       turn.start({
         sourceId: 'terminalization',
         producerId: 'disappearance-terminalization',
-        input: { record, directive },
+        input: {
+          record,
+          directive: this.#withProviderProxySetReference(directive, providerProxySetIdentityFromRecord(record)),
+        },
       });
     });
+  }
+
+  #withProviderProxySetReference(
+    directive: ProviderOperationTerminalDirective,
+    identity: ProviderProxySetIdentity,
+  ): ProviderOperationTerminalDirective {
+    if (directive.kind === 'terminal-aborted') return directive;
+    const reference = providerProxySetReference(identity);
+    if (directive.reason.includes(`Reference: ${reference}.`)) return directive;
+    return { ...directive, reason: `${directive.reason} Reference: ${reference}.` };
   }
 
   async #commitExecuting(

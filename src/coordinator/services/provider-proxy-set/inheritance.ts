@@ -1,7 +1,7 @@
-import { providerHandoffCapsulePath } from '../../infra/path/index.js';
-import { probeProcessStartedAtSeconds } from '../../infra/node-process.js';
-import { createMonotonicClock } from '../../infra/monotonic-clock.js';
-import { reapRecordedContainment } from '../../infra/process-containment.js';
+import { providerHandoffCapsulePath } from '../../../infra/path/index.js';
+import { probeProcessStartedAtSeconds } from '../../../infra/node-process.js';
+import { createMonotonicClock } from '../../../infra/monotonic-clock.js';
+import { reapRecordedContainment } from '../../../infra/process-containment.js';
 import {
   readHandoffCapsuleFile,
   type HandoffCapsule,
@@ -10,7 +10,7 @@ import {
   proxyHandoffRedeemFieldsSchema,
   proxyHandoffRedeemParamsSchema,
   reaperHandoffRotateFieldsSchema,
-} from '../../provider-proxy/handoff-capsule.js';
+} from '../../../provider-proxy/handoff-capsule.js';
 import {
   PROXY_CONTROL_RPC_TIMEOUT_MS,
   controlEpochSchema,
@@ -18,51 +18,51 @@ import {
   type CoordinatorIdentity,
   type OperationIdentity,
   reaperHandoffRotateParamsSchema,
-} from '../../provider-proxy/protocol.js';
-import type { ControlClient, ProviderEventHandler } from '../../provider-proxy/control-client.js';
-import { runtimeControlTimer, type RoleConnectRetryOptions } from '../../provider-proxy/role-spawn.js';
+} from '../../../provider-proxy/protocol.js';
+import type { ControlClient, ProviderEventHandler } from '../../../provider-proxy/control-client.js';
+import { runtimeControlTimer, type RoleConnectRetryOptions } from '../../../provider-proxy/role-spawn.js';
 import {
   MAX_PROXY_RECORDED_PROVIDER_ROOTS,
   providerProxyDisappearanceReceipt,
-} from '../../provider-proxy/enforcement.js';
-import { PROXY_TEARDOWN_RESERVE_MS } from '../../provider-proxy/orphan-deadline.js';
-import type { Runtime } from '../../runtime/ports.js';
-import type { Database } from '../../store/db.js';
-import { readProviderOperations } from '../../store/provider-operation-journal.js';
-import type { ProviderOperationIdentity, ProviderOperationRecord } from '../../store/provider-operation-record.js';
+} from '../../../provider-proxy/enforcement.js';
+import { PROXY_TEARDOWN_RESERVE_MS } from '../../../provider-proxy/orphan-deadline.js';
+import type { Runtime } from '../../../runtime/ports.js';
+import type { Database } from '../../../store/db.js';
+import { readProviderOperations } from '../../../store/provider-operation-journal.js';
+import type { ProviderOperationIdentity, ProviderOperationRecord } from '../../../store/provider-operation-record.js';
 import {
   ESTABLISH_CONTROL_CONNECT_TIMEOUT_MS,
   ESTABLISH_CONTROL_READY_DEADLINE_MS,
   ESTABLISH_CONTROL_RETRY_INTERVAL_MS,
-} from '../live/provider-proxy/acquisition-steps.js';
+} from '../../live/provider-proxy/acquisition-steps.js';
 import {
   establishRoleControl,
   ProviderProxyRoleControlUnavailableError,
   type ProviderProxyRoleControlAvailabilityIncident,
-} from '../live/provider-proxy/role-control.js';
-import { createProviderProxySetAuthority } from '../live/provider-proxy/set-authority.js';
-import { createProviderProxyAuthorityHeartbeatAssembly } from '../live/provider-proxy/heartbeat.js';
+} from '../../live/provider-proxy/role-control.js';
+import { createProviderProxySetAuthority } from '../../live/provider-proxy/set-authority.js';
+import { createProviderProxyAuthorityHeartbeatAssembly } from '../../live/provider-proxy/heartbeat.js';
 import {
   createProviderProxyOperationAuthority,
   type DurableProviderProxyOperationAuthority,
   type ProviderProxyOperationAuthority,
-} from '../live/provider-proxy/operation-route.js';
-import type { ProviderProxySetAcquisitionIdentity } from '../live/provider-hosts/proxy-set-acquisition.js';
+} from '../../live/provider-proxy/operation-route.js';
+import type { ProviderProxySetAcquisitionIdentity } from '../../live/provider-hosts/proxy-set-acquisition.js';
 import {
   providerProxySetIdentitiesEqual,
   providerProxySetIdentityFromRecord,
   providerProxySetIdentitySchema,
   providerProxySetKey,
   type ProviderProxySetIdentity,
-} from './provider-proxy-set-identity.js';
-import type { ProviderProxyOperationSnapshot } from './operation-registry.js';
-import { createProviderProxyAuthorityFaultLatch } from './provider-proxy-authority-fault.js';
+} from './identity.js';
+import type { ProviderProxyOperationSnapshot } from '../operation-registry.js';
+import { createProviderProxyAuthorityFaultLatch } from '../provider-proxy-authority-fault.js';
 import {
   runProviderProxyRecoveryDeadline,
   type ProviderProxyRecoveryArbiter,
   type ProviderProxyRecoveryDispatcher,
   type ProviderProxyRecoveryTurnSinks,
-} from './provider-proxy-recovery-policy.js';
+} from '../provider-proxy-recovery-policy.js';
 
 /**
  * The branch of proxy-set acquisition that redeems a predecessor's continuously recoverable set instead of

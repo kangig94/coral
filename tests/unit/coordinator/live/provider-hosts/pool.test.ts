@@ -12,7 +12,7 @@ vi.mock('#src/coordinator/live/provider-hosts/proxy-set-acquisition.js', () => (
 
 import { hostKeyFromSpec } from '#src/coordinator/live/provider-hosts/index.js';
 import type { ProviderHostEntry } from '#src/coordinator/live/provider-hosts/index.js';
-import { MAX_COORDINATOR_PROXY_SET_SLOTS } from '#src/coordinator/services/provider-proxy-set-lifecycle.js';
+import { MAX_COORDINATOR_PROXY_SET_SLOTS } from '#src/coordinator/services/provider-proxy-set/index.js';
 import { ensureProviderProxySet } from '#src/coordinator/live/provider-hosts/proxy-set-acquisition.js';
 import type { ProviderProxySetAuthority } from '#src/coordinator/live/provider-proxy/authority.js';
 import type {
@@ -21,9 +21,9 @@ import type {
 } from '#src/coordinator/live/provider-proxy/operation-route.js';
 import type { HostRef, ProviderServerSpec } from '#src/providers/contract.js';
 import { backendLog } from '#src/infra/backend-log.js';
-import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set-claim-mirror.js';
-import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set-lifecycle.js';
-import { ProviderProxySetLifecycleRef } from '#src/coordinator/services/provider-proxy-set-lifecycle-ref.js';
+import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set/claim-mirror.js';
+import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set/index.js';
+import { ProviderProxySetLifecycleRef } from '#src/coordinator/services/provider-proxy-set/lifecycle-ref.js';
 import {
   StubbedContainmentProviderHostManager,
   noCarrierBlocksRetirement,
@@ -89,6 +89,7 @@ function fakeDurableProxySet(
     ...inherited,
     faulted: new Promise<never>(() => {}),
     onFault: () => () => undefined,
+    onIncident: () => () => undefined,
     prepareOperation:
       options.prepareOperation ??
       (async () => {
@@ -137,6 +138,7 @@ function createProxySetLifecycleRef(onSlotReleased?: (routeKey: string) => void)
     recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
       'containment-proof': async () => null,
     }),
+    reportLifecycle: () => undefined,
     ...(onSlotReleased === undefined ? {} : { onSlotReleased }),
   });
   lifecycle.initializeClaimSlots();
@@ -1287,7 +1289,7 @@ describe('provider host pool proxy set registry', () => {
 
 describe('provider host pool proxy set registration', () => {
   // Exact-set redemption and per-operation attachment live in
-  // `coordinator/services/provider-proxy-set-inheritance.ts` and is covered end to end there
+  // `coordinator/services/provider-proxy-set/inheritance.ts` and is covered end to end there
   // (`provider-proxy-set-inheritance.test.ts`) — it needs jobs-domain vocabulary this `coordinator/live/`
   // manager may not reach directly. `registerInheritedSet` is the narrow, domain-free seam that mechanism
   // calls back into once it already holds a live, connected set; that hand-off is what this suite exercises.

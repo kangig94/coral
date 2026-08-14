@@ -115,10 +115,10 @@ const producerPorts = exportedSymbol(policy, 'ProviderProxyRecoveryProducerPorts
 const turnSinks = exportedSymbol(policy, 'ProviderProxyRecoveryTurnSinks');
 const effects = exportedSymbol(policy, 'ProviderProxyRecoveryEffects');
 const fatalSink = exportedSymbol(policy, 'ProviderProxyRecoveryFatalSink');
-const inheritance = sourceFile('src/coordinator/services/provider-proxy-set-inheritance.ts');
+const inheritance = sourceFile('src/coordinator/services/provider-proxy-set/inheritance.ts');
 const disappearance = sourceFile('src/coordinator/services/provider-containment-disappearance.ts');
 const reconciler = sourceFile('src/coordinator/services/provider-operation-reconciler.ts');
-const lifecycle = sourceFile('src/coordinator/services/provider-proxy-set-lifecycle.ts');
+const lifecycle = sourceFile('src/coordinator/services/provider-proxy-set/index.ts');
 const disappearanceConsumer = exportedSymbol(disappearance, 'ProviderContainmentDisappearanceConsumer');
 const reconcilerClass = exportedSymbol(reconciler, 'ProviderOperationReconciler');
 const absenceAcceptance = exportedSymbol(lifecycle, 'ContainmentAbsenceAcceptance');
@@ -656,12 +656,12 @@ const EXPECTED_REJECTION_NODE_INVENTORY = [
   'src/coordinator/services/provider-proxy-recovery-policy.ts :: runProviderProxyRecoveryDeadline :: catch#1 :: calls=[] assignments=[]',
   'src/coordinator/services/provider-proxy-recovery-policy.ts :: start :: Promise.then(rejected) :: Promise.resolve(produced).then',
   'src/coordinator/services/provider-proxy-recovery-policy.ts :: start :: catch#1 :: calls=[submit, classifyRejection] assignments=[]',
-  'src/coordinator/services/provider-proxy-set-inheritance.ts :: attemptProviderProxySetInheritance :: catch#1 :: calls=[deps.proveContainmentAbsent] assignments=[]',
-  'src/coordinator/services/provider-proxy-set-inheritance.ts :: attemptProviderProxySetInheritance :: catch#2 :: calls=[] assignments=[]',
-  'src/coordinator/services/provider-proxy-set-inheritance.ts :: proveProviderProxySetContainmentAbsent :: catch#1 :: calls=[] assignments=[]',
-  'src/coordinator/services/provider-proxy-set-inheritance.ts :: redeemCapsule :: catch#1 :: calls=[heartbeatAssembly.stop, client.close] assignments=[]',
-  'src/coordinator/services/provider-proxy-set-lifecycle.ts :: containmentAbsent :: Promise.catch :: authorityToClose .initiateControlClose() .catch',
-  'src/coordinator/services/provider-proxy-set-lifecycle.ts :: createInitialDispositionLatch :: Promise.catch :: promise.catch',
+  'src/coordinator/services/provider-proxy-set/index.ts :: containmentAbsent :: Promise.catch :: authorityToClose .initiateControlClose() .catch',
+  'src/coordinator/services/provider-proxy-set/index.ts :: createInitialDispositionLatch :: Promise.catch :: promise.catch',
+  'src/coordinator/services/provider-proxy-set/inheritance.ts :: attemptProviderProxySetInheritance :: catch#1 :: calls=[deps.proveContainmentAbsent] assignments=[]',
+  'src/coordinator/services/provider-proxy-set/inheritance.ts :: attemptProviderProxySetInheritance :: catch#2 :: calls=[] assignments=[]',
+  'src/coordinator/services/provider-proxy-set/inheritance.ts :: proveProviderProxySetContainmentAbsent :: catch#1 :: calls=[] assignments=[]',
+  'src/coordinator/services/provider-proxy-set/inheritance.ts :: redeemCapsule :: catch#1 :: calls=[heartbeatAssembly.stop, client.close] assignments=[]',
   'src/jobs/provider-operation-terminalization.ts :: terminalizeProviderOperation :: catch#1 :: calls=[] assignments=[]',
 ] as const;
 
@@ -678,7 +678,7 @@ function rejectionJustification(fingerprint: string): string {
   if (fingerprint.startsWith(POLICY_FILE)) {
     return 'The central dispatcher alone classifies producer rejection and deadline cancellation.';
   }
-  if (fingerprint.startsWith('src/coordinator/services/provider-proxy-set-inheritance.ts')) {
+  if (fingerprint.startsWith('src/coordinator/services/provider-proxy-set/inheritance.ts')) {
     return 'Producer-side inheritance protocol cleanup preserves causal evidence without consuming a dispatcher façade.';
   }
   if (fingerprint.includes(' :: containmentAbsent :: ')) {
@@ -759,7 +759,7 @@ const BOUNDARY_AUTHORIZATIONS: readonly JustifiedOccurrence[] = [
   },
   {
     occurrence:
-      'src/coordinator/services/provider-proxy-set-lifecycle.ts :: #absenceAcceptance :: ContextualPropertyAssignment :: ContainmentAbsenceAcceptance.initialDisposition :: lifecycle-public-disposition-property',
+      'src/coordinator/services/provider-proxy-set/index.ts :: #absenceAcceptance :: ContextualPropertyAssignment :: ContainmentAbsenceAcceptance.initialDisposition :: lifecycle-public-disposition-property',
     justification: 'Lifecycle constructs the one public disposition boundary from its unchanged latch promise.',
   },
 ];
@@ -830,10 +830,10 @@ function analyzeAdversarialProgram(program: ts.Program, path: string): Adversari
     return resolved;
   };
   const policyFile = fileAt(POLICY_FILE);
-  const inheritanceFile = fileAt('src/coordinator/services/provider-proxy-set-inheritance.ts');
+  const inheritanceFile = fileAt('src/coordinator/services/provider-proxy-set/inheritance.ts');
   const disappearanceFile = fileAt('src/coordinator/services/provider-containment-disappearance.ts');
   const reconcilerFile = fileAt('src/coordinator/services/provider-operation-reconciler.ts');
-  const lifecycleFile = fileAt('src/coordinator/services/provider-proxy-set-lifecycle.ts');
+  const lifecycleFile = fileAt('src/coordinator/services/provider-proxy-set/index.ts');
   const localOwned = new Map<ts.Symbol, string>([
     [member(exported(policyFile, 'ProviderProxyRecoveryDispatcher'), 'begin'), 'ProviderProxyRecoveryDispatcher.begin'],
     [member(exported(policyFile, 'ProviderProxyRecoveryArbiter'), 'start'), 'ProviderProxyRecoveryArbiter.start'],
@@ -993,43 +993,42 @@ describe('provider proxy recovery policy construction', () => {
       },
       {
         occurrence:
-          'src/coordinator/services/provider-proxy-set-inheritance.ts :: recoverProviderProxySetAtStartup :: startup-set-inheritance',
+          'src/coordinator/services/provider-proxy-set/inheritance.ts :: recoverProviderProxySetAtStartup :: startup-set-inheritance',
         justification: 'The startup façade opens its one inheritance classification turn.',
       },
       {
         occurrence:
-          'src/coordinator/services/provider-proxy-set-inheritance.ts :: recoverProviderProxySetOrdinarily :: ordinary-set-inheritance',
+          'src/coordinator/services/provider-proxy-set/inheritance.ts :: recoverProviderProxySetOrdinarily :: ordinary-set-inheritance',
         justification: 'The ordinary façade opens its one inheritance classification turn.',
       },
       {
-        occurrence:
-          'src/coordinator/services/provider-proxy-set-lifecycle.ts :: #attemptRetirement :: capsule-retirement',
+        occurrence: 'src/coordinator/services/provider-proxy-set/index.ts :: #attemptRetirement :: capsule-retirement',
         justification: 'Capsule retirement is classified by its dedicated lifecycle turn.',
       },
       {
         occurrence:
-          'src/coordinator/services/provider-proxy-set-lifecycle.ts :: #deliverDisappearance :: disappearance-delivery',
+          'src/coordinator/services/provider-proxy-set/index.ts :: #deliverDisappearance :: disappearance-delivery',
         justification:
           'R3 requires every post-start disappearance delivery to enter the dispatcher before consumption.',
       },
       {
         occurrence:
-          'src/coordinator/services/provider-proxy-set-lifecycle.ts :: #recoverExactCapsule :: exact-capsule-recovery',
+          'src/coordinator/services/provider-proxy-set/index.ts :: #recoverExactCapsule :: exact-capsule-recovery',
         justification: 'Exact capsule recovery reduces redemption and absence evidence in one registered turn.',
       },
       {
         occurrence:
-          'src/coordinator/services/provider-proxy-set-lifecycle.ts :: #redeemOpaqueCapsule :: opaque-capsule-redemption',
+          'src/coordinator/services/provider-proxy-set/index.ts :: #redeemOpaqueCapsule :: opaque-capsule-redemption',
         justification: 'Opaque capsule redemption has one registered classification boundary.',
       },
       {
         occurrence:
-          'src/coordinator/services/provider-proxy-set-lifecycle.ts :: #rewriteOpaqueCapsule :: opaque-capsule-rewrite',
+          'src/coordinator/services/provider-proxy-set/index.ts :: #rewriteOpaqueCapsule :: opaque-capsule-rewrite',
         justification: 'Opaque capsule rewriting has one registered classification boundary.',
       },
       {
         occurrence:
-          'src/coordinator/services/provider-proxy-set-lifecycle.ts :: #runContainmentAttempt :: containment-attempt',
+          'src/coordinator/services/provider-proxy-set/index.ts :: #runContainmentAttempt :: containment-attempt',
         justification: 'The containment race reduces stop-and-reap and proof evidence in one registered turn.',
       },
     ];
@@ -1052,47 +1051,47 @@ describe('provider proxy recovery policy construction', () => {
       },
       {
         occurrence:
-          'src/coordinator/services/provider-proxy-set-inheritance.ts :: dispatchProviderProxySetInheritance :: inheritance/set-inheritance',
+          'src/coordinator/services/provider-proxy-set/inheritance.ts :: dispatchProviderProxySetInheritance :: inheritance/set-inheritance',
         justification: 'Both public inheritance façades delegate their one producer start to this adapter.',
       },
       {
         occurrence:
-          'src/coordinator/services/provider-proxy-set-lifecycle.ts :: #attemptRetirement :: retirement/capsule-retirement',
+          'src/coordinator/services/provider-proxy-set/index.ts :: #attemptRetirement :: retirement/capsule-retirement',
         justification: 'The retirement turn invokes only the capsule-retirement producer.',
       },
       {
         occurrence:
-          'src/coordinator/services/provider-proxy-set-lifecycle.ts :: #deliverDisappearance :: delivery/disappearance-consumer',
+          'src/coordinator/services/provider-proxy-set/index.ts :: #deliverDisappearance :: delivery/disappearance-consumer',
         justification: 'R3 routes the captured notice through the registered disappearance consumer.',
       },
       {
         occurrence:
-          'src/coordinator/services/provider-proxy-set-lifecycle.ts :: #recoverExactCapsule :: absence/containment-proof',
+          'src/coordinator/services/provider-proxy-set/index.ts :: #recoverExactCapsule :: absence/containment-proof',
         justification: 'Exact recovery contributes independently proven absence under the absence source id.',
       },
       {
         occurrence:
-          'src/coordinator/services/provider-proxy-set-lifecycle.ts :: #recoverExactCapsule :: redemption/capsule-redemption',
+          'src/coordinator/services/provider-proxy-set/index.ts :: #recoverExactCapsule :: redemption/capsule-redemption',
         justification: 'Exact recovery contributes capsule redemption under the redemption source id.',
       },
       {
         occurrence:
-          'src/coordinator/services/provider-proxy-set-lifecycle.ts :: #redeemOpaqueCapsule :: redemption/capsule-redemption',
+          'src/coordinator/services/provider-proxy-set/index.ts :: #redeemOpaqueCapsule :: redemption/capsule-redemption',
         justification: 'Opaque recovery invokes its sole capsule redemption producer.',
       },
       {
         occurrence:
-          'src/coordinator/services/provider-proxy-set-lifecycle.ts :: #rewriteOpaqueCapsule :: rewrite/capsule-rewrite',
+          'src/coordinator/services/provider-proxy-set/index.ts :: #rewriteOpaqueCapsule :: rewrite/capsule-rewrite',
         justification: 'Opaque recovery invokes its sole capsule rewrite producer.',
       },
       {
         occurrence:
-          'src/coordinator/services/provider-proxy-set-lifecycle.ts :: #runContainmentAttempt :: absence/containment-proof',
+          'src/coordinator/services/provider-proxy-set/index.ts :: #runContainmentAttempt :: absence/containment-proof',
         justification: 'The containment race contributes independent absence proof under the absence source id.',
       },
       {
         occurrence:
-          'src/coordinator/services/provider-proxy-set-lifecycle.ts :: #runContainmentAttempt :: stop-and-reap/role-control',
+          'src/coordinator/services/provider-proxy-set/index.ts :: #runContainmentAttempt :: stop-and-reap/role-control',
         justification: 'The containment race contributes the role-control stop attempt under its distinct source id.',
       },
     ];
@@ -1122,8 +1121,8 @@ describe('provider proxy recovery policy construction', () => {
 
     const consumerFiles = new Set([
       'src/coordinator/services/provider-operation-reconciler.ts',
-      'src/coordinator/services/provider-proxy-set-inheritance.ts',
-      'src/coordinator/services/provider-proxy-set-lifecycle.ts',
+      'src/coordinator/services/provider-proxy-set/inheritance.ts',
+      'src/coordinator/services/provider-proxy-set/index.ts',
     ]);
     const forbiddenAllSettled = SOURCE_FILES.flatMap((file) => {
       if (!consumerFiles.has(relativePath(file))) return [];
@@ -1306,7 +1305,7 @@ export function escape(
       new Map([
         [
           path,
-          `import { recoverProviderProxySetOrdinarily as recover } from './coordinator/services/provider-proxy-set-inheritance.js';
+          `import { recoverProviderProxySetOrdinarily as recover } from './coordinator/services/provider-proxy-set/inheritance.js';
 
 export async function erase(...args: Parameters<typeof recover>) {
   try {
@@ -1342,7 +1341,7 @@ export async function erase(...args: Parameters<typeof recover>) {
       new Map([
         [
           path,
-          `import { recoverProviderProxySetOrdinarily as realRecover } from './coordinator/services/provider-proxy-set-inheritance.js';
+          `import { recoverProviderProxySetOrdinarily as realRecover } from './coordinator/services/provider-proxy-set/inheritance.js';
 
 export async function erase(
   { recover }: { recover: typeof realRecover },
@@ -1387,7 +1386,7 @@ export async function erase(
         [
           path,
           `import { isProviderProxyRecoveryFatalError } from './coordinator/services/provider-proxy-recovery-policy.js';
-import { recoverProviderProxySetOrdinarily } from './coordinator/services/provider-proxy-set-inheritance.js';
+import { recoverProviderProxySetOrdinarily } from './coordinator/services/provider-proxy-set/inheritance.js';
 
 export async function relabel(...args: Parameters<typeof recoverProviderProxySetOrdinarily>) {
   try {

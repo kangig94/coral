@@ -385,7 +385,7 @@ export async function runShutdownSequence({
     await runStep('stream response close', () => stream.end());
   }
   await waitForObservedShutdownTask(serverClosed);
-  await runStep('recovery coordinator teardown', teardownRecoveryCoordinator);
+  await runBudgetedStep('recovery coordinator teardown', teardownRecoveryCoordinator);
   await runStep('ownership checker teardown', () => state.ownershipCheckerTeardown?.());
   state.ownershipCheckerTeardown = null;
 
@@ -431,7 +431,10 @@ export async function runShutdownSequence({
       quiescePorts = handoffQuiescePorts();
     });
     for (const port of quiescePorts) {
-      await runStep('app-server handoff quiesce', () => port.quiesceAppServerJobsForHandoff());
+      await runRequiredBudgetedStep('app-server handoff quiesce', async () => {
+        await port.quiesceAppServerJobsForHandoff();
+        return { confirmed: true };
+      });
     }
     await runRequiredBudgetedStep('provider host drain for handoff', async (signal) => {
       await providerHostManager.drainForHandoff(signal);
@@ -447,7 +450,7 @@ export async function runShutdownSequence({
   for (const [source, store] of discussStores) {
     await runStep(`discuss store '${source}' dispose`, () => store.dispose());
   }
-  await runStep('lifecycle reactor dispose', disposeLifecycleReactor);
+  await runBudgetedStep('lifecycle reactor dispose', async () => disposeLifecycleReactor());
 
   // Socket release is the last step before lifecycle stop / process exit.
   // No async work may run between this resolution and `onStopped()`; that

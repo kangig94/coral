@@ -11,7 +11,7 @@ import {
   activateProviderOperation,
   providerOperationErrorCode,
 } from '#src/coordinator/services/provider-proxy-operation-activation.js';
-import type { ProviderProxySetIdentity } from '#src/coordinator/services/provider-proxy-set-identity.js';
+import type { ProviderProxySetIdentity } from '#src/coordinator/services/provider-proxy-set/identity.js';
 import {
   createControlEndpoint,
   type ControlChallenge,
@@ -418,6 +418,7 @@ describe('provider-proxy control endpoint', () => {
           setIdentity,
           mutationRpcTimeoutMs: 5_000,
           faultAuthority: (fault) => faults.push(fault),
+          reportIncident: () => undefined,
         },
         {
           jobId: '55555555-5555-4555-8555-555555555555',

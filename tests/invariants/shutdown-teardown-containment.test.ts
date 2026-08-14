@@ -6,10 +6,18 @@ import { describe, expect, it } from 'vitest';
 
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const SHUTDOWN_PATH = 'src/coordinator/shutdown.ts';
+const LIFECYCLE_PATH = 'src/coordinator/lifecycle.ts';
 const ADMISSION_PATH = 'src/coordinator/live/admission.ts';
 const FIXTURE_ROOT = 'tests/invariants/fixtures/shutdown-teardown-containment';
 
-const SHUTDOWN_CONTAINMENT_HELPERS = new Set(['runStep', 'runBudgetedStep', 'runRequiredBudgetedStep']);
+const SHUTDOWN_BUDGETED_HELPERS = new Set(['runBudgetedStep', 'runRequiredBudgetedStep']);
+const SHUTDOWN_NON_BLOCKING_STEP_TASKS = new Set([
+  'server.closeAllConnections',
+  'state.ownershipCheckerTeardown',
+  'store.dispose',
+  'stream.end',
+  'terminateAllFn',
+]);
 const SHUTDOWN_NON_FINALIZER_AWAIT_ALLOWLIST = new Set([
   'waitForObservedShutdownTask(serverClosed)',
   'waitForObservedShutdownTask(ipcServerClosed)',
@@ -100,18 +108,53 @@ function exactSingleIdentifierCall(expression: ts.Expression): string | null {
   return `${target}(${argument.text})`;
 }
 
-function isContainedAwait(node: ts.AwaitExpression, shutdownSequence: NamedFunction): boolean {
-  const expression = unwrapExpression(node.expression);
-  const directTarget = ts.isCallExpression(expression) ? expressionName(expression.expression) : null;
-  const exactCall = exactSingleIdentifierCall(expression);
-  if (
-    (directTarget !== null && SHUTDOWN_CONTAINMENT_HELPERS.has(directTarget)) ||
-    (exactCall !== null && SHUTDOWN_NON_FINALIZER_AWAIT_ALLOWLIST.has(exactCall))
-  ) {
-    return true;
+function containsAwaitOrValueReturn(node: ts.Block): boolean {
+  let match = false;
+
+  function visit(current: ts.Node): void {
+    if (match) return;
+    if (current !== node && ts.isFunctionLike(current)) return;
+    if (ts.isAwaitExpression(current) || (ts.isReturnStatement(current) && current.expression !== undefined)) {
+      match = true;
+      return;
+    }
+    ts.forEachChild(current, visit);
   }
 
-  for (let current = node.parent; current && current !== shutdownSequence; current = current.parent) {
+  visit(node);
+  return match;
+}
+
+function isDeadlineAwareInflightDrain(call: ts.CallExpression): boolean {
+  if (expressionName(call.expression) !== 'waitForInflightDrain' || call.arguments.length !== 3) return false;
+
+  const remainingBudget = unwrapExpression(call.arguments[1]);
+  return ts.isCallExpression(remainingBudget) && expressionName(remainingBudget.expression) === 'remainingDrain';
+}
+
+function isNonBlockingRunStep(call: ts.CallExpression): boolean {
+  const task = call.arguments[1] && unwrapExpression(call.arguments[1]);
+  if (task === undefined) return false;
+  if (ts.isIdentifier(task)) return SHUTDOWN_NON_BLOCKING_STEP_TASKS.has(task.text);
+  if (!ts.isArrowFunction(task) && !ts.isFunctionExpression(task)) return false;
+  if (ts.isBlock(task.body)) return !containsAwaitOrValueReturn(task.body);
+
+  const result = unwrapExpression(task.body);
+  if (!ts.isCallExpression(result)) return false;
+  const target = expressionName(result.expression);
+  return isDeadlineAwareInflightDrain(result) || (target !== null && SHUTDOWN_NON_BLOCKING_STEP_TASKS.has(target));
+}
+
+function enclosingShutdownHelper(node: ts.AwaitExpression, shutdownPath: NamedFunction): ts.CallExpression | null {
+  const expression = unwrapExpression(node.expression);
+  if (ts.isCallExpression(expression)) {
+    const directTarget = expressionName(expression.expression);
+    if (directTarget === 'runStep' || (directTarget !== null && SHUTDOWN_BUDGETED_HELPERS.has(directTarget))) {
+      return expression;
+    }
+  }
+
+  for (let current = node.parent; current && current !== shutdownPath; current = current.parent) {
     if (
       !ts.isArrowFunction(current) &&
       !ts.isFunctionExpression(current) &&
@@ -129,12 +172,50 @@ function isContainedAwait(node: ts.AwaitExpression, shutdownSequence: NamedFunct
       unwrapExpression(parent.arguments[1]) === current
     ) {
       const helper = expressionName(parent.expression);
-      if (helper !== null && SHUTDOWN_CONTAINMENT_HELPERS.has(helper)) return true;
+      if (helper === 'runStep' || (helper !== null && SHUTDOWN_BUDGETED_HELPERS.has(helper))) return parent;
     }
-    return false;
+    return null;
   }
 
-  return false;
+  return null;
+}
+
+function shutdownAwaitViolation(node: ts.AwaitExpression, shutdownPath: NamedFunction): string | null {
+  const expression = unwrapExpression(node.expression);
+  const exactCall = exactSingleIdentifierCall(expression);
+  if (exactCall !== null && SHUTDOWN_NON_FINALIZER_AWAIT_ALLOWLIST.has(exactCall)) return null;
+
+  const helperCall = enclosingShutdownHelper(node, shutdownPath);
+  const helper = helperCall === null ? null : expressionName(helperCall.expression);
+  if (helper !== null && SHUTDOWN_BUDGETED_HELPERS.has(helper)) return null;
+  if (helper === 'runStep' && helperCall !== null && isNonBlockingRunStep(helperCall)) return null;
+  if (helper === 'runStep') {
+    return `plain runStep has no shutdown deadline; use ${[...SHUTDOWN_BUDGETED_HELPERS].join(' or ')}`;
+  }
+  return `await ${awaitedExpressionLabel(node)} bypasses shutdown containment`;
+}
+
+function containmentSequenceEntryPoint(
+  shutdownPath: NamedFunction,
+  containmentSequence: NamedFunction | undefined,
+): ts.AwaitExpression | null {
+  const containmentSequenceName = containmentSequence && functionName(containmentSequence);
+  if (containmentSequenceName === null || containmentSequenceName === undefined) return null;
+
+  const matches: ts.AwaitExpression[] = [];
+  function visit(node: ts.Node): void {
+    if (ts.isAwaitExpression(node)) {
+      const expression = unwrapExpression(node.expression);
+      if (ts.isCallExpression(expression) && expressionName(expression.expression) === containmentSequenceName) {
+        matches.push(node);
+        return;
+      }
+    }
+    ts.forEachChild(node, visit);
+  }
+
+  if (shutdownPath.body) visit(shutdownPath.body);
+  return matches.length === 1 ? matches[0] : null;
 }
 
 function formatViolation(functionNode: NamedFunction, node: ts.Node, detail: string): string {
@@ -143,19 +224,21 @@ function formatViolation(functionNode: NamedFunction, node: ts.Node, detail: str
   return `${sourceFile.fileName}:${line + 1} ${functionName(functionNode)}: ${detail}`;
 }
 
-function shutdownAwaitViolations(sourceFile: ts.SourceFile): string[] {
-  const shutdownSequence = findFunction(sourceFile, 'runShutdownSequence');
+function shutdownAwaitViolations(
+  sourceFile: ts.SourceFile,
+  pathFunctionName = 'runShutdownSequence',
+  containmentSequence?: NamedFunction,
+): string[] {
+  const shutdownSequence = findFunction(sourceFile, pathFunctionName);
+  const sequenceEntryPoint = containmentSequenceEntryPoint(shutdownSequence, containmentSequence);
   const violations: string[] = [];
 
   function visit(node: ts.Node): void {
-    if (ts.isAwaitExpression(node) && !isContainedAwait(node, shutdownSequence)) {
-      violations.push(
-        formatViolation(
-          shutdownSequence,
-          node,
-          `await ${awaitedExpressionLabel(node)} bypasses containment helpers ${[...SHUTDOWN_CONTAINMENT_HELPERS].join(', ')}`,
-        ),
-      );
+    // The delegating path starts containment here. Its callbacks are checked where the sequence invokes them.
+    if (node === sequenceEntryPoint) return;
+    if (ts.isAwaitExpression(node)) {
+      const violation = shutdownAwaitViolation(node, shutdownSequence);
+      if (violation !== null) violations.push(formatViolation(shutdownSequence, node, violation));
     }
     ts.forEachChild(node, visit);
   }
@@ -236,13 +319,61 @@ function childTerminationViolations(sourceFile: ts.SourceFile): string[] {
 
 describe('shutdown teardown containment invariant', () => {
   it('contains every awaited shutdown finalizer or names an exact non-finalizer await', () => {
-    expect(shutdownAwaitViolations(readSource(SHUTDOWN_PATH))).toEqual([]);
+    const shutdownSource = readSource(SHUTDOWN_PATH);
+    const shutdownSequence = findFunction(shutdownSource, 'runShutdownSequence');
+    expect([
+      ...shutdownAwaitViolations(shutdownSource),
+      ...shutdownAwaitViolations(readSource(LIFECYCLE_PATH), 'shutdown', shutdownSequence),
+    ]).toEqual([]);
   });
 
   it('rejects a bare awaited shutdown finalizer mutation', () => {
     expect(shutdownAwaitViolations(readFixture('shutdown-bare-await'))).toEqual([
-      `${FIXTURE_ROOT}/shutdown-bare-await.ts:2 runShutdownSequence: ` +
-        'await terminateAllFn() bypasses containment helpers runStep, runBudgetedStep, runRequiredBudgetedStep',
+      `${FIXTURE_ROOT}/shutdown-bare-await.ts:2 runShutdownSequence: await terminateAllFn() bypasses shutdown containment`,
+    ]);
+  });
+
+  it('rejects a potentially blocking finalizer inside plain runStep', () => {
+    const mutation = parseSource(
+      SHUTDOWN_PATH,
+      `async function runShutdownSequence() {
+        await runStep('provider operation reconciler drain', stopProviderOperationReconciler);
+      }`,
+    );
+    expect(shutdownAwaitViolations(mutation)).toEqual([
+      `${SHUTDOWN_PATH}:2 runShutdownSequence: ` +
+        'plain runStep has no shutdown deadline; use runBudgetedStep or runRequiredBudgetedStep',
+    ]);
+  });
+
+  it('rejects a bare awaited finalizer in the lifecycle stopped-state path', () => {
+    const mutation = parseSource(
+      LIFECYCLE_PATH,
+      `function createLifecycle() {
+        async function shutdown() {
+          await stopProviderOperationReconciler('drain');
+        }
+      }`,
+    );
+    expect(shutdownAwaitViolations(mutation, 'shutdown')).toEqual([
+      `${LIFECYCLE_PATH}:3 shutdown: await stopProviderOperationReconciler() bypasses shutdown containment`,
+    ]);
+  });
+
+  it('does not silently exempt multiple entries into a containment sequence', () => {
+    const containmentSource = parseSource(SHUTDOWN_PATH, 'async function runShutdownSequence() {}');
+    const mutation = parseSource(
+      LIFECYCLE_PATH,
+      `async function shutdown() {
+        await runShutdownSequence();
+        await runShutdownSequence();
+      }`,
+    );
+    expect(
+      shutdownAwaitViolations(mutation, 'shutdown', findFunction(containmentSource, 'runShutdownSequence')),
+    ).toEqual([
+      `${LIFECYCLE_PATH}:2 shutdown: await runShutdownSequence() bypasses shutdown containment`,
+      `${LIFECYCLE_PATH}:3 shutdown: await runShutdownSequence() bypasses shutdown containment`,
     ]);
   });
 

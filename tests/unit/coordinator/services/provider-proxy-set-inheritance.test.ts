@@ -39,16 +39,16 @@ import {
   attemptProviderProxySetInheritance,
   createProviderProxySetInheritance,
   type ProviderProxySetLocator,
-} from '#src/coordinator/services/provider-proxy-set-inheritance.js';
+} from '#src/coordinator/services/provider-proxy-set/inheritance.js';
 import {
   isProviderProxyOperationAuthority,
   notifyProviderProxyControlEstablished,
   subscribeProviderProxyControlEstablished,
   type ProviderProxyOperationAuthority,
 } from '#src/coordinator/live/provider-proxy/operation-route.js';
-import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set-claim-mirror.js';
-import { providerProxySetIdentityFromRecord } from '#src/coordinator/services/provider-proxy-set-identity.js';
-import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set-lifecycle.js';
+import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set/claim-mirror.js';
+import { providerProxySetIdentityFromRecord } from '#src/coordinator/services/provider-proxy-set/identity.js';
+import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set/index.js';
 import { flushMicrotasks, VirtualTime } from '#tools/simulation/core/virtual-time.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
@@ -1147,6 +1147,7 @@ describe('createProviderProxySetInheritance', () => {
       recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
         'containment-proof': async () => null,
       }),
+      reportLifecycle: () => undefined,
     });
     lifecycle.initializeClaimSlots();
     lifecycle.installDiscoveredCapsules([{ path: '/capsules/claim-backed.handoff.json', capsule }]);
@@ -1208,6 +1209,7 @@ describe('createProviderProxySetInheritance', () => {
       recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
         'containment-proof': async () => null,
       }),
+      reportLifecycle: () => undefined,
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
@@ -1277,6 +1279,7 @@ describe('createProviderProxySetInheritance', () => {
           acceptance: { kind: 'accepted', operation: notice.operation, disposition: 'record-absent' },
         }),
       }),
+      reportLifecycle: () => undefined,
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
@@ -1338,6 +1341,7 @@ describe('createProviderProxySetInheritance', () => {
           acceptance: { kind: 'accepted', operation: notice.operation, disposition: 'record-absent' },
         }),
       }),
+      reportLifecycle: () => undefined,
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();

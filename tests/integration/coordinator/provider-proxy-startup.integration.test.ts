@@ -5,19 +5,19 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { createExecutionServices } from '#src/coordinator/composition/execution-services.js';
 import { LocalOperationRegistry } from '#src/coordinator/services/operation-registry.js';
-import { ProviderProxySetLifecycleRef } from '#src/coordinator/services/provider-proxy-set-lifecycle-ref.js';
+import { ProviderProxySetLifecycleRef } from '#src/coordinator/services/provider-proxy-set/lifecycle-ref.js';
 import {
   attemptProviderProxySetInheritance,
   createProviderProxySetInheritance,
   type ProviderProxySetRedemptionOutcome,
-} from '#src/coordinator/services/provider-proxy-set-inheritance.js';
+} from '#src/coordinator/services/provider-proxy-set/inheritance.js';
 import {
   ProviderOperationReconciler,
   StartupSetRecoveryProducer,
   type StartupSetRecoveryPort,
 } from '#src/coordinator/services/provider-operation-reconciler.js';
-import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set-claim-mirror.js';
-import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set-lifecycle.js';
+import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set/claim-mirror.js';
+import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set/index.js';
 import type { DisappearanceDeliveryAttemptOutcome } from '#src/coordinator/services/provider-containment-disappearance.js';
 import {
   isProviderProxyRecoveryFatalError,
@@ -26,7 +26,7 @@ import {
 import {
   providerProxySetIdentityFromRecord,
   providerProxySetKey,
-} from '#src/coordinator/services/provider-proxy-set-identity.js';
+} from '#src/coordinator/services/provider-proxy-set/identity.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema, type Database } from '#src/store/db.js';
 import {
@@ -209,6 +209,7 @@ function lifecycleFor(
     controlEstablished: () => undefined,
     time: options.time,
     recoveryDispatcher,
+    reportLifecycle: () => undefined,
   });
   lifecycle.initializeClaimSlots();
   return lifecycle;

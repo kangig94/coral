@@ -2,7 +2,7 @@ import type { ProviderProxyOperationSnapshot } from '../../src/coordinator/servi
 import type {
   CreateProviderProxySetInheritanceOptions,
   ProviderProxySetInheritanceDeps,
-} from '../../src/coordinator/services/provider-proxy-set-inheritance.js';
+} from '../../src/coordinator/services/provider-proxy-set/inheritance.js';
 
 declare const operationsOnly: { operationsFor: () => never[] };
 declare const fullSnapshot: { operationsFor: () => never[]; providerRootsFor: () => never[] };

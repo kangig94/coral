@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import { operationIdentitySchema } from '../../provider-proxy/protocol.js';
 import type { ProviderOperationIdentity } from '../../store/provider-operation-record.js';
-import { providerProxySetIdentitySchema, type ProviderProxySetIdentity } from './provider-proxy-set-identity.js';
+import { providerProxySetIdentitySchema, type ProviderProxySetIdentity } from './provider-proxy-set/identity.js';
 
 export type ContainmentDisappearanceNotice = Readonly<{
   operation: ProviderOperationIdentity;

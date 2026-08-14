@@ -23,13 +23,13 @@ import {
   type DisappearanceDeliveryAttemptOutcome,
 } from './provider-containment-disappearance.js';
 import type { ProviderHandoffCapsuleRetirementOutcome } from './provider-proxy-capsule-discovery.js';
-import { providerProxySetIdentitiesEqual, type ProviderProxySetIdentity } from './provider-proxy-set-identity.js';
+import { providerProxySetIdentitiesEqual, type ProviderProxySetIdentity } from './provider-proxy-set/identity.js';
 import type {
   ProviderProxySetAvailabilityIncident,
   ProviderProxySetInheritanceOutcome,
   ProviderProxySetLocator,
   ProviderProxySetRedemptionOutcome,
-} from './provider-proxy-set-inheritance.js';
+} from './provider-proxy-set/inheritance.js';
 
 export const PROVIDER_PROXY_RECOVERY_PRODUCERS = [
   'disappearance-terminalization',

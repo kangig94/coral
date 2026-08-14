@@ -60,7 +60,7 @@ import {
   MAX_PROVIDER_REPLAY_BYTES,
   MAX_PROVIDER_REPLAY_EVENTS,
 } from '#src/provider-proxy/ledger.js';
-import { proxyHandoffRedeemResultSchema } from '#src/coordinator/services/provider-proxy-set-inheritance.js';
+import { proxyHandoffRedeemResultSchema } from '#src/coordinator/services/provider-proxy-set/inheritance.js';
 import { PROXY_CONTROL_HEARTBEAT_MS, PROXY_CONTROL_LEASE_MS } from '#src/provider-proxy/orphan-deadline.js';
 import {
   decodeProxyControlFrame,
@@ -718,6 +718,7 @@ function activationDepsFor(set: ProxyUnderTest): ProviderProxyOperationActivatio
     proxyClient: set.control,
     guardianClient: set.control,
     faultAuthority: () => undefined,
+    reportIncident: () => undefined,
     setIdentity: {
       buildSetId: set.shared.buildSetId,
       hostFingerprint: FINGERPRINT,

@@ -30,8 +30,8 @@ import {
 } from '#src/coordinator/live/provider-proxy/operation-route.js';
 import { establishRoleControl } from '#src/coordinator/live/provider-proxy/role-control.js';
 import { createProviderProxySetAuthority } from '#src/coordinator/live/provider-proxy/set-authority.js';
-import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set-claim-mirror.js';
-import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set-lifecycle.js';
+import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set/claim-mirror.js';
+import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set/index.js';
 import type { ControlClient } from '#src/provider-proxy/control-client.js';
 import { connectControlClient } from '#src/provider-proxy/control-client.js';
 import { createControlEndpoint, type ControlChallengeAuthority } from '#src/provider-proxy/control-endpoint.js';
@@ -296,6 +296,7 @@ describe('createProviderProxyAcquisitionSteps', () => {
           acceptance: { kind: 'accepted', operation: notice.operation, disposition: 'record-absent' },
         }),
       }),
+      reportLifecycle: () => undefined,
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();

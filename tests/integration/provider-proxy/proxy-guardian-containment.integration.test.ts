@@ -70,13 +70,13 @@ import {
   providerOperationErrorCode,
   providerOperationPrepareAttempt,
 } from '#src/coordinator/services/provider-proxy-operation-activation.js';
-import type { ProviderProxySetIdentity } from '#src/coordinator/services/provider-proxy-set-identity.js';
+import type { ProviderProxySetIdentity } from '#src/coordinator/services/provider-proxy-set/identity.js';
 import { createAppServerProxyRoute } from '#src/coordinator/services/provider-proxy-launch-route.js';
 import { ProviderOperationReconciler } from '#src/coordinator/services/provider-operation-reconciler.js';
 import { LocalOperationRegistry } from '#src/coordinator/services/operation-registry.js';
-import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set-claim-mirror.js';
-import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set-lifecycle.js';
-import { ProviderProxySetLifecycleRef } from '#src/coordinator/services/provider-proxy-set-lifecycle-ref.js';
+import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set/claim-mirror.js';
+import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set/index.js';
+import { ProviderProxySetLifecycleRef } from '#src/coordinator/services/provider-proxy-set/lifecycle-ref.js';
 import { createProviderProxyAuthorityFaultLatch } from '#src/coordinator/services/provider-proxy-authority-fault.js';
 import { DefaultProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
 import {
@@ -508,6 +508,7 @@ async function startCoordinatorActivationSet() {
 function establishActivationRoute(setIdentity: ProviderProxySetIdentity) {
   const claims = new ProviderProxySetClaimMirror();
   claims.initialize([]);
+  const authorityFaults = createProviderProxyAuthorityFaultLatch();
   const lifecycle = new ProviderProxySetLifecycle({
     claims,
     controlEstablished: () => undefined,
@@ -515,14 +516,16 @@ function establishActivationRoute(setIdentity: ProviderProxySetIdentity) {
     recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
       'containment-proof': () => new Promise<never>(() => undefined),
     }),
+    reportLifecycle: () => undefined,
   });
   lifecycle.initializeClaimSlots();
   lifecycle.completeStartupDiscovery();
   const authority = {
     proxyInstanceId: setIdentity.proxyInstanceId,
     setIdentity,
-    faulted: new Promise<never>(() => undefined),
-    onFault: () => () => undefined,
+    faulted: authorityFaults.faulted,
+    onFault: authorityFaults.onFault,
+    onIncident: authorityFaults.onIncident,
     stopHeartbeats: () => undefined,
     stopAndReap: () => new Promise<never>(() => undefined),
     initiateControlClose: async () => undefined,
@@ -530,7 +533,7 @@ function establishActivationRoute(setIdentity: ProviderProxySetIdentity) {
   const admission = lifecycle.beginFreshAcquisition('activation-route');
   if (admission.kind !== 'accepted') throw new Error('expected activation route admission');
   lifecycle.acquisitionSucceeded(admission.slotId, authority);
-  return { lifecycle, authority };
+  return { lifecycle, authority, authorityFaults };
 }
 
 const ROTATION_HOST_SPEC: ProviderServerSpec = {
@@ -920,6 +923,7 @@ describe('provider proxy activation against a real guardian', () => {
       setIdentity: set.setIdentity,
       mutationRpcTimeoutMs: 5_000,
       faultAuthority: () => undefined,
+      reportIncident: () => undefined,
     };
     const prepared = await prepareProviderOperation(deps, providerOperationPrepareAttempt(deps, operation, PREPARED));
     if (prepared.state !== 'pending-activation') throw new Error('expected a prepared operation');
@@ -959,17 +963,16 @@ describe('provider proxy activation against a real guardian', () => {
     { code: 'unauthorized_control', prepare: true },
   ] as const)('keeps real endpoint $code refusal before semantic start', async ({ code, prepare }) => {
     const set = await startCoordinatorActivationSet();
-    const { lifecycle, authority } = establishActivationRoute(set.setIdentity);
+    const { lifecycle, authority, authorityFaults } = establishActivationRoute(set.setIdentity);
     const faults: unknown[] = [];
+    authorityFaults.onFault((fault) => faults.push(fault));
     const deps = {
       proxyClient: set.proxyControl,
       guardianClient: set.control,
       setIdentity: set.setIdentity,
       mutationRpcTimeoutMs: 5_000,
-      faultAuthority: (fault: unknown) => {
-        faults.push(fault);
-        lifecycle.faultAuthority(set.setIdentity);
-      },
+      faultAuthority: authorityFaults.latch,
+      reportIncident: () => undefined,
     };
     const operation = {
       jobId: randomUUID(),
@@ -1007,17 +1010,16 @@ describe('provider proxy activation against a real guardian', () => {
 
   it('faults and removes routing when a raw recordStart failure follows a real semantic start', async () => {
     const set = await startCoordinatorActivationSet();
-    const { lifecycle, authority } = establishActivationRoute(set.setIdentity);
+    const { lifecycle, authority, authorityFaults } = establishActivationRoute(set.setIdentity);
     const faults: unknown[] = [];
+    authorityFaults.onFault((fault) => faults.push(fault));
     const deps = {
       proxyClient: set.proxyControl,
       guardianClient: set.control,
       setIdentity: set.setIdentity,
       mutationRpcTimeoutMs: 5_000,
-      faultAuthority: (fault: unknown) => {
-        faults.push(fault);
-        lifecycle.faultAuthority(set.setIdentity);
-      },
+      faultAuthority: authorityFaults.latch,
+      reportIncident: () => undefined,
     };
     const operation = {
       jobId: randomUUID(),
@@ -1328,6 +1330,7 @@ describe('provider proxy cumulative root rotation', () => {
       recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
         'containment-proof': async () => null,
       }),
+      reportLifecycle: () => undefined,
       onSlotReleased: (routeKey) => manager.providerProxySlotReleased(routeKey),
     });
     lifecycle.initializeClaimSlots();

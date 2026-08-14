@@ -64,7 +64,7 @@ type HeartbeatLoopState =
  *  heartbeat interval. A failed echo is handed to `onError` and not retried early — every production caller
  *  logs it, so a degrading tenancy is visible before its deadline fires, and the enforcer's own deadline,
  *  not this loop, is what bounds the fallout of one that cannot be refreshed. Exported so
- *  `services/provider-proxy-set-inheritance.ts` keeps a redeemed tenancy alive the identical way a freshly
+ *  `services/provider-proxy-set/inheritance.ts` keeps a redeemed tenancy alive the identical way a freshly
  *  established one is kept alive here — one heartbeat mechanism, not two. */
 function startHeartbeatLoop(
   client: ControlClient,

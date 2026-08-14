@@ -1,5 +1,5 @@
 import { currentCoralStoreFormat } from '#src/store-format.js';
-import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set-claim-mirror.js';
+import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set/claim-mirror.js';
 import { applyBundledStoreSchema, type Database } from '#src/store/db.js';
 import {
   compareAndSwapProviderOperation,

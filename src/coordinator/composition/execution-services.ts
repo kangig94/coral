@@ -36,8 +36,8 @@ import {
 import {
   providerProxySetIdentitiesEqual,
   providerProxySetIdentityFromRecord,
-} from '../services/provider-proxy-set-identity.js';
-import { ProviderProxySetLifecycle } from '../services/provider-proxy-set-lifecycle.js';
+} from '../services/provider-proxy-set/identity.js';
+import { ProviderProxySetLifecycle } from '../services/provider-proxy-set/index.js';
 import type { ProviderProxySetLifecycleFatalError } from '../services/provider-proxy-recovery-policy.js';
 import {
   discoverProviderHandoffCapsules,
@@ -45,11 +45,11 @@ import {
 } from '../services/provider-proxy-capsule-discovery.js';
 import { writeHandoffCapsuleFile } from '../../provider-proxy/handoff-capsule.js';
 import { proxyOperationStatusNonceSchema } from '../../provider-proxy/protocol.js';
-import { providerProxySetAvailabilityReason } from '../services/provider-proxy-set-inheritance.js';
+import { providerProxySetAvailabilityReason } from '../services/provider-proxy-set/inheritance.js';
 import {
   recoverProviderProxySetAtStartup,
   recoverProviderProxySetOrdinarily,
-} from '../services/provider-proxy-set-inheritance.js';
+} from '../services/provider-proxy-set/inheritance.js';
 import {
   createProviderProxyRecoveryDispatcher,
   providerProxyRecoveryRoleControlPort,
@@ -252,6 +252,7 @@ export function createExecutionServices({
       backendLog.warn(
         `Provider proxy lifecycle ${violation.stage} woke ${violation.latenessMs}ms after its requested time.`,
       ),
+    reportLifecycle: (severity, message) => backendLog[severity](message),
     onError: (message) => backendLog.warn(message),
     onSlotReleased: (routeKey) => world.providerHostManager.providerProxySlotReleased?.(routeKey),
   });

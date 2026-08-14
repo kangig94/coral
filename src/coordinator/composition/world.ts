@@ -25,12 +25,12 @@ import {
 import { createHostAdmissionCollection, exactHostRefsMatch } from '../../providers/host-admission.js';
 import type { ProviderProxyAuthorityRegistry } from '../live/provider-proxy/authority.js';
 import { LocalOperationRegistry } from '../services/operation-registry.js';
-import { ProviderProxySetClaimMirror } from '../services/provider-proxy-set-claim-mirror.js';
-import { ProviderProxySetLifecycleRef } from '../services/provider-proxy-set-lifecycle-ref.js';
+import { ProviderProxySetClaimMirror } from '../services/provider-proxy-set/claim-mirror.js';
+import { ProviderProxySetLifecycleRef } from '../services/provider-proxy-set/lifecycle-ref.js';
 import {
   createProviderProxySetInheritance,
   type ProviderProxySetInheritance,
-} from '../services/provider-proxy-set-inheritance.js';
+} from '../services/provider-proxy-set/inheritance.js';
 import type { IdleTimer } from '../live/idle.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { CoralSetupError } from '../../runtime/errors.js';

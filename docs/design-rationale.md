@@ -90,6 +90,14 @@ The same provider boundary is the usage boundary. Raw provider counters are norm
 
 Adding a new provider is declaring its middleware stack, but managed artifact ownership also carries a hard registration gate: `ProviderRegistry.register` rejects a managed definition unless it declares the versioned `provider-artifact-discard.v1` protocol with both `discardArtifacts` and `reconcileDiscard`. Reconciliation is closed over `applied | not-applied | definitive-failure | unknown`, so an unknown discard cannot be silently treated as success. Provider implementations stay pure: they emit bodies only. The coordinator wraps each body in an envelope (`seq`, `ts`, `stream`, `refs`) and appends to the Journal. Providers never touch envelopes, seqs, or the Journal directly.
 
+### 3.1 Why mutation ambiguity and supervision loss are separate axes
+
+A failed provider-proxy mutation raises two independent questions: **could the remote mutation have taken effect**, and **does that ambiguity threaten continued supervision of the set**? The first distinguishes a proven pre-effect refusal from an indeterminate result. The second determines whether containment is justified. A replay-safe attach, settle, or stop can have an indeterminate result while its durable phase retains retry ownership; that is an operation incident, not proof that live siblings have lost supervision.
+
+Retry-safe incidents therefore travel a repeatable, non-consuming channel and record `preserve`. They must not occupy the one-shot terminal authority-fault latch, because consuming that latch authorizes a set-wide transition rather than merely reporting one failed operation call. Control-channel closure is different: it is evidence that the supervisory authority itself is gone, so it overrides the individual method's disposition even when that method is retry-safe.
+
+The destructive boundary encodes the same distinction. Reaping a set with live claims requires a containment-qualified terminal fault; faultless retirement may reach `stopAndReap` only with literal `liveClaims: 0`. The rejected alternative is the old one-axis rule that treated “may have taken effect” as authority loss by itself. Under that rule, an unrelated replay-safe settlement failure could reap executing siblings even though their supervision remained intact. Approximate idleness or a non-consuming incident is likewise not a substitute for either qualification.
+
 ## 4. Two Consumer Interfaces
 
 Journal and Corpus consumers are deliberately split:
