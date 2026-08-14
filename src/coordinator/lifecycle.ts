@@ -16,7 +16,7 @@ import { isTerminalPhase } from '../jobs/phase.js';
 import { parsePositiveInt } from './live/worker-limits.js';
 import { createRecoveryCoordinator, type RecoveryCoordinator } from './services/recovery/index.js';
 import { createReplacementBackendOwnershipChecker } from './ownership-checker.js';
-import { writeResultArtifact } from '../jobs/terminal/export.js';
+import { writeWorkflowResultArtifact } from '../workflow/result-artifact.js';
 import type { JobStore } from '../jobs/store.js';
 import type { JobStatus } from '../jobs/records.js';
 import { jobLaunchRequestBodySchema } from '../jobs/launch.js';
@@ -458,7 +458,7 @@ function createCrashedJobTerminalizationPolicy(
       });
       if (status.jobKind === 'workflow') {
         try {
-          writeResultArtifact(storage, jobsRoot, status.jobId, '');
+          writeWorkflowResultArtifact(storage, jobsRoot, status.jobId, '');
         } catch {
           // Journal terminal state is authoritative; export materialization is best-effort.
         }
@@ -531,9 +531,10 @@ export function createCrashedJobTerminalizationRetryPlan(
 
 /**
  * Prune terminal jobs' export artifacts (`<exports>/jobs/<id>/`). These dirs are a
- * rebuildable cache of the journal — `JobStore.ensureResultArtifact` regenerates
- * `result.md` from the journal terminal event on the next read — so pruning only
- * reclaims disk; `jobs list`/`detail` keep working from the journal projection.
+ * rebuildable cache of durable state — `JobStore.ensureResultArtifact` regenerates
+ * `result.md` from the journal terminal event and workflow-child metadata from
+ * journal-derived projections on the next read — so pruning only reclaims disk;
+ * `jobs list`/`detail` keep working from the journal projection.
  * A terminal job is pruned when it is left over from a previous bundle version OR
  * older than the retention window. Live jobs are never touched.
  */

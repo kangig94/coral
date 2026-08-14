@@ -160,6 +160,7 @@ type WorkflowChildFixture = Readonly<{
   workflowJobId: string;
   workflowSlotId: string;
   generation: number;
+  label: string;
 }>;
 
 function createCauseRenderFixture(workflowChildren: readonly WorkflowChildFixture[] = []): {
@@ -237,6 +238,31 @@ function createCauseRenderFixture(workflowChildren: readonly WorkflowChildFixtur
         workflow_slot, workflow_slot_generation, replaces_workflow_job_id, created_at, last_seq
       ) VALUES (?, ?, 'running', NULL, ?, ?, 'codex', ?, 'test-namespace', NULL, 'provider', ?, ?, ?, NULL, ?, 0)`,
     );
+    const childrenByWorkflow = new Map<string, WorkflowChildFixture[]>();
+    for (const child of workflowChildren) {
+      const children = childrenByWorkflow.get(child.workflowJobId) ?? [];
+      children.push(child);
+      childrenByWorkflow.set(child.workflowJobId, children);
+    }
+    const insertWorkflow = db.prepare(
+      `INSERT INTO projection_workflows (workflow_id, plan, provider_scope, lifecycle, last_seq)
+       VALUES (?, ?, ?, 'active', 0)`,
+    );
+    for (const [workflowJobId, children] of childrenByWorkflow) {
+      insertWorkflow.run(
+        workflowJobId,
+        JSON.stringify({
+          slots: children.map((child) => ({
+            slotId: child.workflowSlotId,
+            dependencies: [],
+            provider: 'codex',
+            instruction: child.label,
+            agent: child.label,
+          })),
+        }),
+        JSON.stringify({ origin: 'system', name: 'test', profiles: [] }),
+      );
+    }
     for (const child of workflowChildren) {
       insertProjection.run(
         child.jobId,
@@ -987,8 +1013,8 @@ describe('cli follow', () => {
     const architectSlot = `${workflowJobId}:0:0`;
     const criticSlot = `${workflowJobId}:0:1`;
     const fixture = createCauseRenderFixture([
-      { jobId: architectJobId, workflowJobId, workflowSlotId: architectSlot, generation: 0 },
-      { jobId: criticJobId, workflowJobId, workflowSlotId: criticSlot, generation: 0 },
+      { jobId: architectJobId, workflowJobId, workflowSlotId: architectSlot, generation: 0, label: 'architect' },
+      { jobId: criticJobId, workflowJobId, workflowSlotId: criticSlot, generation: 0, label: 'critic' },
     ]);
     const originalHome = process.env.HOME;
     const originalTmpdir = process.env.TMPDIR;
@@ -1026,10 +1052,10 @@ describe('cli follow', () => {
         }),
       ).resolves.toBe(0);
 
-      expect(stdout).toContain('j0 · slot 0:0 (g0) - Architect running');
-      expect(stdout).toContain('j1 · slot 0:1 (g0) - Critic running');
-      expect(stdout).toContain(`Job ${architectJobId} (slot 0:0 (g0)) completed`);
-      expect(stdout).toContain(`Job ${criticJobId} (slot 0:1 (g0)) completed`);
+      expect(stdout).toContain('j0 · architect · slot 0:0 (g0) - Architect running');
+      expect(stdout).toContain('j1 · critic · slot 0:1 (g0) - Critic running');
+      expect(stdout).toContain(`Job ${architectJobId} (architect · slot 0:0 (g0)) completed`);
+      expect(stdout).toContain(`Job ${criticJobId} (critic · slot 0:1 (g0)) completed`);
     } finally {
       if (originalHome === undefined) delete process.env.HOME;
       else process.env.HOME = originalHome;
@@ -1050,12 +1076,14 @@ describe('cli follow', () => {
         workflowJobId: firstWorkflowJobId,
         workflowSlotId: `${firstWorkflowJobId}:0:0`,
         generation: 0,
+        label: 'first',
       },
       {
         jobId: secondJobId,
         workflowJobId: secondWorkflowJobId,
         workflowSlotId: `${secondWorkflowJobId}:0:0`,
         generation: 0,
+        label: 'second',
       },
     ]);
     const originalHome = process.env.HOME;
@@ -1094,8 +1122,8 @@ describe('cli follow', () => {
         }),
       ).resolves.toBe(0);
 
-      expect(stdout).toContain('j0 · slot 0:0 (g0) - First workflow running');
-      expect(stdout).toContain('j1 · slot 0:0 (g0) - Second workflow running');
+      expect(stdout).toContain('j0 · first · slot 0:0 (g0) - First workflow running');
+      expect(stdout).toContain('j1 · second · slot 0:0 (g0) - Second workflow running');
     } finally {
       if (originalHome === undefined) delete process.env.HOME;
       else process.env.HOME = originalHome;
@@ -1114,6 +1142,7 @@ describe('cli follow', () => {
         workflowJobId,
         workflowSlotId: `${workflowJobId}:0:0`,
         generation: 0,
+        label: 'critic',
       },
     ]);
     const originalHome = process.env.HOME;
@@ -1142,8 +1171,9 @@ describe('cli follow', () => {
         }),
       ).resolves.toBe(0);
 
-      expect(stdout).toContain('slot 0:0 (g0) - Only child running');
-      expect(stdout).toContain(`Job ${childJobId} (slot 0:0 (g0)) completed`);
+      expect(stdout.split('\n')).toContain('[ 0m  2s] critic · slot 0:0 (g0) - Only child running');
+      expect(stdout).not.toContain('j0 · critic · slot');
+      expect(stdout).toContain(`Job ${childJobId} (critic · slot 0:0 (g0)) completed`);
     } finally {
       if (originalHome === undefined) delete process.env.HOME;
       else process.env.HOME = originalHome;

@@ -173,6 +173,10 @@ function _jobResultPath(jobId: string): string {
   return join(runtime.paths.coral.exports.jobsRoot, jobId, 'result.md');
 }
 
+function _jobWorkflowPath(jobId: string): string {
+  return join(runtime.paths.coral.exports.jobsRoot, jobId, 'workflow.json');
+}
+
 function cancelQueued(jobId: string, pool?: 'default' | 'discuss' | 'curate'): boolean {
   return launchCoordinator.cancelQueued(jobId, pool);
 }
@@ -1471,7 +1475,7 @@ describe('ExecutionService launch', () => {
     );
   });
 
-  it('writes durable workflow identity into an ordinary local completion artifact', async () => {
+  it('writes durable workflow identity beside an ordinary local completion artifact', async () => {
     const { provider } = makeProvider();
     mockState.getNewProvider.mockReturnValue(provider);
     mockState.resolveAgent.mockReturnValue(
@@ -1509,12 +1513,14 @@ describe('ExecutionService launch', () => {
     await vi.waitFor(() => expect(runtime.storage.existsSync(_jobResultPath(decision.jobId))).toBe(true));
 
     expect(decision.jobId).not.toBe(workflowSlotId);
-    expect(runtime.storage.readFileSync(_jobResultPath(decision.jobId), 'utf-8')).toBe(
-      `> Parent workflow: ${workflowJobId}\n` +
-        `> Workflow slot: ${workflowSlotId}\n` +
-        '> Workflow generation: 0\n\n' +
-        'ok\n',
-    );
+    expect(runtime.storage.readFileSync(_jobResultPath(decision.jobId), 'utf-8')).toBe('ok\n');
+    expect(JSON.parse(runtime.storage.readFileSync(_jobWorkflowPath(decision.jobId), 'utf-8'))).toMatchObject({
+      parentWorkflowJobId: workflowJobId,
+      workflowSlotId,
+      workflowSlotGeneration: 0,
+      stepIndex: 0,
+      atomIndex: 0,
+    });
   });
 
   describe("executeJob's 'proxied' branch", () => {

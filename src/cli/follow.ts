@@ -14,7 +14,7 @@ import { isRecord } from '../infra/json.js';
 import { ensure } from '../transport/ipc/ensure.js';
 import { childPrincipalAuthFromEnv, childPrincipalAuthOptions } from '../transport/ipc/child-principal-auth.js';
 import { runHandoff, type HandoffOutcome } from '../coordinator/handoff-runner.js';
-import { formatLaunch, formatWorkflowSlot } from './format/jobs.js';
+import { formatLaunch, formatWorkflowChildIdentity } from './format/jobs.js';
 import { openCliCauseRefRenderer } from './cause-renderer.js';
 import { getSharedReadCoralStore } from './read-store.js';
 import { errorCodeToExit, WaitResumeError } from './errors.js';
@@ -138,17 +138,16 @@ function jobLabelsFor(projectRoot: string, jobIds: readonly string[]): Map<strin
   let hasWorkflowLabel = false;
 
   jobIds.forEach((jobId, index) => {
-    const workflowSlot = formatWorkflowSlot(statuses.get(jobId) ?? {});
-    if (workflowSlot === null) {
+    const workflowIdentity = formatWorkflowChildIdentity(statuses.get(jobId) ?? {});
+    if (workflowIdentity === null) {
       labels.set(jobId, { stream: `j${index}`, terminal: jobId });
       return;
     }
 
     hasWorkflowLabel = true;
-    const slotLabel = `slot ${workflowSlot}`;
     labels.set(jobId, {
-      stream: jobIds.length > 1 ? `j${index} · ${slotLabel}` : slotLabel,
-      terminal: `${jobId} (${slotLabel})`,
+      stream: jobIds.length > 1 ? `j${index} · ${workflowIdentity}` : workflowIdentity,
+      terminal: `${jobId} (${workflowIdentity})`,
     });
   });
 

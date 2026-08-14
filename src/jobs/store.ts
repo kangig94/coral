@@ -15,10 +15,15 @@ import {
 import type { ResolvableCoralEventInput } from '../store/envelope.js';
 import type { EventBodyCodec } from '../store/event-body-codec.js';
 import { composeReducers, type ComposedReducers } from '../store/reducers.js';
-import { listJobProjections, loadJobProjectionDetail, readJobEvents } from './read-queries.js';
+import {
+  listJobProjections,
+  listWorkflowChildProjections,
+  loadJobProjectionDetail,
+  readJobEvents,
+} from './read-queries.js';
 import type { Runtime } from '../runtime/ports.js';
 import { jobsDir } from './paths.js';
-import { ensureResultMarkdownArtifact } from './terminal/export.js';
+import { ensureResultMarkdownArtifact, materializeResultMarkdownArtifact } from './terminal/export.js';
 import type { DurableProcessExit } from '../runtime/durable-runtime.js';
 import { nowDate, nowIsoString } from '../infra/time.js';
 import { createNoopJobEventBus, jobCreatedEvent, type JobEventBus } from './event-bus.js';
@@ -542,8 +547,25 @@ export class JobStore implements JobProgressStore {
     );
   }
 
+  materializeResultArtifact(jobId: string): string {
+    return materializeResultMarkdownArtifact(
+      this.db,
+      jobId,
+      this.runtime.paths.coral.exports.jobsRoot,
+      this.runtime.storage,
+      this,
+    );
+  }
+
   listJobProjections() {
     return listJobProjections(this.db, this).map(({ jobId, status }) => ({
+      jobId,
+      status: this.applyNamespaceOverrideToStatus(jobId, status),
+    }));
+  }
+
+  listWorkflowChildProjections(parentWorkflowJobId: string) {
+    return listWorkflowChildProjections(this.db, parentWorkflowJobId, this).map(({ jobId, status }) => ({
       jobId,
       status: this.applyNamespaceOverrideToStatus(jobId, status),
     }));

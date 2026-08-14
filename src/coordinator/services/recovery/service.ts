@@ -5,7 +5,6 @@ import { createMonotonicClock } from '../../../infra/monotonic-clock.js';
 import type { AppServerRuntime, JobLaunch, JobRuntime, JobTerminal, JobTerminalInput } from '../../../jobs/records.js';
 import { isTerminalPhase, type JobPhase } from '../../../jobs/phase.js';
 import { hasProviderOperationForJob, readProviderOperationForJob } from '../../../store/provider-operation-journal.js';
-import { writeResultArtifact } from '../../../jobs/terminal/export.js';
 import { isDurableCliRuntime } from '../../../runtime/durable-runtime.js';
 import type { DurableCliRuntimeRecord, DurableProcessExit } from '../../../runtime/durable-runtime.js';
 import { providerSessionProvider, type ProviderSession } from '../../../sessions/entry.js';
@@ -285,6 +284,7 @@ export class RecoveryService {
       abortRegistry: this.deps.abortRegistry,
       launchAdmission: this.deps.launchAdmission,
       jobPools: this.deps.jobPools,
+      progressStore: this.deps.progressStore,
     });
   }
 
@@ -354,6 +354,7 @@ export class RecoveryService {
       abortRegistry: this.deps.abortRegistry,
       launchAdmission: this.deps.launchAdmission,
       jobPools: this.deps.jobPools,
+      progressStore: this.deps.progressStore,
     });
   }
 
@@ -421,12 +422,7 @@ export class RecoveryService {
       });
     }
     try {
-      writeResultArtifact(
-        this.deps.runtime.storage,
-        this.deps.runtime.paths.coral.exports.jobsRoot,
-        jobId,
-        result.content,
-      );
+      this.deps.progressStore.materializeResultArtifact(jobId);
     } catch (error: unknown) {
       backendLog.warn(`Writing terminal artifact failed for ${jobId}: ${String(error)}`);
     }

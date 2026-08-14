@@ -3,7 +3,6 @@ import { assertNever } from '../../../infra/error-format.js';
 import { elapsedDurationMs } from '../../../jobs/duration.js';
 import type { JobStatus, JobTerminalInput } from '../../../jobs/records.js';
 import type { InterruptedProbeOutcome } from '../../../jobs/reconcile/interrupted-reason.js';
-import { writeResultArtifact } from '../../../jobs/terminal/export.js';
 import type { LaunchPool } from '../../../jobs/contracts/admission.js';
 import type { JobAdmissionPort } from '../../../jobs/contracts/admission.js';
 import type { JobAbortRegistryPort } from '../../../jobs/contracts/abort-registry.js';
@@ -21,6 +20,7 @@ import {
 import { appendJobTerminalRecorded } from '../../../jobs/terminal/recording.js';
 import type { AppServerInterruptedRecoveryPlan, DurableInterruptedRecoveryPlan } from './interrupted-plan.js';
 import type { PerformedDurableRecovery, PerformedInterruptedRecovery } from './interrupted-performer.js';
+import type { JobProgressStore } from '../../../jobs/contracts/job-store.js';
 
 export class InterruptedRecoveryCommitError extends Error {
   readonly jobId: string;
@@ -44,11 +44,12 @@ export class RecoveryOwnershipReleaseError extends Error {
 }
 
 type InterruptedFinalizerDeps = Readonly<{
-  runtime: Pick<Runtime, 'storage' | 'paths' | 'time'>;
+  runtime: Pick<Runtime, 'time'>;
   sessionManager: Pick<SessionRecoveryPort, 'recordArtifactHandleAtomic' | 'finalizeJobContinuityAtomic'>;
   abortRegistry: JobAbortRegistryPort;
   launchAdmission: Pick<JobAdmissionPort, 'releaseLaunch'>;
   jobPools: Map<string, LaunchPool>;
+  progressStore: Pick<JobProgressStore, 'materializeResultArtifact'>;
 }>;
 
 type RecoveryCommitPlan = Pick<
@@ -101,18 +102,9 @@ async function finalizeSessionExact(
   }
 }
 
-function exportResultAndReleaseOwnership(
-  plan: RecoveryCommitPlan,
-  content: string,
-  deps: InterruptedFinalizerDeps,
-): void {
+function exportResultAndReleaseOwnership(plan: RecoveryCommitPlan, deps: InterruptedFinalizerDeps): void {
   try {
-    writeResultArtifact(
-      deps.runtime.storage,
-      deps.runtime.paths.coral.exports.jobsRoot,
-      plan.launchRecord.jobId,
-      content,
-    );
+    deps.progressStore.materializeResultArtifact(plan.launchRecord.jobId);
   } catch (error: unknown) {
     backendLog.warn(`Writing terminal artifact failed for ${plan.launchRecord.jobId}: ${String(error)}`);
   }
@@ -200,7 +192,7 @@ export async function finalizeInterruptedAppServerRecovery(
   }
 
   await finalizeSessionExact(plan, expectedVersion, mutation, appendTerminal, deps);
-  exportResultAndReleaseOwnership(plan, content, deps);
+  exportResultAndReleaseOwnership(plan, deps);
 }
 
 function directTerminalAppender(status: JobStatus, terminal: JobTerminalInput): TerminalAppender {
@@ -270,5 +262,5 @@ export async function finalizeInterruptedDurableRecovery(
   }
 
   await finalizeSessionExact(plan, expectedVersion, performed.mutation, appendTerminal, deps);
-  exportResultAndReleaseOwnership(plan, content, deps);
+  exportResultAndReleaseOwnership(plan, deps);
 }

@@ -7,7 +7,8 @@ import { defineDomainEvent, type DomainAppendValidator, type DomainEventRegistry
 import { CoralSetupError } from '../runtime/errors.js';
 import { CoralAppendError } from '../store/append-error.js';
 import { causeRefSchema, type CauseRef, type CauseRefToken } from '../causality/cause-ref.js';
-import { parseWorkflowSlotId, workflowPlanSchema, type WorkflowPlan } from './plan.js';
+import { parseWorkflowSlotId } from '../infra/identifiers.js';
+import { workflowPlanSchema, type WorkflowPlan } from './plan.js';
 import { providerScopeSchema, type ProviderScope } from '../infra/provider-scope.js';
 import {
   transitionWorkflowLifecycle,

@@ -574,6 +574,7 @@ describe('interrupted recovery settlement ownership', () => {
       jobPools,
       deps: {
         runtime,
+        progressStore: { materializeResultArtifact: vi.fn(() => '/jobs/result.md') },
         sessionManager: { finalizeJobContinuityAtomic, recordArtifactHandleAtomic },
         abortRegistry,
         launchAdmission,

@@ -10,7 +10,7 @@ import type { RecoveryRegistry } from '../../../jobs/reconcile/registry.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { ProviderRecoveryAuthority, RecoveryCapableService } from '../../../jobs/reconcile/contracts.js';
 import type { RecoveryCommitFence } from '../../../jobs/reconcile/contracts.js';
-import { writeResultArtifact } from '../../../jobs/terminal/export.js';
+import { writeWorkflowResultArtifact } from '../../../workflow/result-artifact.js';
 import { gracefulKillByPid } from '../../../infra/process-supervision.js';
 import type { JobLifecycleFault, JobProgressFault } from '../../../jobs/outcome.js';
 import type { RecoveryObligationId, RecoverySettlementFact } from '../../../recovery/containment.js';
@@ -81,7 +81,7 @@ function markRecoveryError(
   const facts = settleFault(action.fault);
   if (action.status.jobKind === 'workflow') {
     try {
-      writeResultArtifact(runtime.storage, runtime.paths.coral.exports.jobsRoot, action.status.jobId, '');
+      writeWorkflowResultArtifact(runtime.storage, runtime.paths.coral.exports.jobsRoot, action.status.jobId, '');
     } catch (error: unknown) {
       log(`Failed to write result artifact for ${action.status.jobId}: ${formatError(error)}\n`);
     }

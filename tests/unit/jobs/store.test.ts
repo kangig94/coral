@@ -1,4 +1,5 @@
 import { currentCoralStoreFormat } from '#src/store-format.js';
+import { dirname } from 'node:path';
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -9,7 +10,7 @@ import { applyBundledStoreSchema } from '#src/store/db.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { isLivePhase } from '#src/jobs/phase.js';
 import { JobStore } from '#src/jobs/store.js';
-import { writeResultArtifact } from '#src/jobs/terminal/export.js';
+import { resultPathFor, workflowMetadataPathFor } from '#src/jobs/terminal/export.js';
 import type { JobStatus, JobTerminal } from '#src/jobs/records.js';
 import type { CoralEventInput } from '#src/store/envelope.js';
 import { commitJobInput, commitJobInputs, commitJobTerminal } from '#tests/helpers/job-commits.js';
@@ -228,6 +229,88 @@ describe('JobStore', () => {
     expect(store.liveJobCount()).toBe(referenceLiveCount(statuses));
   });
 
+  it('loads workflow children through the parent index without hydrating unrelated durable rows', () => {
+    const backingDb = createDb();
+    const { db: trackedDb, preparedSql } = createTrackedDb(backingDb);
+    const { store } = createStore(trackedDb);
+    const db = store.getDb();
+    const workflowJobId = '22222222-2222-4222-8222-222222222222';
+    const childJobId = '11111111-1111-4111-8111-111111111111';
+    const workflowSlotId = `${workflowJobId}:0:0`;
+    db.prepare(
+      `INSERT INTO projection_workflows (workflow_id, plan, provider_scope, lifecycle, last_seq)
+       VALUES (?, ?, ?, 'active', 0)`,
+    ).run(
+      workflowJobId,
+      JSON.stringify({
+        slots: [
+          {
+            slotId: workflowSlotId,
+            dependencies: [],
+            provider: 'codex',
+            instruction: 'critic',
+            agent: 'critic',
+          },
+        ],
+      }),
+      JSON.stringify({ origin: 'system', name: 'test', profiles: [] }),
+    );
+    const insertProjection = db.prepare(
+      `INSERT INTO projection_jobs (
+        job_id, execution_owner, phase, terminal, diagnostics, session_id, provider,
+        project_root, backend_namespace, bundle_hash, job_kind, parent_workflow_job_id,
+        workflow_slot, workflow_slot_generation, replaces_workflow_job_id, created_at, last_seq
+      ) VALUES (?, ?, 'running', NULL, ?, ?, 'codex', '/workspace', 'test-ns', NULL, 'provider', ?, ?, ?, NULL, ?, 0)`,
+    );
+    db.exec('BEGIN');
+    try {
+      for (let index = 0; index < 33_000; index += 1) {
+        insertProjection.run(
+          `unrelated-${index}`,
+          index === 32_999 ? '{corrupt' : JSON.stringify({ kind: 'provider-session', id: `session-${index}` }),
+          JSON.stringify({ progressFaults: [] }),
+          `session-${index}`,
+          null,
+          null,
+          null,
+          '2026-08-15T00:00:00.000Z',
+        );
+      }
+      insertProjection.run(
+        childJobId,
+        JSON.stringify({ kind: 'workflow', id: workflowJobId }),
+        JSON.stringify({ progressFaults: [] }),
+        'child-session',
+        workflowJobId,
+        workflowSlotId,
+        0,
+        '2026-08-15T00:00:00.000Z',
+      );
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+    db.prepare(
+      `INSERT INTO events (
+        seq, ts, type, stream_kind, stream_id, namespace, project,
+        correlation_id, causation_seq, refs, body
+      ) VALUES (1, ?, 'job.runtime.started', 'job', 'unrelated-0', NULL, NULL, NULL, NULL, NULL, ?)`,
+    ).run('2026-08-15T00:00:00.000Z', Buffer.from('{corrupt', 'utf-8'));
+
+    preparedSql.length = 0;
+    expect(store.listWorkflowChildProjections(workflowJobId)).toEqual([
+      expect.objectContaining({
+        jobId: childJobId,
+        status: expect.objectContaining({ workflowSlotId }),
+      }),
+    ]);
+    expect(preparedSql.filter((sql) => sql.includes('WHERE parent_workflow_job_id = ?'))).toHaveLength(1);
+    expect(preparedSql.filter((sql) => sql.includes('WHERE projection_jobs.parent_workflow_job_id = ?'))).toHaveLength(
+      1,
+    );
+  });
+
   it('rejects duplicate terminal events for the same job stream', () => {
     const { store } = createStore();
     const jobId = 'job-duplicate-terminal';
@@ -269,7 +352,7 @@ describe('JobStore', () => {
     expect(store.loadJobProjectionDetail(jobId).exit?.diagnostics.byteCounts).toEqual({ stdout: 123, stderr: 45 });
   });
 
-  it('rebuilds a pre-existing raw workflow child artifact with its durable slot identity', () => {
+  it('rebuilds a pre-existing raw workflow child artifact and exports identity beside the result', () => {
     const { runtime, store } = createStore();
     const childJobId = '11111111-1111-4111-8111-111111111111';
     const workflowJobId = '22222222-2222-4222-8222-222222222222';
@@ -301,17 +384,71 @@ describe('JobStore', () => {
         replacedJobId,
         childJobId,
       );
-    writeResultArtifact(runtime.storage, runtime.paths.coral.exports.jobsRoot, childJobId, 'Critic result');
+    store
+      .getDb()
+      .prepare(
+        `INSERT INTO projection_workflows (workflow_id, plan, provider_scope, lifecycle, last_seq)
+         VALUES (?, ?, ?, 'active', 0)`,
+      )
+      .run(
+        workflowJobId,
+        JSON.stringify({
+          slots: [
+            {
+              slotId: workflowSlotId,
+              dependencies: [],
+              provider: 'codex',
+              instruction: 'critic',
+              agent: 'critic',
+            },
+          ],
+        }),
+        JSON.stringify({ origin: 'system', name: 'test', profiles: [] }),
+      );
+    const rawResultPath = resultPathFor(runtime.paths.coral.exports.jobsRoot, childJobId);
+    runtime.storage.mkdirSync(dirname(rawResultPath), { recursive: true });
+    runtime.storage.writeAtomicSync(rawResultPath, 'Critic result', { encoding: 'utf-8' });
 
     const resultPath = store.ensureResultArtifact(childJobId);
 
-    expect(runtime.storage.readFileSync(resultPath, 'utf-8')).toBe(
-      `> Parent workflow: ${workflowJobId}\n` +
-        `> Workflow slot: ${workflowSlotId}\n` +
-        '> Workflow generation: 1\n' +
-        `> Replaces workflow job: ${replacedJobId}\n\n` +
-        'Critic result\n',
-    );
+    expect(runtime.storage.readFileSync(resultPath, 'utf-8')).toBe('Critic result\n');
+    expect(
+      JSON.parse(
+        runtime.storage.readFileSync(
+          workflowMetadataPathFor(runtime.paths.coral.exports.jobsRoot, childJobId),
+          'utf-8',
+        ),
+      ),
+    ).toEqual({
+      parentWorkflowJobId: workflowJobId,
+      workflowSlotId,
+      workflowSlotGeneration: 1,
+      stepIndex: 0,
+      atomIndex: 1,
+      replacesWorkflowJobId: replacedJobId,
+    });
+  });
+
+  it('preserves an existing workflow child result when its terminal record is missing', () => {
+    const { runtime, store } = createStore();
+    const childJobId = '11111111-1111-4111-8111-111111111111';
+    const workflowJobId = '22222222-2222-4222-8222-222222222222';
+    const sessionId = 'session-workflow-child';
+    initProviderJob(store, childJobId, sessionId);
+    store
+      .getDb()
+      .prepare(
+        `UPDATE projection_jobs
+            SET execution_owner = ?, parent_workflow_job_id = ?, workflow_slot = ?, workflow_slot_generation = 0
+          WHERE job_id = ?`,
+      )
+      .run(JSON.stringify({ kind: 'workflow', id: workflowJobId }), workflowJobId, `${workflowJobId}:0:0`, childJobId);
+    const resultPath = resultPathFor(runtime.paths.coral.exports.jobsRoot, childJobId);
+    runtime.storage.mkdirSync(dirname(resultPath), { recursive: true });
+    runtime.storage.writeAtomicSync(resultPath, 'only copy', { encoding: 'utf-8' });
+
+    expect(() => store.ensureResultArtifact(childJobId)).toThrow('terminal record is missing');
+    expect(runtime.storage.readFileSync(resultPath, 'utf-8')).toBe('only copy');
   });
 
   it('rejects progress after a terminal event has been recorded', () => {

@@ -30,6 +30,7 @@ export interface JobProgressStore {
   loadJobProjectionDetail(jobId: string): JobProjectionDetail;
   readJobEvents(jobId: string): JobEvent[];
   ensureResultArtifact(jobId: string): string;
+  materializeResultArtifact(jobId: string): string;
   commit(cb: <Scope>(c: CommitContext<Scope>) => CommitClosureResult): AppendedEvent[];
   initJob(opts: InitJobOptions): void;
   rollbackJob(jobId: string): void;

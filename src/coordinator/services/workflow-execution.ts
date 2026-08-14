@@ -21,7 +21,7 @@ import {
 import { createWorkflowJournal } from '../../workflow/projections.js';
 import { type WorkflowLaunchDecision, rejectLaunch } from '../../jobs/launch.js';
 import type { AbortReason } from '../../jobs/outcome.js';
-import { writeResultArtifact } from '../../jobs/terminal/export.js';
+import { writeWorkflowResultArtifact } from '../../workflow/result-artifact.js';
 import type { JobAbortRegistryPort } from '../../jobs/contracts/abort-registry.js';
 import type { WorkflowJobLifecyclePort } from '../../jobs/contracts/job-runner.js';
 import { TerminalWriteError } from '../../jobs/terminal/write-error.js';
@@ -153,7 +153,12 @@ export class WorkflowExecutionService {
 
   private finishWorkflowJobPostCommit(jobId: string, markdown: string): void {
     try {
-      writeResultArtifact(this.deps.runtime.storage, this.deps.runtime.paths.coral.exports.jobsRoot, jobId, markdown);
+      writeWorkflowResultArtifact(
+        this.deps.runtime.storage,
+        this.deps.runtime.paths.coral.exports.jobsRoot,
+        jobId,
+        markdown,
+      );
     } catch (error: unknown) {
       backendLog.warn(`Writing terminal artifact failed for ${jobId}: ${errorMessage(error)}`);
     }

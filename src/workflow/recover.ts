@@ -34,6 +34,7 @@ import {
   DEFAULT_STALE_CHECK_INTERVAL_MS,
   DEFAULT_STALE_TIMEOUT_MS,
 } from './execution-constants.js';
+import { compareWorkflowSlotIds } from '../infra/identifiers.js';
 import {
   compileWorkflowPlan,
   maxStepIndex,
@@ -253,7 +254,7 @@ function validateAndReadCurrentSlotJobIds(
     .filter((row): row is WorkflowSlotJobRow => row.parent_workflow_job_id === workflowId && row.workflow_slot !== null)
     .sort(
       (left, right) =>
-        left.workflow_slot.localeCompare(right.workflow_slot) ||
+        compareWorkflowSlotIds(left.workflow_slot, right.workflow_slot) ||
         (left.workflow_slot_generation ?? 0) - (right.workflow_slot_generation ?? 0),
     );
   const selected = new Map<string, string>();

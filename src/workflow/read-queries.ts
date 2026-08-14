@@ -4,10 +4,11 @@ import type { CauseRef } from '../causality/cause-ref.js';
 import type { JobPhase } from '../jobs/phase.js';
 import {
   decodeProjectionJobTerminal,
-  readProjectionJobRows,
+  readWorkflowChildProjectionRows,
   type ProjectionJobStoredRow,
 } from '../jobs/projection-row.js';
 import { workflowCompletedBodySchema } from './events.js';
+import { compareWorkflowSlotIds } from '../infra/identifiers.js';
 import { workflowPlanSchema, type WorkflowPlan } from './plan.js';
 import { decodeBody, type StoreReadContext } from '../store/body-codec.js';
 import { providerScopeSchema, type ProviderScope } from '../infra/provider-scope.js';
@@ -156,13 +157,11 @@ function readWorkflowCompletionRow(db: Database, workflowId: string): WorkflowCo
 }
 
 function readWorkflowChildJobRows(db: Database, workflowId: string): WorkflowChildJobRow[] {
-  return readProjectionJobRows(db)
-    .filter(
-      (row): row is WorkflowChildJobRow => row.parent_workflow_job_id === workflowId && row.workflow_slot !== null,
-    )
+  return readWorkflowChildProjectionRows(db, workflowId)
+    .filter((row): row is WorkflowChildJobRow => row.workflow_slot !== null)
     .sort(
       (left, right) =>
-        left.workflow_slot.localeCompare(right.workflow_slot) ||
+        compareWorkflowSlotIds(left.workflow_slot, right.workflow_slot) ||
         (left.workflow_slot_generation ?? 0) - (right.workflow_slot_generation ?? 0),
     );
 }

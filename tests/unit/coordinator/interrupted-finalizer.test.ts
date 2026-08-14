@@ -115,10 +115,9 @@ function createHarness(options: { artifactRecorded?: boolean; sessionFinalized?:
   const remove = vi.fn(() => order.push('abort-remove'));
   const releaseLaunch = vi.fn(() => order.push('admission-release'));
   const jobPools = new Map([['interrupted-job', 'continuation' as const]]);
-  const mkdirSync = vi.fn(() => order.push('artifact-mkdir'));
-  const writeAtomicSync = vi.fn(() => {
-    order.push('artifact-write');
-    return true;
+  const materializeResultArtifact = vi.fn(() => {
+    order.push('artifact-materialize');
+    return '/jobs/interrupted-job/result.md';
   });
 
   return {
@@ -131,9 +130,8 @@ function createHarness(options: { artifactRecorded?: boolean; sessionFinalized?:
     deps: {
       runtime: {
         time: { now: () => Date.parse('2026-07-22T00:01:00.000Z') },
-        paths: { coral: { exports: { jobsRoot: '/jobs' } } },
-        storage: { mkdirSync, writeAtomicSync },
       },
+      progressStore: { materializeResultArtifact },
       sessionManager: { recordArtifactHandleAtomic, finalizeJobContinuityAtomic },
       abortRegistry: { remove },
       launchAdmission: { releaseLaunch },
@@ -173,8 +171,7 @@ describe('interrupted app-server recovery finalizer', () => {
       'session-cas',
       'terminal',
       'terminal',
-      'artifact-mkdir',
-      'artifact-write',
+      'artifact-materialize',
       'abort-remove',
       'admission-release',
     ]);
@@ -242,8 +239,7 @@ describe('interrupted durable recovery finalizer', () => {
       'artifact-cas',
       'session-cas',
       'terminal',
-      'artifact-mkdir',
-      'artifact-write',
+      'artifact-materialize',
       'abort-remove',
       'admission-release',
     ]);

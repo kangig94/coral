@@ -16,11 +16,13 @@ import {
   type JobStatus,
   type JobTerminal,
   type JobTerminalDiagnostics,
+  type WorkflowChildJobSummary,
 } from './records.js';
 import {
   decodeProjectionJobStoredRow,
   decodeProjectionJobExecutionOwner,
   PROJECTION_JOB_COLUMNS,
+  readWorkflowChildProjectionRows,
   type ProjectionJobStoredRow,
 } from './projection-row.js';
 
@@ -217,9 +219,8 @@ function readLatestEventsForJobs(db: Database, jobIds: string[], type: string): 
 }
 
 function readLatestProjectionStatusEvents(db: Database, jobIds: string[]): Map<string, JobStatusEventsByType> {
-  const eventsByJob = new Map<string, JobStatusEventsByType>();
   if (jobIds.length === 0) {
-    return eventsByJob;
+    return new Map();
   }
 
   const rows = prepareCached<unknown[], EventsRow & { type: ProjectionStatusEventType }>(
@@ -236,6 +237,35 @@ function readLatestProjectionStatusEvents(db: Database, jobIds: string[]): Map<s
       WHERE row_number = 1`,
   ).all(...jobIds);
 
+  return indexProjectionStatusEvents(rows);
+}
+
+function readLatestWorkflowChildStatusEvents(
+  db: Database,
+  parentWorkflowJobId: string,
+): Map<string, JobStatusEventsByType> {
+  const rows = prepareCached<[string], EventsRow & { type: ProjectionStatusEventType }>(
+    db,
+    `SELECT seq, ts, type, stream_kind, stream_id, namespace, project,
+            correlation_id, causation_seq, refs, body
+       FROM (
+         SELECT events.*,
+                ROW_NUMBER() OVER (PARTITION BY stream_id, type ORDER BY seq DESC) AS row_number
+           FROM events
+           JOIN projection_jobs ON projection_jobs.job_id = events.stream_id
+          WHERE projection_jobs.parent_workflow_job_id = ?
+            AND type IN ('job.launch.rejected', 'job.runtime.started', 'job.terminal.recorded')
+       )
+      WHERE row_number = 1`,
+  ).all(parentWorkflowJobId);
+
+  return indexProjectionStatusEvents(rows);
+}
+
+function indexProjectionStatusEvents(
+  rows: readonly (EventsRow & { type: ProjectionStatusEventType })[],
+): Map<string, JobStatusEventsByType> {
+  const eventsByJob = new Map<string, JobStatusEventsByType>();
   for (const row of rows) {
     rowToCoralEvent(row, null);
     const current = eventsByJob.get(row.stream_id) ?? {
@@ -483,6 +513,7 @@ function projectionRowToStatus(
   terminal: EventRow | null,
   requested: EventRow | null,
   ctx: StoreReadContext,
+  workflowLabel?: string,
 ): JobStatus {
   const terminalRecord = decodeTerminalRecord(terminal, ctx);
 
@@ -507,6 +538,7 @@ function projectionRowToStatus(
     ...(projection.replaces_workflow_job_id === null
       ? {}
       : { replacesWorkflowJobId: projection.replaces_workflow_job_id }),
+    ...(workflowLabel === undefined ? {} : { workflowLabel }),
     phase: projection.phase,
     updatedAt: terminal?.ts ?? runtime?.ts ?? rejected?.ts ?? requested?.ts ?? projection.created_at,
     lastSeq: projection.last_seq,
@@ -523,6 +555,7 @@ function hydrateJobProjectionDetail(
   terminal: EventRow | null,
   ctx: StoreReadContext,
   workflowUsage?: UsageSummary,
+  workflowLabel?: string,
 ): JobProjectionDetail {
   const launch = decodeLaunch(jobId, requested, ctx);
   const terminalRecord = decodeTerminalRecord(terminal, ctx);
@@ -536,7 +569,7 @@ function hydrateJobProjectionDetail(
   const exit = terminal && terminalRecord ? toJobExitProjection(terminal, terminalRecord, diagnostics) : null;
 
   const status = projection
-    ? projectionRowToStatus(jobId, projection, rejected, runtime, terminal, requested, ctx)
+    ? projectionRowToStatus(jobId, projection, rejected, runtime, terminal, requested, ctx, workflowLabel)
     : null;
 
   return {
@@ -647,6 +680,34 @@ export function listJobs(
   ctx: StoreReadContext,
 ): Array<{ jobId: string; status: JobStatus }> {
   return listJobProjections(db, ctx, filters);
+}
+
+export function listWorkflowChildProjections(
+  db: Database,
+  parentWorkflowJobId: string,
+  ctx: StoreReadContext,
+): WorkflowChildJobSummary[] {
+  const projections = readWorkflowChildProjectionRows(db, parentWorkflowJobId);
+  const statusEventsByJob = readLatestWorkflowChildStatusEvents(db, parentWorkflowJobId);
+  return projections.map((projection) => {
+    const statusEvents = statusEventsByJob.get(projection.job_id) ?? {
+      rejected: null,
+      runtime: null,
+      terminal: null,
+    };
+    return {
+      jobId: projection.job_id,
+      status: projectionRowToStatus(
+        projection.job_id,
+        projection,
+        statusEvents.rejected,
+        statusEvents.runtime,
+        statusEvents.terminal,
+        null,
+        ctx,
+      ),
+    };
+  });
 }
 
 export function loadJobDetail(db: Database, jobId: string, ctx: StoreReadContext): JobDetail | null {

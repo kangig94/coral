@@ -454,6 +454,7 @@ Foundation layer
 | `projection_discuss` in `store.db`                                                         | Projected discuss snapshots and source-scoped discovery/summary state                                            |
 | `recovery_quarantine` in `store.db`                                                        | Exact recovery failures and continuations retained for convergence or one-coordinate retry                       |
 | `~/.coral/exports/jobs/<jobId>/result.md` or `~/.coral/exports-dev/jobs/<jobId>/result.md` | Durable wait/follow result artifact                                                                              |
+| Sibling `workflow.json` under either export path                                           | Workflow-child parent, slot, generation, and replacement identity                                                |
 | `<os-tmpdir>/coral-jobs/<jobId>/`                                                          | Live job scratch artifacts such as stdout/stderr/intermediates                                                   |
 | `~/.coral/kb/` or `~/.coral/kb-dev/`                                                       | Corpus-authoritative markdown KB                                                                                 |
 | `~/.coral/gen2/data/kb/` or `~/.coral/gen2/data-dev/kb/`                                   | KB runtime artifacts: text index state, Orama snapshots, source-import staging, and installed-engine projections |

@@ -163,6 +163,24 @@ export function readProjectionJobRows(db: Database): ProjectionJobStoredRow[] {
     .map(decodeProjectionJobStoredRow);
 }
 
+export function readWorkflowChildProjectionRows(
+  db: Database,
+  parentWorkflowJobId: string,
+  workflowSlotId?: string,
+): ProjectionJobStoredRow[] {
+  const slotFilter = workflowSlotId === undefined ? '' : ' AND workflow_slot = ?';
+  const parameters = workflowSlotId === undefined ? [parentWorkflowJobId] : [parentWorkflowJobId, workflowSlotId];
+  return db
+    .prepare(
+      `SELECT ${PROJECTION_JOB_COLUMNS}
+         FROM projection_jobs
+        WHERE parent_workflow_job_id = ?${slotFilter}
+        ORDER BY job_id ASC`,
+    )
+    .all(...parameters)
+    .map(decodeProjectionJobStoredRow);
+}
+
 const auditedProjectionJobDatabases = new WeakSet<Database>();
 
 /**

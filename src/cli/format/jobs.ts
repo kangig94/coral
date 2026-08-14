@@ -4,6 +4,7 @@ import { assertNever } from '../../infra/error-format.js';
 import type { AbortResult } from '../../jobs/contracts/abort-registry.js';
 import type { JobDetailResponse, JobStatus, JobTerminal, JobsListResponse } from '../../jobs/records.js';
 import type { AcceptedLaunchResponse } from '../../jobs/launch.js';
+import { compareWorkflowSlotIds } from '../../infra/identifiers.js';
 import { formatTable, joinLines } from './text.js';
 import { formatUsageSegment } from './usage.js';
 
@@ -156,6 +157,16 @@ export function formatWorkflowSlot(
   return status.workflowSlotGeneration === undefined ? slot : `${slot} (g${status.workflowSlotGeneration})`;
 }
 
+export function formatWorkflowChildIdentity(
+  status: Pick<JobStatus, 'parentWorkflowJobId' | 'workflowSlotId' | 'workflowSlotGeneration' | 'workflowLabel'>,
+): string | null {
+  const slot = formatWorkflowSlot(status);
+  if (slot === null) {
+    return null;
+  }
+  return status.workflowLabel === undefined ? `slot ${slot}` : `${status.workflowLabel} · slot ${slot}`;
+}
+
 export function formatJobsList(data: JobsListResponse, now = Date.now()): JobsListItem[] {
   return data.jobs.map(({ jobId, status }) => ({
     jobId,
@@ -163,7 +174,7 @@ export function formatJobsList(data: JobsListResponse, now = Date.now()): JobsLi
     provider: status.provider ?? status.jobKind,
     cwd: status.projectRoot,
     jobKind: status.jobKind,
-    workflowSlot: formatWorkflowSlot(status) ?? JOBS_TABLE_NO_SLOT,
+    workflowSlot: formatWorkflowChildIdentity(status) ?? JOBS_TABLE_NO_SLOT,
     age: formatRelativeAge(status.updatedAt, now),
   }));
 }
@@ -191,19 +202,21 @@ function formatWorkflowChildren(children: ReadonlyArray<WorkflowChildJob>): stri
     return undefined;
   }
 
-  const ordered = [...children].sort(
-    (left, right) =>
-      (formatWorkflowSlotId(left.status) ?? '').localeCompare(formatWorkflowSlotId(right.status) ?? '') ||
+  const ordered = [...children].sort((left, right) => {
+    return (
+      compareWorkflowSlotIds(left.status.workflowSlotId ?? '', right.status.workflowSlotId ?? '') ||
       (left.status.workflowSlotGeneration ?? 0) - (right.status.workflowSlotGeneration ?? 0) ||
-      left.jobId.localeCompare(right.jobId),
-  );
+      left.jobId.localeCompare(right.jobId)
+    );
+  });
 
   return joinLines([
     'Workflow children:',
     formatTable(
-      ['SLOT', 'GEN', 'CHILD JOB ID', 'REPLACES'],
+      ['SLOT', 'ATOM', 'GEN', 'CHILD JOB ID', 'REPLACES'],
       ordered.map(({ jobId, status }) => [
         formatWorkflowSlotId(status) ?? '-',
+        status.workflowLabel ?? '-',
         status.workflowSlotGeneration?.toString() ?? '-',
         jobId,
         status.replacesWorkflowJobId ?? '-',
@@ -212,11 +225,7 @@ function formatWorkflowChildren(children: ReadonlyArray<WorkflowChildJob>): stri
   ]);
 }
 
-export function formatJobDetail(
-  response: JobDetailResponse,
-  describeCauseRef?: CauseRefDescriber,
-  workflowChildren: ReadonlyArray<WorkflowChildJob> = [],
-): string {
+export function formatJobDetail(response: JobDetailResponse, describeCauseRef?: CauseRefDescriber): string {
   const status = response.status;
   const usage = formatUsageSegment(response.exit?.diagnostics.usage, {
     verbose: true,
@@ -233,8 +242,9 @@ export function formatJobDetail(
     status.parentWorkflowJobId === undefined ? undefined : `Parent workflow: ${status.parentWorkflowJobId}`,
     status.workflowSlotId === undefined ? undefined : `Workflow slot: ${status.workflowSlotId}`,
     status.workflowSlotGeneration === undefined ? undefined : `Workflow generation: ${status.workflowSlotGeneration}`,
+    status.workflowLabel === undefined ? undefined : `Workflow atom: ${status.workflowLabel}`,
     status.replacesWorkflowJobId === undefined ? undefined : `Replaces workflow job: ${status.replacesWorkflowJobId}`,
-    formatWorkflowChildren(workflowChildren),
+    formatWorkflowChildren(response.workflowChildren ?? []),
     status.sessionId === null ? undefined : `Provider session: ${status.sessionId}`,
     `Project: ${status.projectRoot}`,
     `Updated: ${status.updatedAt}`,

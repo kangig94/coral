@@ -3,7 +3,7 @@ import { errorMessage } from '../../infra/error-format.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { CommitEventsFn } from '../../store/append.js';
 import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
-import { writeResultArtifact } from '../../jobs/terminal/export.js';
+import { writeWorkflowResultArtifact } from '../../workflow/result-artifact.js';
 import type { WorkflowFinalizationIntent } from '../../workflow/finalization.js';
 import type {
   WorkflowRecoveryAtomicClose,
@@ -22,7 +22,7 @@ function exportRecoveredWorkflowResult(
 ): void {
   try {
     const serialized = serializeWorkflowResult(intent.stepDetails);
-    writeResultArtifact(
+    writeWorkflowResultArtifact(
       options.runtime.storage,
       options.runtime.paths.coral.exports.jobsRoot,
       intent.workflowJobId,

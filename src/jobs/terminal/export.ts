@@ -12,12 +12,13 @@ import { isRecord } from '../../infra/json.js';
 import { jobTerminalRecordedBodySchema } from './result.js';
 import { describeTerminalOutcome } from '../outcome.js';
 import { readProjectionJobRow } from '../projection-row.js';
+import { parseWorkflowSlotId } from '../../infra/identifiers.js';
 
 export function resultPathFor(jobsRoot: string, jobId: string): string {
   return join(jobsRoot, jobId, 'result.md');
 }
 
-export function writeResultArtifact(
+function writeResultArtifact(
   storage: Pick<StoragePort, 'mkdirSync' | 'writeAtomicSync'>,
   jobsRoot: string,
   jobId: string,
@@ -29,6 +30,10 @@ export function writeResultArtifact(
     throw new Error(`Failed to write result artifact for ${jobId}`);
   }
   return targetPath;
+}
+
+export function workflowMetadataPathFor(jobsRoot: string, jobId: string): string {
+  return join(jobsRoot, jobId, 'workflow.json');
 }
 
 function describeKnownEvent(event: CoralEvent): string {
@@ -89,24 +94,31 @@ function describeResolvedCauseRef(db: Database, ctx: StoreReadContext, ref: Caus
   return describeCauseRefChain(db, ctx, ref, new Set()) ?? renderCauseRefFallback(ref);
 }
 
-function workflowIdentityMarkdown(db: Database, jobId: string): string {
+function workflowMetadataJson(db: Database, jobId: string): string | null {
   const projection = readProjectionJobRow(db, jobId);
   if (projection === null || projection.parent_workflow_job_id === null) {
-    return '';
+    return null;
   }
 
-  const lines = [
-    `> Parent workflow: ${projection.parent_workflow_job_id}`,
-    `> Workflow slot: ${projection.workflow_slot}`,
-    `> Workflow generation: ${projection.workflow_slot_generation}`,
-    projection.replaces_workflow_job_id === null
-      ? undefined
-      : `> Replaces workflow job: ${projection.replaces_workflow_job_id}`,
-  ].filter((line): line is string => line !== undefined);
-  return `${lines.join('\n')}\n\n`;
+  const slot = projection.workflow_slot === null ? null : parseWorkflowSlotId(projection.workflow_slot);
+  // `result.md` is intentionally result-only. Workflow identity belongs beside it so consumers that diff or
+  // parse job results never receive coordinator metadata mixed into the payload.
+  return `${JSON.stringify(
+    {
+      parentWorkflowJobId: projection.parent_workflow_job_id,
+      workflowSlotId: projection.workflow_slot,
+      workflowSlotGeneration: projection.workflow_slot_generation,
+      ...(slot === null ? {} : { stepIndex: slot.stepIndex, atomIndex: slot.atomIndex }),
+      ...(projection.replaces_workflow_job_id === null
+        ? {}
+        : { replacesWorkflowJobId: projection.replaces_workflow_job_id }),
+    },
+    null,
+    2,
+  )}\n`;
 }
 
-function buildResultMarkdown(db: Database, jobId: string, ctx: StoreReadContext): string {
+function buildResultMarkdown(db: Database, jobId: string, ctx: StoreReadContext): string | null {
   const event = db
     .prepare(
       `SELECT type, body, stream_kind, stream_id
@@ -117,24 +129,22 @@ function buildResultMarkdown(db: Database, jobId: string, ctx: StoreReadContext)
         LIMIT 1`,
     )
     .get(jobId) as Pick<EventsRow, 'type' | 'body' | 'stream_kind' | 'stream_id'> | undefined;
-  const body = event ? decodeBody(event, jobTerminalRecordedBodySchema, ctx) : null;
-  const workflowIdentity = workflowIdentityMarkdown(db, jobId);
+  if (event === undefined) {
+    return null;
+  }
+  const body = decodeBody(event, jobTerminalRecordedBodySchema, ctx);
 
-  const content = body?.terminal.content.trimEnd();
+  const content = body.terminal.content.trimEnd();
   if (content && content.length > 0) {
-    return `${workflowIdentity}${content}\n`;
+    return `${content}\n`;
   }
 
-  if (body?.terminal.outcome) {
-    return `${workflowIdentity}${describeTerminalOutcome(body.terminal.outcome, {
-      describeCauseRef: (ref) => describeResolvedCauseRef(db, ctx, ref),
-    })}\n`;
-  }
-
-  return '';
+  return `${describeTerminalOutcome(body.terminal.outcome, {
+    describeCauseRef: (ref) => describeResolvedCauseRef(db, ctx, ref),
+  })}\n`;
 }
 
-function materializeResultMarkdown(
+export function materializeResultMarkdownArtifact(
   db: Database,
   jobId: string,
   jobsRoot: string,
@@ -142,8 +152,19 @@ function materializeResultMarkdown(
   ctx: StoreReadContext,
 ): string {
   const markdown = buildResultMarkdown(db, jobId, ctx);
+  if (markdown === null) {
+    throw new Error(`Cannot materialize result artifact for ${jobId}: terminal record is missing.`);
+  }
   writeResultArtifact(storage, jobsRoot, jobId, markdown);
-  return markdown;
+  const workflowMetadata = workflowMetadataJson(db, jobId);
+  if (workflowMetadata !== null) {
+    const metadataPath = workflowMetadataPathFor(jobsRoot, jobId);
+    storage.mkdirSync(dirname(metadataPath), { recursive: true });
+    if (!storage.writeAtomicSync(metadataPath, workflowMetadata, { encoding: 'utf-8' })) {
+      throw new Error(`Failed to write workflow metadata artifact for ${jobId}`);
+    }
+  }
+  return resultPathFor(jobsRoot, jobId);
 }
 
 export function ensureResultMarkdownArtifact(
@@ -161,6 +182,5 @@ export function ensureResultMarkdownArtifact(
     }
   }
 
-  materializeResultMarkdown(db, jobId, jobsRoot, storage, ctx);
-  return targetPath;
+  return materializeResultMarkdownArtifact(db, jobId, jobsRoot, storage, ctx);
 }

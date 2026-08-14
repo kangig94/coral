@@ -291,6 +291,7 @@ describe('cli format', () => {
           parentWorkflowJobId: workflowJobId,
           workflowSlotId,
           workflowSlotGeneration: 1,
+          workflowLabel: 'critic',
           replacesWorkflowJobId: replacedJobId,
         },
       } satisfies JobDetailResponse;
@@ -302,7 +303,7 @@ describe('cli format', () => {
       const detail = formatJobDetail(child);
 
       expect(list).toContain('SLOT');
-      expect(list).toContain('0:1 (g1)');
+      expect(list).toContain('critic · slot 0:1 (g1)');
       expect(detail).toContain(`Parent workflow: ${workflowJobId}`);
       expect(detail).toContain(`Workflow slot: ${workflowSlotId}`);
       expect(detail).toContain('Workflow generation: 1');
@@ -313,7 +314,7 @@ describe('cli format', () => {
       const workflowJobId = '22222222-2222-4222-8222-222222222222';
       const firstChildJobId = '11111111-1111-4111-8111-111111111111';
       const replacementJobId = '33333333-3333-4333-8333-333333333333';
-      const workflow = {
+      const workflow: JobDetailResponse = {
         ...jobDetailResponse,
         status: {
           ...jobDetailResponse.status,
@@ -323,7 +324,7 @@ describe('cli format', () => {
           provider: null,
           jobKind: 'workflow' as const,
         },
-      } satisfies JobDetailResponse;
+      };
       const firstChild = {
         jobId: firstChildJobId,
         status: {
@@ -333,6 +334,7 @@ describe('cli format', () => {
           parentWorkflowJobId: workflowJobId,
           workflowSlotId: `${workflowJobId}:0:0`,
           workflowSlotGeneration: 0,
+          workflowLabel: 'architect',
         },
       };
       const replacement = {
@@ -345,13 +347,38 @@ describe('cli format', () => {
         },
       };
 
-      const detail = formatJobDetail(workflow, undefined, [replacement, firstChild]);
+      workflow.workflowChildren = [replacement, firstChild];
+
+      const detail = formatJobDetail(workflow);
 
       expect(detail).toContain('Workflow children:');
-      expect(detail).toContain('SLOT  GEN  CHILD JOB ID');
-      expect(detail).toMatch(new RegExp(`0:0\\s+0\\s+${firstChildJobId}`));
-      expect(detail).toMatch(new RegExp(`0:0\\s+1\\s+${replacementJobId}\\s+${firstChildJobId}`));
+      expect(detail).toContain('SLOT  ATOM');
+      expect(detail).toMatch(new RegExp(`0:0\\s+architect\\s+0\\s+${firstChildJobId}`));
+      expect(detail).toMatch(new RegExp(`0:0\\s+architect\\s+1\\s+${replacementJobId}\\s+${firstChildJobId}`));
       expect(detail.indexOf(firstChildJobId)).toBeLessThan(detail.indexOf(replacementJobId));
+    });
+
+    it('orders workflow children by numeric step and atom coordinates before generation and job id', () => {
+      const workflowJobId = '22222222-2222-4222-8222-222222222222';
+      const workflow = {
+        ...jobDetailResponse,
+        status: { ...jobDetailResponse.status, jobKind: 'workflow' as const },
+        workflowChildren: [10, 2, 1].map((stepIndex) => ({
+          jobId: `child-${stepIndex}`,
+          status: {
+            ...jobDetailResponse.status,
+            jobId: `child-${stepIndex}`,
+            parentWorkflowJobId: workflowJobId,
+            workflowSlotId: `${workflowJobId}:${stepIndex}:0`,
+            workflowSlotGeneration: 0,
+          },
+        })),
+      } satisfies JobDetailResponse;
+
+      const detail = formatJobDetail(workflow);
+
+      expect(detail.indexOf('child-1')).toBeLessThan(detail.indexOf('child-2'));
+      expect(detail.indexOf('child-2')).toBeLessThan(detail.indexOf('child-10'));
     });
 
     /**

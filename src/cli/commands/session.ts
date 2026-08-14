@@ -158,18 +158,11 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
         const causeRenderer = openCliCauseRefRenderer(projectRoot);
         try {
           const result = await client.detailJob(jobId);
-          const workflowChildren =
-            result.status.jobKind === 'workflow'
-              ? (await client.listJobs({ allProjects: true, all: true })).jobs.filter(
-                  ({ status }) => status.parentWorkflowJobId === result.status.jobId,
-                )
-              : [];
           const renderCauseRef = causeRenderer.render;
           process.stdout.write(
             formatJobDetail(
               result,
               renderCauseRef === undefined ? undefined : (ref) => renderCauseRef(ref, result.exit?.outcome),
-              workflowChildren,
             ) + '\n',
           );
           flushPendingReadStoreNote('text');

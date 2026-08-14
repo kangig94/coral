@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -55,7 +55,8 @@ import {
   type StandaloneTestProvider,
 } from '#tests/helpers/scripted-provider.js';
 import { getInternals } from '#tests/unit/jobs/shell/__helpers__/service-fixture.js';
-import { workflowRegistry } from '#src/workflow/events.js';
+import { workflowPlanDeclaredEvent, workflowRegistry } from '#src/workflow/events.js';
+import { buildWorkflowPlan } from '#src/workflow/plan.js';
 import { readWorkflowView } from '#src/workflow/read-queries.js';
 import { aggregateWorkflowUsage } from '#src/jobs/workflow-usage.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
@@ -2479,9 +2480,79 @@ describe('ExecutionService', () => {
           getInternals(service);
 
         const jobId = `complete-recovered-${randomUUID()}`;
+        const workflowJobId = randomUUID();
         trackJob(jobId);
 
         const session = allocateCodexSession(sessionManager, 'recover-complete', 'gpt-5', ctx.projectRoot);
+        expect(sessionManager.claimForJobSync(session.sessionId, jobId)).toBe(true);
+        seedTestJobSession(progressStore, {
+          jobId,
+          sessionId: session.sessionId,
+          provider: 'codex',
+          projectRoot: ctx.projectRoot,
+          backendNamespace: session.backendNamespace,
+          initialPhase: 'running',
+        });
+        const plan = buildWorkflowPlan(workflowJobId, parseExpression('critic'), { defaultProvider: 'codex' });
+        const workflowSlotId = plan.slots[0]?.slotId;
+        if (workflowSlotId === undefined) throw new Error('Expected workflow child slot.');
+        progressStore.commit((commit) => {
+          commit.append(workflowPlanDeclaredEvent(workflowJobId, plan, TEST_CODEX_SCOPE));
+          return undefined;
+        });
+        progressStore.appendLaunchRequested(
+          jobId,
+          makeLaunchRecord({
+            jobId,
+            sessionId: session.sessionId,
+            projectRoot: ctx.projectRoot,
+            backendNamespace: TEST_BACKEND_NAMESPACE,
+            owner: { kind: 'workflow', id: workflowJobId },
+            parentWorkflowJobId: workflowJobId,
+            workflowSlotId,
+            workflowSlotGeneration: 0,
+          }),
+        );
+        mkdirSync(join(runtime.paths.coral.exports.jobsRoot, jobId), { recursive: true });
+        writeFileSync(jobResultPath(jobId), 'stale raw result', 'utf-8');
+
+        // Simulate a running job being adopted: register active launch + claim session
+        restoreActiveLaunch(jobId, 'codex');
+        service.completeRecoveredJob(
+          jobId,
+          session.sessionId,
+          { content: 'recovered done', durationMs: 0, outcome: { kind: 'completed' } },
+          'completed',
+          { pool: 'default' },
+        );
+
+        const status = progressStore.readStatus(jobId);
+        expect(status).toMatchObject({
+          phase: 'completed',
+          result: { content: 'recovered done', outcome: { kind: 'completed' } },
+        });
+        expect(existsSync(jobResultPath(jobId))).toBe(true);
+        expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe('recovered done\n');
+        expect(
+          JSON.parse(readFileSync(join(runtime.paths.coral.exports.jobsRoot, jobId, 'workflow.json'), 'utf-8')),
+        ).toMatchObject({
+          parentWorkflowJobId: workflowJobId,
+          workflowSlotId,
+          workflowSlotGeneration: 0,
+        });
+
+        const updatedSession = sessionManager.readById(session.sessionId, { forceFresh: true });
+        expect(updatedSession?.activeJobId).toBeUndefined();
+      });
+
+      it('replaces a pre-existing ordinary artifact with the committed recovered terminal', () => {
+        const service = createService(ctx);
+        const { progressStore, sessionManager } =
+          /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+          getInternals(service);
+        const jobId = `complete-recovered-existing-${randomUUID()}`;
+        trackJob(jobId);
+        const session = allocateCodexSession(sessionManager, 'recover-complete-existing', 'gpt-5', ctx.projectRoot);
         expect(sessionManager.claimForJobSync(session.sessionId, jobId)).toBe(true);
         seedTestJobSession(progressStore, {
           jobId,
@@ -2500,27 +2571,19 @@ describe('ExecutionService', () => {
             backendNamespace: TEST_BACKEND_NAMESPACE,
           }),
         );
-
-        // Simulate a running job being adopted: register active launch + claim session
+        mkdirSync(join(runtime.paths.coral.exports.jobsRoot, jobId), { recursive: true });
+        writeFileSync(jobResultPath(jobId), 'stale raw result', 'utf-8');
         restoreActiveLaunch(jobId, 'codex');
+
         service.completeRecoveredJob(
           jobId,
           session.sessionId,
-          { content: 'recovered done', durationMs: 0, outcome: { kind: 'completed' } },
+          { content: 'canonical recovered result', durationMs: 0, outcome: { kind: 'completed' } },
           'completed',
           { pool: 'default' },
         );
 
-        const status = progressStore.readStatus(jobId);
-        expect(status).toMatchObject({
-          phase: 'completed',
-          result: { content: 'recovered done', outcome: { kind: 'completed' } },
-        });
-        expect(existsSync(jobResultPath(jobId))).toBe(true);
-        expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe('recovered done');
-
-        const updatedSession = sessionManager.readById(session.sessionId, { forceFresh: true });
-        expect(updatedSession?.activeJobId).toBeUndefined();
+        expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe('canonical recovered result\n');
       });
     });
 
@@ -2565,6 +2628,8 @@ describe('ExecutionService', () => {
           },
         });
         progressStore.appendLaunchRequested(jobId, launchRecord);
+        mkdirSync(join(runtime.paths.coral.exports.jobsRoot, jobId), { recursive: true });
+        writeFileSync(jobResultPath(jobId), 'stale interrupted result', 'utf-8');
 
         await service.finalizeInterruptedAppServerJob(
           await captureRecoveryAuthority(service, launchRecord),
@@ -2595,7 +2660,7 @@ describe('ExecutionService', () => {
             },
           },
         });
-        expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(expectedReport);
+        expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(`${expectedReport}\n`);
         const updatedSession = sessionManager.get('codex', session.sessionId);
         expect(updatedSession).toMatchObject({
           state: 'ready',
@@ -2782,7 +2847,7 @@ describe('ExecutionService', () => {
             },
           },
         });
-        expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(expectedReport);
+        expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(`${expectedReport}\n`);
         const updatedSession = sessionManager.get('codex', session.sessionId);
         expect(updatedSession).toMatchObject({
           state: 'ready',
@@ -2869,7 +2934,7 @@ describe('ExecutionService', () => {
             },
           },
         });
-        expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(expectedReport);
+        expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(`${expectedReport}\n`);
         const updatedSession = sessionManager.get('codex', session.sessionId);
         expect(updatedSession).toMatchObject({
           state: 'non_resumable',
@@ -3050,7 +3115,7 @@ describe('ExecutionService', () => {
             },
           },
         });
-        expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(expectedReport);
+        expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(`${expectedReport}\n`);
         const updatedSession = sessionManager.get('codex', session.sessionId);
         expect(updatedSession).toMatchObject({
           state: 'non_resumable',

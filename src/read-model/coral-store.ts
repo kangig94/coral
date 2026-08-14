@@ -35,6 +35,7 @@ import {
   type DiscussReadRef,
 } from '../discuss/read-queries.js';
 import type { DiscussDomainEvent, PersistedDiscussSnapshot } from '../discuss/events.js';
+import { labelWorkflowChildStatus, labelWorkflowStatuses } from '../workflow/job-labels.js';
 import { readProviderSessionById } from '../sessions/read-queries.js';
 import {
   listWorkflowProjections,
@@ -125,8 +126,11 @@ export class CoralStore implements StoreReadContext {
     this.pluginRoot = options.pluginRoot;
 
     this.jobs = {
-      list: (filters) => listJobs(this.db, filters, this),
-      detail: (jobId) => loadJobDetail(this.db, jobId, this),
+      list: (filters) => labelWorkflowStatuses(this.db, listJobs(this.db, filters, this)),
+      detail: (jobId) => {
+        const detail = loadJobDetail(this.db, jobId, this);
+        return detail === null ? null : { ...detail, status: labelWorkflowChildStatus(this.db, detail.status) };
+      },
     };
 
     this.kb = {

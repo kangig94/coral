@@ -79,6 +79,7 @@ export interface JobStatus {
   workflowSlotId?: string;
   workflowSlotGeneration?: number;
   replacesWorkflowJobId?: string;
+  workflowLabel?: string;
   phase: JobPhase;
   updatedAt: string;
   lastSeq?: number;
@@ -247,6 +248,8 @@ export type JobsListResponse = {
   jobs: Array<{ jobId: string; status: JobStatus }>;
 };
 
+export type WorkflowChildJobSummary = JobsListResponse['jobs'][number];
+
 /** Response shape for jobs.detail. Includes:
  *
  * - `status`: stable launch identity + lifecycle summary (phase, lastSeq, etc.)
@@ -263,5 +266,7 @@ export type JobDetailResponse = {
   events: JobEvent[];
   readiness: LaunchReadiness;
   exit: JobExit | null;
+  /** Optional so a current CLI can still read detail responses from a previous-build backend. */
+  workflowChildren?: WorkflowChildJobSummary[];
 };
 import { z } from 'zod';

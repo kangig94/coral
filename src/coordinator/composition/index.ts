@@ -119,6 +119,7 @@ import {
   createTerminalRetentionOutcomeRetryPlan,
 } from '../../sessions/lifecycle-reactor.js';
 import { createWorkflowRecoveryRetryPlan } from '../../workflow/recover.js';
+import { labelWorkflowChildren, labelWorkflowChildStatus, labelWorkflowStatuses } from '../../workflow/job-labels.js';
 
 export const MAX_EVENT_STREAM_CONNECTIONS = 100;
 const KB_DAEMON_JOB_ABORT_PROXY_TTL_MS = 24 * 60 * 60 * 1000;
@@ -918,12 +919,12 @@ export function createCoordinatorCore(
           jobs.push(entry);
         }
 
-        return jobs;
+        return labelWorkflowStatuses(progressStore.getDb(), jobs);
       },
       detail: (jobId) => {
         const progressStore = getProgressStore();
         const detail = progressStore.loadJobProjectionDetail(jobId);
-        const status = detail.status;
+        const status = detail.status === null ? null : labelWorkflowChildStatus(progressStore.getDb(), detail.status);
         if (!status) {
           return null;
         }
@@ -933,6 +934,15 @@ export function createCoordinatorCore(
           events,
           readiness: deriveLaunchReadiness(detail),
           exit: detail.exit,
+          ...(status.jobKind === 'workflow'
+            ? {
+                workflowChildren: labelWorkflowChildren(
+                  progressStore.getDb(),
+                  status.jobId,
+                  progressStore.listWorkflowChildProjections(status.jobId),
+                ),
+              }
+            : {}),
         };
       },
     },
