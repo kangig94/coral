@@ -36,6 +36,9 @@ const SRC_ROOT = join(process.cwd(), 'src');
  */
 const BOOT_CLOCK_FILE = '/proc/stat';
 
+/** The one module that may still spell the retired field: its V2 schema is how shipped capsules stay readable. */
+const LEGACY_FIELD_READER = 'provider-proxy/handoff-capsule.ts';
+
 /** A name that promises a point in time. An incarnation is a token; the two must never meet. */
 const TIME_FLAVOURED_NAME = /startedat|starttime|recordedstart|seconds|timestamp|epoch/i;
 
@@ -65,6 +68,12 @@ function literalTexts(source: ts.SourceFile): string[] {
     if (ts.isStringLiteralLike(node) || ts.isTemplateHead(node) || ts.isTemplateMiddleOrTemplateTail(node)) {
       texts.push(node.text);
     }
+    // Regular expressions carry the boot clock's field name in the shape the removed code actually used:
+    // `/^btime\s+(\d+)\s*$/m`. Inside a regex `btime` is not an identifier, so an identifier scan alone reads
+    // the exact historical implementation as clean.
+    if (ts.isRegularExpressionLiteral(node)) {
+      texts.push(node.getText(source));
+    }
   });
   return texts;
 }
@@ -87,8 +96,9 @@ describe('process incarnation opacity', () => {
     for (const file of listProductionSourceFiles(SRC_ROOT)) {
       const source = parse(file);
       const relative = file.slice(SRC_ROOT.length + 1);
-      if (literalTexts(source).some((text) => text.includes(BOOT_CLOCK_FILE))) {
-        offenders.push({ file: relative, detail: `reads ${BOOT_CLOCK_FILE}` });
+      for (const text of literalTexts(source)) {
+        if (text.includes(BOOT_CLOCK_FILE)) offenders.push({ file: relative, detail: `reads ${BOOT_CLOCK_FILE}` });
+        if (/\bbtime\b/.test(text)) offenders.push({ file: relative, detail: 'matches btime' });
       }
       walk(source, (node) => {
         if (ts.isIdentifier(node) && node.text === 'btime') {
@@ -131,6 +141,30 @@ describe('process incarnation opacity', () => {
     expect(
       offenders,
       'the value is a token, not a timestamp — a name that reads as a time is how it was published into wire payloads and compared across processes',
+    ).toEqual([]);
+  });
+
+  // The name itself, independent of what any declaration is annotated as. The rule above needs a type
+  // annotation or a probe call to recognise an incarnation, so a value laundered through an unannotated
+  // local — `const observed = identity.incarnation` — reaches a `processStartedAtSeconds:` property
+  // invisibly. Banning the spelling closes that without pretending an AST scan can do data flow.
+  it('does not reintroduce the retired field name', () => {
+    const offenders = listProductionSourceFiles(SRC_ROOT)
+      .filter((file) => !file.endsWith(LEGACY_FIELD_READER))
+      .filter((file) => {
+        let found = false;
+        walk(parse(file), (node) => {
+          if ((ts.isIdentifier(node) || ts.isStringLiteralLike(node)) && /ProcessStartedAtSeconds$/i.test(node.text)) {
+            found = true;
+          }
+        });
+        return found;
+      })
+      .map((file) => file.slice(SRC_ROOT.length + 1));
+
+    expect(
+      offenders,
+      `only ${LEGACY_FIELD_READER} may name the retired field, and only to keep reading capsules v0.10.6-v0.10.8 wrote`,
     ).toEqual([]);
   });
 });

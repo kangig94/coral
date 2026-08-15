@@ -127,8 +127,48 @@ describe('provider-proxy handoff capsule', () => {
     expect(decoded.grantId).toBe('11111111-1111-4111-8111-111111111111');
   });
 
-  it('decodes a v2 capsule with the complete containment identity', () => {
+  it('decodes a v3 capsule with the complete containment identity', () => {
     expect(decodeHandoffCapsule(encode(capsuleV3For()))).toEqual(capsuleV3For());
+  });
+
+  // Spelled out rather than derived, and that is the whole point. Every other fixture here is built from the
+  // current schema, so a rename moves the fixture with it and nothing fails — which is how V2 came to be
+  // renamed in place while still calling itself version 2, and how a build that could not boot against a
+  // v0.10.6-v0.10.8 capsule passed every gate. This literal is what those builds actually wrote. It may be
+  // corrected only against a real capsule from one of those versions, never to match a schema change.
+  const SHIPPED_V2_CAPSULE = {
+    version: 2,
+    grantId: '11111111-1111-4111-8111-111111111111',
+    secret: 'a'.repeat(64),
+    generation: 'gen2',
+    flavor: 'prod',
+    buildSetId: '22222222-2222-4222-8222-222222222222',
+    hostFingerprint: 'b'.repeat(64),
+    guardianInstanceId: '33333333-3333-4333-8333-333333333333',
+    reaperInstanceId: '44444444-4444-4444-8444-444444444444',
+    proxyInstanceId: '55555555-5555-4555-8555-555555555555',
+    guardianControlEndpoint: '/tmp/coral-shipped-guardian.sock',
+    reaperControlEndpoint: '/tmp/coral-shipped-reaper.sock',
+    proxyEndpoint: '/tmp/coral-shipped-proxy.sock',
+    orphanTimeoutMs: 30_000,
+    teardownReserveMs: 14_000,
+    guardianPid: 101,
+    guardianProcessStartedAtSeconds: 1_700_000_001,
+    proxyPid: 102,
+    reaperPid: 103,
+    reaperProcessStartedAtSeconds: 1_700_000_003,
+    containmentKind: 'detached-process-group',
+    proxyProcessStartedAtSeconds: 1_700_000_002,
+    proxyProcessGroupId: 102,
+  } as const;
+
+  it('still decodes the v2 capsule v0.10.6 through v0.10.8 wrote', () => {
+    const decoded = decodeHandoffCapsule(new TextEncoder().encode(JSON.stringify(SHIPPED_V2_CAPSULE)));
+
+    // Seconds stay seconds. Promoting them to a `ProcessIncarnation` would make a live process compare unequal
+    // to its own record and read as absent, which mints a disappearance receipt for a running set.
+    expect(decoded).toEqual(SHIPPED_V2_CAPSULE);
+    expect(decoded.version).toBe(2);
   });
 
   it('refuses an oversize capsule before parsing it', () => {
