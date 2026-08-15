@@ -11,18 +11,30 @@ asserted opposite facts about one directory, one had scoped its own reported sym
 was built on a cause that had been inferred rather than reproduced, and a live defect was buried inside
 a document about an unplanned feature.
 
+**Re-verified against source the same day**, every claim and every `file:line`. The rewrite had fixed
+how these documents were organised without checking what they asserted. Four entries were wrong in ways
+that would have produced a wrong fix — a defect enumerated at one call site that exists at three, a
+sibling of the same defect one file away, a prescription for a field that no longer crosses the wire,
+and a dismissed constraint that was true of a different directory. Each carries the correction in place
+rather than an edited-clean text, because the corrections are the part that does not re-derive.
+
 ---
 
 ## Build identity — one build's records read by another
 
-|                                                                    |                                                                                                                                                                                                                                                                                                                      |
-| ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`build-identity-and-upgrade.md`](./build-identity-and-upgrade.md) | **Highest severity open.** Updating the plugin swaps CLI and skills immediately while the running coordinator does not swap. In that window a new writer's durable record fails the old coordinator's adoption parse, and the parse failure **terminalizes the job**. Four running jobs died this way on 2026-08-15. |
+|                                                                    |                                                                                                                                                                                                                                                                                                    |
+| ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`build-identity-and-upgrade.md`](./build-identity-and-upgrade.md) | **Re-scored down.** Updating the plugin swaps CLI and skills immediately while the running coordinator does not swap, so two builds are live at once. Nothing has been observed to break because of it — the 2026-08-15 job losses it was written for were a single-build defect (#318), not skew. |
 
-Its first half — a record this build cannot parse must not become a job this build destroys — is small,
-independent, and where the data loss is. Its second half shares a compatibility policy with
+Its first half — a record this build cannot parse must not become a job this build destroys — shipped
+as #316. What remains splits in two: the **record** direction shares a compatibility policy with
 [`jobs-read-contract-schema-first.md`](./jobs-read-contract-schema-first.md) and
-[`result-artifact-availability.md`](./result-artifact-availability.md); settle it once across all three.
+[`result-artifact-availability.md`](./result-artifact-availability.md), settle it once across all
+three; the **output** direction — a live session holding old skill text driving a new CLI — has no
+defense today and is what actually blocks the `wait` change below.
+
+Read its correction section before citing it. It named a cause it had inferred from a bundle-string
+diff rather than reproduced, which is the same defect this index was rewritten to remove.
 
 ---
 
@@ -33,16 +45,17 @@ independent, and where the data loss is. Its second half shares a compatibility 
 | [`cli-machine-channel.md`](./cli-machine-channel.md)             | `wait`'s exit integer and the `jobs` table's column layout are both presentation carrying a protocol. The `wait` contract is **settled** — it becomes a pure monitor whose exit code describes the monitor, not the job. The `jobs` half is an open product decision. Ship as two PRs, never one. |
 | [`cli-terminal-width-layout.md`](./cli-terminal-width-layout.md) | A **third** thing, and it must not join either. Width work rewrites the rows a contract fixture exists to freeze.                                                                                                                                                                                 |
 
-The `wait` change is blocked on build identity: a stale skill reading a new always-zero exit would
-convert failure into success.
+The `wait` change is blocked on build identity's **output** direction specifically: a session still
+holding the old skill's text, reading a new always-zero exit, would convert failure into success. #316
+landing does not unblock it — that was the record direction.
 
 ---
 
 ## A job has one root
 
-|                                                          |                                                                                                                                                                                                                                                                                                        |
-| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| [`job-scope-containment.md`](./job-scope-containment.md) | Authorization already decides against the directory the work happens in; the durable record takes the shell's cwd instead. Record the former, and compare by containment rather than equality. Must land before the jobs read contract — a consumer inventory cannot be audited while the values move. |
+|                                                          |                                                                                                                                                                                                                                                                                                                                                                                                       |
+| -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`job-scope-containment.md`](./job-scope-containment.md) | Authorization already decides against the directory the work happens in; the durable record takes the shell's cwd instead. Record the former, and compare by containment rather than equality. **Three launch paths write the record, not one** — initial, resumed, and workflow-replacement. Must land before the jobs read contract — a consumer inventory cannot be audited while the values move. |
 
 ---
 
@@ -70,19 +83,19 @@ would have to satisfy both, and their requirements are opposites.
 
 ## Durable state with no lifecycle owner
 
-|                                                                      |                                                                                                                                                                                      |
-| -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| [`export-lifetime.md`](./export-lifetime.md)                         | Nothing prunes `~/.coral/exports/jobs/`. Ever. Part 1 gives it a retention authority; part 2 is archived-session restore, whose real question is answerable only once part 1 exists. |
-| [`coordinator-socket-identity.md`](./coordinator-socket-identity.md) | The socket path falls back through `TMPDIR`, so two processes with one state root can both bind. Two coordinators over one journal. Small, independent.                              |
+|                                                                      |                                                                                                                                                                                                                                               |
+| -------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`export-lifetime.md`](./export-lifetime.md)                         | Nothing prunes `~/.coral/exports/jobs/`. Ever — the retention setting's own doc comment says otherwise. Part 1 gives it a retention authority; part 2 is archived-session restore, whose real question is answerable only once part 1 exists. |
+| [`coordinator-socket-identity.md`](./coordinator-socket-identity.md) | The socket path falls back through `TMPDIR`, so two processes with one state root can both bind. Two coordinators over one journal. The **provider endpoint resolver has the same fallback** — fix both together. Small, independent.         |
 
 ---
 
 ## Wire contracts
 
-|                                                                              |                                                                                                                                                                          |
-| ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| [`jobs-read-contract-schema-first.md`](./jobs-read-contract-schema-first.md) | `jobs.list` and `jobs.detail` cross four boundaries with no response schema.                                                                                             |
-| [`result-artifact-availability.md`](./result-artifact-availability.md)       | **Re-score before starting.** The symptom that motivated it was fixed by a ten-line change (#314); what remains has never been observed and costs a protocol transition. |
+|                                                                              |                                                                                                                                                                                                  |
+| ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| [`jobs-read-contract-schema-first.md`](./jobs-read-contract-schema-first.md) | `jobs.list` and `jobs.detail` cross four boundaries with no response schema. The field that motivated it stopped crossing the wire while it sat open; the boundary is the defect, not the field. |
+| [`result-artifact-availability.md`](./result-artifact-availability.md)       | **Re-score before starting.** The symptom that motivated it was fixed by a ten-line change (#314); what remains has never been observed and costs a protocol transition.                         |
 
 ---
 

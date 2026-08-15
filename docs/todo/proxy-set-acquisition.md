@@ -12,9 +12,10 @@ guardian identity disagreement on processStartedAtSeconds:
 this acquisition issued 1786780788, the process reported 1786780791.
 ```
 
-Three seconds apart. The check is at `src/coordinator/live/provider-proxy/role-control.ts:175`: an
-acquisition issues an expected identity and compares it against what the spawned process reports; any
-disagreement on `processStartedAtSeconds` fails the acquisition.
+Three seconds apart. The check is `assertIdentityFieldsAgree`
+(`src/coordinator/live/provider-proxy/role-control.ts:167-179`, comparison at `:173`): an acquisition
+issues an expected identity and compares every field against what the spawned process reports; any
+disagreement — `processStartedAtSeconds` included — throws and fails the acquisition.
 
 Acquisition is therefore **attempted, logged, and failed** — not silently skipped. When it fails the
 route stays absent, `routeAppServerOperation` returns `null`, and every operation takes the
@@ -30,12 +31,16 @@ branch, and a real reporting gap — but not at what was happening here.
 
 Two things survive from that version and remain true:
 
-- `ensureProxySetFor` (`src/coordinator/live/provider-hosts/index.ts:334`) reports only the `capacity`
-  refusal. `already-represented` and `startup-discovery-pending` return without a word. That is still a
-  reporting gap worth closing, and it is why the real cause took a second incident to surface.
+- `ensureProxySetFor` (`src/coordinator/live/provider-hosts/index.ts:334-368`) reports only the
+  `capacity` refusal (`:346-350`). Every other non-accepted admission returns silently, and so does the
+  earlier `routeFor(identityKey) !== null` short-circuit at `:341`. That is still a reporting gap worth
+  closing, and it is why the real cause took a second incident to surface.
 - `ProviderProxySetLifecycleSnapshot` already computes `startupDiscoveryCompleted`, `represented`,
-  `available` and `states`, and has **no production consumer** — only an integration test reads it. The
-  observability this needs is already built and unpublished.
+  `available` and `states` (`src/coordinator/services/provider-proxy-set/index.ts:140`, produced by
+  `snapshot()` at `:577`), and has **no production consumer** — its only readers are in
+  `tests/unit/coordinator/services/provider-proxy-set-lifecycle.test.ts`, a unit test, not an
+  integration test as an earlier revision said. The observability this needs is already built and
+  unpublished.
 
 ## The defect
 

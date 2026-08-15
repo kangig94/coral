@@ -22,15 +22,52 @@ They differ exactly when `--work-dir` names something other than the caller's cw
 usage in `docs/skills.md` and the `ralph` skill instructs precisely that, then instructs a `wait` that
 cannot find the job it just created.
 
+### `:175` is one of three
+
+All three launch paths reach the same builder, `buildProviderLaunch` (`src/jobs/shell/launch.ts:463`),
+and all three pass `ctx.projectRoot` into it:
+
+| Launch path          | Call site           | Orchestrator entry                   |
+| -------------------- | ------------------- | ------------------------------------ |
+| initial provider job | `job-launch.ts:175` | `launchInitialProviderJob` (`:363`)  |
+| workflow replacement | `job-launch.ts:419` | `launchWorkflowReplacement` (`:596`) |
+| resumed provider job | `job-launch.ts:433` | `launchResumedProviderJob` (`:512`)  |
+
+An earlier revision named only `:175`. A fix applied there alone would leave every resumed and every
+workflow-replacement job still recorded against the shell's cwd — the same defect on two of three
+paths, and the two a long-running workflow spends most of its life on.
+
 ## The two fixes, and they are one concept
 
-**1. Record the directory the work happened in.** `job-launch.ts:175` takes `cwd` instead of
+**1. Record the directory the work happened in.** The three launch call sites take `cwd` instead of
 `ctx.projectRoot`. Value-only: no DDL, no Zod contract change, therefore no store fingerprint move and
 no store reset.
 
-Do **not** change the other three `ctx.projectRoot` uses in that file. `:107` and `:217` resolve the
-agent profile — they want the operator's configuration root, which is genuinely the invocation
-directory. `:146` is the session record; leave it until something forces it.
+The builder already wants the right value. `buildProviderLaunch` computes
+`opts.projectRoot ?? request.cwd ?? ''` (`src/jobs/shell/launch.ts:465`) — `request.cwd` **is** the work
+directory, and it is already second in that chain. The fallback never fires only because all three
+callers supply `opts.projectRoot` explicitly, and `launchWorkflowReplacement` types it as required
+(`launch.ts:607`) so it cannot even be omitted. Decide deliberately between dropping the argument and
+letting the existing fallback carry it, or passing `cwd` at each call site; the first is smaller but
+makes an implicit chain load-bearing.
+
+Do **not** change the other five `ctx.projectRoot` uses in `job-launch.ts`. Enumerated, because the
+earlier revision counted three and there are eight in total:
+
+| Line   | Use                                            | Verdict                                                  |
+| ------ | ---------------------------------------------- | -------------------------------------------------------- |
+| `:107` | agent profile resolution                       | leave — wants the operator's configuration root          |
+| `:119` | `const cwd = input.cwd ?? ctx.projectRoot`     | leave — this is the fallback that _defines_ the work dir |
+| `:146` | session record                                 | leave until something forces it                          |
+| `:175` | **initial launch record**                      | **change**                                               |
+| `:217` | agent profile resolution                       | leave — same as `:107`                                   |
+| `:335` | base for `canonicalizeWorkDir(session.cwd, …)` | leave — a resolution base, not a recorded value          |
+| `:419` | **workflow-replacement launch record**         | **change**                                               |
+| `:433` | **resumed launch record**                      | **change**                                               |
+
+While in there: `launch.ts` reads the value back inconsistently for event metadata — `:389` and `:534`
+use the builder's result, `:622` uses `opts.projectRoot` directly. They agree today only because the
+argument is always supplied. Whichever branch fix 1 takes, make all three read the same source.
 
 Do **not** rename the column. `project_root` is misnamed — it is a work root — but a column rename moves
 the store format fingerprint and becomes a destructive reset. That debt is cheap to carry and expensive
@@ -40,6 +77,12 @@ to pay.
 (`src/coordinator/composition/job-control.ts:96`) tests `status.projectRoot !== projectRoot`. The
 predicate it should use already exists and is already used for exactly this question on the
 child-principal path: `containsProjectRoot` (`src/security/policy/authorize.ts:98`).
+
+That predicate is **module-private** — `authorize.ts` does not export it. Reusing it means exporting it
+or moving it to a lower owner; do not copy it, since a second containment predicate is exactly the
+"one concept, two homes" this repository forbids. Note also that `scopeCheckJobs` already carries one
+deliberate exemption (`jobKind === 'kb'`, which belongs to no project); containment must be applied
+without disturbing it.
 
 Apply containment to `scopeCheck` **only** — not to the `jobs list` filter
 (`src/jobs/read-queries.ts`). Naming a job id is an explicit act; listing is ambient, and `cd /` must
