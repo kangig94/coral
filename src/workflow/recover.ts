@@ -51,7 +51,7 @@ import {
   sessionControllerFromProfile,
   type ProviderSession,
 } from '../sessions/entry.js';
-import { projectionSessionStoredRowSchema } from '../sessions/projections.js';
+import { projectionSessionStoredRowSchema, readProjectionProviderSession } from '../sessions/projections.js';
 import type { ProjectionJobStoredRow } from '../jobs/projection-row.js';
 import type {
   RecoveryDisposition,
@@ -136,6 +136,13 @@ type ResumeWorkflowContext = {
   drain: ReturnType<typeof workflowDrainEnteredBodySchema.parse> | null;
   time: Pick<TimePort, 'now'>;
   onProgress: (workflowId: string, message: string) => void;
+  /**
+   * Hands a replacement this pass just committed back to the recovery item, so the durable continuation
+   * names the job that now holds the session instead of the one it replaced. Without it the replacement
+   * is invisible to the close that has to release it: `descendants` is derived from the continuation,
+   * and the continuation was read before this pass created anything.
+   */
+  onReplacementLaunched: (sessionId: string, jobId: string) => Promise<void>;
   staleTimeoutMs: number;
   staleCheckIntervalMs: number;
   staleAbortTimeoutMs: number;
@@ -199,7 +206,6 @@ type HydratedWorkflowRecovery = {
   readonly childRows: readonly ProjectionJobStoredRow[];
   readonly slotDetailsByJob: Map<string, JobProjectionDetail>;
   readonly providerSessionsById: ReadonlyMap<string, ProviderSession>;
-  readonly descendants: readonly WorkflowRecoveryDescendant[];
   readonly completion: ReturnType<typeof workflowCompletedBodySchema.parse> | null;
   readonly drain: ReturnType<typeof workflowDrainEnteredBodySchema.parse> | null;
   readonly eventsBySeq: ReadonlyMap<number, EventsRow>;
@@ -373,6 +379,11 @@ async function resumePendingReplacementIntents(
         `Workflow recovery could not complete replacement intent for slot '${slot.slotId}': ${resumed.message ?? 'unknown error'}.`,
       );
     }
+    // Before any further fallible work — `awaitLaunch` below is the first thing that can throw, and the
+    // close that follows a throw can only release what the continuation names. Recording here is what
+    // keeps a replacement this pass created inside the envelope this pass cleans up.
+    await deps.onReplacementLaunched(launch.sessionId, resumed.jobId);
+
     const readiness = await deps.executionSvc.awaitLaunch(resumed.jobId, BOOTSTRAP_TIMEOUT_MS);
     if (readiness === 'error') {
       throw new Error(`Workflow recovery replacement '${resumed.jobId}' failed to launch for slot '${slot.slotId}'.`);
@@ -1213,7 +1224,6 @@ function hydrateWorkflowRecovery(raw: RawWorkflowRecoveryEnvelope, ctx: StoreRea
     childRows,
     slotDetailsByJob,
     providerSessionsById,
-    descendants: continuationDescendants(continuation),
     completion,
     drain,
     eventsBySeq,
@@ -1252,6 +1262,40 @@ async function persistWorkflowContinuation(
     throw new Error(`Workflow recovery continuation lost authority for '${item.envelope.subject.key}'.`);
   }
   item.continuationDurable = true;
+}
+
+/**
+ * Moves a session's continuation entry onto the replacement this recovery pass just launched, and adds
+ * that replacement to the workflow's child set, then persists the result.
+ *
+ * The version is re-read rather than incremented: `resume()` returns only the job and session ids, and
+ * the claim swap it commits is the only authority on what version the session now carries. Guessing it
+ * would reintroduce the same stale-expectation failure one step later, in the check that exists to
+ * detect exactly that.
+ */
+async function recordWorkflowReplacement(
+  item: HydratedWorkflowRecovery,
+  quarantine: RecoveryQuarantinePort,
+  db: Database,
+  sessionId: string,
+  jobId: string,
+): Promise<void> {
+  const entry = readProjectionProviderSession(db, sessionId);
+  if (entry === null) {
+    throw new Error(`Workflow recovery replacement '${jobId}' left session '${sessionId}' unreadable.`);
+  }
+  item.continuation = {
+    ...item.continuation,
+    childIds: item.continuation.childIds.includes(jobId)
+      ? item.continuation.childIds
+      : [...item.continuation.childIds, jobId],
+    providerSessions: item.continuation.providerSessions.map((session) =>
+      session.sessionId === sessionId
+        ? { ...session, activeJobId: entry.activeJobId ?? null, version: entry.version }
+        : session,
+    ),
+  };
+  await persistWorkflowContinuation(item, quarantine);
 }
 
 function executionWithUnknownOutcome(
@@ -1380,7 +1424,7 @@ function closeRecoveredWorkflow(
     item.descendantReleases = finalizer.atomicClose({
       intent,
       recording: finalizationRecording(item),
-      descendants: item.descendants,
+      descendants: continuationDescendants(item.continuation),
       releaseDescendants,
       clearContinuation: () => clearWorkflowContinuation(item, quarantine),
     });
@@ -1466,6 +1510,9 @@ async function settleWorkflowRecovery(
         completion: item.completion,
         drain: item.drain,
         onProgress: options.onProgress ?? (() => {}),
+        onReplacementLaunched: async (sessionId, jobId) => {
+          await recordWorkflowReplacement(item, quarantine, options.db, sessionId, jobId);
+        },
         staleTimeoutMs: options.staleTimeoutMs ?? DEFAULT_STALE_TIMEOUT_MS,
         staleCheckIntervalMs: options.staleCheckIntervalMs ?? DEFAULT_STALE_CHECK_INTERVAL_MS,
         staleAbortTimeoutMs: options.staleAbortTimeoutMs ?? DEFAULT_STALE_ABORT_TIMEOUT_MS,
@@ -1556,7 +1603,7 @@ function createWorkflowRecoveryPolicy(
           };
         }
         try {
-          releaser.cleanup(item.descendants);
+          releaser.cleanup(continuationDescendants(item.continuation));
           item.cleanupRequired = false;
           return { kind: 'released' };
         } catch (error) {
