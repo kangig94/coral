@@ -1,4 +1,5 @@
 import { currentCoralStoreFormat } from '#src/store-format.js';
+import { ZodError } from 'zod';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { allocateTestSession } from '../../../helpers/session.js';
 import { fixtureCanonicalWorkDir } from '../../../helpers/canonical-work-dir.js';
@@ -3641,6 +3642,75 @@ describe('lifecycle recovery', () => {
         );
         expect(reader.get('codex', sessionId)?.activeJobId).toBeUndefined();
         expect(reader.claimForJobSync(sessionId, `${jobId}-later`)).toBe(true);
+      } finally {
+        await stopLifecycleController(controller);
+      }
+    },
+  );
+
+  it.each(['queued', 'running'] as const)(
+    '14c6. an unreadable %s record is quarantined, not terminalized',
+    async (recoveryKind) => {
+      const modules = await loadModules();
+      const pluginRoot = createPluginRoot(`plugin-${recoveryKind}-unreadable-record`);
+      const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
+      const projectRoot = createProjectRoot(`project-${recoveryKind}-unreadable-record`);
+      const eventBus = new modules.eventBusModule.TypedEventBus();
+      const db = openTestStoreDb(runtime, ':memory:');
+      const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createEventBodyCodec(), {
+        db,
+        eventBus,
+        providers: permissiveProviderLookupPort,
+      });
+      const launchCoordinator = createLaunchCoordinator(modules);
+      const providerRegistry = createRecoveryProviderRegistry(modules);
+      const service = createActualRecoveryService(modules, {
+        progressStore,
+        eventBus,
+        launchCoordinator,
+        providerRegistry,
+        pluginRoot,
+        projectRoot,
+      });
+      const jobId = `${recoveryKind}-unreadable-record-job`;
+      const sessionId = `${jobId}-session`;
+
+      stubLaunchRecord(progressStore, {
+        jobId,
+        sessionId,
+        provider: 'codex',
+        projectRoot,
+        backendNamespace: namespace,
+      });
+      if (recoveryKind === 'queued') {
+        appendQueuedEvent(progressStore, jobId, sessionId, namespace, projectRoot);
+      } else {
+        stubRuntimeRecord(progressStore, { jobId, pid: process.pid });
+      }
+      // What a build that cannot read a newer durable shape actually throws. The provider's session
+      // outlives this coordinator, so adoption must be deferred rather than spent.
+      vi.spyOn(progressStore, 'rebindNamespace').mockImplementationOnce(() => {
+        throw new ZodError([
+          { code: 'invalid_type', expected: 'string', received: 'undefined', path: ['turnId'], message: 'Required' },
+        ]);
+      });
+
+      const { controller } = createLifecycleHarness(modules, {
+        pluginRoot,
+        progressStore,
+        eventBus,
+        launchCoordinator,
+        providerRegistry,
+        servicesByProjectRoot: new Map([[projectRoot, service]]),
+      });
+
+      try {
+        await controller.start();
+
+        expect(progressStore.readStatus(jobId)?.phase).not.toBe('error');
+        expect(
+          progressStore.getDb().prepare(`SELECT state FROM recovery_quarantine WHERE subject_key = ?`).get(jobId),
+        ).toMatchObject({ state: 'active' });
       } finally {
         await stopLifecycleController(controller);
       }
