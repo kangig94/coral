@@ -1,7 +1,12 @@
 import { join } from 'node:path';
 import { SessionManager } from '../../src/sessions/shell.js';
 import type { CoordinatorServerInfo, LifecycleState } from '../../src/coordinator/lifecycle.js';
-import { createSimulationBackend, type SimulationBackend, type SimulationHookLog } from './core/backend.js';
+import {
+  createSimulationBackend,
+  type SimulationBackend,
+  type SimulationHookLog,
+  type SimulationWorldCarryOver,
+} from './core/backend.js';
 import { DEFAULT_EPOCH_MS } from './core/virtual-time.js';
 import {
   acquireNoRealIoMonitor,
@@ -144,14 +149,43 @@ export class SimulationWorld {
     };
   }
 
-  async cycle(): Promise<CoordinatorServerInfo> {
+  /**
+   * `preserveWorld` restarts the coordinator on the world it was already running: same filesystem,
+   * same process table, same journal. That is the only shape in which recovery adoption is reachable,
+   * because a job can only be adopted from durable state that outlived the coordinator that wrote it.
+   * Without it the next generation starts on a fresh machine and has nothing to adopt.
+   */
+  async cycle(options?: { preserveWorld?: boolean }): Promise<CoordinatorServerInfo> {
     this.assertUsable();
     this.elapsedOffsetMs = this.getVirtualElapsedMs();
-    await this.current.backend.backend.shutdown('cycle');
+    const carryOver = options?.preserveWorld === true ? this.current.backend.carryOver : undefined;
+    // A restart that keeps its world is a replacement, not a crash: `shutdownModeFromReason` only
+    // treats 'replaced' and 'sigterm' as a handoff, and a hard stop terminalizes the very jobs the
+    // next generation is supposed to adopt.
+    await this.current.backend.backend.shutdown(carryOver === undefined ? 'cycle' : 'replaced');
     await this.current.backend.backend.waitForShutdown();
     this.generationIndex += 1;
-    this.current = this.createGenerationState();
+    this.current = this.createGenerationState(carryOver);
     return this.boot();
+  }
+
+  /**
+   * Rewrite a stored event body into a shape this build cannot decode — the exact durable condition a
+   * newer build's writer leaves behind when the two disagree about a field. It is not corruption: the
+   * row is well-formed for whoever wrote it, and unreadable only here.
+   */
+  writeForeignRecord(eventType: string): number {
+    this.assertUsable();
+    const db = this.current.backend.progressStore.getDb();
+    const row = db
+      .prepare<[string], { seq: number }>(`SELECT seq FROM events WHERE type = ? ORDER BY seq DESC LIMIT 1`)
+      .get(eventType);
+    if (row === undefined) throw new Error(`No '${eventType}' event exists to rewrite.`);
+    db.prepare<[Buffer, number]>(`UPDATE events SET body = ? WHERE seq = ?`).run(
+      Buffer.from(JSON.stringify({ transport: 'durable-cli', writtenByANewerBuild: true }), 'utf-8'),
+      row.seq,
+    );
+    return row.seq;
   }
 
   async shutdown(reason = 'simulation-shutdown'): Promise<void> {
@@ -389,6 +423,34 @@ export class SimulationWorld {
     }
   }
 
+  /**
+   * Read straight from the quarantine table. Every decoded read surface is unavailable while the world
+   * holds a record this build cannot parse, which is the condition these scenarios create — so this is
+   * the only way to assert that a job was deferred rather than ended.
+   */
+  quarantinedSubjects(): string[] {
+    this.assertUsable();
+    return this.current.backend.progressStore
+      .getDb()
+      .prepare<[], { subject_key: string }>(`SELECT subject_key FROM recovery_quarantine WHERE state = 'active'`)
+      .all()
+      .map((row) => row.subject_key);
+  }
+
+  /**
+   * Count terminal events straight from the journal. "The job was not ended" is the contract these
+   * scenarios assert, and every decoded surface is unavailable while the world holds a record this
+   * build cannot parse.
+   */
+  terminalEventCount(): number {
+    this.assertUsable();
+    const row = this.current.backend.progressStore
+      .getDb()
+      .prepare<[], { total: number }>(`SELECT COUNT(*) AS total FROM events WHERE type = 'job.terminal.recorded'`)
+      .get();
+    return row?.total ?? 0;
+  }
+
   listJobIds(): string[] {
     this.assertUsable();
     return this.current.backend.progressStore.listJobIds();
@@ -488,8 +550,8 @@ export class SimulationWorld {
     }
   }
 
-  private createGenerationState(): WorldGenerationState {
-    const backend = createSimulationBackend(normalizeWorldConfig(this.initialConfig));
+  private createGenerationState(inherited?: SimulationWorldCarryOver): WorldGenerationState {
+    const backend = createSimulationBackend(normalizeWorldConfig(this.initialConfig), inherited);
     const phaseTransitions = new Map<string, Array<{ previousPhase: string; phase: string }>>();
 
     backend.eventBus.on('job:phase_changed', ({ jobId, previousPhase, phase }) => {
@@ -507,12 +569,28 @@ export class SimulationWorld {
 
   private observeJob(jobId: string): WaitObservation {
     const status = this.current.backend.progressStore.readStatus(jobId);
-    const replay = this.replay(jobId);
+    // A world can legitimately hold an event this build cannot decode — that is the whole subject of
+    // the upgrade scenarios. Replay is a convenience here; the projection is what the assertions are
+    // about, so an unreadable event must not stop the harness from observing the job at all.
+    let replay: readonly JobEvent[];
+    try {
+      replay = this.replay(jobId);
+    } catch {
+      replay = [];
+    }
     const replayTerminalSeen = replay.some((event) => event.type === 'terminal');
+
+    let runtimeRecorded: boolean;
+    try {
+      runtimeRecorded = this.current.backend.progressStore.readRuntimeProjection(jobId) !== null;
+    } catch {
+      // An unreadable runtime record is still a recorded one — that is precisely the state under test.
+      runtimeRecorded = true;
+    }
 
     return {
       phase: status?.phase ?? null,
-      runtimeRecorded: this.current.backend.progressStore.readRuntimeProjection(jobId) !== null,
+      runtimeRecorded,
       terminal:
         replayTerminalSeen ||
         Boolean(status?.result) ||

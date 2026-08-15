@@ -553,6 +553,8 @@ export type SimulationController = {
 export type SimulationBackend = {
   backend: SimulationController;
   runtime: SimulationRuntime;
+  /** Hand to a later `createSimulationBackend` to restart the coordinator on this same world. */
+  carryOver: SimulationWorldCarryOver;
   eventBus: TypedEventBus;
   progressStore: JobStore;
   launchCoordinator: LaunchCoordinator;
@@ -568,13 +570,29 @@ export type SimulationBackend = {
   advance: (ms: number) => Promise<void>;
 };
 
-export function createSimulationBackend(scenario: SimulationScenario = {}): SimulationBackend {
-  const runtimeRoot = mkdtempSync(join(tmpdir(), 'coral-sim-backend-'));
-  const runtime = new SimulationRuntime({
-    epochMs: scenario.epochMs,
-    env: scenario.env,
-    roots: { coralRoot: runtimeRoot },
-  });
+/**
+ * What a coordinator restart leaves behind: the machine's filesystem, its process table, and its
+ * journal. Passing this into a later generation models restarting the coordinator; omitting it models
+ * starting on a fresh machine, which is what a bare `cycle` has always done.
+ */
+export type SimulationWorldCarryOver = Readonly<{
+  runtimeRoot: string;
+  runtime: SimulationRuntime;
+  storeDb: ReturnType<typeof openStoreDatabase>;
+}>;
+
+export function createSimulationBackend(
+  scenario: SimulationScenario = {},
+  inherited?: SimulationWorldCarryOver,
+): SimulationBackend {
+  const runtimeRoot = inherited?.runtimeRoot ?? mkdtempSync(join(tmpdir(), 'coral-sim-backend-'));
+  const runtime =
+    inherited?.runtime ??
+    new SimulationRuntime({
+      epochMs: scenario.epochMs,
+      env: scenario.env,
+      roots: { coralRoot: runtimeRoot },
+    });
   mkdirSync(runtime.paths.coral.store.dbDir, { recursive: true });
   for (const spawnScript of scenario.spawn ?? []) {
     runtime.spawner.enqueueSpawn(spawnScript);
@@ -585,6 +603,9 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
 
   const pluginRoot = scenario.pluginRoot ?? DEFAULT_PLUGIN_ROOT;
   const projectRoot = scenario.projectRoot ?? DEFAULT_PROJECT_ROOT;
+  // Recovery canonicalizes a launch record's project root against the real filesystem, so a scenario
+  // that restarts the coordinator needs this path to exist. Nothing before adoption ever read it.
+  mkdirSync(projectRoot, { recursive: true });
   const namespace = runtime.paths.pluginRootNamespace(pluginRoot);
   const eventBus = new TypedEventBus();
   const providerRegistry = new ProviderRegistry();
@@ -592,11 +613,13 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
   providerRegistry.register(fakeProvider);
   const storeFormat = describeCoralStoreFormat(providerRegistry);
   const providerScope = simulationProviderScope(fakeProvider.name);
-  const storeDb = openStoreDatabase({
-    path: ':memory:',
-    storage: runtime.storage,
-    storeFormat,
-  });
+  const storeDb =
+    inherited?.storeDb ??
+    openStoreDatabase({
+      path: ':memory:',
+      storage: runtime.storage,
+      storeFormat,
+    });
   const progressStore = new JobStore(namespace, runtime, createEventBodyCodec(), {
     eventBus,
     db: storeDb,
@@ -882,6 +905,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
   return {
     backend,
     runtime,
+    carryOver: { runtimeRoot, runtime, storeDb },
     eventBus,
     progressStore,
     launchCoordinator,

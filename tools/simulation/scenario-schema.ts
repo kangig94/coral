@@ -179,8 +179,20 @@ const killStepObjectSchema = z.object({
 });
 export type KillStep = z.infer<typeof killStepObjectSchema>;
 
+const foreignRecordStepSchema = z.object({
+  type: z.literal('foreign-record'),
+  /** Which durable event a build with a different shape wrote. */
+  event: z.string().min(1),
+});
+
 export const cycleStepSchema = z.object({
   type: z.literal('cycle'),
+  /**
+   * Restart the coordinator on the same world — filesystem, process table and journal — instead of
+   * starting on a fresh machine. Recovery adoption is only reachable this way, because a job can only
+   * be adopted from durable state that outlived the coordinator that wrote it.
+   */
+  preserveWorld: z.boolean().optional(),
 });
 
 const shutdownStepSchema = z.object({
@@ -212,6 +224,10 @@ const expectStepObjectSchema = z.object({
   result: resultExpectationSchema.optional(),
   runtimeRecorded: z.boolean().optional(),
   jobCount: z.number().int().nonnegative().optional(),
+  /** Subjects held by the recovery quarantine — a job deferred for a later build, not terminalized. */
+  quarantinedSubjects: z.number().int().nonnegative().optional(),
+  /** Terminal events in the journal. Zero means nothing was ended. */
+  terminalEvents: z.number().int().nonnegative().optional(),
   sessionCount: sessionCountExpectationSchema.optional(),
   timing: timingExpectationSchema.optional(),
   noRealIO: z.boolean().optional(),
@@ -239,6 +255,7 @@ const stepSchema = z
     abortStepSchema,
     killStepObjectSchema,
     cycleStepSchema,
+    foreignRecordStepSchema,
     shutdownStepSchema,
     expectStepObjectSchema,
     hangStepSchema,

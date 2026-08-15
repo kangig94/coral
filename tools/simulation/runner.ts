@@ -91,8 +91,14 @@ function resolveJobTarget(jobId: string | undefined, cursor: RunnerCursor, actio
   };
 }
 
-function resetCursor(cursor: RunnerCursor): void {
+/**
+ * A fresh generation knows nothing about the previous one's launches. When the world is preserved the
+ * jobs are still there to be adopted, so the cursor keeps pointing at them — otherwise a scenario could
+ * restart the coordinator and then have no way to name the job it is asking about.
+ */
+function advanceCursor(cursor: RunnerCursor, preserveWorld: boolean): void {
   cursor.generation += 1;
+  if (preserveWorld) return;
   cursor.currentJobId = null;
   cursor.launchedJobIds.clear();
 }
@@ -106,6 +112,8 @@ function captureExpectedAssertions(step: ExpectStep): Record<string, unknown> {
   if (step.result !== undefined) expected.result = step.result;
   if (step.runtimeRecorded !== undefined) expected.runtimeRecorded = step.runtimeRecorded;
   if (step.jobCount !== undefined) expected.jobCount = step.jobCount;
+  if (step.quarantinedSubjects !== undefined) expected.quarantinedSubjects = step.quarantinedSubjects;
+  if (step.terminalEvents !== undefined) expected.terminalEvents = step.terminalEvents;
   if (step.sessionCount !== undefined) expected.sessionCount = step.sessionCount;
   if (step.timing !== undefined) expected.timing = step.timing;
   if (step.noRealIO !== undefined) expected.noRealIO = step.noRealIO;
@@ -195,6 +203,21 @@ async function runExpectStep(
       if (runtimeRecorded !== step.runtimeRecorded) {
         mismatches.push(`expected runtimeRecorded=${step.runtimeRecorded}`);
       }
+    }
+  }
+
+  if (step.terminalEvents !== undefined) {
+    actual.terminalEvents = world.terminalEventCount();
+    if (actual.terminalEvents !== step.terminalEvents) {
+      mismatches.push(`expected terminalEvents=${step.terminalEvents}, received ${String(actual.terminalEvents)}`);
+    }
+  }
+
+  if (step.quarantinedSubjects !== undefined) {
+    const subjects = world.quarantinedSubjects();
+    actual.quarantinedSubjects = subjects.length;
+    if (subjects.length !== step.quarantinedSubjects) {
+      mismatches.push(`expected quarantinedSubjects=${step.quarantinedSubjects}, received ${String(subjects.length)}`);
     }
   }
 
@@ -429,8 +452,9 @@ async function executeStep(
       }
 
       case 'cycle': {
-        const info = await world.cycle();
-        resetCursor(cursor);
+        const preserveWorld = step.preserveWorld === true;
+        const info = await world.cycle(preserveWorld ? { preserveWorld: true } : undefined);
+        advanceCursor(cursor, preserveWorld);
         return buildStepResult(world, step, stepIndex, startedAt, {
           ok: true,
           detail: { info, generation: cursor.generation },
@@ -466,6 +490,14 @@ async function executeStep(
                 detail: outcome.detail,
               },
         );
+      }
+
+      case 'foreign-record': {
+        const seq = world.writeForeignRecord(step.event);
+        return buildStepResult(world, step, stepIndex, startedAt, {
+          ok: true,
+          detail: { event: step.event, seq },
+        });
       }
 
       case 'hang': {

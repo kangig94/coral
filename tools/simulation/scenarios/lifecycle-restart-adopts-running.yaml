@@ -1,0 +1,40 @@
+# The reattachment contract: a coordinator restart loses the wrapper for a moment and picks the job
+# back up. The provider process outlives the coordinator on purpose, so a job that was running before
+# the restart must still be running after it — not terminalized, not forgotten.
+#
+# `preserveWorld` is what makes this reachable. A bare `cycle` starts the next generation on a fresh
+# machine, where there is nothing to adopt; this one restarts the coordinator on the world it was
+# already running.
+world:
+  durable:
+    - pid: 41001
+      runtimeDelayMs: 5
+      stdout:
+        - delayMs: 20
+          data: "still-working-across-the-restart\n"
+      exit: null
+  fakeProvider:
+    progress:
+      - delayMs: 5
+        message: provider-progress-before-restart
+steps:
+  - type: boot
+  - type: launch
+    prompt: simulate a coordinator restart adopting a running job
+  - type: wait
+    until:
+      runtimeRecorded: true
+    stepMs: 5
+    maxSteps: 10
+  - type: wait
+    until:
+      progressContains: provider-progress-before-restart
+    stepMs: 5
+    maxSteps: 10
+  - type: cycle
+    preserveWorld: true
+  - type: expect
+    jobCount: 1
+    phase: running
+    runtimeRecorded: true
+    noRealIO: true
