@@ -8,7 +8,13 @@ import {
   type HandoffCapsuleFileEnvironment,
 } from '../../provider-proxy/handoff-capsule.js';
 
-const HANDOFF_CAPSULE_FILENAME = /^provider-1[0-9a-f]{23}\.handoff\.json$/u;
+/**
+ * Both names, because this build must find every capsule that exists — the generations it wrote and the ones
+ * older builds left. The optional `.v<n>` is the format generation, which lives in the filename so a build
+ * that predates a generation never opens its files (see `providerHandoffCapsulePath`). v0.10.8's own copy of
+ * this pattern has no such branch, which is exactly the point: to it, a `.handoff.v3.json` is not a capsule.
+ */
+const HANDOFF_CAPSULE_FILENAME = /^provider-1[0-9a-f]{23}\.handoff(\.v[0-9]+)?\.json$/u;
 
 export type DiscoveredProviderHandoffCapsule = Readonly<{
   path: string;
@@ -34,7 +40,9 @@ export function discoverProviderHandoffCapsules(
     const path = join(options.runDir, entry);
     const capsule = readHandoffCapsuleFile(path, env);
     if (capsule === null) throw new Error(`provider_proxy_handoff_capsule_disappeared:${path}`);
-    const canonicalPath = providerHandoffCapsulePath(capsule, { baseDir });
+    // The capsule's own version, not this build's: an older generation is canonical at the name it shipped
+    // under, and holding it to the current one would read every legacy capsule as relocated.
+    const canonicalPath = providerHandoffCapsulePath(capsule, { baseDir }, capsule.version);
     if (canonicalPath !== path) throw new Error(`provider_proxy_handoff_capsule_path_mismatch:${path}`);
     return Object.freeze({ path, capsule });
   });

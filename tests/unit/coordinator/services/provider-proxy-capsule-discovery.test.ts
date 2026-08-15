@@ -71,6 +71,34 @@ describe('provider proxy capsule discovery', () => {
     expect(syncDirectoryDurableSync).not.toHaveBeenCalled();
   });
 
+  // Copied from `git show v0.10.8:src/coordinator/services/provider-proxy-capsule-discovery.ts`, deliberately
+  // as a literal. It is the gate a rolled-back build applies before it opens anything, and this project can
+  // no longer unrelease — a bad version is answered by a forward one, so the build being rolled back to is a
+  // build already in the field whose source cannot be changed. Correct this only against that source.
+  const V0_10_8_DISCOVERY_PATTERN = /^provider-1[0-9a-f]{23}\.handoff\.json$/u;
+
+  it('writes a capsule a v0.10.8 build will not open', () => {
+    const identity = {
+      generation: 'gen2' as const,
+      flavor: 'prod' as const,
+      buildSetId: '22222222-2222-4222-8222-222222222222',
+      hostFingerprint: 'd'.repeat(64),
+      proxyInstanceId: '55555555-5555-4555-8555-555555555555',
+    };
+    const baseDir = '/tmp/coral-capsule-generation';
+
+    const current = basename(providerHandoffCapsulePath(identity, { baseDir }));
+    const legacy = basename(providerHandoffCapsulePath(identity, { baseDir }, 2));
+
+    expect(
+      V0_10_8_DISCOVERY_PATTERN.test(current),
+      'a capsule this build writes must be invisible to v0.10.8, not fatal to it',
+    ).toBe(false);
+    // And the older generations stay exactly where they were, or this build stops finding what it must refuse.
+    expect(V0_10_8_DISCOVERY_PATTERN.test(legacy)).toBe(true);
+    expect(current).not.toBe(legacy);
+  });
+
   it('discovers a canonical real-storage capsule and blocks matching fresh admission', () => {
     const baseDir = mkdtempSync(join(tmpdir(), 'coral-provider-capsule-discovery-'));
     const runtime = createRealRuntime('prod', { baseDir });
@@ -93,7 +121,7 @@ describe('provider proxy capsule discovery', () => {
       orphanTimeoutMs: 30_000,
       teardownReserveMs: 14_000,
     };
-    const path = providerHandoffCapsulePath(capsule, { baseDir });
+    const path = providerHandoffCapsulePath(capsule, { baseDir }, capsule.version);
     const stat = runtime.storage.statSync(baseDir, { bigint: true });
     if (stat.uid === undefined) throw new Error('real storage did not report the temporary directory owner');
     // Placed as bytes rather than through `writeHandoffCapsuleFile`, which now accepts V3 alone. This case is

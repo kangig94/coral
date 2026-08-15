@@ -202,15 +202,30 @@ export function providerReaperBootstrapCapsulePath(
   return providerBootstrapCapsulePath('reaper', identity, identity.reaperInstanceId, options);
 }
 
+/** The capsule format this build writes. Named here because it is the filename that carries it. */
+export const CURRENT_HANDOFF_CAPSULE_VERSION = 3;
+
 /**
  * One capsule per exact proxy set keeps the recovery secret independent of operation count. A distinct
- * `.handoff.json` suffix prevents the standing credential from colliding with the proxy's one-use bootstrap
+ * `.handoff` suffix prevents the standing credential from colliding with the proxy's one-use bootstrap
  * secret, which has a different authority and lifetime.
+ *
+ * **The format generation is in the filename**, and that is the only thing standing between a rollback and a
+ * dead coordinator. A build reads a capsule strictly and refuses to start on one it cannot parse — v0.10.8
+ * does exactly this — so a newer format under a name an older build opens is boot-fatal for it. That older
+ * build's discovery matches `provider-1<hash>.handoff.json` *exactly*, so anything from generation 3 onward
+ * is invisible to it rather than fatal. The change asks nothing of the build being rolled back to, which is
+ * what makes it the only version of this fix that can ever work.
+ *
+ * Versions 1 and 2 keep the unsuffixed name they shipped under; nothing writes them any more, and renaming
+ * them would hide capsules this build still has to find and refuse.
  */
 export function providerHandoffCapsulePath(
   identity: ProviderProxyEndpointIdentity,
   options?: ProviderBootstrapCapsulePathOptions,
+  capsuleVersion: number = CURRENT_HANDOFF_CAPSULE_VERSION,
 ): string {
   const identityHash = providerPathIdentityHash('proxy', identity, identity.proxyInstanceId);
-  return join(generationRunDir(identity.flavor, options), `provider-${identityHash}.handoff.json`);
+  const suffix = capsuleVersion <= 2 ? 'handoff.json' : `handoff.v${capsuleVersion}.json`;
+  return join(generationRunDir(identity.flavor, options), `provider-${identityHash}.${suffix}`);
 }
