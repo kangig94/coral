@@ -6,11 +6,11 @@ on this work and must not carry another partial version of it.
 
 ## The bug
 
-Shutdown calls `stopProviderOperationReconciler()` before the accepted-request drain begins
-(`src/coordinator/lifecycle.ts:1233-1239`). That stop unsubscribes
-`subscribeProviderOperationMutations` immediately (`src/coordinator/composition/execution-services.ts:375-379`),
+Shutdown calls `stopProviderOperationReconciler()` at `src/coordinator/lifecycle.ts:1226`, five lines
+before `runShutdownSequence` and therefore before the accepted-request drain begins. That stop unsubscribes
+`subscribeProviderOperationMutations` immediately (`src/coordinator/composition/execution-services.ts:375-380`),
 while `ProviderOperationReconciler.stop()` only disables scheduled polling and removes its settlement listener
-(`src/coordinator/services/provider-operation-reconciler.ts:444-451`). It neither fences nor awaits an active
+(`src/coordinator/services/provider-operation-reconciler.ts:444-452`). It neither fences nor awaits an active
 serializer; those serializers remain represented only by the per-operation `inFlight` promise
 (`src/coordinator/services/provider-operation-reconciler.ts:732-771`).
 

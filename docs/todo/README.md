@@ -11,6 +11,13 @@ asserted opposite facts about one directory, one had scoped its own reported sym
 was built on a cause that had been inferred rather than reproduced, and a live defect was buried inside
 a document about an unplanned feature.
 
+**Re-verified against source the same day**, every claim and every `file:line`. The rewrite had fixed
+how these documents were organised without checking what they asserted. Four entries were wrong in ways
+that would have produced a wrong fix — a defect enumerated at one call site that exists at three, a
+sibling of the same defect one file away, a prescription for a field that no longer crosses the wire,
+and a dismissed constraint that was true of a different directory. Each carries the correction in place
+rather than an edited-clean text, because the corrections are the part that does not re-derive.
+
 ---
 
 ## Build identity — one build's records read by another
@@ -46,9 +53,9 @@ landing does not unblock it — that was the record direction.
 
 ## A job has one root
 
-|                                                          |                                                                                                                                                                                                                                                                                                        |
-| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| [`job-scope-containment.md`](./job-scope-containment.md) | Authorization already decides against the directory the work happens in; the durable record takes the shell's cwd instead. Record the former, and compare by containment rather than equality. Must land before the jobs read contract — a consumer inventory cannot be audited while the values move. |
+|                                                          |                                                                                                                                                                                                                                                                                                                                                                                                       |
+| -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`job-scope-containment.md`](./job-scope-containment.md) | Authorization already decides against the directory the work happens in; the durable record takes the shell's cwd instead. Record the former, and compare by containment rather than equality. **Three launch paths write the record, not one** — initial, resumed, and workflow-replacement. Must land before the jobs read contract — a consumer inventory cannot be audited while the values move. |
 
 ---
 
@@ -76,19 +83,19 @@ would have to satisfy both, and their requirements are opposites.
 
 ## Durable state with no lifecycle owner
 
-|                                                                      |                                                                                                                                                                                      |
-| -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| [`export-lifetime.md`](./export-lifetime.md)                         | Nothing prunes `~/.coral/exports/jobs/`. Ever. Part 1 gives it a retention authority; part 2 is archived-session restore, whose real question is answerable only once part 1 exists. |
-| [`coordinator-socket-identity.md`](./coordinator-socket-identity.md) | The socket path falls back through `TMPDIR`, so two processes with one state root can both bind. Two coordinators over one journal. Small, independent.                              |
+|                                                                      |                                                                                                                                                                                                                                               |
+| -------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`export-lifetime.md`](./export-lifetime.md)                         | Nothing prunes `~/.coral/exports/jobs/`. Ever — the retention setting's own doc comment says otherwise. Part 1 gives it a retention authority; part 2 is archived-session restore, whose real question is answerable only once part 1 exists. |
+| [`coordinator-socket-identity.md`](./coordinator-socket-identity.md) | The socket path falls back through `TMPDIR`, so two processes with one state root can both bind. Two coordinators over one journal. The **provider endpoint resolver has the same fallback** — fix both together. Small, independent.         |
 
 ---
 
 ## Wire contracts
 
-|                                                                              |                                                                                                                                                                          |
-| ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| [`jobs-read-contract-schema-first.md`](./jobs-read-contract-schema-first.md) | `jobs.list` and `jobs.detail` cross four boundaries with no response schema.                                                                                             |
-| [`result-artifact-availability.md`](./result-artifact-availability.md)       | **Re-score before starting.** The symptom that motivated it was fixed by a ten-line change (#314); what remains has never been observed and costs a protocol transition. |
+|                                                                              |                                                                                                                                                                                                  |
+| ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| [`jobs-read-contract-schema-first.md`](./jobs-read-contract-schema-first.md) | `jobs.list` and `jobs.detail` cross four boundaries with no response schema. The field that motivated it stopped crossing the wire while it sat open; the boundary is the defect, not the field. |
+| [`result-artifact-availability.md`](./result-artifact-availability.md)       | **Re-score before starting.** The symptom that motivated it was fixed by a ten-line change (#314); what remains has never been observed and costs a protocol transition.                         |
 
 ---
 

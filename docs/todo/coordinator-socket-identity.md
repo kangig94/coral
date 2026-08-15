@@ -27,6 +27,23 @@ and one store.
 That directly violates `design-rationale.md` §8.2 — exactly one coordinator per Coral installation —
 which every ownership, recovery and handoff guarantee in the system is written on top of.
 
+## The same fallback exists a second time
+
+`providerEndpoint` (`src/infra/path/provider-proxy.ts:126-150`) resolves guardian, proxy and reaper
+sockets with the identical shape: try `generationRunDir(...)`, and on a length overflow fall back to
+`join(env.tempDirectory, 'coral-<uid>')`. Same ambient variable, same consequence — two processes that
+agree on a provider set's identity can disagree on where its socket lives, so an existing set looks
+absent and a second one gets spawned.
+
+It is better hardened in two ways worth copying rather than re-deriving: it **refuses** when even the
+fallback exceeds the limit (`proxy_endpoint_too_long`) instead of returning an unusable path, and it
+asserts the fallback directory is private before returning. What it does not have, and what this item
+is about, is independence from `TMPDIR`.
+
+Fix both together. They are one missing invariant, and fixing the coordinator alone would leave the
+same class live one directory away — the shape that made this defect worth extracting in the first
+place.
+
 ## Why it has not been seen more
 
 It needs the long-path branch, which needs a deep state root, and then it needs two invocations with
@@ -56,4 +73,6 @@ is only the socket path's dependence on ambient environment.
 ## Start condition
 
 Write the failing case first: two `socketPathForRunDir` calls with the same deep `runDir` and different
-`env.tempDirectory`, asserting they agree. It fails today.
+`env.tempDirectory`, asserting they agree. It fails today. Write the matching case for
+`providerEndpoint` in the same commit — same identity, same overflow, different `env.tempDirectory` —
+so the invariant is stated once for both callers rather than discovered twice.

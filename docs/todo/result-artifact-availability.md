@@ -18,7 +18,7 @@ scope itself away from the thing that prompted it.
 
 ## What actually remains
 
-`WaitCoordinator.resultPathFor` (`src/jobs/shell/wait.ts:362-372`) catches a rebuild failure, logs to
+`WaitCoordinator.resultPathFor` (`src/jobs/shell/wait.ts:362-374`) catches a rebuild failure, logs to
 coordinator stderr, and returns the **expected** filename. The terminal wait event then carries a path
 that was never verified, and `wait` prints it.
 
@@ -47,9 +47,10 @@ discriminated value:
 durable terminal outcome alone — and under the settled `wait` contract, from the monitor's own success
 (see `cli-machine-channel.md`).
 
-The dependency is genuinely optional in the interface (`src/jobs/shell/wait.ts:225`) and four test
-harnesses omit it, but the **sole production composition supplies it**
-(`src/coordinator/execution-service.ts:108`). The work is making the constructor contract require what
+The dependency is genuinely optional in the interface (`ensureResultArtifact?`,
+`src/jobs/shell/wait.ts:226`) and the four test harnesses that construct a `WaitCoordinator` omit it, but
+the **sole production composition supplies it** (`src/coordinator/execution-service.ts:120`, inside the
+one `new WaitCoordinator` at `:108`). The work is making the constructor contract require what
 production already provides, not adding missing wiring.
 
 ## Why it is still split

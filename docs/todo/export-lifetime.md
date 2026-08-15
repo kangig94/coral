@@ -13,12 +13,33 @@ Nothing prunes `~/.coral/exports/jobs/<id>/`. Ever.
 (`src/coordinator/lifecycle.ts` → `src/jobs/runtime-meta-store.ts`, a `DELETE FROM meta`).
 
 The export tree is `runtime.paths.coral.exports.jobsRoot`, a different root. A repository-wide search
-found no removal targeting it.
+found no removal targeting it. The only prune that exists is
+`STALE_ARTIFACT_PRUNE_OBLIGATION` (`src/coordinator/lifecycle.ts:380-412`), and it removes exactly
+`progressStore.jobDir(jobId)` and the `meta` row — never the export.
 
-The retention document eventually recorded this correctly. The archive-restore document recorded the
-inverse — that the archive is pruned on the first boot after any version change, giving a restore window
-of "until the next upgrade" — and built a blocking design question on top of it. That question was
-answering a constraint that does not exist.
+**The source itself states the false belief.** `resolveJobRetentionMs`'s doc comment
+(`src/coordinator/lifecycle.ts:235-238`) calls it "the terminal-job **export** retention window", for a
+setting whose prune touches only scratch. Correcting that comment belongs in Part 1; leaving it is how
+the next reader re-derives the same wrong fact.
+
+### The archive-restore document was not inventing its constraint
+
+It recorded that the archive is pruned on the first boot after any version change, giving a restore
+window of "until the next upgrade", and built a blocking design question on that. The earlier merge
+dismissed this as a constraint that does not exist. **It exists — for a different directory.** The
+prune's eligibility test is `fromOldBundle || agedOut` (`lifecycle.ts:387-389`), so a scratch artifact
+carrying a previous `bundleHash` is removed regardless of age. That is precisely "pruned on the first
+boot after any version change", and it is true of `progressStore.jobDir`.
+
+The error was applying a true fact about the scratch directory to the export tree — the same shape as
+the incorrect claim `build-identity-and-upgrade.md` had to retract. Two documents describing two
+different roots with one name is what produced the contradiction, and it is why this merge names the
+root every time it makes a claim.
+
+The preserved provider artifacts live **inside** the export tree —
+`exports.jobsRoot/<jobId>/artifacts/<provider>/actions/<archiveActionId>/`
+(`src/sessions/provider-artifact-archive.ts:190-202`) — so they inherit its absent lifetime exactly,
+and no separate decision covers them.
 
 ## What follows from getting the fact right
 

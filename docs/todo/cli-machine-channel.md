@@ -16,14 +16,16 @@ passes a provider's status through `normalizeExitCode` across the full 0–255 r
 reserves **75** for "still running" (`src/cli/errors.ts:98`).
 
 A reserved code and a 0–255 passthrough cannot coexist — every value the reservation could take is a
-value a child can produce. This is not hypothetical: three skill documents already carry the workaround
-in prose.
+value a child can produce. This is not hypothetical: **six** skill documents already carry the
+workaround in prose.
 
 > `ralph/SKILL.md:176` — "classify each result from its rendered output, **not exit code `75` alone** …
 > even when a terminal `provider_exit` propagated code `75`."
 
-The same sentence appears at `ralph/SKILL.md:205` and `plan/SKILL.md:161`. Three documents instructing
-agents to ignore the exit code is the system reporting that the channel is full.
+The same sentence appears in `analyze` (`:65`), `bugfix` (`:27`), `code-simplify` (`:69`, plus a second
+phrasing at `:75`), `preplan` (`:151`), `plan` (`:161`), and twice in `ralph` (`:176`, `:205`) — eight
+sites across six documents. Six documents instructing agents to ignore the exit code is the system
+reporting that the channel is full.
 
 Exit 1 is overloaded the same way: it means both "your job failed" (`toExitCode`) and "I could not
 attach to your job" (`scope_mismatch` reaching `errorCodeToExit`'s default).
@@ -47,7 +49,7 @@ correct_ — the monitor failed to attach. #307 item 2 therefore reduces to mess
 do instead of surfacing a raw 403. No exit-code change is needed for it.
 
 **What it costs.** `toExitCode`'s outcome mapping goes away, and every skill that branches on it must
-move to the structured record. `ralph`, `plan` and `preplan` all do.
+move to the structured record — all six named above, not the three an earlier revision listed.
 
 **Binding constraint.** This must not ship before the build-identity work's **output** direction. A
 session holding the old skill's text against a new CLI would read the new always-zero exit as
