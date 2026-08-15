@@ -268,7 +268,16 @@ export function createExecutionServices({
   const initializeProviderProxyClaims = (): void => {
     if (providerProxyClaimsInitialized) return;
     const db = getProgressStore().getDb();
-    world.providerProxyClaims.initialize(readProviderOperations(db));
+    const scan = readProviderOperations(db);
+    if (scan.unreadableKeys.length > 0) {
+      // The first scan on the boot path, so this is where an operator learns. Reported once and by key: the
+      // rows stay in the store, this build simply cannot act on them, and refusing to boot over them would
+      // trade a stalled operation for no daemon at all.
+      backendLog.warn(
+        `Skipped ${scan.unreadableKeys.length} provider operation record(s) this build cannot read: ${scan.unreadableKeys.join(', ')}`,
+      );
+    }
+    world.providerProxyClaims.initialize(scan.records);
     providerProxyClaimsInitialized = true;
     unsubscribeProviderOperationMutations = subscribeProviderOperationMutations(db, (mutation) => {
       world.providerProxyClaims.applyMutation(mutation);

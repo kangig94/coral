@@ -1142,7 +1142,7 @@ export function createRecoveryCoordinator(
   const snapshotProviderOperationStartupOwnership = (): ProviderOperationStartupOwnership =>
     Object.freeze({
       jobIds: Object.freeze([
-        ...new Set(readProviderOperations(progressStore.getDb()).map((record) => record.operation.jobId)),
+        ...new Set(readProviderOperations(progressStore.getDb()).records.map((record) => record.operation.jobId)),
       ]),
     });
 
@@ -1221,7 +1221,7 @@ export function createRecoveryCoordinator(
         interruptedAppServerReason,
       });
     }
-    const localRecoveryRecords = readProviderOperations(progressStore.getDb()).filter(
+    const localRecoveryRecords = readProviderOperations(progressStore.getDb()).records.filter(
       (record): record is Extract<ProviderOperationRecord, { phase: 'local-recovery-pending' }> =>
         record.phase === 'local-recovery-pending',
     );

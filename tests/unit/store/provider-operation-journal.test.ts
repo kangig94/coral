@@ -462,7 +462,7 @@ describe('provider operation journal', () => {
       );
       for (const record of records) insertProviderOperation(db, record);
 
-      expect(readProviderOperations(db)).toEqual(
+      expect(readProviderOperations(db).records).toEqual(
         [...records].sort((left, right) => left.operation.jobId.localeCompare(right.operation.jobId)),
       );
     } finally {
@@ -499,6 +499,49 @@ describe('provider operation journal', () => {
       );
 
       expect(() => readProviderOperationsDue(db, 100, 1)).toThrow(/is stale or disagrees with its canonical record/u);
+    } finally {
+      db.close();
+    }
+  });
+
+  // The incarnation token changed this record's shape while leaving `version: 1` on it, so every row written
+  // by v0.10.6-v0.10.8 fails validation here. Every scan caller sits on the coordinator's boot path, so a
+  // throw is not "one stalled operation" — it is no daemon at all. The row is reported and left in place.
+  it('reports a row this build cannot read instead of refusing the whole scan', () => {
+    const db = createDb();
+    try {
+      const readable = providerOperationRecord('executing');
+      insertProviderOperation(db, readable);
+
+      // A genuine v0.10.8 value: the same record with its three process identities back in seconds.
+      const shipped = JSON.parse(sagaRows(db)[0]?.value ?? '{}') as {
+        locator: Record<string, Record<string, unknown>>;
+        providerRoot?: Record<string, unknown>;
+      };
+      for (const part of ['proxy', 'guardian', 'reaper', 'containment']) {
+        const process = shipped.locator[part];
+        if (process === undefined) continue;
+        delete process.incarnation;
+        process.processStartedAtSeconds = 1_700_000_000;
+      }
+      if (shipped.providerRoot !== undefined) {
+        delete shipped.providerRoot.incarnation;
+        shipped.providerRoot.processStartedAtSeconds = 1_700_000_000;
+      }
+      const legacyKey = `${RECORD_PREFIX}00000000-0000-4000-8000-00000000ffff`;
+      db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)').run(
+        legacyKey,
+        JSON.stringify(shipped),
+      );
+
+      const scan = readProviderOperations(db);
+
+      expect(scan.records).toEqual([readable]);
+      expect(scan.unreadableKeys).toEqual([legacyKey]);
+      expect(
+        sagaRows(db).some((row) => row.key === legacyKey),
+        'the row is skipped, never removed',
+      ).toBe(true);
     } finally {
       db.close();
     }

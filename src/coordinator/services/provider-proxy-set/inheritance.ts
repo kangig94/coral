@@ -314,7 +314,7 @@ async function proveProviderProxySetContainmentAbsent(
   signal.throwIfAborted();
 
   const roots = new Map<string, Readonly<{ pid: number; incarnation: ProcessIncarnation }>>();
-  for (const record of readProviderOperations(db)) {
+  for (const record of readProviderOperations(db).records) {
     if (
       !('providerRoot' in record) ||
       !providerProxySetIdentitiesEqual(providerProxySetIdentityFromRecord(record), identity)

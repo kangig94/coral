@@ -453,7 +453,7 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
   }
 
   async reconcileAtStartup(signal: AbortSignal): Promise<StartupReconciliationReport> {
-    const records = readProviderOperations(this.#deps.getProgressStore().getDb());
+    const { records } = readProviderOperations(this.#deps.getProgressStore().getDb());
     const incidents: StartupReconciliationIncident[] = [];
     let setsVisited = 0;
     let operationsVisited = 0;
@@ -589,7 +589,7 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
     ) {
       throw new Error(`provider_proxy_startup_retry_record_missing:${operationKey(record.operation)}`);
     }
-    const recordCount = readProviderOperations(db).length;
+    const recordCount = readProviderOperations(db).records.length;
     const verificationCutoff = Math.min(record.retryNotBeforeMs + 1, Number.MAX_SAFE_INTEGER);
     const due = readProviderOperationsDue(db, verificationCutoff, Math.max(recordCount, 1));
     if (!due.some((candidate) => operationKey(candidate.operation) === operationKey(record.operation))) {
@@ -2124,7 +2124,7 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
 
   async #reconcileActiveForAuthority(authority: DurableProviderProxyOperationAuthority): Promise<void> {
     const db = this.#deps.getProgressStore().getDb();
-    for (const record of readProviderOperations(db)) {
+    for (const record of readProviderOperations(db).records) {
       if (sameAuthority(record, authority)) await this.reconcile(record, authority);
     }
   }

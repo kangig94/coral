@@ -355,8 +355,28 @@ export function readProviderOperationForJob(db: Database, jobId: string): Provid
   return row === undefined ? null : decodeCanonicalValue(row.key, row.value);
 }
 
-export function readProviderOperations(db: Database): readonly ProviderOperationRecord[] {
+/**
+ * The result of walking every saga row, with the rows this build could not read kept separate rather than
+ * thrown.
+ *
+ * A keyed lookup that fails is a caller asking for a record that must exist, and it still throws. A *scan*
+ * is different: it is startup asking what is here, and one row it cannot parse is not a reason to refuse to
+ * run. That distinction is not hypothetical \u2014 the incarnation token changed this record's shape while
+ * leaving `version: 1` on it, so a row written by v0.10.6-v0.10.8 fails validation, and every scan caller
+ * sits on a path that ends at the coordinator's own startup.
+ *
+ * Unreadable rows are reported as keys, never as bytes: what they mean is not this reader's to guess. They
+ * are also left in place. Nothing is lost by skipping one \u2014 the row stays, and a build that understands it
+ * can still act on it.
+ */
+export type ProviderOperationScan = Readonly<{
+  records: readonly ProviderOperationRecord[];
+  unreadableKeys: readonly string[];
+}>;
+
+export function readProviderOperations(db: Database): ProviderOperationScan {
   const records: ProviderOperationRecord[] = [];
+  const unreadableKeys: string[] = [];
   let cursor = PROVIDER_OPERATION_RECORD_PREFIX;
   for (;;) {
     const rows = db
@@ -367,8 +387,16 @@ export function readProviderOperations(db: Database): readonly ProviderOperation
          LIMIT ?`,
       )
       .all(cursor, `${PROVIDER_OPERATION_RECORD_PREFIX}\uffff`, PROVIDER_OPERATION_READ_PAGE_SIZE);
-    for (const row of rows) records.push(decodeCanonicalValue(row.key, row.value));
-    if (rows.length < PROVIDER_OPERATION_READ_PAGE_SIZE) return records;
+    for (const row of rows) {
+      try {
+        records.push(decodeCanonicalValue(row.key, row.value));
+      } catch {
+        unreadableKeys.push(row.key);
+      }
+    }
+    if (rows.length < PROVIDER_OPERATION_READ_PAGE_SIZE) {
+      return { records, unreadableKeys };
+    }
     cursor = rows.at(-1)?.key ?? cursor;
   }
 }
