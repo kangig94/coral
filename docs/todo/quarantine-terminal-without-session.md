@@ -1,67 +1,101 @@
-# TODO — recovery quarantines a growing pile of terminals that carry no `refs.sessionId`
+# TODO — a fixed producer leaves a quarantine backlog nothing clears
 
-**Status**: open, **and actively accumulating**. Recorded 2026-08-15 while the count was still climbing
-on a live daemon. This is the only entry in this directory whose subject is growing while it is being
-written.
+**Status**: open, and **smaller than the entry that preceded it**. Rewritten 2026-08-15, hours after the
+first version, once the rows were actually read instead of inferred from a status line.
 
-## What is observed
+## Correction — the previous version of this document was wrong
 
-`backend status` reports recovery as degraded:
+It said the rows were **not** #311, that they had "survived a restart onto `0.10.8`", and that the count
+"kept rising". All three were wrong, and they were wrong in the same way: the count was read from
+`backend status` at intervals and the rows themselves were never opened.
+
+What the rows say:
+
+- Every one is `boundary="retention-release-pair"`, `stage=hydrate` — **exactly the source #311 fixed**.
+- The newest was detected at `12:06:18Z`; the restart onto `0.10.8` was `12:12:45Z`. Nothing was created
+  after it. The count stood still for the next hour and a half.
+- `0.10.6`'s bundle does not contain #311's predicate. `0.10.8`'s does.
+
+So the producer was the old daemon, the fix works, and the "still rising" reading came from sampling a
+total that had already stopped moving. The lesson is the same one this directory keeps recording: a
+symptom read at intervals is not a measurement, and the cost of opening the record was two commands.
+
+## What was actually happening, confirmed
+
+Every quarantined terminal belongs to a **workflow root job** — 25 such events in the store, all of jobs
+that completed successfully. A workflow root has no provider session by construction, so its terminal
+legitimately carries no `refs.sessionId`, and a boundary about session claims has nothing to do with it.
+`retention-release-pair-recovery-source.ts:29-33` says so in as many words. `0.10.6` admitted them
+anyway and failed at hydrate on a field the pair never reads.
+
+The first version of this document guessed exactly this shape and then attached it to the wrong
+producer. The guess was cheap and right; not checking it was the expensive part.
+
+## What remains open
+
+**A backlog produced by a fixed defect has no owner.** The 24 stale rows kept `recovery` reporting
+`degraded` indefinitely on a daemon whose code could no longer produce one. They are individually
+disposable — `backend recovery-quarantine clear` re-runs the narrowed scan for that one subject, finds
+the predicate now excludes it, and reports `resolved and removed` — but only one row per invocation, and
+only if an operator knows to do it.
+
+Two things follow:
+
+1. **A health signal that stays red for a repaired cause teaches the operator to ignore it.** This one
+   did: `degraded` was visible for a full day and read as background noise, which is how a genuinely
+   different failure sat underneath it unnoticed (below).
+2. **Nothing re-evaluates a quarantined subject against the current build.** The disposal exists and is
+   correct; what is missing is anything that runs it. A startup pass that retries `active` rows whose
+   scan no longer yields them would have emptied this backlog on the first boot of `0.10.8` — which is
+   precisely the boot where the operator most wants to know what is still broken.
+
+## Found underneath it
+
+Clearing the 24 left **two** rows of a different boundary, `session-retention-work`, both workflow slot
+children of one workflow (`…:0:0` and `…:0:1`). `LifecycleReactor.enforceRetention` throws when
+`readyBoundProvider` returns null (`src/sessions/lifecycle-reactor.ts:667-670`), and the coordinator log
+says why:
 
 ```
-recovery: degraded
-  reason: recovery-quarantine (27 unresolved rows)
-  last error: Job terminal event 62029 has no refs.sessionId.
+Retention discard skipped for session 3a15866c-…: The selected Codex profile is
+authenticated as a different workspace. Restore the original login or start a new session.
 ```
 
-The count went 21 → 25 → 26 → 27 over roughly four hours of ordinary use, and the event sequence in the
-message advanced each time. It is not a fixed backlog from one incident; something produces a new one
-regularly.
+**The refusal is correct.** The session's binding records a ChatGPT account subject; `~/.codex` is now
+logged into a different one. A retention discard deletes the provider's own session file, and doing that
+under an unrelated login would be worse than not doing it.
 
-## What it is not
+What is wrong is the **disposition**. A login that has changed is not a transient failure, and storing
+it as a retryable row means the condition is retried forever against a state nobody is going to restore.
+That is the same disease as the backlog above, arrived at from the other direction: there, the cause was
+repaired and the row stayed; here, the cause will never be repaired and the row stays anyway.
 
-**It is not the `0.10.6` daemon lacking #311.** That was the first hypothesis, because the machine had
-been running an old coordinator against a new install for hours (see `build-identity-and-upgrade.md`).
-It survived a restart onto `0.10.8`: the fresh daemon reported the same degraded reason and the count
-kept rising. #311 narrowed the retention-pair source's SQL to terminals that **have** a `sessionId`;
-whatever is producing these reaches the same complaint by another route.
+### And they could not be cleared at all
 
-Recorded explicitly because the wrong attribution is cheap to repeat: an old-daemon explanation fits the
-symptom, was believed, and is false.
+The subject key for this boundary is `${sessionId}\u0000${jobId}`
+(`src/sessions/retention-work-item-recovery-source.ts:63`). `recovery-quarantine list` renders every
+field with `JSON.stringify`, so it prints as an escape sequence; `clear --key` took its argument from
+argv verbatim, and **argv cannot carry a NUL at all**. Copying what `list` printed produced a literal
+backslash-u that matched nothing, and the real byte could not be typed. The command's own error message
+says "Run `recovery-quarantine list` and copy the exact boundary, key, and revision" — advice that could
+not work for the only rows that needed it.
 
-## The shape worth checking first
+Fixed here: `clear` now unquotes a coordinate that arrives as a JSON string literal, so the printed form
+round-trips. Unquoting at the CLI rather than changing the stored key keeps existing durable rows
+addressable — the key's shape belongs to the recovery source, not to the command that names it.
 
-A workflow root job has no provider session — `sessionId` is `null` on its launch record by
-construction. A terminal for such a job legitimately carries no `refs.sessionId`. Any consumer that
-treats "job terminal" as implying "has a session" will therefore fail on every workflow terminal, and
-will keep failing as long as workflows keep running. That matches the accumulation rate.
-
-So the first question is not "which record is malformed" but **which reader is asserting a session that
-the emitting job never had**. The answer decides whether the fix is at the reader, at the enumeration
-that selects records for it, or at the event's own refs.
-
-## What to gather before deciding
-
-- `coral-cli backend recovery-quarantine list` — the boundary, subject kind, and revision of the rows.
-  If they are all one boundary, the enumeration is the suspect; if they span boundaries, the emitting
-  side is.
-- For one named event sequence, the event's `stream_kind`, `refs`, and the `jobKind` of the job it names.
-  A `jobKind: 'workflow'` row confirms the shape above and ends the investigation early.
-- Whether the rows are retryable or terminal in the quarantine's own vocabulary. Deferred work that a
-  later build resolves is a different severity from work nothing will ever resolve.
-
-## Why it matters beyond the count
-
-Quarantine is the disposition #316 introduced so that a record this build cannot read stops destroying
-the job it describes. That is the right trade, and it is working. But it converts an unreadable record
-into **deferred** work, and nothing tells the operator that a job stopped moving for that reason. A
-pile that only grows is the failure mode that trade accepts, and it needs an owner.
+The disposition question remains open.
 
 ## Explicitly out of scope
 
-The quarantine mechanism itself, the recovery enumeration boundary, and #316's disposition. This item is
-only about what keeps producing rows and whether the reader or the record is wrong.
+#311 itself, the quarantine mechanism, and #316's disposition. This is about what happens to rows a
+later build can no longer produce, and about the two rows that are not those.
 
 ## Start condition
 
-None — the data is on any machine that has run workflows, and the first two commands above are reads.
+None for the first half — the disposal already works, and a startup re-evaluation pass is a contained
+change against `RecoveryQuarantineStore` and the source registry.
+
+The `session-retention-work` pair now needs only a decision, not a read: should a binding whose account
+has changed settle as unrecoverable rather than retry forever, and if so, does the operator get told
+which sessions were given up on. The evidence is above.
