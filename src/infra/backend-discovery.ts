@@ -5,6 +5,7 @@ import type { BuildFlavor } from './build-flavor.js';
 import type { CoralPaths } from './path/index.js';
 import type { EnvPort, StoragePort } from './port-types.js';
 import { processIncarnationSchema, probeProcessIncarnation, type ProcessIncarnation } from './node-process.js';
+import { backendLog } from './backend-log.js';
 import { isNoEntryError } from './fs-errors.js';
 
 /** Connection and authentication evidence only; executable identity comes from authenticated health. */
@@ -79,11 +80,16 @@ function discoveryFilePath(runtime: DiscoveryRuntime): string {
 
 export function writeDiscoveryRecord(record: CoordinatorDiscoveryRecord, runtime: DiscoveryRuntime): void {
   const infoPath = discoveryFilePath(runtime);
-  const payload = JSON.stringify({
-    ...record,
-    incarnation:
-      record.incarnation ?? probeProcessIncarnation(record.pid, runtime.env.platform() as NodeJS.Platform) ?? undefined,
-  });
+  const incarnation =
+    record.incarnation ?? probeProcessIncarnation(record.pid, runtime.env.platform() as NodeJS.Platform) ?? undefined;
+  if (incarnation === undefined) {
+    // Said out loud because the consequence arrives much later and looks like something else: a contender can
+    // only signal a pid whose incarnation the incumbent published, so a record written without one leaves this
+    // daemon replaceable over IPC but not evictable by force. Probing our own pid should not fail; if it did,
+    // an operator reading a later "cannot be proven to be it" refusal needs this line to connect the two.
+    backendLog.warn(`Coordinator discovery record for pid ${record.pid} was written without a process incarnation.`);
+  }
+  const payload = JSON.stringify({ ...record, incarnation });
 
   runtime.storage.mkdirSync(dirname(infoPath), { recursive: true });
   if (!runtime.storage.writeAtomicSync(infoPath, payload, { encoding: 'utf-8', mode: 0o600 })) {

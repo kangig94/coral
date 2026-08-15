@@ -79,14 +79,38 @@ describe('verifiedIncumbentFromDiscovery', () => {
     expect(verifiedIncumbentFromDiscovery(null, evidence())).toBeNull();
   });
 
+  // `writeDiscoveryRecord` probes once and serializes nothing if that probe fails, so a perfectly ordinary
+  // current build can publish a record without an incarnation. Signalling requires one, so if health's value
+  // were discarded here that build would be unevictable — the guard against killing a stranger turned into a
+  // guard against replacing a peer.
+  it('takes the incarnation from health when the record has none', () => {
+    const incarnation = testIncarnation(5_150);
+    const health: IncumbentHealth = {
+      flavor: 'prod',
+      namespace: 'ns',
+      bundleHash: 'incumbent-bundle',
+      pid: 4321,
+      incarnation,
+    };
+
+    const incumbent = verifiedIncumbentFromDiscovery(preTokenRecord(), evidence(health));
+
+    expect(incumbent, 'health naming an incarnation the record omits is not a disagreement').not.toBeNull();
+    expect(incumbent?.incarnation).toBe(incarnation);
+  });
+
   it('is not the incumbent when the record contradicts health read from the same socket', () => {
     const health: IncumbentHealth = { flavor: 'prod', namespace: 'ns', bundleHash: 'incumbent-bundle', pid: 4321 };
 
     expect(verifiedIncumbentFromDiscovery(preTokenRecord(), evidence(health))).not.toBeNull();
     expect(verifiedIncumbentFromDiscovery(preTokenRecord(), evidence({ ...health, pid: 9999 }))).toBeNull();
     expect(verifiedIncumbentFromDiscovery(preTokenRecord(), evidence({ ...health, bundleHash: 'other' }))).toBeNull();
+    // Two statements that disagree, which is what a contradiction is. One statement and a silence is not.
     expect(
-      verifiedIncumbentFromDiscovery(preTokenRecord(), evidence({ ...health, incarnation: testIncarnation(7) })),
+      verifiedIncumbentFromDiscovery(
+        preTokenRecord({ incarnation: testIncarnation(1) }),
+        evidence({ ...health, incarnation: testIncarnation(7) }),
+      ),
     ).toBeNull();
   });
 });

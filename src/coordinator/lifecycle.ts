@@ -229,13 +229,21 @@ export function verifiedIncumbentFromDiscovery(
       (lastHealth.version !== undefined && lastHealth.version !== info.version) ||
       lastHealth.bundleHash !== info.bundleHash ||
       (lastHealth.pid !== undefined && lastHealth.pid !== info.pid) ||
-      (lastHealth.incarnation !== undefined && lastHealth.incarnation !== info.incarnation))
+      // A contradiction needs two statements. The record omitting an incarnation is not one: the write probes
+      // once and serializes nothing if that probe fails, so a perfectly ordinary current build can publish a
+      // record without it. Reading that as disagreement discards the incumbent entirely.
+      (lastHealth.incarnation !== undefined &&
+        info.incarnation !== undefined &&
+        lastHealth.incarnation !== info.incarnation))
   ) {
     return null;
   }
   return {
     pid: info.pid,
-    incarnation: info.incarnation,
+    // Health is the incumbent's own live statement about itself and the pids have already been cross-checked,
+    // so when the durable record is missing this, health supplies it. Without that an incumbent whose single
+    // startup probe failed could never be signalled — a current build made unevictable by a transient read.
+    incarnation: info.incarnation ?? lastHealth?.incarnation,
     source: 'discovery',
     instanceId: info.instanceId,
     token: info.token,
