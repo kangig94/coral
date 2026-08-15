@@ -1095,11 +1095,13 @@ describe('createProviderProxySetInheritance', () => {
     expect(signals.some(({ signal }) => signal === 'SIGKILL')).toBe(false);
   });
 
-  // The guardian and the reaper recorded their own incarnations; this coordinator did not. Requiring an
-  // exact match against a fresh probe made a live enforcer look gone, after which this path reaped a
-  // running set and minted a disappearance receipt for it. A readable incarnation already proves the pid
-  // exists, and whether it is still ours is precisely what a successor cannot tell.
-  it('will not prove absence while an enforcer pid exists under a incarnation it did not record', async () => {
+  // Unreadable is the only ambiguity left. While the recorded value carried a per-process clock term a
+  // disagreement meant nothing, so this path settled for existence — any readable pid counted as possibly
+  // ours. The token removed that term, and a pid that reads back as *someone else* is now proof, not doubt;
+  // treating it as doubt let an unrelated process inherit an enforcer's pid and block this proof forever,
+  // which leaves the set's operations unsettled for good. What stays conservative is a pid that is alive but
+  // cannot be read: nothing observed is still not absence.
+  it('will not prove absence while an enforcer pid is alive but unreadable', async () => {
     const reference = locator();
     const record = proofRecord(reference, { pid: 104, incarnation: testIncarnation(1_003) });
     const db = proofDatabase([record]);
@@ -1117,7 +1119,37 @@ describe('createProviderProxySetInheritance', () => {
         },
       },
     };
-    // Every pid reads back on a clock base this coordinator does not share — readable, and disagreeing.
+    // No pid can be read at all, while every one of them is alive.
+    mockedProbe.mockImplementation(() => null);
+
+    const inheritance = createProviderProxySetInheritance({
+      runtime: boundedRuntime,
+      identity,
+      operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
+      registerInheritedSet: () => undefined,
+    });
+
+    await expect(
+      inheritance.proveContainmentAbsent(providerProxySetIdentityFromRecord(reference), db, controller.signal),
+      'an unreadable but living pid is not evidence that the enforcer is gone',
+    ).resolves.toBeNull();
+    expect(signals, 'nothing may be signalled while a target cannot be observed').toEqual([]);
+  });
+
+  // The other half of the same rule, and the reason the one above had to narrow. A pid that reads back as a
+  // different process is not our enforcer, so it cannot keep this set alive — otherwise an unrelated process
+  // inheriting that pid blocks the proof forever and the set's operations never settle.
+  it('proves absence when an enforcer pid now belongs to a different process', async () => {
+    const reference = locator();
+    const record = proofRecord(reference, { pid: 104, incarnation: testIncarnation(1_003) });
+    const db = proofDatabase([record]);
+    const controller = new AbortController();
+    const base = createRealRuntime('prod');
+    const boundedRuntime = {
+      ...base,
+      process: { ...base.process, isAlive: () => true, kill: () => true },
+    };
+    // Every pid is readable, and every one of them reads back as someone else.
     mockedProbe.mockImplementation(() => testIncarnation(9_999_999));
 
     const inheritance = createProviderProxySetInheritance({
@@ -1129,9 +1161,8 @@ describe('createProviderProxySetInheritance', () => {
 
     await expect(
       inheritance.proveContainmentAbsent(providerProxySetIdentityFromRecord(reference), db, controller.signal),
-      'a disagreement is not evidence that the enforcer is gone',
-    ).resolves.toBeNull();
-    expect(signals, 'nothing may be signalled on the strength of a disagreement').toEqual([]);
+      'a pid that is provably someone else does not keep this set alive',
+    ).resolves.not.toBeNull();
   });
 
   it('proves containment through the public factory without selecting an address-distinct root', async () => {

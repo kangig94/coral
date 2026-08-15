@@ -4,7 +4,7 @@ import type { OperationIdentity } from '../../../provider-proxy/protocol.js';
 import type { HandoffCapsule, HandoffCapsuleV1, HandoffCapsuleV3 } from '../../../provider-proxy/handoff-capsule.js';
 import type { DurableProviderProxyOperationAuthority } from '../../live/provider-proxy/operation-route.js';
 import type { ProviderHandoffCapsuleRetirementOutcome } from '../provider-proxy-capsule-discovery.js';
-import type { ProviderProxySetRedemptionOutcome } from './inheritance.js';
+import { classifyProviderProxySetInheritance, type ProviderProxySetRedemptionOutcome } from './inheritance.js';
 import type {
   ContainmentDisappearanceNotice,
   DisappearanceDeliveryAttemptOutcome,
@@ -731,9 +731,10 @@ export class ProviderProxySetLifecycle {
   }
 
   #classifyCapsule(capsule: HandoffCapsule): CapsuleInheritance {
-    if (capsule.buildSetId !== this.#deps.buildSetId) return { kind: 'uninheritable', reason: 'other-build' };
-    if (capsule.version === 2) return { kind: 'uninheritable', reason: 'unreadable-identity' };
-    return { kind: 'inheritable', capsule };
+    const verdict = classifyProviderProxySetInheritance(capsule, this.#deps.buildSetId);
+    return verdict.kind === 'refused'
+      ? { kind: 'uninheritable', reason: verdict.reason }
+      : { kind: 'inheritable', capsule: verdict.candidate };
   }
 
   #recoverExactCapsule(slot: Extract<ProviderProxySetSlot, { kind: 'capsule-recovering' }>): void {

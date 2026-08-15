@@ -234,6 +234,38 @@ export function providerProxySetAvailabilityReason(incident: ProviderProxySetAva
 
 const NOTHING_TO_INHERIT_REASON = 'no capsule at this address';
 
+/** Why this build may not inherit a proxy set. */
+export type ProviderProxySetInheritanceRefusal = 'other-build' | 'unreadable-identity';
+
+/**
+ * Whether this build may inherit a set, and why not when it may not. One home because the rule is enforced at
+ * two entry points that cannot be merged — discovery classifying a capsule it found, and a claimed record
+ * deriving its capsule's address for itself — and the two disagreeing is how a foreign set gets dialed.
+ *
+ * Dialing one is not a failed attempt but a fatal one: `handoff.redeem` is gated on build identity at the role
+ * (`assertNamedCoordinatorBuild`), a foreign set answers `identity_mismatch`, and the recovery policy retires
+ * that fatally — taking this coordinator down over a set it never owned. `capsuleMatchesLocator` cannot catch
+ * it either, because it compares a capsule against the *record's* build, and for a foreign set those agree.
+ *
+ * Version 2 alone is refused, not "anything older". V1 carries no process identity at all, which is why it
+ * takes the opaque path and asks the roles instead. V2 carries one this build cannot verify, which is worse
+ * than none: it looks like an answer.
+ */
+export type ProviderProxySetInheritanceVerdict<T> =
+  | Readonly<{ kind: 'inheritable'; candidate: T }>
+  | Readonly<{ kind: 'refused'; reason: ProviderProxySetInheritanceRefusal }>;
+
+export function classifyProviderProxySetInheritance<T extends Readonly<{ buildSetId: string; version?: number }>>(
+  candidate: T,
+  ownBuildSetId: string,
+): ProviderProxySetInheritanceVerdict<Exclude<T, { version: 2 }>> {
+  if (candidate.buildSetId !== ownBuildSetId) return { kind: 'refused', reason: 'other-build' };
+  if (candidate.version === 2) return { kind: 'refused', reason: 'unreadable-identity' };
+  // The verdict carries the narrowing so callers need no cast: refusing `version === 2` is what leaves the
+  // shapes this build can actually act on, and saying so in the return type is what keeps it true.
+  return { kind: 'inheritable', candidate: candidate as Exclude<T, { version: 2 }> };
+}
+
 function canonicalOperationSet(operations: readonly OperationIdentity[]): string[] {
   return [
     ...new Set(
@@ -292,18 +324,24 @@ async function proveProviderProxySetContainmentAbsent(
     { pid: identity.guardianPid, incarnation: identity.guardianIncarnation },
     { pid: identity.reaperPid, incarnation: identity.reaperIncarnation },
   ];
-  // Existence, not identity. These incarnations were recorded by the guardian and the reaper, not by this
-  // coordinator, and a value derived in another process sits on another clock base — requiring an exact
-  // match concluded that a live enforcer was gone, after which this function reaped a running set and
-  // minted a disappearance receipt for it.
+  // Identity, now that identity is comparable. These incarnations were recorded by the guardian and the
+  // reaper rather than by this coordinator, and while the value carried a per-process clock term that made
+  // it useless across processes this had to settle for existence — a readable pid meant "might be ours".
+  // The token removed the clock term: a recorded incarnation and a fresh probe of the same process produce
+  // the same bytes, so a *different* one is not ambiguity, it is proof the pid belongs to someone else.
   //
-  // A readable incarnation already proves the pid exists; whether it is still *our* enforcer is what this
-  // coordinator cannot tell, so it assumes it might be. That is strictly more conservative than the
-  // comparison it replaces, and this path exists to prove absence — it may only do so when absence is
-  // observable, never inferred from a disagreement.
-  const enforcerMayStillBeLive = enforcerIdentities.some((identity) => {
+  // Existence-only was safe in the direction that matters but not free. An unrelated process inheriting an
+  // enforcer's pid blocked this proof forever, and a set that can never be proven absent is a set whose
+  // operations never settle.
+  //
+  // The unreadable case is unchanged and stays conservative: nothing observed is not absence, so a pid that
+  // is alive but unreadable still counts as possibly ours. This mirrors `observeProcessIdentity`
+  // (`infra/process-containment.ts`) deliberately rather than sharing it — that one throws on ambiguity
+  // because it is about to signal, and this one must return, because it is only allowed to conclude.
+  const enforcerMayStillBeLive = enforcerIdentities.some((enforcer) => {
     try {
-      return probeProcessIncarnation(identity.pid, platform) !== null || runtime.process.isAlive(identity.pid);
+      const live = probeProcessIncarnation(enforcer.pid, platform);
+      return live === null ? runtime.process.isAlive(enforcer.pid) : live === enforcer.incarnation;
     } catch {
       return true;
     }
@@ -571,15 +609,10 @@ async function redeem(
   signal: AbortSignal,
 ): Promise<ProviderProxySetInheritanceOutcome> {
   const { operation, locator } = reference;
-  // Refused before the capsule is even read, because reading it is one step from dialing it. `handoff.redeem`
-  // is gated on build identity at the role (`assertNamedCoordinatorBuild`), so a set from another build
-  // answers `identity_mismatch` — which the recovery policy classifies as `refused` and retires *fatally*,
-  // taking this coordinator down over a set it never owned. `capsuleMatchesLocator` cannot catch this: it
-  // compares the capsule against the *record's* `buildSetId`, and for a foreign set those two agree.
-  //
-  // Not-bequeathed is the honest outcome rather than an error. There is genuinely nothing here this build may
-  // inherit, and the caller already knows how to settle a set it could not take over.
-  if (operation.buildSetId !== deps.coordinatorIdentity.buildSetId) {
+  // Refused before the capsule is even read, because reading it is one step from dialing it. Not-bequeathed is
+  // the honest outcome rather than an error: there is genuinely nothing here this build may inherit, and the
+  // caller already knows how to settle a set it could not take over.
+  if (classifyProviderProxySetInheritance(operation, deps.coordinatorIdentity.buildSetId).kind === 'refused') {
     return { kind: 'not-bequeathed', reason: 'the recorded set belongs to another build' };
   }
   const capsulePath = providerHandoffCapsulePath(
@@ -597,9 +630,7 @@ async function redeem(
     uid: process.getuid?.() ?? 0,
   });
   if (capsule === null) return { kind: 'not-bequeathed', reason: NOTHING_TO_INHERIT_REASON };
-  // Same build, older capsule shape. Its process identity is seconds this build cannot verify, and every
-  // redemption step downstream compares the identity it would have to invent from them.
-  if (capsule.version === 2) {
+  if (classifyProviderProxySetInheritance(capsule, deps.coordinatorIdentity.buildSetId).kind === 'refused') {
     return { kind: 'not-bequeathed', reason: 'the capsule predates the process incarnation token' };
   }
   if (!capsuleMatchesLocator(capsule, reference, deps.coordinatorIdentity)) {
