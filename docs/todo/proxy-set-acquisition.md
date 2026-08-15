@@ -62,10 +62,17 @@ its only sound operation is equality against a value derived in the same process
 `assertIdentityFieldsAgree` does not do: the acquisition issues a value it derived, and the spawned role
 reports one it derived.
 
-Source proves btime is cached per process. It does **not** prove that any two processes must differ, nor
-that the difference equals the older process's age — that is the most plausible reading of the measured
-series, not something the code establishes. Treat it as the leading hypothesis, and note that this
-document has twice been burned by promoting a plausible reading to a cause.
+**Measured, not inferred — and the earlier framing here was wrong.** btime is not cached by the kernel;
+it is recomputed on every read as `realtime_now - boottime_now`. The per-process constancy is entirely
+Coral's own module-level cache (`node-process.ts:16`). On this host `CLOCK_BOOTTIME` runs slow against
+`CLOCK_REALTIME`, so btime climbs: **3 seconds in 23 seconds of wall time, 13.5%**. A four-hour-old
+daemon is therefore ~1900 seconds away from a fresh reader.
+
+So the spread below is not noise and not spawn latency. It is **the incumbent's age times the drift
+rate**, which is why it grew monotonically and why the maximum kept rising as the daemon aged.
+
+What the probe actually computes is `(realtime_now - boottime_now) + startTicks/HZ` — the identity plus a
+noise sample taken at probe time, with no record of which sample was used.
 
 The identical mistake, in `probeCoordinator`, made an installed upgrade unable to take over at all; that
 half is fixed under `build-identity-and-upgrade.md`. The remaining pairs, enumerated rather than sampled:
@@ -88,7 +95,30 @@ might be live — a readable start time already proves the pid exists, and wheth
 what a successor cannot tell. Reproduced first: without the fix that function returns a disappearance
 receipt for a set whose enforcers are alive.
 
-### What is left here is a design question, not a repair
+### The reaper is a fourth cross-frame site, not the entitled recorder
+
+An earlier revision of this entry, and of the fix that shipped with it, assumed `observeContainment`'s
+mismatch-means-absent inference was sound for "the recorder". Traced, the recorder is not who it looked
+like: the **guardian** probes at spawn (`role-spawn.ts:148`), arms its own enforcer with that value —
+genuinely sound, same frame — and then **forwards the identical value** to the reaper
+(`guardian.ts:676`). The reaper stores it (`reaper.ts:221`) and compares it against **its own** probes.
+
+It has not been seen failing only because guardian and reaper are born milliseconds apart, so their
+cached samples nearly agree. That margin degrades linearly with the drift rate.
+
+The one genuinely same-frame caller is the coordinator-local drain — record in
+`providers/app-server-transport.ts`, reap in `live/provider-hosts/drain.ts`, one process. That is what
+`drain.test.ts` protects, and it is the only one.
+
+### Still open on `main`: a disappearance receipt for a live orphaned group
+
+Guardian and reaper both dead while the detached proxy group survives — a real topology, since the proxy
+outlives its parents by design. `enforcerMayStillBeLive` is false, `observeContainment` reads the
+cross-frame mismatch as absence **without ever probing `-processGroupId`**, `confirmAbsence` re-reads the
+same mismatch and agrees, the reap returns cleanly, and a disappearance receipt is minted for a live
+group that nothing will ever signal.
+
+### The direction: fix the primitive, and the question dissolves
 
 `observeContainment` (`infra/process-containment.ts`) reads a mismatch as absence, and **for its
 original caller that is correct**: the reaper recorded the value itself, so a disagreement really does
@@ -100,19 +130,45 @@ everywhere by construction — both decisions are positive matches — but it al
 conclusion the recorder is entitled to, and the coordinator-local recycled-group case regressed from a
 clean reap into a hard error.
 
-So the question is: **how does a process that did not record a containment prove its absence?** Options
-worth weighing: pass the recorder's identity so the module can tell which caller it has; ask the reaper
-over the control protocol it already speaks; or accept that a non-recorder may only ever quarantine a
-containment as unreapable, never retire it. This needs a decision before code.
+The question "how does a non-recorder prove absence?" presupposes that recording confers epistemic
+privilege. It does not — **sharing a frame does**, and the recorder merely shares a frame with itself.
 
-The redeem path is **half** right, and the half matters. Its three `establishControl` calls pass
-`expectedIdentity: {}` (`inheritance.ts:390,415,445`) and compare nothing, because the capsule secret is
-the authority — that is the pattern the fresh acquisition path should have copied. But the same function
-then compares `containment.processStartedAtSeconds !== proxyIdentity.processStartedAtSeconds`
-(`inheritance.ts:491`), guardian-observed against proxy self-report, which is the defect again.
+Replace `processStartedAtSeconds` with an opaque, equality-only `ProcessIncarnation`: on Linux
+`boot_id:startTicks`, with no clock term, no `HZ` division and no `Math.floor`; on macOS and Windows the
+kernel-stored creation stamps those platforms already expose. `startTicks` alone is not enough — after a
+reboot a durable `pid=1234, ticks=500` can genuinely match a fresh low-pid process, a false _match_ at
+exactly the pids reused earliest in boot. `boot_id` closes that structurally.
 
-An earlier revision of this entry called the redeem path simply correct. It is not, and the two halves
-sit forty lines apart in one function.
+Then every site above becomes sound at once, `inheritance.ts:491` becomes a real cross-check, and the
+`enforcerMayStillBeLive` softening shipped alongside this entry can be deleted in favour of the stronger
+comparison it replaced.
+
+**The build gate makes the wire half atomic.** `assertNamedCoordinatorBuild` (`protocol.ts:370`) requires
+`buildSetId` equality and gates handoff-redeem on guardian, proxy and reaper, so a new build can never
+redeem an old build's live set. No negotiation and no compatibility window is needed for the control
+protocol — only for the two surfaces that genuinely span builds: the journal's `durable_cli_process.v1`
+meta, and durable provider-operation records read when role control is unavailable. For those, write the
+token as a **new field and let its absence be the signal**: a legacy record carries a number with no
+frame, was never comparable, and must fail closed into quarantine rather than be translated.
+
+The rule then lives in the **type**. A branded string admits no arithmetic, no ordering, and no
+"within 3 seconds", so the only expressible operation is the sound one. Prose demonstrably could not
+hold it: the propagation vector was a comment naming an unsound site as "Canonical pattern". One
+invariant test is the backstop, asserting `/proc/stat` btime does not return to `src/`.
+
+Deleted along the way: btime parsing and its cache, `HZ` parsing and its cache and the `getconf`
+subprocess, the `CORAL_DISCOVERY_PROBE_CLK_TCK` environment variable and its row in
+`docs/configuration.md`, and the floor that made 1-second aliasing possible.
+
+The redeem path's three `establishControl` calls pass `expectedIdentity: {}`
+(`inheritance.ts:390,415,445`) and compare nothing, because the capsule secret is the authority — that is
+the pattern the fresh acquisition path should have copied.
+
+The comparison forty lines later (`inheritance.ts:491`, guardian-observed containment against proxy
+self-report) is a **different thing, and it is correct in intent**: an independent cross-check between
+two views of one containment. An earlier revision of this entry called it "the defect again". It is not.
+The check is sound; the primitive underneath it is not, and under a comparable primitive the check
+becomes valuable rather than deletable.
 
 ### The observed spread is much wider than a spawn, and that changes the suspect
 
