@@ -36,6 +36,15 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: npm
       - run: npm ci
+      # Static gates first: they are seconds, they are part of the project's own
+      # quality gate, and none of them ran here. `npm run build` typechecks src
+      # only, so nothing caught a type error under tests/ — a change that brands
+      # or narrows a widely-used type churns fixtures, and only `typecheck:tests`
+      # sees them.
+      - run: npm run typecheck:tests
+      - run: npm run lint
+      - run: npm run format:check
+      - run: npm run knip
       - run: npm run build
       - run: npm test
       # `npm test` runs only tests/unit, tests/invariants and the simulation

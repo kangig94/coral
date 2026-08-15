@@ -71,10 +71,24 @@ jobs:
 
       - run: npm ci
 
-      - name: Test
+      # Everything CI runs, before the version moves. This step used to be `npm test`
+      # plus the store-reset contract, which is a strict subset of the pull-request
+      # gate: a release could ship what CI would have rejected, and integration —
+      # where the cross-version handoff, cold/warm start and IPC suites live — never
+      # ran on the artifact being released at all.
+      - name: Full gate
         run: |
+          npm run typecheck:tests
+          npm run lint
+          npm run format:check
+          npm run knip
+          npm run build
           npm test
+          npm run test:integration
           npm run test:store-reset:integration
+          npm run verify:store-reset-build
+          npm run test:e2e:store-reset:build
+          npm run test:e2e:lifecycle
 
       - name: Bump version and release build
         run: |
