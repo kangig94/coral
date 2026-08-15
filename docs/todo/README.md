@@ -15,14 +15,19 @@ a document about an unplanned feature.
 
 ## Build identity — one build's records read by another
 
-|                                                                    |                                                                                                                                                                                                                                                                                                                      |
-| ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`build-identity-and-upgrade.md`](./build-identity-and-upgrade.md) | **Highest severity open.** Updating the plugin swaps CLI and skills immediately while the running coordinator does not swap. In that window a new writer's durable record fails the old coordinator's adoption parse, and the parse failure **terminalizes the job**. Four running jobs died this way on 2026-08-15. |
+|                                                                    |                                                                                                                                                                                                                                                                                                    |
+| ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`build-identity-and-upgrade.md`](./build-identity-and-upgrade.md) | **Re-scored down.** Updating the plugin swaps CLI and skills immediately while the running coordinator does not swap, so two builds are live at once. Nothing has been observed to break because of it — the 2026-08-15 job losses it was written for were a single-build defect (#318), not skew. |
 
-Its first half — a record this build cannot parse must not become a job this build destroys — is small,
-independent, and where the data loss is. Its second half shares a compatibility policy with
+Its first half — a record this build cannot parse must not become a job this build destroys — shipped
+as #316. What remains splits in two: the **record** direction shares a compatibility policy with
 [`jobs-read-contract-schema-first.md`](./jobs-read-contract-schema-first.md) and
-[`result-artifact-availability.md`](./result-artifact-availability.md); settle it once across all three.
+[`result-artifact-availability.md`](./result-artifact-availability.md), settle it once across all
+three; the **output** direction — a live session holding old skill text driving a new CLI — has no
+defense today and is what actually blocks the `wait` change below.
+
+Read its correction section before citing it. It named a cause it had inferred from a bundle-string
+diff rather than reproduced, which is the same defect this index was rewritten to remove.
 
 ---
 
@@ -33,8 +38,9 @@ independent, and where the data loss is. Its second half shares a compatibility 
 | [`cli-machine-channel.md`](./cli-machine-channel.md)             | `wait`'s exit integer and the `jobs` table's column layout are both presentation carrying a protocol. The `wait` contract is **settled** — it becomes a pure monitor whose exit code describes the monitor, not the job. The `jobs` half is an open product decision. Ship as two PRs, never one. |
 | [`cli-terminal-width-layout.md`](./cli-terminal-width-layout.md) | A **third** thing, and it must not join either. Width work rewrites the rows a contract fixture exists to freeze.                                                                                                                                                                                 |
 
-The `wait` change is blocked on build identity: a stale skill reading a new always-zero exit would
-convert failure into success.
+The `wait` change is blocked on build identity's **output** direction specifically: a session still
+holding the old skill's text, reading a new always-zero exit, would convert failure into success. #316
+landing does not unblock it — that was the record direction.
 
 ---
 

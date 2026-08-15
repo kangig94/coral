@@ -49,9 +49,11 @@ do instead of surfacing a raw 403. No exit-code change is needed for it.
 **What it costs.** `toExitCode`'s outcome mapping goes away, and every skill that branches on it must
 move to the structured record. `ralph`, `plan` and `preplan` all do.
 
-**Binding constraint.** This must not ship before the build-identity work. A stale skill driving a new
-CLI would read the new always-zero exit as "everything succeeded" — silently converting failure into
-success, which is the worst available failure direction. See `build-identity-and-upgrade.md`.
+**Binding constraint.** This must not ship before the build-identity work's **output** direction. A
+session holding the old skill's text against a new CLI would read the new always-zero exit as
+"everything succeeded" — silently converting failure into success, which is the worst available
+failure direction. See `build-identity-and-upgrade.md`; note that its shipped half (#316) is the other
+direction and does not lift this.
 
 **Bonus the same change should carry.** A monitor should be able to show what has happened so far
 without waiting for a bound. If the structured surface is a read rather than only a stream, that falls
@@ -83,5 +85,7 @@ a contract regression are indistinguishable in one diff.
 
 ## Start condition
 
-The `wait` half needs `build-identity-and-upgrade.md`'s first half landed, and needs the skill branches
-inventoried before `toExitCode` is removed. The `jobs` half needs the CLI owner to pick a branch.
+The `wait` half needs `build-identity-and-upgrade.md`'s **output** direction answered — not its first
+half, which shipped as #316 and addressed the unrelated record direction. The hazard here is a live
+session holding the old skill's text against a new CLI, and nothing addresses it yet. It also needs the
+skill branches inventoried before `toExitCode` is removed. The `jobs` half needs the CLI owner to pick a branch.
