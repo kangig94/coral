@@ -5,7 +5,10 @@ import { StoreDecodeError } from '../../../store/body-codec.js';
 import { ProcessContainmentError } from '../../../infra/process-containment.js';
 import { isTerminalPhase } from '../../../jobs/phase.js';
 import { isAppServerRuntime, type JobTerminalInput } from '../../../jobs/records.js';
-import { readProviderOperations } from '../../../store/provider-operation-journal.js';
+import {
+  providerOperationJobIdFromRecordKey,
+  readProviderOperations,
+} from '../../../store/provider-operation-journal.js';
 import type { ProviderOperationRecord } from '../../../store/provider-operation-record.js';
 import { isDurableCliRuntime } from '../../../runtime/durable-runtime.js';
 import type { InvocationContext } from '../../../runtime/invocation-context.js';
@@ -1139,12 +1142,21 @@ export function createRecoveryCoordinator(
     state.providerOperationRecoveries.delete(jobId);
   };
 
-  const snapshotProviderOperationStartupOwnership = (): ProviderOperationStartupOwnership =>
-    Object.freeze({
+  const snapshotProviderOperationStartupOwnership = (): ProviderOperationStartupOwnership => {
+    const scan = readProviderOperations(progressStore.getDb());
+    // A row this build cannot read still names a job the provider saga owns. Fencing only the decoded ones
+    // hands that job to generic recovery, which then does a keyed strict read of the same row and throws —
+    // turning a stalled operation back into a failed startup. The key carries the job id without decoding
+    // anything, which is the whole identity this fence needs.
+    const unreadableJobIds = scan.unreadableKeys
+      .map((key) => providerOperationJobIdFromRecordKey(key))
+      .filter((jobId): jobId is string => jobId !== null);
+    return Object.freeze({
       jobIds: Object.freeze([
-        ...new Set(readProviderOperations(progressStore.getDb()).records.map((record) => record.operation.jobId)),
+        ...new Set([...scan.records.map((record) => record.operation.jobId), ...unreadableJobIds]),
       ]),
     });
+  };
 
   async function runStartupRecovery(ctx: StartupRecoveryContext): Promise<JobStore> {
     const { runtime, progressStore, signal } = ctx;

@@ -174,6 +174,25 @@ function decodeCanonicalValue(key: string, value: string): ProviderOperationReco
   return record;
 }
 
+/** Whether this build can decode the value at a canonical key. Shared by both scans so "unreadable" means one
+ *  thing: the row a record scan skips is exactly the row a due scan must not fault on. */
+function canReadCanonicalValue(key: string, value: string): boolean {
+  try {
+    decodeCanonicalValue(key, value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The job a canonical key names, without decoding the value — the only identity available for a row this
+ *  build cannot read, and the one startup ownership needs to keep that job away from generic recovery. */
+export function providerOperationJobIdFromRecordKey(key: string): string | null {
+  if (!key.startsWith(PROVIDER_OPERATION_RECORD_PREFIX)) return null;
+  const jobId = key.slice(PROVIDER_OPERATION_RECORD_PREFIX.length).split(':')[0];
+  return jobId === undefined || jobId.length === 0 ? null : jobId;
+}
+
 function readCanonicalRecord(db: Database, key: string): ProviderOperationRecord | undefined {
   const value = readCanonicalValue(db, key);
   return value === undefined ? undefined : decodeCanonicalValue(key, value);
@@ -424,8 +443,17 @@ export function readProviderOperationDueSelections(
        LIMIT ?`,
     )
     .all(PROVIDER_OPERATION_DUE_PREFIX, `${PROVIDER_OPERATION_DUE_PREFIX}${encodedNow};`, limit);
-  return rows.map((row) => {
+  return rows.flatMap((row) => {
     const due = decodeDueEntry(row);
+    const value = readCanonicalValue(db, due.recordKey);
+    if (value !== undefined && !canReadCanonicalValue(due.recordKey, value)) {
+      // A pointer to a record this build cannot read. There is no work here for it to do, and throwing takes
+      // the whole coordinator down — the reconciler classifies a due-scan failure as fatal — which is the
+      // trade `readProviderOperations` already refused for the record itself. Quiet on purpose: this is the
+      // same canonical row that scan skips, and it reports the key once at startup. Reporting again here
+      // would name it twice for one condition.
+      return [];
+    }
     const record = readCanonicalRecord(db, due.recordKey);
     if (record === undefined) {
       throw new ProviderOperationJournalError(

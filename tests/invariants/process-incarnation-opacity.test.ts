@@ -65,13 +65,18 @@ function walk(node: ts.Node, visit: (node: ts.Node) => void): void {
 function literalTexts(source: ts.SourceFile): string[] {
   const texts: string[] = [];
   walk(source, (node) => {
-    if (ts.isStringLiteralLike(node) || ts.isTemplateHead(node) || ts.isTemplateMiddleOrTemplateTail(node)) {
-      texts.push(node.text);
-    }
-    // Regular expressions carry the boot clock's field name in the shape the removed code actually used:
-    // `/^btime\s+(\d+)\s*$/m`. Inside a regex `btime` is not an identifier, so an identifier scan alone reads
-    // the exact historical implementation as clean.
-    if (ts.isRegularExpressionLiteral(node)) {
+    if (
+      ts.isStringLiteralLike(node) ||
+      ts.isTemplateHead(node) ||
+      ts.isTemplateMiddleOrTemplateTail(node) ||
+      // Regular expressions carry the boot clock's field name in the shape the removed code actually used:
+      // `/^btime\s+(\d+)\s*$/m`. Inside a regex `btime` is not an identifier, so an identifier scan alone
+      // reads the exact historical implementation as clean.
+      ts.isRegularExpressionLiteral(node)
+    ) {
+      // Source text, not the cooked value. A tagged template's cooked text is absent when the template holds
+      // an escape that is invalid in a string — `\s`, `\d` — which is precisely what a regex source contains,
+      // so `String.raw\`^btime\s+(\d+)\`` reads as empty and slips through on `.text`.
       texts.push(node.getText(source));
     }
   });

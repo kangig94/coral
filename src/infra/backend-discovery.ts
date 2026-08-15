@@ -123,10 +123,11 @@ export function readDiscoveryRecord(runtime: DiscoveryRuntime): CoordinatorDisco
  * token and belongs at the sites that act on the pid, where a mismatch can refuse a signal without
  * also destroying the credential that makes a peaceful handoff possible.
  *
- * Nothing here acts on `pid`. This returns a token and a socket path; the handshake authenticates with
- * the token, and the sites that signal re-verify the pid against a baseline they observed themselves
- * (`coordinator/handoff.ts`). A record whose pid was recycled is therefore safe to return: the connect
- * fails, or the token proves the peer is ours.
+ * Nothing here acts on `pid`. This returns a token and a socket path, and a record whose pid was recycled is
+ * safe to return only because of what the *signalling* sites do with it: `verifySignalTarget`
+ * (`coordinator/handoff.ts`) requires the record's own incarnation to be present and to match a live probe,
+ * and refuses otherwise. The IPC side is not the guarantee — a connect can succeed and its shutdown still
+ * fail authentication — so do not read this paragraph as licence to relax that check.
  *
  * The probe still runs, but only as a cheap filter. It yields `null` for an absent process *and* for a
  * read, parse, or unsupported-platform failure, so this is "could not observe a process", not proof of

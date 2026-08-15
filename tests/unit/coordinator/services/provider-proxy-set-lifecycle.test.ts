@@ -1690,9 +1690,24 @@ describe('ProviderProxySetLifecycle', () => {
         capsule: { ...capsuleV3For(authority), buildSetId: '88888888-8888-4888-8888-888888888888' },
       },
       { path: '/capsules/shipped-v2.handoff.json', capsule: shippedV2 },
+      {
+        // A fourth, so counting these again would exceed the four-slot limit outright. With three, a single
+        // acquisition still fits inside the limit and the assertion below passes whether they are counted or
+        // not — which is exactly how it passed while counting them.
+        path: '/capsules/other-build-v1-b.handoff.json',
+        capsule: capsuleFor(authority, {
+          buildSetId: '66666666-6666-4666-8666-666666666666',
+          grantId: randomUUID(),
+        }),
+      },
     ]);
 
-    expect(lifecycle.snapshot().states).toEqual(['capsule-foreign', 'capsule-foreign', 'capsule-foreign']);
+    expect(lifecycle.snapshot().states).toEqual([
+      'capsule-foreign',
+      'capsule-foreign',
+      'capsule-foreign',
+      'capsule-foreign',
+    ]);
     for (let i = 0; i < 20; i += 1) await Promise.resolve();
     expect(redeemCapsule, 'a capsule this build cannot redeem must never be dialed').not.toHaveBeenCalled();
 

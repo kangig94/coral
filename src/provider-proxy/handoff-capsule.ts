@@ -247,7 +247,7 @@ export const handoffCapsuleV2Schema = handoffCapsuleV1Schema
   })
   .strict();
 
-/** V2's shape with the process identity carried as opaque incarnation tokens. The only shape written now. */
+/** V2's field set with the process identity carried as opaque incarnation tokens. The only shape written now. */
 export const handoffCapsuleV3Schema = handoffCapsuleV1Schema
   .omit({ version: true })
   .extend({

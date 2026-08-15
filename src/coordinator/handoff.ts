@@ -406,8 +406,9 @@ type SignalVerificationResult = 'matched' | 'gone';
  *
  * A pre-token incumbent therefore cannot be escalated to a signal at all. It can still be asked to stand
  * down over IPC, which is the ordinary path and needs no such proof, so an upgrade over a *responsive*
- * predecessor is unaffected. An unresponsive one now ends in a diagnostic instead of a kill — deliberately:
- * refusing to act costs an operator one command, and acting on an unproven pid costs someone else a process.
+ * predecessor is unaffected. An unresponsive one ends in a diagnostic instead of a kill — deliberately, and
+ * the asymmetry is the argument: refusing is recoverable by a person who can see which service owns the
+ * port, while acting on an unproven pid is not recoverable by anyone.
  *
  * What is still not closed: the interval between this check and the `kill` a few statements later. Nothing
  * short of a pidfd can, and this narrows it from "since the incumbent booted" to "since this verification".
@@ -428,7 +429,7 @@ function verifySignalTarget(
   if (incumbent.incarnation === undefined) {
     return refuseSignal(
       incumbent,
-      'the incumbent published no incarnation, so this pid cannot be proven to be it — stop that process yourself',
+      'the incumbent published no incarnation, so this pid cannot be proven to be it — stop the Coral backend by its service or socket, not by this pid',
     );
   }
   if (incumbent.incarnation !== liveIncarnation) {

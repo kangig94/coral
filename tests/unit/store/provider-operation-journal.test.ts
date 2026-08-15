@@ -8,6 +8,7 @@ import {
   insertProviderOperation,
   readProviderOperation,
   readProviderOperationDueSelections,
+  providerOperationJobIdFromRecordKey,
   readProviderOperations,
   readProviderOperationsDue,
   subscribeProviderOperationMutations,
@@ -513,8 +514,11 @@ describe('provider operation journal', () => {
       const readable = providerOperationRecord('executing');
       insertProviderOperation(db, readable);
 
-      // A genuine v0.10.8 value: the same record with its three process identities back in seconds.
-      const shipped = JSON.parse(sagaRows(db)[0]?.value ?? '{}') as {
+      // A genuine v0.10.8 row, at its own canonical key and carrying the due entry a real one carries. The key
+      // must be well-formed: a malformed key is rejected for its shape before the value is ever judged, which
+      // makes the test pass whatever the value says.
+      const legacy = providerOperationRecord('prepare-pending', { job: 2 });
+      const shipped = JSON.parse(encodeProviderOperationRecord(legacy)) as {
         locator: Record<string, Record<string, unknown>>;
         providerRoot?: Record<string, unknown>;
       };
@@ -528,11 +532,10 @@ describe('provider operation journal', () => {
         delete shipped.providerRoot.incarnation;
         shipped.providerRoot.processStartedAtSeconds = 1_700_000_000;
       }
-      const legacyKey = `${RECORD_PREFIX}00000000-0000-4000-8000-00000000ffff`;
-      db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)').run(
-        legacyKey,
-        JSON.stringify(shipped),
-      );
+      const legacyKey = recordKey(legacy);
+      const insert = db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)');
+      insert.run(legacyKey, JSON.stringify(shipped));
+      insert.run(dueKey(legacy), legacyKey);
 
       const scan = readProviderOperations(db);
 
@@ -542,6 +545,15 @@ describe('provider operation journal', () => {
         sagaRows(db).some((row) => row.key === legacyKey),
         'the row is skipped, never removed',
       ).toBe(true);
+
+      // The job the row names, without decoding it. Startup ownership needs exactly this to keep that job away
+      // from generic recovery, which would strict-read the same row and abort the boot it just survived.
+      expect(providerOperationJobIdFromRecordKey(legacyKey)).toBe(legacy.operation.jobId);
+
+      // And the due index must not reintroduce the fatality. Every non-executing row has a due entry, so this
+      // is the shape a real orphaned operation has, and the reconciler treats a throw here as fatal.
+      expect(() => readProviderOperationsDue(db, Number.MAX_SAFE_INTEGER, 10)).not.toThrow();
+      expect(readProviderOperationsDue(db, Number.MAX_SAFE_INTEGER, 10)).toEqual([]);
     } finally {
       db.close();
     }

@@ -14,8 +14,8 @@ import type { TimePort } from '../../infra/port-types.js';
 /**
  * Identity tuple proving "this incumbent is who it claims to be" — used to
  * gate signal escalation. `pid` alone is insufficient because pids wrap;
- * `incarnation` is the kernel-supplied second of process creation
- * (probed via `probeProcessIncarnation`).
+ * `incarnation` is an opaque token for one run of one process, compared only
+ * for equality (probed via `probeProcessIncarnation`).
  */
 export type IncumbentIdentity = {
   pid: number;
