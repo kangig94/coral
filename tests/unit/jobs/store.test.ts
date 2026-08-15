@@ -269,6 +269,27 @@ describe('JobStore', () => {
     expect(store.loadJobProjectionDetail(jobId).exit?.diagnostics.byteCounts).toEqual({ stdout: 123, stderr: 45 });
   });
 
+  it('renders a crashed workflow root from its terminal instead of an empty placeholder', () => {
+    const { runtime, store } = createStore();
+    const workflowJobId = '44444444-4444-4444-8444-444444444444';
+    const sessionId = 'session-crashed-workflow';
+
+    initProviderJob(store, workflowJobId, sessionId);
+    // Exactly what crash terminalization commits: no content, and a fault that describes itself.
+    commitJobTerminal(store, workflowJobId, sessionId, {
+      content: '',
+      outcome: { kind: 'job_fault', fault: { kind: 'wrapper_crashed', cause: { message: 'Backend shutting down' } } },
+      durationMs: 0,
+    });
+
+    const resultPath = store.ensureResultArtifact(workflowJobId);
+
+    // Before, crash terminalization wrote '' here first. The file then existed, so this read returned it
+    // unchanged and the operator was handed a path to nothing for a failure Coral could describe exactly.
+    expect(runtime.storage.readFileSync(resultPath, 'utf-8')).toContain('Backend shutting down');
+    expect(runtime.storage.readFileSync(resultPath, 'utf-8').trim().length).toBeGreaterThan(0);
+  });
+
   it('rebuilds a pre-existing raw workflow child artifact with its durable slot identity', () => {
     const { runtime, store } = createStore();
     const childJobId = '11111111-1111-4111-8111-111111111111';

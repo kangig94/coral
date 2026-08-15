@@ -1766,13 +1766,6 @@ describe('lifecycle recovery', () => {
         await modules.lifecycleModule.markJobsAsError(
           progressStore,
           message,
-          {
-            mkdirSync: () => {},
-            writeAtomicSync: () => {
-              throw new Error('injected workflow result export failure');
-            },
-          } as never,
-          runtime.paths.coral.exports.jobsRoot,
           runtime.time.now(),
           signal,
           createTestJobJournalDeps(progressStore, runtime).coordinatorCommit,

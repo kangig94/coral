@@ -151,15 +151,7 @@ export function resolveCoordinatorDefaults(
         ((message, signal) => {
           const progressStore = bindings.getProgressStore();
           if (progressStore === null) return;
-          return markJobsAsError(
-            progressStore,
-            message,
-            runtime.storage,
-            runtime.paths.coral.exports.jobsRoot,
-            runtime.time.now(),
-            signal,
-            (cb) => progressStore.commit(cb),
-          );
+          return markJobsAsError(progressStore, message, runtime.time.now(), signal, (cb) => progressStore.commit(cb));
         });
       const terminateAllFn = options.terminateAllFn ?? (() => bindings.launchCoordinator.terminateAll());
 
