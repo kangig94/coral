@@ -1695,5 +1695,16 @@ describe('ProviderProxySetLifecycle', () => {
     expect(lifecycle.snapshot().states).toEqual(['capsule-foreign', 'capsule-foreign', 'capsule-foreign']);
     for (let i = 0; i < 20; i += 1) await Promise.resolve();
     expect(redeemCapsule, 'a capsule this build cannot redeem must never be dialed').not.toHaveBeenCalled();
+
+    // Capacity exists for sets this coordinator runs. A foreign slot holds no authority, route or claim, so
+    // counting it would let capsules left by another build deny this one its own sets — four permanently, and
+    // one for the matching host. The V2 above carries exactly this build's buildSetId and hostFingerprint.
+    expect(
+      lifecycle.beginFreshAcquisition('route-a', {
+        buildSetId: FIXTURE_BUILD_SET_ID,
+        hostFingerprint: identity.hostFingerprint,
+      }),
+      'an un-inheritable capsule must not deny acquisition for its own build and host',
+    ).toMatchObject({ kind: 'accepted' });
   });
 });

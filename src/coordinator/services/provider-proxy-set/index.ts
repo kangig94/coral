@@ -141,6 +141,15 @@ type ProviderProxySetSlot =
 
 type AbsenceDeliveryPendingSlot = Extract<ProviderProxySetSlot, { kind: 'absence-delivery-pending' }>;
 
+/**
+ * Whether a discovered capsule is one this build may act on. Returned as a variant rather than a boolean so
+ * the inheritable branch carries the narrowed capsule: every path that reads a process identity out of one
+ * is then unreachable for a V2, by type rather than by discipline.
+ */
+type CapsuleInheritance =
+  | Readonly<{ kind: 'inheritable'; capsule: HandoffCapsuleV1 | HandoffCapsuleV3 }>
+  | Readonly<{ kind: 'uninheritable'; reason: 'other-build' | 'unreadable-identity' }>;
+
 type ContainmentAbsenceCommit =
   | Readonly<{ kind: 'unchanged'; pending: AbsenceDeliveryPendingSlot }>
   | Readonly<{
@@ -363,13 +372,14 @@ export class ProviderProxySetLifecycle {
       [...this.#slots.values()].some(
         (slot) =>
           slot.kind !== 'acquiring' &&
+          slot.kind !== 'capsule-foreign' &&
           slot.address.buildSetId === binding.buildSetId &&
           slot.address.hostFingerprint === binding.hostFingerprint,
       )
     ) {
       return { kind: 'already-represented' };
     }
-    if (this.#slots.size + 1 > MAX_COORDINATOR_PROXY_SET_SLOTS) {
+    if (this.#occupiedSlotCount() + 1 > MAX_COORDINATOR_PROXY_SET_SLOTS) {
       return { kind: 'capacity', code: 'provider_proxy_set_capacity' };
     }
     const slotId = `acquiring-${this.#nextSlotId++}`;
@@ -627,6 +637,21 @@ export class ProviderProxySetLifecycle {
     this.#capsuleAddresses.set(addressKey, path);
     this.#capsuleGrants.set(capsule.grantId, path);
 
+    // Decided before anything is attached to a claim, because a capsule that names a durable operation is
+    // exactly the capsule an upgrade finds, and attaching it is what makes it get dialed.
+    //
+    // Reaching a role is what makes an un-inheritable capsule fatal rather than merely useless.
+    // `handoff.redeem` is gated on build identity (`assertNamedCoordinatorBuild`), so a foreign set answers
+    // `identity_mismatch`; the recovery policy reads that as `refused`, and `refused` retires fatally
+    // *before* any seam can weigh the absence evidence gathered beside it — taking this whole coordinator
+    // down over a set it never owned.
+    //
+    // A V2 capsule is the same problem from the other side: this build can reach it, but its process
+    // identity is in seconds it can no longer verify, and carrying those numbers into a token would make a
+    // live process read as absent.
+    const classified = this.#classifyCapsule(capsule);
+    const uninheritable = classified.kind === 'uninheritable' ? classified.reason : null;
+
     const claimKey = this.#identityIndex.keyForAddress(address);
     if (claimKey !== null) {
       const claimSlot = this.#slots.get(claimKey);
@@ -636,22 +661,22 @@ export class ProviderProxySetLifecycle {
       if (claimSlot.capsulePath !== null && claimSlot.capsulePath !== path) {
         throw new Error('provider_proxy_capsule_claim_path_alias');
       }
+      if (uninheritable !== null) {
+        // Leave `capsulePath` null — the same state a claim reaches when no capsule was found at all, which
+        // resolves through containment proof rather than redemption. Naming the path here is precisely what
+        // hands this credential to a redemption that must be refused.
+        this.#deps.reportLifecycle(
+          'warn',
+          `Provider proxy capsule at ${path} names a claimed set but is not inheritable (${uninheritable}); the claim will resolve without it.`,
+        );
+        return;
+      }
       claimSlot.capsulePath = path;
       return;
     }
 
-    // Two capsules must be represented but never dialed, and reaching a role is what makes the difference
-    // fatal rather than merely useless. `handoff.redeem` is gated on build identity
-    // (`assertNamedCoordinatorBuild`), so a foreign set answers `identity_mismatch`; the recovery policy
-    // reads that as `refused`, and `refused` retires fatally *before* any seam can weigh the absence
-    // evidence gathered beside it — taking this whole coordinator down over a set it never owned.
-    //
-    // A V2 capsule is the same problem from the other side: this build can reach it, but its process
-    // identity is in seconds it can no longer verify, and carrying those numbers into a token would make a
-    // live process read as absent. Neither can be inherited; the set's own orphan deadline reclaims it.
-    // The slot exists so the address stays represented and cannot be aliased.
-    const ownBuild = capsule.buildSetId === this.#deps.buildSetId;
-    if (!ownBuild || capsule.version === 2) {
+    // Unclaimed and un-inheritable: the slot exists so the address stays represented and cannot be aliased.
+    if (classified.kind === 'uninheritable') {
       const slotId = `capsule-${this.#nextSlotId++}`;
       this.#slots.set(slotId, {
         kind: 'capsule-foreign',
@@ -659,22 +684,23 @@ export class ProviderProxySetLifecycle {
         capsulePath: path,
         address,
         capacityClass: 'retained',
-        reason: ownBuild ? 'unreadable-identity' : 'other-build',
+        reason: classified.reason,
       });
       this.#deps.reportLifecycle(
         'warn',
-        `Provider proxy capsule at ${path} is represented but not inheritable (${ownBuild ? 'unreadable-identity' : 'other-build'}).`,
+        `Provider proxy capsule at ${path} is represented but not inheritable (${classified.reason}).`,
       );
       return;
     }
+    const inheritable = classified.capsule;
 
-    if (capsule.version === 1) {
+    if (inheritable.version === 1) {
       const slotId = `capsule-${this.#nextSlotId++}`;
       this.#slots.set(slotId, {
         kind: 'capsule-opaque',
         slotId,
         capsulePath: path,
-        capsuleBinding: capsule,
+        capsuleBinding: inheritable,
         address,
         capacityClass: 'retained',
         completedAttempts: 0,
@@ -685,7 +711,7 @@ export class ProviderProxySetLifecycle {
       return;
     }
 
-    const identity = providerProxySetIdentityFromCapsule(capsule);
+    const identity = providerProxySetIdentityFromCapsule(inheritable);
     const key = this.#identityIndex.add(identity);
     if (this.#slots.has(key)) throw new Error('provider_proxy_capsule_exact_identity_alias');
     this.#slots.set(key, {
@@ -693,7 +719,7 @@ export class ProviderProxySetLifecycle {
       key,
       identity,
       capsulePath: path,
-      capsuleBinding: capsule,
+      capsuleBinding: inheritable,
       address,
       capacityClass: 'retained',
       completedAttempts: 0,
@@ -701,6 +727,12 @@ export class ProviderProxySetLifecycle {
       attemptToken: 0,
       attemptAbort: null,
     });
+  }
+
+  #classifyCapsule(capsule: HandoffCapsule): CapsuleInheritance {
+    if (capsule.buildSetId !== this.#deps.buildSetId) return { kind: 'uninheritable', reason: 'other-build' };
+    if (capsule.version === 2) return { kind: 'uninheritable', reason: 'unreadable-identity' };
+    return { kind: 'inheritable', capsule };
   }
 
   #capsuleMatchesIdentity(capsule: HandoffCapsule, identity: ProviderProxySetIdentity): boolean {
@@ -919,9 +951,22 @@ export class ProviderProxySetLifecycle {
     }
   }
 
+  /**
+   * Slots this coordinator is actually running a set in. A `capsule-foreign` slot is deliberately excluded:
+   * it holds no authority, no route and no claim, and the coordinator can take no action on it, so counting
+   * it against the acquisition limit lets capsules left behind by another build deny this one its own sets —
+   * four of them permanently, and one of them for the matching host.
+   */
+  #occupiedSlotCount(): number {
+    return [...this.#slots.values()].filter((slot) => slot.kind !== 'capsule-foreign').length;
+  }
+
   #classifyCapacity(): void {
     const addressed = [...this.#slots.values()]
-      .filter((slot): slot is Exclude<ProviderProxySetSlot, { kind: 'acquiring' }> => slot.kind !== 'acquiring')
+      .filter(
+        (slot): slot is Exclude<ProviderProxySetSlot, { kind: 'acquiring' | 'capsule-foreign' }> =>
+          slot.kind !== 'acquiring' && slot.kind !== 'capsule-foreign',
+      )
       .sort((left, right) =>
         providerProxySetAddressKey(left.address).localeCompare(providerProxySetAddressKey(right.address)),
       );

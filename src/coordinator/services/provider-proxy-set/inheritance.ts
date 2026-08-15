@@ -571,6 +571,17 @@ async function redeem(
   signal: AbortSignal,
 ): Promise<ProviderProxySetInheritanceOutcome> {
   const { operation, locator } = reference;
+  // Refused before the capsule is even read, because reading it is one step from dialing it. `handoff.redeem`
+  // is gated on build identity at the role (`assertNamedCoordinatorBuild`), so a set from another build
+  // answers `identity_mismatch` — which the recovery policy classifies as `refused` and retires *fatally*,
+  // taking this coordinator down over a set it never owned. `capsuleMatchesLocator` cannot catch this: it
+  // compares the capsule against the *record's* `buildSetId`, and for a foreign set those two agree.
+  //
+  // Not-bequeathed is the honest outcome rather than an error. There is genuinely nothing here this build may
+  // inherit, and the caller already knows how to settle a set it could not take over.
+  if (operation.buildSetId !== deps.coordinatorIdentity.buildSetId) {
+    return { kind: 'not-bequeathed', reason: 'the recorded set belongs to another build' };
+  }
   const capsulePath = providerHandoffCapsulePath(
     {
       generation: deps.coordinatorIdentity.generation,
@@ -586,6 +597,11 @@ async function redeem(
     uid: process.getuid?.() ?? 0,
   });
   if (capsule === null) return { kind: 'not-bequeathed', reason: NOTHING_TO_INHERIT_REASON };
+  // Same build, older capsule shape. Its process identity is seconds this build cannot verify, and every
+  // redemption step downstream compares the identity it would have to invent from them.
+  if (capsule.version === 2) {
+    return { kind: 'not-bequeathed', reason: 'the capsule predates the process incarnation token' };
+  }
   if (!capsuleMatchesLocator(capsule, reference, deps.coordinatorIdentity)) {
     return { kind: 'not-bequeathed', reason: 'capsule identity disagrees with the committed locator' };
   }

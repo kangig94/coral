@@ -24,6 +24,7 @@ import {
   readHandoffCapsuleFile,
   type HandoffCapsule,
   type HandoffCapsuleV1,
+  type HandoffCapsuleV2,
 } from '#src/provider-proxy/handoff-capsule.js';
 import { probeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
@@ -632,6 +633,66 @@ describe('attemptProviderProxySetInheritance', () => {
     );
 
     expect(outcome).toEqual({ kind: 'not-bequeathed', reason: 'no capsule at this address' });
+    expect(mockedConnect).not.toHaveBeenCalled();
+  });
+
+  // The upgrade path, and the one a discovery-side build gate cannot cover: this entry derives the capsule's
+  // address from the record itself rather than from anything discovery classified. Dialing a set from another
+  // build returns `identity_mismatch`, which the recovery policy retires fatally — the coordinator dies over a
+  // set it never owned. `capsuleMatchesLocator` cannot catch it either, because it compares the capsule
+  // against the *record's* build, and for a foreign set those two agree.
+  it('reports not-bequeathed without reading a foreign build’s capsule at all', async () => {
+    const loc = locator({ buildSetId: '77777777-7777-4777-8777-777777777777' });
+
+    const outcome = await attemptProviderProxySetInheritance(
+      loc,
+      unusedDb,
+      {
+        runtime,
+        coordinatorIdentity: COORDINATOR_IDENTITY,
+        operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
+      },
+      neverAborts,
+    );
+
+    expect(outcome).toEqual({ kind: 'not-bequeathed', reason: 'the recorded set belongs to another build' });
+    expect(mockedReadCapsule, 'a foreign capsule is refused before it is even read').not.toHaveBeenCalled();
+    expect(mockedConnect).not.toHaveBeenCalled();
+  });
+
+  // Same build, shipped-V2 capsule. Its process fields are seconds this build cannot verify, so there is no
+  // identity to redeem against — and inventing one from them reports a live process as absent.
+  it('reports not-bequeathed for a capsule that predates the incarnation token', async () => {
+    const loc = locator();
+    const shippedV2: HandoffCapsuleV2 = {
+      ...(capsuleFor(loc) as HandoffCapsuleV1),
+      version: 2,
+      guardianPid: loc.locator.guardian.pid,
+      guardianProcessStartedAtSeconds: 1_700_000_001,
+      proxyPid: loc.locator.proxy.pid,
+      reaperPid: loc.locator.reaper.pid,
+      reaperProcessStartedAtSeconds: 1_700_000_003,
+      containmentKind: 'detached-process-group',
+      proxyProcessStartedAtSeconds: 1_700_000_002,
+      proxyProcessGroupId: loc.locator.proxy.pid,
+    };
+    mockedReadCapsule.mockReturnValueOnce(shippedV2);
+
+    const outcome = await attemptProviderProxySetInheritance(
+      loc,
+      unusedDb,
+      {
+        runtime,
+        coordinatorIdentity: COORDINATOR_IDENTITY,
+        operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
+      },
+      neverAborts,
+    );
+
+    expect(outcome).toEqual({
+      kind: 'not-bequeathed',
+      reason: 'the capsule predates the process incarnation token',
+    });
     expect(mockedConnect).not.toHaveBeenCalled();
   });
 
