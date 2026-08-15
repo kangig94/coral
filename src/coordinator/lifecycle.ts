@@ -16,7 +16,6 @@ import { isTerminalPhase } from '../jobs/phase.js';
 import { parsePositiveInt } from './live/worker-limits.js';
 import { createRecoveryCoordinator, type RecoveryCoordinator } from './services/recovery/index.js';
 import { createReplacementBackendOwnershipChecker } from './ownership-checker.js';
-import { writeResultArtifact } from '../jobs/terminal/export.js';
 import type { JobStore } from '../jobs/store.js';
 import type { JobStatus } from '../jobs/records.js';
 import { jobLaunchRequestBodySchema } from '../jobs/launch.js';
@@ -369,8 +368,6 @@ type StaleJobCleanupPolicyContext = {
 type CrashedJobTerminalizationPolicyContext = {
   readonly progressStore: JobStore;
   readonly message: string;
-  readonly storage: Pick<Runtime['storage'], 'mkdirSync' | 'writeAtomicSync'>;
-  readonly jobsRoot: string;
   readonly endTimeMs: number;
   readonly coordinatorCommit: CommitEventsFn;
 };
@@ -427,7 +424,7 @@ function createStaleJobCleanupPolicy(
 function createCrashedJobTerminalizationPolicy(
   context: CrashedJobTerminalizationPolicyContext,
 ): RecoveryRetryPolicy<RawCrashedJobRow, CrashedJobTerminalizationItem> {
-  const { progressStore, message, storage, jobsRoot, endTimeMs, coordinatorCommit } = context;
+  const { progressStore, message, endTimeMs, coordinatorCommit } = context;
   return {
     processLocalCleanup: { kind: 'not-required' },
     hydrate: (raw) => hydrateCrashedJob(raw, progressStore),
@@ -456,13 +453,10 @@ function createCrashedJobTerminalizationPolicy(
         });
         return undefined;
       });
-      if (status.jobKind === 'workflow') {
-        try {
-          writeResultArtifact(storage, jobsRoot, status.jobId, '');
-        } catch {
-          // Journal terminal state is authoritative; export materialization is best-effort.
-        }
-      }
+      // No export is written here on purpose. The terminal committed above already carries the crash
+      // fault, so `ensureResultMarkdownArtifact` renders it on the next read. Writing a placeholder
+      // instead makes that read a no-op — the file exists, so it is never regenerated — and the
+      // operator is handed a path to an empty file for a failure Coral can describe exactly.
       return {
         kind: 'advanced',
         outcome: 'settled',
@@ -562,13 +556,11 @@ export async function cleanupStaleJobs(
 export async function markJobsAsError(
   progressStore: JobStore,
   message: string,
-  storage: Pick<Runtime['storage'], 'mkdirSync' | 'writeAtomicSync'>,
-  jobsRoot: string,
   endTimeMs: number,
   signal: AbortSignal,
   coordinatorCommit: CommitEventsFn,
 ): Promise<void> {
-  const context = { progressStore, message, storage, jobsRoot, endTimeMs, coordinatorCommit };
+  const context = { progressStore, message, endTimeMs, coordinatorCommit };
   crashedJobTerminalizationRetryContexts.set(progressStore.getDb(), context);
   const policy: RecoveryPolicy<RawCrashedJobRow, CrashedJobTerminalizationItem> = {
     signal,
