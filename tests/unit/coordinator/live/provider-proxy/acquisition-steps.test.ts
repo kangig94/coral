@@ -44,6 +44,9 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import { flushMicrotasks, VirtualTime } from '#tools/simulation/core/virtual-time.js';
 import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
 
+/** The build this fixture lifecycle belongs to — the same one `providerOperationRecord` stamps on its identities, so a discovered capsule is inheritable rather than foreign. */
+const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
+
 const mockedEstablishRoleControl = vi.mocked(establishRoleControl);
 const mockedCreateSetAuthority = vi.mocked(createProviderProxySetAuthority);
 
@@ -287,6 +290,7 @@ describe('createProviderProxyAcquisitionSteps', () => {
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([]);
     const lifecycle = new ProviderProxySetLifecycle({
+      buildSetId: FIXTURE_BUILD_SET_ID,
       claims,
       controlEstablished: notifyProviderProxyControlEstablished,
       time,

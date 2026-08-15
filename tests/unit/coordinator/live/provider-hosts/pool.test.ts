@@ -37,6 +37,9 @@ import {
 } from '#tests/unit/coordinator/live/provider-hosts/helpers.js';
 import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
 
+/** The build this fixture lifecycle belongs to — the same one `providerOperationRecord` stamps on its identities, so a discovered capsule is inheritable rather than foreign. */
+const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
+
 const mockedEnsureProxySet = ensureProviderProxySet as unknown as ReturnType<typeof vi.fn>;
 
 function fakeProxySet(proxyInstanceId: string): ProviderProxySetAuthority {
@@ -133,6 +136,7 @@ function createProxySetLifecycleRef(onSlotReleased?: (routeKey: string) => void)
   const claims = new ProviderProxySetClaimMirror();
   claims.initialize([]);
   const lifecycle = new ProviderProxySetLifecycle({
+    buildSetId: FIXTURE_BUILD_SET_ID,
     claims,
     controlEstablished: () => undefined,
     time: runtime.time,

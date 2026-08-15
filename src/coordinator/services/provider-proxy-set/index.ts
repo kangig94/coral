@@ -1,7 +1,7 @@
 import type { TimePort, TimerHandle } from '../../../infra/port-types.js';
 import { errorMessage } from '../../../infra/error-format.js';
 import type { OperationIdentity } from '../../../provider-proxy/protocol.js';
-import type { HandoffCapsule, HandoffCapsuleV1, HandoffCapsuleV2 } from '../../../provider-proxy/handoff-capsule.js';
+import type { HandoffCapsule, HandoffCapsuleV1, HandoffCapsuleV3 } from '../../../provider-proxy/handoff-capsule.js';
 import type { DurableProviderProxyOperationAuthority } from '../../live/provider-proxy/operation-route.js';
 import type { ProviderHandoffCapsuleRetirementOutcome } from '../provider-proxy-capsule-discovery.js';
 import type { ProviderProxySetRedemptionOutcome } from './inheritance.js';
@@ -81,7 +81,7 @@ type ProviderProxySetSlot =
       key: ProviderProxySetKey;
       identity: ProviderProxySetIdentity;
       capsulePath: string;
-      capsuleBinding: HandoffCapsuleV2;
+      capsuleBinding: HandoffCapsuleV3;
       address: ProviderProxySetAddress;
       capacityClass: CapacityClass;
       completedAttempts: number;
@@ -100,6 +100,18 @@ type ProviderProxySetSlot =
       retryTimer: TimerHandle | null;
       attemptToken: number;
       attemptAbort: AbortController | null;
+    }
+  /**
+   * A capsule this build must not dial. It holds an address and nothing else — no timer, no attempt, no
+   * authority — because every action available here is one this build is not entitled to take.
+   */
+  | {
+      kind: 'capsule-foreign';
+      slotId: string;
+      capsulePath: string;
+      address: ProviderProxySetAddress;
+      capacityClass: CapacityClass;
+      reason: 'other-build' | 'unreadable-identity';
     }
   | {
       kind: 'recovering';
@@ -189,6 +201,12 @@ type AbsenceDeliveryState =
   | Readonly<{ kind: 'fatal'; error: ProviderProxySetLifecycleFatalError }>;
 
 export type ProviderProxySetLifecycleDeps = Readonly<{
+  /**
+   * This coordinator's own build set. Discovery needs it to tell a capsule it may redeem from one it may
+   * only represent: redemption is build-bound at the role (`assertNamedCoordinatorBuild`), so dialing a
+   * foreign set is not a failed attempt but a fatal one.
+   */
+  buildSetId: string;
   claims: ProviderProxySetClaimMirror;
   controlEstablished(authority: DurableProviderProxyOperationAuthority): void;
   time: Pick<TimePort, 'now' | 'setTimeout' | 'clearTimeout'>;
@@ -393,6 +411,7 @@ export class ProviderProxySetLifecycle {
       slot.kind === 'acquiring' ||
       slot.kind === 'capsule-recovering' ||
       slot.kind === 'capsule-opaque' ||
+      slot.kind === 'capsule-foreign' ||
       slot.kind === 'recovering' ||
       slot.kind === 'containing' ||
       slot.kind === 'containment-wait' ||
@@ -439,6 +458,7 @@ export class ProviderProxySetLifecycle {
       slot.kind === 'acquiring' ||
       slot.kind === 'capsule-recovering' ||
       slot.kind === 'capsule-opaque' ||
+      slot.kind === 'capsule-foreign' ||
       slot.kind === 'recovering' ||
       slot.kind === 'absence-delivery-pending' ||
       slot.kind === 'containing' ||
@@ -468,6 +488,7 @@ export class ProviderProxySetLifecycle {
       slot.kind === 'acquiring' ||
       slot.kind === 'capsule-recovering' ||
       slot.kind === 'capsule-opaque' ||
+      slot.kind === 'capsule-foreign' ||
       slot.kind === 'recovering'
     ) {
       return;
@@ -525,6 +546,7 @@ export class ProviderProxySetLifecycle {
     if (
       slot.kind === 'acquiring' ||
       slot.kind === 'capsule-opaque' ||
+      slot.kind === 'capsule-foreign' ||
       !providerProxySetIdentitiesEqual(slot.identity, identity)
     ) {
       throw new Error('provider_proxy_containment_absence_identity_mismatch');
@@ -618,6 +640,34 @@ export class ProviderProxySetLifecycle {
       return;
     }
 
+    // Two capsules must be represented but never dialed, and reaching a role is what makes the difference
+    // fatal rather than merely useless. `handoff.redeem` is gated on build identity
+    // (`assertNamedCoordinatorBuild`), so a foreign set answers `identity_mismatch`; the recovery policy
+    // reads that as `refused`, and `refused` retires fatally *before* any seam can weigh the absence
+    // evidence gathered beside it — taking this whole coordinator down over a set it never owned.
+    //
+    // A V2 capsule is the same problem from the other side: this build can reach it, but its process
+    // identity is in seconds it can no longer verify, and carrying those numbers into a token would make a
+    // live process read as absent. Neither can be inherited; the set's own orphan deadline reclaims it.
+    // The slot exists so the address stays represented and cannot be aliased.
+    const ownBuild = capsule.buildSetId === this.#deps.buildSetId;
+    if (!ownBuild || capsule.version === 2) {
+      const slotId = `capsule-${this.#nextSlotId++}`;
+      this.#slots.set(slotId, {
+        kind: 'capsule-foreign',
+        slotId,
+        capsulePath: path,
+        address,
+        capacityClass: 'retained',
+        reason: ownBuild ? 'unreadable-identity' : 'other-build',
+      });
+      this.#deps.reportLifecycle(
+        'warn',
+        `Provider proxy capsule at ${path} is represented but not inheritable (${ownBuild ? 'unreadable-identity' : 'other-build'}).`,
+      );
+      return;
+    }
+
     if (capsule.version === 1) {
       const slotId = `capsule-${this.#nextSlotId++}`;
       this.#slots.set(slotId, {
@@ -654,9 +704,11 @@ export class ProviderProxySetLifecycle {
   }
 
   #capsuleMatchesIdentity(capsule: HandoffCapsule, identity: ProviderProxySetIdentity): boolean {
-    if (capsule.version === 2) {
+    if (capsule.version === 3) {
       return providerProxySetIdentitiesEqual(providerProxySetIdentityFromCapsule(capsule), identity);
     }
+    // V1 and V2 alike: compare only what this build can read as identity. V2's process fields are seconds,
+    // and comparing them against a token would be a guaranteed mismatch dressed up as a real disagreement.
     return (
       capsule.buildSetId === identity.buildSetId &&
       capsule.hostFingerprint === identity.hostFingerprint &&
@@ -745,9 +797,9 @@ export class ProviderProxySetLifecycle {
           slot.attemptAbort = null;
           const outcome = value as Extract<ProviderProxySetRedemptionOutcome, { kind: 'redeemed' }>;
           const identity = outcome.set.setIdentity;
-          const upgraded: HandoffCapsuleV2 = {
+          const upgraded: HandoffCapsuleV3 = {
             ...slot.capsuleBinding,
-            version: 2,
+            version: 3,
             guardianPid: identity.guardianPid,
             guardianIncarnation: identity.guardianIncarnation,
             proxyPid: identity.proxyPid,
@@ -788,7 +840,7 @@ export class ProviderProxySetLifecycle {
   #rewriteOpaqueCapsule(
     slot: Extract<ProviderProxySetSlot, { kind: 'capsule-opaque' }>,
     authority: DurableProviderProxyOperationAuthority,
-    upgraded: HandoffCapsuleV2,
+    upgraded: HandoffCapsuleV3,
   ): void {
     const dispatcher = this.#deps.recoveryDispatcher;
     const turn = dispatcher.begin(

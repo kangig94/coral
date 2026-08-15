@@ -129,6 +129,9 @@ import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
 import { createFakeProviderServerHandle } from '#tests/unit/coordinator/live/provider-hosts/helpers.js';
 
+/** The build this fixture lifecycle belongs to — the same one `providerOperationRecord` stamps on its identities, so a discovered capsule is inheritable rather than foreign. */
+const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
+
 /**
  * Drives `createProxyGuardianContainment` — the containment closures `startProviderProxyRole` installs on a
  * real `Proxy` — against a *real* `createGuardian`/`createReaper` pair over real control sockets, following
@@ -511,6 +514,7 @@ function establishActivationRoute(setIdentity: ProviderProxySetIdentity) {
   claims.initialize([]);
   const authorityFaults = createProviderProxyAuthorityFaultLatch();
   const lifecycle = new ProviderProxySetLifecycle({
+    buildSetId: FIXTURE_BUILD_SET_ID,
     claims,
     controlEstablished: () => undefined,
     time: { ...timer, now: () => 0 },
@@ -1325,6 +1329,7 @@ describe('provider proxy cumulative root rotation', () => {
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([]);
     const lifecycle = new ProviderProxySetLifecycle({
+      buildSetId: FIXTURE_BUILD_SET_ID,
       claims,
       controlEstablished: () => undefined,
       time: runtime.time,

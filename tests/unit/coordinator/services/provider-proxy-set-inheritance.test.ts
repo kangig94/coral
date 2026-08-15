@@ -58,6 +58,9 @@ import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
 
+/** The build this fixture lifecycle belongs to — the same one `providerOperationRecord` stamps on its identities, so a discovered capsule is inheritable rather than foreign. */
+const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
+
 const mockedReadCapsule = vi.mocked(readHandoffCapsuleFile);
 const mockedConnect = vi.mocked(connectRoleControlWithRetry);
 const mockedProbe = vi.mocked(probeProcessIncarnation);
@@ -1187,6 +1190,7 @@ describe('createProviderProxySetInheritance', () => {
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([providerOperationRecord('executing', { operation: loc.operation, locator: loc.locator })]);
     const lifecycle = new ProviderProxySetLifecycle({
+      buildSetId: FIXTURE_BUILD_SET_ID,
       claims,
       controlEstablished: notifyProviderProxyControlEstablished,
       time: runtime.time,
@@ -1249,6 +1253,7 @@ describe('createProviderProxySetInheritance', () => {
     claims.initialize([]);
     const established = vi.fn();
     const lifecycle = new ProviderProxySetLifecycle({
+      buildSetId: FIXTURE_BUILD_SET_ID,
       claims,
       controlEstablished: established,
       time,
@@ -1311,6 +1316,7 @@ describe('createProviderProxySetInheritance', () => {
     claims.initialize([]);
     const established = vi.fn();
     const lifecycle = new ProviderProxySetLifecycle({
+      buildSetId: FIXTURE_BUILD_SET_ID,
       claims,
       controlEstablished: established,
       time: {
@@ -1377,6 +1383,7 @@ describe('createProviderProxySetInheritance', () => {
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([]);
     const lifecycle = new ProviderProxySetLifecycle({
+      buildSetId: FIXTURE_BUILD_SET_ID,
       claims,
       controlEstablished: () => undefined,
       time,

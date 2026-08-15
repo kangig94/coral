@@ -185,6 +185,9 @@ import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 
+/** The build this fixture lifecycle belongs to — the same one `providerOperationRecord` stamps on its identities, so a discovered capsule is inheritable rather than foreign. */
+const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
+
 /**
  * Drives the real spawn topology in-process rather than against the built backend artifact.
  *
@@ -1107,6 +1110,7 @@ describe('provider-proxy process topology: acquisition', () => {
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([]);
     const lifecycle = new ProviderProxySetLifecycle({
+      buildSetId: FIXTURE_BUILD_SET_ID,
       claims,
       controlEstablished: () => undefined,
       time: environment.outerRuntime().time,

@@ -5,7 +5,7 @@ import {
   ProviderOperationTerminalizationUnavailableError,
   type ProviderOperationTerminalizationResult,
 } from '../../jobs/provider-operation-terminalization.js';
-import type { HandoffCapsule, HandoffCapsuleV2 } from '../../provider-proxy/handoff-capsule.js';
+import type { HandoffCapsule, HandoffCapsuleV3 } from '../../provider-proxy/handoff-capsule.js';
 import type { OperationIdentity } from '../../provider-proxy/protocol.js';
 import type { Database } from '../../store/db.js';
 import { ProviderOperationJournalError } from '../../store/provider-operation-journal.js';
@@ -84,7 +84,7 @@ type ContainmentProofInput = Readonly<{
   signal: AbortSignal;
 }>;
 
-type CapsuleRewriteInput = Readonly<{ path: string; capsule: HandoffCapsuleV2 }>;
+type CapsuleRewriteInput = Readonly<{ path: string; capsule: HandoffCapsuleV3 }>;
 type CapsuleRetirementInput = Readonly<{ path: string }>;
 type DisappearanceConsumerInput = Readonly<{ notice: ContainmentDisappearanceNotice }>;
 
@@ -262,7 +262,9 @@ function retrySafeTerminalizationUnknown(error: ProviderOperationAtomicTerminali
 }
 
 function capsuleMatchesIdentity(capsule: HandoffCapsule, identity: ProviderProxySetIdentity): boolean {
-  if (capsule.version === 2) {
+  // V3 alone carries a comparable process identity. V1 has none, and V2's is seconds from a retired
+  // derivation — comparing those against a token would manufacture a disagreement rather than find one.
+  if (capsule.version === 3) {
     const expected = {
       buildSetId: capsule.buildSetId,
       hostFingerprint: capsule.hostFingerprint,

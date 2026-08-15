@@ -244,6 +244,7 @@ export function createExecutionServices({
     onError: (message) => backendLog.warn(message),
   });
   const providerProxyLifecycle: ProviderProxySetLifecycle = new ProviderProxySetLifecycle({
+    buildSetId: world.identity.buildSetId,
     claims: world.providerProxyClaims,
     controlEstablished: notifyProviderProxyControlEstablished,
     time: runtime.time,

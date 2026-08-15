@@ -215,10 +215,43 @@ export const handoffCapsuleV1Schema = z
 
 const nonNegativeSafeIntegerSchema = z.number().int().nonnegative().safe();
 
+/**
+ * Shipped in v0.10.6 through v0.10.8, and read-only from here on: nothing writes a V2 again.
+ *
+ * Its three process fields are **seconds**, derived as `/proc/stat` btime plus the process's start ticks.
+ * That derivation was unsound — btime is recomputed on every read, so the value is an identity plus a
+ * probe-time noise sample — which is why V3 exists. The numbers are kept in the schema exactly as they
+ * shipped rather than renamed in place, because a build that renames a field while keeping its version
+ * number leaves two incompatible shapes claiming to be the same thing, and the reader that then rejects
+ * one of them cannot boot at all.
+ *
+ * A decoded V2 yields **address only**. Its seconds must never be carried into a `ProcessIncarnation`:
+ * `assertProcessIdentity` (`infra/process-containment.ts`) accepts any non-empty string, so `String(secs)`
+ * would pass, and `observeProcessIdentity` would then compare it against a real token, take the
+ * "read something, and it differs" branch, and report a **live** process as absent — minting a
+ * disappearance receipt for a running set. `providerProxySetIdentityFromCapsule` therefore accepts V3
+ * alone, and the compiler is what keeps that true.
+ */
 export const handoffCapsuleV2Schema = handoffCapsuleV1Schema
   .omit({ version: true })
   .extend({
     version: z.literal(2),
+    guardianPid: nonNegativeSafeIntegerSchema,
+    guardianProcessStartedAtSeconds: nonNegativeSafeIntegerSchema,
+    proxyPid: nonNegativeSafeIntegerSchema,
+    reaperPid: nonNegativeSafeIntegerSchema,
+    reaperProcessStartedAtSeconds: nonNegativeSafeIntegerSchema,
+    containmentKind: z.string().min(1).max(64),
+    proxyProcessStartedAtSeconds: nonNegativeSafeIntegerSchema,
+    proxyProcessGroupId: nonNegativeSafeIntegerSchema,
+  })
+  .strict();
+
+/** V2's shape with the process identity carried as opaque incarnation tokens. The only shape written now. */
+export const handoffCapsuleV3Schema = handoffCapsuleV1Schema
+  .omit({ version: true })
+  .extend({
+    version: z.literal(3),
     guardianPid: nonNegativeSafeIntegerSchema,
     guardianIncarnation: processIncarnationSchema,
     proxyPid: nonNegativeSafeIntegerSchema,
@@ -230,11 +263,16 @@ export const handoffCapsuleV2Schema = handoffCapsuleV1Schema
   })
   .strict();
 
-export const handoffCapsuleSchema = z.discriminatedUnion('version', [handoffCapsuleV1Schema, handoffCapsuleV2Schema]);
+export const handoffCapsuleSchema = z.discriminatedUnion('version', [
+  handoffCapsuleV1Schema,
+  handoffCapsuleV2Schema,
+  handoffCapsuleV3Schema,
+]);
 
 export type HandoffCapsuleV1 = z.output<typeof handoffCapsuleV1Schema>;
 export type HandoffCapsuleV2 = z.output<typeof handoffCapsuleV2Schema>;
-export type HandoffCapsule = HandoffCapsuleV1 | HandoffCapsuleV2;
+export type HandoffCapsuleV3 = z.output<typeof handoffCapsuleV3Schema>;
+export type HandoffCapsule = HandoffCapsuleV1 | HandoffCapsuleV2 | HandoffCapsuleV3;
 
 /**
  * What the three authorities retain. The secret itself is never stored beside the digest, and the identity

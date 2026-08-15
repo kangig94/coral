@@ -35,7 +35,7 @@ import {
   readProviderOperation,
   readProviderOperationsDue,
 } from '#src/store/provider-operation-journal.js';
-import type { HandoffCapsuleV1, HandoffCapsuleV2 } from '#src/provider-proxy/handoff-capsule.js';
+import type { HandoffCapsule, HandoffCapsuleV1, HandoffCapsuleV3 } from '#src/provider-proxy/handoff-capsule.js';
 import type { ProviderOperationRecord } from '#src/store/provider-operation-record.js';
 import { createControlEndpoint, type ControlChallengeAuthority } from '#src/provider-proxy/control-endpoint.js';
 import { PROXY_CONTROL_RPC_TIMEOUT_MS, ProxyControlProtocolError } from '#src/provider-proxy/protocol.js';
@@ -49,6 +49,9 @@ import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provid
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 import type { JobProgressStore } from '#src/jobs/contracts/job-store.js';
+
+/** The build this fixture lifecycle belongs to — the same one `providerOperationRecord` stamps on its identities, so a discovered capsule is inheritable rather than foreign. */
+const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
 
 function deferred<T>(): Readonly<{ promise: Promise<T>; resolve(value: T): void }> {
   let resolve!: (value: T) => void;
@@ -179,7 +182,7 @@ function lifecycleFor(
       signal: AbortSignal,
     ) => Promise<string | null>;
     redeemCapsule?: (
-      capsule: HandoffCapsuleV1 | HandoffCapsuleV2,
+      capsule: HandoffCapsule,
       path: string,
       signal: AbortSignal,
     ) => Promise<ProviderProxySetRedemptionOutcome>;
@@ -206,6 +209,7 @@ function lifecycleFor(
     onFatal,
   );
   const lifecycle = new ProviderProxySetLifecycle({
+    buildSetId: FIXTURE_BUILD_SET_ID,
     claims,
     controlEstablished: () => undefined,
     time: options.time,
@@ -275,11 +279,11 @@ function v1CapsuleFor(record: ProviderOperationRecord): HandoffCapsuleV1 {
   };
 }
 
-function v2CapsuleFor(record: ProviderOperationRecord): HandoffCapsuleV2 {
+function v3CapsuleFor(record: ProviderOperationRecord): HandoffCapsuleV3 {
   const identity = providerProxySetIdentityFromRecord(record);
   return {
     ...v1CapsuleFor(record),
-    version: 2,
+    version: 3,
     guardianPid: identity.guardianPid,
     guardianIncarnation: identity.guardianIncarnation,
     proxyPid: identity.proxyPid,
@@ -367,6 +371,7 @@ function composeProductionStartup(
     ...options.progressStore,
   };
   const world = {
+    identity: { buildSetId: FIXTURE_BUILD_SET_ID },
     storeServicesRef: { tryGet: () => ({ progressStore }) },
     operationRegistry: new LocalOperationRegistry(),
     providerProxyClaims: new ProviderProxySetClaimMirror(),
@@ -397,7 +402,7 @@ async function productionStartupOutcome(harness: ProductionStartupHarness) {
 function capsuleBackedStorage(
   base: StoragePort,
   generationRoot: string,
-  capsule: HandoffCapsuleV1 | HandoffCapsuleV2,
+  capsule: HandoffCapsuleV1 | HandoffCapsuleV3,
   options: Readonly<{
     discover: boolean;
     unlink(): void;
@@ -832,7 +837,7 @@ async function capsuleRetirementStartupCase(mode: 'unlink-throws' | 'directory-s
   const capsuleStorage = capsuleBackedStorage(
     realRuntime.storage,
     realRuntime.paths.coral.generation.root,
-    v2CapsuleFor(record),
+    v3CapsuleFor(record),
     { discover: true, unlink, syncDirectoryDurableSync },
   );
   const runtime = { ...realRuntime, time, storage: capsuleStorage.storage } satisfies Runtime;
@@ -992,8 +997,8 @@ describe('provider proxy startup set recovery', () => {
       retireCapsule: retirement,
     });
 
-    const capsule = v2CapsuleFor(record);
-    lifecycle.installDiscoveredCapsules([{ path: '/capsules/startup-v2.handoff.json', capsule }]);
+    const capsule = v3CapsuleFor(record);
+    lifecycle.installDiscoveredCapsules([{ path: '/capsules/startup-v3.handoff.json', capsule }]);
     await retirementStarted.promise;
     retirementOutcome.resolve({ kind: 'retired' });
     await retirementOutcome.promise;

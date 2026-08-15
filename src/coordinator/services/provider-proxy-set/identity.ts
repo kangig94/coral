@@ -6,7 +6,7 @@ import {
   canonicalUuidSchema,
   hostFingerprintSchema,
 } from '../../../provider-proxy/protocol.js';
-import type { HandoffCapsuleV2 } from '../../../provider-proxy/handoff-capsule.js';
+import type { HandoffCapsuleV3 } from '../../../provider-proxy/handoff-capsule.js';
 import type { ProviderOperationRecord } from '../../../store/provider-operation-record.js';
 
 const nonNegativeSafeIntegerSchema = z.number().int().nonnegative().safe();
@@ -121,7 +121,7 @@ export function providerProxySetIdentityFromRecord(
   });
 }
 
-export function providerProxySetIdentityFromCapsule(capsule: HandoffCapsuleV2): ProviderProxySetIdentity {
+export function providerProxySetIdentityFromCapsule(capsule: HandoffCapsuleV3): ProviderProxySetIdentity {
   return providerProxySetIdentitySchema.parse({
     buildSetId: capsule.buildSetId,
     hostFingerprint: capsule.hostFingerprint,

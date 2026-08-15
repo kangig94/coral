@@ -16,6 +16,9 @@ import {
 } from '#src/coordinator/services/provider-proxy-capsule-discovery.js';
 import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
 
+/** The build this fixture lifecycle belongs to — the same one its capsule carries, so discovery treats it as inheritable rather than foreign. */
+const FIXTURE_BUILD_SET_ID = '22222222-2222-4222-8222-222222222222';
+
 function retirementStorage(unlinkSync: () => void, syncDirectoryDurableSync: () => boolean): StoragePort {
   return { unlinkSync, syncDirectoryDurableSync } as unknown as StoragePort;
 }
@@ -104,6 +107,7 @@ describe('provider proxy capsule discovery', () => {
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([]);
     const lifecycle = new ProviderProxySetLifecycle({
+      buildSetId: FIXTURE_BUILD_SET_ID,
       claims,
       controlEstablished: () => undefined,
       time: runtime.time,

@@ -13,9 +13,9 @@ import {
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 
 describe('complete provider proxy set identity', () => {
-  it('derives all sixteen identity facts from a v2 capsule', () => {
+  it('derives all sixteen identity facts from a v3 capsule', () => {
     const identity = providerProxySetIdentityFromCapsule({
-      version: 2,
+      version: 3,
       grantId: '11111111-1111-4111-8111-111111111111',
       secret: 'a'.repeat(64),
       generation: 'gen2',

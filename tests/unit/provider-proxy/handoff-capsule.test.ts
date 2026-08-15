@@ -16,7 +16,7 @@ import {
   writeHandoffCapsuleFile,
   type HandoffCapsule,
   type HandoffCapsuleV1,
-  type HandoffCapsuleV2,
+  type HandoffCapsuleV3,
   type HandoffCapsuleFileEnvironment,
   type InstalledGrant,
 } from '#src/provider-proxy/handoff-capsule.js';
@@ -45,10 +45,10 @@ function capsuleFor(): HandoffCapsuleV1 {
   };
 }
 
-function capsuleV2For(): HandoffCapsuleV2 {
+function capsuleV3For(): HandoffCapsuleV3 {
   return {
     ...capsuleFor(),
-    version: 2,
+    version: 3,
     guardianPid: 101,
     guardianIncarnation: testIncarnation(1_001),
     proxyPid: 102,
@@ -129,7 +129,7 @@ describe('provider-proxy handoff capsule', () => {
   });
 
   it('decodes a v2 capsule with the complete containment identity', () => {
-    expect(decodeHandoffCapsule(encode(capsuleV2For()))).toEqual(capsuleV2For());
+    expect(decodeHandoffCapsule(encode(capsuleV3For()))).toEqual(capsuleV3For());
   });
 
   it('refuses an oversize capsule before parsing it', () => {

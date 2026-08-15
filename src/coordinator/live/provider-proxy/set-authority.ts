@@ -110,7 +110,7 @@ export function createProviderProxySetAuthority(
     if (recoveryCapsule !== null) return recoveryCapsule;
     const deadlineConfig = resolveProviderProxyDeadlineConfiguration(runtime.env);
     recoveryCapsule = {
-      version: 2,
+      version: 3,
       grantId: runtime.ids.uuid(),
       secret: runtime.ids.randomBytes(32).toString('hex'),
       generation: guardianIdentity.generation,

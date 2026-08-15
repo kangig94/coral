@@ -57,6 +57,9 @@ function proxyHeartbeatFault(error: unknown): ProviderProxyAuthorityFault {
 
 import { providerOperationRecord } from '../../store/provider-operation-fixtures.js';
 
+/** The build this fixture lifecycle belongs to — the same one `providerOperationRecord` stamps on its identities, so a discovered capsule is inheritable rather than foreign. */
+const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
+
 const activationAck = {
   state: 'executing',
   activationFingerprint: 'c'.repeat(64),
@@ -132,6 +135,7 @@ function lifecycleForSchedule(
   const claims = new ProviderProxySetClaimMirror();
   claims.initialize([record]);
   const lifecycle = new ProviderProxySetLifecycle({
+    buildSetId: FIXTURE_BUILD_SET_ID,
     claims,
     controlEstablished: () => undefined,
     time: {

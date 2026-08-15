@@ -34,6 +34,9 @@ import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { seedTestSessionProjection } from '#tests/helpers/session.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 
+/** The build these fixture worlds belong to; capsules built from the same fixtures are inheritable, not foreign. */
+const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
+
 type SharedSetControl = 'settlement-timeout' | 'control-channel-fault' | 'heartbeat-failed';
 
 function setReference(identity: ProviderProxySetIdentity): string {
@@ -54,6 +57,7 @@ async function createSharedSetHarness(control: SharedSetControl) {
   const lifecycleRef = new ProviderProxySetLifecycleRef();
   const operationRegistry = new LocalOperationRegistry();
   const world = {
+    identity: { buildSetId: FIXTURE_BUILD_SET_ID },
     storeServicesRef: { tryGet: () => ({ progressStore }) },
     operationRegistry,
     providerProxyClaims: claims,
@@ -200,6 +204,7 @@ describe('execution services provider-proxy proof composition', () => {
     });
     const proveContainmentAbsent = vi.fn(async () => null);
     const world = {
+      identity: { buildSetId: FIXTURE_BUILD_SET_ID },
       storeServicesRef: { tryGet: () => null },
       operationRegistry,
       providerProxyClaims: claims,
@@ -242,6 +247,7 @@ describe('execution services provider-proxy proof composition', () => {
     const lifecycleRef = new ProviderProxySetLifecycleRef();
     const operationRegistry = new LocalOperationRegistry();
     const world = {
+      identity: { buildSetId: FIXTURE_BUILD_SET_ID },
       storeServicesRef: { tryGet: () => ({ progressStore: { getDb: () => db } }) },
       operationRegistry,
       providerProxyClaims: claims,
@@ -327,6 +333,7 @@ describe('execution services provider-proxy proof composition', () => {
       request: { prompt: 'test', cwd: '/workspace', bypassPermissions: false, coralEnv: {} },
     }));
     const world = {
+      identity: { buildSetId: FIXTURE_BUILD_SET_ID },
       storeServicesRef: { tryGet: () => ({ progressStore: { getDb: () => db, readLaunchProjection } }) },
       operationRegistry,
       providerProxyClaims: claims,
@@ -511,6 +518,7 @@ describe('execution services provider-proxy proof composition', () => {
       (identity: ProviderProxySetIdentity, db: Database, signal: AbortSignal) => Promise<string | null>
     >(async () => 'process-proof-receipt');
     const world = {
+      identity: { buildSetId: FIXTURE_BUILD_SET_ID },
       storeServicesRef: {
         tryGet: () => ({ progressStore: { getDb: () => db } }),
       },
@@ -617,6 +625,7 @@ describe('execution services provider-proxy proof composition', () => {
       disappearanceReceipt: 'inheritance-process-proof',
     }));
     const world = {
+      identity: { buildSetId: FIXTURE_BUILD_SET_ID },
       storeServicesRef: {
         tryGet: () => ({ progressStore: { getDb: () => db } }),
       },

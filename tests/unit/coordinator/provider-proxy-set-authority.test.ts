@@ -438,7 +438,7 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
       proxyIncarnation: ProcessIncarnation;
       proxyProcessGroupId: number;
     };
-    expect(written.version).toBe(2);
+    expect(written.version).toBe(3);
     expect(written.buildSetId).toBe(GUARDIAN_IDENTITY.buildSetId);
     expect(written.orphanTimeoutMs).toBe(DEFAULT_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS);
     expect(written.teardownReserveMs).toBe(PROXY_TEARDOWN_RESERVE_MS);
