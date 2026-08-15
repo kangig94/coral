@@ -98,7 +98,6 @@ describe('selectFinalCauseRef precedence', () => {
         jobId: 'workflow-1:slot:0',
         sessionId: 'session-1',
         projectRoot: fixtureCanonicalWorkDir('/project'),
-        expectedSessionVersion: 4,
       },
     ];
     const releaseDescendants = (() => []) as unknown as AtomicFailedWorkflowDescendantReleaser;

@@ -79,7 +79,6 @@ export type WorkflowRecoveryDescendant = {
   readonly jobId: string;
   readonly sessionId: string;
   readonly projectRoot: CanonicalWorkDir;
-  readonly expectedSessionVersion: number;
 };
 
 export type WorkflowRecoveryDescendantRelease = {
@@ -137,12 +136,11 @@ type ResumeWorkflowContext = {
   time: Pick<TimePort, 'now'>;
   onProgress: (workflowId: string, message: string) => void;
   /**
-   * Hands a replacement this pass just committed back to the recovery item, so the durable continuation
-   * names the job that now holds the session instead of the one it replaced. Without it the replacement
-   * is invisible to the close that has to release it: `descendants` is derived from the continuation,
-   * and the continuation was read before this pass created anything.
+   * A mandatory checkpoint, not a notification: recovery may not proceed past a committed replacement
+   * until the durable continuation names it. The continuation was read before this pass created
+   * anything, and the close can only release what it names.
    */
-  onReplacementLaunched: (sessionId: string, jobId: string) => Promise<void>;
+  checkpointReplacement: (sessionId: string, jobId: string) => Promise<void>;
   staleTimeoutMs: number;
   staleCheckIntervalMs: number;
   staleAbortTimeoutMs: number;
@@ -382,7 +380,7 @@ async function resumePendingReplacementIntents(
     // Before any further fallible work — `awaitLaunch` below is the first thing that can throw, and the
     // close that follows a throw can only release what the continuation names. Recording here is what
     // keeps a replacement this pass created inside the envelope this pass cleans up.
-    await deps.onReplacementLaunched(launch.sessionId, resumed.jobId);
+    await deps.checkpointReplacement(launch.sessionId, resumed.jobId);
 
     const readiness = await deps.executionSvc.awaitLaunch(resumed.jobId, BOOTSTRAP_TIMEOUT_MS);
     if (readiness === 'error') {
@@ -1148,7 +1146,6 @@ function continuationDescendants(continuation: WorkflowRecoveryContinuation): re
             jobId: session.activeJobId,
             sessionId: session.sessionId,
             projectRoot: session.projectRoot,
-            expectedSessionVersion: session.version,
           },
         ]
       : [],
@@ -1265,15 +1262,12 @@ async function persistWorkflowContinuation(
 }
 
 /**
- * Moves a session's continuation entry onto the replacement this recovery pass just launched, and adds
- * that replacement to the workflow's child set, then persists the result.
- *
- * The version is re-read rather than incremented: `resume()` returns only the job and session ids, and
- * the claim swap it commits is the only authority on what version the session now carries. Guessing it
- * would reintroduce the same stale-expectation failure one step later, in the check that exists to
- * detect exactly that.
+ * Re-reads the session rather than trusting the launch decision: `resume()` reports which job it created,
+ * not whether that job ended up holding the claim. Confirming it here is what makes the recorded child a
+ * fact about durable state instead of an inference from a return value — and the version comes back with
+ * it, so the continuation stays internally consistent with the projection it mirrors.
  */
-async function recordWorkflowReplacement(
+async function checkpointReplacementInContinuation(
   item: HydratedWorkflowRecovery,
   quarantine: RecoveryQuarantinePort,
   db: Database,
@@ -1281,8 +1275,8 @@ async function recordWorkflowReplacement(
   jobId: string,
 ): Promise<void> {
   const entry = readProjectionProviderSession(db, sessionId);
-  if (entry === null) {
-    throw new Error(`Workflow recovery replacement '${jobId}' left session '${sessionId}' unreadable.`);
+  if (entry === null || entry.activeJobId !== jobId) {
+    throw new Error(`Workflow recovery replacement '${jobId}' did not take the claim on session '${sessionId}'.`);
   }
   item.continuation = {
     ...item.continuation,
@@ -1290,9 +1284,7 @@ async function recordWorkflowReplacement(
       ? item.continuation.childIds
       : [...item.continuation.childIds, jobId],
     providerSessions: item.continuation.providerSessions.map((session) =>
-      session.sessionId === sessionId
-        ? { ...session, activeJobId: entry.activeJobId ?? null, version: entry.version }
-        : session,
+      session.sessionId === sessionId ? { ...session, activeJobId: jobId, version: entry.version } : session,
     ),
   };
   await persistWorkflowContinuation(item, quarantine);
@@ -1510,9 +1502,8 @@ async function settleWorkflowRecovery(
         completion: item.completion,
         drain: item.drain,
         onProgress: options.onProgress ?? (() => {}),
-        onReplacementLaunched: async (sessionId, jobId) => {
-          await recordWorkflowReplacement(item, quarantine, options.db, sessionId, jobId);
-        },
+        checkpointReplacement: (sessionId, jobId) =>
+          checkpointReplacementInContinuation(item, quarantine, options.db, sessionId, jobId),
         staleTimeoutMs: options.staleTimeoutMs ?? DEFAULT_STALE_TIMEOUT_MS,
         staleCheckIntervalMs: options.staleCheckIntervalMs ?? DEFAULT_STALE_CHECK_INTERVAL_MS,
         staleAbortTimeoutMs: options.staleAbortTimeoutMs ?? DEFAULT_STALE_ABORT_TIMEOUT_MS,
