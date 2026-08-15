@@ -820,7 +820,12 @@ async function runLifecycleStartup({
             env: runtime.env,
             paths: runtime.paths,
           });
-          if (!info || info.incarnation === undefined) {
+          // Deliberately not requiring an incarnation. A coordinator from a build that predates the
+          // token writes no such field, and refusing its record here would discard the `bootToken`
+          // beside it — reinstating, for the one upgrade that introduces the token, exactly the deadlock
+          // the token exists to end. The signal path anchors on this contender's own observation, so it
+          // never needed the incumbent's.
+          if (!info) {
             return null;
           }
           if (

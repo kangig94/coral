@@ -19,7 +19,9 @@ import type { TimePort } from '../../infra/port-types.js';
  */
 export type IncumbentIdentity = {
   pid: number;
-  incarnation: ProcessIncarnation;
+  /** Absent when the incumbent predates the token. Never required to signal: a contender verifies the
+   *  pid against a baseline it observed itself. */
+  incarnation?: ProcessIncarnation;
   source: 'health' | 'discovery';
   instanceId?: string;
   token?: string;

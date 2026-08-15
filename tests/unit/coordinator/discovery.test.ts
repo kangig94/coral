@@ -156,6 +156,45 @@ describe('coordinator discovery', () => {
     ).toMatchObject({ pid: process.pid, bootToken: 'boot-token-c' });
   });
 
+  // The upgrade that introduces the token. A coordinator from a build that predates it writes no
+  // incarnation at all, and its record must still yield the `bootToken` beside it — refusing it here
+  // would reinstate, for exactly that upgrade, the deadlock the token exists to end.
+  it('reads a record written before the incarnation existed', async () => {
+    makeHome();
+    const { probeCoordinator } = await importDiscovery();
+    const { writeFileSync, mkdirSync } = await import('node:fs');
+    const { dirname } = await import('node:path');
+    const runtime = makeDiscoveryRuntime('prod');
+    const paths = coordinatorPaths('prod');
+
+    // Written by hand rather than through `writeDiscoveryRecord`, which stamps the token every new
+    // writer produces. The point is the record a build that never had one left behind.
+    mkdirSync(dirname(paths.infoFile), { recursive: true });
+    writeFileSync(
+      paths.infoFile,
+      JSON.stringify({
+        pid: process.pid,
+        port: 9024,
+        socketPath: paths.socketPath,
+        bundleHash: 'bundle-legacy',
+        flavor: 'prod',
+        namespace: 'ns-legacy',
+        startedAt: Date.now(),
+        token: 'token-legacy',
+        bootToken: 'boot-token-legacy',
+        processStartedAt: 1_786_795_964,
+      }),
+      'utf-8',
+    );
+
+    const probed = probeCoordinator(runtime);
+    expect(probed, 'a pre-token record must still carry its credential').toMatchObject({
+      pid: process.pid,
+      bootToken: 'boot-token-legacy',
+    });
+    expect(probed?.incarnation, 'and it simply has no token').toBeUndefined();
+  });
+
   it('probeCoordinator rejects a record whose pid names no process', async () => {
     makeHome();
     const { probeCoordinator, writeDiscoveryRecord } = await importDiscovery();

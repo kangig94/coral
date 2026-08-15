@@ -117,7 +117,7 @@ export type HandoffSignalRecord = {
   version: 1;
   socketPath: string;
   pid: number;
-  incarnation: ProcessIncarnation;
+  incarnation?: ProcessIncarnation;
   instanceId?: string;
   signal: HandoffSignal;
   signaledAtMs: number;
@@ -165,7 +165,7 @@ function isHandoffSignalRecord(value: unknown): value is HandoffSignalRecord {
     record.version === 1 &&
     typeof record.socketPath === 'string' &&
     Number.isInteger(record.pid) &&
-    Number.isInteger(record.incarnation) &&
+    (record.incarnation === undefined || typeof record.incarnation === 'string') &&
     (record.instanceId === undefined || typeof record.instanceId === 'string') &&
     (record.signal === 'SIGTERM' || record.signal === 'SIGKILL') &&
     Number.isFinite(record.signaledAtMs)
@@ -173,7 +173,10 @@ function isHandoffSignalRecord(value: unknown): value is HandoffSignalRecord {
 }
 
 function sameIncumbent(left: IncumbentIdentity, right: IncumbentIdentity): boolean {
-  if (left.pid !== right.pid || left.incarnation !== right.incarnation) {
+  if (left.pid !== right.pid) {
+    return false;
+  }
+  if (left.incarnation !== undefined && right.incarnation !== undefined && left.incarnation !== right.incarnation) {
     return false;
   }
   if (left.instanceId !== undefined && left.instanceId !== right.instanceId) {
@@ -260,7 +263,9 @@ function isSameSignalTarget(record: HandoffSignalRecord, socketPath: string, inc
   return (
     record.socketPath === socketPath &&
     record.pid === incumbent.pid &&
-    record.incarnation === incumbent.incarnation &&
+    (record.incarnation === undefined ||
+      incumbent.incarnation === undefined ||
+      record.incarnation === incumbent.incarnation) &&
     (record.instanceId === undefined || record.instanceId === incumbent.instanceId)
   );
 }
@@ -289,7 +294,7 @@ function recordSignal(opts: HandoffOptions, incumbent: IncumbentIdentity, signal
     version: 1,
     socketPath: opts.socketPath,
     pid: incumbent.pid,
-    incarnation: incumbent.incarnation,
+    ...(incumbent.incarnation === undefined ? {} : { incarnation: incumbent.incarnation }),
     ...(incumbent.instanceId === undefined ? {} : { instanceId: incumbent.instanceId }),
     signal,
     signaledAtMs: opts.runtime.time.now(),
@@ -324,7 +329,7 @@ function logHandoffSignalAudit(
     desired: opts.desired,
     target: {
       pid: incumbent.pid,
-      incarnation: incumbent.incarnation,
+      ...(incumbent.incarnation === undefined ? {} : { incarnation: incumbent.incarnation }),
       ...(incumbent.instanceId === undefined ? {} : { instanceId: incumbent.instanceId }),
     },
     ...(currentContenderPid === undefined ? {} : { contenderPid: currentContenderPid }),
