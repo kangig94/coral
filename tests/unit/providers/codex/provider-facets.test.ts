@@ -4,6 +4,7 @@ import { TEST_CODEX_ACCESS } from '../../../helpers/provider-credentials.js';
 import type { DirentLike, StoragePort } from '#src/infra/port-types.js';
 import { codexAppServerLifecycle, codexRecoveryLifecycle } from '#src/providers/codex/provider-facets.js';
 import { buildCodexContinuity } from '#src/providers/codex/request-mapping.js';
+import { jsonValueSchema } from '#src/infra/json-value.js';
 import { codexArtifactCapability, locateCodexRolloutArtifact } from '#src/providers/codex/artifacts.js';
 import type { ArtifactCleanupRuntime, AppServerTransport } from '#src/providers/contract.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
@@ -42,6 +43,26 @@ function leaseWithRpc(
 }
 
 describe('codexRecoveryLifecycle.finalizeInterrupted', () => {
+  it('emits continuity the durable JSON boundary accepts', () => {
+    // Production hands this mutation's continuity to `jsonValueSchema.parse` in
+    // `providers/internal/bound-provider.ts`. JSON has no `undefined`, so a key that exists with an
+    // undefined value is rejected there — and the throw lands inside recovery adoption, where it used
+    // to terminalize the job. `toEqual` cannot see this: it ignores undefined-valued properties, which
+    // is why every existing case here passed while the boundary rejected the same object.
+    const continuity = buildCodexContinuity({ cwd: '/workspace', threadId: 'thread-1' });
+
+    const mutation = codexRecoveryLifecycle.finalizeInterrupted(
+      { resumable: true, updatedContinuity: continuity },
+      continuity,
+      {},
+    );
+
+    const emitted = 'providerContinuity' in mutation ? mutation.providerContinuity : undefined;
+    expect(emitted).toBeDefined();
+    expect(Object.keys(emitted as object)).toStrictEqual(['cwd', 'threadId']);
+    expect(() => jsonValueSchema.parse(emitted)).not.toThrow();
+  });
+
   it('uses the preserved conversation ref when the session is resumable without a parsed thread id', () => {
     const continuity = buildCodexContinuity({
       cwd: '/workspace',
