@@ -1,4 +1,7 @@
+import { ZodError } from 'zod';
+
 import { errorMessage, formatError } from '../../../infra/error-format.js';
+import { StoreDecodeError } from '../../../store/body-codec.js';
 import { ProcessContainmentError } from '../../../infra/process-containment.js';
 import { isTerminalPhase } from '../../../jobs/phase.js';
 import { isAppServerRuntime, type JobTerminalInput } from '../../../jobs/records.js';
@@ -594,6 +597,17 @@ export function createRecoveryCoordinator(
       emitSessionReleased: (payload) => eventBus.emit('session:released', payload),
     });
 
+  /**
+   * A record this build cannot read is not a job that failed. The provider process and its session
+   * outlive the coordinator on purpose — adoption exists so a wrapper lost across a restart or an
+   * upgrade reattaches instead of destroying the work it was supervising. When two builds disagree
+   * about a durable shape, the honest answer is that this coordinator cannot speak for the subject,
+   * which is what the quarantine boundary already holds. Terminalizing instead spends the provider's
+   * work to settle a question about our own schema.
+   */
+  const isUninterpretableRecord = (error: unknown): boolean =>
+    error instanceof StoreDecodeError || error instanceof ZodError;
+
   const settleUnexpectedRecoveryFailure = (
     item: CoordinatorRecoveryItem,
     jobId: string,
@@ -602,6 +616,11 @@ export function createRecoveryCoordinator(
     coordinatorCommit: CommitEventsFn,
     report: (message: string) => void,
   ): RecoveryDisposition => {
+    if (isUninterpretableRecord(error)) {
+      report(`${summary} for ${jobId}: ${errorMessage(error)}. Left for a build that can read it.\n`);
+      return { kind: 'quarantine', detail: `${summary}: record unreadable by this build` };
+    }
+
     const facts = settleFault(
       item,
       jobId,
