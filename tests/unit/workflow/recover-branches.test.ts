@@ -35,6 +35,7 @@ import { composeReducers } from '#src/store/reducers.js';
 import { sessionContinuationLeaseClaimedEvent } from '#src/sessions/continuation-lease-events.js';
 import { jobLaunchRequestedEvent } from '#src/jobs/store.js';
 import type { ProviderSession } from '#src/sessions/entry.js';
+import type { ProviderSessionLaunchDecision } from '#src/jobs/launch.js';
 import { createProjectionSessionLookup } from '#src/sessions/lookup.js';
 import { createWorkflowRecoveryFinalizer } from '#src/coordinator/services/workflow-recovery-finalizer.js';
 import { createRecoveryCoordinator } from '#src/coordinator/services/recovery/index.js';
@@ -2385,6 +2386,191 @@ describe('workflow recovery branch rules', () => {
       expect(log).toHaveBeenCalledWith(
         `Workflow recovery child ${childJobId} session claim ${sessionId} disposition: already absent.\n`,
       );
+    } finally {
+      await backend.backend.shutdown('test cleanup');
+    }
+  });
+
+  // `resume()` starts the provider before it resolves (`activateCommittedProviderLaunch`), so a
+  // replacement that terminalizes quickly has already released its own claim by the time the caller sees
+  // a job id. The checkpoint must record it anyway. An earlier revision required the claim to still be
+  // held there and threw — turning a replacement that had *succeeded* into a failed workflow and
+  // dropping it from the cleanup envelope in the same move, which is the one thing the checkpoint exists
+  // to prevent. It was the same moment-in-time expectation about a moving claim that `composeAtomic`
+  // used to hold, re-introduced one layer up.
+  it('records a replacement that released its claim before the checkpoint ran', async () => {
+    const backend = createSimulationBackend({ projectRoot: PROJECT_ROOT, pluginRoot: PROJECT_ROOT });
+    const workflowId = 'workflow-replacement-fast-terminal';
+    const plan = buildWorkflowPlan(workflowId, parseExpression('architect'), { defaultProvider: 'codex' });
+    const childJobId = plan.slots[0].slotId;
+    const sessionId = 'session-replacement-fast-terminal';
+    const providerScope = backend.createInvocationContext().providerScope;
+    if (providerScope === undefined) throw new Error('expected simulation provider scope');
+
+    commitWorkflowEvents(
+      backend.progressStore.getDb(),
+      (c) => {
+        c.append(workflowPlanDeclaredEvent(workflowId, plan, providerScope));
+        return undefined;
+      },
+      backend.runtime.time,
+      permissiveProviderLookupPort,
+    );
+    backend.progressStore.appendLaunchRequested(workflowId, {
+      jobId: workflowId,
+      owner: { kind: 'workflow', id: workflowId },
+      sessionId: null,
+      provider: null,
+      projectRoot: backend.projectRoot,
+      backendNamespace: backend.namespace,
+      jobKind: 'workflow',
+      pool: 'default',
+      enqueueSequence: backend.progressStore.nextEnqueueSequence(),
+      request: { prompt: '', cwd: backend.projectRoot, bypassPermissions: false, coralEnv: {} },
+      createdAt: '2026-04-27T00:00:00.000Z',
+    });
+    backend.progressStore.commit((c) => {
+      c.append({
+        type: 'job.runtime.started',
+        stream: { kind: 'job', id: workflowId },
+        namespace: backend.namespace,
+        project: backend.projectRoot,
+        refs: { jobId: workflowId, workflowId },
+        body: { transport: 'workflow', startedAt: '2026-04-27T00:00:00.000Z' },
+      });
+      return undefined;
+    });
+
+    seedTestSessionProjection(backend.progressStore.getDb(), {
+      sessionId,
+      provider: 'codex',
+      projectRoot: backend.projectRoot,
+      backendNamespace: backend.namespace,
+      activeJobId: childJobId,
+    });
+    backend.progressStore.appendLaunchRequested(childJobId, {
+      jobId: childJobId,
+      owner: { kind: 'workflow', id: workflowId },
+      sessionId,
+      provider: 'codex',
+      projectRoot: backend.projectRoot,
+      backendNamespace: backend.namespace,
+      jobKind: 'provider',
+      pool: 'default',
+      enqueueSequence: backend.progressStore.nextEnqueueSequence(),
+      providerAction: 'exec',
+      parentWorkflowJobId: workflowId,
+      workflowSlotId: childJobId,
+      workflowSlotGeneration: 0,
+      request: { prompt: '', cwd: backend.projectRoot, bypassPermissions: false, coralEnv: {} },
+      createdAt: '2026-04-27T00:00:00.000Z',
+    });
+    commitJobTerminal(backend.progressStore, childJobId, sessionId, {
+      content: '',
+      outcome: { kind: 'job_fault', fault: { kind: 'ghost_launch' } },
+      durationMs: 0,
+    });
+
+    const sessionRow = backend.progressStore
+      .getDb()
+      .prepare<[string], { entry: string }>('SELECT entry FROM projection_sessions WHERE session_id = ?')
+      .get(sessionId);
+    if (sessionRow === undefined) throw new Error('expected persisted provider session');
+    const sessionEntry = JSON.parse(sessionRow.entry) as ProviderSession & Record<string, unknown>;
+    delete sessionEntry.activeJobId;
+    sessionEntry.binding = {
+      provider: 'codex',
+      kind: 'profile',
+      binding: {
+        profile: { canonicalLocation: '/tmp/sim/accounts/codex', routing: { kind: 'home' } },
+        guarantee: 'profile-only',
+      },
+    };
+    sessionEntry.continuationLease = {
+      status: 'pending',
+      staleJobId: childJobId,
+      workflowId,
+      workflowSlotId: childJobId,
+      replacementGeneration: 1,
+      reason: 'stale_recovery',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      recordedAt: '2026-04-27T00:00:00.000Z',
+    };
+    sessionEntry.version = Number(sessionEntry.version) + 1;
+    backend.progressStore
+      .getDb()
+      .prepare('UPDATE projection_sessions SET entry = ? WHERE session_id = ?')
+      .run(JSON.stringify(sessionEntry), sessionId);
+
+    const log = vi.fn<(message: string) => void>();
+    const coordinatorCommit = (cb: Parameters<JobStore['commit']>[0]) => backend.progressStore.commit(cb);
+    const releaseFailedWorkflowDescendants = createFailedWorkflowDescendantReleaser({
+      progressStore: backend.progressStore,
+      runtime: backend.runtime,
+      coordinatorCommit,
+      getExecutionService: () => backend.service,
+      createInvocationContext: backend.createInvocationContext,
+      releaseAdoptedJob: () => {},
+      emitSessionReleased: () => {},
+      log,
+    });
+
+    // `resume()` returns only after the replacement has already released its own claim — the race the
+    // asynchronous activation makes reachable. `awaitLaunch` then fails so the close runs deterministically.
+    let replacementJobId: string | undefined;
+    const abort = vi.spyOn(backend.service, 'abort');
+    const executionSvc = new Proxy(backend.service as object, {
+      get: (target, property) => {
+        if (property === 'awaitLaunch') return async (): Promise<'error'> => 'error';
+        if (property === 'resume') {
+          return async (...args: unknown[]) => {
+            const decision = await (
+              Reflect.get(target, property, target) as (...a: unknown[]) => Promise<ProviderSessionLaunchDecision>
+            ).apply(target, args);
+            if (decision.status !== 'rejected') {
+              replacementJobId = decision.jobId;
+              releaseSessionJobClaim({
+                projectRoot: backend.projectRoot,
+                runtime: backend.runtime,
+                db: backend.progressStore.getDb(),
+                commitEvents: coordinatorCommit,
+                emitSessionReleased: () => {},
+                sessionId,
+                jobId: decision.jobId,
+              });
+            }
+            return decision;
+          };
+        }
+        const value = Reflect.get(target, property, target) as unknown;
+        return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+      },
+    }) as typeof backend.service;
+
+    try {
+      const settled = await resumeAll({
+        db: backend.progressStore.getDb(),
+        progressStore: backend.progressStore,
+        loadJobDetails: loadJobProjectionDetails,
+        getExecutionService: () => executionSvc as never,
+        createInvocationContext: backend.createInvocationContext,
+        finalizeWorkflow: createWorkflowRecoveryFinalizer({
+          runtime: backend.runtime,
+          progressStore: backend.progressStore,
+          coordinatorCommit,
+          log,
+        }),
+        releaseFailedWorkflowDescendants,
+        log,
+        time: backend.runtime.time,
+      });
+
+      expect(replacementJobId, 'recovery must have launched a replacement').toBeDefined();
+      expect(settled).toEqual([workflowId]);
+      expect(
+        abort,
+        'a replacement that finished before it could be checkpointed still belongs in the cleanup envelope',
+      ).toHaveBeenCalledWith([replacementJobId]);
     } finally {
       await backend.backend.shutdown('test cleanup');
     }

@@ -51,7 +51,7 @@ import {
   sessionControllerFromProfile,
   type ProviderSession,
 } from '../sessions/entry.js';
-import { projectionSessionStoredRowSchema, readProjectionProviderSession } from '../sessions/projections.js';
+import { projectionSessionStoredRowSchema } from '../sessions/projections.js';
 import type { ProjectionJobStoredRow } from '../jobs/projection-row.js';
 import type {
   RecoveryDisposition,
@@ -185,6 +185,12 @@ type WorkflowRecoveryContinuation = {
   readonly providerSessions: readonly {
     readonly sessionId: string;
     readonly projectRoot: CanonicalWorkDir;
+    /**
+     * What the session's version was when this recovery hydrated, and nothing more. It has no reader:
+     * the close compares job identity, never versions, because recovery's own work legitimately moves a
+     * session's version between hydration and close. Do not revive a comparison against it — one used to
+     * exist, and it rejected releases that had already succeeded.
+     */
     readonly version: number;
     readonly activeJobId: string | null;
     readonly continuationLease: ProviderSession['continuationLease'] | null;
@@ -1262,29 +1268,25 @@ async function persistWorkflowContinuation(
 }
 
 /**
- * Re-reads the session rather than trusting the launch decision: `resume()` reports which job it created,
- * not whether that job ended up holding the claim. Confirming it here is what makes the recorded child a
- * fact about durable state instead of an inference from a return value — and the version comes back with
- * it, so the continuation stays internally consistent with the projection it mirrors.
+ * Records the replacement as this session's child. It does not verify that the replacement still holds
+ * the claim, and must not: `resume()` starts the provider before it resolves, so a job that terminalizes
+ * quickly releases its own claim first, and requiring the claim here would turn that success into a
+ * failed workflow. What the record has to survive is the close, and the close is idempotent per job —
+ * an already-finished replacement releases as `already_absent` and aborts as a no-op.
  */
 async function checkpointReplacementInContinuation(
   item: HydratedWorkflowRecovery,
   quarantine: RecoveryQuarantinePort,
-  db: Database,
   sessionId: string,
   jobId: string,
 ): Promise<void> {
-  const entry = readProjectionProviderSession(db, sessionId);
-  if (entry === null || entry.activeJobId !== jobId) {
-    throw new Error(`Workflow recovery replacement '${jobId}' did not take the claim on session '${sessionId}'.`);
-  }
   item.continuation = {
     ...item.continuation,
     childIds: item.continuation.childIds.includes(jobId)
       ? item.continuation.childIds
       : [...item.continuation.childIds, jobId],
     providerSessions: item.continuation.providerSessions.map((session) =>
-      session.sessionId === sessionId ? { ...session, activeJobId: jobId, version: entry.version } : session,
+      session.sessionId === sessionId ? { ...session, activeJobId: jobId } : session,
     ),
   };
   await persistWorkflowContinuation(item, quarantine);
@@ -1503,7 +1505,7 @@ async function settleWorkflowRecovery(
         drain: item.drain,
         onProgress: options.onProgress ?? (() => {}),
         checkpointReplacement: (sessionId, jobId) =>
-          checkpointReplacementInContinuation(item, quarantine, options.db, sessionId, jobId),
+          checkpointReplacementInContinuation(item, quarantine, sessionId, jobId),
         staleTimeoutMs: options.staleTimeoutMs ?? DEFAULT_STALE_TIMEOUT_MS,
         staleCheckIntervalMs: options.staleCheckIntervalMs ?? DEFAULT_STALE_CHECK_INTERVAL_MS,
         staleAbortTimeoutMs: options.staleAbortTimeoutMs ?? DEFAULT_STALE_ABORT_TIMEOUT_MS,
