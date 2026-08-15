@@ -548,12 +548,50 @@ describe('bindWithHandoff', () => {
     expect(killCalls.filter((c) => c.signal === 'SIGTERM').length).toBe(0);
   });
 
-  it('alive-but-mismatched start time before SIGTERM → HandoffEscalationError, no signal sent', async () => {
-    const verifiedIdentity: IncumbentIdentity = {
-      pid: 1234,
-      processStartedAt: 500,
-      source: 'health',
-    };
+  // The incident: the incumbent's own reported start time is on a different clock base than this
+  // contender's probe (`/proc/stat` btime is cached per process, so the two disagree by the age gap
+  // between their first reads — 168s measured on WSL2). That disagreement must not block the signal,
+  // because it says nothing about the pid. Before self-anchoring it did, and a newer build could
+  // neither ask the incumbent to stand down nor escalate past it, on every session start.
+  it('signals a pid whose reported start time is on a clock base this contender does not share', async () => {
+    const verifiedIdentity: IncumbentIdentity = { pid: 4321, processStartedAt: 500, source: 'health' };
+    const { options, time, killCalls } = buildHarness({
+      bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
+      totalBudgetMs: 1_000,
+      isAlive: () => true,
+      readDiscovery: () => ({
+        ...verifiedIdentity,
+        source: 'discovery',
+        instanceId: 'incumbent-drift',
+        token: 'token-drift',
+        bootToken: 'boot-token-drift',
+        shutdownToken: 'shutdown-token-drift',
+      }),
+    });
+    mockedShutdown.mockResolvedValue(shutdownResult({ health: null, verifiedIdentity }));
+    // Consistent within this process, and 168 away from what the incumbent reported.
+    mockedProbe.mockReturnValue(668);
+
+    const promise = bindWithHandoff(options).catch((e: Error) => e);
+    for (let i = 0; i < 30; i += 1) {
+      await flush();
+      time.tick(200);
+    }
+    for (let i = 0; i < (SIGTERM_GRACE_MS + SIGKILL_GRACE_MS) / 200 + 5; i += 1) {
+      await flush();
+      time.tick(200);
+    }
+    await promise;
+
+    const sigterms = killCalls.filter((c) => c.signal === 'SIGTERM');
+    expect(sigterms.length, 'a clock-base disagreement must not veto the signal').toBeGreaterThanOrEqual(1);
+    expect(sigterms[0].pid).toBe(4321);
+  });
+
+  // The guarantee that survives: between the handshake and the signal, the pid must still name the same
+  // process. Both observations are this contender's own, so the comparison is meaningful.
+  it('refuses to signal when the pid was recycled after this contender observed it', async () => {
+    const verifiedIdentity: IncumbentIdentity = { pid: 1234, processStartedAt: 500, source: 'health' };
     const { options, time, killCalls } = buildHarness({
       bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
       totalBudgetMs: 500,
@@ -561,8 +599,8 @@ describe('bindWithHandoff', () => {
       readDiscovery: () => ({ ...verifiedIdentity, source: 'discovery', bootToken: 'boot-token' }),
     });
     mockedShutdown.mockResolvedValue(shutdownResult({ health: null, verifiedIdentity }));
-    // Probe returns DIFFERENT start time → mismatch → HandoffEscalationError.
-    mockedProbe.mockReturnValue(999); // mismatch
+    // First probe anchors; every later probe sees a different process on the same pid.
+    mockedProbe.mockReturnValueOnce(999).mockReturnValue(1_001);
 
     const promise = bindWithHandoff(options).catch((e: Error) => e);
     for (let i = 0; i < 30; i += 1) {
@@ -571,7 +609,7 @@ describe('bindWithHandoff', () => {
     }
     const outcome = await promise;
     expect(outcome).toBeInstanceOf(HandoffEscalationError);
-    expect(killCalls).toEqual([]);
+    expect(killCalls, 'a recycled pid must never be signalled').toEqual([]);
   });
 
   it('identity change at immediate pre-signal revalidation stays fatal', async () => {

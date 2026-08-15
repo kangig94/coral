@@ -49,6 +49,32 @@ its expectation before the process exists; the process reports its own start aft
 between those two moments that crosses a second boundary — a slow spawn, a loaded machine, a cold
 filesystem — makes them disagree, and the acquisition fails.
 
+### Confirmed: the same defect as the upgrade takeover, and it is not the spawn
+
+**Root cause established 2026-08-15 and fixed for the coordinator's own paths.** `probeProcessStartedAtSeconds`
+(`src/infra/node-process.ts:74-99`) returns `/proc/stat` btime plus the process's start ticks, and btime
+is **cached per process** (`:16`, module-level). Every value a process derives is therefore consistent
+with its own other values forever, and inconsistent with another process's by roughly the age gap
+between their first reads.
+
+So the number is not a timestamp. It is a **process-local pid disambiguator rendered in seconds**, and
+its only sound operation is equality against a value derived in the same process. That is exactly what
+`assertIdentityFieldsAgree` does not do: the acquisition issues a value it derived, and the spawned role
+reports one it derived.
+
+The measured spread below is not noise — it is the incumbent's age. It grows monotonically for the same
+reason.
+
+The identical mistake, in `probeCoordinator`, made an installed upgrade unable to take over at all; that
+half is fixed under `build-identity-and-upgrade.md`. This half is the same defect at
+`src/coordinator/live/provider-proxy/acquisition-steps.ts:356-357` (parent's probe in `role-spawn.ts:147`
+against the child's self-probe in `role-main.ts:176`) and at
+`src/coordinator/services/provider-proxy-set/inheritance.ts:491`.
+
+**Note the redeem path already does it right**: `inheritance.ts:390,415,445` pass `expectedIdentity: {}`
+and compare nothing, because the capsule secret is the authority. That is the pattern the fresh
+acquisition path should have copied.
+
 ### The observed spread is much wider than a spawn, and that changes the suspect
 
 Thirty-one failures on one daemon over four hours, with disagreements of **2, 3, 42, 85, 91, 123, 171,
@@ -93,8 +119,10 @@ Reproduce the disagreement deliberately before changing the comparison. The docu
 wrong twice about this cause — once inferring silent abandonment from an absent log, once generalising
 spawn latency from a single sample — so a reproduction is the entry price, not a formality.
 
-Delaying a spawn past a second boundary reproduces the two-second end of the range and proves the
-comparison is fragile. It does **not** reproduce the six-hundred-second end, and a fix validated only
-against the cheap case would leave the common one live. Start instead by reading both sides' derivation
-of `processStartedAtSeconds` and establishing whether they share a clock base at all; if they do not,
-the reproduction is a clock move, not a slow spawn.
+That start condition is now met — see the section above. The two sides do not share a clock base, and a
+reproduction is a clock read in a second process, not a slow spawn.
+
+What remains is to apply the same rule here that the coordinator paths now follow: **compare a process
+start time only against a value observed in the same process**. For an acquisition, the value the parent
+observed at spawn is the one that matters, because the parent is the process that will reap. The role's
+self-report was never the authority — the bootstrap nonce is.

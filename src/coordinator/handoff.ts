@@ -380,21 +380,37 @@ async function sleepForHandoffPoll(opts: HandoffOptions, ms: number): Promise<vo
 
 type SignalVerificationResult = 'matched' | 'gone';
 
+/**
+ * Confirms the pid about to be signalled is still the process this contender observed, by comparing two
+ * probes **this contender made itself**.
+ *
+ * The incumbent's own reported start time cannot serve as the baseline. `probeProcessStartedAtSeconds`
+ * adds `/proc/stat` btime, which each process caches on first read, so a value the incumbent derived and
+ * a value this process derives disagree by roughly the age difference between those two reads — 168
+ * seconds, measured on a WSL2 host, for a coordinator probing its own pid. Comparing across that
+ * boundary refused to signal targets that were perfectly correct, which is how an installed upgrade
+ * could neither ask the incumbent to stand down nor escalate past it.
+ *
+ * Anchoring on this side keeps exactly the guarantee that matters — the pid must not have been recycled
+ * between the handshake and the signal — and drops the one that was never sound.
+ */
 function verifySignalTarget(
   incumbent: IncumbentIdentity,
+  anchoredStartedAt: number,
   process: Pick<Runtime['process'], 'isAlive'>,
   platform: NodeJS.Platform,
 ): SignalVerificationResult {
-  // Canonical pattern: src/infra/backend-discovery.ts:127,162.
   const liveStartedAt = probeProcessStartedAtSeconds(incumbent.pid, platform);
-  if (liveStartedAt === incumbent.processStartedAt) {
+  if (liveStartedAt === anchoredStartedAt) {
     return 'matched';
   }
   if (liveStartedAt === null && !process.isAlive(incumbent.pid)) {
     return 'gone';
   }
   const reason =
-    liveStartedAt === null ? 'process start time unavailable while pid is alive' : 'process start time mismatch';
+    liveStartedAt === null
+      ? 'process start time unavailable while pid is alive'
+      : 'pid was recycled after this coordinator observed it';
   throw new HandoffEscalationError(`Refusing to signal unverified incumbent pid=${incumbent.pid}: ${reason}`);
 }
 
@@ -424,12 +440,27 @@ export async function bindWithHandoff(opts: HandoffOptions): Promise<BoundCoordi
   let lastHealth: IncumbentHealth | null = null;
   let sigtermAt: number | null = null;
   let sigkillAt: number | null = null;
+  /** This contender's own first observation of the incumbent's pid — see `verifySignalTarget`. */
+  let signalAnchor: { pid: number; startedAt: number } | null = null;
+
+  const anchorSignalTarget = (pid: number): number | null => {
+    if (signalAnchor?.pid === pid) {
+      return signalAnchor.startedAt;
+    }
+    const observed = probeProcessStartedAtSeconds(pid, platform);
+    if (observed === null) {
+      return null;
+    }
+    signalAnchor = { pid, startedAt: observed };
+    return observed;
+  };
 
   const resetForNewIncumbent = (fresh: IncumbentIdentity): void => {
     backendLog.info(`Incumbent discovery changed before signaling; retrying handoff against pid=${fresh.pid}`);
     incumbent = null;
     sigtermAt = null;
     sigkillAt = null;
+    signalAnchor = null;
   };
 
   while (true) {
@@ -473,6 +504,9 @@ export async function bindWithHandoff(opts: HandoffOptions): Promise<BoundCoordi
       lastHealth = shutdownResult.health ?? lastHealth;
       if (shutdownResult.verifiedIdentity && incumbent === null) {
         incumbent = shutdownResult.verifiedIdentity;
+        // As early as the handshake names a pid, so the recycling window this anchor closes is the
+        // handshake-to-signal gap and nothing wider.
+        anchorSignalTarget(incumbent.pid);
         const incumbentBundleHash = shutdownResult.health?.bundleHash ?? 'unknown';
         backendLog.info(`Incumbent bundleHash=${incumbentBundleHash} pid=${incumbent.pid}; requested shutdown via IPC`);
       }
@@ -515,7 +549,11 @@ export async function bindWithHandoff(opts: HandoffOptions): Promise<BoundCoordi
             `Manual repair required: refusing handoff signal for pid=${incumbent.pid} because ${HANDOFF_SIGNAL_POLICY_ENV}=manual`,
           );
         }
-        if (verifySignalTarget(incumbent, opts.runtime.process, platform) === 'gone') {
+        const sigtermAnchor = anchorSignalTarget(incumbent.pid);
+        if (
+          sigtermAnchor === null ||
+          verifySignalTarget(incumbent, sigtermAnchor, opts.runtime.process, platform) === 'gone'
+        ) {
           backendLog.info(`Incumbent pid=${incumbent.pid} exited before SIGTERM; retrying bind`);
           incumbent = null;
           sigtermAt = null;
@@ -541,7 +579,11 @@ export async function bindWithHandoff(opts: HandoffOptions): Promise<BoundCoordi
           );
         }
         incumbent = refreshIncumbentForSignal(opts, incumbent, lastHealth);
-        if (verifySignalTarget(incumbent, opts.runtime.process, platform) === 'gone') {
+        const sigkillAnchor = anchorSignalTarget(incumbent.pid);
+        if (
+          sigkillAnchor === null ||
+          verifySignalTarget(incumbent, sigkillAnchor, opts.runtime.process, platform) === 'gone'
+        ) {
           backendLog.info(`Incumbent pid=${incumbent.pid} exited before SIGKILL; retrying bind`);
           incumbent = null;
           sigtermAt = null;

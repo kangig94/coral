@@ -65,7 +65,41 @@ bounded only by its next restart. The evidence for this is independent of the in
 log line showed the daemon reporting `0.10.6` while the environment it handed to spawned children
 carried `…/coral/0.10.8/bin` on `PATH`.
 
-### The replacement is designed, built, and never triggered
+### Correction, again — it is triggered, and it died at one gate
+
+**The section below was wrong, and this is the third time this document has been wrong about this
+subject.** The trigger exists and fires on every session start: `clients/hooks/session-start.mjs:144`
+calls `spawnBackend` unconditionally, and `bindWithHandoff` lets a strictly newer contender evict an
+older incumbent (`incumbentOutranksContender`, `src/transport/ipc/handoff.ts:100-105`).
+
+It fired, and it died. From the coordinator log, 2026-08-15:
+
+```
+07:43:14.210 INFO  [0.10.8] Incumbent bundleHash=040765a5 pid=3274924; requested shutdown via IPC
+07:43:14.211 ERROR [0.10.8] Handoff escalation failed: Manual shutdown required: refusing handoff
+                            for pid=3274924 because verified shutdown capability was unavailable
+07:43:14.211 ERROR [0.10.8] Fatal startup error
+```
+
+One millisecond, twice, and the contender exited. The chain: `probeCoordinator` rejected the discovery
+record because a freshly probed start time disagreed with the recorded one → no `bootToken` →
+`requestIncumbentShutdown` only attempts a shutdown when it holds that token, so `shutdownAttempted`
+stayed false → the gate at `coordinator/handoff.ts` threw. A token was needed to attempt, and the
+attempt was needed to excuse the missing token.
+
+The disagreement is not a clock going wrong. `probeProcessStartedAtSeconds` adds `/proc/stat` btime,
+**cached per process**, so two processes' values differ by the age gap between their first reads —
+measured at 168 seconds for a coordinator probing its own pid. The value is a process-local pid
+disambiguator, not a timestamp, and comparing it across a process boundary is meaningless.
+
+**Fixed**: `probeCoordinator` no longer compares it (liveness only), and the signal path anchors on a
+baseline the contender observed itself, which keeps the guarantee that matters — the pid must not have
+been recycled between handshake and signal — and drops the one that was never sound.
+
+`proxy-set-acquisition.md` is the same defect at a different pair of processes. They were filed as two
+items and are one.
+
+### Superseded: "designed, built, and never triggered"
 
 Observed 2026-08-15, four hours after `0.10.8` was installed: the live coordinator was still `0.10.6`,
 pid unchanged since boot, serving a `0.10.8` CLI. It had accumulated 27 unresolved quarantine rows,

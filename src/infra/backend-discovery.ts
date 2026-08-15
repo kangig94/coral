@@ -112,22 +112,36 @@ export function readDiscoveryRecord(runtime: DiscoveryRuntime): CoordinatorDisco
   }
 }
 
+/**
+ * Liveness only. The record's `processStartedAt` is deliberately not re-derived and compared here.
+ *
+ * `probeProcessStartedAtSeconds` is `/proc/stat` btime plus the process's start ticks, and btime is
+ * cached per process (`infra/node-process.ts`). Every value a process produces is therefore consistent
+ * with its own other values forever, and inconsistent with another process's by roughly the age
+ * difference between their first probes. Comparing a value this process derives against one the
+ * coordinator wrote is comparing two different clock bases: measured on a WSL2 host, a coordinator's
+ * own record differed from a fresh probe of its own pid by 168 seconds.
+ *
+ * Rejecting the record on that basis discarded the `bootToken` beside it, and without that token a
+ * replacing coordinator cannot ask the incumbent to stand down — so an installed upgrade could not take
+ * over at all, and the older daemon served on with none of the new build's fixes.
+ *
+ * Nothing here acts on `pid`. This returns a token and a socket path; the IPC handshake authenticates
+ * with the token, and the sites that actually signal re-verify the pid against a baseline they observed
+ * themselves (`coordinator/handoff.ts`, `infra/process-containment.ts`). Believing a record whose pid
+ * was recycled is therefore safe: the connect fails, or the token proves the peer is ours.
+ *
+ * The probe still runs, for the one thing it can answer without a second observer: a `null` means no
+ * such process exists, which is an observation rather than a comparison.
+ */
 export function probeCoordinator(runtime: DiscoveryRuntime): CoordinatorDiscoveryRecord | null {
   const record = readDiscoveryRecord(runtime);
   if (!record) {
     return null;
   }
 
-  const liveProcessStartedAt = probeProcessStartedAtSeconds(record.pid, runtime.env.platform() as NodeJS.Platform);
-  if (liveProcessStartedAt === null) {
-    return null;
-  }
-
-  if (record.processStartedAt !== undefined && record.processStartedAt !== liveProcessStartedAt) {
-    return null;
-  }
-
-  return record;
+  const live = probeProcessStartedAtSeconds(record.pid, runtime.env.platform() as NodeJS.Platform);
+  return live === null ? null : record;
 }
 
 export function writeBackendInfo(info: BackendInfo, runtime: DiscoveryRuntime): void {
