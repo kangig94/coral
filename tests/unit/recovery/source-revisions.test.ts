@@ -668,6 +668,32 @@ function createP4RevisionDb() {
   return db;
 }
 
+/**
+ * A workflow root has no provider session, so its terminal carries no `refs.sessionId`. It is a real
+ * durable shape, not corruption, and it must stay outside a boundary that pairs a session claim with the
+ * terminal releasing it.
+ */
+function insertSessionlessWorkflowTerminal(db: ReturnType<typeof createP4RevisionDb>, seq: number): void {
+  db.prepare(
+    `INSERT INTO events (
+       seq, ts, type, stream_kind, stream_id, namespace, project,
+       correlation_id, causation_seq, refs, body
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    seq,
+    P4_NOW,
+    'job.terminal.recorded',
+    'job',
+    'p4-workflow-root',
+    'p4-ns',
+    '/p4',
+    null,
+    null,
+    JSON.stringify({ jobId: 'p4-workflow-root' }),
+    Buffer.from('{"terminal":"workflow"}'),
+  );
+}
+
 function rawContinuationToken(raw: unknown): { readonly kind: string; readonly key: string } | null {
   if (typeof raw !== 'object' || raw === null || !('continuation' in raw)) return null;
   const continuation = raw.continuation;
@@ -862,6 +888,33 @@ async function quarantineFixedP4Composite(
 }
 
 describe('P4 recovery source revisions', () => {
+  it('keeps a session-less workflow terminal out of the retention release pair', async () => {
+    const db = createP4RevisionDb();
+    try {
+      insertSessionlessWorkflowTerminal(db, 5);
+      const quarantine = new RecoveryQuarantineStore(db, REVISION_TIME);
+      const scanned: number[] = [];
+
+      await RecoveryContainment.each(retentionReleasePairComponentSource(db), {
+        signal: new AbortController().signal,
+        quarantine,
+        processLocalCleanup: { kind: 'not-required' as const },
+        hydrate: (raw: RawRetentionReleaseAndTerminalRow) => raw,
+        requiredObligations: () => [],
+        settle: (raw: RawRetentionReleaseAndTerminalRow) => {
+          scanned.push(raw.seq);
+          return { kind: 'advanced' as const, outcome: 'settled' as const, facts: [], detail: 'observed' };
+        },
+        onFault: ({ error }) => ({ kind: 'fatal' as const, error }),
+      });
+
+      expect(scanned).toEqual([1, 2]);
+      expect(quarantine.list()).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
   it('re-attempts every row-granular component when its raw persisted bytes change', async () => {
     const cases: ReadonlyArray<{
       readonly name: string;

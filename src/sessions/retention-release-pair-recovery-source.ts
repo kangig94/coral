@@ -26,6 +26,17 @@ export type RetentionReleasePairComponent =
       readonly jobId: string;
     };
 
+/**
+ * A retention pair is a session claim and the job terminal that releases it, so a terminal carrying no
+ * session has no claim to release and never belongs to this boundary. Workflow roots and KB jobs
+ * legitimately have none; admitting them fails hydration on a value the pair itself never reads.
+ * The targeted `pair` scan states this as equality against a concrete session and is already stricter.
+ */
+const RETENTION_PAIR_EVENT_PREDICATE = `(
+             type = 'session.claim.released'
+          OR (type = 'job.terminal.recorded' AND json_extract(refs, '$.sessionId') IS NOT NULL)
+        )`;
+
 function scanRetentionReleaseAndTerminalRows(
   db: Database,
   subjectKey?: string,
@@ -36,7 +47,7 @@ function scanRetentionReleaseAndTerminalRows(
       .prepare<[string], EventsRow>(
         `SELECT ${EVENT_COLUMNS}
            FROM events
-          WHERE type IN ('session.claim.released', 'job.terminal.recorded')
+          WHERE ${RETENTION_PAIR_EVENT_PREDICATE}
             AND seq = ?`,
       )
       .all(subjectKey);
@@ -63,7 +74,7 @@ function scanRetentionReleaseAndTerminalRows(
     .prepare<[], EventsRow>(
       `SELECT ${EVENT_COLUMNS}
          FROM events
-        WHERE type IN ('session.claim.released', 'job.terminal.recorded')
+        WHERE ${RETENTION_PAIR_EVENT_PREDICATE}
         ORDER BY seq ASC`,
     )
     .all();
