@@ -46,8 +46,13 @@ import {
   HandoffEscalationError,
   type BoundCoordinator,
 } from './handoff.js';
-import { IncumbentMatchesError } from '../transport/ipc/handoff.js';
-import { probeCoordinator } from '../infra/backend-discovery.js';
+import {
+  IncumbentMatchesError,
+  type DesiredIncumbentIdentity,
+  type IncumbentHealth,
+  type IncumbentIdentity,
+} from '../transport/ipc/handoff.js';
+import { probeCoordinator, type CoordinatorDiscoveryRecord } from '../infra/backend-discovery.js';
 import type { RecoveryCapableService } from '../jobs/reconcile/contracts.js';
 import type { ProjectRequestPort } from './contracts.js';
 import type { TypedEventBus } from './event-bus.js';
@@ -191,6 +196,52 @@ export interface LifecycleHooks {
   onShutdown(mode: ShutdownMode, signal: AbortSignal): Promise<void>;
   onIdleCheck(): boolean;
   onRecoveryComplete(resumes: RecoveredDiscussResume[]): Promise<void>;
+}
+
+/**
+ * Which discovery record counts as the incumbent this contender is contending with.
+ *
+ * A named function rather than a closure because one line of it is load-bearing and was already reverted
+ * once: **an incarnation is deliberately not required here**. A coordinator from a build that predates the
+ * token writes no such field, and refusing its record would discard the `bootToken` beside it — leaving the
+ * contender with no way to ask anyone to stand down, which is the exact deadlock the token exists to end,
+ * reinstated for the one upgrade that introduces it. Whether the incumbent's identity is *sufficient to
+ * signal* is a separate question, answered separately, in `verifySignalTarget`.
+ *
+ * Everything else here is agreement: the record must name the socket being contended, the same flavor and
+ * namespace, and must not contradict health evidence already collected from that same socket.
+ */
+export function verifiedIncumbentFromDiscovery(
+  info: CoordinatorDiscoveryRecord | null,
+  evidence: Readonly<{ socketPath: string; desired: DesiredIncumbentIdentity; lastHealth: IncumbentHealth | null }>,
+): IncumbentIdentity | null {
+  const { socketPath, desired, lastHealth } = evidence;
+  if (!info) {
+    return null;
+  }
+  if (info.socketPath !== socketPath || info.flavor !== desired.flavor || info.namespace !== desired.namespace) {
+    return null;
+  }
+  if (
+    lastHealth &&
+    (lastHealth.flavor !== info.flavor ||
+      lastHealth.namespace !== info.namespace ||
+      (lastHealth.version !== undefined && lastHealth.version !== info.version) ||
+      lastHealth.bundleHash !== info.bundleHash ||
+      (lastHealth.pid !== undefined && lastHealth.pid !== info.pid) ||
+      (lastHealth.incarnation !== undefined && lastHealth.incarnation !== info.incarnation))
+  ) {
+    return null;
+  }
+  return {
+    pid: info.pid,
+    incarnation: info.incarnation,
+    source: 'discovery',
+    instanceId: info.instanceId,
+    token: info.token,
+    bootToken: info.bootToken,
+    shutdownToken: info.shutdownToken,
+  };
 }
 
 export function closeServer(server: Server): Promise<void> {
@@ -814,48 +865,11 @@ async function runLifecycleStartup({
         },
         runStartupRecovery,
         runtime,
-        readVerifiedIncumbentFromDiscovery: ({ socketPath: probeSocket, desired, lastHealth }) => {
-          const info = probeCoordinator({
-            storage: runtime.storage,
-            env: runtime.env,
-            paths: runtime.paths,
-          });
-          // Deliberately not requiring an incarnation. A coordinator from a build that predates the
-          // token writes no such field, and refusing its record here would discard the `bootToken`
-          // beside it — reinstating, for the one upgrade that introduces the token, exactly the deadlock
-          // the token exists to end. The signal path anchors on this contender's own observation, so it
-          // never needed the incumbent's.
-          if (!info) {
-            return null;
-          }
-          if (
-            info.socketPath !== probeSocket ||
-            info.flavor !== desired.flavor ||
-            info.namespace !== desired.namespace
-          ) {
-            return null;
-          }
-          if (
-            lastHealth &&
-            (lastHealth.flavor !== info.flavor ||
-              lastHealth.namespace !== info.namespace ||
-              (lastHealth.version !== undefined && lastHealth.version !== info.version) ||
-              lastHealth.bundleHash !== info.bundleHash ||
-              (lastHealth.pid !== undefined && lastHealth.pid !== info.pid) ||
-              (lastHealth.incarnation !== undefined && lastHealth.incarnation !== info.incarnation))
-          ) {
-            return null;
-          }
-          return {
-            pid: info.pid,
-            incarnation: info.incarnation,
-            source: 'discovery',
-            instanceId: info.instanceId,
-            token: info.token,
-            bootToken: info.bootToken,
-            shutdownToken: info.shutdownToken,
-          };
-        },
+        readVerifiedIncumbentFromDiscovery: (evidence) =>
+          verifiedIncumbentFromDiscovery(
+            probeCoordinator({ storage: runtime.storage, env: runtime.env, paths: runtime.paths }),
+            evidence,
+          ),
         signalLedger: createFileHandoffSignalLedger({
           storage: runtime.storage,
           runDir: runtime.paths.coral.coordinator.runDir,

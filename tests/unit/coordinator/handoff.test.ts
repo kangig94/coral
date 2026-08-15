@@ -549,17 +549,19 @@ describe('bindWithHandoff', () => {
     expect(killCalls.filter((c) => c.signal === 'SIGTERM').length).toBe(0);
   });
 
-  // The incident this pins: a disagreement between what the incumbent *reports* and what this contender
-  // *probes* must not block the signal, because the signal decision anchors on this contender's own
-  // observations. Before self-anchoring it did block, and a newer build could neither ask the incumbent
-  // to stand down nor escalate past it, on every session start.
+  // The two halves of the same incident, and they must not be conflated again.
   //
-  // The cause has changed and the behaviour has not. It used to be unavoidable: the derived value carried
-  // a per-process clock term, so two processes disagreed by the age gap between their reads (168s measured
-  // on WSL2). With the opaque token two probes of one process agree, so a disagreement now means a stale
-  // record or a recycled pid — and whether *that* should still permit a signal is open, not settled here.
-  // This test states today's behaviour; it does not argue for it.
-  it('signals a pid whose reported incarnation disagrees with this contender’s own probe', async () => {
+  // A disagreement between what the incumbent published and what this contender probes must not cost the
+  // *credential*: rejecting the record on that basis discarded the boot token beside it, and a contender
+  // without that token cannot ask anyone to stand down — which is how a newer build died on every session
+  // start. So the shutdown RPC still runs, with the token.
+  //
+  // It must cost the *signal*. Under the old derivation a disagreement was unavoidable noise (168 seconds
+  // measured on WSL2 between two processes reading the same clock). With the opaque token two probes of one
+  // process agree, so a disagreement now means what it says: this pid is not the process the record is
+  // about — a stale `coordinator.json` and an ordinary pid wrap are enough — and signalling it delivers
+  // SIGKILL to a stranger.
+  it('uses the token but refuses to signal a pid the incumbent did not publish', async () => {
     const verifiedIdentity: IncumbentIdentity = { pid: 4321, incarnation: testIncarnation(500), source: 'health' };
     const { options, time, killCalls } = buildHarness({
       bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
@@ -587,16 +589,49 @@ describe('bindWithHandoff', () => {
       await flush();
       time.tick(200);
     }
-    await promise;
+    const outcome = await promise;
 
     // The credential must survive the disagreement and be used: this is the whole reason the record is
     // no longer rejected. Before the change no token reached this call, so `shutdownAttempted` stayed
     // false and the contender died on the gate that exists to catch a missing credential.
     expect(mockedShutdown).toHaveBeenCalledWith(expect.objectContaining({ bootToken: 'boot-token-drift' }));
 
-    const sigterms = killCalls.filter((c) => c.signal === 'SIGTERM');
-    expect(sigterms.length, 'a clock-base disagreement must not veto the signal').toBeGreaterThanOrEqual(1);
-    expect(sigterms[0].pid).toBe(4321);
+    expect(outcome).toBeInstanceOf(HandoffEscalationError);
+    expect(killCalls, 'a pid the incumbent did not publish must never be signalled').toEqual([]);
+  });
+
+  // The upgrade this branch exists for: the incumbent is a build that predates the token, so it publishes no
+  // incarnation at all. Its boot token still works, so it steps down gracefully — that path is untouched, and
+  // it is the path an ordinary upgrade takes. What it cannot do is authorize a kill: with nothing published,
+  // the only baseline is this contender's own first look, and a pid recycled before that look matches itself
+  // forever. An unresponsive predecessor therefore ends in a diagnostic the operator acts on.
+  it('asks a pre-token incumbent to stand down but will not escalate to a signal', async () => {
+    const { options, time, killCalls } = buildHarness({
+      bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
+      totalBudgetMs: 1_000,
+      isAlive: () => true,
+      readDiscovery: () => ({
+        pid: 7777,
+        source: 'discovery',
+        instanceId: 'pre-token-incumbent',
+        token: 'token-legacy',
+        bootToken: 'boot-token-legacy',
+        shutdownToken: 'shutdown-token-legacy',
+      }),
+    });
+    mockedShutdown.mockResolvedValue(shutdownResult({ health: null, verifiedIdentity: null }));
+    mockedProbe.mockReturnValue(testIncarnation(4_242));
+
+    const promise = bindWithHandoff(options).catch((e: Error) => e);
+    for (let i = 0; i < (SIGTERM_GRACE_MS + SIGKILL_GRACE_MS) / 200 + 40; i += 1) {
+      await flush();
+      time.tick(200);
+    }
+    const outcome = await promise;
+
+    expect(mockedShutdown).toHaveBeenCalledWith(expect.objectContaining({ bootToken: 'boot-token-legacy' }));
+    expect(outcome).toBeInstanceOf(HandoffEscalationError);
+    expect(killCalls, 'an incumbent that published no incarnation must never be signalled').toEqual([]);
   });
 
   // The guarantee that survives: between the handshake and the signal, the pid must still name the same

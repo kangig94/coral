@@ -393,11 +393,24 @@ type SignalVerificationResult = 'matched' | 'gone';
  * a per-process clock term, so two processes never agreed. The token retired that term — a recorded
  * incarnation and a fresh probe of the same process now produce the same bytes.
  *
- * Two gaps remain, and neither is closed here. This check cannot cover the interval between itself and
- * the `kill` a few statements later; nothing short of a pidfd can, and it narrows that window from
- * "since the incumbent booted" to "since this verification". And because the baseline is only ever this
- * contender's own first observation, a pid already recycled before that observation anchors the wrong
- * process and matches itself forever — which the record's own incarnation could now rule out.
+ * Two baselines, because they answer different questions and only one of them predates this contender.
+ *
+ * The **incumbent's published incarnation** says which process the record is about. Without it the only
+ * baseline is this contender's own first observation — and a pid recycled *before* that observation
+ * anchors an unrelated process, which then matches itself forever. A stale `coordinator.json` left by a
+ * crashed daemon plus an ordinary pid wrap is all that takes, and the result is SIGKILL delivered to
+ * something this coordinator has no relationship with.
+ *
+ * The **self-anchor**, taken when the peer was authenticated, says the pid has not been recycled since.
+ * The published incarnation cannot answer that, because it is equally old.
+ *
+ * A pre-token incumbent therefore cannot be escalated to a signal at all. It can still be asked to stand
+ * down over IPC, which is the ordinary path and needs no such proof, so an upgrade over a *responsive*
+ * predecessor is unaffected. An unresponsive one now ends in a diagnostic instead of a kill — deliberately:
+ * refusing to act costs an operator one command, and acting on an unproven pid costs someone else a process.
+ *
+ * What is still not closed: the interval between this check and the `kill` a few statements later. Nothing
+ * short of a pidfd can, and this narrows it from "since the incumbent booted" to "since this verification".
  */
 function verifySignalTarget(
   incumbent: IncumbentIdentity,
@@ -411,6 +424,15 @@ function verifySignalTarget(
     return process.isAlive(incumbent.pid)
       ? refuseSignal(incumbent, 'process incarnation unavailable while pid is alive')
       : 'gone';
+  }
+  if (incumbent.incarnation === undefined) {
+    return refuseSignal(
+      incumbent,
+      'the incumbent published no incarnation, so this pid cannot be proven to be it — stop that process yourself',
+    );
+  }
+  if (incumbent.incarnation !== liveIncarnation) {
+    return refuseSignal(incumbent, 'this pid is not the process the incumbent published');
   }
   if (anchoredIncarnation === null) {
     return refuseSignal(incumbent, 'no baseline was observed for this pid while it was authenticated');

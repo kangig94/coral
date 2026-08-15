@@ -19,8 +19,11 @@ import type { TimePort } from '../../infra/port-types.js';
  */
 export type IncumbentIdentity = {
   pid: number;
-  /** Absent when the incumbent predates the token. Never required to signal: a contender verifies the
-   *  pid against a baseline it observed itself. */
+  /** Absent when the incumbent predates the token. Required to *signal*, and only to signal: it is the one
+   *  piece of identity evidence that predates this contender, so without it a pid recycled before the
+   *  contender ever looked cannot be told from the incumbent. Shutdown over IPC needs no such proof — the
+   *  socket and the boot token are the authority there — so a pre-token incumbent still steps down
+   *  gracefully; it is escalation that stops. */
   incarnation?: ProcessIncarnation;
   source: 'health' | 'discovery';
   instanceId?: string;
