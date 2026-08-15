@@ -112,22 +112,31 @@ export function readDiscoveryRecord(runtime: DiscoveryRuntime): CoordinatorDisco
   }
 }
 
+/**
+ * The record's `processStartedAt` is deliberately not re-derived and compared here.
+ *
+ * `probeProcessStartedAtSeconds` adds `/proc/stat` btime, which each process caches on first read
+ * (`infra/node-process.ts`), so a value this process derives and one the coordinator wrote sit on
+ * different clock bases and are not comparable. Rejecting the record on that basis discarded the
+ * `bootToken` beside it, and a contender without that token cannot ask the incumbent to stand down.
+ *
+ * Nothing here acts on `pid`. This returns a token and a socket path; the handshake authenticates with
+ * the token, and the sites that signal re-verify the pid against a baseline they observed themselves
+ * (`coordinator/handoff.ts`). A record whose pid was recycled is therefore safe to return: the connect
+ * fails, or the token proves the peer is ours.
+ *
+ * The probe still runs, but only as a cheap filter. It yields `null` for an absent process *and* for a
+ * read, parse, or unsupported-platform failure, so this is "could not observe a process", not proof of
+ * absence — nothing downstream may treat it as proof.
+ */
 export function probeCoordinator(runtime: DiscoveryRuntime): CoordinatorDiscoveryRecord | null {
   const record = readDiscoveryRecord(runtime);
   if (!record) {
     return null;
   }
 
-  const liveProcessStartedAt = probeProcessStartedAtSeconds(record.pid, runtime.env.platform() as NodeJS.Platform);
-  if (liveProcessStartedAt === null) {
-    return null;
-  }
-
-  if (record.processStartedAt !== undefined && record.processStartedAt !== liveProcessStartedAt) {
-    return null;
-  }
-
-  return record;
+  const live = probeProcessStartedAtSeconds(record.pid, runtime.env.platform() as NodeJS.Platform);
+  return live === null ? null : record;
 }
 
 export function writeBackendInfo(info: BackendInfo, runtime: DiscoveryRuntime): void {

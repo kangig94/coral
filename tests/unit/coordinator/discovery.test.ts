@@ -122,7 +122,13 @@ describe('coordinator discovery', () => {
     });
   });
 
-  it('probeCoordinator rejects a record when processStartedAt does not match the live process', async () => {
+  // A record whose `processStartedAt` disagrees with a fresh probe of the same live pid must still be
+  // returned. The value is `/proc/stat` btime plus start ticks, and btime is cached per process, so the
+  // writer's value and this reader's disagree by roughly the age gap between their first probes — 168
+  // seconds, measured on a WSL2 host, for a coordinator probing its own pid. Rejecting on that basis
+  // discarded the `bootToken` beside it, leaving a newer build unable to ask the incumbent to stand
+  // down; it died on every session start while the older daemon served on.
+  it('probeCoordinator returns a live record whose recorded start time disagrees with a fresh probe', async () => {
     makeHome();
     const { probeCoordinator, writeDiscoveryRecord } = await importDiscovery();
     const { probeProcessStartedAtSeconds } = await import('#src/infra/node-process.js');
@@ -139,12 +145,38 @@ describe('coordinator discovery', () => {
         startedAt: Date.now(),
         token: 'token-c',
         bootToken: 'boot-token-c',
-        processStartedAt: (probeProcessStartedAtSeconds(process.pid) ?? 0) + 1,
+        processStartedAt: (probeProcessStartedAtSeconds(process.pid) ?? 0) + 168,
       },
       runtime,
     );
 
-    expect(probeCoordinator(runtime)).toBeNull();
+    expect(
+      probeCoordinator(runtime),
+      'the credential beside a live pid must survive a clock base this reader does not share',
+    ).toMatchObject({ pid: process.pid, bootToken: 'boot-token-c' });
+  });
+
+  it('probeCoordinator rejects a record whose pid names no process', async () => {
+    makeHome();
+    const { probeCoordinator, writeDiscoveryRecord } = await importDiscovery();
+    const runtime = makeDiscoveryRuntime('prod');
+
+    writeDiscoveryRecord(
+      {
+        pid: 2147483646,
+        port: 9023,
+        socketPath: coordinatorPaths('prod').socketPath,
+        bundleHash: 'bundle-d',
+        flavor: 'prod',
+        namespace: 'ns-d',
+        startedAt: Date.now(),
+        token: 'token-d',
+        bootToken: 'boot-token-d',
+      },
+      runtime,
+    );
+
+    expect(probeCoordinator(runtime), 'liveness is an observation this reader can make alone').toBeNull();
   });
 
   it('reads a discovery record that carries a field this build predates', async () => {

@@ -1,8 +1,13 @@
 # TODO — two builds are live at once during an upgrade
 
-**Status**: open, **re-scored down from "highest severity"**. Its severity came entirely from an
-incident that has since been traced to a different cause. The window it describes is real and was never
-contingent on that incident, but nothing has yet been observed to break because of it.
+**Status**: open, **narrowed**. Read this block and skip to "Still open"; everything between is why this
+document has been wrong three times, kept because the corrections are the part that does not re-derive.
+
+|                |                                                                                                                                                                                                                                                                           |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Shipped**    | The takeover works. A process start time is no longer compared across a process boundary in `probeCoordinator` or on the handoff signal path, so a newer build can obtain the incumbent's `bootToken`, ask it to stand down, and escalate if it does not.                 |
+| **Still open** | The mixed window itself: the **record** direction (a new CLI writes what an old coordinator reads), the **output** direction (a live session holding old skill text drives a new CLI), and **observability** (four different situations collapse into one `use-current`). |
+| **Elsewhere**  | The same defect, uncorrected, at four other pairs of processes — see `proxy-set-acquisition.md`.                                                                                                                                                                          |
 
 ## Correction — this document named the wrong cause
 
@@ -65,7 +70,41 @@ bounded only by its next restart. The evidence for this is independent of the in
 log line showed the daemon reporting `0.10.6` while the environment it handed to spawned children
 carried `…/coral/0.10.8/bin` on `PATH`.
 
-### The replacement is designed, built, and never triggered
+### Correction, again — it is triggered, and it died at one gate
+
+**The section below was wrong, and this is the third time this document has been wrong about this
+subject.** The trigger exists and fires on every session start: `clients/hooks/session-start.mjs:144`
+calls `spawnBackend` unconditionally, and `bindWithHandoff` lets a strictly newer contender evict an
+older incumbent (`incumbentOutranksContender`, `src/transport/ipc/handoff.ts:100-105`).
+
+It fired, and it died. From the coordinator log, 2026-08-15:
+
+```
+07:43:14.210 INFO  [0.10.8] Incumbent bundleHash=040765a5 pid=3274924; requested shutdown via IPC
+07:43:14.211 ERROR [0.10.8] Handoff escalation failed: Manual shutdown required: refusing handoff
+                            for pid=3274924 because verified shutdown capability was unavailable
+07:43:14.211 ERROR [0.10.8] Fatal startup error
+```
+
+One millisecond, twice, and the contender exited. The chain: `probeCoordinator` rejected the discovery
+record because a freshly probed start time disagreed with the recorded one → no `bootToken` →
+`requestIncumbentShutdown` only attempts a shutdown when it holds that token, so `shutdownAttempted`
+stayed false → the gate at `coordinator/handoff.ts` threw. A token was needed to attempt, and the
+attempt was needed to excuse the missing token.
+
+The disagreement is not a clock going wrong. `probeProcessStartedAtSeconds` adds `/proc/stat` btime,
+**cached per process**, so two processes' values differ by the age gap between their first reads —
+measured at 168 seconds for a coordinator probing its own pid. The value is a process-local pid
+disambiguator, not a timestamp, and comparing it across a process boundary is meaningless.
+
+**Fixed**: `probeCoordinator` no longer compares it (liveness only), and the signal path anchors on a
+baseline the contender observed itself, which keeps the guarantee that matters — the pid must not have
+been recycled between handshake and signal — and drops the one that was never sound.
+
+`proxy-set-acquisition.md` is the same defect at a different pair of processes. They were filed as two
+items and are one.
+
+### Superseded: "designed, built, and never triggered"
 
 Observed 2026-08-15, four hours after `0.10.8` was installed: the live coordinator was still `0.10.6`,
 pid unchanged since boot, serving a `0.10.8` CLI. It had accumulated 27 unresolved quarantine rows,
@@ -117,12 +156,10 @@ about. Treat it as motivation, not as evidence.
 
 ## Options, none costless
 
-- **Finish the takeover.** Give one entry point a build comparison that starts a successor when the
-  installed build is newer than the live coordinator, and let the existing ownership checker drain the
-  incumbent as `'replaced'`. This is the option the machinery was built for, and it is the only one that
-  makes an installed fix take effect without an operator noticing. It needs a decision about **which**
-  entry point owns it — the session-start hook sees every new session, `routeLiveIncumbent` sees every
-  invocation — and about what happens to work in flight, which the handoff drain already answers.
+- ~~**Finish the takeover.**~~ **Done.** It never needed a new entry point: the session-start hook
+  already spawns a contender unconditionally, and `bindWithHandoff` already evicts an older incumbent.
+  What it needed was for the contender to stop discarding the incumbent's credential over a comparison
+  that could not hold.
 - ~~**Refuse the mixed window.**~~ Ruled out earlier and still ruled out: refusing is a cold upgrade,
   and handing off backwards makes the upgrade silently not take effect. Note that this is a different
   question from the takeover above — refusing keeps the old daemon, finishing the takeover replaces it.
@@ -178,14 +215,10 @@ which points at two coordinators over one journal. Not tested, deliberately; see
 
 ## Start condition
 
-1. **Finish the takeover.** This moved to the front on 2026-08-15, when a four-hour-old `0.10.6` daemon
-   was found serving a `0.10.8` install with none of that release's fixes in effect. It is the only item
-   here whose absence makes every other fix conditional on a daemon restart nobody schedules. Pick the
-   owning entry point first; the drain side already works.
-2. **Make the window observable.** Carry the reason on the routing result instead of collapsing four
+1. **Make the window observable.** Carry the reason on the routing result instead of collapsing four
    situations into one `use-current`, and surface it in `backend status`. Small, blocks nothing, and it
    is why the August incident stayed misattributed as long as it did.
-3. **Fold the record direction into the one compatibility policy** shared with
+2. **Fold the record direction into the one compatibility policy** shared with
    `jobs-read-contract-schema-first.md` and `result-artifact-availability.md`. It is a consumer of a
    policy those two need anyway, not a driver.
-4. **The output direction** waits on none of that — it is already the constraint blocking `wait`.
+3. **The output direction** waits on none of that — it is already the constraint blocking `wait`.

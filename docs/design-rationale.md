@@ -239,7 +239,7 @@ Command class is the routing axis, not transport-aware code paths in domain logi
 
 ### 8.2 Single-writer discipline
 
-Even with two transports (IPC + HTTP), there is exactly one coordinator per Coral installation; the IPC bootstrap reconciler in `transport/ipc/ensure.ts` enforces the singleton through observation states (`absent | starting | sick | healthyCompatible | ...`) and bounded actions (`wait | requestShutdown | ensureReplacement | ...`). Sick replacement is fenced by PID + `processStartedAt` verification — unverified ownership fails closed, never force-replaces.
+Even with two transports (IPC + HTTP), there is exactly one coordinator per Coral installation; the IPC bootstrap reconciler in `transport/ipc/ensure.ts` enforces the singleton through observation states (`absent | starting | sick | healthyCompatible | ...`) and bounded actions (`wait | requestShutdown | ensureReplacement | ...`). The singleton itself is held by exclusive ownership of the canonical IPC socket — `lifecycle.ts` calls it "socket-as-lock", and a contender proceeds only once its own bind succeeds. Authentication and signal verification constrain what a contender may _do_ about an incumbent; they do not create the singleton. Sick replacement asks the incumbent to stand down over an authenticated channel, and escalates to signals only after re-verifying the target pid against a baseline **the contender itself observed** — a process start time is derived from `/proc/stat` btime, which each process caches, so a value another process reported is not a baseline this one can compare against.
 
 ## 9. Naming and Subdivision Policy (full)
 
