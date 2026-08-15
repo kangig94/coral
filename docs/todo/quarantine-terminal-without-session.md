@@ -51,17 +51,40 @@ Two things follow:
 
 ## Found underneath it
 
-Clearing the 24 left **two** rows of a different boundary:
+Clearing the 24 left **two** rows of a different boundary, `session-retention-work`, both workflow slot
+children of one workflow (`…:0:0` and `…:0:1`). `LifecycleReactor.enforceRetention` throws when
+`readyBoundProvider` returns null (`src/sessions/lifecycle-reactor.ts:667-670`), and the coordinator log
+says why:
 
 ```
-boundary="session-retention-work" key="3a15866c-…" and "a2f382f7-…"
-error="Retention provider binding is unavailable for session a2f382f7-…"
+Retention discard skipped for session 3a15866c-…: The selected Codex profile is
+authenticated as a different workspace. Restore the original login or start a new session.
 ```
 
-Both keys are workflow slot children of one workflow (`…:0:0` and `…:0:1`). `LifecycleReactor.enforceRetention`
-throws when `readyBoundProvider` returns null (`src/sessions/lifecycle-reactor.ts:667-670`). Whether a
-binding that cannot be resolved should defer forever or settle as unrecoverable is a separate question,
-and it is the only quarantine content on this machine that is not explained.
+**The refusal is correct.** The session's binding records a ChatGPT account subject; `~/.codex` is now
+logged into a different one. A retention discard deletes the provider's own session file, and doing that
+under an unrelated login would be worse than not doing it.
+
+What is wrong is the **disposition**. A login that has changed is not a transient failure, and storing
+it as a retryable row means the condition is retried forever against a state nobody is going to restore.
+That is the same disease as the backlog above, arrived at from the other direction: there, the cause was
+repaired and the row stayed; here, the cause will never be repaired and the row stays anyway.
+
+### And they could not be cleared at all
+
+The subject key for this boundary is `${sessionId}\u0000${jobId}`
+(`src/sessions/retention-work-item-recovery-source.ts:63`). `recovery-quarantine list` renders every
+field with `JSON.stringify`, so it prints as an escape sequence; `clear --key` took its argument from
+argv verbatim, and **argv cannot carry a NUL at all**. Copying what `list` printed produced a literal
+backslash-u that matched nothing, and the real byte could not be typed. The command's own error message
+says "Run `recovery-quarantine list` and copy the exact boundary, key, and revision" — advice that could
+not work for the only rows that needed it.
+
+Fixed here: `clear` now unquotes a coordinate that arrives as a JSON string literal, so the printed form
+round-trips. Unquoting at the CLI rather than changing the stored key keeps existing durable rows
+addressable — the key's shape belongs to the recovery source, not to the command that names it.
+
+The disposition question remains open.
 
 ## Explicitly out of scope
 
@@ -73,5 +96,6 @@ later build can no longer produce, and about the two rows that are not those.
 None for the first half — the disposal already works, and a startup re-evaluation pass is a contained
 change against `RecoveryQuarantineStore` and the source registry.
 
-The `session-retention-work` pair needs its own read first: what binding those two sessions expect, and
-whether it is absent because the provider is gone or because the record predates something.
+The `session-retention-work` pair now needs only a decision, not a read: should a binding whose account
+has changed settle as unrecoverable rather than retry forever, and if so, does the operator get told
+which sessions were given up on. The evidence is above.

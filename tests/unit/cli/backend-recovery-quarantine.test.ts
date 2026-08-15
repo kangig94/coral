@@ -285,6 +285,53 @@ describe('backend recovery-quarantine commands', () => {
     expect(stderr).toBe('');
   });
 
+  // The error message on a bad coordinate tells the operator to run `list` and copy the exact key, and
+  // `list` renders every field with `JSON.stringify`. For `session-retention-work` that key joins two
+  // identifiers with a NUL, so the printed form is an escape sequence and the stored form is a byte no
+  // command line can carry. Copying what the tool prints has to work, or those rows are addressable by
+  // nothing.
+  it('should accept a subject key exactly as list prints it, escapes included', async () => {
+    const key = `3a15866c\u00006e83e33f:0:0`;
+    const entry = {
+      boundary: 'session-retention-work',
+      subject: { key, revision: { kind: 'fingerprint' as const, value: 'revision-1' } },
+      state: 'active' as const,
+      stage: 'settle' as const,
+      errorMessage: 'Retention provider binding is unavailable',
+      detail: 'P4 settle failed',
+      retry: null,
+      continuation: null,
+      detectedAt: '2026-08-15T09:03:29.786Z',
+      updatedAt: '2026-08-15T09:03:29.786Z',
+    };
+
+    const printed = formatRecoveryQuarantineList([entry]);
+    const printedKey = /key=("(?:[^"\\]|\\.)*")/.exec(printed)?.[1];
+    expect(printedKey, 'list must render the key as a JSON string').toBeDefined();
+    expect(printedKey).not.toContain('\u0000');
+
+    const clear = vi.fn(async (request: { boundary: string; key: string; revision: string | null }) => ({
+      ...request,
+      disposition: 'advanced' as const,
+    }));
+    await programWith({ list: () => [entry], clear }).parseAsync([
+      'node',
+      'coral-cli',
+      'backend',
+      'recovery-quarantine',
+      'clear',
+      '--boundary',
+      'session-retention-work',
+      '--key',
+      printedKey as string,
+      '--revision',
+      'fingerprint:sha256:revision-1',
+    ]);
+
+    expect(clear).toHaveBeenCalledTimes(1);
+    expect(clear.mock.calls[0]?.[0].key, 'the coordinator must receive the stored key, not its rendering').toBe(key);
+  });
+
   it('should refuse clear when coordinator authority is unavailable', async () => {
     vi.spyOn(ipcEnsure, 'ensure').mockRejectedValue(new Error('connect ENOENT'));
     const recoveryQuarantine = createRecoveryQuarantineCommandOperations();
