@@ -62,24 +62,41 @@ its only sound operation is equality against a value derived in the same process
 `assertIdentityFieldsAgree` does not do: the acquisition issues a value it derived, and the spawned role
 reports one it derived.
 
-The measured spread below is not noise — it is the incumbent's age. It grows monotonically for the same
-reason.
+Source proves btime is cached per process. It does **not** prove that any two processes must differ, nor
+that the difference equals the older process's age — that is the most plausible reading of the measured
+series, not something the code establishes. Treat it as the leading hypothesis, and note that this
+document has twice been burned by promoting a plausible reading to a cause.
 
 The identical mistake, in `probeCoordinator`, made an installed upgrade unable to take over at all; that
-half is fixed under `build-identity-and-upgrade.md`. This half is the same defect at
-`src/coordinator/live/provider-proxy/acquisition-steps.ts:356-357` (parent's probe in `role-spawn.ts:147`
-against the child's self-probe in `role-main.ts:176`) and at
-`src/coordinator/services/provider-proxy-set/inheritance.ts:491`.
+half is fixed under `build-identity-and-upgrade.md`. The remaining pairs, enumerated rather than sampled:
 
-**Note the redeem path already does it right**: `inheritance.ts:390,415,445` pass `expectedIdentity: {}`
-and compare nothing, because the capsule secret is the authority. That is the pattern the fresh
-acquisition path should have copied.
+| Comparison                                                            | Sites                                                        |
+| --------------------------------------------------------------------- | ------------------------------------------------------------ |
+| parent's probe at spawn vs guardian self-report                       | `acquisition-steps.ts:354` compared at `role-control.ts:173` |
+| proxy self-report vs guardian-observed containment held by the reaper | `acquisition-steps.ts:385` vs `reaper.ts:191`                |
+| guardian-reported containment vs proxy self-report during inheritance | `inheritance.ts:491`                                         |
+| successor coordinator's probe vs role-reported durable identity       | `inheritance.ts:291`, then `process-containment.ts:150`      |
+| predecessor coordinator's durable CLI evidence vs successor's probe   | `durable-transport.ts:81` vs `carrier-observation.ts:79`     |
+
+The last three **fail open**: a readable mismatch is interpreted as absence, so a live process group is
+declared gone, never signalled, and can be issued a disappearance receipt while it is still running.
+That is the more dangerous direction and it is not what the measured acquisition failures show — those
+fail closed. Both come from the same primitive.
+
+The redeem path is **half** right, and the half matters. Its three `establishControl` calls pass
+`expectedIdentity: {}` (`inheritance.ts:390,415,445`) and compare nothing, because the capsule secret is
+the authority — that is the pattern the fresh acquisition path should have copied. But the same function
+then compares `containment.processStartedAtSeconds !== proxyIdentity.processStartedAtSeconds`
+(`inheritance.ts:491`), guardian-observed against proxy self-report, which is the defect again.
+
+An earlier revision of this entry called the redeem path simply correct. It is not, and the two halves
+sit forty lines apart in one function.
 
 ### The observed spread is much wider than a spawn, and that changes the suspect
 
 Thirty-one failures on one daemon over four hours, with disagreements of **2, 3, 42, 85, 91, 123, 171,
 234, 236, 325, 349, 373, 375, 402, 404, 406, 410, 497, 533, 545, 550, 567, 576, 585, 629, 634 and 670
-seconds**. The earlier revision of this document generalised from a single three-second sample and
+seconds** — a snapshot taken 2026-08-15, not a bound. The same daemon later recorded 716 and 729. The earlier revision of this document generalised from a single three-second sample and
 called spawn latency the cause. Two seconds is a spawn crossing a boundary. **Six hundred is not.**
 
 A spread that reaches eleven minutes points at the two sides deriving the value from different clock
@@ -119,7 +136,9 @@ Reproduce the disagreement deliberately before changing the comparison. The docu
 wrong twice about this cause — once inferring silent abandonment from an absent log, once generalising
 spawn latency from a single sample — so a reproduction is the entry price, not a formality.
 
-That start condition is now met — see the section above. The two sides do not share a clock base, and a
+That start condition is **partly** met: the mechanism is established from source, and the coordinator
+half is fixed and regression-tested. What is still missing is a reproduction of two live processes
+reading different clock bases — the tests injected the offset rather than producing it. The two sides do not share a clock base, and a
 reproduction is a clock read in a second process, not a slow spawn.
 
 What remains is to apply the same rule here that the coordinator paths now follow: **compare a process

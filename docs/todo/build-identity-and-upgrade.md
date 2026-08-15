@@ -1,8 +1,13 @@
 # TODO — two builds are live at once during an upgrade
 
-**Status**: open, **re-scored down from "highest severity"**. Its severity came entirely from an
-incident that has since been traced to a different cause. The window it describes is real and was never
-contingent on that incident, but nothing has yet been observed to break because of it.
+**Status**: open, **narrowed**. Read this block and skip to "Still open"; everything between is why this
+document has been wrong three times, kept because the corrections are the part that does not re-derive.
+
+|                |                                                                                                                                                                                                                                                                           |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Shipped**    | The takeover works. A process start time is no longer compared across a process boundary in `probeCoordinator` or on the handoff signal path, so a newer build can obtain the incumbent's `bootToken`, ask it to stand down, and escalate if it does not.                 |
+| **Still open** | The mixed window itself: the **record** direction (a new CLI writes what an old coordinator reads), the **output** direction (a live session holding old skill text drives a new CLI), and **observability** (four different situations collapse into one `use-current`). |
+| **Elsewhere**  | The same defect, uncorrected, at four other pairs of processes — see `proxy-set-acquisition.md`.                                                                                                                                                                          |
 
 ## Correction — this document named the wrong cause
 
@@ -151,12 +156,10 @@ about. Treat it as motivation, not as evidence.
 
 ## Options, none costless
 
-- **Finish the takeover.** Give one entry point a build comparison that starts a successor when the
-  installed build is newer than the live coordinator, and let the existing ownership checker drain the
-  incumbent as `'replaced'`. This is the option the machinery was built for, and it is the only one that
-  makes an installed fix take effect without an operator noticing. It needs a decision about **which**
-  entry point owns it — the session-start hook sees every new session, `routeLiveIncumbent` sees every
-  invocation — and about what happens to work in flight, which the handoff drain already answers.
+- ~~**Finish the takeover.**~~ **Done.** It never needed a new entry point: the session-start hook
+  already spawns a contender unconditionally, and `bindWithHandoff` already evicts an older incumbent.
+  What it needed was for the contender to stop discarding the incumbent's credential over a comparison
+  that could not hold.
 - ~~**Refuse the mixed window.**~~ Ruled out earlier and still ruled out: refusing is a cold upgrade,
   and handing off backwards makes the upgrade silently not take effect. Note that this is a different
   question from the takeover above — refusing keeps the old daemon, finishing the takeover replaces it.
@@ -212,14 +215,10 @@ which points at two coordinators over one journal. Not tested, deliberately; see
 
 ## Start condition
 
-1. **Finish the takeover.** This moved to the front on 2026-08-15, when a four-hour-old `0.10.6` daemon
-   was found serving a `0.10.8` install with none of that release's fixes in effect. It is the only item
-   here whose absence makes every other fix conditional on a daemon restart nobody schedules. Pick the
-   owning entry point first; the drain side already works.
-2. **Make the window observable.** Carry the reason on the routing result instead of collapsing four
+1. **Make the window observable.** Carry the reason on the routing result instead of collapsing four
    situations into one `use-current`, and surface it in `backend status`. Small, blocks nothing, and it
    is why the August incident stayed misattributed as long as it did.
-3. **Fold the record direction into the one compatibility policy** shared with
+2. **Fold the record direction into the one compatibility policy** shared with
    `jobs-read-contract-schema-first.md` and `result-artifact-availability.md`. It is a consumer of a
    policy those two need anyway, not a driver.
-4. **The output direction** waits on none of that — it is already the constraint blocking `wait`.
+3. **The output direction** waits on none of that — it is already the constraint blocking `wait`.

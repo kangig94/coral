@@ -22,10 +22,10 @@ rather than an edited-clean text, because the corrections are the part that does
 
 ## Build identity — one build's records read by another
 
-|                                                                                      |                                                                                                                                                                                                                                                                                                                                                                                                             |
-| ------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`build-identity-and-upgrade.md`](./build-identity-and-upgrade.md)                   | **Root cause found and fixed 2026-08-15.** The takeover was implemented and fired on every session; it died because a process start time was compared across a process boundary, where `/proc/stat` btime is cached per process and the two sides disagree by their age gap. The newer build exited fatally and the older daemon served on with none of its fixes. What remains is the mixed window itself. |
-| [`quarantine-terminal-without-session.md`](./quarantine-terminal-without-session.md) | **Re-scored down after the rows were read.** They were #311's, produced by the old daemon, and the fix works — but a backlog a repaired build can no longer produce still keeps `recovery` reporting `degraded` until an operator clears it one row at a time. A signal that stays red for a fixed cause gets ignored, which is how two rows of a different boundary sat unnoticed underneath.              |
+|                                                                                      |                                                                                                                                                                                                                                                                                                                                                                                                |
+| ------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`build-identity-and-upgrade.md`](./build-identity-and-upgrade.md)                   | **Takeover fixed 2026-08-15; the window itself is still open.** A process start time was compared across a process boundary, where `/proc/stat` btime is cached per process, so a newer build discarded the incumbent credential it needed and died on every session start while the older daemon served on. Read its status block, not its history.                                           |
+| [`quarantine-terminal-without-session.md`](./quarantine-terminal-without-session.md) | **Re-scored down after the rows were read.** They were #311's, produced by the old daemon, and the fix works — but a backlog a repaired build can no longer produce still keeps `recovery` reporting `degraded` until an operator clears it one row at a time. A signal that stays red for a fixed cause gets ignored, which is how two rows of a different boundary sat unnoticed underneath. |
 
 `build-identity`'s first half — a record this build cannot parse must not become a job this build
 destroys — shipped as #316. What remains is three things, not two: **finishing the takeover** (above,
@@ -35,9 +35,9 @@ now the front item), the **record** direction, which shares a compatibility poli
 a live session holding old skill text driving a new CLI — which has no defense today and is what
 actually blocks the `wait` change below.
 
-Read its correction sections before citing it. It has now been wrong twice about this subject: once
-naming a cause inferred from a bundle-string diff rather than reproduced, and once calling the mixed
-window "permitted by design" when the design is present and simply unreached.
+Read its status block before citing it. The document has now been wrong **three times** about this
+subject — a cause inferred from a bundle-string diff, a trigger declared missing that fires every
+session, and a mixed window called "permitted by design" — so its corrections are kept in place.
 
 ---
 
