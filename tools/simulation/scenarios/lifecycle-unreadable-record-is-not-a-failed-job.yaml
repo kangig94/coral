@@ -1,0 +1,55 @@
+# A record this build cannot decode must not become a job this build ends.
+#
+# `foreign-record` rewrites a stored event into a shape the current codec rejects — the durable
+# condition a build with a different shape leaves behind. The coordinator then restarts on that world
+# and has to deal with a record it cannot read.
+#
+# WHAT THIS PROVES: recovery defers rather than terminalizes. Zero terminal events after the restart.
+#
+# WHAT IT DOES NOT YET REACH: the field incident of 2026-08-15 failed *inside* adoption
+# ('Running recovery adoption failed'), after hydration had already succeeded. This injection is
+# caught at the hydrate boundary instead, where deferral was already correct. Reproducing the
+# adoption boundary needs a record that hydrates cleanly and only fails once adoption reads it.
+#
+# Also recorded here because the scenario exposed it: while the world holds an unreadable record,
+# every decoded read surface throws — `readStatus` and `listJobIds` both do — so the job is not
+# observable through `jobs list` or `jobs detail` at all. Only codec-free reads work, which is why the
+# assertions below go straight to the journal and the quarantine table.
+world:
+  durable:
+    - pid: 41002
+      runtimeDelayMs: 5
+      stdout:
+        - delayMs: 20
+          data: "unaffected-by-the-upgrade\n"
+      exit: null
+  fakeProvider:
+    progress:
+      - delayMs: 5
+        message: provider-progress-before-upgrade
+steps:
+  - type: boot
+  - type: launch
+    prompt: simulate an upgrade across a running job
+  - type: wait
+    until:
+      runtimeRecorded: true
+    stepMs: 5
+    maxSteps: 10
+  - type: wait
+    until:
+      progressContains: provider-progress-before-upgrade
+    stepMs: 5
+    maxSteps: 10
+  - type: foreign-record
+    event: job.launch.requested
+  - type: cycle
+    preserveWorld: true
+  # Every decoded read surface is unavailable while the record is unreadable — `readStatus` and
+  # `listJobIds` both throw — so the quarantine table is what can be asserted. One active subject is
+  # the contract: the job was deferred for a build that can read it, not ended by the build that
+  # could not.
+  - type: expect
+    terminalEvents: 0
+    quarantinedSubjects: 1
+    noRealIO: true
