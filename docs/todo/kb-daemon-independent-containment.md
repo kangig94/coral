@@ -32,7 +32,7 @@ fires. Child-local escalation, which is what shipped, fails when the child's loo
 
 Coral already runs this pattern correctly once. The provider guardian/reaper hold a deadline that survives
 coordinator loss, latch before awaited teardown, report scheduling lateness rather than pretending the bound
-was met, and confirm containment *absence* rather than trusting leader exit
+was met, and confirm containment _absence_ rather than trusting leader exit
 (`src/provider-proxy/enforcement.ts`, `src/provider-proxy/orphan-deadline.ts`).
 
 A design exploration on 2026-08-14 proposed generalising that semantic core into a `src/leased-containment/`
@@ -49,7 +49,7 @@ deadline. Its conclusions worth keeping:
 
 One claim from that exploration was **over-read and should not be carried forward**: that the first transition
 is blocked because a successor cannot attach to an already-running old-build daemon, making the design
-incompatible with the hot-upgrade rule. Restarting the *KB daemon* during an upgrade is not a cold upgrade of
+incompatible with the hot-upgrade rule. Restarting the _KB daemon_ during an upgrade is not a cold upgrade of
 Coral. The constraint binds the coordinator's own continuity, not this child's.
 
 ## Also open, found in the same audit
@@ -59,14 +59,14 @@ teardown, which is why they were left out rather than folded in.
 
 - **Detached grandchildren are not covered by anything.** `runtime.process.exec` spawns each child into its own
   process group (`src/runtime/real.ts:364-382`, `src/runtime/exec-builder.ts:88-96`) with no containment
-  recorded, so uv, Marker and curl/wget children can be stranded — and a daemon that now exits *faster* makes
+  recorded, so uv, Marker and curl/wget children can be stranded — and a daemon that now exits _faster_ makes
   stranding more reachable, not less. Covering them means the containment authority must own or gate the spawn
   through the runtime process port; a wrapper that registers after `spawn` still has an execution race. Until
   that exists, the claim is bounded to the daemon's own process and calling it "KB containment" would be false.
 - **Coordinator shutdown can skip asking the daemon to stop at all.** `shutdown.ts` wraps KB disposal in
   `runBudgetedStep`, and `withBudget` skips the task outright when the drain budget is exhausted — while the
   immediately preceding `recovery coordinator teardown` is unbudgeted and can consume it. Converting it to
-  `runRequiredBudgetedStep` is *not* the fix: on exhaustion that path fires the task with an already-aborted
+  `runRequiredBudgetedStep` is _not_ the fix: on exhaustion that path fires the task with an already-aborted
   signal on the argument that its synchronous prefix has run, and here the stdin write lives inside an async
   `runExclusive` turn, so nothing would be sent either way — it would trade a silent skip for a shutdown error.
 - **Recovery teardown is itself unbounded**, and it is what exhausts that budget:
@@ -75,7 +75,7 @@ teardown, which is why they were left out rather than folded in.
 - **Liveness is policed rather than derived.** `daemon-main.ts` installs `setInterval(() => undefined, 60_000)`
   purely to pin the event loop, so the process can outlive the parent pipe and then relies on a poll to notice.
   The stdin `data` listener already references the loop, which makes the keepalive close to redundant; removing
-  it would make parent EOF structurally sufficient. Left alone deliberately — `stopAsync` clears it *before*
+  it would make parent EOF structurally sufficient. Left alone deliberately — `stopAsync` clears it _before_
   the disposal await, so it was not what held the stranded daemon open, and changing it would be an unrelated
   behavioural risk riding along with a fix.
 - **No test kills a coordinator and asserts the daemon disappears.** The runtime-host tests release their
