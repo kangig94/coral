@@ -22,19 +22,22 @@ rather than an edited-clean text, because the corrections are the part that does
 
 ## Build identity — one build's records read by another
 
-|                                                                    |                                                                                                                                                                                                                                                                                                    |
-| ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`build-identity-and-upgrade.md`](./build-identity-and-upgrade.md) | **Re-scored down.** Updating the plugin swaps CLI and skills immediately while the running coordinator does not swap, so two builds are live at once. Nothing has been observed to break because of it — the 2026-08-15 job losses it was written for were a single-build defect (#318), not skew. |
+|                                                                                      |                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`build-identity-and-upgrade.md`](./build-identity-and-upgrade.md)                   | **Re-scored back up, for a different reason than it was written for.** The replacement machinery exists and is never triggered: nothing compares the installed build against the live coordinator, so an old daemon serves a new install indefinitely and that release's fixes never run. Observed 2026-08-15 — a four-hour-old `0.10.6` daemon serving `0.10.8`, with 27 quarantine rows and none of the fixes in effect. |
+| [`quarantine-terminal-without-session.md`](./quarantine-terminal-without-session.md) | **Actively accumulating.** Recovery quarantines a new row every so often for a terminal event carrying no `refs.sessionId`. Survived a restart onto the build whose fix was assumed to cover it, so the old-daemon explanation is false.                                                                                                                                                                                   |
 
-Its first half — a record this build cannot parse must not become a job this build destroys — shipped
-as #316. What remains splits in two: the **record** direction shares a compatibility policy with
+`build-identity`'s first half — a record this build cannot parse must not become a job this build
+destroys — shipped as #316. What remains is three things, not two: **finishing the takeover** (above,
+now the front item), the **record** direction, which shares a compatibility policy with
 [`jobs-read-contract-schema-first.md`](./jobs-read-contract-schema-first.md) and
-[`result-artifact-availability.md`](./result-artifact-availability.md), settle it once across all
-three; the **output** direction — a live session holding old skill text driving a new CLI — has no
-defense today and is what actually blocks the `wait` change below.
+[`result-artifact-availability.md`](./result-artifact-availability.md), and the **output** direction —
+a live session holding old skill text driving a new CLI — which has no defense today and is what
+actually blocks the `wait` change below.
 
-Read its correction section before citing it. It named a cause it had inferred from a bundle-string
-diff rather than reproduced, which is the same defect this index was rewritten to remove.
+Read its correction sections before citing it. It has now been wrong twice about this subject: once
+naming a cause inferred from a bundle-string diff rather than reproduced, and once calling the mixed
+window "permitted by design" when the design is present and simply unreached.
 
 ---
 
@@ -61,10 +64,10 @@ landing does not unblock it — that was the record direction.
 
 ## Provider proxy
 
-|                                                                                            |                                                                                                                                                                                                                |
-| ------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`proxy-set-acquisition.md`](./proxy-set-acquisition.md)                                   | Acquisition fails on an exact-equality comparison of `processStartedAtSeconds` across a spawn. A three-second skew is enough, which is the most plausible reason two machines on one build behave differently. |
-| [`provider-operation-shutdown-quiescence.md`](./provider-operation-shutdown-quiescence.md) | Shutdown fences only part of the mutation surface.                                                                                                                                                             |
+|                                                                                            |                                                                                                                                                                                                                                                   |
+| ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`proxy-set-acquisition.md`](./proxy-set-acquisition.md)                                   | Acquisition fails on an exact-equality comparison of `processStartedAtSeconds` across a spawn. Measured disagreements run from **2 to 670 seconds**, which is too wide for spawn latency and points at the two sides using different clock bases. |
+| [`provider-operation-shutdown-quiescence.md`](./provider-operation-shutdown-quiescence.md) | Shutdown fences only part of the mutation surface.                                                                                                                                                                                                |
 
 ---
 
@@ -104,6 +107,16 @@ would have to satisfy both, and their requirements are opposites.
 |                                                        |                                                                                                                 |
 | ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
 | [`store-format-routing.md`](./store-format-routing.md) | **Dormant.** Its one live defect was extracted to `coordinator-socket-identity.md`. Read it as a design record. |
+
+---
+
+---
+
+## Environment, not Coral
+
+|                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Sandboxed hooks cannot find the backend bundle.** 252 occurrences of `Cannot find module '/tmp/coral-hooks-<rand>/plugin-root/bridge/coral-backend.cjs'` in one coordinator log. Neither `coral-hooks` nor that path shape exists anywhere in this repository or in a built bundle, so the mirrored plugin root is the host harness's, and it omits `bridge/`. The hooks fail open, so nothing breaks — but every occurrence is a spawned process that dies, and the noise buries real errors in the same log. Worth a line in `docs/hooks.md` about what a hook may assume about its plugin root, and worth confirming against the harness rather than guessing. |
 
 ---
 
