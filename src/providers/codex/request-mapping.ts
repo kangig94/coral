@@ -144,12 +144,18 @@ export function readCodexPersistedContinuity(
   const continuity = decoded.data;
   const cwdScope = readString(options.cwdScope);
   const cwd = readString(continuity.cwd);
-  const parsed = {
-    cwd: cwdScope === undefined ? (cwd === undefined ? undefined : resolve(cwd)) : scopedCodexCwd(cwd, cwdScope),
-    threadId: readString(continuity.threadId),
-    turnId: readString(continuity.turnId),
+  // Build the way `buildCodexContinuity` does — a key present with an `undefined` value is not the
+  // same as an absent key once this reaches the durable JSON boundary, which has no `undefined` and
+  // rejects it. Claude's reader returns Zod's parsed data directly and never had the hazard.
+  const resolvedCwd =
+    cwdScope === undefined ? (cwd === undefined ? undefined : resolve(cwd)) : scopedCodexCwd(cwd, cwdScope);
+  const threadId = readString(continuity.threadId);
+  const turnId = readString(continuity.turnId);
+  return {
+    ...(resolvedCwd === undefined ? {} : { cwd: resolvedCwd }),
+    ...(threadId === undefined ? {} : { threadId }),
+    ...(turnId === undefined ? {} : { turnId }),
   };
-  return parsed;
 }
 
 export function buildCodexContinuity(update: {
