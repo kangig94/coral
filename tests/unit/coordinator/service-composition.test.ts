@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -47,7 +47,10 @@ import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
 import { composeReducers } from '#src/store/reducers.js';
 import type { CommitContext } from '#src/store/append.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
+import { getEvent } from '#src/store/event-queries.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
+import { createCauseRefRenderer } from '#src/causality/render.js';
+import { defaultEventDescribers } from '#src/read-model/event-describers.js';
 import {
   defineFakeProvider,
   toProviderDefinition,
@@ -130,11 +133,20 @@ let runtime: ReturnType<typeof createRealRuntime>;
 let JOBS_DIR = '';
 
 function createProgressStore(namespace = 'test-ns'): JobStore {
-  return new JobStore(namespace, runtime, createEventBodyCodec(), {
-    db: openTestStoreDb(runtime),
+  const db = openTestStoreDb(runtime);
+  const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
+  const bodyCodec = createEventBodyCodec();
+  const readCtx = { schemas: reducers.schemas, streamKinds: reducers.streamKinds, bodyCodec };
+  const causeRefRenderer = createCauseRefRenderer(defaultEventDescribers);
+  return new JobStore(namespace, runtime, bodyCodec, {
+    db,
     eventBus,
-    reducers: composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry),
+    reducers,
     providers: permissiveProviderLookupPort,
+    describeCauseRef: (ref) =>
+      causeRefRenderer.describe(ref, {
+        getEvent: (stream, seq) => getEvent(db, stream, seq, readCtx),
+      }),
     materializeWorkflowResultArtifact,
   });
 }
@@ -192,7 +204,7 @@ function seedTestJobSession(progressStore: JobStore, options: InitJobOptions): v
 }
 
 function jobResultPath(jobId: string): string {
-  return join(runtime.paths.coral.exports.jobsRoot, jobId, 'result.md');
+  return runtime.paths.coral.exports.forJob(jobId).resultMarkdown;
 }
 
 function cancelQueued(jobId: string, pool?: 'default' | 'discuss' | 'curate'): boolean {
@@ -1203,7 +1215,6 @@ describe('ExecutionService', () => {
 
     const service = createService(ctx);
     const { progressStore } = getInternals(service);
-    const materializeResultArtifact = vi.spyOn(progressStore, 'materializeResultArtifact');
     const decision = await service.executeWorkflow(
       'codex',
       parseExpression('architect -> resolver'),
@@ -1227,7 +1238,6 @@ describe('ExecutionService', () => {
     const workflow = readWorkflowView(progressStore.getDb(), decision.jobId, createDefaultStoreReadContext());
 
     expect(existsSync(terminal.resultPath)).toBe(true);
-    expect(materializeResultArtifact).toHaveBeenCalledExactlyOnceWith(decision.jobId);
     expect(markdownAtTerminal).toBe(
       ['# Step 0.0: architect', '', 'ARCH', '', '# Step 1.0: resolver', '', 'FINAL', ''].join('\n'),
     );
@@ -1379,7 +1389,6 @@ describe('ExecutionService', () => {
 
     const service = createService(ctx);
     const { progressStore } = getInternals(service);
-    const materializeResultArtifact = vi.spyOn(progressStore, 'materializeResultArtifact');
     const decision = await service.executeWorkflow(
       'codex',
       parseExpression('architect -> resolver'),
@@ -1403,7 +1412,6 @@ describe('ExecutionService', () => {
     const workflow = readWorkflowView(progressStore.getDb(), decision.jobId, createDefaultStoreReadContext());
 
     expect(markdownAtTerminal).toBe('# Step 0.0: architect\n\nARCH\n');
-    expect(materializeResultArtifact).toHaveBeenCalledExactlyOnceWith(decision.jobId);
     expect(terminal.result).toMatchObject({
       content: '',
       outcome: {
@@ -1458,7 +1466,6 @@ describe('ExecutionService', () => {
 
     const service = createService(ctx);
     const { progressStore } = getInternals(service);
-    const materializeResultArtifact = vi.spyOn(progressStore, 'materializeResultArtifact');
     const decision = await service.executeWorkflow(
       'codex',
       parseExpression('architect -> resolver'),
@@ -1482,7 +1489,6 @@ describe('ExecutionService', () => {
     const workflow = readWorkflowView(progressStore.getDb(), decision.jobId, createDefaultStoreReadContext());
 
     expect(markdownAtTerminal).toBe('# Step 0.0: architect\n\nARCH\n');
-    expect(materializeResultArtifact).toHaveBeenCalledExactlyOnceWith(decision.jobId);
     expect(terminal.result).toMatchObject({
       content: '',
       outcome: {
@@ -2515,7 +2521,7 @@ describe('ExecutionService', () => {
             workflowSlotGeneration: 0,
           }),
         );
-        mkdirSync(join(runtime.paths.coral.exports.jobsRoot, jobId), { recursive: true });
+        mkdirSync(dirname(jobResultPath(jobId)), { recursive: true });
         writeFileSync(jobResultPath(jobId), 'stale raw result', 'utf-8');
 
         // Simulate a running job being adopted: register active launch + claim session
@@ -2536,7 +2542,7 @@ describe('ExecutionService', () => {
         expect(existsSync(jobResultPath(jobId))).toBe(true);
         expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe('recovered done\n');
         expect(
-          JSON.parse(readFileSync(join(runtime.paths.coral.exports.jobsRoot, jobId, 'workflow.json'), 'utf-8')),
+          JSON.parse(readFileSync(runtime.paths.coral.exports.forJob(jobId).workflowMetadata, 'utf-8')),
         ).toMatchObject({
           parentWorkflowJobId: workflowJobId,
           workflowSlotId,
@@ -2573,7 +2579,7 @@ describe('ExecutionService', () => {
             backendNamespace: TEST_BACKEND_NAMESPACE,
           }),
         );
-        mkdirSync(join(runtime.paths.coral.exports.jobsRoot, jobId), { recursive: true });
+        mkdirSync(dirname(jobResultPath(jobId)), { recursive: true });
         writeFileSync(jobResultPath(jobId), 'stale raw result', 'utf-8');
         restoreActiveLaunch(jobId, 'codex');
 
@@ -2630,7 +2636,7 @@ describe('ExecutionService', () => {
           },
         });
         progressStore.appendLaunchRequested(jobId, launchRecord);
-        mkdirSync(join(runtime.paths.coral.exports.jobsRoot, jobId), { recursive: true });
+        mkdirSync(dirname(jobResultPath(jobId)), { recursive: true });
         writeFileSync(jobResultPath(jobId), 'stale interrupted result', 'utf-8');
 
         await service.finalizeInterruptedAppServerJob(

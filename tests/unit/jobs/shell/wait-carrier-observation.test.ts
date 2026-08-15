@@ -189,7 +189,7 @@ describe('wait carrier observation composition', () => {
       aggregateWorkflowUsage: () => undefined,
       subscribeJobEvents: ({ abortSignal }) => emptySubscription(abortSignal),
       getCurrentJournalSeq: () => 9,
-      resultJobsRoot: '/tmp/coral-exports/jobs',
+      resultPathForJob: (jobId) => `/tmp/coral-exports/jobs/${jobId}/result.md`,
       observeCarriers,
     });
     const iterator = coordinator.waitForJobs({ jobIds: [INHERITED_JOB_ID], timeoutSeconds: 0 })[Symbol.asyncIterator]();

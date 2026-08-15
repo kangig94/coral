@@ -123,7 +123,13 @@ function fakeRuntime(): Pick<Runtime, 'time' | 'ids' | 'storage' | 'env' | 'path
     env: { platform: () => 'linux', fullSnapshot: () => ({}) } as never,
     paths: {
       coral: {
-        exports: { jobsRoot: '/tmp/coral/exports/jobs' },
+        exports: {
+          jobsRoot: '/tmp/coral/exports/jobs',
+          forJob: (jobId: string) => ({
+            resultMarkdown: `/tmp/coral/exports/jobs/${jobId}/result.md`,
+            workflowMetadata: `/tmp/coral/exports/jobs/${jobId}/workflow.json`,
+          }),
+        },
         corpus: { kbRoot: '/tmp/coral/kb' },
         projects: { root: '/tmp/coral/projects', dataDir: (access: string) => `/tmp/coral/projects/${access}` },
       },

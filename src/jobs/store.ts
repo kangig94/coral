@@ -1,7 +1,7 @@
 import type { Database } from '../store/db.js';
 import { join } from 'node:path';
 
-import { renderCauseRefFallback, type CauseRef, type CauseRefToken } from '../causality/cause-ref.js';
+import type { CauseRef, CauseRefToken } from '../causality/cause-ref.js';
 import type { ProviderLookupPort } from '../providers/catalog.js';
 import {
   commit as commitJournalEvents,
@@ -23,8 +23,9 @@ import {
   type JobsListFilters,
 } from './read-queries.js';
 import type { Runtime } from '../runtime/ports.js';
+import type { JobExportPaths } from '../infra/path/index.js';
 import { jobsDir } from './paths.js';
-import { ensureResultMarkdownArtifact, materializeResultMarkdownArtifact, resultPathFor } from './terminal/export.js';
+import { ensureResultMarkdownArtifact, materializeResultMarkdownArtifact } from './terminal/export.js';
 import type { DurableProcessExit } from '../runtime/durable-runtime.js';
 import { nowDate, nowIsoString } from '../infra/time.js';
 import { createNoopJobEventBus, jobCreatedEvent, type JobEventBus } from './event-bus.js';
@@ -74,7 +75,7 @@ export type JobStoreOptions = {
   materializeWorkflowResultArtifact?: (
     db: Database,
     workflowJobId: string,
-    jobsRoot: string,
+    paths: JobExportPaths,
     storage: Runtime['storage'],
     ctx: StoreReadContext,
   ) => string;
@@ -420,7 +421,7 @@ export class JobStore implements JobProgressStore {
 
   private readonly namespace: string;
   private readonly runtime: Pick<Runtime, 'storage' | 'paths' | 'time' | 'env'>;
-  private readonly describeCauseRef: (ref: CauseRef) => string;
+  private readonly describeCauseRef?: (ref: CauseRef) => string;
   private readonly materializeWorkflowResultArtifact?: JobStoreOptions['materializeWorkflowResultArtifact'];
   constructor(
     namespace: string,
@@ -438,7 +439,7 @@ export class JobStore implements JobProgressStore {
     this.streamKinds = reducers.streamKinds;
     this.bodyCodec = bodyCodec;
     this.db = db;
-    this.describeCauseRef = options.describeCauseRef ?? renderCauseRefFallback;
+    this.describeCauseRef = options.describeCauseRef;
     this.materializeWorkflowResultArtifact = options.materializeWorkflowResultArtifact;
     this.commitEvents = (cb) =>
       commitJournalEvents(this.db, cb, {
@@ -551,19 +552,14 @@ export class JobStore implements JobProgressStore {
   }
 
   ensureResultArtifact(jobId: string): string {
+    const paths = this.runtime.paths.coral.exports.forJob(jobId);
     const status = this.readStatus(jobId);
     if (status?.jobKind === 'workflow') {
-      const targetPath = resultPathFor(this.runtime.paths.coral.exports.jobsRoot, jobId);
-      if (this.runtime.storage.existsSync(targetPath)) return targetPath;
+      if (this.runtime.storage.existsSync(paths.resultMarkdown)) return paths.resultMarkdown;
       return this.materializeWorkflowResultArtifactFor(jobId);
     }
-    return ensureResultMarkdownArtifact(
-      this.db,
-      jobId,
-      this.runtime.paths.coral.exports.jobsRoot,
-      this.runtime.storage,
-      this,
-      this.describeCauseRef,
+    return ensureResultMarkdownArtifact(this.db, jobId, paths, this.runtime.storage, this, (ref) =>
+      this.describeCauseRefFor(jobId, ref),
     );
   }
 
@@ -574,11 +570,18 @@ export class JobStore implements JobProgressStore {
     return materializeResultMarkdownArtifact(
       this.db,
       jobId,
-      this.runtime.paths.coral.exports.jobsRoot,
+      this.runtime.paths.coral.exports.forJob(jobId),
       this.runtime.storage,
       this,
-      this.describeCauseRef,
+      (ref) => this.describeCauseRefFor(jobId, ref),
     );
+  }
+
+  private describeCauseRefFor(jobId: string, ref: CauseRef): string {
+    if (this.describeCauseRef === undefined) {
+      throw new Error(`Cannot materialize result artifact for ${jobId}: cause renderer is missing.`);
+    }
+    return this.describeCauseRef(ref);
   }
 
   private materializeWorkflowResultArtifactFor(jobId: string): string {
@@ -588,7 +591,7 @@ export class JobStore implements JobProgressStore {
     return this.materializeWorkflowResultArtifact(
       this.db,
       jobId,
-      this.runtime.paths.coral.exports.jobsRoot,
+      this.runtime.paths.coral.exports.forJob(jobId),
       this.runtime.storage,
       this,
     );

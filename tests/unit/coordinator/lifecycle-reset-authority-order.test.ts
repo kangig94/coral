@@ -177,7 +177,13 @@ function makeRuntime(): Runtime {
           walFile: '/tmp/coral-lifecycle-order-store/store.db-wal',
           shmFile: '/tmp/coral-lifecycle-order-store/store.db-shm',
         },
-        exports: { jobsRoot: '/tmp/coral-lifecycle-order-jobs' },
+        exports: {
+          jobsRoot: '/tmp/coral-lifecycle-order-jobs',
+          forJob: (jobId: string) => ({
+            resultMarkdown: `/tmp/coral-lifecycle-order-jobs/${jobId}/result.md`,
+            workflowMetadata: `/tmp/coral-lifecycle-order-jobs/${jobId}/workflow.json`,
+          }),
+        },
         corpus: {
           kbRoot: '/tmp/coral-lifecycle-order-kb',
           notesDir: '/tmp/coral-lifecycle-order-kb/notes',

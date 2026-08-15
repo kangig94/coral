@@ -8,6 +8,7 @@ import { basename, join } from 'node:path';
 
 import type { BuildFlavor } from '../build-flavor.js';
 import { type CoordinatorPaths, coordinatorPaths, socketPathForRunDir } from './coordinator.js';
+import { type ExportsPaths, exportsPaths } from './exports.js';
 import { coralStateRoot, generationRoot, generationStateRoot, kbVaultRoot } from './root.js';
 import { type EnginePaths, enginePaths } from './engine.js';
 import { type KbRuntimePaths, kbRuntimePaths } from './kb-runtime.js';
@@ -30,10 +31,6 @@ export interface CorpusPaths {
   principlesDir: string;
   communitiesDir: string;
   wikiDir: string;
-}
-
-export interface ExportsPaths {
-  jobsRoot: string;
 }
 
 export interface ProjectsPaths {
@@ -67,6 +64,8 @@ export type CoralPaths = {
 // provider endpoint and capsule paths are dynamic and therefore publish their constructors here.
 export type { CoordinatorPaths } from './coordinator.js';
 export { socketPathForRunDir };
+export type { ExportsPaths, JobExportPaths } from './exports.js';
+export { exportsPaths };
 export type {
   ProviderBootstrapCapsulePathOptions,
   ProviderGuardianEndpointIdentity,
@@ -98,11 +97,9 @@ export interface CorpusPathOptions extends FamilyPathOptions {
   readonly customKbRoot?: string;
 }
 
-// `corpusPaths` and `exportsPaths` live inside the composer file rather than
-// in their own siblings: corpus piggybacks on `kbVaultRoot` (already in
-// root.ts) and exports has a single field. Splitting either into its own
-// file would be premature. They stay exported for path-layout tests that
-// assert each family in isolation.
+// `corpusPaths` lives inside the composer file rather than in its own sibling:
+// it piggybacks on `kbVaultRoot` (already in root.ts). It stays exported for
+// path-layout tests that assert the family in isolation.
 export function corpusPaths(flavor: BuildFlavor, opts?: CorpusPathOptions): CorpusPaths {
   const kbRootDir = kbVaultRoot(flavor, {
     ...(opts?.baseDir === undefined ? {} : { baseDir: opts.baseDir }),
@@ -115,13 +112,6 @@ export function corpusPaths(flavor: BuildFlavor, opts?: CorpusPathOptions): Corp
     principlesDir: join(kbRootDir, 'principles'),
     communitiesDir: join(kbRootDir, 'communities'),
     wikiDir: join(kbRootDir, 'wiki'),
-  };
-}
-
-export function exportsPaths(flavor: BuildFlavor, opts?: FamilyPathOptions): ExportsPaths {
-  const base = flavor === 'dev' ? 'exports-dev' : 'exports';
-  return {
-    jobsRoot: join(coralStateRoot(opts?.baseDir), base, 'jobs'),
   };
 }
 

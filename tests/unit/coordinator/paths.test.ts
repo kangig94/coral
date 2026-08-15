@@ -87,8 +87,11 @@ describe('composeCoralPaths', () => {
   });
 
   it('exportsPaths accepts an explicit baseDir', () => {
-    expect(exportsPaths('dev', { baseDir: '/tmp/coral-root' })).toEqual({
-      jobsRoot: join('/tmp/coral-root', 'exports-dev', 'jobs'),
+    const paths = exportsPaths('dev', { baseDir: '/tmp/coral-root' });
+    expect(paths.jobsRoot).toBe(join('/tmp/coral-root', 'exports-dev', 'jobs'));
+    expect(paths.forJob('job-1')).toEqual({
+      resultMarkdown: join('/tmp/coral-root', 'exports-dev', 'jobs', 'job-1', 'result.md'),
+      workflowMetadata: join('/tmp/coral-root', 'exports-dev', 'jobs', 'job-1', 'workflow.json'),
     });
   });
 

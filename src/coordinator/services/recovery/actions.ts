@@ -81,7 +81,12 @@ function markRecoveryError(
   const facts = settleFault(action.fault);
   if (action.status.jobKind === 'workflow') {
     try {
-      writeWorkflowResultArtifact(runtime.storage, runtime.paths.coral.exports.jobsRoot, action.status.jobId, '');
+      writeWorkflowResultArtifact(
+        runtime.storage,
+        runtime.paths.coral.exports.forJob(action.status.jobId),
+        action.status.jobId,
+        '',
+      );
     } catch (error: unknown) {
       log(`Failed to write result artifact for ${action.status.jobId}: ${formatError(error)}\n`);
     }

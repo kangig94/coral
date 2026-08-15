@@ -155,7 +155,7 @@ export function resolveCoordinatorDefaults(
             progressStore,
             message,
             runtime.storage,
-            runtime.paths.coral.exports.jobsRoot,
+            runtime.paths.coral.exports.forJob,
             runtime.time.now(),
             signal,
             (cb) => progressStore.commit(cb),

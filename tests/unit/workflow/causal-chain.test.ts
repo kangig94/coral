@@ -29,6 +29,7 @@ import { defaultEventDescribers } from '#src/read-model/event-describers.js';
 
 const renderer = createCauseRefRenderer(defaultEventDescribers);
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
+import { commit } from '#src/store/append.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { composeReducers } from '#src/store/reducers.js';
@@ -278,11 +279,11 @@ async function runChain(db: Database, driver: ConsumerDriver): Promise<number> {
 
   // Transaction 5 — C fails, workflow fails, workflow-job fails.
   // All three events commit atomically (BEGIN IMMEDIATE..COMMIT).
-  const cTerminalSeq =
-    commitInputs(
+  const workflowJobTerminalSeq =
+    commit(
       db,
-      [
-        {
+      (c) => {
+        const childTerminal = c.append({
           type: 'job.terminal.recorded',
           stream: { kind: 'job', id: 'c-1' },
           refs: { sessionId: 'session-c-1', parentJobId: WORKFLOW_ID, workflowId: WORKFLOW_ID, workflowSlotId: SLOT_C },
@@ -293,42 +294,18 @@ async function runChain(db: Database, driver: ConsumerDriver): Promise<number> {
               durationMs: 3300,
             },
           },
-        },
-      ],
-      {
-        now: () => NOW,
-        reducers: composeReducers(jobsRegistry, workflowRegistry),
-        bodyCodec: createEventBodyCodec(),
-        providers: permissiveProviderLookupPort,
-      },
-    ).at(-1)?.seq ?? 0;
-  const workflowCompletedSeq =
-    commitInputs(
-      db,
-      [
-        {
+        });
+        const workflowCompleted = c.append({
           type: 'workflow.completed',
           stream: { kind: 'workflow', id: WORKFLOW_ID },
           refs: { workflowId: WORKFLOW_ID },
           body: {
             outcome: 'failed',
-            causeRef: { stream: { kind: 'job', id: 'c-1' }, seq: cTerminalSeq },
+            causeRef: childTerminal,
             stepDetails: [],
           },
-        },
-      ],
-      {
-        now: () => NOW,
-        reducers: composeReducers(jobsRegistry, workflowRegistry),
-        bodyCodec: createEventBodyCodec(),
-        providers: permissiveProviderLookupPort,
-      },
-    ).at(-1)?.seq ?? 0;
-  const workflowJobTerminalSeq =
-    commitInputs(
-      db,
-      [
-        {
+        });
+        c.append({
           type: 'job.terminal.recorded',
           stream: { kind: 'job', id: WORKFLOW_ID },
           refs: { jobId: WORKFLOW_ID, workflowId: WORKFLOW_ID },
@@ -336,14 +313,15 @@ async function runChain(db: Database, driver: ConsumerDriver): Promise<number> {
             terminal: {
               outcome: {
                 kind: 'failed',
-                causeRef: { stream: { kind: 'workflow', id: WORKFLOW_ID }, seq: workflowCompletedSeq },
+                causeRef: workflowCompleted,
               },
               content: '',
               durationMs: 8452,
             },
           },
-        },
-      ],
+        });
+        return undefined;
+      },
       {
         now: () => NOW,
         reducers: composeReducers(jobsRegistry, workflowRegistry),

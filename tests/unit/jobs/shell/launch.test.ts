@@ -170,11 +170,11 @@ function loadPersistedRecoveryLaunch(progressStore: JobStore, jobId: string): Jo
 }
 
 function _jobResultPath(jobId: string): string {
-  return join(runtime.paths.coral.exports.jobsRoot, jobId, 'result.md');
+  return runtime.paths.coral.exports.forJob(jobId).resultMarkdown;
 }
 
 function _jobWorkflowPath(jobId: string): string {
-  return join(runtime.paths.coral.exports.jobsRoot, jobId, 'workflow.json');
+  return runtime.paths.coral.exports.forJob(jobId).workflowMetadata;
 }
 
 function cancelQueued(jobId: string, pool?: 'default' | 'discuss' | 'curate'): boolean {

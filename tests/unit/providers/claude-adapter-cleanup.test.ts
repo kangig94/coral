@@ -38,7 +38,15 @@ function protocolStorage(unlinkSync: ReturnType<typeof vi.fn>, existsSync: Retur
 }
 
 const protocolPaths = {
-  coral: { exports: { jobsRoot: '/tmp/coral/jobs' } },
+  coral: {
+    exports: {
+      jobsRoot: '/tmp/coral/jobs',
+      forJob: (jobId: string) => ({
+        resultMarkdown: `/tmp/coral/jobs/${jobId}/result.md`,
+        workflowMetadata: `/tmp/coral/jobs/${jobId}/workflow.json`,
+      }),
+    },
+  },
 } as ArtifactCleanupRuntime['paths'];
 
 function makeRuntime(): {

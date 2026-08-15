@@ -1,6 +1,8 @@
 import { CoralSetupError } from '../runtime/errors.js';
+import { isRecord } from '../infra/json.js';
 import { sessionContinuationLeaseClaimedBodySchema } from '../sessions/event-bodies.js';
 import { decodeBody } from '../store/body-codec.js';
+import { CoralAppendError } from '../store/append-error.js';
 import type { DomainAppendValidator } from '../store/reducers.js';
 import { jobLaunchRequestBodySchema } from '../jobs/launch.js';
 import { workflowLifecycleSchema, workflowTerminalLifecycleSchema } from './lifecycle.js';
@@ -9,6 +11,38 @@ import { readWorkflowChildProjectionRows } from '../jobs/projection-row.js';
 const TERMINAL_LIFECYCLES: ReadonlySet<string> = new Set(workflowTerminalLifecycleSchema.options);
 
 type WorkflowSlotHead = { jobId: string; sessionId: string; generation: number; terminal: boolean };
+
+type WorkflowTerminalLifecycle = ReturnType<typeof workflowTerminalLifecycleSchema.parse>;
+
+function finalizationPairError(
+  workflowId: string,
+  reason:
+    | 'missing_completion'
+    | 'missing_terminal'
+    | 'duplicate_completion'
+    | 'duplicate_terminal'
+    | 'outcome_mismatch',
+  detail: Record<string, unknown> = {},
+): CoralAppendError {
+  return new CoralAppendError('workflow_finalization_pair_invalid', { workflowId, reason, ...detail });
+}
+
+function jobTerminalWorkflowOutcome(body: unknown): WorkflowTerminalLifecycle | null {
+  if (!isRecord(body) || !isRecord(body.terminal) || !isRecord(body.terminal.outcome)) return null;
+  switch (body.terminal.outcome.kind) {
+    case 'completed':
+      return 'completed';
+    case 'aborted':
+      return 'aborted';
+    case 'failed':
+    case 'job_fault':
+      return 'failed';
+    case 'provider_exit':
+      return body.terminal.outcome.code === 0 ? 'completed' : 'failed';
+    default:
+      return null;
+  }
+}
 
 function slotChainError(jobId: string, reason: string, context: Record<string, unknown>): CoralSetupError {
   return new CoralSetupError({
@@ -24,6 +58,9 @@ export const validateWorkflowJobAuthority: DomainAppendValidator = (ctx, inputs)
     inputs.filter((input) => input.type === 'workflow.plan.declared').map((input) => input.stream.id),
   );
   const terminalInBatch = new Map<string, string>();
+  const completionOutcomes = new Map<string, WorkflowTerminalLifecycle[]>();
+  const jobTerminalOutcomes = new Map<string, Array<string | null>>();
+  const workflowRootsInBatch = new Set<string>();
   const replacementClaims = new Map<string, ReturnType<typeof sessionContinuationLeaseClaimedBodySchema.parse>>();
   const heads = new Map<string, WorkflowSlotHead | null>();
 
@@ -35,6 +72,15 @@ export const validateWorkflowJobAuthority: DomainAppendValidator = (ctx, inputs)
           : undefined,
       );
       terminalInBatch.set(input.stream.id, body);
+      const outcomes = completionOutcomes.get(input.stream.id) ?? [];
+      outcomes.push(body);
+      completionOutcomes.set(input.stream.id, outcomes);
+    } else if (input.type === 'job.terminal.recorded') {
+      const outcomes = jobTerminalOutcomes.get(input.stream.id) ?? [];
+      outcomes.push(jobTerminalWorkflowOutcome(input.body));
+      jobTerminalOutcomes.set(input.stream.id, outcomes);
+    } else if (input.type === 'job.launch.requested' && isRecord(input.body) && input.body.jobKind === 'workflow') {
+      workflowRootsInBatch.add(input.stream.id);
     } else if (input.type === 'session.continuation_lease.claimed') {
       const body = sessionContinuationLeaseClaimedBodySchema.parse(input.body);
       replacementClaims.set(body.lease.resumedJobId, body);
@@ -45,6 +91,15 @@ export const validateWorkflowJobAuthority: DomainAppendValidator = (ctx, inputs)
     ctx.db
       .prepare<[string], { lifecycle: string }>('SELECT lifecycle FROM projection_workflows WHERE workflow_id = ?')
       .get(workflowId);
+
+  const isWorkflowRoot = (jobId: string): boolean =>
+    workflowRootsInBatch.has(jobId) ||
+    ctx.db
+      .prepare<
+        [string],
+        { present: 1 }
+      >("SELECT 1 AS present FROM projection_jobs WHERE job_id = ? AND job_kind = 'workflow' LIMIT 1")
+      .get(jobId) !== undefined;
 
   const readHead = (workflowId: string, slotId: string): WorkflowSlotHead | null => {
     const key = `${workflowId}\0${slotId}`;
@@ -207,5 +262,31 @@ export const validateWorkflowJobAuthority: DomainAppendValidator = (ctx, inputs)
       generation: launch.workflowSlotGeneration,
       terminal: false,
     });
+  }
+
+  for (const [workflowId, completions] of completionOutcomes) {
+    if (completions.length !== 1) {
+      throw finalizationPairError(workflowId, 'duplicate_completion', { count: completions.length });
+    }
+    const terminals = jobTerminalOutcomes.get(workflowId) ?? [];
+    if (terminals.length === 0) {
+      throw finalizationPairError(workflowId, 'missing_terminal');
+    }
+    if (terminals.length !== 1) {
+      throw finalizationPairError(workflowId, 'duplicate_terminal', { count: terminals.length });
+    }
+    const completionOutcome = completions[0];
+    const terminalOutcome = terminals[0];
+    if (terminalOutcome !== completionOutcome) {
+      throw finalizationPairError(workflowId, 'outcome_mismatch', { completionOutcome, terminalOutcome });
+    }
+  }
+
+  for (const [jobId, terminals] of jobTerminalOutcomes) {
+    if (!isWorkflowRoot(jobId) || completionOutcomes.has(jobId)) continue;
+    if (terminals.length !== 1) {
+      throw finalizationPairError(jobId, 'duplicate_terminal', { count: terminals.length });
+    }
+    throw finalizationPairError(jobId, 'missing_completion', { terminalOutcome: terminals[0] });
   }
 };

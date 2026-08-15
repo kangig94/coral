@@ -3,11 +3,16 @@ import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
-import { commit, type AppendContext } from '#src/store/append.js';
+import { commit, type AppendContext, type CommitContext } from '#src/store/append.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { workflowCompletedEvent, workflowPlanDeclaredEvent, workflowRegistry } from '#src/workflow/events.js';
+import { jobsRegistry } from '#src/jobs/events.js';
+import type { JobLaunchRequestBody } from '#src/jobs/launch.js';
+import { appendJobTerminalRecorded } from '#src/jobs/terminal/recording.js';
+import type { CoralEventInput } from '#src/store/envelope.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import type { WorkflowPlan } from '#src/workflow/plan.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
@@ -28,7 +33,7 @@ function createDb(): Database {
 function ctx(): AppendContext {
   return {
     now: () => NOW,
-    reducers: composeReducers(workflowRegistry),
+    reducers: composeReducers(workflowRegistry, jobsRegistry),
     bodyCodec: createEventBodyCodec(),
     providers: permissiveProviderLookupPort,
   };
@@ -45,6 +50,45 @@ function plan(slotIds: readonly string[]): WorkflowPlan {
   };
 }
 
+function workflowRootLaunch(workflowId: string): CoralEventInput<JobLaunchRequestBody> {
+  return {
+    type: 'job.launch.requested',
+    stream: { kind: 'job', id: workflowId },
+    refs: { jobId: workflowId, workflowId },
+    body: {
+      owner: { kind: 'workflow', id: workflowId },
+      projectRoot: fixtureCanonicalWorkDir('/workspace'),
+      backendNamespace: 'tests',
+      jobKind: 'workflow',
+      pool: 'default',
+      enqueueSequence: 0,
+      request: {
+        prompt: 'test workflow',
+        cwd: fixtureCanonicalWorkDir('/workspace'),
+        bypassPermissions: false,
+        coralEnv: {},
+      },
+      createdAt: NOW.toISOString(),
+    },
+  };
+}
+
+function appendFinalizationPair<Scope>(
+  c: CommitContext<Scope>,
+  workflowId: string,
+  outcome: 'completed' | 'aborted',
+): void {
+  c.append(workflowCompletedEvent(workflowId, { outcome, stepDetails: [] }));
+  appendJobTerminalRecorded(c, {
+    jobId: workflowId,
+    terminal: {
+      content: '',
+      durationMs: 1,
+      outcome: outcome === 'completed' ? { kind: 'completed' } : { kind: 'aborted', reason: 'signal_abort' },
+    },
+  });
+}
+
 describe('workflow.completed duplicate validator', () => {
   it('rejects a second completion on a stream that already has one', () => {
     const db = createDb();
@@ -53,7 +97,8 @@ describe('workflow.completed duplicate validator', () => {
         db,
         (c) => {
           c.append(workflowPlanDeclaredEvent('workflow-1', plan(['workflow-1:0:0']), TEST_PROVIDER_SCOPE));
-          c.append(workflowCompletedEvent('workflow-1', { outcome: 'completed', stepDetails: [] }));
+          c.append(workflowRootLaunch('workflow-1'));
+          appendFinalizationPair(c, 'workflow-1', 'completed');
           return undefined;
         },
         ctx(),
@@ -63,7 +108,7 @@ describe('workflow.completed duplicate validator', () => {
         commit(
           db,
           (c) => {
-            c.append(workflowCompletedEvent('workflow-1', { outcome: 'aborted', stepDetails: [] }));
+            appendFinalizationPair(c, 'workflow-1', 'aborted');
             return undefined;
           },
           ctx(),
@@ -82,8 +127,9 @@ describe('workflow.completed duplicate validator', () => {
           db,
           (c) => {
             c.append(workflowPlanDeclaredEvent('workflow-2', plan(['workflow-2:0:0']), TEST_PROVIDER_SCOPE));
-            c.append(workflowCompletedEvent('workflow-2', { outcome: 'completed', stepDetails: [] }));
-            c.append(workflowCompletedEvent('workflow-2', { outcome: 'aborted', stepDetails: [] }));
+            c.append(workflowRootLaunch('workflow-2'));
+            appendFinalizationPair(c, 'workflow-2', 'completed');
+            appendFinalizationPair(c, 'workflow-2', 'aborted');
             return undefined;
           },
           ctx(),
@@ -102,8 +148,10 @@ describe('workflow.completed duplicate validator', () => {
         (c) => {
           c.append(workflowPlanDeclaredEvent('workflow-a', plan(['workflow-a:0:0']), TEST_PROVIDER_SCOPE));
           c.append(workflowPlanDeclaredEvent('workflow-b', plan(['workflow-b:0:0']), TEST_PROVIDER_SCOPE));
-          c.append(workflowCompletedEvent('workflow-a', { outcome: 'completed', stepDetails: [] }));
-          c.append(workflowCompletedEvent('workflow-b', { outcome: 'aborted', stepDetails: [] }));
+          c.append(workflowRootLaunch('workflow-a'));
+          c.append(workflowRootLaunch('workflow-b'));
+          appendFinalizationPair(c, 'workflow-a', 'completed');
+          appendFinalizationPair(c, 'workflow-b', 'aborted');
           return undefined;
         },
         ctx(),

@@ -440,7 +440,8 @@ describe('sessions projections', () => {
 
       expect(readProjectionSessionEntriesById(h.db, []).size).toBe(0);
 
-      const entries = readProjectionSessionEntriesById(h.db, ['session-a', 'missing', 'session-a']);
+      const missingSessionIds = Array.from({ length: 33_000 }, (_, index) => `missing-${index}`);
+      const entries = readProjectionSessionEntriesById(h.db, ['session-a', ...missingSessionIds, 'session-a']);
       expect([...entries.keys()]).toEqual(['session-a']);
       expect(entries.get('session-a')?.sessionId).toBe('session-a');
     } finally {

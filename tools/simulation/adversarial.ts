@@ -19,8 +19,6 @@ import type { DurableCliRuntimeRecord, DurableProcessExit } from '../../src/runt
 import type { ProviderSession } from '../../src/sessions/entry.js';
 import { providerLookupPortFromCatalog } from '../../src/providers/catalog.js';
 
-const RESULT_FILE = 'result.md';
-
 export type LaunchJobOptions = {
   provider?: string;
   agent?: string;
@@ -572,7 +570,7 @@ export class SimulationWorld {
   }
 
   private resolveResultArtifactPath(jobId: string): string {
-    return join(this.current.backend.runtime.paths.coral.exports.jobsRoot, jobId, RESULT_FILE);
+    return this.current.backend.runtime.paths.coral.exports.forJob(jobId).resultMarkdown;
   }
 
   private resolveStreamArtifactPath(jobId: string, kind: 'stdout' | 'stderr'): string {

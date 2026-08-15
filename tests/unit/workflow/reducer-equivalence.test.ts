@@ -22,8 +22,45 @@ import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { TEST_CODEX_BINDING, TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 import type { ProviderSession } from '#src/sessions/entry.js';
 import type { CoralEventInput } from '#src/store/envelope.js';
+import type { JobLaunchRequestBody } from '#src/jobs/launch.js';
+import type { CauseRef } from '#src/causality/cause-ref.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 const NOW = new Date('2026-04-19T00:00:00.000Z');
+
+function workflowRootLaunch(workflowId: string): CoralEventInput<JobLaunchRequestBody> {
+  return {
+    type: 'job.launch.requested',
+    stream: { kind: 'job', id: workflowId },
+    refs: { jobId: workflowId, workflowId },
+    body: {
+      owner: { kind: 'workflow', id: workflowId },
+      projectRoot: fixtureCanonicalWorkDir('/workspace/coral'),
+      backendNamespace: 'tests',
+      jobKind: 'workflow',
+      pool: 'default',
+      enqueueSequence: 0,
+      request: {
+        prompt: 'test workflow',
+        cwd: fixtureCanonicalWorkDir('/workspace/coral'),
+        bypassPermissions: false,
+        coralEnv: {},
+      },
+      createdAt: NOW.toISOString(),
+    },
+  };
+}
+
+function failedWorkflowRootTerminal(workflowId: string, causeRef: CauseRef): CoralEventInput {
+  return {
+    type: 'job.terminal.recorded',
+    stream: { kind: 'job', id: workflowId },
+    refs: { jobId: workflowId, workflowId },
+    body: {
+      terminal: { outcome: { kind: 'failed', causeRef }, durationMs: 1, content: '' },
+    },
+  };
+}
 
 function providerSessionInputs(sessionId: string, jobId: string): CoralEventInput[] {
   const opened: ProviderSession = {
@@ -64,7 +101,7 @@ describe('workflow reducer equivalence', () => {
     const db = newRawDatabase(':memory:');
     try {
       applyBundledStoreSchema(db, currentCoralStoreFormat());
-      const reducers = composeReducers(workflowRegistry);
+      const reducers = composeReducers(jobsRegistry, workflowRegistry);
       const bodyCodec = createEventBodyCodec();
 
       const declaredPlan = buildWorkflowPlan('workflow-1', parseExpression('architect -> resolver'), {
@@ -75,6 +112,7 @@ describe('workflow reducer equivalence', () => {
         db,
         [
           workflowPlanDeclaredEvent('workflow-1', declaredPlan, TEST_PROVIDER_SCOPE),
+          workflowRootLaunch('workflow-1'),
           // drain.entered is projection-only state: replay must preserve the drain window
           // without reviving the deleted workflow checkpoint persistence layer.
           workflowDrainEnteredEvent('workflow-1', {
@@ -83,8 +121,12 @@ describe('workflow reducer equivalence', () => {
           }),
           workflowCompletedEvent('workflow-1', {
             outcome: 'failed',
-            causeRef: { stream: { kind: 'workflow', id: 'workflow-1' }, seq: 2 },
+            causeRef: { stream: { kind: 'workflow', id: 'workflow-1' }, seq: 3 },
             stepDetails: [],
+          }),
+          failedWorkflowRootTerminal('workflow-1', {
+            stream: { kind: 'workflow', id: 'workflow-1' },
+            seq: 4,
           }),
         ],
         { now: () => NOW, reducers, bodyCodec, providers: permissiveProviderLookupPort },
@@ -102,7 +144,7 @@ describe('workflow reducer equivalence', () => {
       expect(before).toEqual({
         workflow_id: 'workflow-1',
         plan: JSON.stringify(declaredPlan),
-        last_seq: appended.at(-1)?.seq,
+        last_seq: appended.find((event) => event.type === 'workflow.completed')?.seq,
       });
 
       rebuildProjections({
@@ -147,6 +189,7 @@ describe('workflow reducer equivalence', () => {
         db,
         [
           workflowPlanDeclaredEvent('workflow-1', plan, TEST_PROVIDER_SCOPE),
+          workflowRootLaunch('workflow-1'),
           ...plannedSlots.flatMap((slot) => [
             ...providerSessionInputs(`session-${slot.jobId}`, slot.jobId),
             {
@@ -211,6 +254,7 @@ describe('workflow reducer equivalence', () => {
             },
           },
           workflowCompletedEvent('workflow-1', { outcome: 'failed', causeRef, stepDetails: [] }),
+          failedWorkflowRootTerminal('workflow-1', causeRef),
         ],
         { now: () => NOW, reducers, bodyCodec, providers: permissiveProviderLookupPort },
       );

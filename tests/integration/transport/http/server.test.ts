@@ -150,7 +150,7 @@ let runtime: ReturnType<typeof createRealRuntime>;
 let JOBS_DIR = '';
 
 function jobResultPath(jobId: string): string {
-  return join(runtime.paths.coral.exports.jobsRoot, jobId, 'result.md');
+  return runtime.paths.coral.exports.forJob(jobId).resultMarkdown;
 }
 
 function createProgressStore(

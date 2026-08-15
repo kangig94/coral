@@ -1,7 +1,7 @@
 import type { Command } from 'commander';
 import { z } from 'zod';
 
-import { isLivePhase, jobPhaseSchema } from '../../jobs/phase.js';
+import { isLivePhase, LIVE_JOB_PHASES, jobPhaseSchema } from '../../jobs/phase.js';
 import type { JobStatus } from '../../jobs/records.js';
 import type { ProviderRegistry } from '../../providers/registry.js';
 import { getProviderNames, makeClient, type AbortOptions } from '../dispatch.js';
@@ -35,7 +35,6 @@ type WaitJobsOptions = {
 export function registerSessionCommands(program: Command, providerRegistry: ProviderRegistry): void {
   const registeredProviders = getProviderNames(providerRegistry);
   const providerSet = new Set(registeredProviders);
-  const livePhaseList = ['queued', 'launching', 'running'] as const;
   const jobsOptionsSchema = z
     .object({
       phase: jobPhaseSchema.optional(),
@@ -90,13 +89,13 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
         if (!phaseResult.success) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
-            message: `--phase must be one of: ${livePhaseList.join(', ')}`,
+            message: `--phase must be one of: ${LIVE_JOB_PHASES.join(', ')}`,
             path: ['phase'],
           });
         } else if (!isLivePhase(phaseResult.data)) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
-            message: `--phase must be one of: ${livePhaseList.join(', ')}`,
+            message: `--phase must be one of: ${LIVE_JOB_PHASES.join(', ')}`,
             path: ['phase'],
           });
         }

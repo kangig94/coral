@@ -548,7 +548,6 @@ function projectionRowToStatus(
   terminal: EventRow | null,
   requested: EventRow | null,
   ctx: StoreReadContext,
-  workflowLabel?: string,
 ): JobStatus {
   const terminalRecord = decodeTerminalRecord(terminal, ctx);
 
@@ -573,7 +572,6 @@ function projectionRowToStatus(
     ...(projection.replaces_workflow_job_id === null
       ? {}
       : { replacesWorkflowJobId: projection.replaces_workflow_job_id }),
-    ...(workflowLabel === undefined ? {} : { workflowLabel }),
     phase: projection.phase,
     updatedAt: terminal?.ts ?? runtime?.ts ?? rejected?.ts ?? requested?.ts ?? projection.created_at,
     lastSeq: projection.last_seq,
@@ -590,7 +588,6 @@ function hydrateJobProjectionDetail(
   terminal: EventRow | null,
   ctx: StoreReadContext,
   workflowUsage?: UsageSummary,
-  workflowLabel?: string,
 ): JobProjectionDetail {
   const launch = decodeLaunch(jobId, requested, ctx);
   const terminalRecord = decodeTerminalRecord(terminal, ctx);
@@ -604,7 +601,7 @@ function hydrateJobProjectionDetail(
   const exit = terminal && terminalRecord ? toJobExitProjection(terminal, terminalRecord, diagnostics) : null;
 
   const status = projection
-    ? projectionRowToStatus(jobId, projection, rejected, runtime, terminal, requested, ctx, workflowLabel)
+    ? projectionRowToStatus(jobId, projection, rejected, runtime, terminal, requested, ctx)
     : null;
 
   return {

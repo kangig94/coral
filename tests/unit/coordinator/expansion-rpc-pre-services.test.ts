@@ -56,7 +56,13 @@ function makeRuntime(): Runtime {
           walFile: '/tmp/coral-expansion-pre-services-store/store.db-wal',
           shmFile: '/tmp/coral-expansion-pre-services-store/store.db-shm',
         },
-        exports: { jobsRoot: '/tmp/coral-expansion-pre-services-jobs' },
+        exports: {
+          jobsRoot: '/tmp/coral-expansion-pre-services-jobs',
+          forJob: (jobId: string) => ({
+            resultMarkdown: `/tmp/coral-expansion-pre-services-jobs/${jobId}/result.md`,
+            workflowMetadata: `/tmp/coral-expansion-pre-services-jobs/${jobId}/workflow.json`,
+          }),
+        },
         corpus: {
           kbRoot: '/tmp/coral-expansion-pre-services-kb',
           notesDir: '/tmp/coral-expansion-pre-services-kb/notes',

@@ -1,6 +1,7 @@
 import { PROJECTION_JOB_COLUMNS, type ProjectionJobStoredRow } from './projection-row.js';
-import type { Database } from '../store/db.js';
+import { sqlPlaceholders, type Database } from '../store/db.js';
 import type { EventsRow } from '../store/schema.js';
+import { TERMINAL_JOB_PHASES } from './phase.js';
 import {
   canonicalRecoveryRevision,
   defineRecoverySource,
@@ -24,21 +25,21 @@ function scanCrashedJobRows(db: Database, subjectKey?: string): readonly RawCras
     const projections =
       subjectKey === undefined
         ? db
-            .prepare<[], ProjectionJobStoredRow>(
+            .prepare<unknown[], ProjectionJobStoredRow>(
               `SELECT ${PROJECTION_JOB_COLUMNS}
                  FROM projection_jobs
-                WHERE phase NOT IN ('completed', 'error', 'aborted')
+                WHERE phase NOT IN (${sqlPlaceholders(TERMINAL_JOB_PHASES.length)})
                 ORDER BY job_id ASC`,
             )
-            .all()
+            .all(...TERMINAL_JOB_PHASES)
         : db
-            .prepare<[string], ProjectionJobStoredRow>(
+            .prepare<unknown[], ProjectionJobStoredRow>(
               `SELECT ${PROJECTION_JOB_COLUMNS}
                  FROM projection_jobs
-                WHERE phase NOT IN ('completed', 'error', 'aborted')
+                WHERE phase NOT IN (${sqlPlaceholders(TERMINAL_JOB_PHASES.length)})
                   AND job_id = ?`,
             )
-            .all(subjectKey);
+            .all(...TERMINAL_JOB_PHASES, subjectKey);
     const readLaunchEvent = db.prepare<[string], EventsRow>(
       `SELECT ${EVENT_COLUMNS}
          FROM events

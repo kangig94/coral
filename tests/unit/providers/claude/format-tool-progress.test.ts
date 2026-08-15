@@ -13,6 +13,10 @@ describe('truncate', () => {
   it('truncates text and appends ellipsis when over max length', () => {
     expect(truncate('a'.repeat(81))).toBe(`${'a'.repeat(80)}...`);
   });
+
+  it('backs up to a grapheme boundary when an emoji crosses the cutoff', () => {
+    expect(truncate(`${'a'.repeat(19)}🪸`, 20)).toBe(`${'a'.repeat(19)}...`);
+  });
 });
 
 describe('formatToolProgress', () => {

@@ -28,7 +28,9 @@ import {
   formatJobsList,
   formatLaunch,
   formatLaunchWaitHint,
+  formatWorkflowSlot,
   renderJobsList,
+  truncatePreview,
   type JobsListItem,
 } from '#src/cli/format/jobs.js';
 import {
@@ -277,6 +279,10 @@ describe('cli format', () => {
   });
 
   describe('formatJobDetail', () => {
+    it('truncates previews without splitting a grapheme at the inline limit', () => {
+      expect(truncatePreview(`${'a'.repeat(9_996)}👨‍👩‍👧‍👦tail`)).toBe(`${'a'.repeat(9_996)}...`);
+    });
+
     it('renders durable workflow identity for an opaque child job id in list and detail views', () => {
       const childJobId = '11111111-1111-4111-8111-111111111111';
       const workflowJobId = '22222222-2222-4222-8222-222222222222';
@@ -309,6 +315,32 @@ describe('cli format', () => {
       expect(detail).toContain('Workflow generation: 1');
       expect(detail.split('\n')).toContain('Workflow atom: critic');
       expect(detail).toContain(`Replaces workflow job: ${replacedJobId}`);
+    });
+
+    it('abbreviates only canonical workflow slots owned by the recorded parent', () => {
+      const workflowJobId = '22222222-2222-4222-8222-222222222222';
+
+      expect(
+        formatWorkflowSlot({
+          parentWorkflowJobId: workflowJobId,
+          workflowSlotId: `${workflowJobId}:2:1`,
+          workflowSlotGeneration: 3,
+        }),
+      ).toBe('2:1 (g3)');
+      expect(
+        formatWorkflowSlot({
+          parentWorkflowJobId: workflowJobId,
+          workflowSlotId: `${workflowJobId}:2:not-an-atom`,
+          workflowSlotGeneration: 3,
+        }),
+      ).toBe(`${workflowJobId}:2:not-an-atom (g3)`);
+      expect(
+        formatWorkflowSlot({
+          parentWorkflowJobId: 'different-workflow',
+          workflowSlotId: `${workflowJobId}:2:1`,
+          workflowSlotGeneration: 3,
+        }),
+      ).toBe(`${workflowJobId}:2:1 (g3)`);
     });
 
     it('renders workflow child ids and replacement lineage in workflow detail', () => {

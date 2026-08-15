@@ -1,4 +1,4 @@
-import { dirname, join } from 'node:path';
+import { dirname } from 'node:path';
 
 import type { Database } from '../../store/db.js';
 
@@ -6,30 +6,23 @@ import type { StoragePort } from '../../infra/port-types.js';
 import { decodeBody, type StoreReadContext } from '../../store/body-codec.js';
 import type { EventsRow } from '../../store/schema.js';
 import type { CauseRef } from '../../causality/cause-ref.js';
+import type { JobExportPaths } from '../../infra/path/index.js';
 import { jobTerminalRecordedBodySchema } from './result.js';
 import { describeTerminalOutcome } from '../outcome.js';
 import { readProjectionJobRow } from '../projection-row.js';
 
-export function resultPathFor(jobsRoot: string, jobId: string): string {
-  return join(jobsRoot, jobId, 'result.md');
-}
-
 function writeResultArtifact(
   storage: Pick<StoragePort, 'mkdirSync' | 'writeAtomicSync'>,
-  jobsRoot: string,
+  paths: JobExportPaths,
   jobId: string,
   markdown: string,
 ): string {
-  const targetPath = resultPathFor(jobsRoot, jobId);
+  const targetPath = paths.resultMarkdown;
   storage.mkdirSync(dirname(targetPath), { recursive: true });
   if (!storage.writeAtomicSync(targetPath, markdown, { encoding: 'utf-8' })) {
     throw new Error(`Failed to write result artifact for ${jobId}`);
   }
   return targetPath;
-}
-
-export function workflowMetadataPathFor(jobsRoot: string, jobId: string): string {
-  return join(jobsRoot, jobId, 'workflow.json');
 }
 
 function workflowMetadataJson(db: Database, jobId: string): string | null {
@@ -88,7 +81,7 @@ function buildResultMarkdown(
 export function materializeResultMarkdownArtifact(
   db: Database,
   jobId: string,
-  jobsRoot: string,
+  paths: JobExportPaths,
   storage: Pick<StoragePort, 'mkdirSync' | 'writeAtomicSync'>,
   ctx: StoreReadContext,
   describeCauseRef: (ref: CauseRef) => string,
@@ -97,27 +90,27 @@ export function materializeResultMarkdownArtifact(
   if (markdown === null) {
     throw new Error(`Cannot materialize result artifact for ${jobId}: terminal record is missing.`);
   }
-  writeResultArtifact(storage, jobsRoot, jobId, markdown);
+  writeResultArtifact(storage, paths, jobId, markdown);
   const workflowMetadata = workflowMetadataJson(db, jobId);
   if (workflowMetadata !== null) {
-    const metadataPath = workflowMetadataPathFor(jobsRoot, jobId);
+    const metadataPath = paths.workflowMetadata;
     storage.mkdirSync(dirname(metadataPath), { recursive: true });
     if (!storage.writeAtomicSync(metadataPath, workflowMetadata, { encoding: 'utf-8' })) {
       throw new Error(`Failed to write workflow metadata artifact for ${jobId}`);
     }
   }
-  return resultPathFor(jobsRoot, jobId);
+  return paths.resultMarkdown;
 }
 
 export function ensureResultMarkdownArtifact(
   db: Database,
   jobId: string,
-  jobsRoot: string,
+  paths: JobExportPaths,
   storage: Pick<StoragePort, 'existsSync' | 'mkdirSync' | 'writeAtomicSync'>,
   ctx: StoreReadContext,
   describeCauseRef: (ref: CauseRef) => string,
 ): string {
-  const targetPath = resultPathFor(jobsRoot, jobId);
+  const targetPath = paths.resultMarkdown;
   if (storage.existsSync(targetPath)) {
     const projection = readProjectionJobRow(db, jobId);
     if (projection === null || projection.parent_workflow_job_id === null) {
@@ -125,5 +118,5 @@ export function ensureResultMarkdownArtifact(
     }
   }
 
-  return materializeResultMarkdownArtifact(db, jobId, jobsRoot, storage, ctx, describeCauseRef);
+  return materializeResultMarkdownArtifact(db, jobId, paths, storage, ctx, describeCauseRef);
 }

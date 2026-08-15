@@ -11,7 +11,7 @@ import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { jobsRegistry } from '#src/jobs/events.js';
-import { workflowPlanDeclaredEvent, workflowRegistry } from '#src/workflow/events.js';
+import { workflowCompletedEvent, workflowPlanDeclaredEvent, workflowRegistry } from '#src/workflow/events.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
@@ -188,6 +188,13 @@ function terminalRecorded(
   };
 }
 
+function completedWorkflowFinalization(workflowJobId: string): CoralEventInput[] {
+  return [
+    workflowCompletedEvent(workflowJobId, { outcome: 'completed', stepDetails: [] }),
+    terminalRecorded(workflowJobId, { jobKind: 'workflow' }),
+  ];
+}
+
 function seedWorkflowWithChildren(db: Database, workflowJobId: string): void {
   seedTestSessionProjection(db, {
     sessionId: 'claude-child-session',
@@ -293,7 +300,7 @@ describe('workflow usage aggregation', () => {
     try {
       const workflowJobId = 'workflow-usage-detail';
       seedWorkflowWithChildren(db, workflowJobId);
-      commit(db, [terminalRecorded(workflowJobId, { jobKind: 'workflow' })]);
+      commit(db, completedWorkflowFinalization(workflowJobId));
 
       const expectedUsage = {
         inputTokens: 107,
@@ -321,7 +328,7 @@ describe('workflow usage aggregation', () => {
     try {
       const workflowJobId = 'workflow-usage-batch-detail';
       seedWorkflowWithChildren(db, workflowJobId);
-      commit(db, [terminalRecorded(workflowJobId, { jobKind: 'workflow' })]);
+      commit(db, completedWorkflowFinalization(workflowJobId));
 
       expect(
         loadJobProjectionDetails(db, [workflowJobId], readCtx).get(workflowJobId)?.exit?.diagnostics.usage,
@@ -369,12 +376,12 @@ describe('workflow usage aggregation', () => {
         subscribeJobEvents,
         getCurrentJournalSeq: () =>
           (db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq,
-        resultJobsRoot: '/tmp/workflow-usage-results',
+        resultPathForJob: (jobId) => `/tmp/workflow-usage-results/${jobId}/result.md`,
       });
 
       const iterator = coordinator.waitForJobs({ jobIds: [workflowJobId], timeoutSeconds: 1 })[Symbol.asyncIterator]();
       const next = iterator.next();
-      publishJobEvents(commit(db, [terminalRecorded(workflowJobId, { jobKind: 'workflow' })]));
+      publishJobEvents(commit(db, completedWorkflowFinalization(workflowJobId)));
 
       const terminal = await next;
       expect(terminal.done).toBe(false);

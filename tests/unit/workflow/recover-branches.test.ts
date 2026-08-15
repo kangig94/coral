@@ -18,7 +18,7 @@ import { applyBundledStoreSchema } from '#src/store/db.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { decodeEventBody, encodeEventBody } from '#src/store/body-codec.js';
 import { parseExpression } from '#src/workflow/parser.js';
-import { workflowCompletedEvent, workflowPlanDeclaredEvent, workflowRegistry } from '#src/workflow/events.js';
+import { workflowPlanDeclaredEvent, workflowRegistry } from '#src/workflow/events.js';
 import { buildWorkflowPlan, type WorkflowPlan } from '#src/workflow/plan.js';
 import { commitWorkflowEvents } from '#src/workflow/projections.js';
 import { loadJobProjectionDetails } from '#src/jobs/read-queries.js';
@@ -39,7 +39,6 @@ import { createProjectionSessionLookup } from '#src/sessions/lookup.js';
 import { createWorkflowRecoveryFinalizer } from '#src/coordinator/services/workflow-recovery-finalizer.js';
 import { composeWorkflowFinalization } from '#src/coordinator/services/workflow-finalization.js';
 import { materializeWorkflowResultArtifact } from '#src/workflow/result-artifact.js';
-import { resultPathFor } from '#src/jobs/terminal/export.js';
 import { createRecoveryCoordinator } from '#src/coordinator/services/recovery/index.js';
 import { createFailedWorkflowDescendantReleaser } from '#src/coordinator/services/workflow-recovery-descendants.js';
 import { seedTestSessionProjection } from '#tests/helpers/session.js';
@@ -389,7 +388,7 @@ describe('workflow recovery branch rules', () => {
       );
       return undefined;
     });
-    const resultPath = resultPathFor(harness.runtime.paths.coral.exports.jobsRoot, 'workflow-1');
+    const resultPath = harness.runtime.paths.coral.exports.forJob('workflow-1').resultMarkdown;
     expect(harness.progressStore.readStatus('workflow-1')?.phase).toBe('completed');
     expect(harness.runtime.storage.existsSync(resultPath)).toBe(false);
 
@@ -398,42 +397,6 @@ describe('workflow recovery branch rules', () => {
       expect(harness.runtime.storage.readFileSync(resultPath, 'utf-8')).toBe(
         '# Step 0.0: architect\n\ndurable workflow answer\n',
       );
-    } finally {
-      harness.db.close();
-    }
-  });
-
-  it('ensures a report before clearing an already-completed live workflow recovery', async () => {
-    const harness = createHarness({ atomPhase: 'running', projectionPhase: 'running' });
-    const stepDetails = [{ stepIndex: 0, atomIndex: 0, label: 'architect', output: 'durable workflow answer' }];
-    harness.progressStore.commit((commit) => {
-      commit.append(workflowCompletedEvent('workflow-1', { outcome: 'completed', stepDetails }));
-      return undefined;
-    });
-    const resultPath = resultPathFor(harness.runtime.paths.coral.exports.jobsRoot, 'workflow-1');
-    const finalizeWorkflow = createWorkflowRecoveryFinalizer({
-      runtime: harness.runtime,
-      progressStore: harness.progressStore,
-      coordinatorCommit: (callback) => harness.progressStore.commit(callback),
-    });
-
-    try {
-      await expect(
-        resumeAll({
-          db: harness.db,
-          progressStore: harness.progressStore,
-          loadJobDetails: loadJobProjectionDetails,
-          getExecutionService: () => harness.executionSvc,
-          createInvocationContext: harness.createInvocationContext,
-          finalizeWorkflow,
-          releaseFailedWorkflowDescendants: noFailedWorkflowDescendants,
-          time: fixedTime,
-        }),
-      ).resolves.toEqual([]);
-      expect(harness.runtime.storage.readFileSync(resultPath, 'utf-8')).toBe(
-        '# Step 0.0: architect\n\ndurable workflow answer\n',
-      );
-      expect(harness.executionSvc.waitStream).not.toHaveBeenCalled();
     } finally {
       harness.db.close();
     }

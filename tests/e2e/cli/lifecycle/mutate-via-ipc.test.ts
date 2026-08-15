@@ -18,6 +18,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import type { CoordinatorDiscoveryRecord } from '#src/infra/backend-discovery.js';
 import { coordinatorPaths } from '#src/infra/path/coordinator.js';
+import { exportsPaths } from '#src/infra/path/index.js';
 import { isProcessAlive } from '#src/infra/node-process.js';
 import { readBuildFlavor } from '#src/infra/bundle-manifest.js';
 import { createIpcClient } from '#src/transport/ipc/client.js';
@@ -247,8 +248,7 @@ function discoveryFilePath(home: string, flavor: 'prod' | 'dev'): string {
 }
 
 function resultArtifactPath(home: string, flavor: 'prod' | 'dev', jobId: string): string {
-  const exportsDir = flavor === 'dev' ? 'exports-dev' : 'exports';
-  return join(home, '.coral', exportsDir, 'jobs', jobId, 'result.md');
+  return exportsPaths(flavor, { baseDir: join(home, '.coral') }).forJob(jobId).resultMarkdown;
 }
 
 function readDiscoveryRecord(home: string, flavor: 'prod' | 'dev'): CoordinatorDiscoveryRecord | null {

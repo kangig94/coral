@@ -155,7 +155,7 @@ function createProgressStore(namespace = 'test-ns'): JobStore {
 }
 
 function jobResultPath(jobId: string): string {
-  return join(runtime.paths.coral.exports.jobsRoot, jobId, 'result.md');
+  return runtime.paths.coral.exports.forJob(jobId).resultMarkdown;
 }
 
 function cancelQueued(jobId: string, pool?: 'default' | 'discuss' | 'curate'): boolean {
@@ -955,7 +955,7 @@ describe('ExecutionService wait', () => {
         jobId: 'job-1',
         seq: 2,
         remainingJobIds: [],
-        resultPath: `${runtime.paths.coral.exports.jobsRoot}/job-1/result.md`,
+        resultPath: runtime.paths.coral.exports.forJob('job-1').resultMarkdown,
         result: { content: 'done', outcome: { kind: 'completed' }, durationMs: 0 },
         continuity: null,
         usage: waitUsage,
@@ -1074,6 +1074,26 @@ describe('ExecutionService wait', () => {
           TEST_PROVIDER_SCOPE,
         ),
       );
+      c.append({
+        type: 'job.launch.requested',
+        stream: { kind: 'job', id: workflowId },
+        refs: { jobId: workflowId, workflowId },
+        body: {
+          owner: { kind: 'workflow', id: workflowId },
+          projectRoot: fixtureCanonicalWorkDir('/workspace'),
+          backendNamespace: status?.backendNamespace ?? 'tests',
+          jobKind: 'workflow',
+          pool: 'default',
+          enqueueSequence: 0,
+          request: {
+            prompt: 'test workflow failure',
+            cwd: fixtureCanonicalWorkDir('/workspace'),
+            bypassPermissions: false,
+            coralEnv: {},
+          },
+          createdAt: new Date(runtime.time.now()).toISOString(),
+        },
+      });
       const fault = c.append(
         workflowLifecycleFaultEvent(workflowId, {
           kind: 'unknown',
@@ -1087,6 +1107,16 @@ describe('ExecutionService wait', () => {
           stepDetails: [],
         }),
       );
+      appendJobTerminalRecorded(c, {
+        jobId: workflowId,
+        namespace: status?.backendNamespace,
+        project: status?.projectRoot,
+        terminal: {
+          content: '',
+          outcome: failedTerminalOutcome(completed),
+          durationMs: 0,
+        },
+      });
       appendJobTerminalRecorded(c, {
         jobId,
         sessionId,

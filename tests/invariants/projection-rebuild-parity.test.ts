@@ -227,7 +227,7 @@ describe('Phase 7: rebuildProjections parity for all 4 base journal consumers', 
       const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
       const bodyCodec = createEventBodyCodec();
 
-      // Workflow plan + drain + completion (3 events).
+      // Workflow plan + root launch + paired drain/finalization (5 events).
       const plan = buildWorkflowPlan('workflow-parity', parseExpression('architect -> resolver'), {
         defaultProvider: 'codex',
       });
@@ -343,6 +343,27 @@ describe('Phase 7: rebuildProjections parity for all 4 base journal consumers', 
         },
         // Workflow
         workflowPlanDeclaredEvent('workflow-parity', plan, TEST_PROVIDER_SCOPE),
+        {
+          type: 'job.launch.requested' as const,
+          stream: { kind: 'job' as const, id: 'workflow-parity' },
+          refs: { jobId: 'workflow-parity', workflowId: 'workflow-parity' },
+          body: {
+            owner: { kind: 'workflow' as const, id: 'workflow-parity' },
+            projectRoot: '/workspace/coral',
+            backendNamespace: 'invariant-ns',
+            bundleHash: 'bundle-parity',
+            jobKind: 'workflow' as const,
+            pool: 'default',
+            enqueueSequence: 2,
+            request: {
+              prompt: 'parity workflow',
+              cwd: '/workspace/coral',
+              bypassPermissions: false,
+              coralEnv: {},
+            },
+            createdAt: NOW.toISOString(),
+          },
+        },
         workflowDrainEnteredEvent('workflow-parity', {
           firstFailureSlotId: plan.slots[1].slotId,
           drainDeadline: Date.parse('2026-04-29T00:00:15.000Z'),
@@ -352,6 +373,21 @@ describe('Phase 7: rebuildProjections parity for all 4 base journal consumers', 
           causeRef: { stream: { kind: 'workflow' as const, id: 'workflow-parity' }, seq: 2 },
           stepDetails: [],
         }),
+        {
+          type: 'job.terminal.recorded' as const,
+          stream: { kind: 'job' as const, id: 'workflow-parity' },
+          refs: { jobId: 'workflow-parity', workflowId: 'workflow-parity' },
+          body: {
+            terminal: {
+              outcome: {
+                kind: 'failed' as const,
+                causeRef: { stream: { kind: 'workflow' as const, id: 'workflow-parity' }, seq: 12 },
+              },
+              durationMs: 42,
+              content: '',
+            },
+          },
+        },
         {
           type: 'session.opened' as const,
           stream: { kind: 'session' as const, id: DISCUSS_EXECUTION_SESSION_ID },

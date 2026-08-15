@@ -1,7 +1,7 @@
 import { dirname } from 'node:path';
 
 import type { StoragePort } from '../infra/port-types.js';
-import { resultPathFor } from '../jobs/terminal/export.js';
+import type { JobExportPaths } from '../infra/path/index.js';
 import type { Database } from '../store/db.js';
 import { decodeBody, type StoreReadContext } from '../store/body-codec.js';
 import { readLatestEvent } from '../store/event-queries.js';
@@ -29,11 +29,11 @@ export function serializeWorkflowResult(details: readonly StepDetail[]): { markd
  */
 export function writeWorkflowResultArtifact(
   storage: Pick<StoragePort, 'mkdirSync' | 'writeAtomicSync'>,
-  jobsRoot: string,
+  paths: JobExportPaths,
   workflowJobId: string,
   markdown: string,
 ): string {
-  const targetPath = resultPathFor(jobsRoot, workflowJobId);
+  const targetPath = paths.resultMarkdown;
   storage.mkdirSync(dirname(targetPath), { recursive: true });
   if (!storage.writeAtomicSync(targetPath, markdown, { encoding: 'utf-8' })) {
     throw new Error(`Failed to write workflow result artifact for ${workflowJobId}`);
@@ -45,7 +45,7 @@ export function writeWorkflowResultArtifact(
 export function materializeWorkflowResultArtifact(
   db: Database,
   workflowJobId: string,
-  jobsRoot: string,
+  paths: JobExportPaths,
   storage: Pick<StoragePort, 'mkdirSync' | 'writeAtomicSync'>,
   ctx: StoreReadContext,
 ): string {
@@ -56,7 +56,7 @@ export function materializeWorkflowResultArtifact(
   const completion = decodeBody(row, workflowCompletedBodySchema, ctx);
   return writeWorkflowResultArtifact(
     storage,
-    jobsRoot,
+    paths,
     workflowJobId,
     serializeWorkflowResult(completion.stepDetails).markdown,
   );

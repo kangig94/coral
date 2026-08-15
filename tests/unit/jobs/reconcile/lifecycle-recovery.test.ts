@@ -1775,7 +1775,7 @@ describe('lifecycle recovery', () => {
               throw new Error('injected workflow result export failure');
             },
           } as never,
-          runtime.paths.coral.exports.jobsRoot,
+          runtime.paths.coral.exports.forJob,
           runtime.time.now(),
           signal,
           createTestJobJournalDeps(progressStore, runtime).coordinatorCommit,

@@ -1,6 +1,7 @@
 import { PROJECTION_JOB_COLUMNS, type ProjectionJobStoredRow } from './projection-row.js';
-import type { Database } from '../store/db.js';
+import { sqlPlaceholders, type Database } from '../store/db.js';
 import type { EventsRow } from '../store/schema.js';
+import { LIVE_JOB_PHASES } from './phase.js';
 import {
   canonicalRecoveryRevision,
   defineRecoverySource,
@@ -24,21 +25,21 @@ function scanStaleJobCleanupRows(db: Database, subjectKey?: string): readonly Ra
     const projections =
       subjectKey === undefined
         ? db
-            .prepare<[], ProjectionJobStoredRow>(
+            .prepare<unknown[], ProjectionJobStoredRow>(
               `SELECT ${PROJECTION_JOB_COLUMNS}
                  FROM projection_jobs
-                WHERE phase NOT IN ('queued', 'launching', 'running')
+                WHERE phase NOT IN (${sqlPlaceholders(LIVE_JOB_PHASES.length)})
                 ORDER BY job_id ASC`,
             )
-            .all()
+            .all(...LIVE_JOB_PHASES)
         : db
-            .prepare<[string], ProjectionJobStoredRow>(
+            .prepare<unknown[], ProjectionJobStoredRow>(
               `SELECT ${PROJECTION_JOB_COLUMNS}
                  FROM projection_jobs
-                WHERE phase NOT IN ('queued', 'launching', 'running')
+                WHERE phase NOT IN (${sqlPlaceholders(LIVE_JOB_PHASES.length)})
                   AND job_id = ?`,
             )
-            .all(subjectKey);
+            .all(...LIVE_JOB_PHASES, subjectKey);
     const readStatusEvents = db.prepare<[string], EventsRow>(
       `SELECT ${EVENT_COLUMNS}
          FROM events

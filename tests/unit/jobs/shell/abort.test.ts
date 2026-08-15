@@ -108,7 +108,7 @@ function createProgressStore(namespace = 'test-ns'): JobStore {
 }
 
 function _jobResultPath(jobId: string): string {
-  return join(runtime.paths.coral.exports.jobsRoot, jobId, 'result.md');
+  return runtime.paths.coral.exports.forJob(jobId).resultMarkdown;
 }
 
 function cancelQueued(jobId: string, pool?: 'default' | 'discuss' | 'curate'): boolean {

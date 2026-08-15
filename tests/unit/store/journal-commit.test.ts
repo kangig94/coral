@@ -136,6 +136,29 @@ function workflowPlanInput(workflowId: string): CoralEventInput<WorkflowDeclared
   };
 }
 
+function workflowLaunchInput(workflowId: string): CoralEventInput<JobLaunchRequestBody> {
+  return {
+    type: 'job.launch.requested',
+    stream: { kind: 'job', id: workflowId },
+    refs: { jobId: workflowId, workflowId },
+    body: {
+      owner: { kind: 'workflow', id: workflowId },
+      projectRoot: fixtureCanonicalWorkDir('/workspace/workflow-chain'),
+      backendNamespace: 'tests',
+      jobKind: 'workflow',
+      pool: 'default',
+      enqueueSequence: 0,
+      request: {
+        prompt: 'test workflow',
+        cwd: fixtureCanonicalWorkDir('/workspace/workflow-chain'),
+        bypassPermissions: false,
+        coralEnv: {},
+      },
+      createdAt: NOW.toISOString(),
+    },
+  };
+}
+
 describe('journal commit primitive', () => {
   it('resolves tokens before schema parse and preserves source stream for cross-stream terminals', () => {
     const db = createDb();
@@ -406,6 +429,7 @@ describe('journal commit primitive', () => {
             },
           });
           c.append(workflowPlanInput('workflow-chain'));
+          c.append(workflowLaunchInput('workflow-chain'));
           const workflowCompleted = c.append({
             type: 'workflow.completed',
             stream: { kind: 'workflow', id: 'workflow-chain' },
@@ -416,12 +440,10 @@ describe('journal commit primitive', () => {
               stepDetails: [],
             },
           });
-          c.append(claimInput(entry, 'job-chain'));
-          c.append(launchInput('job-chain', 'session-chain'));
           c.append({
             type: 'job.terminal.recorded',
-            stream: { kind: 'job', id: 'job-chain' },
-            refs: { jobId: 'job-chain', sessionId: 'session-chain' },
+            stream: { kind: 'job', id: 'workflow-chain' },
+            refs: { jobId: 'workflow-chain', workflowId: 'workflow-chain' },
             body: {
               terminal: {
                 outcome: { kind: 'failed', causeRef: workflowCompleted },
@@ -435,18 +457,18 @@ describe('journal commit primitive', () => {
         ctx(),
       );
 
-      expect(appended.map((event) => event.seq)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+      expect(appended.map((event) => event.seq)).toEqual([1, 2, 3, 4, 5, 6]);
 
       const bodies = bodiesBySeq(db);
-      expect(bodies.get(4)).toMatchObject({
+      expect(bodies.get(5)).toMatchObject({
         outcome: 'failed',
         causeRef: { stream: { kind: 'session', id: 'session-chain' }, seq: 2 },
       });
-      expect(bodies.get(7)).toMatchObject({
+      expect(bodies.get(6)).toMatchObject({
         terminal: {
           outcome: {
             kind: 'failed',
-            causeRef: { stream: { kind: 'workflow', id: 'workflow-chain' }, seq: 4 },
+            causeRef: { stream: { kind: 'workflow', id: 'workflow-chain' }, seq: 5 },
           },
         },
       });

@@ -130,6 +130,15 @@ describe('compileWorkflowPlan', () => {
       ),
     ).toBe('critic xxxxxxxxxxxxx...');
   });
+
+  it('removes terminal string controls and bidi display controls without consuming visible labels', () => {
+    const label = (agent: string) => workflowSlotLabel(slot('workflow-label', 0, 0, { agent }), 0);
+
+    expect(label('\u001b]8;;https://example.com\u001b\\critic\u001b]8;;\u001b\\')).toBe('critic');
+    expect(label('\u009d0;owned\u009ccritic')).toBe('critic');
+    expect(label('cr\u001bPignored\u001b\\it\u001b_ignored\u009cic')).toBe('critic');
+    expect(label('cr\u202eit\u202cic\u2066\u2069')).toBe('critic');
+  });
 });
 
 function eventCount(db: Database): number {

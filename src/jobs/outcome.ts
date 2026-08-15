@@ -8,7 +8,7 @@ import {
   type CauseRef,
   type ResolvableCauseRef,
 } from '../causality/cause-ref.js';
-import type { JobPhase } from './phase.js';
+import type { TerminalJobPhase } from './phase.js';
 import { providerBindingFailureReasonSchema } from '../providers/contracts/binding.js';
 
 const abortReasonSchema = z.enum(['signal_abort', 'user_abort', 'queue_shutdown']);
@@ -82,7 +82,7 @@ export type TerminalOutcomeInput<Scope = never> =
   | { kind: 'failed'; causeRef: ResolvableCauseRef<Scope> }
   | { kind: 'job_fault'; fault: JobLifecycleFault };
 
-export function phaseForOutcome(outcome: TerminalOutcome): Extract<JobPhase, 'completed' | 'error' | 'aborted'> {
+export function phaseForOutcome(outcome: TerminalOutcome): TerminalJobPhase {
   switch (outcome.kind) {
     case 'completed':
       return 'completed';

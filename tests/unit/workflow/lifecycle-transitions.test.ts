@@ -2,9 +2,8 @@ import { currentCoralStoreFormat } from '#src/store-format.js';
 import { describe, expect, it } from 'vitest';
 
 import { applyBundledStoreSchema } from '#src/store/db.js';
-import { commit, type AppendContext } from '#src/store/append.js';
-import { createEventBodyCodec } from '#src/store/event-body-codec.js';
-import { applyReducer, composeReducers } from '#src/store/reducers.js';
+import type { CoralEventInput } from '#src/store/envelope.js';
+import { applyReducer, composeReducers, type ComposedReducers } from '#src/store/reducers.js';
 import {
   workflowCompletedEvent,
   workflowDrainEnteredEvent,
@@ -13,19 +12,18 @@ import {
   workflowRegistry,
 } from '#src/workflow/events.js';
 import { readWorkflowProjection } from '#src/workflow/read-queries.js';
-import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 
 const NOW = new Date('2026-07-22T00:00:00.000Z');
 
-function context(): AppendContext {
-  return {
-    now: () => NOW,
-    reducers: composeReducers(workflowRegistry),
-    bodyCodec: createEventBodyCodec(),
-    providers: permissiveProviderLookupPort,
-  };
+function reduceWorkflowEvent(
+  db: Parameters<typeof applyReducer>[0],
+  reducers: ComposedReducers,
+  seq: number,
+  input: CoralEventInput,
+): void {
+  applyReducer(db, { ...input, seq, ts: NOW.toISOString() }, reducers);
 }
 
 function declaration(workflowId: string) {
@@ -50,21 +48,23 @@ describe('workflow lifecycle transitions', () => {
     const db = newRawDatabase(':memory:');
     try {
       applyBundledStoreSchema(db, currentCoralStoreFormat());
-      commit(
+      const reducers = composeReducers(workflowRegistry);
+      reduceWorkflowEvent(db, reducers, 1, declaration('workflow-fault'));
+      reduceWorkflowEvent(
         db,
-        (c) => {
-          c.append(declaration('workflow-fault'));
-          c.append(workflowLifecycleFaultEvent('workflow-fault', { kind: 'unknown', message: 'failed' }));
-          c.append(
-            workflowCompletedEvent('workflow-fault', {
-              outcome: 'failed',
-              causeRef: { stream: { kind: 'workflow', id: 'workflow-fault' }, seq: 2 },
-              stepDetails: [],
-            }),
-          );
-          return undefined;
-        },
-        context(),
+        reducers,
+        2,
+        workflowLifecycleFaultEvent('workflow-fault', { kind: 'unknown', message: 'failed' }),
+      );
+      reduceWorkflowEvent(
+        db,
+        reducers,
+        3,
+        workflowCompletedEvent('workflow-fault', {
+          outcome: 'failed',
+          causeRef: { stream: { kind: 'workflow', id: 'workflow-fault' }, seq: 2 },
+          stepDetails: [],
+        }),
       );
       expect(readWorkflowProjection(db, 'workflow-fault')?.lifecycle).toBe('failed');
     } finally {
@@ -76,39 +76,32 @@ describe('workflow lifecycle transitions', () => {
     const db = newRawDatabase(':memory:');
     try {
       applyBundledStoreSchema(db, currentCoralStoreFormat());
-      commit(
+      const reducers = composeReducers(workflowRegistry);
+      reduceWorkflowEvent(db, reducers, 1, declaration('workflow-terminal'));
+      reduceWorkflowEvent(
         db,
-        (c) => {
-          c.append(declaration('workflow-terminal'));
-          c.append(workflowCompletedEvent('workflow-terminal', { outcome: 'completed', stepDetails: [] }));
-          return undefined;
-        },
-        context(),
+        reducers,
+        2,
+        workflowCompletedEvent('workflow-terminal', { outcome: 'completed', stepDetails: [] }),
       );
 
       expect(() =>
-        commit(
+        reduceWorkflowEvent(
           db,
-          (c) => {
-            c.append(
-              workflowDrainEnteredEvent('workflow-terminal', {
-                firstFailureSlotId: 'workflow-terminal:0:0',
-                drainDeadline: 1,
-              }),
-            );
-            return undefined;
-          },
-          context(),
+          reducers,
+          3,
+          workflowDrainEnteredEvent('workflow-terminal', {
+            firstFailureSlotId: 'workflow-terminal:0:0',
+            drainDeadline: 1,
+          }),
         ),
       ).toThrowError(expect.objectContaining({ code: 'workflow_lifecycle_invalid' }));
       expect(() =>
-        commit(
+        reduceWorkflowEvent(
           db,
-          (c) => {
-            c.append(workflowLifecycleFaultEvent('workflow-terminal', { kind: 'unknown', message: 'late' }));
-            return undefined;
-          },
-          context(),
+          reducers,
+          3,
+          workflowLifecycleFaultEvent('workflow-terminal', { kind: 'unknown', message: 'late' }),
         ),
       ).toThrowError(expect.objectContaining({ code: 'workflow_lifecycle_invalid' }));
     } finally {
@@ -120,34 +113,27 @@ describe('workflow lifecycle transitions', () => {
     const db = newRawDatabase(':memory:');
     try {
       applyBundledStoreSchema(db, currentCoralStoreFormat());
-      commit(
+      const reducers = composeReducers(workflowRegistry);
+      reduceWorkflowEvent(db, reducers, 1, declaration('workflow-drain'));
+      reduceWorkflowEvent(
         db,
-        (c) => {
-          c.append(declaration('workflow-drain'));
-          c.append(
-            workflowDrainEnteredEvent('workflow-drain', {
-              firstFailureSlotId: 'workflow-drain:0:0',
-              drainDeadline: 1,
-            }),
-          );
-          return undefined;
-        },
-        context(),
+        reducers,
+        2,
+        workflowDrainEnteredEvent('workflow-drain', {
+          firstFailureSlotId: 'workflow-drain:0:0',
+          drainDeadline: 1,
+        }),
       );
       expect(readWorkflowProjection(db, 'workflow-drain')?.lifecycle).toBe('draining');
       expect(() =>
-        commit(
+        reduceWorkflowEvent(
           db,
-          (c) => {
-            c.append(
-              workflowDrainEnteredEvent('workflow-drain', {
-                firstFailureSlotId: 'workflow-drain:0:0',
-                drainDeadline: 2,
-              }),
-            );
-            return undefined;
-          },
-          context(),
+          reducers,
+          3,
+          workflowDrainEnteredEvent('workflow-drain', {
+            firstFailureSlotId: 'workflow-drain:0:0',
+            drainDeadline: 2,
+          }),
         ),
       ).toThrowError(expect.objectContaining({ code: 'workflow_lifecycle_invalid' }));
     } finally {
@@ -159,19 +145,23 @@ describe('workflow lifecycle transitions', () => {
     const db = newRawDatabase(':memory:');
     try {
       applyBundledStoreSchema(db, currentCoralStoreFormat());
+      const reducers = composeReducers(workflowRegistry);
+      reduceWorkflowEvent(db, reducers, 1, declaration('workflow-contradiction'));
+      reduceWorkflowEvent(
+        db,
+        reducers,
+        2,
+        workflowLifecycleFaultEvent('workflow-contradiction', { kind: 'unknown', message: 'failed' }),
+      );
       expect(() =>
-        commit(
+        reduceWorkflowEvent(
           db,
-          (c) => {
-            c.append(declaration('workflow-contradiction'));
-            c.append(workflowLifecycleFaultEvent('workflow-contradiction', { kind: 'unknown', message: 'failed' }));
-            c.append(workflowCompletedEvent('workflow-contradiction', { outcome: 'completed', stepDetails: [] }));
-            return undefined;
-          },
-          context(),
+          reducers,
+          3,
+          workflowCompletedEvent('workflow-contradiction', { outcome: 'completed', stepDetails: [] }),
         ),
       ).toThrowError(expect.objectContaining({ code: 'workflow_lifecycle_invalid' }));
-      expect(readWorkflowProjection(db, 'workflow-contradiction')).toBeNull();
+      expect(readWorkflowProjection(db, 'workflow-contradiction')?.lifecycle).toBe('faulted');
     } finally {
       db.close();
     }
@@ -182,14 +172,12 @@ describe('workflow lifecycle transitions', () => {
     try {
       applyBundledStoreSchema(db, currentCoralStoreFormat());
       const reducers = composeReducers(workflowRegistry);
-      commit(
+      reduceWorkflowEvent(db, reducers, 1, declaration('workflow-rebuild'));
+      reduceWorkflowEvent(
         db,
-        (c) => {
-          c.append(declaration('workflow-rebuild'));
-          c.append(workflowCompletedEvent('workflow-rebuild', { outcome: 'aborted', stepDetails: [] }));
-          return undefined;
-        },
-        context(),
+        reducers,
+        2,
+        workflowCompletedEvent('workflow-rebuild', { outcome: 'aborted', stepDetails: [] }),
       );
 
       expect(() =>

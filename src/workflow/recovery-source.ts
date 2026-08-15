@@ -1,5 +1,6 @@
 import { PROJECTION_JOB_COLUMNS, type ProjectionJobStoredRow } from '../jobs/projection-row.js';
-import type { Database } from '../store/db.js';
+import { TERMINAL_JOB_PHASES } from '../jobs/phase.js';
+import { sqlPlaceholders, type Database } from '../store/db.js';
 import type { EventsRow } from '../store/schema.js';
 import {
   canonicalRecoveryRevision,
@@ -211,23 +212,23 @@ function scanWorkflowRecoveryEnvelopes(db: Database, subjectKey?: string): reado
     const projections =
       subjectKey === undefined
         ? db
-            .prepare<[], ProjectionJobStoredRow>(
+            .prepare<unknown[], ProjectionJobStoredRow>(
               `SELECT ${PROJECTION_JOB_COLUMNS}
                  FROM projection_jobs
                 WHERE job_kind = 'workflow'
-                  AND phase NOT IN ('completed', 'error', 'aborted')
+                  AND phase NOT IN (${sqlPlaceholders(TERMINAL_JOB_PHASES.length)})
                 ORDER BY job_id ASC`,
             )
-            .all()
+            .all(...TERMINAL_JOB_PHASES)
         : db
-            .prepare<[string], ProjectionJobStoredRow>(
+            .prepare<unknown[], ProjectionJobStoredRow>(
               `SELECT ${PROJECTION_JOB_COLUMNS}
                  FROM projection_jobs
                 WHERE job_kind = 'workflow'
-                  AND phase NOT IN ('completed', 'error', 'aborted')
+                  AND phase NOT IN (${sqlPlaceholders(TERMINAL_JOB_PHASES.length)})
                   AND job_id = ?`,
             )
-            .all(subjectKey);
+            .all(...TERMINAL_JOB_PHASES, subjectKey);
     return projections.map((projection) => readWorkflowEnvelope(db, projection));
   });
 }

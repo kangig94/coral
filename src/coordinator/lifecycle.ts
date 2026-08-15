@@ -17,6 +17,7 @@ import { parsePositiveInt } from './live/worker-limits.js';
 import { createRecoveryCoordinator, type RecoveryCoordinator } from './services/recovery/index.js';
 import { createReplacementBackendOwnershipChecker } from './ownership-checker.js';
 import { writeWorkflowResultArtifact } from '../workflow/result-artifact.js';
+import { workflowCompletedEvent, workflowLifecycleFaultEvent } from '../workflow/events.js';
 import type { JobStore } from '../jobs/store.js';
 import type { JobStatus } from '../jobs/records.js';
 import { jobLaunchRequestBodySchema } from '../jobs/launch.js';
@@ -68,6 +69,7 @@ import { decodeStoredBody } from '../store/body-codec.js';
 import { rowToCoralEvent } from '../store/envelope.js';
 import type { EventsRow } from '../store/schema.js';
 import type { CommitEventsFn } from '../store/append.js';
+import type { JobExportPaths } from '../infra/path/index.js';
 import {
   type RecoveryObligationId,
   type RecoveryPolicy,
@@ -370,7 +372,7 @@ type CrashedJobTerminalizationPolicyContext = {
   readonly progressStore: JobStore;
   readonly message: string;
   readonly storage: Pick<Runtime['storage'], 'mkdirSync' | 'writeAtomicSync'>;
-  readonly jobsRoot: string;
+  readonly jobExportPathsFor: (jobId: string) => JobExportPaths;
   readonly endTimeMs: number;
   readonly coordinatorCommit: CommitEventsFn;
 };
@@ -427,7 +429,7 @@ function createStaleJobCleanupPolicy(
 function createCrashedJobTerminalizationPolicy(
   context: CrashedJobTerminalizationPolicyContext,
 ): RecoveryRetryPolicy<RawCrashedJobRow, CrashedJobTerminalizationItem> {
-  const { progressStore, message, storage, jobsRoot, endTimeMs, coordinatorCommit } = context;
+  const { progressStore, message, storage, jobExportPathsFor, endTimeMs, coordinatorCommit } = context;
   return {
     processLocalCleanup: { kind: 'not-required' },
     hydrate: (raw) => hydrateCrashedJob(raw, progressStore),
@@ -440,6 +442,21 @@ function createCrashedJobTerminalizationPolicy(
 
       const durationMs = elapsedDurationMs(item.launchCreatedAt, endTimeMs, `job ${status.jobId}`);
       coordinatorCommit((c) => {
+        if (status.jobKind === 'workflow') {
+          const fault = c.append(
+            workflowLifecycleFaultEvent(status.jobId, {
+              kind: 'wrapper_crashed',
+              message,
+            }),
+          );
+          c.append(
+            workflowCompletedEvent(status.jobId, {
+              outcome: 'failed',
+              causeRef: fault,
+              stepDetails: [],
+            }),
+          );
+        }
         appendJobTerminalRecorded(c, {
           jobId: status.jobId,
           sessionId: status.sessionId,
@@ -458,7 +475,7 @@ function createCrashedJobTerminalizationPolicy(
       });
       if (status.jobKind === 'workflow') {
         try {
-          writeWorkflowResultArtifact(storage, jobsRoot, status.jobId, '');
+          writeWorkflowResultArtifact(storage, jobExportPathsFor(status.jobId), status.jobId, '');
         } catch {
           // Journal terminal state is authoritative; export materialization is best-effort.
         }
@@ -562,12 +579,12 @@ export async function markJobsAsError(
   progressStore: JobStore,
   message: string,
   storage: Pick<Runtime['storage'], 'mkdirSync' | 'writeAtomicSync'>,
-  jobsRoot: string,
+  jobExportPathsFor: (jobId: string) => JobExportPaths,
   endTimeMs: number,
   signal: AbortSignal,
   coordinatorCommit: CommitEventsFn,
 ): Promise<void> {
-  const context = { progressStore, message, storage, jobsRoot, endTimeMs, coordinatorCommit };
+  const context = { progressStore, message, storage, jobExportPathsFor, endTimeMs, coordinatorCommit };
   crashedJobTerminalizationRetryContexts.set(progressStore.getDb(), context);
   const policy: RecoveryPolicy<RawCrashedJobRow, CrashedJobTerminalizationItem> = {
     signal,

@@ -26,7 +26,7 @@ import {
   type WorkflowExecutionPort,
 } from './execution-contract.js';
 import { describeTerminalFailure, formatStepOutput } from './command.js';
-import { workflowCompletedBodySchema, workflowDrainEnteredBodySchema } from './events.js';
+import { workflowDrainEnteredBodySchema } from './events.js';
 import { executePlannedSteps } from './executor.js';
 import { BOOTSTRAP_TIMEOUT_MS, handleStepLaunchFailure, launchCompiledStepAtoms } from './launch.js';
 import {
@@ -103,7 +103,6 @@ export type WorkflowRecoveryAtomicClose = {
 
 export type WorkflowRecoveryFinalizer = ((intent: WorkflowFinalizationIntent) => void) & {
   atomicClose?(request: WorkflowRecoveryAtomicClose): readonly WorkflowRecoveryDescendantRelease[];
-  ensureArtifact(workflowJobId: string): void;
 };
 
 export type FailedWorkflowDescendantReleaser = ((
@@ -134,7 +133,6 @@ type ResumeWorkflowContext = {
   slotDetailsByJob: Map<string, JobProjectionDetail>;
   providerSessionsById: ReadonlyMap<string, ProviderSession>;
   eventsBySeq: ReadonlyMap<number, EventsRow>;
-  completion: ReturnType<typeof workflowCompletedBodySchema.parse> | null;
   drain: ReturnType<typeof workflowDrainEnteredBodySchema.parse> | null;
   time: Pick<TimePort, 'now'>;
   onProgress: (workflowId: string, message: string) => void;
@@ -202,7 +200,6 @@ type HydratedWorkflowRecovery = {
   readonly slotDetailsByJob: Map<string, JobProjectionDetail>;
   readonly providerSessionsById: ReadonlyMap<string, ProviderSession>;
   readonly descendants: readonly WorkflowRecoveryDescendant[];
-  readonly completion: ReturnType<typeof workflowCompletedBodySchema.parse> | null;
   readonly drain: ReturnType<typeof workflowDrainEnteredBodySchema.parse> | null;
   readonly eventsBySeq: ReadonlyMap<number, EventsRow>;
   continuation: WorkflowRecoveryContinuation;
@@ -692,10 +689,6 @@ function recoveryIntentFromError(workflowId: string, error: unknown): WorkflowFi
   };
 }
 
-function detectExistingCompletion(deps: ResumeWorkflowContext): boolean {
-  return deps.completion !== null;
-}
-
 function loadRecoverySnapshot(deps: ResumeWorkflowDeps): RecoverySnapshot {
   const readCtx: StoreReadContext = deps.progressStore;
   const compiledSlots = compileSlotsForRecovery(deps);
@@ -970,10 +963,7 @@ async function resumeWorkflow(
   context: ResumeWorkflowContext,
   currentSlotJobIds: ReadonlyMap<string, string>,
   ids: Pick<IdPort, 'uuid'>,
-): Promise<RecoveredWorkflowFinalization | null> {
-  if (detectExistingCompletion(context)) {
-    return null;
-  }
+): Promise<RecoveredWorkflowFinalization> {
   const deps: ResumeWorkflowDeps = {
     ...context,
     jobIds: await resolveWorkflowRecoveryJobIds(context, currentSlotJobIds, ids),
@@ -1200,9 +1190,7 @@ function hydrateWorkflowRecovery(raw: RawWorkflowRecoveryEnvelope, ctx: StoreRea
       eventsBySeq.set(event.seq, event);
     }
   }
-  const completionRow = latestEvent(raw.workflowEvents, 'workflow.completed');
   const drainRow = latestEvent(raw.workflowEvents, 'workflow.drain.entered');
-  const completion = completionRow === null ? null : decodeBody(completionRow, workflowCompletedBodySchema, ctx);
   const drain = drainRow === null ? null : decodeBody(drainRow, workflowDrainEnteredBodySchema, ctx);
   const recoveredContinuation = parseWorkflowRecoveryContinuation(raw);
   const continuation =
@@ -1216,7 +1204,6 @@ function hydrateWorkflowRecovery(raw: RawWorkflowRecoveryEnvelope, ctx: StoreRea
     slotDetailsByJob,
     providerSessionsById,
     descendants: continuationDescendants(continuation),
-    completion,
     drain,
     eventsBySeq,
     continuation,
@@ -1437,7 +1424,7 @@ async function settleWorkflowRecovery(
     return settledWorkflowResult(item, 'workflow recovery durable close settled');
   }
 
-  let recovered: RecoveredWorkflowFinalization | null;
+  let recovered: RecoveredWorkflowFinalization;
   let containedFailure: unknown = null;
   let unknownExternalOutcome: UnknownWorkflowRecoveryOutcome | null = null;
   try {
@@ -1465,7 +1452,6 @@ async function settleWorkflowRecovery(
         slotDetailsByJob: item.slotDetailsByJob,
         providerSessionsById: item.providerSessionsById,
         eventsBySeq: item.eventsBySeq,
-        completion: item.completion,
         drain: item.drain,
         onProgress: options.onProgress ?? (() => {}),
         staleTimeoutMs: options.staleTimeoutMs ?? DEFAULT_STALE_TIMEOUT_MS,
@@ -1499,14 +1485,6 @@ async function settleWorkflowRecovery(
     containedFailure = error;
     item.recoveredError = error;
     recovered = { intent: recoveryIntentFromError(item.envelope.subject.key, error) };
-  }
-
-  if (recovered === null) {
-    options.finalizeWorkflow.ensureArtifact(item.envelope.subject.key);
-    if (!clearWorkflowContinuation(item, quarantine)) {
-      throw new Error(`Workflow recovery continuation changed for '${item.envelope.subject.key}'.`);
-    }
-    return settledWorkflowResult(item, 'workflow already had a durable completion');
   }
 
   item.continuation = {

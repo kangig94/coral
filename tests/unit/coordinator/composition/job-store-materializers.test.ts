@@ -10,7 +10,6 @@ import { ConsumerDriver } from '#src/projection-consumers/index.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import * as jobsStartup from '#src/jobs/startup.js';
 import type { JobsStartupContext } from '#src/jobs/startup.js';
-import { resultPathFor } from '#src/jobs/terminal/export.js';
 import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
 
 const tempRoots: string[] = [];
@@ -155,7 +154,7 @@ describe('production JobStore composition', () => {
         'App-server restarted during the turn; existing conversation reference was preserved.',
       );
       expect(workflowMarkdown).toBe('# Step 0.0: critic\n\ndurable composition report\n');
-      expect(runtime.storage.existsSync(resultPathFor(runtime.paths.coral.exports.jobsRoot, workflowJobId))).toBe(true);
+      expect(runtime.storage.existsSync(runtime.paths.coral.exports.forJob(workflowJobId).resultMarkdown)).toBe(true);
     } finally {
       await coordinator.shutdown('test-cleanup');
       await coordinator.waitForShutdown();

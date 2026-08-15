@@ -2,8 +2,8 @@ import { z } from 'zod';
 
 import { executionOwnerSchema } from '../runtime/execution-owner.js';
 import type { ExecutionOwner } from '../runtime/execution-owner.js';
-import type { Database } from '../store/db.js';
-import { jobPhaseSchema } from './phase.js';
+import { sqlPlaceholders, type Database } from '../store/db.js';
+import { isTerminalPhase, LIVE_JOB_PHASES, jobPhaseSchema } from './phase.js';
 import { jobKindSchema } from './records.js';
 import { jobDiagnosticsSchema, jobTerminalSchema } from './terminal/result.js';
 
@@ -29,7 +29,7 @@ export const projectionJobStoredRowSchema = z
   })
   .strict()
   .superRefine((row, ctx) => {
-    const terminalPhase = row.phase === 'completed' || row.phase === 'error' || row.phase === 'aborted';
+    const terminalPhase = isTerminalPhase(row.phase);
     if (row.terminal !== null && !terminalPhase) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -201,8 +201,8 @@ export function assertProjectionJobTableIntegrity(db: Database): void {
 
 export function countProjectedLiveJobRows(db: Database, excludedJobIds: readonly string[] = []): number {
   assertProjectionJobTableIntegrity(db);
-  const clauses = ["phase IN ('queued', 'launching', 'running')"];
-  const parameters: unknown[] = [];
+  const clauses = [`phase IN (${sqlPlaceholders(LIVE_JOB_PHASES.length)})`];
+  const parameters: unknown[] = [...LIVE_JOB_PHASES];
   if (excludedJobIds.length > 0) {
     clauses.push(`job_id NOT IN (${excludedJobIds.map(() => '?').join(', ')})`);
     parameters.push(...excludedJobIds);
@@ -223,10 +223,10 @@ export function countProjectedLiveJobRows(db: Database, excludedJobIds: readonly
  */
 export function readStoredNonterminalProjectionJobIds(db: Database): string[] {
   return db
-    .prepare<[], { job_id: string }>(
-      "SELECT job_id FROM projection_jobs INDEXED BY projection_jobs_phase_namespace WHERE phase IN ('queued', 'launching', 'running') ORDER BY job_id ASC",
+    .prepare<unknown[], { job_id: string }>(
+      `SELECT job_id FROM projection_jobs INDEXED BY projection_jobs_phase_namespace WHERE phase IN (${sqlPlaceholders(LIVE_JOB_PHASES.length)}) ORDER BY job_id ASC`,
     )
-    .all()
+    .all(...LIVE_JOB_PHASES)
     .map(({ job_id }) => {
       if (typeof job_id !== 'string' || job_id.length === 0) {
         throw new TypeError('projection_jobs.job_id for a stored-nonterminal row is invalid.');

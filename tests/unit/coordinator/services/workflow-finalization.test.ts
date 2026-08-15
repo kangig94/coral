@@ -89,7 +89,6 @@ describe('selectFinalCauseRef precedence', () => {
       progressStore: {
         readStatus: () => ({ backendNamespace: 'ns', projectRoot: '/project' }) as never,
         readRuntimeProjection: () => ({ transport: 'workflow', startTime: new Date(runtime.time.now()).toISOString() }),
-        ensureResultArtifact: vi.fn(() => '/jobs/workflow-1/result.md'),
         materializeResultArtifact,
       },
       coordinatorCommit: ((callback: (context: CommitContext<unknown>) => unknown) => {
@@ -108,7 +107,6 @@ describe('selectFinalCauseRef precedence', () => {
 
     expect(order).toEqual(['commit:start', 'commit:end', 'materialize:workflow-1']);
     expect(appended.map(({ input }) => input.type)).toEqual(['workflow.completed', 'job.terminal.recorded']);
-    expect(materializeResultArtifact).toHaveBeenCalledExactlyOnceWith('workflow-1');
   });
 
   it('composes workflow finalization, exact descendant release, and continuation clear in one commit', () => {
@@ -126,7 +124,6 @@ describe('selectFinalCauseRef precedence', () => {
       progressStore: {
         readStatus: () => null,
         readRuntimeProjection: () => null,
-        ensureResultArtifact: vi.fn(() => '/jobs/workflow-1/result.md'),
         materializeResultArtifact,
       },
       coordinatorCommit: coordinatorCommit as never,

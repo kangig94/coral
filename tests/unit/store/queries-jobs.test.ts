@@ -1,7 +1,7 @@
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { CoralEventInput } from '#src/store/envelope.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
@@ -238,15 +238,14 @@ describe('jobs queries', () => {
     db.close();
   });
 
-  it('hydrates batched projection details without narrowing status, runtime, or terminal fields', () => {
-    const jobIds = ['job-completed', 'job-rejected', 'job-queued', 'job-missing', 'job-completed'];
-    const prepareSpy = vi.spyOn(db, 'prepare');
+  it('hydrates projection details beyond SQLite variable limits without narrowing fields', () => {
+    const missingJobIds = Array.from({ length: 33_000 }, (_, index) => `job-missing-${index}`);
+    const jobIds = ['job-completed', 'job-rejected', 'job-queued', ...missingJobIds, 'job-completed'];
     const detailsByJob = loadJobProjectionDetails(db, jobIds, readCtx);
-    const prepareCallCount = prepareSpy.mock.calls.length;
 
-    expect(detailsByJob.size).toBe(4);
+    expect(detailsByJob.size).toBe(33_003);
 
-    for (const jobId of ['job-completed', 'job-rejected', 'job-queued', 'job-missing']) {
+    for (const jobId of ['job-completed', 'job-rejected', 'job-queued']) {
       expect(detailsByJob.get(jobId)).toEqual(loadJobProjectionDetail(db, jobId, readCtx));
     }
 
@@ -287,14 +286,12 @@ describe('jobs queries', () => {
       phase: 'error',
     });
 
-    expect(detailsByJob.get('job-missing')).toEqual({
+    expect(detailsByJob.get(missingJobIds.at(-1) ?? '')).toEqual({
       status: null,
       launch: null,
       runtime: null,
       exit: null,
     });
-
-    expect(prepareCallCount).toBeLessThanOrEqual(4);
   });
 
   it('projects durable workflow identity for an opaque child job id', () => {

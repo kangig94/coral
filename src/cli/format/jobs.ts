@@ -1,10 +1,11 @@
 import type { CauseRef } from '../../causality/cause-ref.js';
 import { describeTerminalOutcome } from '../../jobs/outcome.js';
 import { assertNever } from '../../infra/error-format.js';
+import { truncate } from '../../infra/text.js';
 import type { AbortResult } from '../../jobs/contracts/abort-registry.js';
 import type { JobDetailResponse, JobStatus, JobTerminal, JobsListResponse } from '../../jobs/records.js';
 import type { AcceptedLaunchResponse } from '../../jobs/launch.js';
-import { compareWorkflowSlotIds } from '../../workflow/slot-id.js';
+import { compareWorkflowSlotIds, parseWorkflowSlotId } from '../../workflow/slot-id.js';
 import { formatTable, joinLines } from './text.js';
 import { formatUsageSegment } from './usage.js';
 
@@ -37,7 +38,7 @@ export function truncatePreview(text: string): string {
     return text;
   }
 
-  return `${text.slice(0, Math.max(0, MAX_INLINE - 3))}...`;
+  return truncate(text, MAX_INLINE - 3);
 }
 
 export function pickTerminalPreviewSource(result: JobTerminal, describeCauseRef?: CauseRefDescriber): string {
@@ -138,12 +139,10 @@ function formatWorkflowSlotId(
     return null;
   }
 
-  const parentPrefix = status.parentWorkflowJobId === undefined ? null : `${status.parentWorkflowJobId}:`;
-  const slot =
-    parentPrefix !== null && status.workflowSlotId.startsWith(parentPrefix)
-      ? status.workflowSlotId.slice(parentPrefix.length)
-      : status.workflowSlotId;
-  return slot;
+  const slot = parseWorkflowSlotId(status.workflowSlotId);
+  return slot !== null && slot.workflowId === status.parentWorkflowJobId
+    ? `${slot.stepIndex}:${slot.atomIndex}`
+    : status.workflowSlotId;
 }
 
 export function formatWorkflowSlot(

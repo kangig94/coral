@@ -23,6 +23,7 @@ vi.mock('#src/transport/http/handler.js', async (importOriginal) => {
 
 import { createCoordinatorCore } from '#src/coordinator/composition/index.js';
 import type { CoordinatorStoreServices } from '#src/coordinator/composition/store-services-ref.js';
+import { CoralStore } from '#src/read-model/coral-store.js';
 import { JobStore } from '#src/jobs/store.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
@@ -94,7 +95,7 @@ function composeCoordinatorPorts(): { db: Database; progressStore: JobStore } {
 }
 
 describe('coordinator jobs.detail composition', () => {
-  it('loads durable workflow children and labels them from the persisted plan', () => {
+  it('labels workflow children across coordinator and direct store read routes', () => {
     const { db, progressStore } = composeCoordinatorPorts();
 
     const workflowJobId = '22222222-2222-4222-8222-222222222222';
@@ -158,7 +159,13 @@ describe('coordinator jobs.detail composition', () => {
     });
 
     if (captured.detail === null) throw new Error('jobs.detail port was not composed');
+    if (captured.list === null) throw new Error('jobs.list port was not composed');
     const detail = captured.detail(workflowJobId);
+    const childDetail = captured.detail(childJobId);
+    const listedChild = captured.list({ all: true }).find(({ jobId }) => jobId === childJobId);
+    const directListedChild = new CoralStore(db, progressStore).jobs
+      .list({ all: true })
+      .find(({ jobId }) => jobId === childJobId);
 
     expect(detail?.workflowChildren).toEqual([
       expect.objectContaining({
@@ -166,6 +173,9 @@ describe('coordinator jobs.detail composition', () => {
         status: expect.objectContaining({ workflowSlotId, workflowLabel: 'critic' }),
       }),
     ]);
+    expect(childDetail?.status).toMatchObject({ workflowSlotId, workflowLabel: 'critic' });
+    expect(listedChild?.status).toMatchObject({ workflowSlotId, workflowLabel: 'critic' });
+    expect(directListedChild?.status).toMatchObject({ workflowSlotId, workflowLabel: 'critic' });
   });
 });
 

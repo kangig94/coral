@@ -10,7 +10,6 @@ import { applyBundledStoreSchema } from '#src/store/db.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { isLivePhase } from '#src/jobs/phase.js';
 import { JobStore } from '#src/jobs/store.js';
-import { resultPathFor, workflowMetadataPathFor } from '#src/jobs/terminal/export.js';
 import type { JobStatus, JobTerminal } from '#src/jobs/records.js';
 import type { CoralEventInput } from '#src/store/envelope.js';
 import { commitJobInput, commitJobInputs, commitJobTerminal } from '#tests/helpers/job-commits.js';
@@ -385,6 +384,41 @@ describe('JobStore', () => {
     expect(store.loadJobProjectionDetail(jobId).exit?.diagnostics.byteCounts).toEqual({ stdout: 123, stderr: 45 });
   });
 
+  it('fails loudly when an empty failed result needs an unconfigured cause renderer', () => {
+    const { store } = createStore();
+    const jobId = 'job-missing-cause-renderer';
+    const sessionId = 'session-missing-cause-renderer';
+    initProviderJob(store, jobId, sessionId);
+    const [rejected] = commitJobInputs(store, [
+      {
+        type: 'job.launch.rejected',
+        stream: { kind: 'job', id: jobId },
+        namespace: 'test-ns',
+        project: `/workspace/${jobId}`,
+        refs: { jobId, sessionId },
+        body: {
+          reason: 'busy',
+          message: 'busy',
+          provider: 'codex',
+          globalActive: 1,
+          globalLimit: 1,
+        },
+      },
+    ]);
+    commitJobTerminal(store, jobId, sessionId, {
+      content: '',
+      durationMs: 0,
+      outcome: {
+        kind: 'failed',
+        causeRef: { stream: { kind: 'job', id: jobId }, seq: rejected.seq },
+      },
+    });
+
+    const expected = `Cannot materialize result artifact for ${jobId}: cause renderer is missing.`;
+    expect(() => store.ensureResultArtifact(jobId)).toThrow(expected);
+    expect(() => store.materializeResultArtifact(jobId)).toThrow(expected);
+  });
+
   it('rebuilds a pre-existing raw workflow child artifact and exports identity beside the result', () => {
     const { runtime, store } = createStore();
     const childJobId = '11111111-1111-4111-8111-111111111111';
@@ -438,7 +472,7 @@ describe('JobStore', () => {
         }),
         JSON.stringify({ origin: 'system', name: 'test', profiles: [] }),
       );
-    const rawResultPath = resultPathFor(runtime.paths.coral.exports.jobsRoot, childJobId);
+    const rawResultPath = runtime.paths.coral.exports.forJob(childJobId).resultMarkdown;
     runtime.storage.mkdirSync(dirname(rawResultPath), { recursive: true });
     runtime.storage.writeAtomicSync(rawResultPath, 'Critic result', { encoding: 'utf-8' });
 
@@ -447,10 +481,7 @@ describe('JobStore', () => {
     expect(runtime.storage.readFileSync(resultPath, 'utf-8')).toBe('Critic result\n');
     expect(
       JSON.parse(
-        runtime.storage.readFileSync(
-          workflowMetadataPathFor(runtime.paths.coral.exports.jobsRoot, childJobId),
-          'utf-8',
-        ),
+        runtime.storage.readFileSync(runtime.paths.coral.exports.forJob(childJobId).workflowMetadata, 'utf-8'),
       ),
     ).toEqual({
       parentWorkflowJobId: workflowJobId,
@@ -474,7 +505,7 @@ describe('JobStore', () => {
           WHERE job_id = ?`,
       )
       .run(JSON.stringify({ kind: 'workflow', id: workflowJobId }), workflowJobId, `${workflowJobId}:0:0`, childJobId);
-    const resultPath = resultPathFor(runtime.paths.coral.exports.jobsRoot, childJobId);
+    const resultPath = runtime.paths.coral.exports.forJob(childJobId).resultMarkdown;
     runtime.storage.mkdirSync(dirname(resultPath), { recursive: true });
     runtime.storage.writeAtomicSync(resultPath, 'only copy', { encoding: 'utf-8' });
 

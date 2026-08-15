@@ -130,6 +130,29 @@ function workflowChildInput(options: {
   };
 }
 
+function workflowRootInput(workflowId: string): CoralEventInput<JobLaunchRequestBody> {
+  return {
+    type: 'job.launch.requested',
+    stream: { kind: 'job', id: workflowId },
+    refs: { jobId: workflowId, workflowId },
+    body: {
+      owner: { kind: 'workflow', id: workflowId },
+      projectRoot: fixtureCanonicalWorkDir('/workspace'),
+      backendNamespace: 'tests',
+      jobKind: 'workflow',
+      pool: 'default',
+      enqueueSequence: 0,
+      request: {
+        prompt: 'test workflow',
+        cwd: fixtureCanonicalWorkDir('/workspace'),
+        bypassPermissions: false,
+        coralEnv: {},
+      },
+      createdAt: NOW.toISOString(),
+    },
+  };
+}
+
 function progressInput(jobId: string): CoralEventInput {
   return {
     type: 'job.progress.emitted',
@@ -293,6 +316,87 @@ describe('jobs append invariants', () => {
         ),
       ).toThrowError(expect.objectContaining({ code: 'workflow_owner_terminal' }));
       expect((db.prepare('SELECT COUNT(*) AS count FROM events').get() as { count: number }).count).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('rejects workflow.completed without its same-batch workflow-root terminal', () => {
+    const db = createDb();
+    try {
+      seedWorkflow(db, 'workflow-unpaired-completion');
+
+      expect(() =>
+        appendJobEvents(db, [
+          {
+            type: 'workflow.completed',
+            stream: { kind: 'workflow', id: 'workflow-unpaired-completion' },
+            refs: { workflowId: 'workflow-unpaired-completion' },
+            body: { outcome: 'completed', stepDetails: [] },
+          },
+        ]),
+      ).toThrowError(
+        expect.objectContaining({
+          code: 'workflow_finalization_pair_invalid',
+          detail: expect.objectContaining({
+            workflowId: 'workflow-unpaired-completion',
+            reason: 'missing_terminal',
+          }),
+        }),
+      );
+      expect((db.prepare('SELECT COUNT(*) AS count FROM events').get() as { count: number }).count).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('rejects a workflow-root terminal without its same-batch completion', () => {
+    const db = createDb();
+    try {
+      seedWorkflow(db, 'workflow-unpaired-terminal');
+      appendJobEvents(db, [workflowRootInput('workflow-unpaired-terminal')]);
+
+      expect(() => appendJobEvents(db, [terminalInput('workflow-unpaired-terminal')])).toThrowError(
+        expect.objectContaining({
+          code: 'workflow_finalization_pair_invalid',
+          detail: expect.objectContaining({
+            workflowId: 'workflow-unpaired-terminal',
+            reason: 'missing_completion',
+          }),
+        }),
+      );
+    } finally {
+      db.close();
+    }
+  });
+
+  it('rejects a completion and workflow-root terminal with different outcomes', () => {
+    const db = createDb();
+    try {
+      seedWorkflow(db, 'workflow-mismatched-finalization');
+      appendJobEvents(db, [workflowRootInput('workflow-mismatched-finalization')]);
+
+      expect(() =>
+        appendJobEvents(db, [
+          {
+            type: 'workflow.completed',
+            stream: { kind: 'workflow', id: 'workflow-mismatched-finalization' },
+            refs: { workflowId: 'workflow-mismatched-finalization' },
+            body: { outcome: 'aborted', stepDetails: [] },
+          },
+          terminalInput('workflow-mismatched-finalization'),
+        ]),
+      ).toThrowError(
+        expect.objectContaining({
+          code: 'workflow_finalization_pair_invalid',
+          detail: expect.objectContaining({
+            workflowId: 'workflow-mismatched-finalization',
+            reason: 'outcome_mismatch',
+            completionOutcome: 'aborted',
+            terminalOutcome: 'completed',
+          }),
+        }),
+      );
     } finally {
       db.close();
     }

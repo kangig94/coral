@@ -32,10 +32,7 @@ function exportRecoveredWorkflowResult(
 
 export function createWorkflowRecoveryFinalizer(options: {
   runtime: Runtime;
-  progressStore: Pick<
-    JobProgressStore,
-    'readStatus' | 'readRuntimeProjection' | 'ensureResultArtifact' | 'materializeResultArtifact'
-  >;
+  progressStore: Pick<JobProgressStore, 'readStatus' | 'readRuntimeProjection' | 'materializeResultArtifact'>;
   coordinatorCommit: CommitEventsFn;
   log?: (message: string) => void;
 }): WorkflowRecoveryFinalizer {
@@ -82,10 +79,6 @@ export function createWorkflowRecoveryFinalizer(options: {
     });
     exportRecoveredWorkflowResult(options, request.intent);
     return releases;
-  };
-
-  finalize.ensureArtifact = (workflowJobId: string) => {
-    options.progressStore.ensureResultArtifact(workflowJobId);
   };
 
   return finalize;

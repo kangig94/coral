@@ -9,7 +9,6 @@ import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { composeReducers, defineDomainEvent } from '#src/store/reducers.js';
 import { createCauseRefRenderer } from '#src/causality/render.js';
 import { defaultEventDescribers } from '#src/read-model/event-describers.js';
-import { resultPathFor } from '#src/jobs/terminal/export.js';
 import { JobStore } from '#src/jobs/store.js';
 import { jobTerminalRecordedBodySchema } from '#src/jobs/terminal/result.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
@@ -102,7 +101,7 @@ describe('describeCauseRef', () => {
     };
     const materialize = (jobId: string) => {
       jobStore.materializeResultArtifact(jobId);
-      return runtime.storage.readFileSync(resultPathFor(runtime.paths.coral.exports.jobsRoot, jobId), 'utf-8');
+      return runtime.storage.readFileSync(runtime.paths.coral.exports.forJob(jobId).resultMarkdown, 'utf-8');
     };
 
     try {

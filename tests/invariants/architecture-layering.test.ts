@@ -115,6 +115,8 @@ const DOMAIN_ROOT_DIRS = [
   'src/expansion',
 ] as const;
 const DOMAIN_SHELL_ROOTS = DOMAIN_ROOT_DIRS.map((root) => `${root}/shell/`);
+const JOURNAL_STREAM_DOMAINS = ['jobs', 'sessions', 'discuss', 'workflow'] as const;
+type JournalStreamDomain = (typeof JOURNAL_STREAM_DOMAINS)[number];
 
 function startsWithAny(value: string, prefixes: readonly string[]): boolean {
   return prefixes.some((prefix) => value.startsWith(prefix));
@@ -150,6 +152,58 @@ function requiresCoordinatorSourceExemption(source: string, target: string): boo
 
 function shellOwner(path: string): string | null {
   return DOMAIN_SHELL_ROOTS.find((root) => path.startsWith(root)) ?? null;
+}
+
+function domainOwner(path: string): string | null {
+  return DOMAIN_ROOT_DIRS.find((root) => path.startsWith(`${root}/`)) ?? null;
+}
+
+function concreteImplementationOwner(path: string): string | null {
+  const owner = domainOwner(path);
+  if (owner === null) return null;
+  return path.startsWith(`${owner}/shell/`) || path.startsWith(`${owner}/terminal/`) ? owner : null;
+}
+
+function journalStreamDomain(path: string): JournalStreamDomain | null {
+  return JOURNAL_STREAM_DOMAINS.find((domain) => path.startsWith(`src/${domain}/`)) ?? null;
+}
+
+function journalDomainCycles(edges: readonly ParsedImportEdge[]): string[] {
+  const dependencies = new Map<JournalStreamDomain, Set<JournalStreamDomain>>(
+    JOURNAL_STREAM_DOMAINS.map((domain) => [domain, new Set()]),
+  );
+  for (const { source, target, runtime } of edges) {
+    if (!runtime) continue;
+    const sourceDomain = journalStreamDomain(source);
+    const targetDomain = journalStreamDomain(target);
+    if (sourceDomain !== null && targetDomain !== null && sourceDomain !== targetDomain) {
+      dependencies.get(sourceDomain)?.add(targetDomain);
+    }
+  }
+
+  const visiting = new Set<JournalStreamDomain>();
+  const visited = new Set<JournalStreamDomain>();
+  const path: JournalStreamDomain[] = [];
+  const cycles: string[] = [];
+
+  const visit = (domain: JournalStreamDomain): void => {
+    if (visited.has(domain)) return;
+    if (visiting.has(domain)) {
+      const cycleStart = path.indexOf(domain);
+      cycles.push([...path.slice(cycleStart), domain].join(' -> '));
+      return;
+    }
+
+    visiting.add(domain);
+    path.push(domain);
+    for (const dependency of dependencies.get(domain) ?? []) visit(dependency);
+    path.pop();
+    visiting.delete(domain);
+    visited.add(domain);
+  };
+
+  for (const domain of JOURNAL_STREAM_DOMAINS) visit(domain);
+  return cycles;
 }
 
 function collectViolations(predicate: (source: string, target: string) => boolean): string[] {
@@ -397,6 +451,20 @@ describe('architecture layering invariants', () => {
     const violations = collectViolations((source, target) => {
       const sourceOwner = shellOwner(source);
       const targetOwner = shellOwner(target);
+      return sourceOwner !== null && targetOwner !== null && sourceOwner !== targetOwner;
+    });
+
+    expect(violations).toEqual([]);
+  });
+
+  it('Journal-stream domain runtime imports form an acyclic graph', () => {
+    expect(journalDomainCycles(IMPORT_EDGES)).toEqual([]);
+  });
+
+  it('domains do not import another domain concrete shell or terminal implementation', () => {
+    const violations = collectViolations((source, target) => {
+      const sourceOwner = domainOwner(source);
+      const targetOwner = concreteImplementationOwner(target);
       return sourceOwner !== null && targetOwner !== null && sourceOwner !== targetOwner;
     });
 
