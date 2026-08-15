@@ -1,4 +1,4 @@
-import { probeProcessIncarnation, type ProcessIncarnation } from './node-process.js';
+import { isProcessIncarnation, probeProcessIncarnation, type ProcessIncarnation } from './node-process.js';
 import type { MonotonicClock, MonotonicInstant } from './monotonic-clock.js';
 import {
   CONTAINMENT_DISAPPEARANCE_CONFIRM_MS,
@@ -91,7 +91,7 @@ function assertPositiveSafeInteger(value: number, field: string): void {
 
 function assertProcessIdentity(identity: RecordedProcessIdentity, field: string): void {
   assertPositiveSafeInteger(identity.pid, `${field}.pid`);
-  if (typeof identity.incarnation !== 'string' || identity.incarnation.length === 0) {
+  if (!isProcessIncarnation(identity.incarnation)) {
     throw new ProcessContainmentError(
       'process_identity_unverified',
       `${field}.incarnation must be a non-empty incarnation token.`,

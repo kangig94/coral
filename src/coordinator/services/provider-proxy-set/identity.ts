@@ -6,7 +6,7 @@ import {
   canonicalUuidSchema,
   hostFingerprintSchema,
 } from '../../../provider-proxy/protocol.js';
-import type { HandoffCapsuleV3 } from '../../../provider-proxy/handoff-capsule.js';
+import type { HandoffCapsule, HandoffCapsuleV3 } from '../../../provider-proxy/handoff-capsule.js';
 import type { ProviderOperationRecord } from '../../../store/provider-operation-record.js';
 
 const nonNegativeSafeIntegerSchema = z.number().int().nonnegative().safe();
@@ -140,6 +140,36 @@ export function providerProxySetIdentityFromCapsule(capsule: HandoffCapsuleV3): 
     proxyProcessGroupId: capsule.proxyProcessGroupId,
     canonicalEndpoint: capsule.proxyEndpoint,
   });
+}
+
+/**
+ * Whether a discovered capsule names the set an identity describes.
+ *
+ * One home, because there were two and this file is where the other two halves already live — the
+ * capsule-to-identity projection above and `providerProxySetIdentitiesEqual`. The copies had to be edited
+ * identically when V3 arrived, which is the cost the rule against a second canonical home is about.
+ *
+ * V3 alone carries a comparable process identity, so only it is compared in full. V1 has none, and V2's is
+ * seconds from a retired derivation — comparing those against a token would manufacture a disagreement
+ * rather than find one, so both are held to the eight fields that mean the same thing in every version.
+ */
+export function providerProxySetCapsuleMatchesIdentity(
+  capsule: HandoffCapsule,
+  identity: ProviderProxySetIdentity,
+): boolean {
+  if (capsule.version === 3) {
+    return providerProxySetIdentitiesEqual(providerProxySetIdentityFromCapsule(capsule), identity);
+  }
+  return (
+    capsule.buildSetId === identity.buildSetId &&
+    capsule.hostFingerprint === identity.hostFingerprint &&
+    capsule.guardianInstanceId === identity.guardianInstanceId &&
+    capsule.reaperInstanceId === identity.reaperInstanceId &&
+    capsule.proxyInstanceId === identity.proxyInstanceId &&
+    capsule.guardianControlEndpoint === identity.guardianControlEndpoint &&
+    capsule.reaperControlEndpoint === identity.reaperControlEndpoint &&
+    capsule.proxyEndpoint === identity.canonicalEndpoint
+  );
 }
 
 export class ProviderProxySetIdentityIndex {

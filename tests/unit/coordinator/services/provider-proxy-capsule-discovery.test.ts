@@ -5,7 +5,6 @@ import { basename, join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import { providerHandoffCapsulePath } from '#src/infra/path/index.js';
-import { writeHandoffCapsuleFile, type HandoffCapsule } from '#src/provider-proxy/handoff-capsule.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { StoragePort } from '#src/infra/port-types.js';
 import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set/claim-mirror.js';
@@ -14,6 +13,7 @@ import {
   discoverProviderHandoffCapsules,
   retireProviderHandoffCapsule,
 } from '#src/coordinator/services/provider-proxy-capsule-discovery.js';
+import type { HandoffCapsule } from '#src/provider-proxy/handoff-capsule.js';
 import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
 
 /** The build this fixture lifecycle belongs to — the same one its capsule carries, so discovery treats it as inheritable rather than foreign. */
@@ -96,7 +96,10 @@ describe('provider proxy capsule discovery', () => {
     const path = providerHandoffCapsulePath(capsule, { baseDir });
     const stat = runtime.storage.statSync(baseDir, { bigint: true });
     if (stat.uid === undefined) throw new Error('real storage did not report the temporary directory owner');
-    writeHandoffCapsuleFile(path, capsule, { storage: runtime.storage, uid: Number(stat.uid) });
+    // Placed as bytes rather than through `writeHandoffCapsuleFile`, which now accepts V3 alone. This case is
+    // discovery finding a capsule an *older* build left behind, so producing it with the current writer would
+    // be testing a file production can no longer create.
+    runtime.storage.writeAtomicDurableSync(path, JSON.stringify(capsule), { encoding: 'utf-8', mode: 0o600 });
 
     const discovered = discoverProviderHandoffCapsules({
       runDir,

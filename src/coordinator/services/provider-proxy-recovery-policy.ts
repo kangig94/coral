@@ -23,7 +23,11 @@ import {
   type DisappearanceDeliveryAttemptOutcome,
 } from './provider-containment-disappearance.js';
 import type { ProviderHandoffCapsuleRetirementOutcome } from './provider-proxy-capsule-discovery.js';
-import { providerProxySetIdentitiesEqual, type ProviderProxySetIdentity } from './provider-proxy-set/identity.js';
+import {
+  providerProxySetCapsuleMatchesIdentity,
+  providerProxySetIdentitiesEqual,
+  type ProviderProxySetIdentity,
+} from './provider-proxy-set/identity.js';
 import type {
   ProviderProxySetAvailabilityIncident,
   ProviderProxySetInheritanceOutcome,
@@ -261,42 +265,6 @@ function retrySafeTerminalizationUnknown(error: ProviderOperationAtomicTerminali
   };
 }
 
-function capsuleMatchesIdentity(capsule: HandoffCapsule, identity: ProviderProxySetIdentity): boolean {
-  // V3 alone carries a comparable process identity. V1 has none, and V2's is seconds from a retired
-  // derivation — comparing those against a token would manufacture a disagreement rather than find one.
-  if (capsule.version === 3) {
-    const expected = {
-      buildSetId: capsule.buildSetId,
-      hostFingerprint: capsule.hostFingerprint,
-      guardianInstanceId: capsule.guardianInstanceId,
-      guardianPid: capsule.guardianPid,
-      guardianIncarnation: capsule.guardianIncarnation,
-      guardianControlEndpoint: capsule.guardianControlEndpoint,
-      proxyInstanceId: capsule.proxyInstanceId,
-      proxyPid: capsule.proxyPid,
-      reaperInstanceId: capsule.reaperInstanceId,
-      reaperPid: capsule.reaperPid,
-      reaperIncarnation: capsule.reaperIncarnation,
-      reaperControlEndpoint: capsule.reaperControlEndpoint,
-      containmentKind: capsule.containmentKind,
-      proxyIncarnation: capsule.proxyIncarnation,
-      proxyProcessGroupId: capsule.proxyProcessGroupId,
-      canonicalEndpoint: capsule.proxyEndpoint,
-    };
-    return providerProxySetIdentitiesEqual(expected, identity);
-  }
-  return (
-    capsule.buildSetId === identity.buildSetId &&
-    capsule.hostFingerprint === identity.hostFingerprint &&
-    capsule.guardianInstanceId === identity.guardianInstanceId &&
-    capsule.reaperInstanceId === identity.reaperInstanceId &&
-    capsule.proxyInstanceId === identity.proxyInstanceId &&
-    capsule.guardianControlEndpoint === identity.guardianControlEndpoint &&
-    capsule.reaperControlEndpoint === identity.reaperControlEndpoint &&
-    capsule.proxyEndpoint === identity.canonicalEndpoint
-  );
-}
-
 function callerCancellation(input: { signal?: AbortSignal }, error: unknown): Observation | null {
   return input.signal?.aborted === true && input.signal.reason === error ? { kind: 'cancel', reason: error } : null;
 }
@@ -351,7 +319,10 @@ function classifyFulfillment(
     }
     const outcome = value as ProviderProxySetRedemptionOutcome;
     if (outcome.kind === 'temporarily-unavailable') return unavailable(producerId, outcome.incident);
-    if (context.capsule !== undefined && !capsuleMatchesIdentity(context.capsule, outcome.set.setIdentity)) {
+    if (
+      context.capsule !== undefined &&
+      !providerProxySetCapsuleMatchesIdentity(context.capsule, outcome.set.setIdentity)
+    ) {
       return corrupt(producerId, new Error('provider_proxy_capsule_redemption_identity_mismatch'));
     }
     if (

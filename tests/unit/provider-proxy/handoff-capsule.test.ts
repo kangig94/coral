@@ -14,7 +14,6 @@ import {
   handoffSecretDigest,
   readHandoffCapsuleFile,
   writeHandoffCapsuleFile,
-  type HandoffCapsule,
   type HandoffCapsuleV1,
   type HandoffCapsuleV3,
   type HandoffCapsuleFileEnvironment,
@@ -371,12 +370,12 @@ describe('provider-proxy handoff capsule file I/O', () => {
   }
 
   it('writes a private mode-0600 capsule and reads it back unchanged', () => {
-    writeHandoffCapsuleFile(capsulePath, capsuleFor(), env);
+    writeHandoffCapsuleFile(capsulePath, capsuleV3For(), env);
 
     const stat = statSync(capsulePath, { bigint: true });
     expect(stat.uid).toBe(BigInt(env.uid));
     expect(stat.mode & 0o777n).toBe(0o600n);
-    expect(readHandoffCapsuleFile(capsulePath, env)).toEqual(capsuleFor());
+    expect(readHandoffCapsuleFile(capsulePath, env)).toEqual(capsuleV3For());
   });
 
   it('returns null for an absent capsule', () => {
@@ -384,14 +383,14 @@ describe('provider-proxy handoff capsule file I/O', () => {
   });
 
   it('refuses a capsule whose mode is not 0600', () => {
-    writeHandoffCapsuleFile(capsulePath, capsuleFor(), env);
+    writeHandoffCapsuleFile(capsulePath, capsuleV3For(), env);
     chmodSync(capsulePath, 0o644);
 
     expect(readCapsuleFailure(capsulePath, env).code).toBe('handoff_capsule_not_private');
   });
 
   it('refuses a capsule whose filesystem owner is not the reading uid', () => {
-    writeHandoffCapsuleFile(capsulePath, capsuleFor(), env);
+    writeHandoffCapsuleFile(capsulePath, capsuleV3For(), env);
 
     expect(readCapsuleFailure(capsulePath, { ...env, uid: env.uid + 1 }).code).toBe('handoff_capsule_not_private');
   });
@@ -402,8 +401,8 @@ describe('provider-proxy handoff capsule file I/O', () => {
   // (`infra/bundle-manifest.ts`) closes that: swapping the underlying inode is caught even when the byte
   // count never moves.
   it('refuses a capsule swapped for a same-length twin between the ownership check and the open', () => {
-    const capsuleA = capsuleFor();
-    const capsuleB: HandoffCapsule = { ...capsuleA, grantId: '99999999-9999-4999-8999-999999999999' };
+    const capsuleA = capsuleV3For();
+    const capsuleB: HandoffCapsuleV3 = { ...capsuleA, grantId: '99999999-9999-4999-8999-999999999999' };
     expect(JSON.stringify(capsuleA).length).toBe(JSON.stringify(capsuleB).length);
     writeHandoffCapsuleFile(capsulePath, capsuleA, env);
 
@@ -420,7 +419,7 @@ describe('provider-proxy handoff capsule file I/O', () => {
   });
 
   it('refuses a capsule swapped for a symlink while the read was still in flight', () => {
-    writeHandoffCapsuleFile(capsulePath, capsuleFor(), env);
+    writeHandoffCapsuleFile(capsulePath, capsuleV3For(), env);
     const targetPath = join(tempRoot, 'elsewhere.json');
 
     let readCount = 0;

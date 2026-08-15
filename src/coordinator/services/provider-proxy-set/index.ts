@@ -31,6 +31,7 @@ import {
   ProviderProxySetIdentityIndex,
   providerProxySetAddress,
   providerProxySetAddressKey,
+  providerProxySetCapsuleMatchesIdentity,
   providerProxySetIdentitiesEqual,
   providerProxySetIdentityFromCapsule,
   providerProxySetKey,
@@ -655,7 +656,7 @@ export class ProviderProxySetLifecycle {
     const claimKey = this.#identityIndex.keyForAddress(address);
     if (claimKey !== null) {
       const claimSlot = this.#slots.get(claimKey);
-      if (claimSlot?.kind !== 'recovering' || !this.#capsuleMatchesIdentity(capsule, claimSlot.identity)) {
+      if (claimSlot?.kind !== 'recovering' || !providerProxySetCapsuleMatchesIdentity(capsule, claimSlot.identity)) {
         throw new Error('provider_proxy_capsule_claim_identity_mismatch');
       }
       if (claimSlot.capsulePath !== null && claimSlot.capsulePath !== path) {
@@ -733,24 +734,6 @@ export class ProviderProxySetLifecycle {
     if (capsule.buildSetId !== this.#deps.buildSetId) return { kind: 'uninheritable', reason: 'other-build' };
     if (capsule.version === 2) return { kind: 'uninheritable', reason: 'unreadable-identity' };
     return { kind: 'inheritable', capsule };
-  }
-
-  #capsuleMatchesIdentity(capsule: HandoffCapsule, identity: ProviderProxySetIdentity): boolean {
-    if (capsule.version === 3) {
-      return providerProxySetIdentitiesEqual(providerProxySetIdentityFromCapsule(capsule), identity);
-    }
-    // V1 and V2 alike: compare only what this build can read as identity. V2's process fields are seconds,
-    // and comparing them against a token would be a guaranteed mismatch dressed up as a real disagreement.
-    return (
-      capsule.buildSetId === identity.buildSetId &&
-      capsule.hostFingerprint === identity.hostFingerprint &&
-      capsule.guardianInstanceId === identity.guardianInstanceId &&
-      capsule.reaperInstanceId === identity.reaperInstanceId &&
-      capsule.proxyInstanceId === identity.proxyInstanceId &&
-      capsule.guardianControlEndpoint === identity.guardianControlEndpoint &&
-      capsule.reaperControlEndpoint === identity.reaperControlEndpoint &&
-      capsule.proxyEndpoint === identity.canonicalEndpoint
-    );
   }
 
   #recoverExactCapsule(slot: Extract<ProviderProxySetSlot, { kind: 'capsule-recovering' }>): void {

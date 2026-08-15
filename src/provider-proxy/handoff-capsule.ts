@@ -401,14 +401,19 @@ function assertPrivateHandoffCapsuleFile(path: string, env: HandoffCapsuleFileEn
  * primitive `kb/ops/promote-marker.ts` uses. A grant with no durable capsule is unredeemable no matter how
  * many authorities acknowledge it, so this is the one write in the install sequence that must survive a
  * `SIGKILL` landing the instant after it returns.
+ *
+ * V3 only, at the type and again at runtime. The union stays readable so older capsules can be recognised
+ * and refused, but "V2 is read-only" is a property of this boundary rather than of a comment — a writer that
+ * accepts the whole readable union is one edit away from emitting a shape it cannot itself verify. Legacy
+ * shapes belong in test fixtures written as literal bytes, never in what production can produce.
  */
 export function writeHandoffCapsuleFile(
   path: string,
-  capsule: HandoffCapsule,
+  capsule: HandoffCapsuleV3,
   env: HandoffCapsuleFileEnvironment,
 ): void {
   assertCanonicalHandoffCapsulePath(path);
-  const parsed = handoffCapsuleSchema.parse(capsule);
+  const parsed = handoffCapsuleV3Schema.parse(capsule);
   const encoded = JSON.stringify(parsed);
   const encodedBytes = Buffer.byteLength(encoded, 'utf8');
   if (encodedBytes > MAX_HANDOFF_CAPSULE_BYTES) {
