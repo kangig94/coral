@@ -49,6 +49,24 @@ its expectation before the process exists; the process reports its own start aft
 between those two moments that crosses a second boundary — a slow spawn, a loaded machine, a cold
 filesystem — makes them disagree, and the acquisition fails.
 
+### The observed spread is much wider than a spawn, and that changes the suspect
+
+Thirty-one failures on one daemon over four hours, with disagreements of **2, 3, 42, 85, 91, 123, 171,
+234, 236, 325, 349, 373, 375, 402, 404, 406, 410, 497, 533, 545, 550, 567, 576, 585, 629, 634 and 670
+seconds**. The earlier revision of this document generalised from a single three-second sample and
+called spawn latency the cause. Two seconds is a spawn crossing a boundary. **Six hundred is not.**
+
+A spread that reaches eleven minutes points at the two sides deriving the value from different clock
+bases rather than at either side being slow. `probeProcessStartedAtSeconds` converts a per-process tick
+count into an absolute time using a boot reference; if that reference moves — WSL2 suspend/resume is the
+obvious local candidate, and this host is WSL2 — every process started before the move reports a start
+time in a different frame from one computed after it. That would produce exactly this: a roughly
+constant offset within a run, drifting across runs, unrelated to load.
+
+Which means fix option 1 below is not merely preferable, it may be the only one that works: comparing
+two values read the same way is well-defined even when the clock base moves, and comparing an issued
+value against a read one is not.
+
 This is the most plausible explanation for the machine-to-machine divergence that has been read as
 environment weirdness: a fast machine acquires, a slow one does not, on the same build.
 
@@ -71,6 +89,12 @@ This does not change the local-authorized fallback, the control protocol, the co
 
 ## Start condition
 
-Reproduce the disagreement deliberately — delay the spawn past a second boundary and confirm the
-acquisition fails — before changing the comparison. The failure has been observed but not yet produced
-on demand, and this document has already been wrong once about a cause inferred rather than reproduced.
+Reproduce the disagreement deliberately before changing the comparison. The document has already been
+wrong twice about this cause — once inferring silent abandonment from an absent log, once generalising
+spawn latency from a single sample — so a reproduction is the entry price, not a formality.
+
+Delaying a spawn past a second boundary reproduces the two-second end of the range and proves the
+comparison is fragile. It does **not** reproduce the six-hundred-second end, and a fix validated only
+against the cheap case would leave the common one live. Start instead by reading both sides' derivation
+of `processStartedAtSeconds` and establishing whether they share a clock base at all; if they do not,
+the reproduction is a clock move, not a slow spawn.

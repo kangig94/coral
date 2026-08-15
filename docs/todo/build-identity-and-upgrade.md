@@ -65,6 +65,36 @@ bounded only by its next restart. The evidence for this is independent of the in
 log line showed the daemon reporting `0.10.6` while the environment it handed to spawned children
 carried `…/coral/0.10.8/bin` on `PATH`.
 
+### The replacement is designed, built, and never triggered
+
+Observed 2026-08-15, four hours after `0.10.8` was installed: the live coordinator was still `0.10.6`,
+pid unchanged since boot, serving a `0.10.8` CLI. It had accumulated 27 unresolved quarantine rows,
+none of the release's fixes in effect, and the operator's report was that the tool had become unstable.
+Nothing was wrong with the fixes. They had never run.
+
+The intended behaviour exists: `createReplacementBackendOwnershipChecker`
+(`src/coordinator/ownership-checker.ts:27-47`) polls the discovery record every 30s and, on seeing a
+**different `instanceId`**, calls `idleTimer.requestDrain('replaced')`, which `shutdownModeFromReason`
+routes to a handoff-mode drain. An incumbent yielding to a successor is a solved problem.
+
+What is missing is anything that makes a successor start. Three entry points could, and none compares
+build identity:
+
+| Entry point                                              | What it decides on                                                 |
+| -------------------------------------------------------- | ------------------------------------------------------------------ |
+| `clients/hooks/session-start.mjs` (`isCoordinatorAlive`) | pid liveness only — no version, no bundle hash                     |
+| `routeLiveIncumbent` (`src/infra/backend-routing.ts:40`) | a newer invoking CLI is told to **use the incumbent**              |
+| `src/transport/ipc/ensure.ts`                            | discovery-record ↔ health self-consistency, not "is this my build" |
+
+So the incumbent can only learn it has been replaced by seeing a successor's `instanceId`; a successor
+only appears if one starts; and nothing starts one. The loop never closes, and the old daemon serves
+until something unrelated kills it.
+
+**An earlier revision of this document called that "permitted by design."** It is not — the design is
+present and unreached. The corrected reading is that the mixed window is not a policy choice but an
+unfinished path, which also changes its severity: this is not a latent compatibility question, it is the
+reason a shipped fix can sit installed and inert for as long as a daemon stays up.
+
 Two consequences, and they are not the same problem:
 
 **The record direction — a new CLI writes what an old coordinator reads.** No rule anywhere says a
@@ -87,11 +117,15 @@ about. Treat it as motivation, not as evidence.
 
 ## Options, none costless
 
-- **Refuse the mixed window.** A CLI whose build differs from the live coordinator hands off or refuses
-  rather than writing records the coordinator cannot read. `runCliHandoffPreflight`
-  (`src/cli/program.ts:45`) already exists and already runs on every invocation; whether it fires when
-  the _sibling bundle_ differs is the one cheap fact that has never been checked, and it decides
-  between these options.
+- **Finish the takeover.** Give one entry point a build comparison that starts a successor when the
+  installed build is newer than the live coordinator, and let the existing ownership checker drain the
+  incumbent as `'replaced'`. This is the option the machinery was built for, and it is the only one that
+  makes an installed fix take effect without an operator noticing. It needs a decision about **which**
+  entry point owns it — the session-start hook sees every new session, `routeLiveIncumbent` sees every
+  invocation — and about what happens to work in flight, which the handoff drain already answers.
+- ~~**Refuse the mixed window.**~~ Ruled out earlier and still ruled out: refusing is a cold upgrade,
+  and handing off backwards makes the upgrade silently not take effect. Note that this is a different
+  question from the takeover above — refusing keeps the old daemon, finishing the takeover replaces it.
 - **Make durable records forward-readable.** Additive-only shapes with unknown-key tolerance, so an
   older reader can adopt a newer record. This is the same compatibility rule the jobs read contract
   needs — see `jobs-read-contract-schema-first.md` and `result-artifact-availability.md`, and settle
@@ -116,11 +150,42 @@ before any retention window removes them.
 The recovery boundary, the handoff protocol, and the store fingerprint are not redesigned here. Nor is
 the continuity defect — it is fixed, and this document is not its home.
 
+## What the preflight actually does, since it keeps being assumed
+
+`runCliHandoffPreflight` runs on every invocation and does reach a build comparison. The decision is
+`routeLiveIncumbent` (`src/infra/backend-routing.ts:33-49`): same build set → use the incumbent; then
+`compareProductVersions`, and **a newer or equal invoker also uses the incumbent**. Only an older
+invoker hands off, to the newer bundle. Confirmed live against a machine in the window: the `0.10.8`
+CLI ran against the `0.10.6` daemon, exited 0, and reported `Version: 0.10.6` with no notice.
+
+`useLiveIncumbent()` returns `createUseCurrentBackendRouting()` — literally the same value the preflight
+returns when no coordinator is running at all. Three gates fall back to it with no trace:
+
+| Fallback                                                           | Site                        |
+| ------------------------------------------------------------------ | --------------------------- |
+| incumbent omits `manifest`/`bundleDir` (older or non-strict build) | `handoff-runner.ts:214-221` |
+| invoking bundle's strict identity does not resolve                 | `handoff-runner.ts:218-221` |
+| foreign-target validation rejects the incumbent's bundle           | `backend-routing.ts:44-47`  |
+
+So a process can be in the mixed window for four different reasons and nothing distinguishes them.
+Observed and unresolved: a `0.10.5` CLI against the `0.10.6` daemon should hand off by that code and
+printed no handoff notice, and which fallback fired is not determinable from outside. That is the defect.
+
+At the far end, a `0.10.4` CLI reports **`Backend not running`** against a live daemon — it predates the
+strict-identity protocol entirely. Its own message then says a mutating command relaunches the backend,
+which points at two coordinators over one journal. Not tested, deliberately; see
+`coordinator-socket-identity.md`.
+
 ## Start condition
 
-Establish `runCliHandoffPreflight`'s behaviour when the sibling bundle differs. It is a single
-observation, it is the only unknown gating the record direction's option choice, and it costs nothing.
-
-Then decide whether the record direction is worth doing at all at its re-scored severity, or whether it
-should simply be folded into the one compatibility policy shared with the two wire-contract entries.
-The output direction does not wait on any of that — it is already the constraint blocking `wait`.
+1. **Finish the takeover.** This moved to the front on 2026-08-15, when a four-hour-old `0.10.6` daemon
+   was found serving a `0.10.8` install with none of that release's fixes in effect. It is the only item
+   here whose absence makes every other fix conditional on a daemon restart nobody schedules. Pick the
+   owning entry point first; the drain side already works.
+2. **Make the window observable.** Carry the reason on the routing result instead of collapsing four
+   situations into one `use-current`, and surface it in `backend status`. Small, blocks nothing, and it
+   is why the August incident stayed misattributed as long as it did.
+3. **Fold the record direction into the one compatibility policy** shared with
+   `jobs-read-contract-schema-first.md` and `result-artifact-availability.md`. It is a consumer of a
+   policy those two need anyway, not a driver.
+4. **The output direction** waits on none of that — it is already the constraint blocking `wait`.
