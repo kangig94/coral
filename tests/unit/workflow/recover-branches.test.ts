@@ -35,10 +35,12 @@ import { composeReducers } from '#src/store/reducers.js';
 import { sessionContinuationLeaseClaimedEvent } from '#src/sessions/continuation-lease-events.js';
 import { jobLaunchRequestedEvent } from '#src/jobs/store.js';
 import type { ProviderSession } from '#src/sessions/entry.js';
+import type { ProviderSessionLaunchDecision } from '#src/jobs/launch.js';
 import { createProjectionSessionLookup } from '#src/sessions/lookup.js';
 import { createWorkflowRecoveryFinalizer } from '#src/coordinator/services/workflow-recovery-finalizer.js';
 import { createRecoveryCoordinator } from '#src/coordinator/services/recovery/index.js';
 import { createFailedWorkflowDescendantReleaser } from '#src/coordinator/services/workflow-recovery-descendants.js';
+import { releaseSessionJobClaim } from '#src/sessions/job-release.js';
 import { seedTestSessionProjection } from '#tests/helpers/session.js';
 import { createBoundJobsRecoveryHarness } from '#tests/helpers/bound-jobs-recovery.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
@@ -2027,6 +2029,701 @@ describe('workflow recovery branch rules', () => {
       expect(releaseFailedWorkflowDescendants).not.toHaveBeenCalled();
     } finally {
       harness.db.close();
+    }
+  });
+
+  // Issue #310. Recovery commits a replacement through `executionSvc.resume()` before it has validated
+  // the durable state that follows, and its descendant authority was captured at hydration — so a job
+  // this pass creates is not in the envelope this pass later cleans up.
+  //
+  // Every other replacement test in this file is structurally unable to see it: they pass
+  // `noFailedWorkflowDescendants`, a bare function with no `composeAtomic`, so `atomicReleaser()`
+  // returns null and the production release never runs at all. This one uses the real releaser and a
+  // real `resume()` — the canonical-path mock above does update the session projection, but only to the
+  // shape that test asserts, and the defect is exactly what the real claim swap writes there.
+  //
+  // The session must hold its claim when the child launches (`appendLaunchRequested` validates the
+  // binding) and must have released it by the time recovery runs (`resumeResolved` rejects
+  // `session_busy` before it ever reaches the replacement branch). That ordering is not incidental —
+  // it is why the replaced session is never itself a descendant, and why the damage is an omission
+  // rather than a rejection.
+  it('cleans up the replacement it launched when recovery then fails', async () => {
+    const backend = createSimulationBackend({ projectRoot: PROJECT_ROOT, pluginRoot: PROJECT_ROOT });
+    const workflowId = 'workflow-replacement-envelope';
+    const plan = buildWorkflowPlan(workflowId, parseExpression('architect'), { defaultProvider: 'codex' });
+    const childJobId = plan.slots[0].slotId;
+    const sessionId = 'session-replacement-envelope';
+    const providerScope = backend.createInvocationContext().providerScope;
+    if (providerScope === undefined) throw new Error('expected simulation provider scope');
+
+    commitWorkflowEvents(
+      backend.progressStore.getDb(),
+      (c) => {
+        c.append(workflowPlanDeclaredEvent(workflowId, plan, providerScope));
+        return undefined;
+      },
+      backend.runtime.time,
+      permissiveProviderLookupPort,
+    );
+    backend.progressStore.appendLaunchRequested(workflowId, {
+      jobId: workflowId,
+      owner: { kind: 'workflow', id: workflowId },
+      sessionId: null,
+      provider: null,
+      projectRoot: backend.projectRoot,
+      backendNamespace: backend.namespace,
+      jobKind: 'workflow',
+      pool: 'default',
+      enqueueSequence: backend.progressStore.nextEnqueueSequence(),
+      request: { prompt: '', cwd: backend.projectRoot, bypassPermissions: false, coralEnv: {} },
+      createdAt: '2026-04-27T00:00:00.000Z',
+    });
+    backend.progressStore.commit((c) => {
+      c.append({
+        type: 'job.runtime.started',
+        stream: { kind: 'job', id: workflowId },
+        namespace: backend.namespace,
+        project: backend.projectRoot,
+        refs: { jobId: workflowId, workflowId },
+        body: { transport: 'workflow', startedAt: '2026-04-27T00:00:00.000Z' },
+      });
+      return undefined;
+    });
+
+    seedTestSessionProjection(backend.progressStore.getDb(), {
+      sessionId,
+      provider: 'codex',
+      projectRoot: backend.projectRoot,
+      backendNamespace: backend.namespace,
+      activeJobId: childJobId,
+    });
+    backend.progressStore.appendLaunchRequested(childJobId, {
+      jobId: childJobId,
+      owner: { kind: 'workflow', id: workflowId },
+      sessionId,
+      provider: 'codex',
+      projectRoot: backend.projectRoot,
+      backendNamespace: backend.namespace,
+      jobKind: 'provider',
+      pool: 'default',
+      enqueueSequence: backend.progressStore.nextEnqueueSequence(),
+      providerAction: 'exec',
+      parentWorkflowJobId: workflowId,
+      workflowSlotId: childJobId,
+      workflowSlotGeneration: 0,
+      request: { prompt: '', cwd: backend.projectRoot, bypassPermissions: false, coralEnv: {} },
+      createdAt: '2026-04-27T00:00:00.000Z',
+    });
+    commitJobTerminal(backend.progressStore, childJobId, sessionId, {
+      content: '',
+      outcome: { kind: 'job_fault', fault: { kind: 'ghost_launch' } },
+      durationMs: 0,
+    });
+
+    // The crashed daemon released the claim and recorded a replacement intent it never completed.
+    const sessionRow = backend.progressStore
+      .getDb()
+      .prepare<[string], { entry: string }>('SELECT entry FROM projection_sessions WHERE session_id = ?')
+      .get(sessionId);
+    if (sessionRow === undefined) throw new Error('expected persisted provider session');
+    const sessionEntry = JSON.parse(sessionRow.entry) as ProviderSession & Record<string, unknown>;
+    delete sessionEntry.activeJobId;
+    sessionEntry.binding = {
+      provider: 'codex',
+      kind: 'profile',
+      binding: {
+        profile: { canonicalLocation: '/tmp/sim/accounts/codex', routing: { kind: 'home' } },
+        guarantee: 'profile-only',
+      },
+    };
+    sessionEntry.continuationLease = {
+      status: 'pending',
+      staleJobId: childJobId,
+      workflowId,
+      workflowSlotId: childJobId,
+      replacementGeneration: 1,
+      reason: 'stale_recovery',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      recordedAt: '2026-04-27T00:00:00.000Z',
+    };
+    sessionEntry.version = Number(sessionEntry.version) + 1;
+    backend.progressStore
+      .getDb()
+      .prepare('UPDATE projection_sessions SET entry = ? WHERE session_id = ?')
+      .run(JSON.stringify(sessionEntry), sessionId);
+
+    const log = vi.fn<(message: string) => void>();
+    const coordinatorCommit = (cb: Parameters<JobStore['commit']>[0]) => backend.progressStore.commit(cb);
+    const releaseFailedWorkflowDescendants = createFailedWorkflowDescendantReleaser({
+      progressStore: backend.progressStore,
+      runtime: backend.runtime,
+      coordinatorCommit,
+      getExecutionService: () => backend.service,
+      createInvocationContext: backend.createInvocationContext,
+      releaseAdoptedJob: () => {},
+      emitSessionReleased: () => {},
+      log,
+    });
+
+    // Fails the step *after* the replacement has already committed — the window the ordering opens.
+    // A Proxy rather than a spread: the execution service is a class instance, so spreading it drops
+    // every prototype method and the run fails on `service.resume is not a function` instead of on the
+    // defect. Methods bind to the target so private fields still resolve.
+    //
+    // The override also records what it was called with, because the assertions below cannot tell a
+    // launched-then-abandoned replacement from a `resume()` that never launched one: if `resume()`
+    // returned `rejected`, recovery still settles the workflow as failed and the session still ends with
+    // no claim, so every assertion would pass while nothing was exercised. That is not hypothetical —
+    // an earlier revision of this test kept the session's claim, `resumeResolved` rejected it as
+    // `session_busy` before the replacement branch, and the test passed against the unfixed code.
+    let replacementJobId: string | undefined;
+    let claimWhileLaunching: string | undefined;
+    const abort = vi.spyOn(backend.service, 'abort');
+    const executionSvc = new Proxy(backend.service as object, {
+      get: (target, property) => {
+        if (property === 'awaitLaunch') {
+          return async (jobId: string): Promise<'error'> => {
+            replacementJobId = jobId;
+            claimWhileLaunching = createProjectionSessionLookup(backend.progressStore.getDb()).readProviderSession(
+              sessionId,
+            )?.activeJobId;
+            return 'error';
+          };
+        }
+        const value = Reflect.get(target, property, target) as unknown;
+        return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+      },
+    }) as typeof backend.service;
+
+    try {
+      const settled = await resumeAll({
+        db: backend.progressStore.getDb(),
+        progressStore: backend.progressStore,
+        loadJobDetails: loadJobProjectionDetails,
+        getExecutionService: () => executionSvc as never,
+        createInvocationContext: backend.createInvocationContext,
+        finalizeWorkflow: createWorkflowRecoveryFinalizer({
+          runtime: backend.runtime,
+          progressStore: backend.progressStore,
+          coordinatorCommit,
+          log,
+        }),
+        releaseFailedWorkflowDescendants,
+        log,
+        time: backend.runtime.time,
+      });
+
+      // The workflow does settle, and its close is not rejected. Pinned because the issue predicted the
+      // opposite — that stale descendant authority would fail `composeAtomic` and defer recovery
+      // permanently. It cannot: the replaced session had already released its claim, so it was never in
+      // the descendant set whose version the close checks. The damage is only what is missing from that
+      // set, and a passing close is what makes the omission silent.
+      expect(settled).toEqual([workflowId]);
+      expect(backend.progressStore.readStatus(workflowId)?.phase).toBe('error');
+
+      // A replacement really launched, and really held the session — without this the assertions below
+      // are satisfied by a `resume()` that never launched anything.
+      expect(replacementJobId, 'recovery must have launched a replacement').toBeDefined();
+      expect(replacementJobId).not.toBe(childJobId);
+      expect(claimWhileLaunching, 'the replacement must hold the session claim while it launches').toBe(
+        replacementJobId,
+      );
+
+      // Two obligations, and reverting either one alone must fail here. The claim release is what the
+      // atomic close performs; the abort is what process-local cleanup performs. Asserting only the
+      // first would let a reverted cleanup site pass while the replacement kept running.
+      expect(
+        createProjectionSessionLookup(backend.progressStore.getDb()).readProviderSession(sessionId)?.activeJobId,
+        'the replacement launched during recovery must be released with the workflow it belongs to, not left holding its session',
+      ).toBeUndefined();
+      expect(abort, 'the replacement must also be stopped, not merely unclaimed').toHaveBeenCalledWith([
+        replacementJobId,
+      ]);
+    } finally {
+      await backend.backend.shutdown('test cleanup');
+    }
+  });
+
+  // The sibling of the case above, and the one that was live on main before it: recovery's own lawful
+  // work moves a claim it is going to release. Waiting for a child to terminate releases that child's
+  // claim; completing a replacement intent swaps it. The close then has to release a descendant whose
+  // claim has already moved.
+  //
+  // `composeAtomic` used to re-derive that judgement from a projection read and reject it — treating an
+  // already-released claim as a conflict, and comparing a session version captured at hydration against
+  // one this pass had itself advanced. A rejected close is not retried into a fresh read: the persisted
+  // `ready-to-close` continuation comes back unchanged, so the workflow deferred forever.
+  //
+  // Nothing pinned it because the release primitive's own `already_absent` result was unreachable —
+  // `describeSessionJobClaimReleaseResult` has carried a string for it that no run could produce.
+  it('closes when a descendant claim was already released by recovery itself', async () => {
+    const backend = createSimulationBackend({ projectRoot: PROJECT_ROOT, pluginRoot: PROJECT_ROOT });
+    const workflowId = 'workflow-descendant-already-released';
+    const plan = buildWorkflowPlan(workflowId, parseExpression('architect'), { defaultProvider: 'codex' });
+    const childJobId = plan.slots[0].slotId;
+    const sessionId = 'session-descendant-already-released';
+    const providerScope = backend.createInvocationContext().providerScope;
+    if (providerScope === undefined) throw new Error('expected simulation provider scope');
+
+    commitWorkflowEvents(
+      backend.progressStore.getDb(),
+      (c) => {
+        c.append(workflowPlanDeclaredEvent(workflowId, plan, providerScope));
+        return undefined;
+      },
+      backend.runtime.time,
+      permissiveProviderLookupPort,
+    );
+    backend.progressStore.appendLaunchRequested(workflowId, {
+      jobId: workflowId,
+      owner: { kind: 'workflow', id: workflowId },
+      sessionId: null,
+      provider: null,
+      projectRoot: backend.projectRoot,
+      backendNamespace: backend.namespace,
+      jobKind: 'workflow',
+      pool: 'default',
+      enqueueSequence: backend.progressStore.nextEnqueueSequence(),
+      request: { prompt: '', cwd: backend.projectRoot, bypassPermissions: false, coralEnv: {} },
+      createdAt: '2026-04-27T00:00:00.000Z',
+    });
+    backend.progressStore.commit((c) => {
+      c.append({
+        type: 'job.runtime.started',
+        stream: { kind: 'job', id: workflowId },
+        namespace: backend.namespace,
+        project: backend.projectRoot,
+        refs: { jobId: workflowId, workflowId },
+        body: { transport: 'workflow', startedAt: '2026-04-27T00:00:00.000Z' },
+      });
+      return undefined;
+    });
+
+    // A running child still holding its claim — this is what makes it a descendant.
+    seedTestSessionProjection(backend.progressStore.getDb(), {
+      sessionId,
+      provider: 'codex',
+      projectRoot: backend.projectRoot,
+      backendNamespace: backend.namespace,
+      activeJobId: childJobId,
+    });
+    backend.progressStore.appendLaunchRequested(childJobId, {
+      jobId: childJobId,
+      owner: { kind: 'workflow', id: workflowId },
+      sessionId,
+      provider: 'codex',
+      projectRoot: backend.projectRoot,
+      backendNamespace: backend.namespace,
+      jobKind: 'provider',
+      pool: 'default',
+      enqueueSequence: backend.progressStore.nextEnqueueSequence(),
+      providerAction: 'exec',
+      parentWorkflowJobId: workflowId,
+      workflowSlotId: childJobId,
+      workflowSlotGeneration: 0,
+      request: { prompt: '', cwd: backend.projectRoot, bypassPermissions: false, coralEnv: {} },
+      createdAt: '2026-04-27T00:00:00.000Z',
+    });
+
+    const log = vi.fn<(message: string) => void>();
+    const coordinatorCommit = (cb: Parameters<JobStore['commit']>[0]) => backend.progressStore.commit(cb);
+    const releaseFailedWorkflowDescendants = createFailedWorkflowDescendantReleaser({
+      progressStore: backend.progressStore,
+      runtime: backend.runtime,
+      coordinatorCommit,
+      getExecutionService: () => backend.service,
+      createInvocationContext: backend.createInvocationContext,
+      releaseAdoptedJob: () => {},
+      emitSessionReleased: () => {},
+      log,
+    });
+
+    // Recovery releases the claim itself — through the production primitive, not a hand-written row —
+    // and then fails, so the close runs against a descendant that is already absent.
+    const executionSvc = new Proxy(backend.service as object, {
+      get: (target, property) => {
+        if (property === 'waitStream') {
+          return () => {
+            releaseSessionJobClaim({
+              projectRoot: backend.projectRoot,
+              runtime: backend.runtime,
+              db: backend.progressStore.getDb(),
+              commitEvents: coordinatorCommit,
+              emitSessionReleased: () => {},
+              sessionId,
+              jobId: childJobId,
+            });
+            throw new Error('workflow recovery failed after its own claim release');
+          };
+        }
+        const value = Reflect.get(target, property, target) as unknown;
+        return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+      },
+    }) as typeof backend.service;
+
+    try {
+      const settled = await resumeAll({
+        db: backend.progressStore.getDb(),
+        progressStore: backend.progressStore,
+        loadJobDetails: loadJobProjectionDetails,
+        getExecutionService: () => executionSvc as never,
+        createInvocationContext: backend.createInvocationContext,
+        finalizeWorkflow: createWorkflowRecoveryFinalizer({
+          runtime: backend.runtime,
+          progressStore: backend.progressStore,
+          coordinatorCommit,
+          log,
+        }),
+        releaseFailedWorkflowDescendants,
+        log,
+        time: backend.runtime.time,
+      });
+
+      expect(settled, 'a claim recovery released itself must not make its own close unsatisfiable').toEqual([
+        workflowId,
+      ]);
+      expect(backend.progressStore.readStatus(workflowId)?.phase).toBe('error');
+      expect(log).toHaveBeenCalledWith(
+        `Workflow recovery child ${childJobId} session claim ${sessionId} disposition: already absent.\n`,
+      );
+    } finally {
+      await backend.backend.shutdown('test cleanup');
+    }
+  });
+
+  // `resume()` starts the provider before it resolves (`activateCommittedProviderLaunch`), so a
+  // replacement that terminalizes quickly has already released its own claim by the time the caller sees
+  // a job id. The checkpoint must record it anyway. An earlier revision required the claim to still be
+  // held there and threw — turning a replacement that had *succeeded* into a failed workflow and
+  // dropping it from the cleanup envelope in the same move, which is the one thing the checkpoint exists
+  // to prevent. It was the same moment-in-time expectation about a moving claim that `composeAtomic`
+  // used to hold, re-introduced one layer up.
+  it('records a replacement that released its claim before the checkpoint ran', async () => {
+    const backend = createSimulationBackend({ projectRoot: PROJECT_ROOT, pluginRoot: PROJECT_ROOT });
+    const workflowId = 'workflow-replacement-fast-terminal';
+    const plan = buildWorkflowPlan(workflowId, parseExpression('architect'), { defaultProvider: 'codex' });
+    const childJobId = plan.slots[0].slotId;
+    const sessionId = 'session-replacement-fast-terminal';
+    const providerScope = backend.createInvocationContext().providerScope;
+    if (providerScope === undefined) throw new Error('expected simulation provider scope');
+
+    commitWorkflowEvents(
+      backend.progressStore.getDb(),
+      (c) => {
+        c.append(workflowPlanDeclaredEvent(workflowId, plan, providerScope));
+        return undefined;
+      },
+      backend.runtime.time,
+      permissiveProviderLookupPort,
+    );
+    backend.progressStore.appendLaunchRequested(workflowId, {
+      jobId: workflowId,
+      owner: { kind: 'workflow', id: workflowId },
+      sessionId: null,
+      provider: null,
+      projectRoot: backend.projectRoot,
+      backendNamespace: backend.namespace,
+      jobKind: 'workflow',
+      pool: 'default',
+      enqueueSequence: backend.progressStore.nextEnqueueSequence(),
+      request: { prompt: '', cwd: backend.projectRoot, bypassPermissions: false, coralEnv: {} },
+      createdAt: '2026-04-27T00:00:00.000Z',
+    });
+    backend.progressStore.commit((c) => {
+      c.append({
+        type: 'job.runtime.started',
+        stream: { kind: 'job', id: workflowId },
+        namespace: backend.namespace,
+        project: backend.projectRoot,
+        refs: { jobId: workflowId, workflowId },
+        body: { transport: 'workflow', startedAt: '2026-04-27T00:00:00.000Z' },
+      });
+      return undefined;
+    });
+
+    seedTestSessionProjection(backend.progressStore.getDb(), {
+      sessionId,
+      provider: 'codex',
+      projectRoot: backend.projectRoot,
+      backendNamespace: backend.namespace,
+      activeJobId: childJobId,
+    });
+    backend.progressStore.appendLaunchRequested(childJobId, {
+      jobId: childJobId,
+      owner: { kind: 'workflow', id: workflowId },
+      sessionId,
+      provider: 'codex',
+      projectRoot: backend.projectRoot,
+      backendNamespace: backend.namespace,
+      jobKind: 'provider',
+      pool: 'default',
+      enqueueSequence: backend.progressStore.nextEnqueueSequence(),
+      providerAction: 'exec',
+      parentWorkflowJobId: workflowId,
+      workflowSlotId: childJobId,
+      workflowSlotGeneration: 0,
+      request: { prompt: '', cwd: backend.projectRoot, bypassPermissions: false, coralEnv: {} },
+      createdAt: '2026-04-27T00:00:00.000Z',
+    });
+    commitJobTerminal(backend.progressStore, childJobId, sessionId, {
+      content: '',
+      outcome: { kind: 'job_fault', fault: { kind: 'ghost_launch' } },
+      durationMs: 0,
+    });
+
+    const sessionRow = backend.progressStore
+      .getDb()
+      .prepare<[string], { entry: string }>('SELECT entry FROM projection_sessions WHERE session_id = ?')
+      .get(sessionId);
+    if (sessionRow === undefined) throw new Error('expected persisted provider session');
+    const sessionEntry = JSON.parse(sessionRow.entry) as ProviderSession & Record<string, unknown>;
+    delete sessionEntry.activeJobId;
+    sessionEntry.binding = {
+      provider: 'codex',
+      kind: 'profile',
+      binding: {
+        profile: { canonicalLocation: '/tmp/sim/accounts/codex', routing: { kind: 'home' } },
+        guarantee: 'profile-only',
+      },
+    };
+    sessionEntry.continuationLease = {
+      status: 'pending',
+      staleJobId: childJobId,
+      workflowId,
+      workflowSlotId: childJobId,
+      replacementGeneration: 1,
+      reason: 'stale_recovery',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      recordedAt: '2026-04-27T00:00:00.000Z',
+    };
+    sessionEntry.version = Number(sessionEntry.version) + 1;
+    backend.progressStore
+      .getDb()
+      .prepare('UPDATE projection_sessions SET entry = ? WHERE session_id = ?')
+      .run(JSON.stringify(sessionEntry), sessionId);
+
+    const log = vi.fn<(message: string) => void>();
+    const coordinatorCommit = (cb: Parameters<JobStore['commit']>[0]) => backend.progressStore.commit(cb);
+    const releaseFailedWorkflowDescendants = createFailedWorkflowDescendantReleaser({
+      progressStore: backend.progressStore,
+      runtime: backend.runtime,
+      coordinatorCommit,
+      getExecutionService: () => backend.service,
+      createInvocationContext: backend.createInvocationContext,
+      releaseAdoptedJob: () => {},
+      emitSessionReleased: () => {},
+      log,
+    });
+
+    // `resume()` returns only after the replacement has already released its own claim — the race the
+    // asynchronous activation makes reachable. `awaitLaunch` then fails so the close runs deterministically.
+    let replacementJobId: string | undefined;
+    const abort = vi.spyOn(backend.service, 'abort');
+    const executionSvc = new Proxy(backend.service as object, {
+      get: (target, property) => {
+        if (property === 'awaitLaunch') return async (): Promise<'error'> => 'error';
+        if (property === 'resume') {
+          return async (...args: unknown[]) => {
+            const decision = await (
+              Reflect.get(target, property, target) as (...a: unknown[]) => Promise<ProviderSessionLaunchDecision>
+            ).apply(target, args);
+            if (decision.status !== 'rejected') {
+              replacementJobId = decision.jobId;
+              releaseSessionJobClaim({
+                projectRoot: backend.projectRoot,
+                runtime: backend.runtime,
+                db: backend.progressStore.getDb(),
+                commitEvents: coordinatorCommit,
+                emitSessionReleased: () => {},
+                sessionId,
+                jobId: decision.jobId,
+              });
+            }
+            return decision;
+          };
+        }
+        const value = Reflect.get(target, property, target) as unknown;
+        return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+      },
+    }) as typeof backend.service;
+
+    try {
+      const settled = await resumeAll({
+        db: backend.progressStore.getDb(),
+        progressStore: backend.progressStore,
+        loadJobDetails: loadJobProjectionDetails,
+        getExecutionService: () => executionSvc as never,
+        createInvocationContext: backend.createInvocationContext,
+        finalizeWorkflow: createWorkflowRecoveryFinalizer({
+          runtime: backend.runtime,
+          progressStore: backend.progressStore,
+          coordinatorCommit,
+          log,
+        }),
+        releaseFailedWorkflowDescendants,
+        log,
+        time: backend.runtime.time,
+      });
+
+      expect(replacementJobId, 'recovery must have launched a replacement').toBeDefined();
+      expect(settled).toEqual([workflowId]);
+      expect(
+        abort,
+        'a replacement that finished before it could be checkpointed still belongs in the cleanup envelope',
+      ).toHaveBeenCalledWith([replacementJobId]);
+    } finally {
+      await backend.backend.shutdown('test cleanup');
+    }
+  });
+
+  // The third arm of the same result. A close that this pass defers is retried on a later pass, and by
+  // then the launch fence is down — so another job can lawfully hold the session a stale descendant
+  // names. Treating that as a conflict made the close permanently unsatisfiable: the persisted
+  // `ready-to-close` record comes back unchanged every pass, and the descendant it names is never going
+  // to hold that session again. `releaseJob` refusing to touch the other owner is the safety property;
+  // the throw on top of it only converted a benign state into a workflow that never finishes.
+  it('closes when a descendant session has since been claimed by another job', async () => {
+    const backend = createSimulationBackend({ projectRoot: PROJECT_ROOT, pluginRoot: PROJECT_ROOT });
+    const workflowId = 'workflow-descendant-foreign-owner';
+    const plan = buildWorkflowPlan(workflowId, parseExpression('architect'), { defaultProvider: 'codex' });
+    const childJobId = plan.slots[0].slotId;
+    const sessionId = 'session-descendant-foreign-owner';
+    const successorJobId = 'job-unrelated-successor';
+    const providerScope = backend.createInvocationContext().providerScope;
+    if (providerScope === undefined) throw new Error('expected simulation provider scope');
+
+    commitWorkflowEvents(
+      backend.progressStore.getDb(),
+      (c) => {
+        c.append(workflowPlanDeclaredEvent(workflowId, plan, providerScope));
+        return undefined;
+      },
+      backend.runtime.time,
+      permissiveProviderLookupPort,
+    );
+    backend.progressStore.appendLaunchRequested(workflowId, {
+      jobId: workflowId,
+      owner: { kind: 'workflow', id: workflowId },
+      sessionId: null,
+      provider: null,
+      projectRoot: backend.projectRoot,
+      backendNamespace: backend.namespace,
+      jobKind: 'workflow',
+      pool: 'default',
+      enqueueSequence: backend.progressStore.nextEnqueueSequence(),
+      request: { prompt: '', cwd: backend.projectRoot, bypassPermissions: false, coralEnv: {} },
+      createdAt: '2026-04-27T00:00:00.000Z',
+    });
+    backend.progressStore.commit((c) => {
+      c.append({
+        type: 'job.runtime.started',
+        stream: { kind: 'job', id: workflowId },
+        namespace: backend.namespace,
+        project: backend.projectRoot,
+        refs: { jobId: workflowId, workflowId },
+        body: { transport: 'workflow', startedAt: '2026-04-27T00:00:00.000Z' },
+      });
+      return undefined;
+    });
+
+    seedTestSessionProjection(backend.progressStore.getDb(), {
+      sessionId,
+      provider: 'codex',
+      projectRoot: backend.projectRoot,
+      backendNamespace: backend.namespace,
+      activeJobId: childJobId,
+    });
+    backend.progressStore.appendLaunchRequested(childJobId, {
+      jobId: childJobId,
+      owner: { kind: 'workflow', id: workflowId },
+      sessionId,
+      provider: 'codex',
+      projectRoot: backend.projectRoot,
+      backendNamespace: backend.namespace,
+      jobKind: 'provider',
+      pool: 'default',
+      enqueueSequence: backend.progressStore.nextEnqueueSequence(),
+      providerAction: 'exec',
+      parentWorkflowJobId: workflowId,
+      workflowSlotId: childJobId,
+      workflowSlotGeneration: 0,
+      request: { prompt: '', cwd: backend.projectRoot, bypassPermissions: false, coralEnv: {} },
+      createdAt: '2026-04-27T00:00:00.000Z',
+    });
+
+    const log = vi.fn<(message: string) => void>();
+    const coordinatorCommit = (cb: Parameters<JobStore['commit']>[0]) => backend.progressStore.commit(cb);
+    const releaseFailedWorkflowDescendants = createFailedWorkflowDescendantReleaser({
+      progressStore: backend.progressStore,
+      runtime: backend.runtime,
+      coordinatorCommit,
+      getExecutionService: () => backend.service,
+      createInvocationContext: backend.createInvocationContext,
+      releaseAdoptedJob: () => {},
+      emitSessionReleased: () => {},
+      log,
+    });
+
+    // The child releases, an unrelated job claims the session, and only then does recovery fail — the
+    // shape a deferred close finds when it is retried after the launch fence has lifted.
+    const executionSvc = new Proxy(backend.service as object, {
+      get: (target, property) => {
+        if (property === 'waitStream') {
+          return () => {
+            releaseSessionJobClaim({
+              projectRoot: backend.projectRoot,
+              runtime: backend.runtime,
+              db: backend.progressStore.getDb(),
+              commitEvents: coordinatorCommit,
+              emitSessionReleased: () => {},
+              sessionId,
+              jobId: childJobId,
+            });
+            seedTestSessionProjection(backend.progressStore.getDb(), {
+              sessionId,
+              provider: 'codex',
+              projectRoot: backend.projectRoot,
+              backendNamespace: backend.namespace,
+              activeJobId: successorJobId,
+            });
+            throw new Error('workflow recovery failed while an unrelated job held the session');
+          };
+        }
+        const value = Reflect.get(target, property, target) as unknown;
+        return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+      },
+    }) as typeof backend.service;
+
+    try {
+      const settled = await resumeAll({
+        db: backend.progressStore.getDb(),
+        progressStore: backend.progressStore,
+        loadJobDetails: loadJobProjectionDetails,
+        getExecutionService: () => executionSvc as never,
+        createInvocationContext: backend.createInvocationContext,
+        finalizeWorkflow: createWorkflowRecoveryFinalizer({
+          runtime: backend.runtime,
+          progressStore: backend.progressStore,
+          coordinatorCommit,
+          log,
+        }),
+        releaseFailedWorkflowDescendants,
+        log,
+        time: backend.runtime.time,
+      });
+
+      expect(settled, 'a session another job now owns must not make this close unsatisfiable forever').toEqual([
+        workflowId,
+      ]);
+      expect(log).toHaveBeenCalledWith(
+        `Workflow recovery child ${childJobId} session claim ${sessionId} disposition: owned by another job.\n`,
+      );
+      // The successor keeps its claim: recovery released nothing it did not own.
+      expect(
+        createProjectionSessionLookup(backend.progressStore.getDb()).readProviderSession(sessionId)?.activeJobId,
+      ).toBe(successorJobId);
+    } finally {
+      await backend.backend.shutdown('test cleanup');
     }
   });
 });

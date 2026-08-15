@@ -79,7 +79,6 @@ export type WorkflowRecoveryDescendant = {
   readonly jobId: string;
   readonly sessionId: string;
   readonly projectRoot: CanonicalWorkDir;
-  readonly expectedSessionVersion: number;
 };
 
 export type WorkflowRecoveryDescendantRelease = {
@@ -136,6 +135,12 @@ type ResumeWorkflowContext = {
   drain: ReturnType<typeof workflowDrainEnteredBodySchema.parse> | null;
   time: Pick<TimePort, 'now'>;
   onProgress: (workflowId: string, message: string) => void;
+  /**
+   * A mandatory checkpoint, not a notification: recovery may not proceed past a committed replacement
+   * until the durable continuation names it. The continuation was read before this pass created
+   * anything, and the close can only release what it names.
+   */
+  checkpointReplacement: (sessionId: string, jobId: string) => Promise<void>;
   staleTimeoutMs: number;
   staleCheckIntervalMs: number;
   staleAbortTimeoutMs: number;
@@ -180,6 +185,12 @@ type WorkflowRecoveryContinuation = {
   readonly providerSessions: readonly {
     readonly sessionId: string;
     readonly projectRoot: CanonicalWorkDir;
+    /**
+     * What the session's version was when this recovery hydrated, and nothing more. It has no reader:
+     * the close compares job identity, never versions, because recovery's own work legitimately moves a
+     * session's version between hydration and close. Do not revive a comparison against it — one used to
+     * exist, and it rejected releases that had already succeeded.
+     */
     readonly version: number;
     readonly activeJobId: string | null;
     readonly continuationLease: ProviderSession['continuationLease'] | null;
@@ -199,7 +210,6 @@ type HydratedWorkflowRecovery = {
   readonly childRows: readonly ProjectionJobStoredRow[];
   readonly slotDetailsByJob: Map<string, JobProjectionDetail>;
   readonly providerSessionsById: ReadonlyMap<string, ProviderSession>;
-  readonly descendants: readonly WorkflowRecoveryDescendant[];
   readonly completion: ReturnType<typeof workflowCompletedBodySchema.parse> | null;
   readonly drain: ReturnType<typeof workflowDrainEnteredBodySchema.parse> | null;
   readonly eventsBySeq: ReadonlyMap<number, EventsRow>;
@@ -373,6 +383,11 @@ async function resumePendingReplacementIntents(
         `Workflow recovery could not complete replacement intent for slot '${slot.slotId}': ${resumed.message ?? 'unknown error'}.`,
       );
     }
+    // Before any further fallible work — `awaitLaunch` below is the first thing that can throw, and the
+    // close that follows a throw can only release what the continuation names. Recording here is what
+    // keeps a replacement this pass created inside the envelope this pass cleans up.
+    await deps.checkpointReplacement(launch.sessionId, resumed.jobId);
+
     const readiness = await deps.executionSvc.awaitLaunch(resumed.jobId, BOOTSTRAP_TIMEOUT_MS);
     if (readiness === 'error') {
       throw new Error(`Workflow recovery replacement '${resumed.jobId}' failed to launch for slot '${slot.slotId}'.`);
@@ -1137,7 +1152,6 @@ function continuationDescendants(continuation: WorkflowRecoveryContinuation): re
             jobId: session.activeJobId,
             sessionId: session.sessionId,
             projectRoot: session.projectRoot,
-            expectedSessionVersion: session.version,
           },
         ]
       : [],
@@ -1213,7 +1227,6 @@ function hydrateWorkflowRecovery(raw: RawWorkflowRecoveryEnvelope, ctx: StoreRea
     childRows,
     slotDetailsByJob,
     providerSessionsById,
-    descendants: continuationDescendants(continuation),
     completion,
     drain,
     eventsBySeq,
@@ -1252,6 +1265,31 @@ async function persistWorkflowContinuation(
     throw new Error(`Workflow recovery continuation lost authority for '${item.envelope.subject.key}'.`);
   }
   item.continuationDurable = true;
+}
+
+/**
+ * Records the replacement as this session's child. It does not verify that the replacement still holds
+ * the claim, and must not: `resume()` starts the provider before it resolves, so a job that terminalizes
+ * quickly releases its own claim first, and requiring the claim here would turn that success into a
+ * failed workflow. What the record has to survive is the close, and the close is idempotent per job —
+ * an already-finished replacement releases as `already_absent` and aborts as a no-op.
+ */
+async function checkpointReplacementInContinuation(
+  item: HydratedWorkflowRecovery,
+  quarantine: RecoveryQuarantinePort,
+  sessionId: string,
+  jobId: string,
+): Promise<void> {
+  item.continuation = {
+    ...item.continuation,
+    childIds: item.continuation.childIds.includes(jobId)
+      ? item.continuation.childIds
+      : [...item.continuation.childIds, jobId],
+    providerSessions: item.continuation.providerSessions.map((session) =>
+      session.sessionId === sessionId ? { ...session, activeJobId: jobId } : session,
+    ),
+  };
+  await persistWorkflowContinuation(item, quarantine);
 }
 
 function executionWithUnknownOutcome(
@@ -1380,7 +1418,7 @@ function closeRecoveredWorkflow(
     item.descendantReleases = finalizer.atomicClose({
       intent,
       recording: finalizationRecording(item),
-      descendants: item.descendants,
+      descendants: continuationDescendants(item.continuation),
       releaseDescendants,
       clearContinuation: () => clearWorkflowContinuation(item, quarantine),
     });
@@ -1466,6 +1504,8 @@ async function settleWorkflowRecovery(
         completion: item.completion,
         drain: item.drain,
         onProgress: options.onProgress ?? (() => {}),
+        checkpointReplacement: (sessionId, jobId) =>
+          checkpointReplacementInContinuation(item, quarantine, sessionId, jobId),
         staleTimeoutMs: options.staleTimeoutMs ?? DEFAULT_STALE_TIMEOUT_MS,
         staleCheckIntervalMs: options.staleCheckIntervalMs ?? DEFAULT_STALE_CHECK_INTERVAL_MS,
         staleAbortTimeoutMs: options.staleAbortTimeoutMs ?? DEFAULT_STALE_ABORT_TIMEOUT_MS,
@@ -1556,7 +1596,7 @@ function createWorkflowRecoveryPolicy(
           };
         }
         try {
-          releaser.cleanup(item.descendants);
+          releaser.cleanup(continuationDescendants(item.continuation));
           item.cleanupRequired = false;
           return { kind: 'released' };
         } catch (error) {
