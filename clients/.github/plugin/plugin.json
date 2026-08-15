@@ -1,6 +1,6 @@
 {
   "name": "coral",
-  "version": "0.10.7",
+  "version": "0.10.8",
   "description": "Structured planning, execution, and review workflows for Copilot CLI — multi-round plan/review, verified execution loops, multi-agent discussion, and a persistent knowledge base.",
   "author": {
     "name": "kangig94",
