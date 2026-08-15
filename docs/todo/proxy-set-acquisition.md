@@ -83,6 +83,28 @@ declared gone, never signalled, and can be issued a disappearance receipt while 
 That is the more dangerous direction and it is not what the measured acquisition failures show — those
 fail closed. Both come from the same primitive.
 
+**One of them is fixed**: `inheritance.ts:295` no longer requires an exact match to conclude an enforcer
+might be live — a readable start time already proves the pid exists, and whether it is still _ours_ is
+what a successor cannot tell. Reproduced first: without the fix that function returns a disappearance
+receipt for a set whose enforcers are alive.
+
+### What is left here is a design question, not a repair
+
+`observeContainment` (`infra/process-containment.ts`) reads a mismatch as absence, and **for its
+original caller that is correct**: the reaper recorded the value itself, so a disagreement really does
+prove the recorded leader is gone. The same function is also reached by a successor coordinator that
+recorded nothing, and for that caller the identical inference is unsound.
+
+Widening its result to `present | absent | unverifiable` was tried and reverted. It fails closed
+everywhere by construction — both decisions are positive matches — but it also destroys the sound
+conclusion the recorder is entitled to, and the coordinator-local recycled-group case regressed from a
+clean reap into a hard error.
+
+So the question is: **how does a process that did not record a containment prove its absence?** Options
+worth weighing: pass the recorder's identity so the module can tell which caller it has; ask the reaper
+over the control protocol it already speaks; or accept that a non-recorder may only ever quarantine a
+containment as unreapable, never retire it. This needs a decision before code.
+
 The redeem path is **half** right, and the half matters. Its three `establishControl` calls pass
 `expectedIdentity: {}` (`inheritance.ts:390,415,445`) and compare nothing, because the capsule secret is
 the authority — that is the pattern the fresh acquisition path should have copied. But the same function

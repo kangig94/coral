@@ -1025,6 +1025,45 @@ describe('createProviderProxySetInheritance', () => {
     expect(signals.some(({ signal }) => signal === 'SIGKILL')).toBe(false);
   });
 
+  // The guardian and the reaper recorded their own start times; this coordinator did not. Requiring an
+  // exact match against a fresh probe made a live enforcer look gone, after which this path reaped a
+  // running set and minted a disappearance receipt for it. A readable start time already proves the pid
+  // exists, and whether it is still ours is precisely what a successor cannot tell.
+  it('will not prove absence while an enforcer pid exists under a start time it did not record', async () => {
+    const reference = locator();
+    const record = proofRecord(reference, { pid: 104, processStartedAtSeconds: 1_003 });
+    const db = proofDatabase([record]);
+    const controller = new AbortController();
+    const signals: Array<{ pid: number; signal: NodeJS.Signals | 0 }> = [];
+    const base = createRealRuntime('prod');
+    const boundedRuntime = {
+      ...base,
+      process: {
+        ...base.process,
+        isAlive: () => true,
+        kill: (pid: number, signal: NodeJS.Signals | 0) => {
+          signals.push({ pid, signal });
+          return true;
+        },
+      },
+    };
+    // Every pid reads back on a clock base this coordinator does not share — readable, and disagreeing.
+    mockedProbe.mockImplementation(() => 9_999_999);
+
+    const inheritance = createProviderProxySetInheritance({
+      runtime: boundedRuntime,
+      identity,
+      operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
+      registerInheritedSet: () => undefined,
+    });
+
+    await expect(
+      inheritance.proveContainmentAbsent(providerProxySetIdentityFromRecord(reference), db, controller.signal),
+      'a disagreement is not evidence that the enforcer is gone',
+    ).resolves.toBeNull();
+    expect(signals, 'nothing may be signalled on the strength of a disagreement').toEqual([]);
+  });
+
   it('proves containment through the public factory without selecting an address-distinct root', async () => {
     const referenceA = locator();
     const referenceB = alternateLocator(referenceA);

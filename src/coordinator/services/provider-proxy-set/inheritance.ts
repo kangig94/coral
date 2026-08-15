@@ -292,12 +292,18 @@ async function proveProviderProxySetContainmentAbsent(
     { pid: identity.guardianPid, processStartedAtSeconds: identity.guardianProcessStartedAtSeconds },
     { pid: identity.reaperPid, processStartedAtSeconds: identity.reaperProcessStartedAtSeconds },
   ];
+  // Existence, not identity. These start times were recorded by the guardian and the reaper, not by this
+  // coordinator, and a value derived in another process sits on another clock base — requiring an exact
+  // match concluded that a live enforcer was gone, after which this function reaped a running set and
+  // minted a disappearance receipt for it.
+  //
+  // A readable start time already proves the pid exists; whether it is still *our* enforcer is what this
+  // coordinator cannot tell, so it assumes it might be. That is strictly more conservative than the
+  // comparison it replaces, and this path exists to prove absence — it may only do so when absence is
+  // observable, never inferred from a disagreement.
   const enforcerMayStillBeLive = enforcerIdentities.some((identity) => {
     try {
-      const observed = probeProcessStartedAtSeconds(identity.pid, platform);
-      return (
-        observed === identity.processStartedAtSeconds || (observed === null && runtime.process.isAlive(identity.pid))
-      );
+      return probeProcessStartedAtSeconds(identity.pid, platform) !== null || runtime.process.isAlive(identity.pid);
     } catch {
       return true;
     }
