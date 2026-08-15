@@ -495,6 +495,18 @@ function projectionRowToStatus(
     backendNamespace: projection.backend_namespace,
     ...(projection.bundle_hash === null ? {} : { bundleHash: projection.bundle_hash }),
     jobKind: projection.job_kind,
+    ...(projection.parent_workflow_job_id === null ||
+    projection.workflow_slot === null ||
+    projection.workflow_slot_generation === null
+      ? {}
+      : {
+          parentWorkflowJobId: projection.parent_workflow_job_id,
+          workflowSlotId: projection.workflow_slot,
+          workflowSlotGeneration: projection.workflow_slot_generation,
+        }),
+    ...(projection.replaces_workflow_job_id === null
+      ? {}
+      : { replacesWorkflowJobId: projection.replaces_workflow_job_id }),
     phase: projection.phase,
     updatedAt: terminal?.ts ?? runtime?.ts ?? rejected?.ts ?? requested?.ts ?? projection.created_at,
     lastSeq: projection.last_seq,

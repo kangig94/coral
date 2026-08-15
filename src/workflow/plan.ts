@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { truncate } from '../infra/text.js';
+import type { IdPort } from '../runtime/ports.js';
 import type { PipelineAST } from './ast.js';
 
 export type PlanSlot = {
@@ -109,11 +110,23 @@ export function buildWorkflowPlan(
   return { slots };
 }
 
+export function resolveWorkflowJobIds(
+  plan: WorkflowPlan,
+  ids: Pick<IdPort, 'uuid'>,
+  existing: ReadonlyMap<string, string> = new Map(),
+): ReadonlyMap<string, string> {
+  const jobIds = new Map(existing);
+  for (const slot of plan.slots) {
+    if (!jobIds.has(slot.slotId)) jobIds.set(slot.slotId, ids.uuid());
+  }
+  return jobIds;
+}
+
 export function compileWorkflowPlan(
   plan: WorkflowPlan,
   options: {
-    jobIds?: ReadonlyMap<string, string>;
-  } = {},
+    jobIds: ReadonlyMap<string, string>;
+  },
 ): CompiledPlanSlot[] {
   const stepIndexes = computeStepIndexes(plan);
   const atomIndexesByStep = new Map<number, number>();
@@ -126,10 +139,14 @@ export function compileWorkflowPlan(
     const kind: CompiledPlanSlot['kind'] = agent === undefined ? 'prompt' : 'agent';
     const tagName = agent ?? 'step-result';
     const label = agent ?? `prompt#${atomIndex}(${truncate(slot.instruction, 20)})`;
+    const jobId = options.jobIds.get(slot.slotId);
+    if (jobId === undefined) {
+      throw new Error(`Workflow plan slot '${slot.slotId}' has no resolved job id.`);
+    }
 
     return {
       ...slot,
-      jobId: options.jobIds?.get(slot.slotId) ?? slot.slotId,
+      jobId,
       stepIndex,
       tagName,
       atomKey: `${stepIndex}:${atomIndex}`,

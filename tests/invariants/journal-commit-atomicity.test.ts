@@ -453,22 +453,20 @@ function createWorkflowRecoveryHarness(db: Db, workflowId: string, expression = 
   };
 }
 
-function slotSessionId(slot: PlanSlot): string {
-  return `${slot.slotId}-session`;
-}
-
-function initWorkflowSlotJob(harness: WorkflowRecoveryHarness, slot: PlanSlot): void {
+function initWorkflowSlotJob(harness: WorkflowRecoveryHarness, slot: PlanSlot): string {
+  const jobId = harness.runtime.ids.uuid();
+  const sessionId = `${jobId}-session`;
   seedTestSessionProjection(harness.db, {
-    sessionId: slotSessionId(slot),
+    sessionId,
     provider: slot.provider,
     projectRoot: PROJECT_ROOT,
     backendNamespace: TEST_NAMESPACE,
-    activeJobId: slot.slotId,
+    activeJobId: jobId,
   });
-  harness.progressStore.appendLaunchRequested(slot.slotId, {
-    jobId: slot.slotId,
+  harness.progressStore.appendLaunchRequested(jobId, {
+    jobId,
     owner: { kind: 'workflow', id: harness.workflowId },
-    sessionId: slotSessionId(slot),
+    sessionId,
     provider: slot.provider,
     projectRoot: PROJECT_ROOT,
     backendNamespace: TEST_NAMESPACE,
@@ -487,24 +485,26 @@ function initWorkflowSlotJob(harness: WorkflowRecoveryHarness, slot: PlanSlot): 
     },
     createdAt: NOW,
   });
-  harness.progressStore.appendRuntimeStarted(slot.slotId, {
+  harness.progressStore.appendRuntimeStarted(jobId, {
     transport: 'durable-cli',
     pid: 1,
-    stdoutPath: `/tmp/${slot.slotId}.stdout`,
-    stderrPath: `/tmp/${slot.slotId}.stderr`,
+    stdoutPath: `/tmp/${jobId}.stdout`,
+    stderrPath: `/tmp/${jobId}.stderr`,
     startTime: NOW,
   });
+  return jobId;
 }
 
 function appendWorkflowSlotTerminal(
   harness: WorkflowRecoveryHarness,
   slot: PlanSlot,
+  jobId: string,
   terminal: { content: string; outcome: WaitTerminalOutcome; durationMs: number },
 ): void {
   harness.progressStore.commit((c) => {
     appendJobTerminalRecorded(c, {
-      jobId: slot.slotId,
-      sessionId: slotSessionId(slot),
+      jobId,
+      sessionId: `${jobId}-session`,
       namespace: TEST_NAMESPACE,
       project: PROJECT_ROOT,
       parentJobId: harness.workflowId,
@@ -551,6 +551,7 @@ async function resumeRecoveryHarness(
     createInvocationContext: createRecoveryInvocationContext,
     finalizeWorkflow,
     releaseFailedWorkflowDescendants: () => [],
+    ids: harness.runtime.ids,
     time: harness.runtime.time,
   });
 }
@@ -707,8 +708,8 @@ describe('journal commit atomicity invariant', () => {
       const harness = createWorkflowRecoveryHarness(db, 'workflow-recover-final-step');
       const [slot] = harness.plan.slots;
       if (slot === undefined) throw new Error('Expected a workflow slot.');
-      initWorkflowSlotJob(harness, slot);
-      appendWorkflowSlotTerminal(harness, slot, {
+      const childJobId = initWorkflowSlotJob(harness, slot);
+      appendWorkflowSlotTerminal(harness, slot, childJobId, {
         content: 'ARCH_DONE',
         outcome: { kind: 'completed' },
         durationMs: 0,
@@ -744,35 +745,34 @@ describe('journal commit atomicity invariant', () => {
       const harness = createWorkflowRecoveryHarness(db, 'workflow-recover-relaunch');
       const [slot] = harness.plan.slots;
       if (slot === undefined) throw new Error('Expected a workflow slot.');
-      const executionSvc = createWorkflowExecutionPort({
-        terminalContentByJob: new Map([[slot.slotId, 'ARCH_RELAUNCHED']]),
-      });
+      const executionSvc = createWorkflowExecutionPort();
       const captured = captureWorkflowIntents();
 
       await expect(resumeRecoveryHarness(harness, captured.finalizeWorkflow, executionSvc)).resolves.toEqual([
         harness.workflowId,
       ]);
 
-      expect(executionSvc.dispatches).toEqual([
-        {
-          providerName: 'codex',
-          coralName: 'architect',
-          jobId: slot.slotId,
-          workflowSlotId: slot.slotId,
-        },
-      ]);
-      expect(executionSvc.waitRequests.map((request) => request.jobIds)).toEqual([[slot.slotId]]);
+      const [dispatch] = executionSvc.dispatches;
+      expect(dispatch).toEqual({
+        providerName: 'codex',
+        coralName: 'architect',
+        jobId: expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u),
+        workflowSlotId: slot.slotId,
+      });
+      if (dispatch === undefined) throw new Error('Expected a recovery dispatch.');
+      expect(dispatch.jobId).not.toBe(slot.slotId);
+      expect(executionSvc.waitRequests.map((request) => request.jobIds)).toEqual([[dispatch.jobId]]);
       expect(captured.intents).toEqual([
         {
           outcome: 'completed',
           workflowJobId: harness.workflowId,
-          finalOutput: 'ARCH_RELAUNCHED',
+          finalOutput: `result:${dispatch.jobId}`,
           stepDetails: [
             {
               stepIndex: 0,
               atomIndex: 0,
               label: 'architect',
-              output: 'ARCH_RELAUNCHED',
+              output: `result:${dispatch.jobId}`,
             },
           ],
         },
@@ -788,9 +788,9 @@ describe('journal commit atomicity invariant', () => {
       const harness = createWorkflowRecoveryHarness(db, 'workflow-recover-active');
       const [slot] = harness.plan.slots;
       if (slot === undefined) throw new Error('Expected a workflow slot.');
-      initWorkflowSlotJob(harness, slot);
+      const childJobId = initWorkflowSlotJob(harness, slot);
       const executionSvc = createWorkflowExecutionPort({
-        terminalContentByJob: new Map([[slot.slotId, 'ARCH_FROM_WAIT']]),
+        terminalContentByJob: new Map([[childJobId, 'ARCH_FROM_WAIT']]),
       });
       const captured = captureWorkflowIntents();
 
@@ -799,7 +799,7 @@ describe('journal commit atomicity invariant', () => {
       ]);
 
       expect(executionSvc.dispatches).toEqual([]);
-      expect(executionSvc.waitRequests.map((request) => request.jobIds)).toEqual([[slot.slotId]]);
+      expect(executionSvc.waitRequests.map((request) => request.jobIds)).toEqual([[childJobId]]);
       expect(captured.intents).toEqual([
         {
           outcome: 'completed',
@@ -827,8 +827,8 @@ describe('journal commit atomicity invariant', () => {
       const harness = createWorkflowRecoveryHarness(db, 'workflow-recover-path', '(architect, critic)');
       const [failedSlot, pendingSlot] = harness.plan.slots;
       if (failedSlot === undefined || pendingSlot === undefined) throw new Error('Expected two workflow slots.');
-      initWorkflowSlotJob(harness, failedSlot);
-      appendWorkflowSlotTerminal(harness, failedSlot, {
+      const failedJobId = initWorkflowSlotJob(harness, failedSlot);
+      appendWorkflowSlotTerminal(harness, failedSlot, failedJobId, {
         content: '',
         outcome: { kind: 'provider_exit', code: 1 },
         durationMs: 0,
@@ -858,7 +858,7 @@ describe('journal commit atomicity invariant', () => {
             slotId: failedSlot.slotId,
             stepIndex: 0,
             atomLabel: 'architect',
-            jobId: failedSlot.slotId,
+            jobId: failedJobId,
           },
         },
       ]);
@@ -914,7 +914,7 @@ describe('journal commit atomicity invariant', () => {
           slotId: failedSlot.slotId,
           stepIndex: 0,
           atomLabel: 'architect',
-          jobId: failedSlot.slotId,
+          jobId: failedJobId,
         },
       });
       expect(decodeEventBody(terminal.body)).toMatchObject({

@@ -2,7 +2,7 @@ import type { CauseRef } from '../../causality/cause-ref.js';
 import { describeTerminalOutcome } from '../../jobs/outcome.js';
 import { assertNever } from '../../infra/error-format.js';
 import type { AbortResult } from '../../jobs/contracts/abort-registry.js';
-import type { JobDetailResponse, JobTerminal, JobsListResponse } from '../../jobs/records.js';
+import type { JobDetailResponse, JobStatus, JobTerminal, JobsListResponse } from '../../jobs/records.js';
 import type { AcceptedLaunchResponse } from '../../jobs/launch.js';
 import { formatTable, joinLines } from './text.js';
 import { formatUsageSegment } from './usage.js';
@@ -13,6 +13,7 @@ export type JobsListItem = {
   provider: string;
   cwd: string;
   jobKind: string;
+  workflowSlot: string;
   age: string;
 };
 
@@ -25,6 +26,8 @@ export type JobsListDisplayFilters = {
 };
 
 export type CauseRefDescriber = (ref: CauseRef) => string;
+
+type WorkflowChildJob = JobsListResponse['jobs'][number];
 
 const MAX_INLINE = 10_000;
 
@@ -127,6 +130,32 @@ export function formatAbortResult(result: AbortResult): string {
   ]);
 }
 
+function formatWorkflowSlotId(
+  status: Pick<JobStatus, 'parentWorkflowJobId' | 'workflowSlotId' | 'workflowSlotGeneration'>,
+): string | null {
+  if (status.workflowSlotId === undefined) {
+    return null;
+  }
+
+  const parentPrefix = status.parentWorkflowJobId === undefined ? null : `${status.parentWorkflowJobId}:`;
+  const slot =
+    parentPrefix !== null && status.workflowSlotId.startsWith(parentPrefix)
+      ? status.workflowSlotId.slice(parentPrefix.length)
+      : status.workflowSlotId;
+  return slot;
+}
+
+export function formatWorkflowSlot(
+  status: Pick<JobStatus, 'parentWorkflowJobId' | 'workflowSlotId' | 'workflowSlotGeneration'>,
+): string | null {
+  const slot = formatWorkflowSlotId(status);
+  if (slot === null) {
+    return null;
+  }
+
+  return status.workflowSlotGeneration === undefined ? slot : `${slot} (g${status.workflowSlotGeneration})`;
+}
+
 export function formatJobsList(data: JobsListResponse, now = Date.now()): JobsListItem[] {
   return data.jobs.map(({ jobId, status }) => ({
     jobId,
@@ -134,6 +163,7 @@ export function formatJobsList(data: JobsListResponse, now = Date.now()): JobsLi
     provider: status.provider ?? status.jobKind,
     cwd: status.projectRoot,
     jobKind: status.jobKind,
+    workflowSlot: formatWorkflowSlot(status) ?? JOBS_TABLE_NO_SLOT,
     age: formatRelativeAge(status.updatedAt, now),
   }));
 }
@@ -156,7 +186,37 @@ function terminalOutcomeText(result: JobTerminal, describeCauseRef?: CauseRefDes
   }
 }
 
-export function formatJobDetail(response: JobDetailResponse, describeCauseRef?: CauseRefDescriber): string {
+function formatWorkflowChildren(children: ReadonlyArray<WorkflowChildJob>): string | undefined {
+  if (children.length === 0) {
+    return undefined;
+  }
+
+  const ordered = [...children].sort(
+    (left, right) =>
+      (formatWorkflowSlotId(left.status) ?? '').localeCompare(formatWorkflowSlotId(right.status) ?? '') ||
+      (left.status.workflowSlotGeneration ?? 0) - (right.status.workflowSlotGeneration ?? 0) ||
+      left.jobId.localeCompare(right.jobId),
+  );
+
+  return joinLines([
+    'Workflow children:',
+    formatTable(
+      ['SLOT', 'GEN', 'CHILD JOB ID', 'REPLACES'],
+      ordered.map(({ jobId, status }) => [
+        formatWorkflowSlotId(status) ?? '-',
+        status.workflowSlotGeneration?.toString() ?? '-',
+        jobId,
+        status.replacesWorkflowJobId ?? '-',
+      ]),
+    ),
+  ]);
+}
+
+export function formatJobDetail(
+  response: JobDetailResponse,
+  describeCauseRef?: CauseRefDescriber,
+  workflowChildren: ReadonlyArray<WorkflowChildJob> = [],
+): string {
   const status = response.status;
   const usage = formatUsageSegment(response.exit?.diagnostics.usage, {
     verbose: true,
@@ -170,6 +230,11 @@ export function formatJobDetail(response: JobDetailResponse, describeCauseRef?: 
     status.provider === null ? undefined : `Provider: ${status.provider}`,
     `Kind: ${status.jobKind}`,
     `Owner: ${status.owner.kind} ${status.owner.id}`,
+    status.parentWorkflowJobId === undefined ? undefined : `Parent workflow: ${status.parentWorkflowJobId}`,
+    status.workflowSlotId === undefined ? undefined : `Workflow slot: ${status.workflowSlotId}`,
+    status.workflowSlotGeneration === undefined ? undefined : `Workflow generation: ${status.workflowSlotGeneration}`,
+    status.replacesWorkflowJobId === undefined ? undefined : `Replaces workflow job: ${status.replacesWorkflowJobId}`,
+    formatWorkflowChildren(workflowChildren),
     status.sessionId === null ? undefined : `Provider session: ${status.sessionId}`,
     `Project: ${status.projectRoot}`,
     `Updated: ${status.updatedAt}`,
@@ -185,13 +250,27 @@ export function formatJobDetail(response: JobDetailResponse, describeCauseRef?: 
   return joinLines(lines);
 }
 
+/** What `workflowSlot` carries when a job occupies no workflow slot, so the column can be dropped entirely. */
+const JOBS_TABLE_NO_SLOT = '-';
 const JOBS_TABLE_HEADERS = ['JOB ID', 'PHASE', 'PROVIDER', 'AGE'];
+const JOBS_TABLE_HEADERS_WITH_SLOT = ['JOB ID', 'SLOT', 'PHASE', 'PROVIDER', 'AGE'];
 
+/**
+ * The slot column appears only when some row actually occupies a slot. A workflow child's job id is a UUID
+ * that says nothing about which atom it ran, so the slot has to be visible — but most jobs are not workflow
+ * children, and a column of dashes on every ordinary listing is a cost paid by everyone to inform no one.
+ */
 function jobsTable(rows: JobsListItem[]): string {
-  return formatTable(
-    JOBS_TABLE_HEADERS,
-    rows.map((row) => [row.jobId, row.phase, row.provider, row.age]),
-  );
+  const hasSlot = rows.some((row) => row.workflowSlot !== JOBS_TABLE_NO_SLOT);
+  return hasSlot
+    ? formatTable(
+        JOBS_TABLE_HEADERS_WITH_SLOT,
+        rows.map((row) => [row.jobId, row.workflowSlot, row.phase, row.provider, row.age]),
+      )
+    : formatTable(
+        JOBS_TABLE_HEADERS,
+        rows.map((row) => [row.jobId, row.phase, row.provider, row.age]),
+      );
 }
 
 /**

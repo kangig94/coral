@@ -283,7 +283,7 @@ The operational health snapshot uses the same conservative but network-free loca
 1. `coral-cli workflow ...` posts to `POST /workflow`
 2. The workflow domain compiles the DSL into a semantic plan (slot id, dependencies, provider, instruction, optional agent)
 3. The executor launches provider or `coral:` atoms through the coordinator API; launch and retry stay intertwined per architecture §10.1a
-4. Workflow state is persisted as Journal events with a projection row per workflow; child job identity is derived from `parentWorkflowJobId` + `workflowSlotId`, not stored in the plan; `coral-cli wait` reads the same job store
+4. Workflow state is persisted as Journal events with a projection row per workflow. `workflowSlotId` identifies a semantic slot and is carried and surfaced separately from child job identity. Each child receives a separately minted canonical UUID job id from the runtime `ids` port. Recovery reconstructs the current slot-to-job mapping from durable child rows, reuses the durable job id for a slot with a current row, mints an id for a plan slot without a row, and mints a new id for the next replacement generation when a pending continuation lease requires one; job ids are never stored in the semantic plan. `coral-cli wait` reads the same job store
 5. Workflow usage is resolved from child job terminal diagnostics at read time, not stored on the workflow terminal event
 
 ### Boot Eras

@@ -29,12 +29,23 @@ export function createAppServerProxyRoute(deps: {
         throw new Error('The selected proxy set does not support durable operation replay.');
       }
 
-      const operation: OperationIdentity = operationIdentitySchema.parse({
+      const parsedOperation = operationIdentitySchema.safeParse({
         jobId: request.jobId,
         operationId: request.operationId,
         proxyInstanceId: authority.proxyInstanceId,
         buildSetId: authority.setIdentity.buildSetId,
       });
+      if (!parsedOperation.success) {
+        const issues = parsedOperation.error.issues
+          .map((issue) => `${issue.path.join('.') || 'identity'}: ${issue.message}`)
+          .join('; ');
+        throw new Error(
+          `Provider proxy launch rejected operation identity for job '${request.jobId}'. Invalid fields: ${issues || 'unknown schema violation'}. ` +
+            'If this is a queued workflow child created before the job-id upgrade, restart it under the upgraded coordinator; verified legacy workflow-slot children are recovered with local placement.',
+          { cause: parsedOperation.error },
+        );
+      }
+      const operation: OperationIdentity = parsedOperation.data;
       const prepared: ProxyPreparedAppServerOperation = proxyPreparedAppServerOperationSchema.parse({
         version: 1,
         provider: request.provider,

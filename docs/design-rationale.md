@@ -98,6 +98,12 @@ Retry-safe incidents therefore travel a repeatable, non-consuming channel and re
 
 The destructive boundary encodes the same distinction. Reaping a set with live claims requires a containment-qualified terminal fault; faultless retirement may reach `stopAndReap` only with literal `liveClaims: 0`. The rejected alternative is the old one-axis rule that treated “may have taken effect” as authority loss by itself. Under that rule, an unrelated replay-safe settlement failure could reap executing siblings even though their supervision remained intact. Approximate idleness or a non-consuming incident is likewise not a substitute for either qualification.
 
+### 3.2 Why workflow slot identity is not job identity
+
+A workflow slot is stable semantic lineage; a child job is one runtime execution of that slot. Each newly launched child therefore receives a separately minted canonical UUID job id, while durable child rows carry the slot identity separately. Recovery reconstructs the current mapping by reusing the durable job id for a slot with a current child row, mints an id for a slot without a row, and mints a new id for the next replacement generation when a pending continuation lease requires one. Operator surfaces preserve the same distinction by carrying and displaying slot identity separately, and a proxy launch rejection identifies the operation-identity component it rejected.
+
+The rejected alternative was to widen the provider-proxy operation-identity schema to accept slot-shaped values as job ids. During a hot upgrade, a new coordinator and previous-build proxies coexist; the coordinator could then send the widened value to a proxy whose strict UUID schema rejects it before the provider starts. Keeping the proxy wire job identity canonical-UUID-shaped across generations avoids that mixed-version failure instead of making slot identity double as job identity.
+
 ## 4. Two Consumer Interfaces
 
 Journal and Corpus consumers are deliberately split:

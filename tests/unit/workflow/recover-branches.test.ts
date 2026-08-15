@@ -2,6 +2,7 @@ import { currentCoralStoreFormat } from '#src/store-format.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { TEST_PROVIDER_SCOPE, withTestProfileLocation } from '#tests/helpers/provider-credentials.js';
 import { describe, expect, it, vi } from 'vitest';
+import { randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -21,7 +22,7 @@ import { workflowPlanDeclaredEvent, workflowRegistry } from '#src/workflow/event
 import { buildWorkflowPlan, type WorkflowPlan } from '#src/workflow/plan.js';
 import { commitWorkflowEvents } from '#src/workflow/projections.js';
 import { loadJobProjectionDetails } from '#src/jobs/read-queries.js';
-import { resumeAll } from '#src/workflow/recover.js';
+import { resumeAll as resumeAllWorkflowRecovery } from '#src/workflow/recover.js';
 import { createWorkflowExecutionError, type WorkflowExecutionPort } from '#src/workflow/execution-contract.js';
 import type { WorkflowFinalizationIntent } from '#src/workflow/finalization.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
@@ -64,6 +65,13 @@ const fixedTime = {
 const PROJECT_ROOT = canonicalizeWorkDir(process.cwd(), process.cwd());
 const BACKEND_NAMESPACE = 'workflow-test-ns';
 const noFailedWorkflowDescendants = () => [];
+const recoveryIds = { uuid: () => randomUUID() };
+
+type ResumeAllOptions = Parameters<typeof resumeAllWorkflowRecovery>[0];
+
+function resumeAll(options: Omit<ResumeAllOptions, 'ids'> & Partial<Pick<ResumeAllOptions, 'ids'>>) {
+  return resumeAllWorkflowRecovery({ ids: recoveryIds, ...options });
+}
 
 function running(jobId: string, sessionId: string) {
   return {
@@ -102,6 +110,10 @@ function createWorkflowPlan(expression = 'architect'): WorkflowPlan {
   });
 }
 
+function persistedJobId(slotIndex: number): string {
+  return `00000000-0000-4000-8000-${String(slotIndex + 1).padStart(12, '0')}`;
+}
+
 type SlotRecoveryState = {
   atomPhase?: 'running' | 'queued' | null;
   projectionPhase?: 'running' | 'queued' | 'completed' | 'error' | 'aborted' | null;
@@ -128,6 +140,7 @@ function createHarness(options: {
     reducers: composeReducers(jobsRegistry, sessionsRegistry, workflowRegistry),
   });
   const plan = createWorkflowPlan(options.expression);
+  const jobIdsBySlot = new Map<string, string>();
   const projectRoot = options.projectRoot ?? PROJECT_ROOT;
   commitWorkflowEvents(
     db,
@@ -170,6 +183,8 @@ function createHarness(options: {
   });
 
   for (const [slotIndex, slot] of plan.slots.entries()) {
+    const jobId = persistedJobId(slotIndex);
+    jobIdsBySlot.set(slot.slotId, jobId);
     const slotState = options.slotStates?.[slotIndex];
     const atomPhase = slotState && 'atomPhase' in slotState ? slotState.atomPhase : options.atomPhase;
     const projectionPhase =
@@ -183,10 +198,10 @@ function createHarness(options: {
         provider: slot.provider,
         projectRoot,
         backendNamespace: BACKEND_NAMESPACE,
-        activeJobId: slot.slotId,
+        activeJobId: jobId,
       });
-      progressStore.appendLaunchRequested(slot.slotId, {
-        jobId: slot.slotId,
+      progressStore.appendLaunchRequested(jobId, {
+        jobId,
         owner: { kind: 'workflow', id: 'workflow-1' },
         sessionId,
         provider: slot.provider,
@@ -210,7 +225,7 @@ function createHarness(options: {
     }
 
     if (terminalForSlot !== undefined) {
-      commitJobTerminal(progressStore, slot.slotId, sessionId, terminalForSlot);
+      commitJobTerminal(progressStore, jobId, sessionId, terminalForSlot);
     }
 
     if (projectionPhase !== null) {
@@ -234,7 +249,7 @@ function createHarness(options: {
 	           created_at = excluded.created_at,
 	           last_seq = excluded.last_seq`,
       ).run(
-        slot.slotId,
+        jobId,
         JSON.stringify({ kind: 'workflow', id: 'workflow-1' }),
         projectionPhase,
         sessionId,
@@ -281,7 +296,13 @@ function createHarness(options: {
     principal: testProjectPrincipal(projectRoot),
   });
 
-  return { db, plan, progressStore, executionSvc, createInvocationContext, waitRequests, runtime };
+  const jobIdForSlot = (slotId: string): string => {
+    const jobId = jobIdsBySlot.get(slotId);
+    if (jobId === undefined) throw new Error(`No persisted job id for slot '${slotId}'.`);
+    return jobId;
+  };
+
+  return { db, plan, progressStore, executionSvc, createInvocationContext, waitRequests, runtime, jobIdForSlot };
 }
 
 function appendRecoverableWorkflowRoot(progressStore: JobStore, workflowId: string, projectRoot: string): void {
@@ -336,7 +357,7 @@ function setPendingReplacementLease(
   delete entry.activeJobId;
   entry.continuationLease = {
     status: 'pending',
-    staleJobId: slot.slotId,
+    staleJobId: harness.jobIdForSlot(slot.slotId),
     workflowId: 'workflow-1',
     workflowSlotId: slot.slotId,
     replacementGeneration: 1,
@@ -461,7 +482,7 @@ describe('workflow recovery branch rules', () => {
     delete entry.activeJobId;
     entry.continuationLease = {
       status: 'pending',
-      staleJobId: slot.slotId,
+      staleJobId: harness.jobIdForSlot(slot.slotId),
       workflowId: 'workflow-1',
       workflowSlotId: slot.slotId,
       replacementGeneration: 1,
@@ -559,7 +580,7 @@ describe('workflow recovery branch rules', () => {
         expect.objectContaining({
           cwd: realpathSync(physicalProject),
           workflowSlotGeneration: 1,
-          replacesWorkflowJobId: slot.slotId,
+          replacesWorkflowJobId: harness.jobIdForSlot(slot.slotId),
         }),
         expect.anything(),
       );
@@ -600,7 +621,7 @@ describe('workflow recovery branch rules', () => {
         harness.plan.slots[0].provider,
         expect.objectContaining({
           workflowSlotGeneration: 1,
-          replacesWorkflowJobId: harness.plan.slots[0].slotId,
+          replacesWorkflowJobId: harness.jobIdForSlot(harness.plan.slots[0].slotId),
         }),
         expect.anything(),
       );
@@ -619,7 +640,7 @@ describe('workflow recovery branch rules', () => {
         {
           type: 'session.interrupted',
           stream: { kind: 'session', id: sessionId },
-          refs: { sessionId, jobId: slot.slotId },
+          refs: { sessionId, jobId: harness.jobIdForSlot(slot.slotId) },
           body: { trigger: 'restart', continuity: 'pre_checkpoint_preserved' },
         },
       ],
@@ -631,7 +652,7 @@ describe('workflow recovery branch rules', () => {
       },
     );
     if (interrupted === undefined) throw new Error('expected session interruption event');
-    commitJobTerminal(harness.progressStore, slot.slotId, sessionId, {
+    commitJobTerminal(harness.progressStore, harness.jobIdForSlot(slot.slotId), sessionId, {
       content: '',
       outcome: { kind: 'failed', causeRef: { stream: interrupted.stream, seq: interrupted.seq } },
       durationMs: 0,
@@ -687,7 +708,7 @@ describe('workflow recovery branch rules', () => {
       expect(harness.executionSvc.recordContinuationLease).toHaveBeenCalledWith(
         expect.objectContaining({
           sessionId: 'session-atom-1',
-          jobId: harness.plan.slots[0].slotId,
+          jobId: harness.jobIdForSlot(harness.plan.slots[0].slotId),
           replacementGeneration: 1,
         }),
       );
@@ -719,7 +740,7 @@ describe('workflow recovery branch rules', () => {
         BACKEND_NAMESPACE,
         'workflow-1',
         slot.slotId,
-        slot.slotId,
+        harness.jobIdForSlot(slot.slotId),
         '2026-04-27T00:00:02.000Z',
       );
     const finalizeWorkflow = vi.fn<(intent: WorkflowFinalizationIntent) => void>();
@@ -772,7 +793,7 @@ describe('workflow recovery branch rules', () => {
       expect(harness.executionSvc.awaitLaunch).not.toHaveBeenCalled();
       expect(harness.executionSvc.waitStream).toHaveBeenCalledTimes(1);
       expect(harness.waitRequests[0]).toEqual({
-        jobIds: [harness.plan.slots[0].slotId],
+        jobIds: [harness.jobIdForSlot(harness.plan.slots[0].slotId)],
         timeoutSeconds: 1,
         cursor: { afterSeq: 17 },
       });
@@ -800,7 +821,7 @@ describe('workflow recovery branch rules', () => {
       expect(harness.executionSvc.awaitLaunch).not.toHaveBeenCalled();
       expect(harness.executionSvc.waitStream).toHaveBeenCalledTimes(1);
       expect(harness.waitRequests[0]).toEqual({
-        jobIds: [harness.plan.slots[0].slotId],
+        jobIds: [harness.jobIdForSlot(harness.plan.slots[0].slotId)],
         timeoutSeconds: 1,
         cursor: { afterSeq: 23 },
       });
@@ -811,6 +832,8 @@ describe('workflow recovery branch rules', () => {
 
   it('relaunches an absent step with persisted source A instead of replacement-daemon source B', async () => {
     const harness = createHarness({ atomPhase: null, projectionPhase: null });
+    const atomJobId = randomUUID();
+    const ids = { uuid: vi.fn(() => atomJobId) };
     const replacementCredentials = withTestProfileLocation(TEST_PROVIDER_SCOPE, 'codex', '/replacement/.codex-b');
     const createReplacementContext = (projectRoot: CanonicalWorkDir): InvocationContext => ({
       ...harness.createInvocationContext(projectRoot),
@@ -826,6 +849,7 @@ describe('workflow recovery branch rules', () => {
         createInvocationContext: createReplacementContext,
         finalizeWorkflow: vi.fn(),
         releaseFailedWorkflowDescendants: noFailedWorkflowDescendants,
+        ids,
         time: fixedTime,
       });
 
@@ -835,7 +859,7 @@ describe('workflow recovery branch rules', () => {
         'codex',
         'architect',
         expect.objectContaining({
-          jobId: harness.plan.slots[0].slotId,
+          jobId: atomJobId,
           workflowSlotId: harness.plan.slots[0].slotId,
           owner: { kind: 'workflow', id: 'workflow-1' },
         }),
@@ -845,8 +869,9 @@ describe('workflow recovery branch rules', () => {
         }),
       );
       expect(getExecutionService).toHaveBeenCalledWith(expect.objectContaining({ providerScope: TEST_PROVIDER_SCOPE }));
-      expect(harness.executionSvc.awaitLaunch).toHaveBeenCalledWith(harness.plan.slots[0].slotId, expect.any(Number));
+      expect(harness.executionSvc.awaitLaunch).toHaveBeenCalledWith(atomJobId, expect.any(Number));
       expect(harness.executionSvc.waitStream).toHaveBeenCalledTimes(1);
+      expect(ids.uuid).toHaveBeenCalledOnce();
     } finally {
       harness.db.close();
     }
@@ -875,11 +900,15 @@ describe('workflow recovery branch rules', () => {
       },
     });
     const [completedSlot, pendingSlot, missingSlot] = harness.plan.slots;
+    const completedJobId = harness.jobIdForSlot(completedSlot.slotId);
+    const pendingJobId = harness.jobIdForSlot(pendingSlot.slotId);
+    const missingJobId = randomUUID();
+    const ids = { uuid: vi.fn(() => missingJobId) };
     const finalizeWorkflow = vi.fn<(intent: WorkflowFinalizationIntent) => void>();
     // eslint-disable-next-line @typescript-eslint/no-misused-promises
     harness.executionSvc.coralDispatch.mockImplementation(async (_provider, _coralName, input) => {
       const jobId = String(input.jobId);
-      if (jobId !== missingSlot.slotId) {
+      if (jobId !== missingJobId) {
         const error = new Error(`job_terminal_order_violation:${jobId}`);
         Object.assign(error, { code: 'job_terminal_order_violation' });
         throw error;
@@ -892,9 +921,7 @@ describe('workflow recovery branch rules', () => {
         jobIds: [...req.jobIds],
         ...(req.cursor ? { cursor: { afterSeq: req.cursor.afterSeq } } : {}),
       });
-      return emit(
-        req.jobIds.map((jobId) => terminal(jobId, jobId === pendingSlot.slotId ? 'CRIT_DONE' : 'VERIFY_DONE')),
-      );
+      return emit(req.jobIds.map((jobId) => terminal(jobId, jobId === pendingJobId ? 'CRIT_DONE' : 'VERIFY_DONE')));
     });
 
     try {
@@ -906,6 +933,7 @@ describe('workflow recovery branch rules', () => {
         createInvocationContext: harness.createInvocationContext,
         finalizeWorkflow,
         releaseFailedWorkflowDescendants: noFailedWorkflowDescendants,
+        ids,
         time: fixedTime,
       });
 
@@ -915,7 +943,7 @@ describe('workflow recovery branch rules', () => {
         'codex',
         'verifier',
         expect.objectContaining({
-          jobId: missingSlot.slotId,
+          jobId: missingJobId,
           workflowSlotId: missingSlot.slotId,
           owner: { kind: 'workflow', id: 'workflow-1' },
         }),
@@ -927,18 +955,19 @@ describe('workflow recovery branch rules', () => {
       expect(harness.executionSvc.coralDispatch).not.toHaveBeenCalledWith(
         expect.anything(),
         expect.anything(),
-        expect.objectContaining({ jobId: completedSlot.slotId }),
+        expect.objectContaining({ jobId: completedJobId }),
         expect.anything(),
       );
       expect(harness.executionSvc.coralDispatch).not.toHaveBeenCalledWith(
         expect.anything(),
         expect.anything(),
-        expect.objectContaining({ jobId: pendingSlot.slotId }),
+        expect.objectContaining({ jobId: pendingJobId }),
         expect.anything(),
       );
       expect(harness.executionSvc.waitStream).toHaveBeenCalledTimes(1);
+      expect(ids.uuid).toHaveBeenCalledOnce();
       expect(harness.waitRequests[0]).toEqual({
-        jobIds: [pendingSlot.slotId, missingSlot.slotId],
+        jobIds: [pendingJobId, missingJobId],
         timeoutSeconds: 1,
         cursor: { afterSeq: 31 },
       });
@@ -976,12 +1005,14 @@ describe('workflow recovery branch rules', () => {
       },
     });
     const [pendingSlot, missingSlot] = harness.plan.slots;
+    const pendingJobId = harness.jobIdForSlot(pendingSlot.slotId);
+    const missingJobId = randomUUID();
     const finalizeWorkflow = vi.fn<(intent: WorkflowFinalizationIntent) => void>();
     harness.executionSvc.coralDispatch.mockResolvedValue({
       status: 'rejected',
       message: 'launch capacity unavailable',
     });
-    harness.executionSvc.abort.mockReturnValue({ aborted: [pendingSlot.slotId], notFound: [] });
+    harness.executionSvc.abort.mockReturnValue({ aborted: [pendingJobId], notFound: [] });
 
     try {
       await expect(
@@ -993,6 +1024,7 @@ describe('workflow recovery branch rules', () => {
           createInvocationContext: harness.createInvocationContext,
           finalizeWorkflow,
           releaseFailedWorkflowDescendants: noFailedWorkflowDescendants,
+          ids: { uuid: () => missingJobId },
           time: fixedTime,
         }),
       ).resolves.toEqual(['workflow-1']);
@@ -1002,7 +1034,7 @@ describe('workflow recovery branch rules', () => {
         'codex',
         'critic',
         expect.objectContaining({
-          jobId: missingSlot.slotId,
+          jobId: missingJobId,
           workflowSlotId: missingSlot.slotId,
           owner: { kind: 'workflow', id: 'workflow-1' },
         }),
@@ -1011,9 +1043,9 @@ describe('workflow recovery branch rules', () => {
           providerScope: TEST_PROVIDER_SCOPE,
         }),
       );
-      expect(harness.executionSvc.abort).toHaveBeenCalledWith([pendingSlot.slotId]);
+      expect(harness.executionSvc.abort).toHaveBeenCalledWith([pendingJobId]);
       expect(harness.waitRequests).toHaveLength(1);
-      expect(harness.waitRequests[0]?.jobIds).toEqual([pendingSlot.slotId]);
+      expect(harness.waitRequests[0]?.jobIds).toEqual([pendingJobId]);
       expect(finalizeWorkflow).toHaveBeenCalledTimes(1);
       expect(finalizeWorkflow.mock.calls[0]?.[0]).toMatchObject({
         outcome: 'failed',
@@ -1028,7 +1060,7 @@ describe('workflow recovery branch rules', () => {
             stepIndex: 0,
             atomIndex: 0,
             label: 'architect',
-            output: `result:${pendingSlot.slotId}`,
+            output: `result:${pendingJobId}`,
           },
         ],
       });
@@ -1055,12 +1087,13 @@ describe('workflow recovery branch rules', () => {
       },
     });
     const [completedSlot] = harness.plan.slots;
+    const completedJobId = harness.jobIdForSlot(completedSlot.slotId);
     const finalizeWorkflow = vi.fn<(intent: WorkflowFinalizationIntent) => void>();
     harness.executionSvc.coralDispatch.mockResolvedValue({
       status: 'rejected',
       message: 'launch capacity unavailable',
     });
-    harness.executionSvc.abort.mockReturnValue({ aborted: [completedSlot.slotId], notFound: [] });
+    harness.executionSvc.abort.mockReturnValue({ aborted: [completedJobId], notFound: [] });
     harness.executionSvc.waitStream.mockImplementation((req: WaitStreamRequest) => {
       harness.waitRequests.push({
         ...req,
@@ -1084,7 +1117,7 @@ describe('workflow recovery branch rules', () => {
         }),
       ).resolves.toEqual(['workflow-1']);
 
-      expect(harness.executionSvc.abort).toHaveBeenCalledWith([completedSlot.slotId]);
+      expect(harness.executionSvc.abort).toHaveBeenCalledWith([completedJobId]);
       expect(finalizeWorkflow).toHaveBeenCalledTimes(1);
       const intent = finalizeWorkflow.mock.calls[0]?.[0];
       expect(intent).toMatchObject({
@@ -1128,7 +1161,7 @@ describe('workflow recovery branch rules', () => {
           slotId: harness.plan.slots[0].slotId,
           stepIndex: 0,
           atomLabel: 'architect',
-          jobId: harness.plan.slots[0].slotId,
+          jobId: harness.jobIdForSlot(harness.plan.slots[0].slotId),
         },
       });
       expect(finalizeWorkflow.mock.calls[0]?.[0].outcome).not.toBe('completed');
@@ -1171,12 +1204,12 @@ describe('workflow recovery branch rules', () => {
           slotId: harness.plan.slots[1].slotId,
           stepIndex: 0,
           atomLabel: 'critic',
-          jobId: harness.plan.slots[1].slotId,
+          jobId: harness.jobIdForSlot(harness.plan.slots[1].slotId),
         },
       });
       expect(finalizeWorkflow.mock.calls[0]?.[0]).not.toMatchObject({
         failureLocation: {
-          jobId: harness.plan.slots[0].slotId,
+          jobId: harness.jobIdForSlot(harness.plan.slots[0].slotId),
         },
       });
       expect(finalizeWorkflow.mock.calls[0]?.[0].outcome).not.toBe('completed');
@@ -1194,7 +1227,7 @@ describe('workflow recovery branch rules', () => {
       .prepare(
         "SELECT seq, body FROM events WHERE stream_kind = 'job' AND stream_id = ? AND type = 'job.launch.requested'",
       )
-      .get(slot.slotId) as { seq: number; body: Buffer };
+      .get(harness.jobIdForSlot(slot.slotId)) as { seq: number; body: Buffer };
     const body = decodeEventBody(row.body) as Record<string, unknown>;
     body.owner = { kind: 'provider-session', id: 'session-atom-1' };
     harness.db.prepare('UPDATE events SET body = ? WHERE seq = ?').run(encodeEventBody(body), row.seq);
@@ -1218,7 +1251,7 @@ describe('workflow recovery branch rules', () => {
           workflowJobId: 'workflow-1',
           lifecycleFault: expect.objectContaining({
             kind: 'recovery_failed',
-            message: `Workflow recovery rejected invalid durable relation for slot '${slot.slotId}' and job '${slot.slotId}'.`,
+            message: `Workflow recovery rejected invalid durable relation for slot '${slot.slotId}' and job '${harness.jobIdForSlot(slot.slotId)}'.`,
           }),
         }),
       );
@@ -1596,9 +1629,9 @@ describe('workflow recovery branch rules', () => {
       atomPhase: 'running',
       projectionPhase: 'running',
     });
-    const failedJobId = harness.plan.slots[0].slotId;
+    const failedJobId = harness.jobIdForSlot(harness.plan.slots[0].slotId);
     const failedSessionId = 'session-atom-1';
-    const nextJobId = harness.plan.slots[1].slotId;
+    const nextJobId = harness.jobIdForSlot(harness.plan.slots[1].slotId);
     const nextSessionId = 'session-atom-2';
     const stopError = new Error('descendant stop failed');
     const abort = vi.fn((jobIds: string[]) => {
@@ -1846,7 +1879,7 @@ describe('workflow recovery branch rules', () => {
 
       expect(harness.progressStore.readStatus('workflow-1')?.phase).toBe('running');
       expect(createProjectionSessionLookup(harness.db).readProviderSession('session-atom-1')?.activeJobId).toBe(
-        harness.plan.slots[0].slotId,
+        harness.jobIdForSlot(harness.plan.slots[0].slotId),
       );
       expect(abort).not.toHaveBeenCalled();
       expect(releaseAdoptedJob).not.toHaveBeenCalled();

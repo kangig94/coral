@@ -1456,6 +1456,7 @@ describe('lifecycle recovery', () => {
           finalizeWorkflow,
           releaseFailedWorkflowDescendants: faultingReleaser,
           signal,
+          ids: runtime.ids,
           time: runtime.time,
         });
         return [];
@@ -1577,6 +1578,7 @@ describe('lifecycle recovery', () => {
             log: vi.fn(),
           }),
           signal,
+          ids: runtime.ids,
           time: runtime.time,
         });
         return [];
@@ -3265,6 +3267,7 @@ describe('lifecycle recovery', () => {
           finalizeWorkflow,
           releaseFailedWorkflowDescendants: () => [],
           signal,
+          ids: runtime.ids,
           time: runtime.time,
         }),
       ).resolves.toEqual([rawWorkflowId]);

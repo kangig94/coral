@@ -11,6 +11,7 @@ import type { CoralEvent } from '../../store/envelope.js';
 import { isRecord } from '../../infra/json.js';
 import { jobTerminalRecordedBodySchema } from './result.js';
 import { describeTerminalOutcome } from '../outcome.js';
+import { readProjectionJobRow } from '../projection-row.js';
 
 export function resultPathFor(jobsRoot: string, jobId: string): string {
   return join(jobsRoot, jobId, 'result.md');
@@ -88,6 +89,23 @@ function describeResolvedCauseRef(db: Database, ctx: StoreReadContext, ref: Caus
   return describeCauseRefChain(db, ctx, ref, new Set()) ?? renderCauseRefFallback(ref);
 }
 
+function workflowIdentityMarkdown(db: Database, jobId: string): string {
+  const projection = readProjectionJobRow(db, jobId);
+  if (projection === null || projection.parent_workflow_job_id === null) {
+    return '';
+  }
+
+  const lines = [
+    `> Parent workflow: ${projection.parent_workflow_job_id}`,
+    `> Workflow slot: ${projection.workflow_slot}`,
+    `> Workflow generation: ${projection.workflow_slot_generation}`,
+    projection.replaces_workflow_job_id === null
+      ? undefined
+      : `> Replaces workflow job: ${projection.replaces_workflow_job_id}`,
+  ].filter((line): line is string => line !== undefined);
+  return `${lines.join('\n')}\n\n`;
+}
+
 function buildResultMarkdown(db: Database, jobId: string, ctx: StoreReadContext): string {
   const event = db
     .prepare(
@@ -100,14 +118,15 @@ function buildResultMarkdown(db: Database, jobId: string, ctx: StoreReadContext)
     )
     .get(jobId) as Pick<EventsRow, 'type' | 'body' | 'stream_kind' | 'stream_id'> | undefined;
   const body = event ? decodeBody(event, jobTerminalRecordedBodySchema, ctx) : null;
+  const workflowIdentity = workflowIdentityMarkdown(db, jobId);
 
   const content = body?.terminal.content.trimEnd();
   if (content && content.length > 0) {
-    return `${content}\n`;
+    return `${workflowIdentity}${content}\n`;
   }
 
   if (body?.terminal.outcome) {
-    return `${describeTerminalOutcome(body.terminal.outcome, {
+    return `${workflowIdentity}${describeTerminalOutcome(body.terminal.outcome, {
       describeCauseRef: (ref) => describeResolvedCauseRef(db, ctx, ref),
     })}\n`;
   }
@@ -136,7 +155,10 @@ export function ensureResultMarkdownArtifact(
 ): string {
   const targetPath = resultPathFor(jobsRoot, jobId);
   if (storage.existsSync(targetPath)) {
-    return targetPath;
+    const projection = readProjectionJobRow(db, jobId);
+    if (projection === null || projection.parent_workflow_job_id === null) {
+      return targetPath;
+    }
   }
 
   materializeResultMarkdown(db, jobId, jobsRoot, storage, ctx);

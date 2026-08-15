@@ -98,10 +98,10 @@ export const workflowLifecycleFaultBodySchema = z.discriminatedUnion('kind', [
 ]);
 
 /**
- * Stores only `firstFailureSlotId`; `jobId` and `stepIndex` are re-derivable
- * by joining against `projection_workflows.plan.slots` at read time
- * (see src/workflow/recover.ts:133-145). Drain events are always read
- * together with the plan, so the join is always available.
+ * Stores only `firstFailureSlotId`; `stepIndex` is derived from
+ * `projection_workflows.plan.slots`, while `jobId` is selected from the
+ * current generation in the workflow child rows joined by workflow and slot
+ * (see `validateAndReadCurrentSlotJobIds` in `src/workflow/recover.ts`).
  */
 export const workflowDrainEnteredBodySchema = z
   .object({

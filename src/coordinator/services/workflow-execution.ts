@@ -181,6 +181,7 @@ export class WorkflowExecutionService {
       },
       workflowJobId: jobId,
       declaredPlan,
+      ids: this.deps.runtime.ids,
       journal: createWorkflowJournal({ commit: this.deps.coordinatorCommit }),
       time: this.deps.runtime.time,
       drainDeadlineMs: resolveDrainDeadlineMs(this.deps.runtime.env),
