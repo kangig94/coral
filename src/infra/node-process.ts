@@ -30,17 +30,28 @@ export function isProcessAlive(pid: number): boolean {
  * recorded `pid=1234, ticks=500` can genuinely *match* a fresh low-pid process — a false match at exactly
  * the pids reused earliest in boot, which is the one outcome the containment doctrine forbids.
  *
- * The brand is the enforcement. A string admits no arithmetic, no ordering, and no "within N seconds", so
- * equality is the only expressible operation and the rule cannot be written wrongly. Prose could not hold
- * it: the previous shape spread because a comment named an unsound site as the canonical pattern.
+ * The brand carries part of the enforcement, and it is worth being exact about which part. Subtraction and
+ * every other arithmetic operator stop at the type, so "within N seconds" is not expressible; an unbranded
+ * string cannot stand in for one, so a value can only enter through a probe or a parse. What it does *not*
+ * stop is `<` and `+`, which TypeScript allows on any string. Ordering two of these is meaningless rather
+ * than ill-typed, and `tests/invariants/process-incarnation-opacity.test.ts` is what guards the shape the
+ * brand cannot: rebuilding an identity from a clock. Prose alone could not hold this — the previous shape
+ * spread because a comment named an unsound site as the canonical pattern.
  */
 export type ProcessIncarnation = string & { readonly __processIncarnation: 'process-incarnation' };
 
+/**
+ * The one admission test for the token, so the bound cannot drift between the schema and the hand-written
+ * guards on the health and signal-ledger paths that validate the same field without Zod.
+ */
+export function isProcessIncarnation(value: unknown): value is ProcessIncarnation {
+  return typeof value === 'string' && value.length > 0 && value.length <= 256;
+}
+
 /** The wire and durable form. Opaque on purpose: readers compare, they never parse. */
-export const processIncarnationSchema = z.custom<ProcessIncarnation>(
-  (value) => typeof value === 'string' && value.length > 0 && value.length <= 256,
-  { message: 'must be a process incarnation token' },
-);
+export const processIncarnationSchema = z.custom<ProcessIncarnation>(isProcessIncarnation, {
+  message: 'must be a process incarnation token',
+});
 
 function readLinuxBootId(): string | null {
   try {

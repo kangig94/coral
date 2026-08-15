@@ -59,13 +59,13 @@ export type JobRecoveryCoverage = 'in-progress' | 'accounted-for' | 'unaccounted
 /**
  * The durable CLI's recorded process identity, or why it is missing.
  *
- * A pid alone is not identity — the OS recycles it — so `matchesRecordedStart` is what separates "the
+ * A pid alone is not identity — the OS recycles it — so `matchesRecordedIncarnation` is what separates "the
  * process we launched is still running" from "some unrelated process now holds that number". A launch that
  * could not capture or write its meta yields `uncaptured`, which is `unknown` rather than `absent`: nothing
  * was learned about the child, only about the record.
  */
 export type DurableCliProcessEvidence =
-  | Readonly<{ kind: 'recorded'; alive: boolean; matchesRecordedStart: boolean; transportEvidence: boolean }>
+  | Readonly<{ kind: 'recorded'; alive: boolean; matchesRecordedIncarnation: boolean; transportEvidence: boolean }>
   | Readonly<{ kind: 'uncaptured' }>;
 
 /** The evidence one stored-nonterminal job's class is judged by. */
@@ -142,14 +142,14 @@ function acquiredVerdict(evidence: Extract<CarrierEvidence, { carrierClass: 'app
 
 /**
  * Two of the three recorded facts actually vary: pid liveness alone is not enough, since a recycled pid is
- * alive and is not this job, so `matchesRecordedStart` is what tells a resurrected identity from the genuine
+ * alive and is not this job, so `matchesRecordedIncarnation` is what tells a resurrected identity from the genuine
  * one. `transportEvidence` stays fixed `true` at every production evidence builder — a durable CLI has no
  * control channel to source a contradicting signal from (`runtime-meta.ts`'s own doc on why the recorded
  * identity is pid-plus-start-time and nothing more) — so today only the first two can turn this `absent`.
  */
 function durableCliVerdict(process: DurableCliProcessEvidence): Verdict {
   if (process.kind === 'uncaptured') return { liveness: 'unknown', source: 'no-local-evidence' };
-  const live = process.alive && process.matchesRecordedStart && process.transportEvidence;
+  const live = process.alive && process.matchesRecordedIncarnation && process.transportEvidence;
   return { liveness: live ? 'live' : 'absent', source: 'durable-cli-process' };
 }
 

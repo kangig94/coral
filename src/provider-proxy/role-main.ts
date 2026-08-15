@@ -1,11 +1,10 @@
-import type { ProcessIncarnation } from '../infra/node-process.js';
 import { z } from 'zod';
 
 import { BUILD_FLAVOR_ENV_KEY, resolveBuildFlavor } from '../infra/build-flavor.js';
 import { backendLog } from '../infra/backend-log.js';
 import type { StrictBundleIdentityResult } from '../infra/bundle-manifest.js';
 import { createMonotonicClock, type MonotonicClock } from '../infra/monotonic-clock.js';
-import { probeProcessIncarnation } from '../infra/node-process.js';
+import { probeProcessIncarnation, type ProcessIncarnation } from '../infra/node-process.js';
 import { providerProxyBootstrapCapsulePath, providerReaperBootstrapCapsulePath } from '../infra/path/index.js';
 import {
   CONTAINMENT_DISAPPEARANCE_CONFIRM_MS,
@@ -164,7 +163,7 @@ function realRoleOutcomeScheduler(ports: ProviderRoleMainPorts): RoleOutcomeSche
   };
 }
 
-/** This role's own pid and start time. A role that cannot read its own start time cannot construct an
+/** This role's own pid and incarnation. A role that cannot read its own incarnation cannot construct an
  *  identity anyone else could later verify against, so it fails rather than reporting a bare pid. */
 function readSelfIdentity(ports: ProviderRoleMainPorts): Readonly<{ pid: number; incarnation: ProcessIncarnation }> {
   const pid = ports.runtime.env.pid();
@@ -172,7 +171,7 @@ function readSelfIdentity(ports: ProviderRoleMainPorts): Readonly<{ pid: number;
   const read = ports.readProcessIncarnation ?? probeProcessIncarnation;
   const incarnation = read(pid, platform);
   if (incarnation === null) {
-    throw new Error(`Could not read this process's own start time (pid ${pid}).`);
+    throw new Error(`Could not read this process's own incarnation (pid ${pid}).`);
   }
   return { pid, incarnation };
 }
@@ -491,7 +490,7 @@ function raceReadinessAgainstSpawnFailure<T>(readiness: Promise<T>, spawnFailed:
  * starts listening, spawns the proxy as a new process-group leader, and records the containment it watched
  * being created. Each step is awaited in this exact order because the next one depends on it: the reaper
  * must exist before it can be paired with, the guardian must be listening before the proxy can connect to
- * it, and the proxy's pid and start time must be known before there is anything to record.
+ * it, and the proxy's pid and incarnation must be known before there is anything to record.
  *
  * The guardian owns the two cuts this function can fail at — the reaper spawn/pairing and the proxy spawn —
  * and therefore owns unwinding them: a half-built set is worse than none, because the enforcers arm on their

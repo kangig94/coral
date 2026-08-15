@@ -33,7 +33,7 @@ describe('durable CLI process runtime meta', () => {
     expect(decodeDurableCliProcessRuntimeMeta(encodeDurableCliProcessRuntimeMeta(META))).toEqual(META);
   });
 
-  it('refuses to encode a record missing the start time that makes the pid meaningful', () => {
+  it('refuses to encode a record missing the incarnation that makes the pid meaningful', () => {
     const { incarnation: _dropped, ...withoutStart } = META;
 
     expect(() => encodeDurableCliProcessRuntimeMeta(withoutStart as DurableCliProcessRuntimeMeta)).toThrow(

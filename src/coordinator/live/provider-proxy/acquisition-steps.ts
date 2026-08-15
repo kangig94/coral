@@ -1,8 +1,7 @@
-import type { ProcessIncarnation } from '../../../infra/node-process.js';
 import { z } from 'zod';
 
 import { BUILD_FLAVOR_ENV_KEY } from '../../../infra/build-flavor.js';
-import { probeProcessIncarnation } from '../../../infra/node-process.js';
+import { probeProcessIncarnation, type ProcessIncarnation } from '../../../infra/node-process.js';
 import { PROVIDER_SERVER_INITIALIZE_TIMEOUT_MS } from '../../../providers/app-server-transport.js';
 import {
   providerGuardianBootstrapCapsulePath,
@@ -307,7 +306,7 @@ export function createProviderProxyAcquisitionSteps(
       const heartbeatAssembly = createProviderProxyAuthorityHeartbeatAssembly(runtime, faults);
 
       try {
-        // The proxy is reached first: only it can report its own pid, start time, and process-group id, and
+        // The proxy is reached first: only it can report its own pid, incarnation, and process-group id, and
         // both `guardian.open.v1` and `reaper.open.v1` need that identity as an input.
         const proxySession = await establishRoleControl(opened, timer, retry, {
           role: 'proxy',
@@ -338,7 +337,7 @@ export function createProviderProxyAcquisitionSteps(
         });
 
         // The one identity this acquisition can verify in full: it spawned the guardian itself and observed
-        // its pid and start time directly, rather than trusting a self-report with nothing to check it against.
+        // its pid and incarnation directly, rather than trusting a self-report with nothing to check it against.
         const guardianSession = await establishRoleControl(opened, timer, retry, {
           role: 'guardian',
           endpoint: setMinted.guardianEndpoint,

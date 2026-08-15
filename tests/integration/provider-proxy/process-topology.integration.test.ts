@@ -238,9 +238,9 @@ type FakeRoleEnvironmentOptions = Readonly<{
   pluginRoot: string;
   baseDir: string;
   resolveStrictIdentity(): StrictBundleIdentityResult;
-  /** Overrides the start time a spawned pid reads back as. `null` simulates a spawn whose start time cannot
+  /** Overrides the incarnation a spawned pid reads back as. `null` simulates a spawn whose incarnation cannot
    *  be read at all. Defaults to a value derived from the pid, distinct per spawn. */
-  startedAtSecondsFor?(role: ProviderRole, pid: number): ProcessIncarnation | null;
+  incarnationFor?(role: ProviderRole, pid: number): ProcessIncarnation | null;
   /** Overrides the pid a role reports about itself (`ports.runtime.env.pid()`, read by `readSelfIdentity`).
    *  Defaults to the pid the fake spawn assigned it. Exists to engineer a deliberate self-report disagreement. */
   selfPidFor?(role: ProviderRole, spawnedPid: number): number;
@@ -288,10 +288,10 @@ function createFakeRoleEnvironment(options: FakeRoleEnvironmentOptions): FakeRol
   const sequenceLog: string[] = [];
   const exitLog: number[] = [];
   const pidHandles = new Map<number, ProviderRoleHandle>();
-  const startedAtByPid = new Map<number, ProcessIncarnation | null>();
+  const incarnationByPid = new Map<number, ProcessIncarnation | null>();
 
   const readProcessIncarnation = (pid: number, platform: NodeJS.Platform): ProcessIncarnation | null => {
-    if (startedAtByPid.has(pid)) return startedAtByPid.get(pid) ?? null;
+    if (incarnationByPid.has(pid)) return incarnationByPid.get(pid) ?? null;
     return probeProcessIncarnation(pid, platform);
   };
 
@@ -330,9 +330,9 @@ function createFakeRoleEnvironment(options: FakeRoleEnvironmentOptions): FakeRol
     const pid = nextPid;
     nextPid += 1;
     const selfPid = options.selfPidFor?.(role, pid) ?? pid;
-    const startedAtSeconds = (options.startedAtSecondsFor ?? ((_role, p) => testIncarnation(`base-${p}`)))(role, pid);
-    startedAtByPid.set(pid, startedAtSeconds);
-    if (selfPid !== pid) startedAtByPid.set(selfPid, startedAtSeconds);
+    const incarnation = (options.incarnationFor ?? ((_role, p) => testIncarnation(`base-${p}`)))(role, pid);
+    incarnationByPid.set(pid, incarnation);
+    if (selfPid !== pid) incarnationByPid.set(selfPid, incarnation);
     spawnLog.push({ role, capsulePath, detached: spawnOptions.detached === true, pid });
 
     const child: ChildProcessLike = {
@@ -590,11 +590,11 @@ async function runGuardianBootstrapSchedule(initialHeartbeatAcceptanceMs: number
     flavor: FLAVOR,
     buildSetId: shared.buildSetId,
   };
-  const guardianStartedAt = environment.readProcessIncarnation(
+  const guardianIncarnation = environment.readProcessIncarnation(
     process.pid,
     environment.outerRuntime().env.platform() as NodeJS.Platform,
   );
-  if (guardianStartedAt === null) throw new Error('test could not read the guardian process start time');
+  if (guardianIncarnation === null) throw new Error('test could not read the guardian process incarnation');
 
   const openedClients: ControlClient[] = [];
   cleanups.push(() => {
@@ -648,7 +648,7 @@ async function runGuardianBootstrapSchedule(initialHeartbeatAcceptanceMs: number
         expectedIdentity: {
           guardianInstanceId: guardianCapsule.guardianInstanceId,
           pid: process.pid,
-          incarnation: guardianStartedAt,
+          incarnation: guardianIncarnation,
           generation: guardianCapsule.generation,
           flavor: guardianCapsule.flavor,
           buildSetId: guardianCapsule.buildSetId,
@@ -862,7 +862,7 @@ describe('provider-proxy process topology: guardian role main', () => {
     heartbeatAssembly.stop();
   });
 
-  it('spawns the reaper before pairing, listens before the proxy spawns, spawns the proxy detached, and records containment only once its pid and start time are known', async () => {
+  it('spawns the reaper before pairing, listens before the proxy spawns, spawns the proxy detached, and records containment only once its pid and incarnation are known', async () => {
     const baseDir = scopedTempDir('coral-topology-order-');
     const shared = mintSharedSetIdentity();
     const environment = createFakeRoleEnvironment({
@@ -901,13 +901,13 @@ describe('provider-proxy process topology: guardian role main', () => {
     expect(environment.sequenceLog).toEqual(['reaper-spawn', 'guardian-listening', 'proxy-spawn']);
 
     // Containment was recorded: both enforcers are armed, and neither could be without
-    // `guardian.recordContainment` having run with the proxy's own spawn-derived pid and start time —
+    // `guardian.recordContainment` having run with the proxy's own spawn-derived pid and incarnation —
     // nothing else could have supplied them, since they exist only as `spawnRoleProcess`'s return value.
     expect(handle.guardian.enforcer()).not.toBeNull();
     expect(environment.handles.reaper?.reaper.enforcer()).not.toBeNull();
   });
 
-  it('fails the spawn — and never records containment — when the proxy start time cannot be read', async () => {
+  it('fails the spawn — and never records containment — when the proxy incarnation cannot be read', async () => {
     const baseDir = scopedTempDir('coral-topology-badstart-');
     const shared = mintSharedSetIdentity();
     const environment = createFakeRoleEnvironment({
@@ -915,23 +915,23 @@ describe('provider-proxy process topology: guardian role main', () => {
       pluginRoot: baseDir,
       baseDir,
       resolveStrictIdentity: () => strictIdentity(shared.buildSetId),
-      // A pid alone is not an identity — it is recycled — so a spawn whose start time cannot be read must
-      // fail rather than record a bare pid. Only the proxy's start time is made unreadable.
-      startedAtSecondsFor: (role, pid) => (role === 'proxy' ? null : testIncarnation(`base-${pid}`)),
+      // A pid alone is not an identity — it is recycled — so a spawn whose incarnation cannot be read must
+      // fail rather than record a bare pid. Only the proxy's incarnation is made unreadable.
+      incarnationFor: (role, pid) => (role === 'proxy' ? null : testIncarnation(`base-${pid}`)),
     });
     cleanups.push(() => closeHandles(environment));
     const { guardianCapsulePath } = writeCapsuleSet(environment.outerRuntime(), baseDir, shared);
 
     await expect(startProviderGuardianRole(guardianCapsulePath, environment.topLevelPorts())).rejects.toThrow(
-      /start time/u,
+      /incarnation/u,
     );
 
     // The reaper came up fine — it is spawned and paired before the proxy — but must have been told
-    // nothing: `recordContainment` is reached only after the proxy's pid and start time are known, and here
+    // nothing: `recordContainment` is reached only after the proxy's pid and incarnation are known, and here
     // they never were, so its enforcer stays unarmed.
     expect(environment.handles.reaper).toBeDefined();
     expect(environment.handles.reaper?.reaper.enforcer()).toBeNull();
-    // No proxy handle: the same unreadable start time that failed the guardian's own spawn call also fails
+    // No proxy handle: the same unreadable incarnation that failed the guardian's own spawn call also fails
     // the proxy's own self-identity read, so the phantom process this fake started never gets to `listen()`.
     expect(environment.handles.proxy).toBeUndefined();
 

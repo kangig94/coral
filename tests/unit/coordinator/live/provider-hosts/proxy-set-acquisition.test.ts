@@ -1,5 +1,4 @@
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
-import type { ProcessIncarnation } from '#src/infra/node-process.js';
 import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('#src/infra/node-process.js', async (importOriginal) => {
@@ -18,7 +17,7 @@ vi.mock('#src/coordinator/live/provider-proxy/index.js', () => ({
   acquireProviderProxySet: vi.fn(),
 }));
 
-import { probeProcessIncarnation } from '#src/infra/node-process.js';
+import { probeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
 import { createProviderProxyAcquisitionSteps } from '#src/coordinator/live/provider-proxy/acquisition-steps.js';
 import { acquireProviderProxySet } from '#src/coordinator/live/provider-proxy/index.js';
 import { ensureProviderProxySet } from '#src/coordinator/live/provider-hosts/proxy-set-acquisition.js';
@@ -55,7 +54,7 @@ function fakeSet(): ProviderProxySetAuthority {
 }
 
 describe('ensureProviderProxySet', () => {
-  it('reports a failed outcome without attempting acquisition when the coordinator’s own start time cannot be read', () => {
+  it('reports a failed outcome without attempting acquisition when the coordinator’s own incarnation cannot be read', () => {
     mockedProbe.mockReturnValueOnce(null);
     const outcomes: unknown[] = [];
 
@@ -63,7 +62,7 @@ describe('ensureProviderProxySet', () => {
       outcomes.push(outcome);
     });
 
-    expect(outcomes).toEqual([{ kind: 'failed', reason: expect.stringContaining('start time') }]);
+    expect(outcomes).toEqual([{ kind: 'failed', reason: expect.stringContaining('incarnation') }]);
     expect(mockedCreateSteps).not.toHaveBeenCalled();
     expect(mockedAcquire).not.toHaveBeenCalled();
   });

@@ -1,4 +1,4 @@
-import type { ProcessIncarnation } from '../../../infra/node-process.js';
+import { isProcessIncarnation, type ProcessIncarnation } from '../../../infra/node-process.js';
 import { isRecord } from '../../../infra/json.js';
 import { isSerializedCoralSetupError, type SerializedCoralSetupError } from '../../../runtime/errors.js';
 
@@ -414,6 +414,6 @@ export function isBackendPing(value: unknown): value is BackendPing {
     typeof value.namespace === 'string' &&
     value.namespace.length > 0 &&
     Number.isInteger(value.pid) &&
-    (value.incarnation === undefined || typeof value.incarnation === 'string')
+    (value.incarnation === undefined || isProcessIncarnation(value.incarnation))
   );
 }

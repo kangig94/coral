@@ -565,12 +565,12 @@ describe('buildGuardianSpawnUndo', () => {
     ]);
   });
 
-  it('refuses to signal once the recorded start time no longer matches (recycled pid)', async () => {
+  it('refuses to signal once the recorded incarnation no longer matches (recycled pid)', async () => {
     const time = new VirtualTime();
     const killCalls: SignalCall[] = [];
     const runtime = guardianUndoRuntime(time, () => true, killCalls);
     const spawned = fakeSpawnedGuardian(4_242, 1_000);
-    // A different start time than what this acquisition recorded at spawn time: pid 4242 now names some
+    // A different incarnation than what this acquisition recorded at spawn time: pid 4242 now names some
     // other process, and signalling it would kill a stranger.
     const readProcessIncarnation = (): ProcessIncarnation => testIncarnation(9_999);
 

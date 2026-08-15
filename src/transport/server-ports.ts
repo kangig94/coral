@@ -128,8 +128,8 @@ export type HealthSnapshot = {
    */
   pid: number;
   /**
-   * Serving process start time in seconds since epoch (kernel-supplied via
-   * `probeProcessIncarnation`). Forms an immutable identity tuple with
+   * Serving process incarnation: an opaque token compared only for equality
+   * (`probeProcessIncarnation`). Forms an immutable identity tuple with
    * `pid`; a mismatch means the pid has wrapped to an unrelated process.
    */
   incarnation?: ProcessIncarnation;

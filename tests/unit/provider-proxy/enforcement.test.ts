@@ -91,7 +91,7 @@ function createHarness(options: { adoptionInMs: number; alive?: Set<number>; stu
       },
       platform: 'linux',
       maxRecordedRoots: MAX_PROXY_RECORDED_PROVIDER_ROOTS,
-      // A start time is only readable while the process exists, which is what makes it identity evidence.
+      // A incarnation is only readable while the process exists, which is what makes it identity evidence.
       readProcessIncarnation: (pid) => {
         if (!alive.has(pid)) return null;
         return pid === CONTAINMENT.pid ? CONTAINMENT.incarnation : testIncarnation(2_000);
@@ -212,7 +212,7 @@ describe('armed provider-proxy enforcer', () => {
     expect(harness.enforcer.recordedRoots()).toHaveLength(128);
   });
 
-  it('treats a different start time on the same pid as a different target', () => {
+  it('treats a different incarnation on the same pid as a different target', () => {
     const harness = createHarness({ adoptionInMs: 60_000 });
     harness.enforcer.registerProviderRoot(root(7_001));
 

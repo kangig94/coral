@@ -549,12 +549,17 @@ describe('bindWithHandoff', () => {
     expect(killCalls.filter((c) => c.signal === 'SIGTERM').length).toBe(0);
   });
 
-  // The incident: the incumbent's own reported start time is on a different clock base than this
-  // contender's probe (`/proc/stat` btime is cached per process, so the two disagree by the age gap
-  // between their first reads — 168s measured on WSL2). That disagreement must not block the signal,
-  // because it says nothing about the pid. Before self-anchoring it did, and a newer build could
-  // neither ask the incumbent to stand down nor escalate past it, on every session start.
-  it('signals a pid whose reported start time is on a clock base this contender does not share', async () => {
+  // The incident this pins: a disagreement between what the incumbent *reports* and what this contender
+  // *probes* must not block the signal, because the signal decision anchors on this contender's own
+  // observations. Before self-anchoring it did block, and a newer build could neither ask the incumbent
+  // to stand down nor escalate past it, on every session start.
+  //
+  // The cause has changed and the behaviour has not. It used to be unavoidable: the derived value carried
+  // a per-process clock term, so two processes disagreed by the age gap between their reads (168s measured
+  // on WSL2). With the opaque token two probes of one process agree, so a disagreement now means a stale
+  // record or a recycled pid — and whether *that* should still permit a signal is open, not settled here.
+  // This test states today's behaviour; it does not argue for it.
+  it('signals a pid whose reported incarnation disagrees with this contender’s own probe', async () => {
     const verifiedIdentity: IncumbentIdentity = { pid: 4321, incarnation: testIncarnation(500), source: 'health' };
     const { options, time, killCalls } = buildHarness({
       bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
@@ -609,7 +614,7 @@ describe('bindWithHandoff', () => {
     // the same pid. Discovery populates `incumbent` before the handshake, which is the ordinary path —
     // an earlier revision anchored only when discovery had NOT, so this exact path reached escalation
     // with no baseline and both of its adjacent probes agreed on the recycled process.
-    mockedProbe.mockReturnValueOnce(testIncarnation(999)).mockReturnValue(1_001);
+    mockedProbe.mockReturnValueOnce(testIncarnation(999)).mockReturnValue(testIncarnation(1_001));
 
     const promise = bindWithHandoff(options).catch((e: Error) => e);
     for (let i = 0; i < 30; i += 1) {
@@ -643,7 +648,7 @@ describe('bindWithHandoff', () => {
     });
     mockedShutdown.mockResolvedValue(shutdownResult({ health: null, verifiedIdentity: null }));
     // Adoption observes the incumbent; everything after observes the process that took its pid.
-    mockedProbe.mockReturnValueOnce(testIncarnation(1_111_000)).mockReturnValue(2_222_000);
+    mockedProbe.mockReturnValueOnce(testIncarnation(1_111_000)).mockReturnValue(testIncarnation(2_222_000));
 
     const promise = bindWithHandoff(options).catch((e: Error) => e);
     for (let i = 0; i < 80; i += 1) {
@@ -655,9 +660,9 @@ describe('bindWithHandoff', () => {
     expect(killCalls, 'a pid recycled before escalation must never be signalled').toEqual([]);
   }, 10_000);
 
-  // An unreadable start time is not a dead process. Treating it as one skipped the fail-closed branch
+  // An unreadable incarnation is not a dead process. Treating it as one skipped the fail-closed branch
   // and let a later, too-late probe become the baseline.
-  it('refuses to signal when the start time is unreadable while the pid is alive', async () => {
+  it('refuses to signal when the incarnation is unreadable while the pid is alive', async () => {
     const verifiedIdentity: IncumbentIdentity = { pid: 2468, incarnation: testIncarnation(500), source: 'health' };
     const { options, time, killCalls } = buildHarness({
       bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],

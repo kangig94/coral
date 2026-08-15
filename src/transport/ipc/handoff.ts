@@ -1,4 +1,4 @@
-import type { ProcessIncarnation } from '../../infra/node-process.js';
+import { isProcessIncarnation, type ProcessIncarnation } from '../../infra/node-process.js';
 // Transport-owned IPC handoff helper. Shared by both daemon-side
 // `bindWithHandoff` (`src/coordinator/handoff.ts`) and CLI-side `ensure()`.
 // Carries no coordinator vocabulary: any caller that wants to ask a peer
@@ -185,7 +185,7 @@ export async function requestIncumbentShutdown(opts: {
   }
 
   const verifiedIdentity: IncumbentIdentity | null =
-    health && typeof health.pid === 'number' && typeof health.incarnation === 'string'
+    health && typeof health.pid === 'number' && isProcessIncarnation(health.incarnation)
       ? {
           pid: health.pid,
           incarnation: health.incarnation,

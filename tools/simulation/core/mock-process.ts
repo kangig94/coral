@@ -68,9 +68,15 @@ function asChunks(value: string | ChildOutputChunk[] | undefined): ChildOutputCh
  * The simulation mints its own incarnations rather than borrowing the test helper: `tools/simulation`
  * is sealed against `tests/`, and a simulated process's identity is the simulation's own concern. The
  * value is opaque to every consumer — only equality is ever asked of it.
+ *
+ * A sequence, not the clock. A script can retire a pid and allocate the same number again within one
+ * virtual instant (`MockScriptedPid`), and a clock-derived value would hand both incarnations the same
+ * token — a false *match* on a reused pid, which is the single outcome the containment doctrine
+ * forbids. The counter lives on the spawner, which a preserved-world restart carries over
+ * (`createSimulationBackend` reuses `inherited.runtime`), so it stays monotonic across that restart.
  */
-function simulatedIncarnation(nowMs: number): ProcessIncarnation {
-  return `simulation:${Math.floor(nowMs / 1_000)}` as ProcessIncarnation;
+function simulatedIncarnation(sequence: number): ProcessIncarnation {
+  return `simulation:${sequence}` as ProcessIncarnation;
 }
 
 export class MockStdin extends EventEmitter implements ChildStdinLike {
@@ -182,6 +188,7 @@ export class MockProcessSpawner {
   private readonly execSyncScripts: MockExecSyncScript[] = [];
   private readonly durableScripts: MockDurableScript[] = [];
   private nextPid = 20_000;
+  private nextIncarnationSequence = 1;
 
   private readonly time: VirtualTime;
   private readonly storage: InMemoryStorage;
@@ -466,7 +473,7 @@ export class MockProcessSpawner {
   ): RegisteredProcess {
     const record: RegisteredProcess = {
       pid,
-      incarnation: simulatedIncarnation(this.time.now()),
+      incarnation: simulatedIncarnation(this.nextIncarnationSequence++),
       processGroupId,
       alive: true,
       closed: false,

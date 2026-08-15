@@ -254,7 +254,7 @@ describe('real recorded process containment', () => {
   );
 
   // @flaky — process scheduling and OS signal delivery are timing-sensitive.
-  it('does not signal a live process whose pid has a different recorded start time', { retry: 2 }, async () => {
+  it('does not signal a live process whose pid has a different recorded incarnation', { retry: 2 }, async () => {
     const child = spawnDetached('setInterval(() => {}, 1000);');
     const actualIdentity = await recordProcess(child.pid as number);
     const recycledIdentity = {

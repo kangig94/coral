@@ -1936,7 +1936,7 @@ describe('provider-proxy guardian and reaper', () => {
     cleanups.push(() => control.close());
 
     // `assertNamedGuardianCapsuleIdentity` checks the caller's claimed guardian against this reaper's own
-    // bootstrap capsule — pid/start time are deliberately excluded (see its doc), so the mismatch has to land
+    // bootstrap capsule — pid/incarnation are deliberately excluded (see its doc), so the mismatch has to land
     // on a capsule-stable field such as `guardianInstanceId`.
     await expect(
       control.call(

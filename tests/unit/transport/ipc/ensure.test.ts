@@ -408,7 +408,7 @@ describe('ipc ensure', () => {
       expect(mockState.spawn).not.toHaveBeenCalled();
     });
 
-    it('rejects discovery with a different process start time', async () => {
+    it('rejects discovery with a different process incarnation', async () => {
       makeHome();
       const root = createPluginRoot();
       setCompleteChildEnv();

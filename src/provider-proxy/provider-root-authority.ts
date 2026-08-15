@@ -1,6 +1,5 @@
-import type { ProcessIncarnation } from '../infra/node-process.js';
 import { backendLog } from '../infra/backend-log.js';
-import { probeProcessIncarnation } from '../infra/node-process.js';
+import { probeProcessIncarnation, type ProcessIncarnation } from '../infra/node-process.js';
 import type { Runtime } from '../runtime/ports.js';
 import {
   spawnProviderServerTransport,
@@ -450,7 +449,7 @@ class ProxyProviderRootPool {
     const retirement = this.installRetirement(transaction, handle);
     const incarnation = probeProcessIncarnation(handle.pid, this.runtime.env.platform() as NodeJS.Platform);
     if (incarnation === null || handle.isClosed()) {
-      throw new Error(`Provider server ${spec.provider} could not have its own start time read after spawn.`);
+      throw new Error(`Provider server ${spec.provider} could not have its own incarnation read after spawn.`);
     }
     const entry: HostPoolEntry = {
       hostKey,

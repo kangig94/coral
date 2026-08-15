@@ -1,11 +1,10 @@
-import { processIncarnationSchema, type ProcessIncarnation } from './node-process.js';
 import { dirname } from 'node:path';
 import { z } from 'zod';
 
 import type { BuildFlavor } from './build-flavor.js';
 import type { CoralPaths } from './path/index.js';
 import type { EnvPort, StoragePort } from './port-types.js';
-import { probeProcessIncarnation } from './node-process.js';
+import { processIncarnationSchema, probeProcessIncarnation, type ProcessIncarnation } from './node-process.js';
 import { isNoEntryError } from './fs-errors.js';
 
 /** Connection and authentication evidence only; executable identity comes from authenticated health. */
@@ -112,12 +111,17 @@ export function readDiscoveryRecord(runtime: DiscoveryRuntime): CoordinatorDisco
 }
 
 /**
- * The record's `incarnation` is deliberately not re-derived and compared here.
+ * The record's `incarnation` is not compared here, and the reason is narrower than it once was.
  *
- * `probeProcessIncarnation` adds `/proc/stat` btime, which each process caches on first read
- * (`infra/node-process.ts`), so a value this process derives and one the coordinator wrote sit on
- * different clock bases and are not comparable. Rejecting the record on that basis discarded the
- * `bootToken` beside it, and a contender without that token cannot ask the incumbent to stand down.
+ * The old rationale — that the derived value carried a per-process clock term and so was not
+ * comparable across processes — died with the token: two processes now derive the same bytes for the
+ * same incarnation. What survives is the second half. Rejecting the record discards the `bootToken`
+ * beside it, and a contender without that token cannot ask the incumbent to stand down, so this
+ * function must keep returning a record whose pid it cannot vouch for.
+ *
+ * That makes this a read, not an authorization. Comparing the recorded token became possible with the
+ * token and belongs at the sites that act on the pid, where a mismatch can refuse a signal without
+ * also destroying the credential that makes a peaceful handoff possible.
  *
  * Nothing here acts on `pid`. This returns a token and a socket path; the handshake authenticates with
  * the token, and the sites that signal re-verify the pid against a baseline they observed themselves

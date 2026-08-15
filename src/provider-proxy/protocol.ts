@@ -260,7 +260,7 @@ export const operationIdentitySchema = z
 
 export type OperationIdentity = z.infer<typeof operationIdentitySchema>;
 
-/** One provider-root identity: the pid and start time the guardian/reaper stage, confirm, and enforce
+/** One provider-root identity: the pid and incarnation the guardian/reaper stage, confirm, and enforce
  *  containment against. Shared because both roles carry this exact 2-field shape wherever a request or
  *  response names a provider root — a single staged/confirmed root or a member of the teardown-time
  *  recorded set — rather than each role declaring its own copy of the same two fields. */
@@ -465,7 +465,7 @@ export function assertNamedReaperIdentity(claimed: ReaperIdentity, actual: Reape
   }
 }
 
-/** The 4-field identity a recorded process-group containment carries: the leader's pid and start time, the
+/** The 4-field identity a recorded process-group containment carries: the leader's pid and incarnation, the
  *  group id that names the containment itself, and the containment-kind vocabulary word. Both the guardian
  *  (recording what it watched spawned) and the reaper (recording what the guardian forwarded, and later
  *  checking what a coordinator's `reaper.open.v1` claims against it) compare an incoming containment against
@@ -614,7 +614,7 @@ export const reaperConfirmProviderRootResultSchema = z.object({ state: z.literal
 export const reaperRecordRedemptionResultSchema = z.object({ state: z.literal('redemption-recorded') }).strict();
 
 /** `control.open.v1`'s request — the proxy's own open, which names no peer because it is reached first and
- *  is the only role that can report the pid, start time, and group id the other two opens carry. */
+ *  is the only role that can report the pid, incarnation, and group id the other two opens carry. */
 export const proxyControlOpenParamsSchema = z
   .object({ bootstrapNonce: z.string().min(1), coordinator: coordinatorIdentitySchema })
   .strict();

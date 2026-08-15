@@ -275,7 +275,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
     canonicalControlEndpoint: capsule.canonicalControlEndpoint,
   });
 
-  /** The reaper identity a teardown's `reaper` claim is checked against: the pid and start time this
+  /** The reaper identity a teardown's `reaper` claim is checked against: the pid and incarnation this
    *  guardian itself observed at spawn time, plus the same capsule-derived fields the reaper's own identity
    *  uses. The guardian never learns this from the reaper directly — pairing carries no identity, only a
    *  shared secret — so this is reconstructed from what the guardian itself watched come into being. */

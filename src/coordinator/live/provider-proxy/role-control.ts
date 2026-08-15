@@ -162,7 +162,7 @@ function classifyRoleControlFailure(
 }
 
 /** Compares only the fields this acquisition can independently verify — everything it minted, plus (for the
- *  guardian alone) the pid and start time the acquisition observed by spawning it itself. A disagreement here
+ *  guardian alone) the pid and incarnation the acquisition observed by spawning it itself. A disagreement here
  *  means the connected process is not the one this acquisition created. */
 function assertIdentityFieldsAgree(
   role: string,

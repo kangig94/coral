@@ -27,7 +27,7 @@ import type { SpawnedRoleProcess } from '../../../provider-proxy/role-spawn.js';
  * plain child with nothing of its own left to do) would force-kill the guardian mid-reap and strand the very
  * containment it was just asked to hold.
  *
- * And a pid is not an identity on its own: the OS recycles it. This re-reads the pid's start time
+ * And a pid is not an identity on its own: the OS recycles it. This re-reads the pid's incarnation
  * immediately before signalling and refuses if it no longer matches what this acquisition recorded at spawn
  * time — signalling a mismatched pid would kill whatever unrelated process now holds it, which is the
  * project's BLOCKING process rule.

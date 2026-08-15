@@ -1,6 +1,5 @@
-import type { ProcessIncarnation } from '../../../infra/node-process.js';
 import { providerHandoffCapsulePath } from '../../../infra/path/index.js';
-import { probeProcessIncarnation } from '../../../infra/node-process.js';
+import { probeProcessIncarnation, type ProcessIncarnation } from '../../../infra/node-process.js';
 import { createMonotonicClock } from '../../../infra/monotonic-clock.js';
 import { reapRecordedContainment } from '../../../infra/process-containment.js';
 import {
@@ -293,12 +292,12 @@ async function proveProviderProxySetContainmentAbsent(
     { pid: identity.guardianPid, incarnation: identity.guardianIncarnation },
     { pid: identity.reaperPid, incarnation: identity.reaperIncarnation },
   ];
-  // Existence, not identity. These start times were recorded by the guardian and the reaper, not by this
+  // Existence, not identity. These incarnations were recorded by the guardian and the reaper, not by this
   // coordinator, and a value derived in another process sits on another clock base — requiring an exact
   // match concluded that a live enforcer was gone, after which this function reaped a running set and
   // minted a disappearance receipt for it.
   //
-  // A readable start time already proves the pid exists; whether it is still *our* enforcer is what this
+  // A readable incarnation already proves the pid exists; whether it is still *our* enforcer is what this
   // coordinator cannot tell, so it assumes it might be. That is strictly more conservative than the
   // comparison it replaces, and this path exists to prove absence — it may only do so when absence is
   // observable, never inferred from a disagreement.
@@ -711,7 +710,7 @@ export function createProviderProxySetInheritance(
           const inheritanceDeps = deps(options.registerInheritedSet);
           let outcome: ProviderProxySetInheritanceOutcome;
           if (inheritanceDeps === null) {
-            outcome = { kind: 'not-bequeathed', reason: 'could not read this coordinator process’s own start time' };
+            outcome = { kind: 'not-bequeathed', reason: 'could not read this coordinator process’s own incarnation' };
           } else {
             const deadline = await runProviderProxyRecoveryDeadline({
               time: options.runtime.time,
@@ -735,7 +734,7 @@ export function createProviderProxySetInheritance(
     async redeemDiscoveredCapsule(capsule, capsulePath, signal) {
       const inheritanceDeps = deps();
       if (inheritanceDeps === null) {
-        throw new Error('could not read this coordinator process’s own start time');
+        throw new Error('could not read this coordinator process’s own incarnation');
       }
       const deadline = await runProviderProxyRecoveryDeadline({
         time: options.runtime.time,

@@ -1,4 +1,3 @@
-import type { ProcessIncarnation } from '../infra/node-process.js';
 // Coordinator-side bind/escalation state machine. Sits above transport's
 // `requestIncumbentShutdown`: speaks IPC for graceful handoff, polls
 // bindability, and only signals (SIGTERM → SIGKILL) after revalidating the
@@ -10,7 +9,7 @@ import type { ProcessIncarnation } from '../infra/node-process.js';
 import { join } from 'node:path';
 
 import { writeAuditEvent } from '../infra/audit-log.js';
-import { probeProcessIncarnation } from '../infra/node-process.js';
+import { isProcessIncarnation, probeProcessIncarnation, type ProcessIncarnation } from '../infra/node-process.js';
 import { backendLog } from '../infra/backend-log.js';
 import { SIGKILL_GRACE_MS, SIGTERM_GRACE_MS } from '../infra/process-constants.js';
 import type { Runtime } from '../runtime/ports.js';
@@ -165,7 +164,7 @@ function isHandoffSignalRecord(value: unknown): value is HandoffSignalRecord {
     record.version === 1 &&
     typeof record.socketPath === 'string' &&
     Number.isInteger(record.pid) &&
-    (record.incarnation === undefined || typeof record.incarnation === 'string') &&
+    (record.incarnation === undefined || isProcessIncarnation(record.incarnation)) &&
     (record.instanceId === undefined || typeof record.instanceId === 'string') &&
     (record.signal === 'SIGTERM' || record.signal === 'SIGKILL') &&
     Number.isFinite(record.signaledAtMs)
@@ -390,13 +389,15 @@ type SignalVerificationResult = 'matched' | 'gone';
  * Confirms the pid about to be signalled is still the process this attempt observed, by comparing two
  * probes **this contender made itself**.
  *
- * The incumbent's own reported start time cannot be the baseline: `probeProcessIncarnation` adds
- * `/proc/stat` btime, which each process caches on first read, so values derived in different processes
- * are on different clock bases. Anchoring on this side keeps the guarantee that matters — the pid must
- * not have been recycled since this attempt adopted it — and drops the one that was never sound.
+ * The self-anchor exists because the old cross-process comparison was unsound: the derived value carried
+ * a per-process clock term, so two processes never agreed. The token retired that term — a recorded
+ * incarnation and a fresh probe of the same process now produce the same bytes.
  *
- * It does not close the gap between this check and the `kill` a few statements later; nothing short of a
- * pidfd can. It narrows the window from "since the incumbent booted" to "since this verification".
+ * Two gaps remain, and neither is closed here. This check cannot cover the interval between itself and
+ * the `kill` a few statements later; nothing short of a pidfd can, and it narrows that window from
+ * "since the incumbent booted" to "since this verification". And because the baseline is only ever this
+ * contender's own first observation, a pid already recycled before that observation anchors the wrong
+ * process and matches itself forever — which the record's own incarnation could now rule out.
  */
 function verifySignalTarget(
   incumbent: IncumbentIdentity,
@@ -408,7 +409,7 @@ function verifySignalTarget(
   if (liveIncarnation === null) {
     // Unreadable is not gone. Only a pid that no longer exists is gone.
     return process.isAlive(incumbent.pid)
-      ? refuseSignal(incumbent, 'process start time unavailable while pid is alive')
+      ? refuseSignal(incumbent, 'process incarnation unavailable while pid is alive')
       : 'gone';
   }
   if (anchoredIncarnation === null) {

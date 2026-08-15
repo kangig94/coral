@@ -29,7 +29,7 @@ vi.mock('#src/providers/app-server-transport.js', async (importOriginal) => {
   return { ...actual, spawnProviderServerTransport: vi.fn() };
 });
 
-// `openSession` reads the spawned process's own start time straight off `/proc` (or platform equivalent).
+// `openSession` reads the spawned process's own incarnation straight off `/proc` (or platform equivalent).
 // Faking a pid that exists in `/proc` is possible but fragile across CI sandboxes; stubbing the probe itself
 // is the same technique `provider-hosts/proxy-set-acquisition.test.ts` already uses for the identical call.
 vi.mock('#src/infra/node-process.js', async (importOriginal) => {

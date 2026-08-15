@@ -290,7 +290,7 @@ function establishDetachedProviderServerIdentity(
     gracefulKill(entry.child, runtime);
     throw new ProcessContainmentError(
       'process_identity_unverified',
-      `Could not read the start time of the spawned ${entry.provider} provider server (pid ${entry.pid}).`,
+      `Could not read the incarnation of the spawned ${entry.provider} provider server (pid ${entry.pid}).`,
       { provider: entry.provider, pid: entry.pid },
     );
   }

@@ -1,5 +1,4 @@
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
-import type { ProcessIncarnation } from '#src/infra/node-process.js';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -7,7 +6,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { DefaultProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
 import type { LaunchPool } from '#src/jobs/contracts/admission.js';
-import { canProbeProcessIncarnation } from '#src/infra/node-process.js';
+import { canProbeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
 import type { ChildProcessLike } from '#src/infra/port-types.js';
 import type { ProcessPort, Runtime, RuntimeSpawnOptions } from '#src/runtime/ports.js';
 import {
@@ -184,7 +183,7 @@ describe('launch admission', () => {
     },
   );
 
-  it('kills a coordinator-local provider spawn whose start time cannot be read', async () => {
+  it('kills a coordinator-local provider spawn whose incarnation cannot be read', async () => {
     const fake = createProviderProcessRuntime(TEST_PROVIDER_PID, true, 'linux', null);
     const localCoordinator = new LaunchCoordinator({ runtime: fake.runtime });
     const manager = new DefaultProviderHostManager({
@@ -207,7 +206,7 @@ describe('launch admission', () => {
     await manager.shutdown();
   });
 
-  it('kills a coordinator-local provider spawn when reading its start time throws', async () => {
+  it('kills a coordinator-local provider spawn when reading its incarnation throws', async () => {
     const fake = createProviderProcessRuntime(TEST_PROVIDER_PID);
     const runtime: Runtime = {
       ...fake.runtime,

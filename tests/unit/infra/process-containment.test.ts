@@ -157,7 +157,7 @@ describe('recorded process containment', () => {
     expect(fake.signals).toEqual([{ pid: -100, signal: 'SIGTERM', at: 0 }]);
   });
 
-  it('fails closed before signalling when a live process start time cannot be read', async () => {
+  it('fails closed before signalling when a live process incarnation cannot be read', async () => {
     const fake = createFakeEnvironment(
       { groupAlive: true, leaderAlive: true, providerRootAlive: false },
       { unreadablePids: new Set([containment.pid]) },

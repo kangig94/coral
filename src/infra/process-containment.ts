@@ -1,5 +1,4 @@
-import type { ProcessIncarnation } from './node-process.js';
-import { probeProcessIncarnation } from './node-process.js';
+import { probeProcessIncarnation, type ProcessIncarnation } from './node-process.js';
 import type { MonotonicClock, MonotonicInstant } from './monotonic-clock.js';
 import {
   CONTAINMENT_DISAPPEARANCE_CONFIRM_MS,
@@ -160,7 +159,7 @@ function observeProcessIdentity<Scope extends symbol>(
   }
   throw new ProcessContainmentError(
     'process_identity_unverified',
-    `Refusing to signal pid=${identity.pid} because its process start time is unavailable while it is alive.`,
+    `Refusing to signal pid=${identity.pid} because its process incarnation is unavailable while it is alive.`,
     { pid: identity.pid },
   );
 }
@@ -171,7 +170,7 @@ function observeContainment<Scope extends symbol>(
 ): TargetObservation {
   const observedIncarnation = readIncarnation(containment, environment);
   if (observedIncarnation !== null && observedIncarnation !== containment.incarnation) {
-    // A mismatched start time proves that pid no longer identifies the recorded leader, not that every member
+    // A mismatched incarnation proves that pid no longer identifies the recorded leader, not that every member
     // of its old group is gone. Do not probe or signal -processGroupId after reuse because the numeric group can
     // no longer be proven ours. This can strand original members: the guarantee is never to signal the wrong
     // group, not always to reap ours.
@@ -180,7 +179,7 @@ function observeContainment<Scope extends symbol>(
   if (observedIncarnation === null && environment.process.isAlive(containment.pid)) {
     throw new ProcessContainmentError(
       'process_identity_unverified',
-      `Refusing to signal process group ${containment.processGroupId} because its leader start time is unavailable while pid=${containment.pid} is alive.`,
+      `Refusing to signal process group ${containment.processGroupId} because its leader incarnation is unavailable while pid=${containment.pid} is alive.`,
       { pid: containment.pid, processGroupId: containment.processGroupId },
     );
   }

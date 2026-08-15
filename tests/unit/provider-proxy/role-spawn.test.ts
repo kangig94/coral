@@ -17,7 +17,7 @@ import type { RuntimeSpawnOptions } from '#src/runtime/ports.js';
 /**
  * `spawnRoleProcess` has no dedicated coverage anywhere else: `process-topology.integration.test.ts` drives
  * it only through the full role-main topology, which never exercises the failure branches (`role_spawn_no_pid`,
- * an unreadable start time), the two `resolveBackendArtifact` branches, or the exact shape of the spawn call
+ * an unreadable incarnation), the two `resolveBackendArtifact` branches, or the exact shape of the spawn call
  * itself. A regression dropping `envAdditions` — the flavor env a spawned peer needs to find the right
  * capsule — would pass every existing test.
  */
@@ -81,7 +81,7 @@ describe('spawnRoleProcess', () => {
     expect(killSignals).toContain('SIGTERM');
   });
 
-  it('kills the child and throws role_spawn_start_time_unavailable when the start time cannot be read', () => {
+  it('kills the child and throws role_spawn_incarnation_unavailable when the incarnation cannot be read', () => {
     const { child, killSignals } = createFakeChild(6_000);
     const ports = fakePorts({ spawn: () => child, readProcessIncarnation: () => null });
 
@@ -89,7 +89,7 @@ describe('spawnRoleProcess', () => {
     try {
       spawnRoleProcess('reaper', '/capsule.json', ports, baseOptions());
     } catch (error: unknown) {
-      expect(error).toMatchObject({ code: 'role_spawn_start_time_unavailable', role: 'reaper' });
+      expect(error).toMatchObject({ code: 'role_spawn_incarnation_unavailable', role: 'reaper' });
     }
     expect(killSignals).toContain('SIGTERM');
   });

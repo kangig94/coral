@@ -100,7 +100,7 @@ export const providerOperationSetLocatorSchema = z
       });
     }
   })
-  .describe('containment pid and start time equal the proxy process identity');
+  .describe('containment pid and incarnation equal the proxy process identity');
 
 const providerRootSchema = z
   .object({

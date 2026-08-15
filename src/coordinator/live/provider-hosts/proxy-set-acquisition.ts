@@ -92,10 +92,10 @@ export function ensureProviderProxySet(
   const platform = env.runtime.env.platform() as NodeJS.Platform;
   const incarnation = probeProcessIncarnation(pid, platform);
   if (incarnation === null) {
-    // This process's own start time is not a value this file may guess at: the coordinator identity it feeds
+    // This process's own incarnation is not a value this file may guess at: the coordinator identity it feeds
     // the handshake is a security-relevant field, not a diagnostic one, so an unreadable read is a failed
     // attempt rather than a fabricated `0`.
-    onSettled({ kind: 'failed', reason: 'could not read this coordinator process’s own start time' });
+    onSettled({ kind: 'failed', reason: 'could not read this coordinator process’s own incarnation' });
     return;
   }
   const coordinatorIdentity: ProviderProxyCoordinatorIdentity = {

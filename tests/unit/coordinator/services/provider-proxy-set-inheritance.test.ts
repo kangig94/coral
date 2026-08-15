@@ -1031,11 +1031,11 @@ describe('createProviderProxySetInheritance', () => {
     expect(signals.some(({ signal }) => signal === 'SIGKILL')).toBe(false);
   });
 
-  // The guardian and the reaper recorded their own start times; this coordinator did not. Requiring an
+  // The guardian and the reaper recorded their own incarnations; this coordinator did not. Requiring an
   // exact match against a fresh probe made a live enforcer look gone, after which this path reaped a
-  // running set and minted a disappearance receipt for it. A readable start time already proves the pid
+  // running set and minted a disappearance receipt for it. A readable incarnation already proves the pid
   // exists, and whether it is still ours is precisely what a successor cannot tell.
-  it('will not prove absence while an enforcer pid exists under a start time it did not record', async () => {
+  it('will not prove absence while an enforcer pid exists under a incarnation it did not record', async () => {
     const reference = locator();
     const record = proofRecord(reference, { pid: 104, incarnation: testIncarnation(1_003) });
     const db = proofDatabase([record]);
@@ -1142,7 +1142,7 @@ describe('createProviderProxySetInheritance', () => {
     expect(process.signals).toEqual([]);
   });
 
-  it('reports not-bequeathed without attempting redemption when this process’s own start time is unreadable', async () => {
+  it('reports not-bequeathed without attempting redemption when this process’s own incarnation is unreadable', async () => {
     mockedProbe.mockReturnValueOnce(null);
     const registerInheritedSet = vi.fn();
 
@@ -1154,7 +1154,7 @@ describe('createProviderProxySetInheritance', () => {
     });
     const outcome = await inheritance.inheritProviderProxySet(locator(), unusedDb, neverAborts);
 
-    expect(outcome).toEqual({ kind: 'not-bequeathed', reason: expect.stringContaining('start time') });
+    expect(outcome).toEqual({ kind: 'not-bequeathed', reason: expect.stringContaining('incarnation') });
     expect(mockedReadCapsule).not.toHaveBeenCalled();
     expect(registerInheritedSet).not.toHaveBeenCalled();
   });

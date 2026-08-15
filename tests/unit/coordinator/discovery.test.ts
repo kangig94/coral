@@ -90,7 +90,7 @@ describe('coordinator discovery', () => {
     });
   });
 
-  it('probeCoordinator returns the record when pid and process start time match', async () => {
+  it('probeCoordinator returns the record when pid and process incarnation match', async () => {
     makeHome();
     const { probeCoordinator, writeDiscoveryRecord } = await importDiscovery();
     const { probeProcessIncarnation } = await import('#src/infra/node-process.js');
@@ -129,7 +129,7 @@ describe('coordinator discovery', () => {
   // seconds, measured on a WSL2 host, for a coordinator probing its own pid. Rejecting on that basis
   // discarded the `bootToken` beside it, leaving a newer build unable to ask the incumbent to stand
   // down; it died on every session start while the older daemon served on.
-  it('probeCoordinator returns a live record whose recorded start time disagrees with a fresh probe', async () => {
+  it('probeCoordinator returns a live record whose recorded incarnation disagrees with a fresh probe', async () => {
     makeHome();
     const { probeCoordinator, writeDiscoveryRecord } = await importDiscovery();
     const runtime = makeDiscoveryRuntime('prod');

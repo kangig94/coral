@@ -76,16 +76,16 @@ function durableCliEvidence(
     return { carrierClass: 'durable-cli', process: { kind: 'uncaptured' } };
   }
 
-  const observedStartedAt = probeProcessIncarnation(meta.pid, platform);
-  if (observedStartedAt === null) {
+  const observedIncarnation = probeProcessIncarnation(meta.pid, platform);
+  if (observedIncarnation === null) {
     if (isProcessAlive(meta.pid)) {
-      // Alive but its start time is unreadable: cannot tell a recycled pid from the same process, so this
+      // Alive but its incarnation is unreadable: cannot tell a recycled pid from the same process, so this
       // stays "nothing to check against" rather than a guess in either direction.
       return { carrierClass: 'durable-cli', process: { kind: 'uncaptured' } };
     }
     return {
       carrierClass: 'durable-cli',
-      process: { kind: 'recorded', alive: false, matchesRecordedStart: false, transportEvidence: true },
+      process: { kind: 'recorded', alive: false, matchesRecordedIncarnation: false, transportEvidence: true },
     };
   }
 
@@ -94,7 +94,7 @@ function durableCliEvidence(
     process: {
       kind: 'recorded',
       alive: true,
-      matchesRecordedStart: observedStartedAt === meta.incarnation,
+      matchesRecordedIncarnation: observedIncarnation === meta.incarnation,
       transportEvidence: true,
     },
   };

@@ -724,7 +724,7 @@ describe('provider-operation carrier reap', () => {
           db,
           clock: fakeClock(),
           signal: new AbortController().signal,
-          // Alive with no verifiable start time is the ambiguous case `reapRecordedContainment` refuses to
+          // Alive with no verifiable incarnation is the ambiguous case `reapRecordedContainment` refuses to
           // signal past — the recorded set can never be confirmed absent, so this must stay fatal.
           readProcessIncarnation: () => null,
         }),

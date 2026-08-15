@@ -64,7 +64,7 @@ import { PROXY_TEARDOWN_RESERVE_MS, type EnforcerDeadlineStateMachine } from './
  */
 /**
  * The caller names the guardian it believes paired with this reaper. Checked against the stable fields this
- * reaper's own bootstrap capsule holds — pid and start time are deliberately excluded, since unlike the
+ * reaper's own bootstrap capsule holds — pid and incarnation are deliberately excluded, since unlike the
  * guardian (which spawned this reaper itself and observed both directly) this reaper never independently
  * learns them: pairing carries only a shared secret, no identity.
  */
