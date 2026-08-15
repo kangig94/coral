@@ -1,7 +1,8 @@
+import type { ProcessIncarnation } from '../../infra/node-process.js';
 import { MAX_BUFFER } from '../../infra/process-constants.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { readAppendedLines } from '../../infra/file-tail.js';
-import { probeProcessStartedAtSeconds } from '../../infra/node-process.js';
+import { probeProcessIncarnation } from '../../infra/node-process.js';
 import type { JobRuntime } from '../../jobs/records.js';
 import type { LaunchPool } from '../../jobs/contracts/admission.js';
 import type { DurableProcessExit } from '../../runtime/durable-runtime.js';
@@ -43,7 +44,7 @@ export type SpawnDurableJobOptions = SpawnCliOptions & {
    * belong to a recycled pid, which is precisely the confusion the pair exists to prevent — so a probe that
    * comes back empty reports nothing rather than a pid on its own.
    */
-  onDurableProcessIdentity?: (identity: { pid: number; processStartedAtSeconds: number }) => void;
+  onDurableProcessIdentity?: (identity: { pid: number; incarnation: ProcessIncarnation }) => void;
 };
 
 export async function spawnDurableJobTransport(params: {
@@ -78,9 +79,9 @@ export async function spawnDurableJobTransport(params: {
     // Captured here because this is where the pid first exists and is still known to name this child.
     // A failure to probe stays silent: the recorded identity is what makes a later `absent` verdict
     // trustworthy, so a half-record — a pid with no start time — would be worse than none.
-    const startedAtSeconds = probeProcessStartedAtSeconds(durable.pid, runtime.env.platform() as NodeJS.Platform);
+    const startedAtSeconds = probeProcessIncarnation(durable.pid, runtime.env.platform() as NodeJS.Platform);
     if (startedAtSeconds !== null) {
-      options.onDurableProcessIdentity?.({ pid: durable.pid, processStartedAtSeconds: startedAtSeconds });
+      options.onDurableProcessIdentity?.({ pid: durable.pid, incarnation: startedAtSeconds });
     }
     cleanupKey = Symbol();
     const cleanup = (): void => {

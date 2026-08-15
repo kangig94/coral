@@ -1,3 +1,4 @@
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -79,7 +80,7 @@ async function startStatusProxy(): Promise<
   const coordinator = {
     instanceId: randomUUID(),
     pid: 4_000,
-    processStartedAtSeconds: 700,
+    incarnation: testIncarnation(700),
     generation: 'gen2' as const,
     flavor: 'prod' as const,
     buildSetId,
@@ -87,7 +88,7 @@ async function startStatusProxy(): Promise<
   const identity = {
     proxyInstanceId,
     pid: 6_000,
-    processStartedAtSeconds: 850,
+    incarnation: testIncarnation(850),
     processGroupId: 6_000,
     guardianInstanceId,
     reaperInstanceId,
@@ -131,7 +132,7 @@ async function startStatusProxy(): Promise<
       stageProviderRoot: () => {
         const result: OperationStageHandle['result'] = Promise.resolve({
           state: 'staged',
-          providerRoot: { pid: 7_001, processStartedAtSeconds: 900 },
+          providerRoot: { pid: 7_001, incarnation: testIncarnation(900) },
           receipt: jointContainmentReceiptSchema.parse('carrier-status-containment'),
         });
         return {
@@ -182,7 +183,7 @@ async function startStatusProxy(): Promise<
     proxy: {
       instanceId: proxyInstanceId,
       pid: identity.pid,
-      processStartedAtSeconds: identity.processStartedAtSeconds,
+      incarnation: identity.incarnation,
       controlEndpoint,
     },
   };

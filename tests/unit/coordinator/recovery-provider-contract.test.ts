@@ -686,12 +686,12 @@ describe('provider-operation carrier reap', () => {
         db,
         clock: fakeClock(),
         signal: new AbortController().signal,
-        readProcessStartedAtSeconds: (pid) => {
+        readProcessIncarnation: (pid) => {
           if (pid === providerOperationCarrier.locator.proxy.pid && state.groupAlive) {
-            return providerOperationCarrier.locator.proxy.processStartedAtSeconds;
+            return providerOperationCarrier.locator.proxy.incarnation;
           }
           if (pid === providerOperationCarrier.providerRoot.pid && state.providerRootAlive) {
-            return providerOperationCarrier.providerRoot.processStartedAtSeconds;
+            return providerOperationCarrier.providerRoot.incarnation;
           }
           return null;
         },
@@ -726,7 +726,7 @@ describe('provider-operation carrier reap', () => {
           signal: new AbortController().signal,
           // Alive with no verifiable start time is the ambiguous case `reapRecordedContainment` refuses to
           // signal past — the recorded set can never be confirmed absent, so this must stay fatal.
-          readProcessStartedAtSeconds: () => null,
+          readProcessIncarnation: () => null,
         }),
       ).rejects.toBeInstanceOf(ProcessContainmentError);
 

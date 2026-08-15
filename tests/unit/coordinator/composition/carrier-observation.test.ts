@@ -1,3 +1,4 @@
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { describe, expect, it, vi } from 'vitest';
 
 import { applyBundledStoreSchema, type Database } from '#src/store/db.js';
@@ -8,7 +9,7 @@ import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { writeDurableCliProcessRuntimeMeta } from '#src/jobs/runtime-meta-store.js';
 import type * as NodeProcess from '#src/infra/node-process.js';
 
-// `isProcessAlive`/`probeProcessStartedAtSeconds` default to the real implementation so every existing test
+// `isProcessAlive`/`probeProcessIncarnation` default to the real implementation so every existing test
 // below keeps observing genuine OS state; only the ambiguous-evidence test overrides them (once each) to
 // stage the alive-but-unreadable-start-time combination without depending on real `/proc` timing.
 vi.mock('#src/infra/node-process.js', async (importOriginal) => {
@@ -16,11 +17,11 @@ vi.mock('#src/infra/node-process.js', async (importOriginal) => {
   return {
     ...original,
     isProcessAlive: vi.fn(original.isProcessAlive),
-    probeProcessStartedAtSeconds: vi.fn(original.probeProcessStartedAtSeconds),
+    probeProcessIncarnation: vi.fn(original.probeProcessIncarnation),
   };
 });
 
-import { isProcessAlive, probeProcessStartedAtSeconds } from '#src/infra/node-process.js';
+import { isProcessAlive, probeProcessIncarnation } from '#src/infra/node-process.js';
 import {
   admittedByThisCoordinator,
   classifyLocalCarriers,
@@ -37,7 +38,7 @@ import { insertProviderOperation } from '#src/store/provider-operation-journal.j
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 
 const mockedIsAlive = vi.mocked(isProcessAlive);
-const mockedProbe = vi.mocked(probeProcessStartedAtSeconds);
+const mockedProbe = vi.mocked(probeProcessIncarnation);
 
 const PLATFORM = process.platform;
 // Guaranteed to name no process this OS ever assigns, so both the OS start-time probe and the alive check
@@ -302,7 +303,12 @@ describe('createObserveCarriers', () => {
     };
     const details = new Map([[DURABLE_JOB_ID, detail(runtime)]]);
     const db = createDb();
-    writeDurableCliProcessRuntimeMeta(db, { version: 1, jobId: DURABLE_JOB_ID, pid: 222, processStartedAtSeconds: 1 });
+    writeDurableCliProcessRuntimeMeta(db, {
+      version: 1,
+      jobId: DURABLE_JOB_ID,
+      pid: 222,
+      incarnation: testIncarnation(1),
+    });
     const observe = createObserveCarriers(registriesFor(details, { getDb: () => db }), () => 7);
 
     expect(await observe([DURABLE_JOB_ID])).toEqual([
@@ -324,7 +330,7 @@ describe('createObserveCarriers', () => {
       version: 1,
       jobId: DURABLE_JOB_ID,
       pid: DEAD_PID,
-      processStartedAtSeconds: 1,
+      incarnation: testIncarnation(1),
     });
     const observe = createObserveCarriers(registriesFor(details, { getDb: () => db }), () => 9);
 
@@ -334,7 +340,7 @@ describe('createObserveCarriers', () => {
   });
 
   it('reports a durable CLI job as live when the recorded pid and start second both still match', async () => {
-    const ownStartedAt = probeProcessStartedAtSeconds(process.pid, PLATFORM);
+    const ownStartedAt = probeProcessIncarnation(process.pid, PLATFORM);
     // Only the current test process's own pid is guaranteed alive and probeable from this test.
     if (ownStartedAt === null) return;
     const runtime: JobRuntime = {
@@ -350,7 +356,7 @@ describe('createObserveCarriers', () => {
       version: 1,
       jobId: DURABLE_JOB_ID,
       pid: process.pid,
-      processStartedAtSeconds: ownStartedAt,
+      incarnation: ownStartedAt,
     });
     const observe = createObserveCarriers(registriesFor(details, { getDb: () => db }), () => 7);
 
@@ -360,7 +366,7 @@ describe('createObserveCarriers', () => {
   });
 
   it('reports a durable CLI job as absent when the pid is alive but its start second no longer matches — a recycled pid', async () => {
-    const ownStartedAt = probeProcessStartedAtSeconds(process.pid, PLATFORM);
+    const ownStartedAt = probeProcessIncarnation(process.pid, PLATFORM);
     if (ownStartedAt === null) return;
     const runtime: JobRuntime = {
       transport: 'durable-cli',
@@ -375,7 +381,7 @@ describe('createObserveCarriers', () => {
       version: 1,
       jobId: DURABLE_JOB_ID,
       pid: process.pid,
-      processStartedAtSeconds: ownStartedAt + 3_600,
+      incarnation: testIncarnation('a-different-incarnation'),
     });
     const observe = createObserveCarriers(registriesFor(details, { getDb: () => db }), () => 7);
 
@@ -397,7 +403,12 @@ describe('createObserveCarriers', () => {
     };
     const details = new Map([[DURABLE_JOB_ID, detail(runtime)]]);
     const db = createDb();
-    writeDurableCliProcessRuntimeMeta(db, { version: 1, jobId: DURABLE_JOB_ID, pid: 4242, processStartedAtSeconds: 1 });
+    writeDurableCliProcessRuntimeMeta(db, {
+      version: 1,
+      jobId: DURABLE_JOB_ID,
+      pid: 4242,
+      incarnation: testIncarnation(1),
+    });
     mockedProbe.mockReturnValueOnce(null);
     mockedIsAlive.mockReturnValueOnce(true);
     const observe = createObserveCarriers(registriesFor(details, { getDb: () => db }), () => 7);

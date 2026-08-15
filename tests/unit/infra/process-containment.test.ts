@@ -1,3 +1,4 @@
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { describe, expect, it } from 'vitest';
 
 import { createMonotonicClock, type MonotonicInstant } from '#src/infra/monotonic-clock.js';
@@ -12,10 +13,10 @@ import { MAX_PROXY_OPERATION_LEDGERS } from '#src/provider-proxy/ledger.js';
 
 const containment: RecordedContainmentIdentity = {
   pid: 100,
-  processStartedAtSeconds: 1,
+  incarnation: testIncarnation(1),
   processGroupId: 100,
 };
-const providerRoot: RecordedProcessIdentity = { pid: 101, processStartedAtSeconds: 2 };
+const providerRoot: RecordedProcessIdentity = { pid: 101, incarnation: testIncarnation(2) };
 const containmentClockScope = Symbol('process-containment-test');
 
 type FakeState = {
@@ -67,10 +68,10 @@ function createFakeEnvironment(
       },
       platform: 'linux',
       maxRecordedRoots: 128,
-      readProcessStartedAtSeconds: (pid) => {
+      readProcessIncarnation: (pid) => {
         if (options.unreadablePids?.has(pid)) return null;
-        if (pid === containment.pid && state.leaderAlive) return containment.processStartedAtSeconds;
-        if (pid === providerRoot.pid && state.providerRootAlive) return providerRoot.processStartedAtSeconds;
+        if (pid === containment.pid && state.leaderAlive) return containment.incarnation;
+        if (pid === providerRoot.pid && state.providerRootAlive) return providerRoot.incarnation;
         return null;
       },
     },
@@ -179,14 +180,14 @@ describe('recorded process containment', () => {
     const fake = createFakeEnvironment({ groupAlive: false, leaderAlive: false, providerRootAlive: false });
     const environment: ProcessContainmentEnvironment<typeof containmentClockScope> = {
       ...fake.environment,
-      readProcessStartedAtSeconds: () => {
+      readProcessIncarnation: () => {
         probed = true;
         return null;
       },
     };
     const roots = Array.from({ length: MAX_PROXY_OPERATION_LEDGERS + 1 }, (_, index) => ({
       pid: 1_000 + index,
-      processStartedAtSeconds: 1,
+      incarnation: testIncarnation(1),
     }));
 
     await expect(

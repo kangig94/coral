@@ -1,10 +1,12 @@
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
+import type { ProcessIncarnation } from '#src/infra/node-process.js';
 import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('#src/infra/node-process.js', async (importOriginal) => {
   const original = await importOriginal<object>();
   return {
     ...original,
-    probeProcessStartedAtSeconds: vi.fn(() => 1_700_000_000),
+    probeProcessIncarnation: vi.fn(() => 'linux:00000000-0000-4000-8000-000000000000:1700000000' as ProcessIncarnation),
   };
 });
 
@@ -16,7 +18,7 @@ vi.mock('#src/coordinator/live/provider-proxy/index.js', () => ({
   acquireProviderProxySet: vi.fn(),
 }));
 
-import { probeProcessStartedAtSeconds } from '#src/infra/node-process.js';
+import { probeProcessIncarnation } from '#src/infra/node-process.js';
 import { createProviderProxyAcquisitionSteps } from '#src/coordinator/live/provider-proxy/acquisition-steps.js';
 import { acquireProviderProxySet } from '#src/coordinator/live/provider-proxy/index.js';
 import { ensureProviderProxySet } from '#src/coordinator/live/provider-hosts/proxy-set-acquisition.js';
@@ -24,7 +26,7 @@ import { hostFingerprintFromSpec } from '#src/coordinator/live/provider-hosts/st
 import type { ProviderProxySetAuthority } from '#src/coordinator/live/provider-proxy/authority.js';
 import { createEntry, createSharedSpec, runtime } from '#tests/unit/coordinator/live/provider-hosts/helpers.js';
 
-const mockedProbe = probeProcessStartedAtSeconds as unknown as ReturnType<typeof vi.fn>;
+const mockedProbe = probeProcessIncarnation as unknown as ReturnType<typeof vi.fn>;
 const mockedCreateSteps = createProviderProxyAcquisitionSteps as unknown as ReturnType<typeof vi.fn>;
 const mockedAcquire = acquireProviderProxySet as unknown as ReturnType<typeof vi.fn>;
 
@@ -87,7 +89,7 @@ describe('ensureProviderProxySet', () => {
       instanceId: 'coordinator-instance',
       generation: 'gen2',
       flavor: 'prod',
-      processStartedAtSeconds: 1_700_000_000,
+      incarnation: testIncarnation(1_700_000_000),
     });
     // Derived, not merely non-empty: compared against the real production function's output for this entry.
     expect(stepsCall.hostFingerprint).toBe(hostFingerprintFromSpec(entry.spec));

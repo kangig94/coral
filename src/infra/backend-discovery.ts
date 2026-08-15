@@ -1,10 +1,11 @@
+import { processIncarnationSchema, type ProcessIncarnation } from './node-process.js';
 import { dirname } from 'node:path';
 import { z } from 'zod';
 
 import type { BuildFlavor } from './build-flavor.js';
 import type { CoralPaths } from './path/index.js';
 import type { EnvPort, StoragePort } from './port-types.js';
-import { probeProcessStartedAtSeconds } from './node-process.js';
+import { probeProcessIncarnation } from './node-process.js';
 import { isNoEntryError } from './fs-errors.js';
 
 /** Connection and authentication evidence only; executable identity comes from authenticated health. */
@@ -22,7 +23,7 @@ export interface CoordinatorDiscoveryRecord {
   host?: string;
   version?: string;
   instanceId?: string;
-  processStartedAt?: number;
+  incarnation?: ProcessIncarnation;
 }
 
 export interface BackendInfo extends CoordinatorDiscoveryRecord {
@@ -61,7 +62,7 @@ const coordinatorDiscoveryRecordSchema = z
     host: nonEmptyStringSchema.optional(),
     version: nonEmptyStringSchema.optional(),
     instanceId: nonEmptyStringSchema.optional(),
-    processStartedAt: positiveIntegerSchema.optional(),
+    incarnation: processIncarnationSchema.optional(),
   })
   // A build older than a future field must still read this record — `.strict()` would make that build's
   // `probeCoordinator` reject it outright the day a newer writer adds one, when every field it already
@@ -81,10 +82,8 @@ export function writeDiscoveryRecord(record: CoordinatorDiscoveryRecord, runtime
   const infoPath = discoveryFilePath(runtime);
   const payload = JSON.stringify({
     ...record,
-    processStartedAt:
-      record.processStartedAt ??
-      probeProcessStartedAtSeconds(record.pid, runtime.env.platform() as NodeJS.Platform) ??
-      undefined,
+    incarnation:
+      record.incarnation ?? probeProcessIncarnation(record.pid, runtime.env.platform() as NodeJS.Platform) ?? undefined,
   });
 
   runtime.storage.mkdirSync(dirname(infoPath), { recursive: true });
@@ -113,9 +112,9 @@ export function readDiscoveryRecord(runtime: DiscoveryRuntime): CoordinatorDisco
 }
 
 /**
- * The record's `processStartedAt` is deliberately not re-derived and compared here.
+ * The record's `incarnation` is deliberately not re-derived and compared here.
  *
- * `probeProcessStartedAtSeconds` adds `/proc/stat` btime, which each process caches on first read
+ * `probeProcessIncarnation` adds `/proc/stat` btime, which each process caches on first read
  * (`infra/node-process.ts`), so a value this process derives and one the coordinator wrote sit on
  * different clock bases and are not comparable. Rejecting the record on that basis discarded the
  * `bootToken` beside it, and a contender without that token cannot ask the incumbent to stand down.
@@ -135,7 +134,7 @@ export function probeCoordinator(runtime: DiscoveryRuntime): CoordinatorDiscover
     return null;
   }
 
-  const live = probeProcessStartedAtSeconds(record.pid, runtime.env.platform() as NodeJS.Platform);
+  const live = probeProcessIncarnation(record.pid, runtime.env.platform() as NodeJS.Platform);
   return live === null ? null : record;
 }
 

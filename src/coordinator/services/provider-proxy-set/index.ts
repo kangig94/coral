@@ -749,12 +749,12 @@ export class ProviderProxySetLifecycle {
             ...slot.capsuleBinding,
             version: 2,
             guardianPid: identity.guardianPid,
-            guardianProcessStartedAtSeconds: identity.guardianProcessStartedAtSeconds,
+            guardianIncarnation: identity.guardianIncarnation,
             proxyPid: identity.proxyPid,
             reaperPid: identity.reaperPid,
-            reaperProcessStartedAtSeconds: identity.reaperProcessStartedAtSeconds,
+            reaperIncarnation: identity.reaperIncarnation,
             containmentKind: identity.containmentKind,
-            proxyProcessStartedAtSeconds: identity.proxyProcessStartedAtSeconds,
+            proxyIncarnation: identity.proxyIncarnation,
             proxyProcessGroupId: identity.proxyProcessGroupId,
           };
           this.#rewriteOpaqueCapsule(slot, outcome.set, upgraded);

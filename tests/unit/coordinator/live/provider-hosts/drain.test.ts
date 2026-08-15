@@ -1,3 +1,4 @@
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { describe, expect, it, vi } from 'vitest';
 import { activePinCount, acquireProviderHostPin } from '#src/coordinator/live/provider-hosts/lease.js';
 import {
@@ -22,11 +23,11 @@ import {
 
 const containment: RecordedContainmentIdentity = Object.freeze({
   pid: 481,
-  processStartedAtSeconds: 1_700_000_481,
+  incarnation: testIncarnation(1_700_000_481),
   processGroupId: 481,
 });
 
-function createRecordingReaper(processStartedAtSeconds = containment.processStartedAtSeconds) {
+function createRecordingReaper(incarnation = containment.incarnation) {
   let elapsedMs = 0;
   let groupAlive = true;
   const signals: Array<readonly [number, NodeJS.Signals | 0]> = [];
@@ -51,7 +52,7 @@ function createRecordingReaper(processStartedAtSeconds = containment.processStar
     },
     {
       clock,
-      readProcessStartedAtSeconds: (pid) => (pid === containment.pid ? processStartedAtSeconds : null),
+      readProcessIncarnation: (pid) => (pid === containment.pid ? incarnation : null),
     },
   );
   return { reaper, signals };
@@ -104,7 +105,7 @@ describe('provider host drain properties', () => {
         ...runtime.process,
         kill: () => false,
         isAlive: () => false,
-        readProcessStartedAtSeconds: () => null,
+        readProcessIncarnation: () => null,
       },
     });
 
@@ -160,7 +161,7 @@ describe('provider host drain properties', () => {
   });
 
   it('does not signal a recycled coordinator-local process group', async () => {
-    const recording = createRecordingReaper(containment.processStartedAtSeconds + 1);
+    const recording = createRecordingReaper(testIncarnation('recycled'));
 
     const server = await closeRecordedEntry(recording.reaper);
 
@@ -195,7 +196,7 @@ describe('provider host drain properties', () => {
       },
       {
         clock,
-        readProcessStartedAtSeconds: (pid) => (pid === containment.pid ? containment.processStartedAtSeconds : null),
+        readProcessIncarnation: (pid) => (pid === containment.pid ? containment.incarnation : null),
       },
     );
     const lifecycle = new AbortController();

@@ -1,3 +1,4 @@
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { createHash, randomUUID } from 'node:crypto';
 
 import type { z } from 'zod';
@@ -44,8 +45,13 @@ vi.mock('#src/provider-proxy/control-endpoint.js', async (importOriginal) => {
 const NONCE = 'a'.repeat(64);
 const PAIR_SECRET = 'c'.repeat(64);
 const FINGERPRINT = 'b'.repeat(64);
-const CONTAINMENT = { pid: 5_100, processStartedAtSeconds: 900, processGroupId: 5_100, containmentKind: 'posix-group' };
-const ROOT = { pid: 6_001, processStartedAtSeconds: 800 };
+const CONTAINMENT = {
+  pid: 5_100,
+  incarnation: testIncarnation(900),
+  processGroupId: 5_100,
+  containmentKind: 'posix-group',
+};
+const ROOT = { pid: 6_001, incarnation: testIncarnation(800) };
 const idleScheduler: EnforcementScheduler = { schedule: () => ({}), cancel: () => {} };
 const cleanups: Array<() => Promise<void>> = [];
 
@@ -100,7 +106,7 @@ function createGuardianHarness() {
   const coordinatorIdentity = {
     instanceId: randomUUID(),
     pid: 4_000,
-    processStartedAtSeconds: 700,
+    incarnation: testIncarnation(700),
     generation: shared.generation,
     flavor: shared.flavor,
     buildSetId: shared.buildSetId,
@@ -108,7 +114,7 @@ function createGuardianHarness() {
   const proxyIdentity = {
     proxyInstanceId: shared.proxyInstanceId,
     pid: 6_000,
-    processStartedAtSeconds: 850,
+    incarnation: testIncarnation(850),
     processGroupId: CONTAINMENT.processGroupId,
     guardianInstanceId: shared.guardianInstanceId,
     reaperInstanceId: shared.reaperInstanceId,
@@ -121,7 +127,7 @@ function createGuardianHarness() {
   const reaperIdentity = {
     reaperInstanceId: shared.reaperInstanceId,
     pid: 5_101,
-    processStartedAtSeconds: 901,
+    incarnation: testIncarnation(901),
     guardianInstanceId: shared.guardianInstanceId,
     generation: shared.generation,
     flavor: shared.flavor,
@@ -165,7 +171,7 @@ function createGuardianHarness() {
       process: { kill: () => true, isAlive: () => true },
       platform: 'linux',
       maxRecordedRoots: 128,
-      readProcessStartedAtSeconds: () => CONTAINMENT.processStartedAtSeconds,
+      readProcessIncarnation: () => CONTAINMENT.incarnation,
     },
     scheduler: idleScheduler,
     timer: {
@@ -174,8 +180,8 @@ function createGuardianHarness() {
     },
     mintReceipt,
     reaperChannel,
-    self: { pid: 5_102, processStartedAtSeconds: 902 },
-    reaperSelf: { pid: reaperIdentity.pid, processStartedAtSeconds: reaperIdentity.processStartedAtSeconds },
+    self: { pid: 5_102, incarnation: testIncarnation(902) },
+    reaperSelf: { pid: reaperIdentity.pid, incarnation: reaperIdentity.incarnation },
     onOutcome: () => {},
     onProgressViolation: () => {},
   });
@@ -217,7 +223,7 @@ describe('guardian outbound schemas', () => {
       operation,
       reservation,
       providerPid: ROOT.pid,
-      providerProcessStartedAtSeconds: ROOT.processStartedAtSeconds,
+      providerIncarnation: ROOT.incarnation,
     })) as { jointContainmentReceipt: string };
     harness.mintReceipt.mockClear();
     harness.reaperCall.mockClear();
@@ -246,7 +252,7 @@ describe('guardian outbound schemas', () => {
       operation,
       reservation,
       providerPid: ROOT.pid,
-      providerProcessStartedAtSeconds: ROOT.processStartedAtSeconds,
+      providerIncarnation: ROOT.incarnation,
     });
     const release = { proxy: harness.proxyIdentity, operation, reservation };
 
@@ -283,7 +289,7 @@ describe('guardian outbound schemas', () => {
       operation: harness.operation(),
       reservation: randomUUID(),
       providerPid: 'not-a-pid',
-      providerProcessStartedAtSeconds: ROOT.processStartedAtSeconds,
+      providerIncarnation: ROOT.incarnation,
     };
     letGuardianIngressYield(guardianRegisterProviderRootParamsSchema, request);
 
@@ -303,7 +309,7 @@ describe('guardian outbound schemas', () => {
       operation,
       reservation,
       providerPid: ROOT.pid,
-      providerProcessStartedAtSeconds: ROOT.processStartedAtSeconds,
+      providerIncarnation: ROOT.incarnation,
     })) as { jointContainmentReceipt: string };
     harness.reaperCall.mockClear();
     refuseReceiverConsultation(harness);
@@ -361,7 +367,7 @@ describe('guardian outbound schemas', () => {
         operation: harness.operation(),
         reservation: randomUUID(),
         providerPid: ROOT.pid,
-        providerProcessStartedAtSeconds: ROOT.processStartedAtSeconds,
+        providerIncarnation: ROOT.incarnation,
       }),
     ).rejects.toMatchObject({
       issues: [expect.objectContaining({ code: 'unrecognized_keys', keys: ['unexpected'], path: [] })],

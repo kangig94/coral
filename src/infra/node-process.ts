@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { z } from 'zod';
 
 export function isProcessAlive(pid: number): boolean {
   try {
@@ -13,73 +14,53 @@ export function isProcessAlive(pid: number): boolean {
   }
 }
 
-let linuxBootTimeSecondsCache: number | null | undefined;
-let linuxClockTicksPerSecondCache: number | null | undefined;
+/**
+ * A process incarnation: opaque, and comparable only by equality.
+ *
+ * The previous primitive returned `/proc/stat` btime plus the process's start ticks, floored to seconds.
+ * btime is not a constant — the kernel recomputes it on every read as `realtime_now - boottime_now`, and
+ * where those two clocks advance at different rates it climbs (measured: 3 seconds per 23 seconds of wall
+ * time on a WSL2 host). So that value was the process's identity *plus a noise sample taken at probe
+ * time*, with no record of which sample was used. Two processes comparing it disagreed by roughly the
+ * age gap between their first probes, which made a live process look like a different one — or, on the
+ * paths that read a mismatch as absence, like no process at all.
+ *
+ * What the kernel actually stores is "this process began at boot-tick N", and that is what this carries.
+ * `boot_id` is not decoration: start ticks alone are comparable within one boot, but after a reboot a
+ * recorded `pid=1234, ticks=500` can genuinely *match* a fresh low-pid process — a false match at exactly
+ * the pids reused earliest in boot, which is the one outcome the containment doctrine forbids.
+ *
+ * The brand is the enforcement. A string admits no arithmetic, no ordering, and no "within N seconds", so
+ * equality is the only expressible operation and the rule cannot be written wrongly. Prose could not hold
+ * it: the previous shape spread because a comment named an unsound site as the canonical pattern.
+ */
+export type ProcessIncarnation = string & { readonly __processIncarnation: 'process-incarnation' };
 
-function parseLinuxBootTimeSeconds(): number | null {
-  if (linuxBootTimeSecondsCache !== undefined) {
-    return linuxBootTimeSecondsCache;
-  }
+/** The wire and durable form. Opaque on purpose: readers compare, they never parse. */
+export const processIncarnationSchema = z.custom<ProcessIncarnation>(
+  (value) => typeof value === 'string' && value.length > 0 && value.length <= 256,
+  { message: 'must be a process incarnation token' },
+);
 
+function readLinuxBootId(): string | null {
   try {
-    const stat = readFileSync('/proc/stat', 'utf-8');
-    const match = /^btime\s+(\d+)\s*$/m.exec(stat);
-    if (match === null) {
-      linuxBootTimeSecondsCache = null;
-      return linuxBootTimeSecondsCache;
-    }
-
-    const rawBootTime = match[1];
-    if (rawBootTime === undefined) {
-      linuxBootTimeSecondsCache = null;
-      return linuxBootTimeSecondsCache;
-    }
-
-    const parsed = Number.parseInt(rawBootTime, 10);
-    linuxBootTimeSecondsCache = Number.isFinite(parsed) ? parsed : null;
-    return linuxBootTimeSecondsCache;
+    const raw = readFileSync('/proc/sys/kernel/random/boot_id', 'utf-8').trim();
+    return raw.length > 0 ? raw : null;
   } catch {
-    linuxBootTimeSecondsCache = null;
-    return linuxBootTimeSecondsCache;
+    return null;
   }
 }
 
-const DEFAULT_LINUX_CLOCK_TICKS_PER_SECOND = 100;
-
-function parseLinuxClockTicksPerSecond(): number | null {
-  if (linuxClockTicksPerSecondCache !== undefined) {
-    return linuxClockTicksPerSecondCache;
-  }
-
-  if (process.env.CORAL_DISCOVERY_PROBE_CLK_TCK !== '1') {
-    linuxClockTicksPerSecondCache = DEFAULT_LINUX_CLOCK_TICKS_PER_SECOND;
-    return linuxClockTicksPerSecondCache;
-  }
-
-  try {
-    const raw = execFileSync('getconf', ['CLK_TCK'], {
-      encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
-    const parsed = Number.parseInt(raw, 10);
-    linuxClockTicksPerSecondCache =
-      Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_LINUX_CLOCK_TICKS_PER_SECOND;
-    return linuxClockTicksPerSecondCache;
-  } catch {
-    linuxClockTicksPerSecondCache = DEFAULT_LINUX_CLOCK_TICKS_PER_SECOND;
-    return linuxClockTicksPerSecondCache;
-  }
-}
-
-function probeLinuxProcessStartedAtSeconds(pid: number): number | null {
-  const bootTimeSeconds = parseLinuxBootTimeSeconds();
-  const clockTicksPerSecond = parseLinuxClockTicksPerSecond();
-  if (bootTimeSeconds === null || clockTicksPerSecond === null) {
+function probeLinuxProcessIncarnation(pid: number): ProcessIncarnation | null {
+  const bootId = readLinuxBootId();
+  if (bootId === null) {
     return null;
   }
 
   try {
     const stat = readFileSync(`/proc/${pid}/stat`, 'utf-8');
+    // The comm field is parenthesised and may itself contain spaces and parentheses, so fields are counted
+    // from the last ')'. Field 22 (1-based) is starttime, the first field after that point being index 0.
     const closeParen = stat.lastIndexOf(')');
     if (closeParen === -1) {
       return null;
@@ -89,18 +70,18 @@ function probeLinuxProcessStartedAtSeconds(pid: number): number | null {
       .slice(closeParen + 2)
       .trim()
       .split(/\s+/);
-    const startTicks = Number.parseInt(fields[19] ?? '', 10);
-    if (!Number.isFinite(startTicks) || startTicks < 0) {
+    const startTicks = fields[19];
+    if (startTicks === undefined || !/^\d+$/.test(startTicks)) {
       return null;
     }
 
-    return Math.floor(bootTimeSeconds + startTicks / clockTicksPerSecond);
+    return `linux:${bootId}:${startTicks}` as ProcessIncarnation;
   } catch {
     return null;
   }
 }
 
-function probeMacProcessStartedAtSeconds(pid: number): number | null {
+function probeMacProcessIncarnation(pid: number): ProcessIncarnation | null {
   try {
     const raw = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], {
       encoding: 'utf-8',
@@ -110,51 +91,47 @@ function probeMacProcessStartedAtSeconds(pid: number): number | null {
       return null;
     }
 
+    // Already a kernel-stored creation stamp rather than a synthesised one, so it needs no frame.
     const parsed = Date.parse(raw);
-    return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : null;
+    return Number.isFinite(parsed) ? (`darwin:${parsed}` as ProcessIncarnation) : null;
   } catch {
     return null;
   }
 }
 
-function probeWindowsProcessStartedAtSeconds(pid: number): number | null {
+function probeWindowsProcessIncarnation(pid: number): ProcessIncarnation | null {
   try {
     const raw = execFileSync('wmic', ['process', 'where', `ProcessId=${pid}`, 'get', 'CreationDate', '/value'], {
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
     });
-    const match = raw.match(/CreationDate=(\d{14})\./);
-    if (!match) {
-      return null;
-    }
-
-    const value = match[1];
-    const year = Number.parseInt(value.slice(0, 4), 10);
-    const month = Number.parseInt(value.slice(4, 6), 10) - 1;
-    const day = Number.parseInt(value.slice(6, 8), 10);
-    const hour = Number.parseInt(value.slice(8, 10), 10);
-    const minute = Number.parseInt(value.slice(10, 12), 10);
-    const second = Number.parseInt(value.slice(12, 14), 10);
-    return Math.floor(Date.UTC(year, month, day, hour, minute, second) / 1000);
+    const match = raw.match(/CreationDate=(\d{14}\.\d+[+-]\d+)/) ?? raw.match(/CreationDate=(\d{14})/);
+    const value = match?.[1];
+    return value === undefined ? null : (`win32:${value}` as ProcessIncarnation);
   } catch {
     return null;
   }
 }
 
-const PROCESS_START_TIME_PROBES: ReadonlyMap<string, (pid: number) => number | null> = new Map([
-  ['linux', probeLinuxProcessStartedAtSeconds],
-  ['darwin', probeMacProcessStartedAtSeconds],
-  ['win32', probeWindowsProcessStartedAtSeconds],
+const PROCESS_INCARNATION_PROBES: ReadonlyMap<string, (pid: number) => ProcessIncarnation | null> = new Map([
+  ['linux', probeLinuxProcessIncarnation],
+  ['darwin', probeMacProcessIncarnation],
+  ['win32', probeWindowsProcessIncarnation],
 ]);
 
-export function canProbeProcessStartedAtSeconds(platform: string): boolean {
-  return PROCESS_START_TIME_PROBES.has(platform);
+export function canProbeProcessIncarnation(platform: string): boolean {
+  return PROCESS_INCARNATION_PROBES.has(platform);
 }
 
-export function probeProcessStartedAtSeconds(pid: number, platform = process.platform): number | null {
+/**
+ * `null` is "could not observe an incarnation" — an absent process, an unreadable `/proc` entry, or a
+ * platform with no probe. It is never proof of absence on its own, and callers that need absence must
+ * pair it with a liveness check.
+ */
+export function probeProcessIncarnation(pid: number, platform = process.platform): ProcessIncarnation | null {
   if (!Number.isInteger(pid) || pid <= 0) {
     return null;
   }
 
-  return PROCESS_START_TIME_PROBES.get(platform)?.(pid) ?? null;
+  return PROCESS_INCARNATION_PROBES.get(platform)?.(pid) ?? null;
 }

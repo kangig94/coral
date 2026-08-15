@@ -1,6 +1,7 @@
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 // R6: cross-version handoff. The new daemon must:
 //   HAPPY: handle a pre-PR running incumbent that writes valid coordinator.json
-//          (with pid+processStartedAt) and answers transport.ping/shutdown.
+//          (with pid+incarnation) and answers transport.ping/shutdown.
 //   DEGRADED: handle a journal that already contains a terminal record
 //             (pre-PR daemon crashed mid-finalizer) — finalizeInterruptedAppServerJob
 //             must early-return with a backendLog.warn rather than re-finalizing.
@@ -85,7 +86,7 @@ describe('pre-PR running incumbent (R6)', () => {
             namespace: 'ns',
             status: 'ok',
             pid: 9999,
-            processStartedAt: 1_111_111,
+            incarnation: testIncarnation(1_111_111),
           } satisfies IncumbentHealth,
         };
       }
@@ -131,7 +132,7 @@ describe('pre-PR running incumbent (R6)', () => {
       runtime,
       readVerifiedIncumbentFromDiscovery: () => ({
         pid: 9999,
-        processStartedAt: 1_111_111,
+        incarnation: testIncarnation(1_111_111),
         source: 'discovery',
         instanceId: 'incumbent',
         token: 'token',
@@ -167,7 +168,7 @@ describe('pre-PR running incumbent (R6)', () => {
             namespace: 'ns',
             status: 'ok',
             pid: 1,
-            processStartedAt: 1,
+            incarnation: testIncarnation(1),
           } satisfies IncumbentHealth,
         };
       }
@@ -213,7 +214,7 @@ describe('pre-PR running incumbent (R6)', () => {
             namespace: 'ns',
             status: 'ok',
             pid: 2,
-            processStartedAt: 2,
+            incarnation: testIncarnation(2),
           } satisfies IncumbentHealth,
         };
       }
@@ -252,7 +253,7 @@ describe('pre-PR running incumbent (R6)', () => {
       runtime,
       readVerifiedIncumbentFromDiscovery: () => ({
         pid: 2,
-        processStartedAt: 2,
+        incarnation: testIncarnation(2),
         source: 'discovery',
         instanceId: 'old-version-incumbent',
         token: 'token',
@@ -358,5 +359,5 @@ describe('pre-PR running incumbent (R6)', () => {
 
 // Use the IncumbentIdentity type so unused-import does not get flagged when
 // future tests expand to discovery-fed cases.
-const _identityShape: IncumbentIdentity = { pid: 1, processStartedAt: 1, source: 'health' };
+const _identityShape: IncumbentIdentity = { pid: 1, incarnation: testIncarnation(1), source: 'health' };
 void _identityShape;

@@ -1,3 +1,4 @@
+import type { ProcessIncarnation } from '../../infra/node-process.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 
 import type { TimePort, TimerHandle } from '../../infra/port-types.js';
@@ -1065,7 +1066,7 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
     record: Extract<ProviderOperationRecord, { phase: 'prepare-pending' }>,
     evidence: Readonly<{
       reservation: string;
-      providerRoot: Readonly<{ pid: number; processStartedAtSeconds: number }>;
+      providerRoot: Readonly<{ pid: number; incarnation: ProcessIncarnation }>;
       jointContainmentReceipt: string;
     }>,
   ): ProviderOperationRecord | null {

@@ -1,3 +1,4 @@
+import { processIncarnationSchema, type ProcessIncarnation } from '../../infra/node-process.js';
 declare const __PLUGIN_ROOT__: string;
 declare const __BUNDLE_DIR__: string | undefined;
 declare const __VERSION__: string;
@@ -51,7 +52,7 @@ export type RawCoordinatorHealth = {
   instanceId: string;
   namespace: string;
   pid?: number;
-  processStartedAt?: number;
+  incarnation?: ProcessIncarnation;
   components?: TransportRuntimeComponentStatus[];
 };
 
@@ -69,7 +70,7 @@ export type VerifiedBackendInfo = {
   host: string;
   version: string;
   instanceId: string;
-  processStartedAt?: number;
+  incarnation?: ProcessIncarnation;
 };
 
 export type EnsuredIpcClient = IpcClient & {
@@ -91,7 +92,7 @@ type ExistingIncumbentIdentity = Readonly<{
   flavor: 'prod' | 'dev';
   namespace: string;
   pid?: number;
-  processStartedAt?: number;
+  incarnation?: ProcessIncarnation;
 }>;
 
 type SpawnedCoordinator = {
@@ -206,7 +207,7 @@ const rawCoordinatorHealthSchema = z
     instanceId: z.string().min(1),
     namespace: z.string().min(1),
     pid: z.number().int().positive().optional(),
-    processStartedAt: z.number().int().positive().optional(),
+    incarnation: processIncarnationSchema.optional(),
     components: z.array(runtimeComponentStatusSchema).optional(),
   })
   .passthrough();
@@ -227,7 +228,7 @@ const verifiedBackendInfoSchema = z
     host: nonEmptyStringSchema,
     version: nonEmptyStringSchema,
     instanceId: nonEmptyStringSchema,
-    processStartedAt: z.number().int().positive().optional(),
+    incarnation: processIncarnationSchema.optional(),
   })
   // Same record `readDiscoveryRecord` parses in infra/backend-discovery.ts, re-validated here with a
   // narrower (all-required) shape — tolerant for the same reason: a future writer's extra field must not
@@ -335,11 +336,11 @@ function existingIncumbentIdentity(health: RawCoordinatorHealth): ExistingIncumb
     flavor: health.flavor,
     namespace: health.namespace,
     ...(health.pid === undefined ? {} : { pid: health.pid }),
-    ...(health.processStartedAt === undefined ? {} : { processStartedAt: health.processStartedAt }),
+    ...(health.incarnation === undefined ? {} : { incarnation: health.incarnation }),
   };
 }
 
-function optionalIdentityMatches(expected: number | undefined, actual: number | undefined): boolean {
+function optionalIdentityMatches<T>(expected: T | undefined, actual: T | undefined): boolean {
   return expected === undefined || actual === undefined || expected === actual;
 }
 
@@ -354,7 +355,7 @@ function identityMatchesExistingIncumbent(
     candidate.flavor === incumbent.flavor &&
     candidate.namespace === incumbent.namespace &&
     optionalIdentityMatches(incumbent.pid, candidate.pid) &&
-    optionalIdentityMatches(incumbent.processStartedAt, candidate.processStartedAt)
+    optionalIdentityMatches(incumbent.incarnation, candidate.incarnation)
   );
 }
 

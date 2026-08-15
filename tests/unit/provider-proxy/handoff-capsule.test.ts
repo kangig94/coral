@@ -1,3 +1,4 @@
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { chmodSync, mkdtempSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
@@ -49,12 +50,12 @@ function capsuleV2For(): HandoffCapsuleV2 {
     ...capsuleFor(),
     version: 2,
     guardianPid: 101,
-    guardianProcessStartedAtSeconds: 1_001,
+    guardianIncarnation: testIncarnation(1_001),
     proxyPid: 102,
     reaperPid: 103,
-    reaperProcessStartedAtSeconds: 1_003,
+    reaperIncarnation: testIncarnation(1_003),
     containmentKind: 'detached-process-group',
-    proxyProcessStartedAtSeconds: 1_002,
+    proxyIncarnation: testIncarnation(1_002),
     proxyProcessGroupId: 102,
   };
 }

@@ -1,3 +1,4 @@
+import type { ProcessIncarnation } from '../../infra/node-process.js';
 import type { z } from 'zod';
 
 import type { ControlClientError } from '../../provider-proxy/control-client.js';
@@ -222,7 +223,7 @@ export async function authorizeProviderOperation(
   operation: OperationIdentity,
   evidence: Readonly<{
     reservation: string;
-    providerRoot: Readonly<{ pid: number; processStartedAtSeconds: number }>;
+    providerRoot: Readonly<{ pid: number; incarnation: ProcessIncarnation }>;
     jointContainmentReceipt: string;
   }>,
 ): Promise<AuthorizeProviderOperationResult> {
@@ -379,24 +380,24 @@ export function providerOperationSetLocator(setIdentity: ProviderProxySetIdentit
     proxy: {
       instanceId: setIdentity.proxyInstanceId,
       pid: setIdentity.proxyPid,
-      processStartedAtSeconds: setIdentity.proxyProcessStartedAtSeconds,
+      incarnation: setIdentity.proxyIncarnation,
       controlEndpoint: setIdentity.canonicalEndpoint,
     },
     guardian: {
       instanceId: setIdentity.guardianInstanceId,
       pid: setIdentity.guardianPid,
-      processStartedAtSeconds: setIdentity.guardianProcessStartedAtSeconds,
+      incarnation: setIdentity.guardianIncarnation,
       controlEndpoint: setIdentity.guardianControlEndpoint,
     },
     reaper: {
       instanceId: setIdentity.reaperInstanceId,
       pid: setIdentity.reaperPid,
-      processStartedAtSeconds: setIdentity.reaperProcessStartedAtSeconds,
+      incarnation: setIdentity.reaperIncarnation,
       controlEndpoint: setIdentity.reaperControlEndpoint,
     },
     containment: {
       pid: setIdentity.proxyPid,
-      processStartedAtSeconds: setIdentity.proxyProcessStartedAtSeconds,
+      incarnation: setIdentity.proxyIncarnation,
       processGroupId: setIdentity.proxyProcessGroupId,
       kind: setIdentity.containmentKind,
     },

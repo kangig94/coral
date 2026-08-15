@@ -1,3 +1,4 @@
+import type { ProcessIncarnation } from '../../../infra/node-process.js';
 import { ABSENCE_POLL_MS } from '../../../infra/process-containment.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import { PROXY_TEARDOWN_RESERVE_MS } from '../../../provider-proxy/orphan-deadline.js';
@@ -35,10 +36,10 @@ export function buildGuardianSpawnUndo(
   runtime: Runtime,
   spawned: SpawnedRoleProcess,
   platform: NodeJS.Platform,
-  readProcessStartedAtSeconds: (pid: number, platform: NodeJS.Platform) => number | null,
+  readProcessIncarnation: (pid: number, platform: NodeJS.Platform) => ProcessIncarnation | null,
 ): () => Promise<void> {
   return async () => {
-    if (readProcessStartedAtSeconds(spawned.pid, platform) !== spawned.processStartedAtSeconds) return;
+    if (readProcessIncarnation(spawned.pid, platform) !== spawned.incarnation) return;
     const group = -spawned.pid;
     runtime.process.kill(group, 'SIGTERM');
     const graceDeadline = runtime.time.now() + PROXY_TEARDOWN_RESERVE_MS;

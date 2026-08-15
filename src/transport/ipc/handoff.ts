@@ -1,3 +1,4 @@
+import type { ProcessIncarnation } from '../../infra/node-process.js';
 // Transport-owned IPC handoff helper. Shared by both daemon-side
 // `bindWithHandoff` (`src/coordinator/handoff.ts`) and CLI-side `ensure()`.
 // Carries no coordinator vocabulary: any caller that wants to ask a peer
@@ -13,12 +14,12 @@ import type { TimePort } from '../../infra/port-types.js';
 /**
  * Identity tuple proving "this incumbent is who it claims to be" — used to
  * gate signal escalation. `pid` alone is insufficient because pids wrap;
- * `processStartedAt` is the kernel-supplied second of process creation
- * (probed via `probeProcessStartedAtSeconds`).
+ * `incarnation` is the kernel-supplied second of process creation
+ * (probed via `probeProcessIncarnation`).
  */
 export type IncumbentIdentity = {
   pid: number;
-  processStartedAt: number;
+  incarnation: ProcessIncarnation;
   source: 'health' | 'discovery';
   instanceId?: string;
   token?: string;
@@ -45,7 +46,7 @@ export type IncumbentHealth = {
   namespace: string;
   status?: 'starting' | 'ok' | 'draining';
   pid?: number;
-  processStartedAt?: number;
+  incarnation?: ProcessIncarnation;
   instanceId?: string;
 };
 
@@ -123,7 +124,7 @@ function isShutdownUnauthorizedError(error: unknown): boolean {
  *
  * Returns:
  *   - `health`: last non-null health snapshot, or null if never reachable.
- *   - `verifiedIdentity`: pid+processStartedAt sourced from health, or null.
+ *   - `verifiedIdentity`: pid+incarnation sourced from health, or null.
  *
  * Throws `IncumbentMatchesError` when the incumbent outranks the contender
  * (`incumbentOutranksContender`: matching flavor/namespace, same-or-newer
@@ -182,10 +183,10 @@ export async function requestIncumbentShutdown(opts: {
   }
 
   const verifiedIdentity: IncumbentIdentity | null =
-    health && typeof health.pid === 'number' && typeof health.processStartedAt === 'number'
+    health && typeof health.pid === 'number' && typeof health.incarnation === 'string'
       ? {
           pid: health.pid,
-          processStartedAt: health.processStartedAt,
+          incarnation: health.incarnation,
           source: 'health',
           ...(typeof health.instanceId === 'string' && health.instanceId.length > 0
             ? { instanceId: health.instanceId }

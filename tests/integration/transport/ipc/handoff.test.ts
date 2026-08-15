@@ -1,3 +1,4 @@
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 // Unit coverage for the transport-owned `requestIncumbentShutdown` helper:
 // absolute deadline behavior across connect+ping+shutdown, compatible-incumbent
 // detection, and the IpcDeadlineExceededError surface.
@@ -182,7 +183,7 @@ describe('requestIncumbentShutdown', () => {
             namespace: 'ns',
             status: 'ok',
             pid: 4242,
-            processStartedAt: 9_999,
+            incarnation: testIncarnation(9_999),
           } satisfies IncumbentHealth,
         };
       }
@@ -205,7 +206,7 @@ describe('requestIncumbentShutdown', () => {
     expect(result.shutdownAttempted).toBe(true);
     expect(result.shutdownUnauthorized).toBe(false);
     expect(result.health?.bundleHash).toBe('old');
-    expect(result.verifiedIdentity).toEqual({ pid: 4242, processStartedAt: 9_999, source: 'health' });
+    expect(result.verifiedIdentity).toEqual({ pid: 4242, incarnation: testIncarnation(9_999), source: 'health' });
   });
 
   it('skips transport.shutdown when no boot token is available', async () => {
@@ -223,7 +224,7 @@ describe('requestIncumbentShutdown', () => {
             namespace: 'ns',
             status: 'ok',
             pid: 4242,
-            processStartedAt: 9_999,
+            incarnation: testIncarnation(9_999),
           } satisfies IncumbentHealth,
         };
       }
@@ -240,7 +241,7 @@ describe('requestIncumbentShutdown', () => {
     });
     expect(receivedShutdown).toBe(false);
     expect(result.shutdownAttempted).toBe(false);
-    expect(result.verifiedIdentity).toEqual({ pid: 4242, processStartedAt: 9_999, source: 'health' });
+    expect(result.verifiedIdentity).toEqual({ pid: 4242, incarnation: testIncarnation(9_999), source: 'health' });
   });
 
   it('compatible draining incumbent does NOT throw IncumbentMatchesError', async () => {

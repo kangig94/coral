@@ -1,3 +1,4 @@
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 // AC7: handoff-escalation integration coverage. Drives `bindWithHandoff`
 // against a virtual incumbent that holds the socket past the drain budget,
 // asserting SIGTERM → SIGKILL escalation timing, pre-signal pid revalidation,
@@ -18,14 +19,14 @@ vi.mock('#src/transport/ipc/handoff.js', async (orig) => {
 });
 vi.mock('#src/infra/node-process.js', async (orig) => {
   const original = await orig<object>();
-  return { ...original, probeProcessStartedAtSeconds: vi.fn() };
+  return { ...original, probeProcessIncarnation: vi.fn() };
 });
 
 import { requestIncumbentShutdown } from '#src/transport/ipc/handoff.js';
-import { probeProcessStartedAtSeconds } from '#src/infra/node-process.js';
+import { probeProcessIncarnation } from '#src/infra/node-process.js';
 
 const mockedShutdown = requestIncumbentShutdown as ReturnType<typeof vi.fn>;
-const mockedProbe = probeProcessStartedAtSeconds as ReturnType<typeof vi.fn>;
+const mockedProbe = probeProcessIncarnation as ReturnType<typeof vi.fn>;
 
 const flush = async (rounds = 16): Promise<void> => {
   for (let i = 0; i < rounds; i += 1) await Promise.resolve();
@@ -100,7 +101,7 @@ describe('handoff escalation (AC7)', () => {
   it('hung incumbent: SIGTERM after budget, SIGKILL after grace, bind succeeds when process exits', async () => {
     const identity: IncumbentIdentity = {
       pid: 5555,
-      processStartedAt: 100,
+      incarnation: testIncarnation(100),
       source: 'discovery',
       instanceId: 'hung-incumbent',
       token: 'token',
@@ -113,7 +114,7 @@ describe('handoff escalation (AC7)', () => {
     const harness = buildEscalationHarness({ incumbentExitsAt, totalBudgetMs, identity });
     mockedShutdown.mockResolvedValue({ health: null, verifiedIdentity: identity });
     // Probe matches identity until the incumbent "exits" — after that, probe returns null.
-    mockedProbe.mockImplementation(() => (harness.elapsedMs() < incumbentExitsAt ? identity.processStartedAt : null));
+    mockedProbe.mockImplementation(() => (harness.elapsedMs() < incumbentExitsAt ? identity.incarnation : null));
 
     const promise = bindWithHandoff(harness.options);
     // Drive virtual time forward.
@@ -160,7 +161,7 @@ describe('handoff escalation (AC7)', () => {
   it('process exited before SIGTERM: helper observes "gone", retries bind without signaling', async () => {
     const identity: IncumbentIdentity = {
       pid: 1234,
-      processStartedAt: 555,
+      incarnation: testIncarnation(555),
       source: 'discovery',
       instanceId: 'gone-incumbent',
       token: 'token',
@@ -176,7 +177,7 @@ describe('handoff escalation (AC7)', () => {
     });
     mockedShutdown.mockResolvedValue({ health: null, verifiedIdentity: identity });
     // Probe returns null after incumbent exits → 'gone'.
-    mockedProbe.mockImplementation(() => (harness.elapsedMs() < 600 ? identity.processStartedAt : null));
+    mockedProbe.mockImplementation(() => (harness.elapsedMs() < 600 ? identity.incarnation : null));
 
     const promise = bindWithHandoff(harness.options);
     for (let i = 0; i < 30; i += 1) {
@@ -198,7 +199,7 @@ describe('handoff escalation (AC7)', () => {
     // socket, and only resolves when the incumbent has actually exited.
     const identity: IncumbentIdentity = {
       pid: 8888,
-      processStartedAt: 222,
+      incarnation: testIncarnation(222),
       source: 'discovery',
       instanceId: 'finalizer-incumbent',
       token: 'token',
@@ -213,7 +214,7 @@ describe('handoff escalation (AC7)', () => {
       identity,
     });
     mockedShutdown.mockResolvedValue({ health: null, verifiedIdentity: identity });
-    mockedProbe.mockReturnValue(identity.processStartedAt);
+    mockedProbe.mockReturnValue(identity.incarnation);
 
     let runStartupRecoveryCalled = false;
     const promise = bindWithHandoff(harness.options).then(() => {

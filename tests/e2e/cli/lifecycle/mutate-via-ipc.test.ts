@@ -580,7 +580,7 @@ describe('mutating commands via IPC', () => {
       expect(isProcessAlive(secondOperationBeforeThread.locator.reaper.pid)).toBe(true);
       expect(secondOperationBeforeThread.locator.containment).toMatchObject({
         pid: secondOperationBeforeThread.locator.proxy.pid,
-        processStartedAtSeconds: secondOperationBeforeThread.locator.proxy.processStartedAtSeconds,
+        incarnation: secondOperationBeforeThread.locator.proxy.incarnation,
       });
       appendOrderedTrace(fixture, 'second operation durable proxy locator');
       const durableContinuityAck = waitForExactProviderWatermark(fixture, secondJobId, 1);

@@ -1,3 +1,4 @@
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { describe, expect, it, vi } from 'vitest';
 
 import { bindProviderRunner, type ProviderDurableSpawner } from '#src/providers/cli-runner.js';
@@ -10,7 +11,7 @@ describe('bindProviderRunner', () => {
     const spawner: ProviderDurableSpawner = {
       spawnDurableJob: (options) => {
         capturedOptionsHadCallback = typeof options.onDurableProcessIdentity === 'function';
-        options.onDurableProcessIdentity?.({ pid: 4242, processStartedAtSeconds: 1_000 });
+        options.onDurableProcessIdentity?.({ pid: 4242, incarnation: testIncarnation(1_000) });
         return Promise.resolve(NO_CLI_RESULT);
       },
     };
@@ -28,7 +29,10 @@ describe('bindProviderRunner', () => {
     await runCli({ command: 'codex', args: [] });
 
     expect(capturedOptionsHadCallback).toBe(true);
-    expect(onDurableProcessIdentity).toHaveBeenCalledExactlyOnceWith({ pid: 4242, processStartedAtSeconds: 1_000 });
+    expect(onDurableProcessIdentity).toHaveBeenCalledExactlyOnceWith({
+      pid: 4242,
+      incarnation: testIncarnation(1_000),
+    });
   });
 
   it('passes no onDurableProcessIdentity through when the caller supplies none', async () => {

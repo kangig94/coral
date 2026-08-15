@@ -1,3 +1,4 @@
+import type { ProcessIncarnation } from '../infra/node-process.js';
 import type { BuildFlavor } from '../infra/build-flavor.js';
 import type { CoralPaths } from '../infra/path/index.js';
 import type { ChildProcessLike, EnvPort, StoragePort, TimePort } from '../infra/port-types.js';
@@ -95,7 +96,7 @@ export interface ProcessPort {
   execSync(command: string, args: string[], options?: RuntimeExecOptions): ExecResult;
   kill(pid: number, signal: NodeJS.Signals | 0): boolean;
   isAlive(pid: number): boolean;
-  readProcessStartedAtSeconds(pid: number, platform: NodeJS.Platform): number | null;
+  readProcessIncarnation(pid: number, platform: NodeJS.Platform): ProcessIncarnation | null;
   durable: DurableExecutionTransport;
 }
 

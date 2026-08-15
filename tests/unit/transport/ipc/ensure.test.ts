@@ -1,3 +1,5 @@
+import type { ProcessIncarnation } from '#src/infra/node-process.js';
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 // CLI-side `ensure()` coverage. The coordinator socket is the live authority:
 //   - Healthy incumbent of any build → reuse summary client
 //   - Healthy + starting → wait for `coordinator.json` then return
@@ -98,7 +100,7 @@ function writeDiscovery(
     instanceId: string;
     namespace: string;
     startedAt: number;
-    processStartedAt: number;
+    incarnation: ProcessIncarnation;
     socketPath: string;
   }> = {},
 ): void {
@@ -121,7 +123,7 @@ function writeDiscovery(
       instanceId: overrides.instanceId ?? 'existing-coordinator',
       namespace: overrides.namespace ?? pluginRootNamespace(root),
       startedAt: overrides.startedAt ?? Date.now(),
-      ...(overrides.processStartedAt === undefined ? {} : { processStartedAt: overrides.processStartedAt }),
+      ...(overrides.incarnation === undefined ? {} : { incarnation: overrides.incarnation }),
     }),
     'utf-8',
   );
@@ -344,7 +346,7 @@ describe('ipc ensure', () => {
         instanceId: 'parent-coordinator',
         namespace: pluginRootNamespace(root),
         pid: 4_201,
-        processStartedAt: 1_000,
+        incarnation: testIncarnation(1_000),
       };
       mockState.health
         .mockResolvedValueOnce({ status: 'starting', ...identity })
@@ -354,7 +356,7 @@ describe('ipc ensure', () => {
           writeDiscovery(root, {
             instanceId: identity.instanceId,
             pid: identity.pid,
-            processStartedAt: identity.processStartedAt,
+            incarnation: identity.incarnation,
           }),
         100,
       );
@@ -380,7 +382,7 @@ describe('ipc ensure', () => {
       writeDiscovery(root, {
         instanceId: 'parent-coordinator',
         pid: 4_201,
-        processStartedAt: 1_000,
+        incarnation: testIncarnation(1_000),
       });
       const identity = {
         version: '0.5.2',
@@ -388,7 +390,7 @@ describe('ipc ensure', () => {
         flavor: 'prod' as const,
         instanceId: 'parent-coordinator',
         namespace: pluginRootNamespace(root),
-        processStartedAt: 1_000,
+        incarnation: testIncarnation(1_000),
       };
       mockState.health
         .mockResolvedValueOnce({ status: 'starting', ...identity, pid: 4_201 })
@@ -413,7 +415,7 @@ describe('ipc ensure', () => {
       writeDiscovery(root, {
         instanceId: 'parent-coordinator',
         pid: 4_201,
-        processStartedAt: 2_000,
+        incarnation: testIncarnation(2_000),
       });
       mockState.health.mockResolvedValue({
         status: 'ok',
@@ -423,7 +425,7 @@ describe('ipc ensure', () => {
         instanceId: 'parent-coordinator',
         namespace: pluginRootNamespace(root),
         pid: 4_201,
-        processStartedAt: 1_000,
+        incarnation: testIncarnation(1_000),
       });
 
       const { ensure } = await importEnsure();

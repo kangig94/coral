@@ -1,3 +1,4 @@
+import { processIncarnationSchema } from '../infra/node-process.js';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { isAbsolute, normalize } from 'node:path';
 
@@ -219,12 +220,12 @@ export const handoffCapsuleV2Schema = handoffCapsuleV1Schema
   .extend({
     version: z.literal(2),
     guardianPid: nonNegativeSafeIntegerSchema,
-    guardianProcessStartedAtSeconds: nonNegativeSafeIntegerSchema,
+    guardianIncarnation: processIncarnationSchema,
     proxyPid: nonNegativeSafeIntegerSchema,
     reaperPid: nonNegativeSafeIntegerSchema,
-    reaperProcessStartedAtSeconds: nonNegativeSafeIntegerSchema,
+    reaperIncarnation: processIncarnationSchema,
     containmentKind: z.string().min(1).max(64),
-    proxyProcessStartedAtSeconds: nonNegativeSafeIntegerSchema,
+    proxyIncarnation: processIncarnationSchema,
     proxyProcessGroupId: nonNegativeSafeIntegerSchema,
   })
   .strict();

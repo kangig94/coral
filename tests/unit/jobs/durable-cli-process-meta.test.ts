@@ -1,3 +1,4 @@
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -12,7 +13,7 @@ const META: DurableCliProcessRuntimeMeta = {
   version: 1,
   jobId: JOB_ID,
   pid: 4242,
-  processStartedAtSeconds: 1_000,
+  incarnation: testIncarnation(1_000),
 };
 
 describe('durable CLI process runtime meta', () => {
@@ -33,7 +34,7 @@ describe('durable CLI process runtime meta', () => {
   });
 
   it('refuses to encode a record missing the start time that makes the pid meaningful', () => {
-    const { processStartedAtSeconds: _dropped, ...withoutStart } = META;
+    const { incarnation: _dropped, ...withoutStart } = META;
 
     expect(() => encodeDurableCliProcessRuntimeMeta(withoutStart as DurableCliProcessRuntimeMeta)).toThrow(
       /schema validation/u,

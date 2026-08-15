@@ -1,3 +1,4 @@
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import {
   providerOperationRecordSchema,
   type ProviderOperationPhase,
@@ -38,24 +39,24 @@ export function providerOperationRecord(
       proxy: {
         instanceId: proxyInstanceId,
         pid: 101,
-        processStartedAtSeconds: 1_000,
+        incarnation: testIncarnation(1_000),
         controlEndpoint: '/tmp/coral-proxy.sock',
       },
       guardian: {
         instanceId: uuid(5),
         pid: 102,
-        processStartedAtSeconds: 1_001,
+        incarnation: testIncarnation(1_001),
         controlEndpoint: '/tmp/coral-guardian.sock',
       },
       reaper: {
         instanceId: uuid(6),
         pid: 103,
-        processStartedAtSeconds: 1_002,
+        incarnation: testIncarnation(1_002),
         controlEndpoint: '/tmp/coral-reaper.sock',
       },
       containment: {
         pid: 101,
-        processStartedAtSeconds: 1_000,
+        incarnation: testIncarnation(1_000),
         processGroupId: 101,
         kind: 'process-group',
       },
@@ -69,7 +70,7 @@ export function providerOperationRecord(
   } as const;
   const prepared = {
     reservation: uuid(7),
-    providerRoot: { pid: 104, processStartedAtSeconds: 1_003 },
+    providerRoot: { pid: 104, incarnation: testIncarnation(1_003) },
     jointContainmentReceipt: 'containment-receipt',
   } as const;
   const authorized = { ...prepared, jointActivationReceipt: 'activation-receipt' } as const;

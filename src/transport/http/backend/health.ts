@@ -1,3 +1,4 @@
+import type { ProcessIncarnation } from '../../../infra/node-process.js';
 import { isRecord } from '../../../infra/json.js';
 import { isSerializedCoralSetupError, type SerializedCoralSetupError } from '../../../runtime/errors.js';
 
@@ -139,7 +140,7 @@ export type BackendPing = {
   namespace: string;
   instanceId: string;
   pid: number;
-  processStartedAt?: number;
+  incarnation?: ProcessIncarnation;
 };
 
 function isMutationBlocked(value: unknown): value is { owner: string; ageMs: number; signaledAtMs: number } {
@@ -413,6 +414,6 @@ export function isBackendPing(value: unknown): value is BackendPing {
     typeof value.namespace === 'string' &&
     value.namespace.length > 0 &&
     Number.isInteger(value.pid) &&
-    (value.processStartedAt === undefined || Number.isInteger(value.processStartedAt))
+    (value.incarnation === undefined || typeof value.incarnation === 'string')
   );
 }

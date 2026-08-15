@@ -1,7 +1,8 @@
+import type { ProcessIncarnation } from '../infra/node-process.js';
 // Coordinator-side bind/escalation state machine. Sits above transport's
 // `requestIncumbentShutdown`: speaks IPC for graceful handoff, polls
 // bindability, and only signals (SIGTERM → SIGKILL) after revalidating the
-// incumbent's pid+processStartedAt against the kernel.
+// incumbent's pid+incarnation against the kernel.
 //
 // All time/process/env access flows through `runtime` ports per the Single
 // Runtime World rule.
@@ -9,7 +10,7 @@
 import { join } from 'node:path';
 
 import { writeAuditEvent } from '../infra/audit-log.js';
-import { probeProcessStartedAtSeconds } from '../infra/node-process.js';
+import { probeProcessIncarnation } from '../infra/node-process.js';
 import { backendLog } from '../infra/backend-log.js';
 import { SIGKILL_GRACE_MS, SIGTERM_GRACE_MS } from '../infra/process-constants.js';
 import type { Runtime } from '../runtime/ports.js';
@@ -116,7 +117,7 @@ export type HandoffSignalRecord = {
   version: 1;
   socketPath: string;
   pid: number;
-  processStartedAt: number;
+  incarnation: ProcessIncarnation;
   instanceId?: string;
   signal: HandoffSignal;
   signaledAtMs: number;
@@ -164,7 +165,7 @@ function isHandoffSignalRecord(value: unknown): value is HandoffSignalRecord {
     record.version === 1 &&
     typeof record.socketPath === 'string' &&
     Number.isInteger(record.pid) &&
-    Number.isInteger(record.processStartedAt) &&
+    Number.isInteger(record.incarnation) &&
     (record.instanceId === undefined || typeof record.instanceId === 'string') &&
     (record.signal === 'SIGTERM' || record.signal === 'SIGKILL') &&
     Number.isFinite(record.signaledAtMs)
@@ -172,7 +173,7 @@ function isHandoffSignalRecord(value: unknown): value is HandoffSignalRecord {
 }
 
 function sameIncumbent(left: IncumbentIdentity, right: IncumbentIdentity): boolean {
-  if (left.pid !== right.pid || left.processStartedAt !== right.processStartedAt) {
+  if (left.pid !== right.pid || left.incarnation !== right.incarnation) {
     return false;
   }
   if (left.instanceId !== undefined && left.instanceId !== right.instanceId) {
@@ -259,7 +260,7 @@ function isSameSignalTarget(record: HandoffSignalRecord, socketPath: string, inc
   return (
     record.socketPath === socketPath &&
     record.pid === incumbent.pid &&
-    record.processStartedAt === incumbent.processStartedAt &&
+    record.incarnation === incumbent.incarnation &&
     (record.instanceId === undefined || record.instanceId === incumbent.instanceId)
   );
 }
@@ -288,7 +289,7 @@ function recordSignal(opts: HandoffOptions, incumbent: IncumbentIdentity, signal
     version: 1,
     socketPath: opts.socketPath,
     pid: incumbent.pid,
-    processStartedAt: incumbent.processStartedAt,
+    incarnation: incumbent.incarnation,
     ...(incumbent.instanceId === undefined ? {} : { instanceId: incumbent.instanceId }),
     signal,
     signaledAtMs: opts.runtime.time.now(),
@@ -323,7 +324,7 @@ function logHandoffSignalAudit(
     desired: opts.desired,
     target: {
       pid: incumbent.pid,
-      processStartedAt: incumbent.processStartedAt,
+      incarnation: incumbent.incarnation,
       ...(incumbent.instanceId === undefined ? {} : { instanceId: incumbent.instanceId }),
     },
     ...(currentContenderPid === undefined ? {} : { contenderPid: currentContenderPid }),
@@ -384,7 +385,7 @@ type SignalVerificationResult = 'matched' | 'gone';
  * Confirms the pid about to be signalled is still the process this attempt observed, by comparing two
  * probes **this contender made itself**.
  *
- * The incumbent's own reported start time cannot be the baseline: `probeProcessStartedAtSeconds` adds
+ * The incumbent's own reported start time cannot be the baseline: `probeProcessIncarnation` adds
  * `/proc/stat` btime, which each process caches on first read, so values derived in different processes
  * are on different clock bases. Anchoring on this side keeps the guarantee that matters — the pid must
  * not have been recycled since this attempt adopted it — and drops the one that was never sound.
@@ -394,21 +395,21 @@ type SignalVerificationResult = 'matched' | 'gone';
  */
 function verifySignalTarget(
   incumbent: IncumbentIdentity,
-  anchoredStartedAt: number | null,
+  anchoredIncarnation: ProcessIncarnation | null,
   process: Pick<Runtime['process'], 'isAlive'>,
   platform: NodeJS.Platform,
 ): SignalVerificationResult {
-  const liveStartedAt = probeProcessStartedAtSeconds(incumbent.pid, platform);
-  if (liveStartedAt === null) {
+  const liveIncarnation = probeProcessIncarnation(incumbent.pid, platform);
+  if (liveIncarnation === null) {
     // Unreadable is not gone. Only a pid that no longer exists is gone.
     return process.isAlive(incumbent.pid)
       ? refuseSignal(incumbent, 'process start time unavailable while pid is alive')
       : 'gone';
   }
-  if (anchoredStartedAt === null) {
+  if (anchoredIncarnation === null) {
     return refuseSignal(incumbent, 'no baseline was observed for this pid while it was authenticated');
   }
-  return liveStartedAt === anchoredStartedAt
+  return liveIncarnation === anchoredIncarnation
     ? 'matched'
     : refuseSignal(incumbent, 'pid was recycled after this coordinator observed it');
 }
@@ -432,7 +433,7 @@ function refuseSignal(incumbent: IncumbentIdentity, reason: string): never {
  *      side should step down.
  *   3. poll bind until budget expires
  *   4. on budget expiry, escalate via process signals only after revalidating
- *      pid+processStartedAt
+ *      pid+incarnation
  */
 export async function bindWithHandoff(opts: HandoffOptions): Promise<BoundCoordinator> {
   const deadline = opts.runtime.time.now() + opts.totalBudgetMs;
@@ -444,7 +445,7 @@ export async function bindWithHandoff(opts: HandoffOptions): Promise<BoundCoordi
   let sigtermAt: number | null = null;
   let sigkillAt: number | null = null;
   /** This contender's own first observation of the incumbent's pid — see `verifySignalTarget`. */
-  let signalAnchor: { pid: number; startedAt: number } | null = null;
+  let signalAnchor: { pid: number; incarnation: ProcessIncarnation } | null = null;
 
   /** Take the baseline the moment this attempt adopts a pid, from discovery or from an authenticated
    *  handshake. Anchoring only on the authenticated case left the ordinary discovery-first path with no
@@ -454,13 +455,14 @@ export async function bindWithHandoff(opts: HandoffOptions): Promise<BoundCoordi
     if (signalAnchor?.pid === pid) {
       return;
     }
-    const observed = probeProcessStartedAtSeconds(pid, platform);
-    signalAnchor = observed === null ? null : { pid, startedAt: observed };
+    const observed = probeProcessIncarnation(pid, platform);
+    signalAnchor = observed === null ? null : { pid, incarnation: observed };
   };
 
   /** Read the baseline. `null` means this attempt never observed that pid, which is a refusal to signal —
    *  never a conclusion that the process is gone. */
-  const signalAnchorFor = (pid: number): number | null => (signalAnchor?.pid === pid ? signalAnchor.startedAt : null);
+  const signalAnchorFor = (pid: number): ProcessIncarnation | null =>
+    signalAnchor?.pid === pid ? signalAnchor.incarnation : null;
 
   /** Every transition that abandons the current incumbent goes through here, so no piece of attempt
    *  state can be forgotten. Leaving `signalAnchor` behind was possible when the 'gone' branches cleared

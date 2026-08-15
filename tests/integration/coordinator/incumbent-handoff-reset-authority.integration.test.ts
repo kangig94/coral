@@ -1,3 +1,4 @@
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { createServer, type Server as HttpServer } from 'node:http';
 import { createServer as createNetServer, type Server as NetServer } from 'node:net';
@@ -9,7 +10,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { createCoordinatorCore } from '#src/coordinator/composition/index.js';
 import { writeDiscoveryRecord } from '#src/infra/backend-discovery.js';
-import { probeProcessStartedAtSeconds } from '#src/infra/node-process.js';
+import { probeProcessIncarnation } from '#src/infra/node-process.js';
 import type { CoordinatorStoreServices } from '#src/coordinator/composition/store-services-ref.js';
 import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
 import type { Runtime } from '#src/runtime/ports.js';
@@ -236,7 +237,8 @@ describe('incumbent handoff reset authority', () => {
     const storeBefore = readFileSync(dbPath);
     const incumbentStore = new DatabaseSync(dbPath);
     let shutdownReceived = false;
-    const processStartedAt = probeProcessStartedAtSeconds(process.pid, runtime.env.platform() as NodeJS.Platform) ?? 1;
+    const incarnation =
+      probeProcessIncarnation(process.pid, runtime.env.platform() as NodeJS.Platform) ?? testIncarnation('self');
     writeDiscoveryRecord(
       {
         pid: process.pid,
@@ -249,7 +251,7 @@ describe('incumbent handoff reset authority', () => {
         token,
         bootToken,
         shutdownToken,
-        processStartedAt,
+        incarnation,
       },
       { storage: runtime.storage, env: runtime.env, paths: runtime.paths },
     );
@@ -266,7 +268,7 @@ describe('incumbent handoff reset authority', () => {
             namespace: 'ns',
             status: 'ok',
             pid: process.pid,
-            processStartedAt,
+            incarnation,
           } satisfies IncumbentHealth,
         };
       }

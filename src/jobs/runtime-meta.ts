@@ -1,3 +1,4 @@
+import { processIncarnationSchema } from '../infra/node-process.js';
 import { z } from 'zod';
 
 const MAX_RUNTIME_META_BYTES = 4096;
@@ -24,7 +25,7 @@ export const durableCliProcessRuntimeMetaSchema = z
     version: z.literal(1),
     jobId: canonicalUuidSchema,
     pid: nonNegativeSafeIntegerSchema,
-    processStartedAtSeconds: nonNegativeSafeIntegerSchema,
+    incarnation: processIncarnationSchema,
   })
   .strict();
 

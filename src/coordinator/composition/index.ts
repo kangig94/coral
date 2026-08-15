@@ -36,7 +36,7 @@ import {
 } from '../../discuss/shell/tools.js';
 import { createHttpHandler, sendJson } from '../../transport/http/handler.js';
 import { closeIpcServer, createIpcServer, listenIpcServer } from '../../transport/ipc/server.js';
-import { probeProcessStartedAtSeconds } from '../../infra/node-process.js';
+import { probeProcessIncarnation } from '../../infra/node-process.js';
 import type { RpcPorts } from '../../transport/rpc/ports.js';
 import {
   providerHostEvictResponseSchema,
@@ -1026,7 +1026,7 @@ export function createCoordinatorCore(
           coarseStatus = 'starting';
         }
         const platform = runtime.env.platform() as NodeJS.Platform;
-        const processStartedAt = probeProcessStartedAtSeconds(world.backendPid, platform) ?? undefined;
+        const incarnation = probeProcessIncarnation(world.backendPid, platform) ?? undefined;
 
         // Strip the branded `RuntimeComponentId` to plain string at the wire boundary;
         // transport types use `string` because the brand is enforced producer-side.
@@ -1126,7 +1126,7 @@ export function createCoordinatorCore(
           namespace: identity.namespace,
           instanceId: identity.instanceId,
           pid: world.backendPid,
-          ...(processStartedAt !== undefined ? { processStartedAt } : {}),
+          ...(incarnation !== undefined ? { incarnation } : {}),
           uptimeMs: identity.now() - runtimeState.getStartedAt(),
           active: world.launchCoordinator.active,
           activeJobs,

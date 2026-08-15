@@ -1,3 +1,4 @@
+import type { ProcessIncarnation } from '#src/infra/node-process.js';
 import { describe, expect, it } from 'vitest';
 
 import { reapProviderOperationCarrier } from '#src/coordinator/services/recovery/interrupted-performer.js';
@@ -22,10 +23,10 @@ describe('interrupted provider-operation carrier reclamation', () => {
     applyBundledStoreSchema(db, currentCoralStoreFormat());
     insertProviderOperation(db, record);
     const controller = new AbortController();
-    const live = new Map<number, number>([
-      [-record.locator.containment.processGroupId, record.locator.containment.processStartedAtSeconds],
-      [record.locator.containment.pid, record.locator.containment.processStartedAtSeconds],
-      [record.providerRoot.pid, record.providerRoot.processStartedAtSeconds],
+    const live = new Map<number, ProcessIncarnation>([
+      [-record.locator.containment.processGroupId, record.locator.containment.incarnation],
+      [record.locator.containment.pid, record.locator.containment.incarnation],
+      [record.providerRoot.pid, record.providerRoot.incarnation],
     ]);
     const signals: Array<{ pid: number; signal: NodeJS.Signals | 0 }> = [];
     let nowMs = 0n;
@@ -58,7 +59,7 @@ describe('interrupted provider-operation carrier reclamation', () => {
             return true;
           },
         },
-        readProcessStartedAtSeconds: (pid) => live.get(pid) ?? null,
+        readProcessIncarnation: (pid) => live.get(pid) ?? null,
       });
       await graceStarted.promise;
       expect(signals).toEqual([
@@ -85,31 +86,31 @@ describe('interrupted provider-operation carrier reclamation', () => {
     const fixture = providerOperationRecord('executing');
     if (fixture.phase !== 'executing') throw new Error('executing fixture did not retain its carrier');
     const baseRuntime = createRealRuntime('prod');
-    const processStartedAtSeconds = baseRuntime.process.readProcessStartedAtSeconds(process.pid, 'linux');
-    if (processStartedAtSeconds === null) throw new Error('test process identity was unavailable');
+    const incarnation = baseRuntime.process.readProcessIncarnation(process.pid, 'linux');
+    if (incarnation === null) throw new Error('test process identity was unavailable');
     const record = providerOperationRecordSchema.parse({
       ...fixture,
       locator: {
         ...fixture.locator,
-        proxy: { ...fixture.locator.proxy, pid: process.pid, processStartedAtSeconds },
+        proxy: { ...fixture.locator.proxy, pid: process.pid, incarnation },
         containment: {
           ...fixture.locator.containment,
           pid: process.pid,
           processGroupId: process.pid,
-          processStartedAtSeconds,
+          incarnation,
         },
       },
-      providerRoot: { pid: process.pid, processStartedAtSeconds },
+      providerRoot: { pid: process.pid, incarnation },
     });
     if (record.phase !== 'executing') throw new Error('service fixture did not retain its carrier');
     const db = newRawDatabase(':memory:');
     applyBundledStoreSchema(db, currentCoralStoreFormat());
     insertProviderOperation(db, record);
     const controller = new AbortController();
-    const live = new Map<number, number>([
-      [-record.locator.containment.processGroupId, record.locator.containment.processStartedAtSeconds],
-      [record.locator.containment.pid, record.locator.containment.processStartedAtSeconds],
-      [record.providerRoot.pid, record.providerRoot.processStartedAtSeconds],
+    const live = new Map<number, ProcessIncarnation>([
+      [-record.locator.containment.processGroupId, record.locator.containment.incarnation],
+      [record.locator.containment.pid, record.locator.containment.incarnation],
+      [record.providerRoot.pid, record.providerRoot.incarnation],
     ]);
     const signals: Array<{ pid: number; signal: NodeJS.Signals | 0 }> = [];
     const runtime = {
@@ -117,7 +118,7 @@ describe('interrupted provider-operation carrier reclamation', () => {
       process: {
         ...baseRuntime.process,
         isAlive: (pid: number) => live.has(pid),
-        readProcessStartedAtSeconds: (pid: number) => live.get(pid) ?? null,
+        readProcessIncarnation: (pid: number) => live.get(pid) ?? null,
         kill: (pid: number, signal: NodeJS.Signals | 0) => {
           signals.push({ pid, signal });
           if (signal === 'SIGKILL') live.clear();

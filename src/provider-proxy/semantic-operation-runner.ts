@@ -1,3 +1,4 @@
+import type { ProcessIncarnation } from '../infra/node-process.js';
 import { backendLog } from '../infra/backend-log.js';
 import { errorMessage } from '../infra/error-format.js';
 import { isRecord } from '../infra/json.js';
@@ -306,7 +307,7 @@ type StagedOperation = {
   cancellationEvidence: OperationCancellationEvidence | null;
   cancellationPromise: Promise<void> | null;
   staged: Readonly<{ hostRef: HostRef; close(): void }> | null;
-  root: Readonly<{ pid: number; processStartedAtSeconds: number }> | null;
+  root: Readonly<{ pid: number; incarnation: ProcessIncarnation }> | null;
   stageHandle: SemanticOperationStageHandle | null;
   startHandle: SemanticOperationStartHandle | null;
   startCommitted: boolean;

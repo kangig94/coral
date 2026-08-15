@@ -1,10 +1,11 @@
+import type { ProcessIncarnation } from '../infra/node-process.js';
 import { z } from 'zod';
 
 import { BUILD_FLAVOR_ENV_KEY, resolveBuildFlavor } from '../infra/build-flavor.js';
 import { backendLog } from '../infra/backend-log.js';
 import type { StrictBundleIdentityResult } from '../infra/bundle-manifest.js';
 import { createMonotonicClock, type MonotonicClock } from '../infra/monotonic-clock.js';
-import { probeProcessStartedAtSeconds } from '../infra/node-process.js';
+import { probeProcessIncarnation } from '../infra/node-process.js';
 import { providerProxyBootstrapCapsulePath, providerReaperBootstrapCapsulePath } from '../infra/path/index.js';
 import {
   CONTAINMENT_DISAPPEARANCE_CONFIRM_MS,
@@ -96,7 +97,7 @@ export type ProviderRoleMainPorts = Readonly<{
   /** Injected for tests; defaults to the real embedded-vs-adjacent-manifest strict identity check. */
   resolveStrictIdentity?(): StrictBundleIdentityResult;
   /** Injected for tests; defaults to the real per-platform `/proc` or `ps` probe. */
-  readProcessStartedAtSeconds?(pid: number, platform: NodeJS.Platform): number | null;
+  readProcessIncarnation?(pid: number, platform: NodeJS.Platform): ProcessIncarnation | null;
   /** Injected for tests; defaults to the real `process.exit`. Called once a guardian or reaper's enforcement
    *  outcome has settled and its own control has closed — its only reason to keep running was bounding one
    *  containment, and there is nothing left to bound once teardown is done. */
@@ -131,9 +132,7 @@ function buildContainmentEnvironment<Scope extends symbol>(
     clock,
     process: { kill: ports.runtime.process.kill, isAlive: ports.runtime.process.isAlive },
     platform: ports.runtime.env.platform() as NodeJS.Platform,
-    ...(ports.readProcessStartedAtSeconds === undefined
-      ? {}
-      : { readProcessStartedAtSeconds: ports.readProcessStartedAtSeconds }),
+    ...(ports.readProcessIncarnation === undefined ? {} : { readProcessIncarnation: ports.readProcessIncarnation }),
   };
 }
 
@@ -151,9 +150,7 @@ function buildSpawnPorts(ports: ProviderRoleMainPorts): RoleSpawnPorts {
     process: ports.runtime.process,
     runtime: ports.runtime,
     platform: ports.runtime.env.platform() as NodeJS.Platform,
-    ...(ports.readProcessStartedAtSeconds === undefined
-      ? {}
-      : { readProcessStartedAtSeconds: ports.readProcessStartedAtSeconds }),
+    ...(ports.readProcessIncarnation === undefined ? {} : { readProcessIncarnation: ports.readProcessIncarnation }),
   };
 }
 
@@ -169,15 +166,15 @@ function realRoleOutcomeScheduler(ports: ProviderRoleMainPorts): RoleOutcomeSche
 
 /** This role's own pid and start time. A role that cannot read its own start time cannot construct an
  *  identity anyone else could later verify against, so it fails rather than reporting a bare pid. */
-function readSelfIdentity(ports: ProviderRoleMainPorts): Readonly<{ pid: number; processStartedAtSeconds: number }> {
+function readSelfIdentity(ports: ProviderRoleMainPorts): Readonly<{ pid: number; incarnation: ProcessIncarnation }> {
   const pid = ports.runtime.env.pid();
   const platform = ports.runtime.env.platform() as NodeJS.Platform;
-  const read = ports.readProcessStartedAtSeconds ?? probeProcessStartedAtSeconds;
-  const processStartedAtSeconds = read(pid, platform);
-  if (processStartedAtSeconds === null) {
+  const read = ports.readProcessIncarnation ?? probeProcessIncarnation;
+  const incarnation = read(pid, platform);
+  if (incarnation === null) {
     throw new Error(`Could not read this process's own start time (pid ${pid}).`);
   }
-  return { pid, processStartedAtSeconds };
+  return { pid, incarnation };
 }
 
 function reaperCapsulePathFrom(capsule: GuardianBootstrapCapsule, baseDir: string | undefined): string {
@@ -246,9 +243,9 @@ function isStillTheRecordedProcess<Scope extends symbol>(
   identity: RecordedProcessIdentity,
   environment: ProcessContainmentEnvironment<Scope>,
 ): boolean {
-  const read = environment.readProcessStartedAtSeconds ?? probeProcessStartedAtSeconds;
+  const read = environment.readProcessIncarnation ?? probeProcessIncarnation;
   try {
-    return read(identity.pid, environment.platform) === identity.processStartedAtSeconds;
+    return read(identity.pid, environment.platform) === identity.incarnation;
   } catch {
     return false;
   }
@@ -456,7 +453,7 @@ async function unwindGuardianConstruction(
       reapUnheldProcessGroup(
         {
           pid: proxySpawn.pid,
-          processStartedAtSeconds: proxySpawn.processStartedAtSeconds,
+          incarnation: proxySpawn.incarnation,
           processGroupId: proxySpawn.pid,
         },
         clock,
@@ -574,7 +571,7 @@ export async function startProviderGuardianRole(
       mintReceipt: () => ports.runtime.ids.uuid(),
       reaperChannel: pairedReaperChannel,
       self: readSelfIdentity(ports),
-      reaperSelf: { pid: reaperSpawn.pid, processStartedAtSeconds: reaperSpawn.processStartedAtSeconds },
+      reaperSelf: { pid: reaperSpawn.pid, incarnation: reaperSpawn.incarnation },
       onOutcome,
       onProgressViolation,
     });
@@ -591,7 +588,7 @@ export async function startProviderGuardianRole(
 
     const containmentRecorded = guardian.recordContainment({
       pid: proxySpawn.pid,
-      processStartedAtSeconds: proxySpawn.processStartedAtSeconds,
+      incarnation: proxySpawn.incarnation,
       processGroupId: proxySpawn.pid,
       containmentKind: DETACHED_CONTAINMENT_KIND,
     });
@@ -731,7 +728,7 @@ export function createProxyGuardianContainment(
           },
           reservation: reserved.reservation,
           providerPid: root.pid,
-          providerProcessStartedAtSeconds: root.processStartedAtSeconds,
+          providerIncarnation: root.incarnation,
         });
         guardianMayHoldMembership = true;
         const response = await deps.guardianChannel.call(
@@ -814,7 +811,7 @@ export async function startProviderProxyRole(
   const identity: ProxyIdentity = {
     proxyInstanceId: capsule.proxyInstanceId,
     pid: self.pid,
-    processStartedAtSeconds: self.processStartedAtSeconds,
+    incarnation: self.incarnation,
     processGroupId: self.pid,
     guardianInstanceId: capsule.guardianInstanceId,
     reaperInstanceId: capsule.reaperInstanceId,

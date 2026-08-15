@@ -1,5 +1,5 @@
 import type { Database } from '../../store/db.js';
-import { isProcessAlive, probeProcessStartedAtSeconds } from '../../infra/node-process.js';
+import { isProcessAlive, probeProcessIncarnation } from '../../infra/node-process.js';
 import {
   classifyCarrier,
   type CarrierEvidence,
@@ -76,7 +76,7 @@ function durableCliEvidence(
     return { carrierClass: 'durable-cli', process: { kind: 'uncaptured' } };
   }
 
-  const observedStartedAt = probeProcessStartedAtSeconds(meta.pid, platform);
+  const observedStartedAt = probeProcessIncarnation(meta.pid, platform);
   if (observedStartedAt === null) {
     if (isProcessAlive(meta.pid)) {
       // Alive but its start time is unreadable: cannot tell a recycled pid from the same process, so this
@@ -94,7 +94,7 @@ function durableCliEvidence(
     process: {
       kind: 'recorded',
       alive: true,
-      matchesRecordedStart: observedStartedAt === meta.processStartedAtSeconds,
+      matchesRecordedStart: observedStartedAt === meta.incarnation,
       transportEvidence: true,
     },
   };

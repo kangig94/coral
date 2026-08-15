@@ -1,3 +1,4 @@
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { JobProgressStore } from '#src/jobs/contracts/job-store.js';
@@ -334,7 +335,7 @@ async function activationAckFromRealProxy(provider: string, operation: ProviderO
     stageProviderRoot: () => ({
       result: Promise.resolve({
         state: 'staged',
-        providerRoot: { pid: 104, processStartedAtSeconds: 1_003 },
+        providerRoot: { pid: 104, incarnation: testIncarnation(1_003) },
         receipt: jointContainmentReceipt,
       }),
       confirmActivation: async () => undefined,
@@ -478,16 +479,16 @@ function createHarness(
       hostFingerprint: record.locator.hostFingerprint,
       guardianInstanceId: record.locator.guardian.instanceId,
       guardianPid: record.locator.guardian.pid,
-      guardianProcessStartedAtSeconds: record.locator.guardian.processStartedAtSeconds,
+      guardianIncarnation: record.locator.guardian.incarnation,
       guardianControlEndpoint: record.locator.guardian.controlEndpoint,
       proxyInstanceId: record.locator.proxy.instanceId,
       proxyPid: record.locator.proxy.pid,
       reaperInstanceId: record.locator.reaper.instanceId,
       reaperPid: record.locator.reaper.pid,
-      reaperProcessStartedAtSeconds: record.locator.reaper.processStartedAtSeconds,
+      reaperIncarnation: record.locator.reaper.incarnation,
       reaperControlEndpoint: record.locator.reaper.controlEndpoint,
       containmentKind: record.locator.containment.kind,
-      proxyProcessStartedAtSeconds: record.locator.proxy.processStartedAtSeconds,
+      proxyIncarnation: record.locator.proxy.incarnation,
       proxyProcessGroupId: record.locator.containment.processGroupId,
       canonicalEndpoint: record.locator.proxy.controlEndpoint,
     },
@@ -503,7 +504,7 @@ function createHarness(
           state: 'pending-activation',
           reservation: asReservation('00000000-0000-4000-8000-000000000007'),
           leaseExpiresInMs: 15_000,
-          providerRoot: { pid: 104, processStartedAtSeconds: 1_003 },
+          providerRoot: { pid: 104, incarnation: testIncarnation(1_003) },
           jointContainmentReceipt: asJointContainmentReceipt('containment-receipt'),
         };
       }),
@@ -926,7 +927,7 @@ describe('ProviderOperationReconciler publication', () => {
             state: 'pending-activation',
             reservation: asReservation('00000000-0000-4000-8000-000000000007'),
             leaseExpiresInMs: 15_000,
-            providerRoot: { pid: 104, processStartedAtSeconds: 1_003 },
+            providerRoot: { pid: 104, incarnation: testIncarnation(1_003) },
             jointContainmentReceipt: asJointContainmentReceipt('containment-receipt'),
           };
         },
@@ -1071,7 +1072,7 @@ describe('ProviderOperationReconciler publication', () => {
       state: 'pending-activation' as const,
       reservation: asReservation('00000000-0000-4000-8000-000000000007'),
       leaseExpiresInMs: 15_000,
-      providerRoot: { pid: 104, processStartedAtSeconds: 1_003 },
+      providerRoot: { pid: 104, incarnation: testIncarnation(1_003) },
       jointContainmentReceipt: asJointContainmentReceipt('containment-receipt'),
     }));
     const harness = createHarness({
@@ -1724,7 +1725,7 @@ describe('ProviderOperationReconciler publication', () => {
         state: 'prepared',
         reservation: asReservation('00000000-0000-4000-8000-000000000007'),
         leaseExpiresInMs: 15_000,
-        providerRoot: { pid: 104, processStartedAtSeconds: 1_003 },
+        providerRoot: { pid: 104, incarnation: testIncarnation(1_003) },
         jointContainmentReceipt: asJointContainmentReceipt('containment-receipt'),
       }),
       activatePreparedOperation,
@@ -1875,7 +1876,7 @@ describe('ProviderOperationReconciler publication', () => {
       state: 'prepared' as const,
       reservation: asReservation('00000000-0000-4000-8000-000000000007'),
       leaseExpiresInMs: 15_000,
-      providerRoot: { pid: 104, processStartedAtSeconds: 1_003 },
+      providerRoot: { pid: 104, incarnation: testIncarnation(1_003) },
       jointContainmentReceipt: asJointContainmentReceipt('containment-receipt'),
     }));
     const harness = createHarness({ activatePreparedOperation, inspectOperation });
@@ -1983,7 +1984,7 @@ describe('ProviderOperationReconciler publication', () => {
           state: 'pending-activation',
           reservation: asReservation('00000000-0000-4000-8000-000000000007'),
           leaseExpiresInMs: 15_000,
-          providerRoot: { pid: 104, processStartedAtSeconds: 1_003 },
+          providerRoot: { pid: 104, incarnation: testIncarnation(1_003) },
           jointContainmentReceipt: asJointContainmentReceipt('containment-receipt'),
         };
       },
@@ -2225,7 +2226,7 @@ describe('ProviderOperationReconciler publication', () => {
         state: 'pending-activation' as const,
         reservation: asReservation('00000000-0000-4000-8000-000000000007'),
         leaseExpiresInMs: 15_000,
-        providerRoot: { pid: 104, processStartedAtSeconds: 1_003 },
+        providerRoot: { pid: 104, incarnation: testIncarnation(1_003) },
         jointContainmentReceipt: asJointContainmentReceipt('containment-receipt'),
       };
     });
@@ -2346,7 +2347,7 @@ describe('ProviderOperationReconciler publication', () => {
         state: 'pending-activation' as const,
         reservation: asReservation('00000000-0000-4000-8000-000000000007'),
         leaseExpiresInMs: 15_000,
-        providerRoot: { pid: 104, processStartedAtSeconds: 1_003 },
+        providerRoot: { pid: 104, incarnation: testIncarnation(1_003) },
         jointContainmentReceipt: asJointContainmentReceipt('containment-receipt'),
       };
     });
@@ -2698,7 +2699,7 @@ describe('ProviderOperationReconciler fault-injection matrix', () => {
               state: 'pending-activation' as const,
               reservation: asReservation('00000000-0000-4000-8000-000000000007'),
               leaseExpiresInMs: 15_000,
-              providerRoot: { pid: 104, processStartedAtSeconds: 1_003 },
+              providerRoot: { pid: 104, incarnation: testIncarnation(1_003) },
               jointContainmentReceipt: asJointContainmentReceipt('containment-receipt'),
             }),
             () => {
@@ -2712,7 +2713,7 @@ describe('ProviderOperationReconciler fault-injection matrix', () => {
           state: 'pending-activation' as const,
           reservation: asReservation('00000000-0000-4000-8000-000000000007'),
           leaseExpiresInMs: 15_000,
-          providerRoot: { pid: 104, processStartedAtSeconds: 1_003 },
+          providerRoot: { pid: 104, incarnation: testIncarnation(1_003) },
           jointContainmentReceipt: asJointContainmentReceipt('containment-receipt'),
         };
       },
@@ -2722,7 +2723,7 @@ describe('ProviderOperationReconciler fault-injection matrix', () => {
               state: 'prepared' as const,
               reservation: asReservation('00000000-0000-4000-8000-000000000007'),
               leaseExpiresInMs: 15_000,
-              providerRoot: { pid: 104, processStartedAtSeconds: 1_003 },
+              providerRoot: { pid: 104, incarnation: testIncarnation(1_003) },
               jointContainmentReceipt: asJointContainmentReceipt('containment-receipt'),
             }
           : { state: 'absent' as const },

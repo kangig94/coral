@@ -1,3 +1,4 @@
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { describe, expect, it } from 'vitest';
 
 import { applyBundledStoreSchema, type Database } from '#src/store/db.js';
@@ -25,7 +26,7 @@ describe('durable CLI process runtime meta store', () => {
 
   it('round-trips a written record through the real meta table', () => {
     const db = createDb();
-    const meta = { version: 1 as const, jobId: JOB_ID, pid: 4242, processStartedAtSeconds: 1_000 };
+    const meta = { version: 1 as const, jobId: JOB_ID, pid: 4242, incarnation: testIncarnation(1_000) };
 
     writeDurableCliProcessRuntimeMeta(db, meta);
 
@@ -34,21 +35,26 @@ describe('durable CLI process runtime meta store', () => {
 
   it('replaces an earlier record for the same job on a second write', () => {
     const db = createDb();
-    writeDurableCliProcessRuntimeMeta(db, { version: 1, jobId: JOB_ID, pid: 111, processStartedAtSeconds: 1 });
+    writeDurableCliProcessRuntimeMeta(db, { version: 1, jobId: JOB_ID, pid: 111, incarnation: testIncarnation(1) });
 
-    writeDurableCliProcessRuntimeMeta(db, { version: 1, jobId: JOB_ID, pid: 222, processStartedAtSeconds: 2 });
+    writeDurableCliProcessRuntimeMeta(db, { version: 1, jobId: JOB_ID, pid: 222, incarnation: testIncarnation(2) });
 
     expect(readDurableCliProcessRuntimeMeta(db, JOB_ID)).toEqual({
       version: 1,
       jobId: JOB_ID,
       pid: 222,
-      processStartedAtSeconds: 2,
+      incarnation: testIncarnation(2),
     });
   });
 
   it('deletes the recorded row, and deleting an already-absent row is a no-op rather than an error', () => {
     const db = createDb();
-    writeDurableCliProcessRuntimeMeta(db, { version: 1, jobId: JOB_ID, pid: 4242, processStartedAtSeconds: 1_000 });
+    writeDurableCliProcessRuntimeMeta(db, {
+      version: 1,
+      jobId: JOB_ID,
+      pid: 4242,
+      incarnation: testIncarnation(1_000),
+    });
 
     deleteDurableCliProcessRuntimeMeta(db, JOB_ID);
     expect(readDurableCliProcessRuntimeMeta(db, JOB_ID)).toBeNull();

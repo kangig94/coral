@@ -1,3 +1,4 @@
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -13,7 +14,10 @@ vi.mock('#src/provider-proxy/role-spawn.js', async (importOriginal) => {
 
 vi.mock('#src/infra/node-process.js', async (importOriginal) => {
   const original = await importOriginal<object>();
-  return { ...original, probeProcessStartedAtSeconds: vi.fn(() => 1_700_000_000) };
+  return {
+    ...original,
+    probeProcessIncarnation: vi.fn(() => 'linux:00000000-0000-4000-8000-000000000000:1700000000' as ProcessIncarnation),
+  };
 });
 
 import {
@@ -21,7 +25,7 @@ import {
   type HandoffCapsule,
   type HandoffCapsuleV1,
 } from '#src/provider-proxy/handoff-capsule.js';
-import { probeProcessStartedAtSeconds } from '#src/infra/node-process.js';
+import { probeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
 import { connectControlClient, ControlClientError } from '#src/provider-proxy/control-client.js';
 import { createControlEndpoint, type ControlChallengeAuthority } from '#src/provider-proxy/control-endpoint.js';
@@ -56,7 +60,7 @@ import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provid
 
 const mockedReadCapsule = vi.mocked(readHandoffCapsuleFile);
 const mockedConnect = vi.mocked(connectRoleControlWithRetry);
-const mockedProbe = vi.mocked(probeProcessStartedAtSeconds);
+const mockedProbe = vi.mocked(probeProcessIncarnation);
 
 // Call history, not implementations, so `mockedProbe`'s default `1_700_000_000` (set in the `vi.mock` factory
 // above) survives — only each test's own explicit `.mockReturnValueOnce`/`.mockResolvedValueOnce` setup and
@@ -93,22 +97,22 @@ function locator(operationOverrides: Partial<ProviderOperationRecord['operation'
       guardian: {
         instanceId: GUARDIAN_INSTANCE_ID,
         pid: 100,
-        processStartedAtSeconds: 1,
+        incarnation: testIncarnation(1),
         controlEndpoint: '/tmp/guardian.sock',
       },
       proxy: {
         instanceId: proxyInstanceId,
         pid: 200,
-        processStartedAtSeconds: 3,
+        incarnation: testIncarnation(3),
         controlEndpoint: '/tmp/proxy.sock',
       },
       reaper: {
         instanceId: REAPER_INSTANCE_ID,
         pid: 300,
-        processStartedAtSeconds: 2,
+        incarnation: testIncarnation(2),
         controlEndpoint: '/tmp/reaper.sock',
       },
-      containment: { pid: 200, processStartedAtSeconds: 3, processGroupId: 200, kind: 'posix-group' },
+      containment: { pid: 200, incarnation: testIncarnation(3), processGroupId: 200, kind: 'posix-group' },
     },
   };
 }
@@ -125,29 +129,29 @@ function alternateLocator(reference: ProviderProxySetLocator): ProviderProxySetL
       guardian: {
         instanceId: randomUUID(),
         pid: 400,
-        processStartedAtSeconds: 4,
+        incarnation: testIncarnation(4),
         controlEndpoint: '/tmp/guardian-b.sock',
       },
       proxy: {
         instanceId: reference.operation.proxyInstanceId,
         pid: 500,
-        processStartedAtSeconds: 5,
+        incarnation: testIncarnation(5),
         controlEndpoint: '/tmp/proxy-b.sock',
       },
       reaper: {
         instanceId: randomUUID(),
         pid: 600,
-        processStartedAtSeconds: 6,
+        incarnation: testIncarnation(6),
         controlEndpoint: '/tmp/reaper-b.sock',
       },
-      containment: { pid: 500, processStartedAtSeconds: 5, processGroupId: 500, kind: 'posix-group' },
+      containment: { pid: 500, incarnation: testIncarnation(5), processGroupId: 500, kind: 'posix-group' },
     },
   };
 }
 
 function proofRecord(
   reference: ProviderProxySetLocator,
-  providerRoot: Readonly<{ pid: number; processStartedAtSeconds: number }>,
+  providerRoot: Readonly<{ pid: number; incarnation: ProcessIncarnation }>,
 ): ProviderOperationRecord {
   return providerOperationRecordSchema.parse({
     ...providerOperationRecord('guardian-activation-pending', {
@@ -169,7 +173,7 @@ function proofDatabase(records: readonly ProviderOperationRecord[]): Database {
   return db;
 }
 
-function proofRuntime(liveProcesses: ReadonlyMap<number, number>) {
+function proofRuntime(liveProcesses: ReadonlyMap<number, ProcessIncarnation>) {
   const live = new Map(liveProcesses);
   const signals: Array<{ pid: number; signal: NodeJS.Signals | 0 }> = [];
   const base = createRealRuntime('prod');
@@ -192,7 +196,7 @@ function proofRuntime(liveProcesses: ReadonlyMap<number, number>) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockedProbe.mockImplementation(() => 1_700_000_000);
+  mockedProbe.mockImplementation(() => testIncarnation(1_700_000_000));
 });
 
 function capsuleFor(reference: ProviderProxySetLocator, overrides: Partial<HandoffCapsuleV1> = {}): HandoffCapsule {
@@ -220,7 +224,7 @@ function capsuleFor(reference: ProviderProxySetLocator, overrides: Partial<Hando
 const COORDINATOR_IDENTITY = {
   instanceId: randomUUID(),
   pid: 1,
-  processStartedAtSeconds: 900,
+  incarnation: testIncarnation(900),
   generation: 'gen2' as const,
   flavor: 'prod' as const,
   buildSetId: BUILD_SET_ID,
@@ -414,7 +418,7 @@ function proxyIdentityFieldsFor(reference: ProviderProxySetLocator) {
   return {
     proxyInstanceId: operation.proxyInstanceId,
     pid: set.proxy.pid,
-    processStartedAtSeconds: set.proxy.processStartedAtSeconds,
+    incarnation: set.proxy.incarnation,
     processGroupId: set.containment.processGroupId,
     guardianInstanceId: set.guardian.instanceId,
     reaperInstanceId: set.reaper.instanceId,
@@ -431,7 +435,7 @@ function guardianIdentityFor(reference: ProviderProxySetLocator) {
   return {
     guardianInstanceId: set.guardian.instanceId,
     pid: set.guardian.pid,
-    processStartedAtSeconds: set.guardian.processStartedAtSeconds,
+    incarnation: set.guardian.incarnation,
     generation: 'gen2' as const,
     flavor: 'prod' as const,
     buildSetId: operation.buildSetId,
@@ -445,7 +449,7 @@ function reaperIdentityFor(reference: ProviderProxySetLocator) {
   return {
     reaperInstanceId: set.reaper.instanceId,
     pid: set.reaper.pid,
-    processStartedAtSeconds: set.reaper.processStartedAtSeconds,
+    incarnation: set.reaper.incarnation,
     guardianInstanceId: set.guardian.instanceId,
     generation: 'gen2' as const,
     flavor: 'prod' as const,
@@ -459,7 +463,7 @@ function reaperIdentityFor(reference: ProviderProxySetLocator) {
 function containmentFor(reference: ProviderProxySetLocator) {
   return {
     pid: reference.locator.containment.pid,
-    processStartedAtSeconds: reference.locator.containment.processStartedAtSeconds,
+    incarnation: reference.locator.containment.incarnation,
     processGroupId: reference.locator.containment.processGroupId,
     containmentKind: reference.locator.containment.kind,
   };
@@ -631,7 +635,9 @@ describe('attemptProviderProxySetInheritance', () => {
   it('returns exact disappearance proof instead of treating a missing credential as authority to proceed', async () => {
     mockedReadCapsule.mockReturnValueOnce(null);
     const loc = locator();
-    const proveContainmentAbsent = vi.fn(async () => 'group:200,leader:200@3');
+    const proveContainmentAbsent = vi.fn(
+      async () => 'group:200,leader:200@linux:00000000-0000-4000-8000-000000000000:3',
+    );
 
     const outcome = await attemptProviderProxySetInheritance(
       loc,
@@ -647,7 +653,7 @@ describe('attemptProviderProxySetInheritance', () => {
 
     expect(outcome).toEqual({
       kind: 'containment-disappeared',
-      disappearanceReceipt: 'group:200,leader:200@3',
+      disappearanceReceipt: 'group:200,leader:200@linux:00000000-0000-4000-8000-000000000000:3',
     });
     expect(proveContainmentAbsent).toHaveBeenCalledWith(providerProxySetIdentityFromRecord(loc), unusedDb, neverAborts);
     expect(mockedConnect).not.toHaveBeenCalled();
@@ -974,14 +980,14 @@ describe('createProviderProxySetInheritance', () => {
 
   it('stops reclamation after TERM when the bounded recovery signal aborts', async () => {
     const reference = locator();
-    const record = proofRecord(reference, { pid: 104, processStartedAtSeconds: 1_003 });
+    const record = proofRecord(reference, { pid: 104, incarnation: testIncarnation(1_003) });
     if (!('providerRoot' in record)) throw new Error('proof record did not retain its provider root');
     const db = proofDatabase([record]);
     const controller = new AbortController();
-    const live = new Map<number, number>([
-      [-reference.locator.containment.processGroupId, reference.locator.containment.processStartedAtSeconds],
-      [reference.locator.containment.pid, reference.locator.containment.processStartedAtSeconds],
-      [record.providerRoot.pid, record.providerRoot.processStartedAtSeconds],
+    const live = new Map<number, ProcessIncarnation>([
+      [-reference.locator.containment.processGroupId, reference.locator.containment.incarnation],
+      [reference.locator.containment.pid, reference.locator.containment.incarnation],
+      [record.providerRoot.pid, record.providerRoot.incarnation],
     ]);
     const signals: Array<{ pid: number; signal: NodeJS.Signals | 0 }> = [];
     const base = createRealRuntime('prod');
@@ -1031,7 +1037,7 @@ describe('createProviderProxySetInheritance', () => {
   // exists, and whether it is still ours is precisely what a successor cannot tell.
   it('will not prove absence while an enforcer pid exists under a start time it did not record', async () => {
     const reference = locator();
-    const record = proofRecord(reference, { pid: 104, processStartedAtSeconds: 1_003 });
+    const record = proofRecord(reference, { pid: 104, incarnation: testIncarnation(1_003) });
     const db = proofDatabase([record]);
     const controller = new AbortController();
     const signals: Array<{ pid: number; signal: NodeJS.Signals | 0 }> = [];
@@ -1048,7 +1054,7 @@ describe('createProviderProxySetInheritance', () => {
       },
     };
     // Every pid reads back on a clock base this coordinator does not share — readable, and disagreeing.
-    mockedProbe.mockImplementation(() => 9_999_999);
+    mockedProbe.mockImplementation(() => testIncarnation(9_999_999));
 
     const inheritance = createProviderProxySetInheritance({
       runtime: boundedRuntime,
@@ -1068,15 +1074,15 @@ describe('createProviderProxySetInheritance', () => {
     const referenceA = locator();
     const referenceB = alternateLocator(referenceA);
     const db = proofDatabase([
-      proofRecord(referenceA, { pid: 104, processStartedAtSeconds: 1_003 }),
-      proofRecord(referenceB, { pid: 204, processStartedAtSeconds: 2_003 }),
+      proofRecord(referenceA, { pid: 104, incarnation: testIncarnation(1_003) }),
+      proofRecord(referenceB, { pid: 204, incarnation: testIncarnation(2_003) }),
     ]);
     const process = proofRuntime(
-      new Map([
-        [-referenceA.locator.containment.processGroupId, referenceA.locator.containment.processStartedAtSeconds],
-        [referenceA.locator.containment.pid, referenceA.locator.containment.processStartedAtSeconds],
-        [104, 1_003],
-        [204, 2_003],
+      new Map<number, ProcessIncarnation>([
+        [-referenceA.locator.containment.processGroupId, referenceA.locator.containment.incarnation],
+        [referenceA.locator.containment.pid, referenceA.locator.containment.incarnation],
+        [104, testIncarnation(1_003)],
+        [204, testIncarnation(2_003)],
       ]),
     );
     const inheritance = createProviderProxySetInheritance({
@@ -1097,7 +1103,8 @@ describe('createProviderProxySetInheritance', () => {
       signals: process.signals,
       addressDistinctRootAlive: process.live.has(204),
     }).toEqual({
-      receipt: 'group:200,leader:200@3,root:104@1003',
+      receipt:
+        'group:200,leader:200@linux:00000000-0000-4000-8000-000000000000:3,root:104@linux:00000000-0000-4000-8000-000000000000:1003',
       signals: [
         { pid: -200, signal: 'SIGTERM' },
         { pid: 104, signal: 'SIGTERM' },
@@ -1110,10 +1117,10 @@ describe('createProviderProxySetInheritance', () => {
     const referenceA = locator();
     const referenceB = alternateLocator(referenceA);
     const exactRecords = Array.from({ length: 65 }, (_, index) =>
-      proofRecord(referenceA, { pid: 1_000 + index, processStartedAtSeconds: 10_000 + index }),
+      proofRecord(referenceA, { pid: 1_000 + index, incarnation: testIncarnation(`10000-${index}`) }),
     );
     const distinctRecords = Array.from({ length: 64 }, (_, index) =>
-      proofRecord(referenceB, { pid: 2_000 + index, processStartedAtSeconds: 20_000 + index }),
+      proofRecord(referenceB, { pid: 2_000 + index, incarnation: testIncarnation(`20000-${index}`) }),
     );
     const db = proofDatabase([...exactRecords, ...distinctRecords]);
     const process = proofRuntime(new Map());
@@ -1131,7 +1138,7 @@ describe('createProviderProxySetInheritance', () => {
     );
 
     expect(receipt?.match(/root:/gu)).toHaveLength(65);
-    expect(receipt).not.toContain('root:2000@20000');
+    expect(receipt).not.toContain('root:2000@linux:00000000-0000-4000-8000-000000000000:20000');
     expect(process.signals).toEqual([]);
   });
 
@@ -1154,7 +1161,7 @@ describe('createProviderProxySetInheritance', () => {
 
   it('registers a successfully inherited set and leaves it unregistered when not bequeathed', async () => {
     mockedReadCapsule.mockReturnValueOnce(null);
-    mockedProbe.mockImplementation((pid) => (pid === 100 ? 1 : 1_700_000_000));
+    mockedProbe.mockImplementation((pid) => (pid === 100 ? testIncarnation(1) : testIncarnation(1_700_000_000)));
     const registerInheritedSet = vi.fn();
 
     const inheritance = createProviderProxySetInheritance({

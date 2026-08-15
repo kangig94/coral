@@ -1,6 +1,7 @@
+import type { ProcessIncarnation } from '../infra/node-process.js';
 import { basename, join } from 'node:path';
 
-import { probeProcessStartedAtSeconds } from '../infra/node-process.js';
+import { probeProcessIncarnation } from '../infra/node-process.js';
 import type { ChildProcessLike } from '../infra/port-types.js';
 import { gracefulKill } from '../infra/process-supervision.js';
 import type { Runtime } from '../runtime/ports.js';
@@ -53,7 +54,7 @@ export type RoleSpawnPorts = Readonly<{
   platform: NodeJS.Platform;
   /** Injected so a test can fake a spawned pid's start time without a real process existing. Defaults to
    *  the real cross-platform `/proc` or `ps` probe. */
-  readProcessStartedAtSeconds?(pid: number, platform: NodeJS.Platform): number | null;
+  readProcessIncarnation?(pid: number, platform: NodeJS.Platform): ProcessIncarnation | null;
 }>;
 
 export type RoleSpawnOptions = Readonly<{
@@ -71,7 +72,7 @@ export type RoleSpawnOptions = Readonly<{
 export type SpawnedRoleProcess = Readonly<{
   child: ChildProcessLike;
   pid: number;
-  processStartedAtSeconds: number;
+  incarnation: ProcessIncarnation;
   /**
    * Rejects if this child later emits an async spawn error (Node reports ENOENT/EACCES this way, after the
    * synchronous `spawn()` call above already returned a pid); never settles otherwise. A caller races this
@@ -144,9 +145,9 @@ export function spawnRoleProcess(
     throw new RoleSpawnError('role_spawn_no_pid', role, `Spawning the ${role} role did not return a pid.`);
   }
 
-  const readStartedAt = ports.readProcessStartedAtSeconds ?? probeProcessStartedAtSeconds;
-  const processStartedAtSeconds = readStartedAt(child.pid, ports.platform);
-  if (processStartedAtSeconds === null) {
+  const readStartedAt = ports.readProcessIncarnation ?? probeProcessIncarnation;
+  const incarnation = readStartedAt(child.pid, ports.platform);
+  if (incarnation === null) {
     killFailedSpawn();
     throw new RoleSpawnError(
       'role_spawn_start_time_unavailable',
@@ -155,7 +156,7 @@ export function spawnRoleProcess(
     );
   }
 
-  return { child, pid: child.pid, processStartedAtSeconds, spawnFailed };
+  return { child, pid: child.pid, incarnation, spawnFailed };
 }
 
 /** Adapts the `Runtime` time port to the shape every control endpoint and client in this domain expects.

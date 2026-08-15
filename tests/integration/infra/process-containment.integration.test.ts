@@ -1,9 +1,10 @@
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
-import { probeProcessStartedAtSeconds } from '#src/infra/node-process.js';
+import { probeProcessIncarnation } from '#src/infra/node-process.js';
 import {
   reapRecordedContainment,
   type ProcessContainmentEnvironment,
@@ -80,10 +81,10 @@ function spawnDetached(source: string, output = false): ChildProcess {
 }
 
 async function recordProcess(pid: number): Promise<RecordedProcessIdentity> {
-  await waitFor(() => probeProcessStartedAtSeconds(pid) !== null);
-  const processStartedAtSeconds = probeProcessStartedAtSeconds(pid);
-  if (processStartedAtSeconds === null) throw new Error(`Process ${pid} exited before identity recording.`);
-  const identity = { pid, processStartedAtSeconds };
+  await waitFor(() => probeProcessIncarnation(pid) !== null);
+  const incarnation = probeProcessIncarnation(pid);
+  if (incarnation === null) throw new Error(`Process ${pid} exited before identity recording.`);
+  const identity = { pid, incarnation };
   cleanupTargets.set(pid, identity);
   return identity;
 }
@@ -121,7 +122,7 @@ function linuxProcessState(pid: number): string | null {
 
 afterEach(async () => {
   for (const [pid, identity] of cleanupTargets) {
-    if (probeProcessStartedAtSeconds(pid) !== identity.processStartedAtSeconds) continue;
+    if (probeProcessIncarnation(pid) !== identity.incarnation) continue;
     try {
       process.kill(pid, 'SIGKILL');
     } catch {
@@ -258,7 +259,7 @@ describe('real recorded process containment', () => {
     const actualIdentity = await recordProcess(child.pid as number);
     const recycledIdentity = {
       ...actualIdentity,
-      processStartedAtSeconds: actualIdentity.processStartedAtSeconds + 1,
+      incarnation: testIncarnation('recycled'),
     };
     const signals: Array<{ pid: number; signal: NodeJS.Signals | 0 }> = [];
 

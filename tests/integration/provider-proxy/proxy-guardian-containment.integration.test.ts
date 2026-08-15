@@ -1,3 +1,4 @@
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -12,7 +13,7 @@ import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 const rotationDoubles = vi.hoisted(() => ({
   ensureProxySet: vi.fn(),
-  probeProcessStartedAtSeconds: vi.fn(),
+  probeProcessIncarnation: vi.fn(),
   rehydrateBinding: vi.fn(),
   spawnProviderRoot: vi.fn(),
 }));
@@ -30,8 +31,8 @@ vi.mock('#src/infra/node-process.js', async (importOriginal) => {
   const actual = await importOriginal<typeof NodeProcessModule>();
   return {
     ...actual,
-    probeProcessStartedAtSeconds: (...args: Parameters<typeof actual.probeProcessStartedAtSeconds>) =>
-      rotationDoubles.probeProcessStartedAtSeconds(...args) ?? actual.probeProcessStartedAtSeconds(...args),
+    probeProcessIncarnation: (...args: Parameters<typeof actual.probeProcessIncarnation>) =>
+      rotationDoubles.probeProcessIncarnation(...args) ?? actual.probeProcessIncarnation(...args),
   };
 });
 
@@ -144,11 +145,11 @@ const PAIR_SECRET = 'c'.repeat(64);
 const FINGERPRINT = 'b'.repeat(64);
 const CONTAINMENT = {
   pid: 5_100,
-  processStartedAtSeconds: 900,
+  incarnation: testIncarnation(900),
   processGroupId: 5_100,
   containmentKind: 'posix-group',
 };
-const ROOT = { pid: 7_001, processStartedAtSeconds: 800 };
+const ROOT = { pid: 7_001, incarnation: testIncarnation(800) };
 const WALL_CLOCK_MS = Date.parse('2026-08-09T12:34:56.000Z');
 
 const PREPARED: ProxyPreparedAppServerOperation = {
@@ -183,7 +184,7 @@ const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
   rotationDoubles.ensureProxySet.mockReset();
-  rotationDoubles.probeProcessStartedAtSeconds.mockReset();
+  rotationDoubles.probeProcessIncarnation.mockReset();
   rotationDoubles.rehydrateBinding.mockReset();
   rotationDoubles.spawnProviderRoot.mockReset();
 });
@@ -222,7 +223,7 @@ async function startGuardianAndReaper() {
   const proxyIdentity: ProxyIdentity = {
     proxyInstanceId: shared.proxyInstanceId,
     pid: 6_000,
-    processStartedAtSeconds: 850,
+    incarnation: testIncarnation(850),
     processGroupId: CONTAINMENT.processGroupId,
     guardianInstanceId: shared.guardianInstanceId,
     reaperInstanceId: shared.reaperInstanceId,
@@ -235,7 +236,7 @@ async function startGuardianAndReaper() {
   const coordinatorIdentity = {
     instanceId: randomUUID(),
     pid: 4_000,
-    processStartedAtSeconds: 700,
+    incarnation: testIncarnation(700),
     generation: shared.generation,
     flavor: shared.flavor,
     buildSetId: shared.buildSetId,
@@ -260,7 +261,7 @@ async function startGuardianAndReaper() {
     },
     platform: 'linux' as const,
     maxRecordedRoots: 128,
-    readProcessStartedAtSeconds: (pid: number) => (alive.has(pid) ? CONTAINMENT.processStartedAtSeconds : null),
+    readProcessIncarnation: (pid: number) => (alive.has(pid) ? CONTAINMENT.incarnation : null),
   };
 
   const boundsOf = () => {
@@ -315,7 +316,7 @@ async function startGuardianAndReaper() {
     scheduler: idleScheduler,
     timer,
     mintReceipt,
-    self: { pid: 5_101, processStartedAtSeconds: 901 },
+    self: { pid: 5_101, incarnation: testIncarnation(901) },
     onOutcome: () => {},
     onProgressViolation: () => {},
   });
@@ -346,8 +347,8 @@ async function startGuardianAndReaper() {
     timer,
     mintReceipt,
     reaperChannel,
-    self: { pid: 5_102, processStartedAtSeconds: 902 },
-    reaperSelf: { pid: 5_101, processStartedAtSeconds: 901 },
+    self: { pid: 5_102, incarnation: testIncarnation(902) },
+    reaperSelf: { pid: 5_101, incarnation: testIncarnation(901) },
     onOutcome: () => {},
     onProgressViolation: () => {},
   });
@@ -380,7 +381,7 @@ async function startGuardianAndReaper() {
       guardian: {
         guardianInstanceId: shared.guardianInstanceId,
         pid: 5_102,
-        processStartedAtSeconds: 902,
+        incarnation: testIncarnation(902),
         generation: shared.generation,
         flavor: shared.flavor,
         buildSetId: shared.buildSetId,
@@ -488,16 +489,16 @@ async function startCoordinatorActivationSet() {
     hostFingerprint: set.shared.hostFingerprint,
     guardianInstanceId: set.shared.guardianInstanceId,
     guardianPid: 5_102,
-    guardianProcessStartedAtSeconds: 902,
+    guardianIncarnation: testIncarnation(902),
     guardianControlEndpoint: set.guardianEndpoint,
     proxyInstanceId: set.proxyIdentity.proxyInstanceId,
     proxyPid: set.proxyIdentity.pid,
     reaperInstanceId: set.shared.reaperInstanceId,
     reaperPid: 5_101,
-    reaperProcessStartedAtSeconds: 901,
+    reaperIncarnation: testIncarnation(901),
     reaperControlEndpoint: set.reaperEndpoint,
     containmentKind: CONTAINMENT.containmentKind,
-    proxyProcessStartedAtSeconds: set.proxyIdentity.processStartedAtSeconds,
+    proxyIncarnation: set.proxyIdentity.incarnation,
     proxyProcessGroupId: set.proxyIdentity.processGroupId,
     canonicalEndpoint: set.proxyEndpoint,
   };
@@ -650,16 +651,16 @@ async function startRotationSet(operationRegistry: LocalOperationRegistry) {
     hostFingerprint: set.shared.hostFingerprint,
     guardianInstanceId: set.shared.guardianInstanceId,
     guardianPid: 5_102,
-    guardianProcessStartedAtSeconds: 902,
+    guardianIncarnation: testIncarnation(902),
     guardianControlEndpoint: set.guardianEndpoint,
     proxyInstanceId: set.proxyIdentity.proxyInstanceId,
     proxyPid: set.proxyIdentity.pid,
     reaperInstanceId: set.shared.reaperInstanceId,
     reaperPid: 5_101,
-    reaperProcessStartedAtSeconds: 901,
+    reaperIncarnation: testIncarnation(901),
     reaperControlEndpoint: set.reaperEndpoint,
     containmentKind: CONTAINMENT.containmentKind,
-    proxyProcessStartedAtSeconds: set.proxyIdentity.processStartedAtSeconds,
+    proxyIncarnation: set.proxyIdentity.incarnation,
     proxyProcessGroupId: set.proxyIdentity.processGroupId,
     canonicalEndpoint: set.proxyEndpoint,
   };
@@ -671,7 +672,7 @@ async function startRotationSet(operationRegistry: LocalOperationRegistry) {
     guardianIdentity: {
       guardianInstanceId: set.shared.guardianInstanceId,
       pid: 5_102,
-      processStartedAtSeconds: 902,
+      incarnation: testIncarnation(902),
       generation: set.shared.generation,
       flavor: set.shared.flavor,
       buildSetId: set.shared.buildSetId,
@@ -681,7 +682,7 @@ async function startRotationSet(operationRegistry: LocalOperationRegistry) {
     reaperIdentity: {
       reaperInstanceId: set.shared.reaperInstanceId,
       pid: 5_101,
-      processStartedAtSeconds: 901,
+      incarnation: testIncarnation(901),
       guardianInstanceId: set.shared.guardianInstanceId,
       generation: set.shared.generation,
       flavor: set.shared.flavor,
@@ -1189,7 +1190,7 @@ describe('provider proxy cancellation relinquishment against a real guardian pai
         },
         attachSession: async () => null,
       }),
-      rootIdentity: () => ({ pid: 7_777, processStartedAtSeconds: 777 }),
+      rootIdentity: () => ({ pid: 7_777, incarnation: testIncarnation(777) }),
       closed: () => new Promise<Error | void>(() => {}),
       forceClose: async () => {
         throw new Error('shared unconfirmed cancellation force-closed one operation');
@@ -1265,8 +1266,8 @@ describe('provider proxy cumulative root rotation', () => {
     let activeProxyOperations = 0;
     let maximumActiveProxyOperations = 0;
 
-    rotationDoubles.probeProcessStartedAtSeconds.mockImplementation((pid: number) =>
-      pid >= 20_000 ? pid + 100_000 : undefined,
+    rotationDoubles.probeProcessIncarnation.mockImplementation((pid: number) =>
+      pid >= 20_000 ? testIncarnation(`rotation-${pid}`) : undefined,
     );
     rotationDoubles.spawnProviderRoot.mockImplementation(async () => {
       const handle = createFakeProviderServerHandle({ generation: nextRootPid++ });
@@ -1373,9 +1374,7 @@ describe('provider proxy cumulative root rotation', () => {
         activeProxyOperations -= 1;
         return;
       }
-      proxyRootIdentities.add(
-        `${prepared.result.providerRoot.pid}@${prepared.result.providerRoot.processStartedAtSeconds}`,
-      );
+      proxyRootIdentities.add(`${prepared.result.providerRoot.pid}@${prepared.result.providerRoot.incarnation}`);
       await authority.cancelOperation(
         prepared.operation,
         prepared.attempt.request.prepareAttemptNumber,

@@ -1,3 +1,5 @@
+import type { ProcessIncarnation } from '#src/infra/node-process.js';
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -35,7 +37,7 @@ import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 const GUARDIAN_IDENTITY: GuardianIdentity = {
   guardianInstanceId: '11111111-1111-4111-8111-111111111111',
   pid: 100,
-  processStartedAtSeconds: 1_000,
+  incarnation: testIncarnation(1_000),
   generation: 'gen2',
   flavor: 'prod',
   buildSetId: '44444444-4444-4444-8444-444444444444',
@@ -46,7 +48,7 @@ const GUARDIAN_IDENTITY: GuardianIdentity = {
 const REAPER_IDENTITY: ReaperIdentity = {
   reaperInstanceId: '22222222-2222-4222-8222-222222222222',
   pid: 101,
-  processStartedAtSeconds: 1_000,
+  incarnation: testIncarnation(1_000),
   guardianInstanceId: GUARDIAN_IDENTITY.guardianInstanceId,
   generation: 'gen2',
   flavor: 'prod',
@@ -59,7 +61,7 @@ const REAPER_IDENTITY: ReaperIdentity = {
 const PROXY_IDENTITY: ProxyIdentity = {
   proxyInstanceId: '33333333-3333-4333-8333-333333333333',
   pid: 102,
-  processStartedAtSeconds: 1_000,
+  incarnation: testIncarnation(1_000),
   processGroupId: 102,
   guardianInstanceId: GUARDIAN_IDENTITY.guardianInstanceId,
   reaperInstanceId: REAPER_IDENTITY.reaperInstanceId,
@@ -73,7 +75,7 @@ const PROXY_IDENTITY: ProxyIdentity = {
 const COORDINATOR_IDENTITY: CoordinatorIdentity = {
   instanceId: '55555555-5555-4555-8555-555555555555',
   pid: 1,
-  processStartedAtSeconds: 900,
+  incarnation: testIncarnation(900),
   generation: 'gen2',
   flavor: 'prod',
   buildSetId: GUARDIAN_IDENTITY.buildSetId,
@@ -141,7 +143,7 @@ function fakeControlClient(time: VirtualTime, resolveAtMs: number, result: unkno
 
 function authorityWithGuardianClient(
   guardianClient: ControlClient,
-  providerRoots: ReadonlyArray<{ pid: number; processStartedAtSeconds: number }> = [],
+  providerRoots: ReadonlyArray<{ pid: number; incarnation: ProcessIncarnation }> = [],
 ): ReturnType<typeof createProviderProxySetAuthority> {
   const deps: ProviderProxySetAuthorityDependencies = {
     proxyInstanceId: PROXY_IDENTITY.proxyInstanceId,
@@ -289,7 +291,7 @@ describe('createProviderProxySetAuthority: stopAndReap providerRoots', () => {
       onFault: () => () => undefined,
       close: () => {},
     };
-    const root = { pid: 9_001, processStartedAtSeconds: 700 };
+    const root = { pid: 9_001, incarnation: testIncarnation(700) };
     const authority = authorityWithGuardianClient(client, [root]);
 
     const result = await authority.stopAndReap(new AbortController().signal);
@@ -428,12 +430,12 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
       operations?: readonly unknown[];
       committedThroughProviderSeq?: number;
       guardianPid: number;
-      guardianProcessStartedAtSeconds: number;
+      guardianIncarnation: ProcessIncarnation;
       proxyPid: number;
       reaperPid: number;
-      reaperProcessStartedAtSeconds: number;
+      reaperIncarnation: ProcessIncarnation;
       containmentKind: string;
-      proxyProcessStartedAtSeconds: number;
+      proxyIncarnation: ProcessIncarnation;
       proxyProcessGroupId: number;
     };
     expect(written.version).toBe(2);
@@ -446,12 +448,12 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
     expect(written.committedThroughProviderSeq).toBeUndefined();
     expect(written).toMatchObject({
       guardianPid: GUARDIAN_IDENTITY.pid,
-      guardianProcessStartedAtSeconds: GUARDIAN_IDENTITY.processStartedAtSeconds,
+      guardianIncarnation: GUARDIAN_IDENTITY.incarnation,
       proxyPid: PROXY_IDENTITY.pid,
       reaperPid: REAPER_IDENTITY.pid,
-      reaperProcessStartedAtSeconds: REAPER_IDENTITY.processStartedAtSeconds,
+      reaperIncarnation: REAPER_IDENTITY.incarnation,
       containmentKind: REAPER_IDENTITY.containmentKind,
-      proxyProcessStartedAtSeconds: PROXY_IDENTITY.processStartedAtSeconds,
+      proxyIncarnation: PROXY_IDENTITY.incarnation,
       proxyProcessGroupId: PROXY_IDENTITY.processGroupId,
     });
     expect((statSync(handoffCapsulePath).mode & 0o777).toString(8)).toBe('600');
@@ -484,11 +486,11 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
   });
 });
 
-function fakeSpawnedGuardian(pid: number, processStartedAtSeconds: number): SpawnedRoleProcess {
+function fakeSpawnedGuardian(pid: number, seed: number): SpawnedRoleProcess {
   return {
     child: {} as unknown as ChildProcessLike,
     pid,
-    processStartedAtSeconds,
+    incarnation: testIncarnation(seed),
     // Never settles — these tests exercise the undo path, not the spawn-error race `spawnFailed` exists for.
     spawnFailed: new Promise<never>(() => {}),
   };
@@ -521,7 +523,7 @@ describe('buildGuardianSpawnUndo', () => {
     const runtime = guardianUndoRuntime(time, () => false, killCalls);
     const spawned = fakeSpawnedGuardian(4_242, 1_000);
 
-    const undo = buildGuardianSpawnUndo(runtime, spawned, 'linux', () => spawned.processStartedAtSeconds);
+    const undo = buildGuardianSpawnUndo(runtime, spawned, 'linux', () => spawned.incarnation);
     await undo();
 
     // detached:true makes the guardian its own process-group leader (and it spawns the reaper into that
@@ -538,7 +540,7 @@ describe('buildGuardianSpawnUndo', () => {
     const runtime = guardianUndoRuntime(time, () => time.now() < disappearsAt, killCalls);
     const spawned = fakeSpawnedGuardian(4_242, 1_000);
 
-    const pending = buildGuardianSpawnUndo(runtime, spawned, 'linux', () => spawned.processStartedAtSeconds)();
+    const pending = buildGuardianSpawnUndo(runtime, spawned, 'linux', () => spawned.incarnation)();
     time.tick(PROXY_TEARDOWN_RESERVE_MS);
     await pending;
 
@@ -551,7 +553,7 @@ describe('buildGuardianSpawnUndo', () => {
     const runtime = guardianUndoRuntime(time, () => true, killCalls);
     const spawned = fakeSpawnedGuardian(4_242, 1_000);
 
-    const pending = buildGuardianSpawnUndo(runtime, spawned, 'linux', () => spawned.processStartedAtSeconds)();
+    const pending = buildGuardianSpawnUndo(runtime, spawned, 'linux', () => spawned.incarnation)();
     time.tick(PROXY_TEARDOWN_RESERVE_MS);
     await pending;
 
@@ -570,9 +572,9 @@ describe('buildGuardianSpawnUndo', () => {
     const spawned = fakeSpawnedGuardian(4_242, 1_000);
     // A different start time than what this acquisition recorded at spawn time: pid 4242 now names some
     // other process, and signalling it would kill a stranger.
-    const readProcessStartedAtSeconds = (): number => 9_999;
+    const readProcessIncarnation = (): ProcessIncarnation => testIncarnation(9_999);
 
-    const undo = buildGuardianSpawnUndo(runtime, spawned, 'linux', readProcessStartedAtSeconds);
+    const undo = buildGuardianSpawnUndo(runtime, spawned, 'linux', readProcessIncarnation);
     await undo();
 
     expect(killCalls).toEqual([]);

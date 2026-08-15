@@ -1,3 +1,5 @@
+import type { ProcessIncarnation } from '#src/infra/node-process.js';
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -141,7 +143,7 @@ async function startProxy(
   const coordinator = {
     instanceId: randomUUID(),
     pid: 4_000,
-    processStartedAtSeconds: 700,
+    incarnation: testIncarnation(700),
     generation: shared.generation,
     flavor: shared.flavor,
     buildSetId: shared.buildSetId,
@@ -149,7 +151,7 @@ async function startProxy(
   const identity = {
     proxyInstanceId: shared.proxyInstanceId,
     pid: 6_000,
-    processStartedAtSeconds: 850,
+    incarnation: testIncarnation(850),
     processGroupId: 6_000,
     guardianInstanceId: shared.guardianInstanceId,
     reaperInstanceId: shared.reaperInstanceId,
@@ -235,7 +237,7 @@ async function startProxy(
               },
               attachSession: async () => null,
             }),
-            rootIdentity: () => ({ pid: 7_001, processStartedAtSeconds: 800 }),
+            rootIdentity: () => ({ pid: 7_001, incarnation: testIncarnation(800) }),
             closed: () => new Promise<Error | void>(() => {}),
             forceClose: async () => {},
           } as unknown as ProxyAppServerHostAuthority;
@@ -260,12 +262,12 @@ async function startProxy(
                 throw new Error('provider creation refusal must not register guardian membership');
               }
               if (method === 'guardian.register-provider-root.v1') {
-                const root = params as { providerPid: number; providerProcessStartedAtSeconds: number };
+                const root = params as { providerPid: number; providerIncarnation: ProcessIncarnation };
                 return {
                   state: 'staged-contained',
                   providerRoot: {
                     pid: root.providerPid,
-                    processStartedAtSeconds: root.providerProcessStartedAtSeconds,
+                    incarnation: root.providerIncarnation,
                   },
                   jointContainmentReceipt: 'joint-1',
                 };
@@ -303,7 +305,7 @@ async function startProxy(
             ? Promise.resolve(options.prepareRefusal)
             : Promise.resolve({
                 state: 'staged' as const,
-                providerRoot: { pid: 7_001, processStartedAtSeconds: 800 },
+                providerRoot: { pid: 7_001, incarnation: testIncarnation(800) },
                 receipt: asJointContainmentReceipt('joint-1'),
               })
         ) as OperationStageHandle['result'];
@@ -511,16 +513,16 @@ async function launchThroughRoute(
     hostFingerprint: FINGERPRINT,
     guardianInstanceId: set.shared.guardianInstanceId,
     guardianPid: 5_000,
-    guardianProcessStartedAtSeconds: 700,
+    guardianIncarnation: testIncarnation(700),
     guardianControlEndpoint: '/tmp/guardian.sock',
     proxyInstanceId: set.shared.proxyInstanceId,
     proxyPid: set.identity.pid,
     reaperInstanceId: set.shared.reaperInstanceId,
     reaperPid: 5_500,
-    reaperProcessStartedAtSeconds: 750,
+    reaperIncarnation: testIncarnation(750),
     reaperControlEndpoint: '/tmp/reaper.sock',
     containmentKind: 'detached-group',
-    proxyProcessStartedAtSeconds: set.identity.processStartedAtSeconds,
+    proxyIncarnation: set.identity.incarnation,
     proxyProcessGroupId: set.identity.processGroupId,
     canonicalEndpoint: set.endpoint,
   } as const;
@@ -724,16 +726,16 @@ function activationDepsFor(set: ProxyUnderTest): ProviderProxyOperationActivatio
       hostFingerprint: FINGERPRINT,
       guardianInstanceId: set.shared.guardianInstanceId,
       guardianPid: 5_000,
-      guardianProcessStartedAtSeconds: 700,
+      guardianIncarnation: testIncarnation(700),
       guardianControlEndpoint: '/tmp/guardian.sock',
       proxyInstanceId: set.shared.proxyInstanceId,
       proxyPid: set.identity.pid,
       reaperInstanceId: set.shared.reaperInstanceId,
       reaperPid: 5_500,
-      reaperProcessStartedAtSeconds: 750,
+      reaperIncarnation: testIncarnation(750),
       reaperControlEndpoint: '/tmp/reaper.sock',
       containmentKind: 'detached-group',
-      proxyProcessStartedAtSeconds: set.identity.processStartedAtSeconds,
+      proxyIncarnation: set.identity.incarnation,
       proxyProcessGroupId: set.identity.processGroupId,
       canonicalEndpoint: set.endpoint,
     },
@@ -844,7 +846,7 @@ describe('provider-proxy operation lifecycle', () => {
 
     expect(reserved.state).toBe('pending-activation');
     expect(reserved.jointContainmentReceipt).toBe('joint-1');
-    expect(reserved.providerRoot).toEqual({ pid: 7_001, processStartedAtSeconds: 800 });
+    expect(reserved.providerRoot).toEqual({ pid: 7_001, incarnation: testIncarnation(800) });
     // Staging precedes the reservation being reported, so a reservation the coordinator goes on to commit
     // always names a root the containment can already reach.
     expect(set.started).toEqual([]);

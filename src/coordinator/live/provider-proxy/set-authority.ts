@@ -126,12 +126,12 @@ export function createProviderProxySetAuthority(
       orphanTimeoutMs: deadlineConfig.orphanTimeoutMs,
       teardownReserveMs: deadlineConfig.teardownReserveMs,
       guardianPid: guardianIdentity.pid,
-      guardianProcessStartedAtSeconds: guardianIdentity.processStartedAtSeconds,
+      guardianIncarnation: guardianIdentity.incarnation,
       proxyPid: proxyIdentityFields.pid,
       reaperPid: reaperIdentity.pid,
-      reaperProcessStartedAtSeconds: reaperIdentity.processStartedAtSeconds,
+      reaperIncarnation: reaperIdentity.incarnation,
       containmentKind: reaperIdentity.containmentKind,
-      proxyProcessStartedAtSeconds: proxyIdentityFields.processStartedAtSeconds,
+      proxyIncarnation: proxyIdentityFields.incarnation,
       proxyProcessGroupId: proxyIdentityFields.processGroupId,
     };
     return recoveryCapsule;

@@ -1,3 +1,4 @@
+import type { ProcessIncarnation } from '../infra/node-process.js';
 import type { z } from 'zod';
 
 import type { MonotonicClock } from '../infra/monotonic-clock.js';
@@ -92,7 +93,7 @@ export type ReaperOptions<Scope extends symbol> = Readonly<{
   timer: ControlEndpointTimer;
   mintReceipt(): string;
   /** The reaper's own pid/start identity, reported in `ReaperIdentity`. */
-  self: Readonly<{ pid: number; processStartedAtSeconds: number }>;
+  self: Readonly<{ pid: number; incarnation: ProcessIncarnation }>;
   onOutcome(outcome: EnforcementOutcome): void;
   /** A wake later than the model's bound. Reported, but teardown still proceeds. */
   onProgressViolation(observedWakeLatencyMs: number): void;
@@ -154,7 +155,7 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
     Object.freeze({
       reaperInstanceId: capsule.reaperInstanceId,
       pid: self.pid,
-      processStartedAtSeconds: self.processStartedAtSeconds,
+      incarnation: self.incarnation,
       guardianInstanceId: capsule.guardianInstanceId,
       generation: capsule.generation,
       flavor: capsule.flavor,
@@ -270,9 +271,7 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
           const isRecorded = requireEnforcer()
             .recordedRoots()
             .some(
-              (root) =>
-                root.pid === request.providerRoot.pid &&
-                root.processStartedAtSeconds === request.providerRoot.processStartedAtSeconds,
+              (root) => root.pid === request.providerRoot.pid && root.incarnation === request.providerRoot.incarnation,
             );
           // Confirms the same thing the old activation authorization proved: the reaper is still alive and
           // still holding this exact root at this instant, without authorizing an operation it never held.

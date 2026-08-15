@@ -1,3 +1,4 @@
+import type { ProcessIncarnation } from '../infra/node-process.js';
 import type { ServerResponse } from 'node:http';
 
 import type { StrictBundleManifest } from '../infra/bundle-manifest.js';
@@ -123,15 +124,15 @@ export type HealthSnapshot = {
   instanceId: string;
   /**
    * Serving process pid. Required for handoff to revalidate the signal
-   * target via `probeProcessStartedAtSeconds(pid)` before SIGTERM/SIGKILL.
+   * target via `probeProcessIncarnation(pid)` before SIGTERM/SIGKILL.
    */
   pid: number;
   /**
    * Serving process start time in seconds since epoch (kernel-supplied via
-   * `probeProcessStartedAtSeconds`). Forms an immutable identity tuple with
+   * `probeProcessIncarnation`). Forms an immutable identity tuple with
    * `pid`; a mismatch means the pid has wrapped to an unrelated process.
    */
-  processStartedAt?: number;
+  incarnation?: ProcessIncarnation;
   uptimeMs: number;
   active: number;
   /** Jobs whose local carrier is live or unresolved; build namespace is provenance, not ownership scope. */

@@ -1,3 +1,4 @@
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { mkdtempSync } from 'node:fs';
 import { createConnection } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -446,7 +447,7 @@ async function createHarness(
       }) as never,
       attachSession: async () => null,
     }),
-    rootIdentity: () => ({ pid: 4_242, processStartedAtSeconds: 1_700_000_000 }),
+    rootIdentity: () => ({ pid: 4_242, incarnation: testIncarnation(1_700_000_000) }),
     closed: () => new Promise<never>(() => undefined),
     forceClose: async () => undefined,
     evictHost: async () => false,
@@ -507,7 +508,7 @@ async function createHarness(
   const identity: ProxyIdentity = {
     proxyInstanceId,
     pid: 6_000,
-    processStartedAtSeconds: 800,
+    incarnation: testIncarnation(800),
     processGroupId: 6_000,
     guardianInstanceId: capsule.guardianInstanceId,
     reaperInstanceId: capsule.reaperInstanceId,
@@ -579,7 +580,7 @@ async function createHarness(
   const coordinator = {
     instanceId: randomUUID(),
     pid: 1,
-    processStartedAtSeconds: 1,
+    incarnation: testIncarnation(1),
     generation: 'gen2' as const,
     flavor: 'prod' as const,
     buildSetId,
@@ -923,7 +924,7 @@ describe('provider proxy continuity commit bridge', () => {
       stageProviderRoot: () => ({
         result: Promise.resolve({
           state: 'staged' as const,
-          providerRoot: { pid: 4_242, processStartedAtSeconds: 1_700_000_000 },
+          providerRoot: { pid: 4_242, incarnation: testIncarnation(1_700_000_000) },
           receipt: asJointContainmentReceipt('late-ack-contained'),
         }),
         confirmActivation: async () => undefined,

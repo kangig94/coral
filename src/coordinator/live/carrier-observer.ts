@@ -137,7 +137,7 @@ export function carrierStatusOperationKey(operation: ProviderOperationRecord['op
 }
 
 function proxyLocatorKey(locator: ProxyLocator): string {
-  return JSON.stringify([locator.instanceId, locator.pid, locator.processStartedAtSeconds, locator.controlEndpoint]);
+  return JSON.stringify([locator.instanceId, locator.pid, locator.incarnation, locator.controlEndpoint]);
 }
 
 function proxyBuildKey(operation: OperationIdentity): string {

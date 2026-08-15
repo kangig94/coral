@@ -1,3 +1,4 @@
+import { processIncarnationSchema } from '../infra/node-process.js';
 import { isAbsolute, normalize } from 'node:path';
 
 import { z } from 'zod';
@@ -66,7 +67,7 @@ const processLocatorSchema = z
   .object({
     instanceId: canonicalUuidSchema,
     pid: nonNegativeSafeIntegerSchema,
-    processStartedAtSeconds: nonNegativeSafeIntegerSchema,
+    incarnation: processIncarnationSchema,
     controlEndpoint: canonicalEndpointSchema,
   })
   .strict();
@@ -80,7 +81,7 @@ export const providerOperationSetLocatorSchema = z
     containment: z
       .object({
         pid: nonNegativeSafeIntegerSchema,
-        processStartedAtSeconds: nonNegativeSafeIntegerSchema,
+        incarnation: processIncarnationSchema,
         processGroupId: nonNegativeSafeIntegerSchema,
         kind: z.string().min(1).max(64),
       })
@@ -90,7 +91,7 @@ export const providerOperationSetLocatorSchema = z
   .superRefine((locator, context) => {
     if (
       locator.containment.pid !== locator.proxy.pid ||
-      locator.containment.processStartedAtSeconds !== locator.proxy.processStartedAtSeconds
+      locator.containment.incarnation !== locator.proxy.incarnation
     ) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
@@ -104,7 +105,7 @@ export const providerOperationSetLocatorSchema = z
 const providerRootSchema = z
   .object({
     pid: nonNegativeSafeIntegerSchema,
-    processStartedAtSeconds: nonNegativeSafeIntegerSchema,
+    incarnation: processIncarnationSchema,
   })
   .strict();
 

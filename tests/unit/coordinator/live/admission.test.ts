@@ -1,3 +1,5 @@
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
+import type { ProcessIncarnation } from '#src/infra/node-process.js';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -5,7 +7,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { DefaultProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
 import type { LaunchPool } from '#src/jobs/contracts/admission.js';
-import { canProbeProcessStartedAtSeconds } from '#src/infra/node-process.js';
+import { canProbeProcessIncarnation } from '#src/infra/node-process.js';
 import type { ChildProcessLike } from '#src/infra/port-types.js';
 import type { ProcessPort, Runtime, RuntimeSpawnOptions } from '#src/runtime/ports.js';
 import {
@@ -17,7 +19,7 @@ import { createExclusiveSpec } from '#tests/unit/coordinator/live/provider-hosts
 const ORIGINAL_MAX_CHILDREN = process.env.CORAL_MAX_WORKERS;
 const ORIGINAL_DISCUSS_MAX_CHILDREN = process.env.CORAL_DISCUSS_MAX_WORKERS;
 const TEST_PROVIDER_PID = 20_000;
-const TEST_PROVIDER_STARTED_AT_SECONDS = 1_700_000_000;
+const TEST_PROVIDER_INCARNATION = testIncarnation(1_700_000_000);
 
 const PLATFORM_CAPABILITIES = {
   aix: { canProbeStartTime: false, canSignalProcessGroup: true },
@@ -46,7 +48,7 @@ function createProviderProcessRuntime(
   pid: number,
   groupProbeResult = true,
   platform = 'linux',
-  processStartedAtSeconds: number | null = TEST_PROVIDER_STARTED_AT_SECONDS,
+  incarnation: ProcessIncarnation | null = TEST_PROVIDER_INCARNATION,
 ): {
   runtime: Runtime;
   spawn: ReturnType<typeof vi.fn<ProcessPort['spawn']>>;
@@ -84,15 +86,15 @@ function createProviderProcessRuntime(
     if (Math.abs(targetPid) !== pid) return false;
     return targetPid < 0 ? groupAlive : processAlive;
   });
-  const readProcessStartedAtSeconds = vi.fn<ProcessPort['readProcessStartedAtSeconds']>((targetPid) =>
-    targetPid === pid && processAlive ? processStartedAtSeconds : null,
+  const readProcessIncarnation = vi.fn<ProcessPort['readProcessIncarnation']>((targetPid) =>
+    targetPid === pid && processAlive ? incarnation : null,
   );
   const readPlatform = vi.fn(() => platform);
   return {
     runtime: {
       ...base,
       env: { ...base.env, platform: readPlatform },
-      process: { ...base.process, spawn, kill: processKill, isAlive, readProcessStartedAtSeconds },
+      process: { ...base.process, spawn, kill: processKill, isAlive, readProcessIncarnation },
     },
     spawn,
     childKill,
@@ -135,7 +137,7 @@ describe('launch admission', () => {
     );
     expect(handle.containmentIdentity).toEqual({
       pid: TEST_PROVIDER_PID,
-      processStartedAtSeconds: TEST_PROVIDER_STARTED_AT_SECONDS,
+      incarnation: TEST_PROVIDER_INCARNATION,
       processGroupId: TEST_PROVIDER_PID,
     });
     expect(fake.processKill).toHaveBeenCalledWith(-TEST_PROVIDER_PID, 0);
@@ -148,7 +150,7 @@ describe('launch admission', () => {
   it.each(Object.entries(PLATFORM_CAPABILITIES))(
     'aligns coordinator-local host admission with %s platform capabilities',
     async (platform, capabilities) => {
-      expect(canProbeProcessStartedAtSeconds(platform)).toBe(capabilities.canProbeStartTime);
+      expect(canProbeProcessIncarnation(platform)).toBe(capabilities.canProbeStartTime);
       expect(canSignalProviderHostProcessGroup(platform)).toBe(capabilities.canSignalProcessGroup);
       const fake = createProviderProcessRuntime(TEST_PROVIDER_PID, true, platform);
       const localCoordinator = new LaunchCoordinator({ runtime: fake.runtime });
@@ -211,7 +213,7 @@ describe('launch admission', () => {
       ...fake.runtime,
       process: {
         ...fake.runtime.process,
-        readProcessStartedAtSeconds: () => {
+        readProcessIncarnation: () => {
           throw new Error('synthetic process read failure');
         },
       },

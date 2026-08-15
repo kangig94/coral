@@ -1,3 +1,4 @@
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 // Daemon-side bind-path election (BLOCKING 1 / BLOCKING 2 from the
 // cross-version-coordinator-continuity review): `bindWithHandoff`
 // (`src/coordinator/handoff.ts`) must apply the same product-version
@@ -116,7 +117,7 @@ describe('cross-version election on the daemon bind path', () => {
             namespace: 'ns',
             status: 'ok',
             pid: 111,
-            processStartedAt: 222,
+            incarnation: testIncarnation(222),
           } satisfies IncumbentHealth,
         };
       }
@@ -169,7 +170,7 @@ describe('cross-version election on the daemon bind path', () => {
             namespace: 'ns',
             status: 'ok',
             pid: 333,
-            processStartedAt: 444,
+            incarnation: testIncarnation(444),
           } satisfies IncumbentHealth,
         };
       }
@@ -211,7 +212,7 @@ describe('cross-version election on the daemon bind path', () => {
             namespace: 'ns',
             status: 'ok',
             pid: 555,
-            processStartedAt: 666,
+            incarnation: testIncarnation(666),
           } satisfies IncumbentHealth,
         };
       }
@@ -254,7 +255,7 @@ describe('cross-version election on the daemon bind path', () => {
             namespace: 'ns',
             status: 'ok',
             pid: 777,
-            processStartedAt: 888,
+            incarnation: testIncarnation(888),
           } satisfies IncumbentHealth,
         };
       }
@@ -277,7 +278,7 @@ describe('cross-version election on the daemon bind path', () => {
       runtime: noSignalRuntime(),
       readVerifiedIncumbentFromDiscovery: () => ({
         pid: 777,
-        processStartedAt: 888,
+        incarnation: testIncarnation(888),
         source: 'discovery',
         instanceId: 'older-incumbent',
         token: 'token',

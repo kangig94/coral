@@ -1,3 +1,4 @@
+import type { ProcessIncarnation } from '../infra/node-process.js';
 import type { z } from 'zod';
 
 import type { MonotonicClock } from '../infra/monotonic-clock.js';
@@ -87,13 +88,13 @@ type ReaperRootAcknowledgement = Readonly<{
   /** Phantom: type-space only, never present at runtime, so this token costs nothing on the wire or in
    *  memory. It exists to make the type unconstructible outside `acknowledgeReaperRoot` below. */
   readonly [reaperAcknowledged]: true;
-  readonly root: Readonly<{ pid: number; processStartedAtSeconds: number }>;
+  readonly root: Readonly<{ pid: number; incarnation: ProcessIncarnation }>;
 }>;
 
 /** The one producer of a `ReaperRootAcknowledgement`, and the only place the reaper's reply is judged. */
 function acknowledgeReaperRoot(
   reply: unknown,
-  root: Readonly<{ pid: number; processStartedAtSeconds: number }>,
+  root: Readonly<{ pid: number; incarnation: ProcessIncarnation }>,
 ): ReaperRootAcknowledgement {
   reaperRegisterProviderRootResultSchema.parse(reply);
   return { root } as unknown as ReaperRootAcknowledgement;
@@ -109,13 +110,13 @@ function acknowledgeReaperRoot(
 declare const guardianRecorded: unique symbol;
 type GuardianRootRecord = Readonly<{
   readonly [guardianRecorded]: true;
-  readonly root: Readonly<{ pid: number; processStartedAtSeconds: number }>;
+  readonly root: Readonly<{ pid: number; incarnation: ProcessIncarnation }>;
 }>;
 
 /** The one producer of a `GuardianRootRecord`, and the only place this guardian's enforcer is told to hold a
  *  root. Translating `EnforcementError` here keeps that internal vocabulary off the wire. */
 function recordGuardianRoot(
-  armed: Readonly<{ registerProviderRoot(root: Readonly<{ pid: number; processStartedAtSeconds: number }>): void }>,
+  armed: Readonly<{ registerProviderRoot(root: Readonly<{ pid: number; incarnation: ProcessIncarnation }>): void }>,
   acknowledgement: ReaperRootAcknowledgement,
 ): GuardianRootRecord {
   try {
@@ -158,7 +159,7 @@ function assertNamedGuardianIdentity(
   if (
     claimed.guardianInstanceId !== actual.guardianInstanceId ||
     claimed.pid !== actual.pid ||
-    claimed.processStartedAtSeconds !== actual.processStartedAtSeconds ||
+    claimed.incarnation !== actual.incarnation ||
     claimed.generation !== actual.generation ||
     claimed.flavor !== actual.flavor ||
     claimed.buildSetId !== actual.buildSetId ||
@@ -215,11 +216,11 @@ export type GuardianOptions<Scope extends symbol> = Readonly<{
   mintReceipt(): string;
   /** The paired reaper channel, held open for the lifetime of the set. */
   reaperChannel: ControlClient;
-  self: Readonly<{ pid: number; processStartedAtSeconds: number }>;
+  self: Readonly<{ pid: number; incarnation: ProcessIncarnation }>;
   /** The reaper this guardian itself spawned. A teardown's `reaper` claim is checked against this — the one
    *  identity the guardian observed directly at spawn time, mirroring how it already checks `self` for its
    *  own claim and the capsule for the proxy's. */
-  reaperSelf: Readonly<{ pid: number; processStartedAtSeconds: number }>;
+  reaperSelf: Readonly<{ pid: number; incarnation: ProcessIncarnation }>;
   onOutcome(outcome: EnforcementOutcome): void;
   /** A wake later than the model's bound. Reported, but teardown still proceeds. */
   onProgressViolation(observedWakeLatencyMs: number): void;
@@ -266,7 +267,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
   const identity = Object.freeze({
     guardianInstanceId: capsule.guardianInstanceId,
     pid: self.pid,
-    processStartedAtSeconds: self.processStartedAtSeconds,
+    incarnation: self.incarnation,
     generation: capsule.generation,
     flavor: capsule.flavor,
     buildSetId: capsule.buildSetId,
@@ -281,7 +282,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
   const reaperSelfIdentity: ReaperIdentity = Object.freeze({
     reaperInstanceId: capsule.reaperInstanceId,
     pid: options.reaperSelf.pid,
-    processStartedAtSeconds: options.reaperSelf.processStartedAtSeconds,
+    incarnation: options.reaperSelf.incarnation,
     guardianInstanceId: capsule.guardianInstanceId,
     generation: capsule.generation,
     flavor: capsule.flavor,
@@ -418,7 +419,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
           const request = registerProviderRootParamsSchema.parse(params);
           const armed = requireEnforcer();
           assertNamedProxyIdentity('guardian', request.proxy, capsule);
-          const root = { pid: request.providerPid, processStartedAtSeconds: request.providerProcessStartedAtSeconds };
+          const root = { pid: request.providerPid, incarnation: request.providerIncarnation };
           // Idempotent by stable identity: the same operation reporting the same root gets the receipt it
           // already holds, rather than a fresh one that silently invalidates it.
           const key = membershipKey(request.operation);
@@ -428,7 +429,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
               !sameOperationIdentity(already.operation, request.operation) ||
               already.reservation !== request.reservation ||
               already.root.pid !== root.pid ||
-              already.root.processStartedAtSeconds !== root.processStartedAtSeconds
+              already.root.incarnation !== root.incarnation
             ) {
               throw new ProxyControlProtocolError(
                 'identity_mismatch',
@@ -508,7 +509,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
           }
           if (
             membership.root.pid !== request.providerRoot.pid ||
-            membership.root.processStartedAtSeconds !== request.providerRoot.processStartedAtSeconds
+            membership.root.incarnation !== request.providerRoot.incarnation
           ) {
             throw new ProxyControlProtocolError('identity_mismatch', 'Activation named a different provider root.');
           }

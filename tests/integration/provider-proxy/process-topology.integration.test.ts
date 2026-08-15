@@ -1,3 +1,4 @@
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { createServer, Socket } from 'node:net';
@@ -131,7 +132,7 @@ import {
   providerReaperBootstrapCapsulePath,
   providerReaperEndpoint,
 } from '#src/infra/path/index.js';
-import { probeProcessStartedAtSeconds } from '#src/infra/node-process.js';
+import { probeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
 import type { ChildProcessLike } from '#src/infra/port-types.js';
 import { createProviderProxyAcquisitionSteps } from '#src/coordinator/live/provider-proxy/acquisition-steps.js';
 import { acquireProviderProxySet } from '#src/coordinator/live/provider-proxy/index.js';
@@ -200,7 +201,6 @@ import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 
 const GENERATION = 'gen2' as const;
 const FLAVOR = 'prod' as const;
-const BASE_STARTED_AT_SECONDS = 1_700_000_000;
 const timingGuardianOpenResultSchema = z
   .object({
     controlEpoch: controlEpochSchema,
@@ -240,7 +240,7 @@ type FakeRoleEnvironmentOptions = Readonly<{
   resolveStrictIdentity(): StrictBundleIdentityResult;
   /** Overrides the start time a spawned pid reads back as. `null` simulates a spawn whose start time cannot
    *  be read at all. Defaults to a value derived from the pid, distinct per spawn. */
-  startedAtSecondsFor?(role: ProviderRole, pid: number): number | null;
+  startedAtSecondsFor?(role: ProviderRole, pid: number): ProcessIncarnation | null;
   /** Overrides the pid a role reports about itself (`ports.runtime.env.pid()`, read by `readSelfIdentity`).
    *  Defaults to the pid the fake spawn assigned it. Exists to engineer a deliberate self-report disagreement. */
   selfPidFor?(role: ProviderRole, spawnedPid: number): number;
@@ -267,7 +267,7 @@ type FakeRoleEnvironment = Readonly<{
   exitLog: number[];
   /** Shared with every nested role's own ports, and exposed so a non-role caller (the coordinator's own
    *  acquisition steps) can inject the identical fake pid identity resolution. */
-  readProcessStartedAtSeconds(pid: number, platform: NodeJS.Platform): number | null;
+  readProcessIncarnation(pid: number, platform: NodeJS.Platform): ProcessIncarnation | null;
   /** Ports for the role under direct test — its own spawn calls route through the shared fake below. */
   topLevelPorts(): ProviderRoleMainPorts;
   /** Runtime for a caller that is not itself a role (e.g. the coordinator's own acquisition steps). */
@@ -288,11 +288,11 @@ function createFakeRoleEnvironment(options: FakeRoleEnvironmentOptions): FakeRol
   const sequenceLog: string[] = [];
   const exitLog: number[] = [];
   const pidHandles = new Map<number, ProviderRoleHandle>();
-  const startedAtByPid = new Map<number, number | null>();
+  const startedAtByPid = new Map<number, ProcessIncarnation | null>();
 
-  const readProcessStartedAtSeconds = (pid: number, platform: NodeJS.Platform): number | null => {
+  const readProcessIncarnation = (pid: number, platform: NodeJS.Platform): ProcessIncarnation | null => {
     if (startedAtByPid.has(pid)) return startedAtByPid.get(pid) ?? null;
-    return probeProcessStartedAtSeconds(pid, platform);
+    return probeProcessIncarnation(pid, platform);
   };
 
   function runtimeWithFakeProcess(pidOverride: number | undefined): Runtime {
@@ -309,7 +309,7 @@ function createFakeRoleEnvironment(options: FakeRoleEnvironmentOptions): FakeRol
       pluginRoot: options.pluginRoot,
       baseDir: options.baseDir,
       resolveStrictIdentity: options.resolveStrictIdentity,
-      readProcessStartedAtSeconds,
+      readProcessIncarnation,
       onGuardianListening: () => {
         sequenceLog.push('guardian-listening');
         options.onGuardianListening?.();
@@ -330,7 +330,7 @@ function createFakeRoleEnvironment(options: FakeRoleEnvironmentOptions): FakeRol
     const pid = nextPid;
     nextPid += 1;
     const selfPid = options.selfPidFor?.(role, pid) ?? pid;
-    const startedAtSeconds = (options.startedAtSecondsFor ?? ((_role, p) => BASE_STARTED_AT_SECONDS + p))(role, pid);
+    const startedAtSeconds = (options.startedAtSecondsFor ?? ((_role, p) => testIncarnation(`base-${p}`)))(role, pid);
     startedAtByPid.set(pid, startedAtSeconds);
     if (selfPid !== pid) startedAtByPid.set(selfPid, startedAtSeconds);
     spawnLog.push({ role, capsulePath, detached: spawnOptions.detached === true, pid });
@@ -404,7 +404,7 @@ function createFakeRoleEnvironment(options: FakeRoleEnvironmentOptions): FakeRol
     handles,
     sequenceLog,
     exitLog,
-    readProcessStartedAtSeconds,
+    readProcessIncarnation,
     topLevelPorts: () => portsFor(undefined),
     outerRuntime: () => runtimeWithFakeProcess(undefined),
   };
@@ -585,12 +585,12 @@ async function runGuardianBootstrapSchedule(initialHeartbeatAcceptanceMs: number
   const coordinatorIdentity: CoordinatorIdentity = {
     instanceId: randomUUID(),
     pid: 4_000,
-    processStartedAtSeconds: 700,
+    incarnation: testIncarnation(700),
     generation: GENERATION,
     flavor: FLAVOR,
     buildSetId: shared.buildSetId,
   };
-  const guardianStartedAt = environment.readProcessStartedAtSeconds(
+  const guardianStartedAt = environment.readProcessIncarnation(
     process.pid,
     environment.outerRuntime().env.platform() as NodeJS.Platform,
   );
@@ -612,7 +612,7 @@ async function runGuardianBootstrapSchedule(initialHeartbeatAcceptanceMs: number
     const proxyIdentity = {
       proxyInstanceId: proxyCapsule.proxyInstanceId,
       pid: proxyPid,
-      processStartedAtSeconds: BASE_STARTED_AT_SECONDS + proxyPid,
+      incarnation: testIncarnation(`base-${proxyPid}`),
       processGroupId: proxyPid,
       guardianInstanceId: proxyCapsule.guardianInstanceId,
       reaperInstanceId: proxyCapsule.reaperInstanceId,
@@ -648,7 +648,7 @@ async function runGuardianBootstrapSchedule(initialHeartbeatAcceptanceMs: number
         expectedIdentity: {
           guardianInstanceId: guardianCapsule.guardianInstanceId,
           pid: process.pid,
-          processStartedAtSeconds: guardianStartedAt,
+          incarnation: guardianStartedAt,
           generation: guardianCapsule.generation,
           flavor: guardianCapsule.flavor,
           buildSetId: guardianCapsule.buildSetId,
@@ -917,7 +917,7 @@ describe('provider-proxy process topology: guardian role main', () => {
       resolveStrictIdentity: () => strictIdentity(shared.buildSetId),
       // A pid alone is not an identity — it is recycled — so a spawn whose start time cannot be read must
       // fail rather than record a bare pid. Only the proxy's start time is made unreadable.
-      startedAtSecondsFor: (role, pid) => (role === 'proxy' ? null : BASE_STARTED_AT_SECONDS + pid),
+      startedAtSecondsFor: (role, pid) => (role === 'proxy' ? null : testIncarnation(`base-${pid}`)),
     });
     cleanups.push(() => closeHandles(environment));
     const { guardianCapsulePath } = writeCapsuleSet(environment.outerRuntime(), baseDir, shared);
@@ -1041,7 +1041,7 @@ describe('provider-proxy process topology: acquisition', () => {
     const coordinatorIdentity: CoordinatorIdentity = {
       instanceId: randomUUID(),
       pid: process.pid,
-      processStartedAtSeconds: probeProcessStartedAtSeconds(process.pid, process.platform) ?? 0,
+      incarnation: probeProcessIncarnation(process.pid, process.platform) ?? testIncarnation('self'),
       generation: GENERATION,
       flavor: FLAVOR,
       buildSetId: shared.buildSetId,
@@ -1052,7 +1052,7 @@ describe('provider-proxy process topology: acquisition', () => {
       coordinatorIdentity,
       hostFingerprint: shared.hostFingerprint,
       baseDir,
-      readProcessStartedAtSeconds: environment.readProcessStartedAtSeconds,
+      readProcessIncarnation: environment.readProcessIncarnation,
       operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
     };
   }
@@ -1186,24 +1186,24 @@ describe('provider-proxy process topology: acquisition', () => {
         guardian: {
           instanceId: identity.guardianInstanceId,
           pid: identity.guardianPid,
-          processStartedAtSeconds: identity.guardianProcessStartedAtSeconds,
+          incarnation: identity.guardianIncarnation,
           controlEndpoint: identity.guardianControlEndpoint,
         },
         proxy: {
           instanceId: identity.proxyInstanceId,
           pid: identity.proxyPid,
-          processStartedAtSeconds: identity.proxyProcessStartedAtSeconds,
+          incarnation: identity.proxyIncarnation,
           controlEndpoint: identity.canonicalEndpoint,
         },
         reaper: {
           instanceId: identity.reaperInstanceId,
           pid: identity.reaperPid,
-          processStartedAtSeconds: identity.reaperProcessStartedAtSeconds,
+          incarnation: identity.reaperIncarnation,
           controlEndpoint: identity.reaperControlEndpoint,
         },
         containment: {
           pid: identity.proxyPid,
-          processStartedAtSeconds: identity.proxyProcessStartedAtSeconds,
+          incarnation: identity.proxyIncarnation,
           processGroupId: identity.proxyProcessGroupId,
           kind: identity.containmentKind,
         },
@@ -1220,7 +1220,7 @@ describe('provider-proxy process topology: acquisition', () => {
     const successorIdentity: CoordinatorIdentity = {
       instanceId: randomUUID(),
       pid: process.pid,
-      processStartedAtSeconds: probeProcessStartedAtSeconds(process.pid, process.platform) ?? 0,
+      incarnation: probeProcessIncarnation(process.pid, process.platform) ?? testIncarnation('self'),
       generation: GENERATION,
       flavor: FLAVOR,
       buildSetId: shared.buildSetId,

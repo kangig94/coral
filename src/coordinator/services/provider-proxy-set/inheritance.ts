@@ -1,5 +1,6 @@
+import type { ProcessIncarnation } from '../../../infra/node-process.js';
 import { providerHandoffCapsulePath } from '../../../infra/path/index.js';
-import { probeProcessStartedAtSeconds } from '../../../infra/node-process.js';
+import { probeProcessIncarnation } from '../../../infra/node-process.js';
 import { createMonotonicClock } from '../../../infra/monotonic-clock.js';
 import { reapRecordedContainment } from '../../../infra/process-containment.js';
 import {
@@ -112,7 +113,7 @@ export const proxyHandoffRedeemResultSchema = proxyHandoffRedeemFieldsSchema.ext
 export type ProviderProxySetInheritanceDeps = Readonly<{
   runtime: Runtime;
   baseDir?: string;
-  /** This successor's own wire identity — `pid`/`processStartedAtSeconds` read fresh, matching
+  /** This successor's own wire identity — `pid`/`incarnation` read fresh, matching
    *  `ensureProviderProxySet`'s own coordinator-identity construction. */
   coordinatorIdentity: CoordinatorIdentity;
   operationRegistry: ProviderProxyOperationSnapshot;
@@ -289,8 +290,8 @@ async function proveProviderProxySetContainmentAbsent(
 ): Promise<string | null> {
   const platform = runtime.env.platform() as NodeJS.Platform;
   const enforcerIdentities = [
-    { pid: identity.guardianPid, processStartedAtSeconds: identity.guardianProcessStartedAtSeconds },
-    { pid: identity.reaperPid, processStartedAtSeconds: identity.reaperProcessStartedAtSeconds },
+    { pid: identity.guardianPid, incarnation: identity.guardianIncarnation },
+    { pid: identity.reaperPid, incarnation: identity.reaperIncarnation },
   ];
   // Existence, not identity. These start times were recorded by the guardian and the reaper, not by this
   // coordinator, and a value derived in another process sits on another clock base — requiring an exact
@@ -303,7 +304,7 @@ async function proveProviderProxySetContainmentAbsent(
   // observable, never inferred from a disagreement.
   const enforcerMayStillBeLive = enforcerIdentities.some((identity) => {
     try {
-      return probeProcessStartedAtSeconds(identity.pid, platform) !== null || runtime.process.isAlive(identity.pid);
+      return probeProcessIncarnation(identity.pid, platform) !== null || runtime.process.isAlive(identity.pid);
     } catch {
       return true;
     }
@@ -313,7 +314,7 @@ async function proveProviderProxySetContainmentAbsent(
   }
   signal.throwIfAborted();
 
-  const roots = new Map<string, Readonly<{ pid: number; processStartedAtSeconds: number }>>();
+  const roots = new Map<string, Readonly<{ pid: number; incarnation: ProcessIncarnation }>>();
   for (const record of readProviderOperations(db)) {
     if (
       !('providerRoot' in record) ||
@@ -321,12 +322,12 @@ async function proveProviderProxySetContainmentAbsent(
     ) {
       continue;
     }
-    roots.set(`${record.providerRoot.pid}@${record.providerRoot.processStartedAtSeconds}`, record.providerRoot);
+    roots.set(`${record.providerRoot.pid}@${record.providerRoot.incarnation}`, record.providerRoot);
   }
   const recordedRoots = [...roots.values()];
   const containment = {
     pid: identity.proxyPid,
-    processStartedAtSeconds: identity.proxyProcessStartedAtSeconds,
+    incarnation: identity.proxyIncarnation,
     processGroupId: identity.proxyProcessGroupId,
   };
   const clock = createMonotonicClock(providerSetDisappearanceClockScope);
@@ -478,23 +479,23 @@ async function redeemCapsule(
       hostFingerprint: proxyIdentity.hostFingerprint,
       guardianInstanceId: guardianIdentity.guardianInstanceId,
       guardianPid: guardianIdentity.pid,
-      guardianProcessStartedAtSeconds: guardianIdentity.processStartedAtSeconds,
+      guardianIncarnation: guardianIdentity.incarnation,
       guardianControlEndpoint: guardianIdentity.canonicalControlEndpoint,
       proxyInstanceId: proxyIdentity.proxyInstanceId,
       proxyPid: proxyIdentity.pid,
       reaperInstanceId: reaperIdentity.reaperInstanceId,
       reaperPid: reaperIdentity.pid,
-      reaperProcessStartedAtSeconds: reaperIdentity.processStartedAtSeconds,
+      reaperIncarnation: reaperIdentity.incarnation,
       reaperControlEndpoint: reaperIdentity.canonicalControlEndpoint,
       containmentKind: reaperIdentity.containmentKind,
-      proxyProcessStartedAtSeconds: proxyIdentity.processStartedAtSeconds,
+      proxyIncarnation: proxyIdentity.incarnation,
       proxyProcessGroupId: proxyIdentity.processGroupId,
       canonicalEndpoint: proxyIdentity.canonicalEndpoint,
     });
     if (
       JSON.stringify(guardianReportedReaper) !== JSON.stringify(reaperIdentity) ||
       containment.pid !== proxyIdentity.pid ||
-      containment.processStartedAtSeconds !== proxyIdentity.processStartedAtSeconds ||
+      containment.incarnation !== proxyIdentity.incarnation ||
       containment.processGroupId !== proxyIdentity.processGroupId ||
       containment.containmentKind !== reaperIdentity.containmentKind ||
       capsule.buildSetId !== setIdentity.buildSetId ||
@@ -680,14 +681,14 @@ export function createProviderProxySetInheritance(
   ): ProviderProxySetInheritanceDeps | null => {
     const pid = options.runtime.env.pid();
     const platform = options.runtime.env.platform() as NodeJS.Platform;
-    const processStartedAtSeconds = probeProcessStartedAtSeconds(pid, platform);
-    if (processStartedAtSeconds === null) return null;
+    const incarnation = probeProcessIncarnation(pid, platform);
+    if (incarnation === null) return null;
     return {
       runtime: options.runtime,
       coordinatorIdentity: {
         instanceId: options.identity.instanceId,
         pid,
-        processStartedAtSeconds,
+        incarnation,
         generation: 'gen2',
         flavor: options.identity.flavor,
         buildSetId: options.identity.buildSetId,

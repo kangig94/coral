@@ -1,3 +1,4 @@
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
 import { join } from 'node:path';
@@ -92,7 +93,7 @@ describe('coordinator discovery', () => {
   it('probeCoordinator returns the record when pid and process start time match', async () => {
     makeHome();
     const { probeCoordinator, writeDiscoveryRecord } = await importDiscovery();
-    const { probeProcessStartedAtSeconds } = await import('#src/infra/node-process.js');
+    const { probeProcessIncarnation } = await import('#src/infra/node-process.js');
     const runtime = makeDiscoveryRuntime('dev');
 
     writeDiscoveryRecord(
@@ -106,7 +107,7 @@ describe('coordinator discovery', () => {
         startedAt: Date.now(),
         token: 'token-b',
         bootToken: 'boot-token-b',
-        processStartedAt: probeProcessStartedAtSeconds(process.pid) ?? undefined,
+        incarnation: probeProcessIncarnation(process.pid) ?? undefined,
       },
       runtime,
     );
@@ -122,7 +123,7 @@ describe('coordinator discovery', () => {
     });
   });
 
-  // A record whose `processStartedAt` disagrees with a fresh probe of the same live pid must still be
+  // A record whose `incarnation` disagrees with a fresh probe of the same live pid must still be
   // returned. The value is `/proc/stat` btime plus start ticks, and btime is cached per process, so the
   // writer's value and this reader's disagree by roughly the age gap between their first probes — 168
   // seconds, measured on a WSL2 host, for a coordinator probing its own pid. Rejecting on that basis
@@ -131,7 +132,6 @@ describe('coordinator discovery', () => {
   it('probeCoordinator returns a live record whose recorded start time disagrees with a fresh probe', async () => {
     makeHome();
     const { probeCoordinator, writeDiscoveryRecord } = await importDiscovery();
-    const { probeProcessStartedAtSeconds } = await import('#src/infra/node-process.js');
     const runtime = makeDiscoveryRuntime('prod');
 
     writeDiscoveryRecord(
@@ -145,7 +145,7 @@ describe('coordinator discovery', () => {
         startedAt: Date.now(),
         token: 'token-c',
         bootToken: 'boot-token-c',
-        processStartedAt: (probeProcessStartedAtSeconds(process.pid) ?? 0) + 168,
+        incarnation: testIncarnation('a-different-boot'),
       },
       runtime,
     );

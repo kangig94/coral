@@ -1,3 +1,4 @@
+import type { ProcessIncarnation } from '../../infra/node-process.js';
 import { timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { z, type ZodError } from 'zod';
@@ -986,7 +987,7 @@ function readHttpPingSnapshot(deps: HttpHandlerPorts): {
   namespace: string;
   instanceId: string;
   pid: number;
-  processStartedAt?: number;
+  incarnation?: ProcessIncarnation;
 } {
   const health = deps.health.read();
   return {
@@ -997,7 +998,7 @@ function readHttpPingSnapshot(deps: HttpHandlerPorts): {
     namespace: health.namespace,
     instanceId: health.instanceId,
     pid: health.pid,
-    ...(health.processStartedAt === undefined ? {} : { processStartedAt: health.processStartedAt }),
+    ...(health.incarnation === undefined ? {} : { incarnation: health.incarnation }),
   };
 }
 

@@ -1,3 +1,4 @@
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -71,16 +72,16 @@ function authority(): DurableProviderProxyOperationAuthority {
       hostFingerprint: 'a'.repeat(64),
       guardianInstanceId: randomUUID(),
       guardianPid: 100,
-      guardianProcessStartedAtSeconds: 1,
+      guardianIncarnation: testIncarnation(1),
       guardianControlEndpoint: '/tmp/guardian.sock',
       proxyInstanceId,
       proxyPid: 200,
       reaperInstanceId: randomUUID(),
       reaperPid: 300,
-      reaperProcessStartedAtSeconds: 2,
+      reaperIncarnation: testIncarnation(2),
       reaperControlEndpoint: '/tmp/reaper.sock',
       containmentKind: 'detached-group',
-      proxyProcessStartedAtSeconds: 3,
+      proxyIncarnation: testIncarnation(3),
       proxyProcessGroupId: 200,
       canonicalEndpoint: '/tmp/proxy.sock',
     },

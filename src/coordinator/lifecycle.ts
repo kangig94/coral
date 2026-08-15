@@ -820,7 +820,7 @@ async function runLifecycleStartup({
             env: runtime.env,
             paths: runtime.paths,
           });
-          if (!info || info.processStartedAt === undefined) {
+          if (!info || info.incarnation === undefined) {
             return null;
           }
           if (
@@ -837,13 +837,13 @@ async function runLifecycleStartup({
               (lastHealth.version !== undefined && lastHealth.version !== info.version) ||
               lastHealth.bundleHash !== info.bundleHash ||
               (lastHealth.pid !== undefined && lastHealth.pid !== info.pid) ||
-              (lastHealth.processStartedAt !== undefined && lastHealth.processStartedAt !== info.processStartedAt))
+              (lastHealth.incarnation !== undefined && lastHealth.incarnation !== info.incarnation))
           ) {
             return null;
           }
           return {
             pid: info.pid,
-            processStartedAt: info.processStartedAt,
+            incarnation: info.incarnation,
             source: 'discovery',
             instanceId: info.instanceId,
             token: info.token,

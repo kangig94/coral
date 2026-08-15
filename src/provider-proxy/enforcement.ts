@@ -86,7 +86,7 @@ export interface ArmedEnforcer<Scope extends symbol> {
 
 /** The only key under which a root can be signalled. */
 function rootKey(root: RecordedProcessIdentity): string {
-  return `${root.pid}@${root.processStartedAtSeconds}`;
+  return `${root.pid}@${root.incarnation}`;
 }
 
 /**
@@ -100,8 +100,8 @@ export function providerProxyDisappearanceReceipt(
 ): string {
   const targets = [
     `group:${containment.processGroupId}`,
-    `leader:${containment.pid}@${containment.processStartedAtSeconds}`,
-    ...roots.map((root) => `root:${root.pid}@${root.processStartedAtSeconds}`),
+    `leader:${containment.pid}@${containment.incarnation}`,
+    ...roots.map((root) => `root:${root.pid}@${root.incarnation}`),
   ];
   return targets.join(',');
 }

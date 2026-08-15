@@ -1,3 +1,4 @@
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { randomUUID } from 'node:crypto';
 import { basename, dirname } from 'node:path';
 
@@ -280,12 +281,12 @@ function v2CapsuleFor(record: ProviderOperationRecord): HandoffCapsuleV2 {
     ...v1CapsuleFor(record),
     version: 2,
     guardianPid: identity.guardianPid,
-    guardianProcessStartedAtSeconds: identity.guardianProcessStartedAtSeconds,
+    guardianIncarnation: identity.guardianIncarnation,
     proxyPid: identity.proxyPid,
     reaperPid: identity.reaperPid,
-    reaperProcessStartedAtSeconds: identity.reaperProcessStartedAtSeconds,
+    reaperIncarnation: identity.reaperIncarnation,
     containmentKind: identity.containmentKind,
-    proxyProcessStartedAtSeconds: identity.proxyProcessStartedAtSeconds,
+    proxyIncarnation: identity.proxyIncarnation,
     proxyProcessGroupId: identity.proxyProcessGroupId,
   };
 }
@@ -298,8 +299,8 @@ type ProductionStartupHarness = Readonly<{
   services: ReturnType<typeof createExecutionServices>;
 }>;
 
-/** Later than every `processStartedAtSeconds` the shared fixture records, so no recorded identity can match. */
-const FIXTURE_PROCESS_LONG_GONE_STARTED_AT_SECONDS = 9_000;
+/** Later than every `incarnation` the shared fixture records, so no recorded identity can match. */
+const FIXTURE_PROCESS_LONG_GONE_INCARNATION = testIncarnation(9_000);
 
 function noCapsuleStorage(base: StoragePort): StoragePort {
   return { ...base, readdirSync: (() => []) as StoragePort['readdirSync'] };
@@ -331,7 +332,7 @@ function absentProcessPort(base: ProcessPort): ProcessPort {
     ...base,
     isAlive: () => false,
     kill: () => false,
-    readProcessStartedAtSeconds: () => FIXTURE_PROCESS_LONG_GONE_STARTED_AT_SECONDS,
+    readProcessIncarnation: () => FIXTURE_PROCESS_LONG_GONE_INCARNATION,
   };
 }
 
@@ -467,7 +468,7 @@ function guardianFields(record: ProviderOperationRecord, operations: readonly Pr
     guardian: {
       guardianInstanceId: identity.guardianInstanceId,
       pid: identity.guardianPid,
-      processStartedAtSeconds: identity.guardianProcessStartedAtSeconds,
+      incarnation: identity.guardianIncarnation,
       generation: 'gen2',
       flavor: 'prod',
       buildSetId: identity.buildSetId,
@@ -477,7 +478,7 @@ function guardianFields(record: ProviderOperationRecord, operations: readonly Pr
     reaper: {
       reaperInstanceId: identity.reaperInstanceId,
       pid: identity.reaperPid,
-      processStartedAtSeconds: identity.reaperProcessStartedAtSeconds,
+      incarnation: identity.reaperIncarnation,
       guardianInstanceId: identity.guardianInstanceId,
       generation: 'gen2',
       flavor: 'prod',
@@ -488,7 +489,7 @@ function guardianFields(record: ProviderOperationRecord, operations: readonly Pr
     },
     containment: {
       pid: identity.proxyPid,
-      processStartedAtSeconds: identity.proxyProcessStartedAtSeconds,
+      incarnation: identity.proxyIncarnation,
       processGroupId: identity.proxyProcessGroupId,
       containmentKind: identity.containmentKind,
     },
@@ -513,7 +514,7 @@ function proxyFields(record: ProviderOperationRecord, operations: readonly Provi
     proxy: {
       proxyInstanceId: identity.proxyInstanceId,
       pid: identity.proxyPid,
-      processStartedAtSeconds: identity.proxyProcessStartedAtSeconds,
+      incarnation: identity.proxyIncarnation,
       processGroupId: identity.proxyProcessGroupId,
       guardianInstanceId: identity.guardianInstanceId,
       reaperInstanceId: identity.reaperInstanceId,
@@ -632,7 +633,7 @@ async function roleRecoveryStartupCase(
           coordinatorIdentity: {
             instanceId: randomUUID(),
             pid: process.pid,
-            processStartedAtSeconds: 1,
+            incarnation: testIncarnation(1),
             generation: 'gen2',
             flavor: 'prod',
             buildSetId: record.operation.buildSetId,

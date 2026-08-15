@@ -1,7 +1,8 @@
+import type { ProcessIncarnation } from '../../../infra/node-process.js';
 import { z } from 'zod';
 
 import { BUILD_FLAVOR_ENV_KEY } from '../../../infra/build-flavor.js';
-import { probeProcessStartedAtSeconds } from '../../../infra/node-process.js';
+import { probeProcessIncarnation } from '../../../infra/node-process.js';
 import { PROVIDER_SERVER_INITIALIZE_TIMEOUT_MS } from '../../../providers/app-server-transport.js';
 import {
   providerGuardianBootstrapCapsulePath,
@@ -91,7 +92,7 @@ export type ProviderProxyAcquisitionStepsOptions = Readonly<{
   baseDir?: string;
   /** Injected for tests; defaults to the real per-platform `/proc` or `ps` probe. This file only spawns the
    *  guardian — it never consumes a capsule itself, so it has no strict-identity check to inject. */
-  readProcessStartedAtSeconds?(pid: number, platform: NodeJS.Platform): number | null;
+  readProcessIncarnation?(pid: number, platform: NodeJS.Platform): ProcessIncarnation | null;
   /** Supplies the live provider roots used for stop-and-reap agreement. */
   operationRegistry: ProviderProxyOperationSnapshot;
   /** Builds the durable-effect handler for `provider.event.v1`, called once `establishControl` is about to
@@ -266,12 +267,12 @@ export function createProviderProxyAcquisitionSteps(
       }
       const setMinted = minted;
       const platform = runtime.env.platform() as NodeJS.Platform;
-      const readProcessStartedAtSeconds = options.readProcessStartedAtSeconds ?? probeProcessStartedAtSeconds;
+      const readProcessIncarnation = options.readProcessIncarnation ?? probeProcessIncarnation;
       const spawnPorts: RoleSpawnPorts = {
         process: runtime.process,
         runtime,
         platform,
-        readProcessStartedAtSeconds,
+        readProcessIncarnation,
       };
       const spawned = spawnRoleProcess('guardian', setMinted.guardianCapsulePath, spawnPorts, {
         pluginRoot: options.pluginRoot,
@@ -283,7 +284,7 @@ export function createProviderProxyAcquisitionSteps(
       guardianSpawn = spawned;
       return {
         label: 'guardian',
-        run: buildGuardianSpawnUndo(runtime, spawned, platform, readProcessStartedAtSeconds),
+        run: buildGuardianSpawnUndo(runtime, spawned, platform, readProcessIncarnation),
       };
     },
 
@@ -354,7 +355,7 @@ export function createProviderProxyAcquisitionSteps(
           expectedIdentity: {
             guardianInstanceId: setMinted.guardianInstanceId,
             pid: spawnedGuardian.pid,
-            processStartedAtSeconds: spawnedGuardian.processStartedAtSeconds,
+            incarnation: spawnedGuardian.incarnation,
             generation,
             flavor,
             buildSetId,
@@ -384,7 +385,7 @@ export function createProviderProxyAcquisitionSteps(
             proxy: proxySession.opened.proxy,
             containment: {
               pid: proxyIdentity.pid,
-              processStartedAtSeconds: proxyIdentity.processStartedAtSeconds,
+              incarnation: proxyIdentity.incarnation,
               processGroupId: proxyIdentity.processGroupId,
               containmentKind: DETACHED_CONTAINMENT_KIND,
             },
@@ -445,16 +446,16 @@ export function createProviderProxyAcquisitionSteps(
           hostFingerprint,
           guardianInstanceId: setMinted.guardianInstanceId,
           guardianPid: spawnedGuardian.pid,
-          guardianProcessStartedAtSeconds: spawnedGuardian.processStartedAtSeconds,
+          guardianIncarnation: spawnedGuardian.incarnation,
           guardianControlEndpoint: setMinted.guardianEndpoint,
           proxyInstanceId: setMinted.proxyInstanceId,
           proxyPid: proxyIdentity.pid,
           reaperInstanceId: setMinted.reaperInstanceId,
           reaperPid: reaperSession.opened.reaper.pid,
-          reaperProcessStartedAtSeconds: reaperSession.opened.reaper.processStartedAtSeconds,
+          reaperIncarnation: reaperSession.opened.reaper.incarnation,
           reaperControlEndpoint: setMinted.reaperEndpoint,
           containmentKind: DETACHED_CONTAINMENT_KIND,
-          proxyProcessStartedAtSeconds: proxyIdentity.processStartedAtSeconds,
+          proxyIncarnation: proxyIdentity.incarnation,
           proxyProcessGroupId: proxyIdentity.processGroupId,
           canonicalEndpoint: setMinted.proxyEndpoint,
         };

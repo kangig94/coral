@@ -1,3 +1,4 @@
+import type { ProcessIncarnation } from '../../../infra/node-process.js';
 import { raceTimeout } from '../../../infra/async.js';
 import type { ContainedProviderServerHandle } from '../../../providers/app-server-transport.js';
 import type { ProviderServerSpec } from '../../../providers/contract.js';
@@ -39,7 +40,7 @@ type ProviderHostContainmentRuntimeWithTime = Pick<Runtime, 'env' | 'process' | 
 function containmentReaperWithClock<Scope extends symbol>(
   runtime: ProviderHostContainmentRuntime,
   clock: MonotonicClock<Scope>,
-  readProcessStartedAtSeconds: (pid: number, platform: NodeJS.Platform) => number | null,
+  readProcessIncarnation: (pid: number, platform: NodeJS.Platform) => ProcessIncarnation | null,
 ): ProviderHostContainmentReaper {
   return (containment, signal) =>
     reapRecordedContainment(containment, [], clock.shiftMilliseconds(clock.now(), PROVIDER_HOST_REAP_DEADLINE_MS), {
@@ -47,7 +48,7 @@ function containmentReaperWithClock<Scope extends symbol>(
       clock,
       process: runtime.process,
       platform: runtime.env.platform() as NodeJS.Platform,
-      readProcessStartedAtSeconds,
+      readProcessIncarnation,
       ...(signal === undefined ? {} : { signal }),
     });
 }
@@ -60,20 +61,19 @@ export function createProviderHostContainmentReaper<Scope extends symbol>(
   runtime: ProviderHostContainmentRuntime,
   options: {
     clock: MonotonicClock<Scope>;
-    readProcessStartedAtSeconds?: (pid: number, platform: NodeJS.Platform) => number | null;
+    readProcessIncarnation?: (pid: number, platform: NodeJS.Platform) => ProcessIncarnation | null;
   },
 ): ProviderHostContainmentReaper;
 export function createProviderHostContainmentReaper<Scope extends symbol>(
   runtime: ProviderHostContainmentRuntime,
   options?: {
     clock: MonotonicClock<Scope>;
-    readProcessStartedAtSeconds?: (pid: number, platform: NodeJS.Platform) => number | null;
+    readProcessIncarnation?: (pid: number, platform: NodeJS.Platform) => ProcessIncarnation | null;
   },
 ): ProviderHostContainmentReaper {
-  const readProcessStartedAtSeconds =
-    options?.readProcessStartedAtSeconds ?? runtime.process.readProcessStartedAtSeconds;
+  const readProcessIncarnation = options?.readProcessIncarnation ?? runtime.process.readProcessIncarnation;
   if (options !== undefined) {
-    return containmentReaperWithClock(runtime, options.clock, readProcessStartedAtSeconds);
+    return containmentReaperWithClock(runtime, options.clock, readProcessIncarnation);
   }
   const runtimeWithTime = runtime as ProviderHostContainmentRuntimeWithTime;
   return containmentReaperWithClock(
@@ -82,7 +82,7 @@ export function createProviderHostContainmentReaper<Scope extends symbol>(
       readMilliseconds: () => runtimeWithTime.time.monotonicNow(),
       sleep: (milliseconds) => runtimeWithTime.time.sleep(milliseconds),
     }),
-    readProcessStartedAtSeconds,
+    readProcessIncarnation,
   );
 }
 

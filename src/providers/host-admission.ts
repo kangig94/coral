@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { errorMessage } from '../infra/error-format.js';
-import { canProbeProcessStartedAtSeconds } from '../infra/node-process.js';
+import { canProbeProcessIncarnation } from '../infra/node-process.js';
 import type { CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 import type { HostRef, ProviderServerSpec } from './contract.js';
 import { decodeHostRef, encodeHostRef } from './host-ref-codec.js';
@@ -155,7 +155,7 @@ export class ProviderHostUnsupportedPlatformError extends Error {
 }
 
 export function assertProviderHostPlatformSupported(platform: string): void {
-  if (!canSignalProviderHostProcessGroup(platform) || !canProbeProcessStartedAtSeconds(platform)) {
+  if (!canSignalProviderHostProcessGroup(platform) || !canProbeProcessIncarnation(platform)) {
     throw new ProviderHostUnsupportedPlatformError(platform);
   }
 }

@@ -1,3 +1,4 @@
+import type { ProcessIncarnation } from '../../../src/infra/node-process.js';
 import { EventEmitter } from 'node:events';
 import { join, normalize } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -38,7 +39,7 @@ type ProcessExitOutcome = {
 
 type RegisteredProcess = {
   pid: number;
-  processStartedAtSeconds: number;
+  incarnation: ProcessIncarnation;
   processGroupId: number | null;
   alive: boolean;
   closed: boolean;
@@ -61,6 +62,15 @@ function asChunks(value: string | ChildOutputChunk[] | undefined): ChildOutputCh
     return [{ delayMs: 0, data: value }];
   }
   return value.map((chunk) => ({ delayMs: chunk.delayMs ?? 0, data: chunk.data }));
+}
+
+/**
+ * The simulation mints its own incarnations rather than borrowing the test helper: `tools/simulation`
+ * is sealed against `tests/`, and a simulated process's identity is the simulation's own concern. The
+ * value is opaque to every consumer — only equality is ever asked of it.
+ */
+function simulatedIncarnation(nowMs: number): ProcessIncarnation {
+  return `simulation:${Math.floor(nowMs / 1_000)}` as ProcessIncarnation;
 }
 
 export class MockStdin extends EventEmitter implements ChildStdinLike {
@@ -325,9 +335,9 @@ export class MockProcessSpawner {
     return this.resolveKillTargets(pid).some((record) => record.alive);
   }
 
-  readProcessStartedAtSeconds(pid: number): number | null {
+  readProcessIncarnation(pid: number): ProcessIncarnation | null {
     const record = this.processes.get(pid);
-    return record && !record.closed ? record.processStartedAtSeconds : null;
+    return record && !record.closed ? record.incarnation : null;
   }
 
   setAlive(pid: number, alive: boolean): void {
@@ -456,7 +466,7 @@ export class MockProcessSpawner {
   ): RegisteredProcess {
     const record: RegisteredProcess = {
       pid,
-      processStartedAtSeconds: Math.floor(this.time.now() / 1_000),
+      incarnation: simulatedIncarnation(this.time.now()),
       processGroupId,
       alive: true,
       closed: false,

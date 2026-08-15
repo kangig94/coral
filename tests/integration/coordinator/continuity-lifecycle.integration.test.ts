@@ -1,3 +1,4 @@
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { allocateTestSession, seedTestProviderContinuity } from '../../helpers/session.js';
 import { randomUUID } from 'node:crypto';
@@ -604,7 +605,7 @@ describe('coordinator continuity lifecycle integration', () => {
     const { sessionManager } = getInternals(service);
     // `durable_cli_process.v1` keys on a canonical UUID; the job id must be one to write it below.
     const jobId = randomUUID();
-    // A pid this OS will never assign: `probeProcessStartedAtSeconds` and `isProcessAlive` both answer
+    // A pid this OS will never assign: `probeProcessIncarnation` and `isProcessAlive` both answer
     // "nothing there" for it locally, with no network call involved.
     const deadPid = 2_147_483_647;
     const session = allocateTestSession(
@@ -640,7 +641,7 @@ describe('coordinator continuity lifecycle integration', () => {
       version: 1,
       jobId,
       pid: deadPid,
-      processStartedAtSeconds: 1,
+      incarnation: testIncarnation(1),
     });
     const expectedStoredPhase = progressStore.readStatus(jobId)?.phase;
 

@@ -1,3 +1,4 @@
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -10,7 +11,7 @@ vi.mock('#src/provider-proxy/role-spawn.js', async (importOriginal) => {
   const original = await importOriginal<object>();
   return {
     ...original,
-    spawnRoleProcess: vi.fn(() => ({ pid: 101, processStartedAtSeconds: 11 })),
+    spawnRoleProcess: vi.fn(() => ({ pid: 101, incarnation: testIncarnation(11) })),
   };
 });
 
@@ -159,9 +160,9 @@ describe('createProviderProxyAcquisitionSteps', () => {
       opened.push(client);
       const identity =
         role === 'proxy'
-          ? { ...plan.expectedIdentity, pid: 201, processStartedAtSeconds: 21, processGroupId: 201 }
+          ? { ...plan.expectedIdentity, pid: 201, incarnation: testIncarnation(21), processGroupId: 201 }
           : role === 'reaper'
-            ? { ...plan.expectedIdentity, pid: 301, processStartedAtSeconds: 31 }
+            ? { ...plan.expectedIdentity, pid: 301, incarnation: testIncarnation(31) }
             : plan.expectedIdentity;
       return {
         client,
@@ -188,7 +189,7 @@ describe('createProviderProxyAcquisitionSteps', () => {
     const coordinatorIdentity: CoordinatorIdentity = {
       instanceId: randomUUID(),
       pid: 1,
-      processStartedAtSeconds: 1,
+      incarnation: testIncarnation(1),
       generation: 'gen2',
       flavor: 'prod',
       buildSetId: randomUUID(),
@@ -234,9 +235,9 @@ describe('createProviderProxyAcquisitionSteps', () => {
       opened.push(client);
       const identity =
         role === 'proxy'
-          ? { ...plan.expectedIdentity, pid: 201, processStartedAtSeconds: 21, processGroupId: 201 }
+          ? { ...plan.expectedIdentity, pid: 201, incarnation: testIncarnation(21), processGroupId: 201 }
           : role === 'reaper'
-            ? { ...plan.expectedIdentity, pid: 301, processStartedAtSeconds: 31 }
+            ? { ...plan.expectedIdentity, pid: 301, incarnation: testIncarnation(31) }
             : plan.expectedIdentity;
       return {
         client,
@@ -263,7 +264,7 @@ describe('createProviderProxyAcquisitionSteps', () => {
     const coordinatorIdentity: CoordinatorIdentity = {
       instanceId: randomUUID(),
       pid: 1,
-      processStartedAtSeconds: 1,
+      incarnation: testIncarnation(1),
       generation: 'gen2',
       flavor: 'prod',
       buildSetId: randomUUID(),

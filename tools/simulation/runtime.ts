@@ -57,7 +57,7 @@ export class SimulationRuntime implements Runtime {
       return this.spawner.kill(pid, signal);
     };
     simulationProcess.isAlive = (pid) => this.spawner.isAlive(pid);
-    simulationProcess.readProcessStartedAtSeconds = (pid) => this.spawner.readProcessStartedAtSeconds(pid);
+    simulationProcess.readProcessIncarnation = (pid) => this.spawner.readProcessIncarnation(pid);
     simulationProcess.durable = this.spawner.durable;
 
     simulationProcess.exec = (command, args, options = {}) => {

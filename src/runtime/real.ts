@@ -46,7 +46,7 @@ import { composeChildEnv, parsePassthrough, resolveEnvBudgetBytes } from '../inf
 import { isDurableCliRuntime, type DurableCliRuntimeRecord, type DurableProcessExit } from './durable-runtime.js';
 import { buildExecPromise } from './exec-builder.js';
 import { createRealTimePort } from '../infra/time.js';
-import { probeProcessStartedAtSeconds } from '../infra/node-process.js';
+import { probeProcessIncarnation } from '../infra/node-process.js';
 
 const DURABLE_POLL_INTERVAL_MS = 100;
 const DURABLE_POLL_TIMEOUT_MS = 5_000;
@@ -357,7 +357,7 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
       }
     },
     isAlive: (pid) => processIsAlive(pid),
-    readProcessStartedAtSeconds: (pid, platform) => probeProcessStartedAtSeconds(pid, platform),
+    readProcessIncarnation: (pid, platform) => probeProcessIncarnation(pid, platform),
     durable,
   } as ProcessPort;
 

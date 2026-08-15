@@ -1,3 +1,4 @@
+import type { ProcessIncarnation } from '../../../infra/node-process.js';
 import type { ControlClient } from '../../../provider-proxy/control-client.js';
 import type { OperationIdentity } from '../../../provider-proxy/protocol.js';
 import {
@@ -44,7 +45,7 @@ export interface DurableProviderProxyOperationAuthority extends ProviderProxyOpe
     operation: OperationIdentity,
     evidence: Readonly<{
       reservation: string;
-      providerRoot: Readonly<{ pid: number; processStartedAtSeconds: number }>;
+      providerRoot: Readonly<{ pid: number; incarnation: ProcessIncarnation }>;
       jointContainmentReceipt: string;
     }>,
   ): Promise<AuthorizeProviderOperationResult>;

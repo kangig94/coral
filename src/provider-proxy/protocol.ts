@@ -1,3 +1,4 @@
+import { processIncarnationSchema, type ProcessIncarnation } from '../infra/node-process.js';
 import { isAbsolute, normalize } from 'node:path';
 
 import { z } from 'zod';
@@ -189,7 +190,7 @@ export const coordinatorIdentitySchema = z
   .object({
     instanceId: canonicalUuidSchema,
     pid: nonNegativeSafeIntegerSchema,
-    processStartedAtSeconds: nonNegativeSafeIntegerSchema,
+    incarnation: processIncarnationSchema,
     generation: generationSchema,
     flavor: flavorSchema,
     buildSetId: canonicalUuidSchema,
@@ -202,7 +203,7 @@ export const guardianIdentitySchema = z
   .object({
     guardianInstanceId: canonicalUuidSchema,
     pid: nonNegativeSafeIntegerSchema,
-    processStartedAtSeconds: nonNegativeSafeIntegerSchema,
+    incarnation: processIncarnationSchema,
     generation: generationSchema,
     flavor: flavorSchema,
     buildSetId: canonicalUuidSchema,
@@ -217,7 +218,7 @@ export const reaperIdentitySchema = z
   .object({
     reaperInstanceId: canonicalUuidSchema,
     pid: nonNegativeSafeIntegerSchema,
-    processStartedAtSeconds: nonNegativeSafeIntegerSchema,
+    incarnation: processIncarnationSchema,
     guardianInstanceId: canonicalUuidSchema,
     generation: generationSchema,
     flavor: flavorSchema,
@@ -234,7 +235,7 @@ export const proxyIdentitySchema = z
   .object({
     proxyInstanceId: canonicalUuidSchema,
     pid: nonNegativeSafeIntegerSchema,
-    processStartedAtSeconds: nonNegativeSafeIntegerSchema,
+    incarnation: processIncarnationSchema,
     processGroupId: nonNegativeSafeIntegerSchema,
     guardianInstanceId: canonicalUuidSchema,
     reaperInstanceId: canonicalUuidSchema,
@@ -264,7 +265,7 @@ export type OperationIdentity = z.infer<typeof operationIdentitySchema>;
  *  response names a provider root — a single staged/confirmed root or a member of the teardown-time
  *  recorded set — rather than each role declaring its own copy of the same two fields. */
 export const providerRootSchema = z
-  .object({ pid: nonNegativeSafeIntegerSchema, processStartedAtSeconds: nonNegativeSafeIntegerSchema })
+  .object({ pid: nonNegativeSafeIntegerSchema, incarnation: processIncarnationSchema })
   .strict();
 
 /** The permission bits of a `stat.mode`, isolated from the leading file-type bits so a mode can be compared
@@ -391,11 +392,10 @@ export function assertNamedCoordinatorBuild(
  *  same stop-and-reap request. */
 export function assertRecordedSetAgreement(
   role: 'guardian' | 'reaper',
-  claimed: readonly { pid: number; processStartedAtSeconds: number }[],
-  recorded: readonly { pid: number; processStartedAtSeconds: number }[],
+  claimed: readonly { pid: number; incarnation: ProcessIncarnation }[],
+  recorded: readonly { pid: number; incarnation: ProcessIncarnation }[],
 ): void {
-  const key = (root: { pid: number; processStartedAtSeconds: number }): string =>
-    `${root.pid}@${root.processStartedAtSeconds}`;
+  const key = (root: { pid: number; incarnation: ProcessIncarnation }): string => `${root.pid}@${root.incarnation}`;
   const recordedKeys = new Set(recorded.map(key));
   if (claimed.some((root) => !recordedKeys.has(key(root)))) {
     throw new ProxyControlProtocolError(
@@ -452,7 +452,7 @@ export function assertNamedReaperIdentity(claimed: ReaperIdentity, actual: Reape
   if (
     claimed.reaperInstanceId !== actual.reaperInstanceId ||
     claimed.pid !== actual.pid ||
-    claimed.processStartedAtSeconds !== actual.processStartedAtSeconds ||
+    claimed.incarnation !== actual.incarnation ||
     claimed.guardianInstanceId !== actual.guardianInstanceId ||
     claimed.generation !== actual.generation ||
     claimed.flavor !== actual.flavor ||
@@ -471,12 +471,12 @@ export function assertNamedReaperIdentity(claimed: ReaperIdentity, actual: Reape
  *  checking what a coordinator's `reaper.open.v1` claims against it) compare an incoming containment against
  *  one already held by this same shape, so a mismatch is always this same 4-field disagreement. */
 export function sameRecordedContainment(
-  left: Readonly<{ pid: number; processStartedAtSeconds: number; processGroupId: number; containmentKind: string }>,
-  right: Readonly<{ pid: number; processStartedAtSeconds: number; processGroupId: number; containmentKind: string }>,
+  left: Readonly<{ pid: number; incarnation: ProcessIncarnation; processGroupId: number; containmentKind: string }>,
+  right: Readonly<{ pid: number; incarnation: ProcessIncarnation; processGroupId: number; containmentKind: string }>,
 ): boolean {
   return (
     left.pid === right.pid &&
-    left.processStartedAtSeconds === right.processStartedAtSeconds &&
+    left.incarnation === right.incarnation &&
     left.processGroupId === right.processGroupId &&
     left.containmentKind === right.containmentKind
   );
@@ -511,7 +511,7 @@ export const guardianRegisterProviderRootParamsSchema = z
     operation: operationIdentitySchema,
     reservation: reservationSchema,
     providerPid: z.number().int().nonnegative(),
-    providerProcessStartedAtSeconds: z.number().int().nonnegative(),
+    providerIncarnation: processIncarnationSchema,
   })
   .strict();
 
@@ -592,7 +592,7 @@ export const reaperStopAndReapResultSchema = z
 export const recordedContainmentSchema = z
   .object({
     pid: nonNegativeSafeIntegerSchema,
-    processStartedAtSeconds: nonNegativeSafeIntegerSchema,
+    incarnation: processIncarnationSchema,
     processGroupId: nonNegativeSafeIntegerSchema,
     containmentKind: z.string().min(1).max(64),
   })

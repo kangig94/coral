@@ -1,3 +1,4 @@
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -68,7 +69,7 @@ const OPERATION_B = operationIdentitySchema.parse({
 const PROXY_LOCATOR = {
   instanceId: OPERATION_A.proxyInstanceId,
   pid: 4_242,
-  processStartedAtSeconds: 1_700_000_000,
+  incarnation: testIncarnation(1_700_000_000),
   controlEndpoint: '/tmp/coral-carrier-status.sock',
 } as const;
 
@@ -494,7 +495,7 @@ describe('carrier status identity handshake', () => {
     const locatorVariants = [
       { ...PROXY_LOCATOR, instanceId: FOREIGN_PROXY_INSTANCE_ID },
       { ...PROXY_LOCATOR, pid: PROXY_LOCATOR.pid + 1 },
-      { ...PROXY_LOCATOR, processStartedAtSeconds: PROXY_LOCATOR.processStartedAtSeconds + 1 },
+      { ...PROXY_LOCATOR, incarnation: testIncarnation('recycled') },
       { ...PROXY_LOCATOR, controlEndpoint: '/tmp/coral-carrier-status-other.sock' },
     ];
     const locatorOperations = locatorVariants.map((locator, index) =>
