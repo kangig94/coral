@@ -41,16 +41,21 @@ export function createFailedWorkflowDescendantReleaser(
   ): readonly WorkflowRecoveryDescendantRelease[] => {
     const releases: WorkflowRecoveryDescendantRelease[] = [];
     for (const descendant of descendants) {
-      // `releaseJob` owns this decision and already separates the two cases that matter: `already_absent`
-      // when nothing holds the claim, `owned_by_another_job` when someone else does. An earlier revision
-      // re-derived that judgement here from a projection read and got it wrong in both directions — it
-      // treated an already-released claim as a conflict, and it compared a session version captured when
-      // recovery started against one that recovery's own lawful work had since moved. Waiting for a child
-      // to terminate releases its claim; completing a replacement intent swaps it. Both are this pass
-      // doing its job, and both failed a check meant to catch foreign change.
+      // An earlier revision re-derived this judgement here from a projection read, and got it wrong in
+      // two directions: it treated an already-released claim as a conflict, and it compared a session
+      // version captured when recovery started against one that recovery's own lawful work had since
+      // moved. Waiting for a child to terminate releases its claim; completing a replacement intent
+      // swaps it. Both are this pass doing its job, and both failed a check meant to catch foreign
+      // change.
       //
       // The obligation is per-job and idempotent: what must hold afterwards is that `jobId` does not hold
-      // `sessionId`. Already true is satisfied, not violated.
+      // `sessionId`. All three results say that it does not — `released` because we just released it,
+      // `already_absent` because nothing held it, `owned_by_another_job` because someone else does. None
+      // is a conflict, and the safety property is `releaseJob` itself refusing to touch another owner,
+      // not a throw here. Throwing on the third only turned a benign state into a close this pass can
+      // never satisfy, retried from the persisted `ready-to-close` record on every later pass.
+      // The disposition is reported rather than swallowed: `describeSessionJobClaimReleaseResult`
+      // renders all three, and workflow recovery logs whichever occurred.
       const sessionClaimRelease = releaseSessionJobClaim({
         projectRoot: descendant.projectRoot,
         runtime: deps.runtime,
@@ -60,11 +65,6 @@ export function createFailedWorkflowDescendantReleaser(
         sessionId: descendant.sessionId,
         jobId: descendant.jobId,
       });
-      if (sessionClaimRelease === 'owned_by_another_job') {
-        throw new Error(
-          `Workflow recovery descendant claim for '${descendant.jobId}' session '${descendant.sessionId}' now belongs to another job.`,
-        );
-      }
       releases.push({
         jobId: descendant.jobId,
         sessionId: descendant.sessionId,

@@ -2575,4 +2575,155 @@ describe('workflow recovery branch rules', () => {
       await backend.backend.shutdown('test cleanup');
     }
   });
+
+  // The third arm of the same result. A close that this pass defers is retried on a later pass, and by
+  // then the launch fence is down — so another job can lawfully hold the session a stale descendant
+  // names. Treating that as a conflict made the close permanently unsatisfiable: the persisted
+  // `ready-to-close` record comes back unchanged every pass, and the descendant it names is never going
+  // to hold that session again. `releaseJob` refusing to touch the other owner is the safety property;
+  // the throw on top of it only converted a benign state into a workflow that never finishes.
+  it('closes when a descendant session has since been claimed by another job', async () => {
+    const backend = createSimulationBackend({ projectRoot: PROJECT_ROOT, pluginRoot: PROJECT_ROOT });
+    const workflowId = 'workflow-descendant-foreign-owner';
+    const plan = buildWorkflowPlan(workflowId, parseExpression('architect'), { defaultProvider: 'codex' });
+    const childJobId = plan.slots[0].slotId;
+    const sessionId = 'session-descendant-foreign-owner';
+    const successorJobId = 'job-unrelated-successor';
+    const providerScope = backend.createInvocationContext().providerScope;
+    if (providerScope === undefined) throw new Error('expected simulation provider scope');
+
+    commitWorkflowEvents(
+      backend.progressStore.getDb(),
+      (c) => {
+        c.append(workflowPlanDeclaredEvent(workflowId, plan, providerScope));
+        return undefined;
+      },
+      backend.runtime.time,
+      permissiveProviderLookupPort,
+    );
+    backend.progressStore.appendLaunchRequested(workflowId, {
+      jobId: workflowId,
+      owner: { kind: 'workflow', id: workflowId },
+      sessionId: null,
+      provider: null,
+      projectRoot: backend.projectRoot,
+      backendNamespace: backend.namespace,
+      jobKind: 'workflow',
+      pool: 'default',
+      enqueueSequence: backend.progressStore.nextEnqueueSequence(),
+      request: { prompt: '', cwd: backend.projectRoot, bypassPermissions: false, coralEnv: {} },
+      createdAt: '2026-04-27T00:00:00.000Z',
+    });
+    backend.progressStore.commit((c) => {
+      c.append({
+        type: 'job.runtime.started',
+        stream: { kind: 'job', id: workflowId },
+        namespace: backend.namespace,
+        project: backend.projectRoot,
+        refs: { jobId: workflowId, workflowId },
+        body: { transport: 'workflow', startedAt: '2026-04-27T00:00:00.000Z' },
+      });
+      return undefined;
+    });
+
+    seedTestSessionProjection(backend.progressStore.getDb(), {
+      sessionId,
+      provider: 'codex',
+      projectRoot: backend.projectRoot,
+      backendNamespace: backend.namespace,
+      activeJobId: childJobId,
+    });
+    backend.progressStore.appendLaunchRequested(childJobId, {
+      jobId: childJobId,
+      owner: { kind: 'workflow', id: workflowId },
+      sessionId,
+      provider: 'codex',
+      projectRoot: backend.projectRoot,
+      backendNamespace: backend.namespace,
+      jobKind: 'provider',
+      pool: 'default',
+      enqueueSequence: backend.progressStore.nextEnqueueSequence(),
+      providerAction: 'exec',
+      parentWorkflowJobId: workflowId,
+      workflowSlotId: childJobId,
+      workflowSlotGeneration: 0,
+      request: { prompt: '', cwd: backend.projectRoot, bypassPermissions: false, coralEnv: {} },
+      createdAt: '2026-04-27T00:00:00.000Z',
+    });
+
+    const log = vi.fn<(message: string) => void>();
+    const coordinatorCommit = (cb: Parameters<JobStore['commit']>[0]) => backend.progressStore.commit(cb);
+    const releaseFailedWorkflowDescendants = createFailedWorkflowDescendantReleaser({
+      progressStore: backend.progressStore,
+      runtime: backend.runtime,
+      coordinatorCommit,
+      getExecutionService: () => backend.service,
+      createInvocationContext: backend.createInvocationContext,
+      releaseAdoptedJob: () => {},
+      emitSessionReleased: () => {},
+      log,
+    });
+
+    // The child releases, an unrelated job claims the session, and only then does recovery fail — the
+    // shape a deferred close finds when it is retried after the launch fence has lifted.
+    const executionSvc = new Proxy(backend.service as object, {
+      get: (target, property) => {
+        if (property === 'waitStream') {
+          return () => {
+            releaseSessionJobClaim({
+              projectRoot: backend.projectRoot,
+              runtime: backend.runtime,
+              db: backend.progressStore.getDb(),
+              commitEvents: coordinatorCommit,
+              emitSessionReleased: () => {},
+              sessionId,
+              jobId: childJobId,
+            });
+            seedTestSessionProjection(backend.progressStore.getDb(), {
+              sessionId,
+              provider: 'codex',
+              projectRoot: backend.projectRoot,
+              backendNamespace: backend.namespace,
+              activeJobId: successorJobId,
+            });
+            throw new Error('workflow recovery failed while an unrelated job held the session');
+          };
+        }
+        const value = Reflect.get(target, property, target) as unknown;
+        return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+      },
+    }) as typeof backend.service;
+
+    try {
+      const settled = await resumeAll({
+        db: backend.progressStore.getDb(),
+        progressStore: backend.progressStore,
+        loadJobDetails: loadJobProjectionDetails,
+        getExecutionService: () => executionSvc as never,
+        createInvocationContext: backend.createInvocationContext,
+        finalizeWorkflow: createWorkflowRecoveryFinalizer({
+          runtime: backend.runtime,
+          progressStore: backend.progressStore,
+          coordinatorCommit,
+          log,
+        }),
+        releaseFailedWorkflowDescendants,
+        log,
+        time: backend.runtime.time,
+      });
+
+      expect(settled, 'a session another job now owns must not make this close unsatisfiable forever').toEqual([
+        workflowId,
+      ]);
+      expect(log).toHaveBeenCalledWith(
+        `Workflow recovery child ${childJobId} session claim ${sessionId} disposition: owned by another job.\n`,
+      );
+      // The successor keeps its claim: recovery released nothing it did not own.
+      expect(
+        createProjectionSessionLookup(backend.progressStore.getDb()).readProviderSession(sessionId)?.activeJobId,
+      ).toBe(successorJobId);
+    } finally {
+      await backend.backend.shutdown('test cleanup');
+    }
+  });
 });
