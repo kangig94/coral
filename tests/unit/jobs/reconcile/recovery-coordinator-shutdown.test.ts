@@ -217,7 +217,6 @@ function createFakeExecutionAndRecoveryService(overrides: Record<string, unknown
         boundProvider: { name: launchRecord.provider },
       },
     })),
-    finalizeProviderRecoveryBindingFailure: vi.fn(() => 'released' as const),
     recoverQueuedJob: vi.fn(() => 'recovered-job'),
     completeRecoveredJob: vi.fn(),
     finalizeInterruptedAppServerJob: vi.fn(async () => {}),
@@ -486,7 +485,7 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
         providerRegistry,
         getRecoveryService,
         createInvocationContext,
-        providerOperationStartupOwnership,
+        providerOperationStartupAdmission,
         signal,
       },
       runJobsStartup,
@@ -502,7 +501,7 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
         signal,
         log: identity.log,
         coordinatorCommit: createTestJobJournalDeps(progressStore, runtime).coordinatorCommit,
-        providerOperationStartupOwnership,
+        providerOperationStartupAdmission,
       });
       signal.throwIfAborted();
       const recoveredDiscussResumes = await recoverPersistedDiscussFn();
@@ -612,10 +611,15 @@ describe('recovery coordinator shutdown', () => {
     const runtime = createRealRuntime('prod');
     const pluginRoot = createPluginRoot('plugin-late-authority');
     const projectRoot = createProjectRoot('project-late-authority');
-    let releaseCapture!: (value: { ok: false; failure: { reason: 'subject-mismatch'; provider: string } }) => void;
+    let releaseCapture!: (value: {
+      ok: false;
+      failure: { reason: 'subject-mismatch'; provider: string };
+      remediation: string;
+    }) => void;
     const captureBlocked = new Promise<{
       ok: false;
       failure: { reason: 'subject-mismatch'; provider: string };
+      remediation: string;
     }>((resolve) => {
       releaseCapture = resolve;
     });
@@ -639,10 +643,13 @@ describe('recovery coordinator shutdown', () => {
     await vi.waitFor(() => expect(harness.fakeService.captureProviderRecoveryAuthority).toHaveBeenCalledTimes(1));
 
     await harness.controller.shutdown('handoff');
-    releaseCapture({ ok: false, failure: { reason: 'subject-mismatch', provider: 'codex' } });
+    releaseCapture({
+      ok: false,
+      failure: { reason: 'subject-mismatch', provider: 'codex' },
+      remediation: 'Restore the original profile.',
+    });
 
     expect(((await startup) as Error).name).toBe('AbortError');
-    expect(harness.fakeService.finalizeProviderRecoveryBindingFailure).not.toHaveBeenCalled();
     expect(harness.progressStore.readStatus('running-adoption-job')?.phase).toBe('running');
   });
 

@@ -1,4 +1,3 @@
-import { backendLog } from '../../../infra/backend-log.js';
 import { formatError } from '../../../infra/error-format.js';
 import { isTerminalPhase } from '../../../jobs/phase.js';
 import { isAppServerRuntime, type JobRuntime } from '../../../jobs/records.js';
@@ -11,9 +10,16 @@ import type { RecoveryRegistry } from '../../../jobs/reconcile/registry.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { ProviderRecoveryAuthority, RecoveryCapableService } from '../../../jobs/reconcile/contracts.js';
 import type { RecoveryCommitFence } from '../../../jobs/reconcile/contracts.js';
-import { gracefulKillByPid } from '../../../infra/process-supervision.js';
 import type { JobLifecycleFault, JobProgressFault } from '../../../jobs/outcome.js';
-import type { RecoveryObligationId, RecoverySettlementFact } from '../../../recovery/containment.js';
+import {
+  providerBindingFailureDisposition,
+  type ProviderBindingFailure,
+} from '../../../providers/contracts/binding.js';
+import type {
+  RecoveryDisposition,
+  RecoveryObligationId,
+  RecoverySettlementFact,
+} from '../../../recovery/containment.js';
 
 export const COORDINATOR_TERMINAL_OBLIGATION = 'coordinator-job-terminal' as RecoveryObligationId;
 export const COORDINATOR_CLAIM_RELEASE_OBLIGATION = 'coordinator-session-claim-release' as RecoveryObligationId;
@@ -48,7 +54,7 @@ type RecoveryActionContext = {
 export async function applyRecoveryAction(
   action: RecoveryAction,
   ctx: RecoveryActionContext,
-): Promise<readonly RecoverySettlementFact[]> {
+): Promise<RecoveryDisposition> {
   switch (action.type) {
     case 'discardIncompleteAdmission':
       return discardIncompleteAdmission(action, ctx);
@@ -66,17 +72,17 @@ export async function applyRecoveryAction(
 function discardIncompleteAdmission(
   action: Extract<RecoveryAction, { type: 'discardIncompleteAdmission' }>,
   ctx: RecoveryActionContext,
-): readonly RecoverySettlementFact[] {
+): RecoveryDisposition {
   const { runtime, progressStore, log } = ctx;
   runtime.storage.rmSync(progressStore.jobDir(action.jobId), { recursive: true, force: true });
   log(`Discarded incomplete admission: ${action.jobId}\n`);
-  return COORDINATOR_NOT_APPLICABLE_FACTS;
+  return completed(COORDINATOR_NOT_APPLICABLE_FACTS, 'incomplete admission discarded');
 }
 
 function markRecoveryError(
   action: Extract<RecoveryAction, { type: 'markError' }>,
   ctx: RecoveryActionContext,
-): readonly RecoverySettlementFact[] {
+): RecoveryDisposition {
   const { log, settleFault } = ctx;
   const facts = settleFault(action.fault);
   // Deliberately no export write. The settled fault is the durable answer, and
@@ -93,13 +99,13 @@ function markRecoveryError(
       log(`Marked recovery job as error: ${action.jobId}\n`);
       break;
   }
-  return facts;
+  return completed(facts, 'recovery fault settled');
 }
 
 async function registerQueuedRecovery(
   action: Extract<RecoveryAction, { type: 'registerQueued' }>,
   ctx: RecoveryActionContext,
-): Promise<readonly RecoverySettlementFact[]> {
+): Promise<RecoveryDisposition> {
   const {
     recoveryRegistry,
     queuedRecoverable,
@@ -117,6 +123,9 @@ async function registerQueuedRecovery(
   const captured = await service.captureProviderRecoveryAuthority(action.launchRecord);
   signal.throwIfAborted();
   if (!captured.ok) {
+    if (providerBindingFailureDisposition(captured.failure) === 'operator-repairable') {
+      return providerBindingQuarantine(action.jobId, captured.failure, captured.remediation);
+    }
     const message = `Provider '${captured.failure.provider}' recovery binding failed: ${captured.failure.reason}.`;
     const facts = settleFault(
       {
@@ -128,18 +137,18 @@ async function registerQueuedRecovery(
       message,
     );
     log(`Rejected queued recovery with invalid provider authority: ${action.jobId}.\n`);
-    return facts;
+    return completed(facts, 'persisted-invalid queued provider binding settled');
   }
   const { authority } = captured;
   queuedRecoverable.push({ jobId: action.jobId, authority });
   clearProcessLocalCleanup();
-  return COORDINATOR_NOT_APPLICABLE_FACTS;
+  return completed(COORDINATOR_NOT_APPLICABLE_FACTS, 'queued recovery registered');
 }
 
 async function registerRunningRecovery(
   action: Extract<RecoveryAction, { type: 'registerRunning' }>,
   ctx: RecoveryActionContext,
-): Promise<readonly RecoverySettlementFact[]> {
+): Promise<RecoveryDisposition> {
   const {
     recoveryRegistry,
     runningRecoverable,
@@ -158,31 +167,25 @@ async function registerRunningRecovery(
   const captured = await service.captureProviderRecoveryAuthority(action.launchRecord);
   signal.throwIfAborted();
   if (!captured.ok) {
-    // Three answers, three dispositions, and the reasoning is worth stating because the terminal one is not
-    // obvious. The binding failure itself is observed and deterministic — the provider authority is invalid,
-    // and it will be invalid on the next boot too — so it settles regardless of what the process is doing.
-    // What differs is what happens to that process.
-    //
-    // `alive`: install the pid-kill cleanup, as before.
-    // `absent`: nothing to clean up.
-    // `unknown`: install nothing — signalling a pid nobody could observe is the one action this branch must
-    //   not take — but say so. The alternative, leaving the job non-terminal to retry, trades a reported
-    //   possibly-orphaned process for a job that never settles while the probe never answers, and a
-    //   deterministic binding failure gives the retry nothing new to find.
+    if (providerBindingFailureDisposition(captured.failure) === 'operator-repairable') {
+      return providerBindingQuarantine(action.jobId, captured.failure, captured.remediation);
+    }
     const durableRecord = isDurableCliRuntime(action.runtimeRecord) ? action.runtimeRecord : null;
-    const durableLiveness = durableRecord === null ? 'absent' : runtime.process.observeLiveness(durableRecord.pid);
-    if (durableRecord !== null && durableLiveness === 'alive') {
-      const pid = durableRecord.pid;
-      const releaseRegistry = (): void => recoveryRegistry.remove(action.jobId);
-      setProcessLocalCleanup(() => {
-        gracefulKillByPid(runtime, pid);
-        releaseRegistry();
-      });
-    } else if (durableRecord !== null && durableLiveness === 'unknown') {
-      backendLog.warn(
-        `Terminalizing job ${action.jobId} for a provider binding failure while its durable process ` +
-          `(pid ${durableRecord.pid}) could not be observed; no signal was sent to it.`,
+    if (durableRecord === null) {
+      return providerBindingCarrierQuarantine(
+        action.jobId,
+        captured.failure,
+        captured.remediation,
+        'the runtime carrier is not directly PID-addressable',
       );
+    }
+    const durableLiveness = runtime.process.observeLiveness(durableRecord.pid);
+    if (durableLiveness !== 'absent') {
+      const carrierState =
+        durableLiveness === 'alive'
+          ? `durable process ${durableRecord.pid} is alive`
+          : `durable process ${durableRecord.pid} has unknown liveness`;
+      return providerBindingCarrierQuarantine(action.jobId, captured.failure, captured.remediation, carrierState);
     }
     const message = `Provider '${captured.failure.provider}' recovery binding failed: ${captured.failure.reason}.`;
     const facts = settleFault(
@@ -197,7 +200,7 @@ async function registerRunningRecovery(
     log(
       `Rejected running recovery with invalid provider authority: terminalized ${action.jobId}. Run coral-cli jobs detail ${action.jobId} for the recorded reason.\n`,
     );
-    return facts;
+    return completed(facts, 'persisted-invalid running provider binding settled');
   }
   const { authority } = captured;
   if (isAppServerRuntime(action.runtimeRecord)) {
@@ -216,13 +219,13 @@ async function registerRunningRecovery(
     runtimeRecord: action.runtimeRecord,
   });
   clearProcessLocalCleanup();
-  return COORDINATOR_NOT_APPLICABLE_FACTS;
+  return completed(COORDINATOR_NOT_APPLICABLE_FACTS, 'running recovery registered');
 }
 
 function releaseSessionClaim(
   action: Extract<RecoveryAction, { type: 'releaseSessionClaim' }>,
   ctx: RecoveryActionContext,
-): readonly RecoverySettlementFact[] {
+): RecoveryDisposition {
   const { progressStore, log, settleClaim } = ctx;
   const facts = settleClaim(action.jobId);
   const status = progressStore.readStatus(action.jobId);
@@ -231,7 +234,40 @@ function releaseSessionClaim(
   } else {
     log(`Orphaned session claim ${action.sessionId} settled.\n`);
   }
-  return facts;
+  return completed(facts, 'session claim released');
+}
+
+function completed(facts: readonly RecoverySettlementFact[], detail: string): RecoveryDisposition {
+  return { kind: 'advanced', outcome: 'settled', facts, detail };
+}
+
+function providerBindingQuarantine(
+  jobId: string,
+  failure: ProviderBindingFailure,
+  remediation: string,
+): RecoveryDisposition {
+  return {
+    kind: 'quarantine',
+    detail:
+      `Provider '${failure.provider}' recovery binding failed: ${failure.reason}. ${remediation} ` +
+      `After repairing the binding, run 'coral-cli backend recovery-quarantine list', then clear the exact ` +
+      `coordinator-job-recovery entry for job '${jobId}'.`,
+  };
+}
+
+function providerBindingCarrierQuarantine(
+  jobId: string,
+  failure: ProviderBindingFailure,
+  remediation: string,
+  carrierState: string,
+): RecoveryDisposition {
+  return {
+    kind: 'quarantine',
+    detail:
+      `Provider '${failure.provider}' recovery binding is persisted-invalid (${failure.reason}), but ` +
+      `${carrierState}; terminalization requires observed process absence. ${remediation} ` +
+      `After the carrier is absent, clear the exact coordinator-job-recovery entry for job '${jobId}'.`,
+  };
 }
 
 export function logRecoveryActionFailure(action: RecoveryAction, error: unknown, log: (message: string) => void): void {

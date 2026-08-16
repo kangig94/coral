@@ -35,7 +35,6 @@ import { CHILD_PRINCIPAL_CAPABILITIES, type ChildPrincipalRegistry } from '../..
 import { CORAL_CHILD_PRINCIPAL_HANDLE } from '../../../security/child-principal-env.js';
 import type { ProviderOperationProtectedEnvironment } from '../../../jobs/contracts/provider-operation-lifecycle.js';
 import type { Principal } from '../../../security/principal.js';
-import { elapsedDurationMs } from '../../../jobs/duration.js';
 import { snapshotProviderRecoveryAuthority } from './authority-snapshot.js';
 import { planInterruptedAppServerRecovery, planInterruptedDurableRecovery } from './interrupted-plan.js';
 import {
@@ -148,32 +147,6 @@ export class RecoveryService {
     return { ok: true, session, bound: binding.value, continuity: continuity.value };
   }
 
-  finalizeProviderRecoveryBindingFailure(
-    launchRecord: JobLaunch,
-    failure: ProviderBindingFailure,
-  ): SessionJobClaimReleaseResult {
-    requireProviderLaunchRecord(launchRecord, 'finalizeProviderRecoveryBindingFailure');
-    const message = this.deps.providerRegistry.renderBindingFailure(failure);
-    return this.completeRecoveredJob(
-      launchRecord.jobId,
-      launchRecord.sessionId,
-      {
-        content: message,
-        durationMs: elapsedDurationMs(
-          launchRecord.createdAt,
-          this.deps.runtime.time.now(),
-          `job ${launchRecord.jobId}`,
-        ),
-        outcome: {
-          kind: 'job_fault',
-          fault: { kind: 'provider_binding', provider: failure.provider, reason: failure.reason, message },
-        },
-      },
-      'error',
-      { pool: launchRecord.pool },
-    );
-  }
-
   async captureProviderRecoveryAuthority(launchRecord: JobLaunch): Promise<ProviderRecoveryAuthorityCapture> {
     requireProviderLaunchRecord(launchRecord, 'captureProviderRecoveryAuthority');
     const result = await this.readProviderSession(launchRecord);
@@ -183,7 +156,11 @@ export class RecoveryService {
         authority: snapshotProviderRecoveryAuthority(launchRecord, result.session, result.bound, result.continuity),
       };
     }
-    return result;
+    return {
+      ok: false,
+      failure: result.failure,
+      remediation: this.deps.providerRegistry.renderBindingFailure(result.failure),
+    };
   }
 
   async interruptAppServerJob(authority: ProviderRecoveryAuthority, runtimeRecord: AppServerRuntime): Promise<void> {

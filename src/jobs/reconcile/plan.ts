@@ -198,7 +198,7 @@ function planJobRecovery(facts: RecoveryJobFacts, isPidAlive: (pid: number) => b
     // the terminal/continuity decision. Non-provider runtimes have no such
     // recovery authority and retain the generic wrapper_lost fallback.
     const pid = readDurableRuntimePid(facts.runtimeRecord);
-    if (pid !== null && !isPidAlive(pid) && status.jobKind !== 'provider') {
+    if (pid !== null && status.jobKind !== 'provider' && !isPidAlive(pid)) {
       return {
         bucket: 'staleRunning',
         action: {

@@ -85,7 +85,6 @@ export type CoordinatorServerController = {
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
-
 function isAppendedEventArray(value: unknown): value is AppendedEvent[] {
   return (
     Array.isArray(value) &&
@@ -504,7 +503,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
         getDiscussContext,
         createInvocationContext,
         recoveryCoordinator,
-        providerOperationStartupOwnership,
+        providerOperationStartupAdmission,
         signal,
         recoverPersistedDiscussFn,
       },
@@ -560,7 +559,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
         signal,
         log: identity.log,
         coordinatorCommit,
-        providerOperationStartupOwnership,
+        providerOperationStartupAdmission,
       });
       signal.throwIfAborted();
 

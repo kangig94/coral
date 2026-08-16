@@ -14,7 +14,11 @@ import { join } from 'node:path';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import type { ProviderBindingRuntime } from '#src/providers/contracts/binding.js';
+import {
+  providerBindingFailureDisposition,
+  type ProviderBindingFailure,
+  type ProviderBindingRuntime,
+} from '#src/providers/contracts/binding.js';
 import { createBuiltInProviderRegistry as createUnconnectedBuiltInProviderRegistry } from '#src/providers/bootstrap.js';
 import { providerLookupPortFromCatalog } from '#src/providers/catalog.js';
 import { SessionManager } from '#src/sessions/shell.js';
@@ -57,6 +61,23 @@ afterEach(() => {
 });
 
 describe('provider binding lifecycle', () => {
+  it.each([
+    ['profile-unavailable', 'operator-repairable'],
+    ['identity-unavailable', 'operator-repairable'],
+    ['subject-mismatch', 'operator-repairable'],
+    ['missing-profile', 'persisted-invalid'],
+    ['profile-mismatch', 'persisted-invalid'],
+    ['unsupported-selection', 'persisted-invalid'],
+    ['invalid-persisted-binding', 'persisted-invalid'],
+  ] as const)('classifies %s binding failure as %s in the binding domain', (reason, expected) => {
+    const failure = {
+      reason,
+      provider: 'codex',
+      ...(reason === 'profile-unavailable' || reason === 'unsupported-selection' ? { selector: 'fixture' } : {}),
+    } as ProviderBindingFailure;
+    expect(providerBindingFailureDisposition(failure)).toBe(expected);
+  });
+
   it('renders recovery-complete Claude identity failures', () => {
     expect(renderClaudeBindingFailure({ reason: 'identity-unavailable', provider: 'claude' })).toBe(
       'Claude cannot verify account identity because this provider supports profile-level binding only. Resume with the original Claude credential profile or start a new session.',

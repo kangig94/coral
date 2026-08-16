@@ -88,7 +88,7 @@ import {
 import { staleJobCleanupSource, type RawStaleJobCleanupRow } from '../jobs/stale-job-cleanup-recovery-source.js';
 import { runShutdownCrashTerminalization } from './shutdown-recovery.js';
 import { runStartupStaleArtifactPrune } from './startup-recovery.js';
-import type { ProviderOperationStartupOwnership, RunJobsStartupFn } from '../jobs/startup.js';
+import type { AdmittedProviderOperationStartup, RunJobsStartupFn } from '../jobs/startup.js';
 
 export type LifecycleState = 'starting' | 'kernel-ready' | 'running' | 'draining' | 'stopped';
 
@@ -693,7 +693,7 @@ export type StartupRecoveryInputs = {
   readonly getDiscussContext: (ctx: InvocationContext) => DiscussContext;
   readonly createInvocationContext: (projectRoot: string) => InvocationContext;
   readonly recoveryCoordinator: RecoveryCoordinator;
-  readonly providerOperationStartupOwnership: ProviderOperationStartupOwnership;
+  readonly providerOperationStartupAdmission: AdmittedProviderOperationStartup;
   readonly signal: AbortSignal;
   readonly recoverPersistedDiscussFn: RecoverPersistedDiscussFn;
   /**
@@ -1000,7 +1000,6 @@ async function runLifecycleStartup({
     state.recoveryCoordinator = recoveryCoordinator;
     connectProviderOperationRecovery?.(recoveryCoordinator);
     recoveryCoordinator.retireAbsentSupersededProviderOperations();
-    const providerOperationStartupOwnership = recoveryCoordinator.snapshotProviderOperationStartupOwnership();
     signal.throwIfAborted();
 
     // Bind the HTTP listener and signal kernel-ready BEFORE Era II's
@@ -1029,12 +1028,40 @@ async function runLifecycleStartup({
     });
     runtimeState.setLifecycle('kernel-ready');
     runtimeState.setLaunchFenceActive(true);
+    const serverInfo = {
+      port,
+      host,
+      socketPath,
+      token: identity.token,
+      bootToken: identity.bootToken,
+      shutdownToken: identity.shutdownToken,
+      version,
+      bundleHash,
+      flavor,
+      namespace,
+      instanceId,
+      startedAt,
+    };
 
     // ===== Era II (recovery) =====
     // This order is load-bearing: a pending publication contains remote facts that the generic job walk
     // cannot see, so allowing that walk to classify the job first could authorize a contradictory execution.
     await reconcileProviderOperationsAtStartup?.(signal);
     signal.throwIfAborted();
+    const providerOperationStartupAdmission =
+      bound === null ? null : recoveryCoordinator.snapshotProviderOperationStartupAdmission();
+    if (providerOperationStartupAdmission?.kind === 'refused') {
+      const blockers = providerOperationStartupAdmission.blockers
+        .map(({ key, revision }) => `${key}@${revision}`)
+        .join(', ');
+      backendLog.warn(
+        `Startup recovery refused because provider operation evidence cannot be attributed: ${blockers}. ` +
+          'Keep this coordinator at kernel-ready while restoring the build that owns the row, or inspect and ' +
+          'evict an identifiable provider host. No current command can abandon an unattributable row.',
+      );
+      state.started = true;
+      return serverInfo;
+    }
     // Per-job isolation: corrupt sessions should not abort recovery.
     // `bound.runStartupRecovery` registers journal cursors then awaits
     // `waitFreshUntil` against `currentMaxSeq`; that wait runs here in Era II
@@ -1045,7 +1072,7 @@ async function runLifecycleStartup({
     // authority and there is no incumbent's work to recover — it was never the canonical coordinator.
     // This is the absence of a recovery obligation, not a skipped one.
     const recoveredDiscussResumes =
-      bound === null
+      bound === null || providerOperationStartupAdmission === null
         ? []
         : await bound.runStartupRecovery({
             identity,
@@ -1059,7 +1086,7 @@ async function runLifecycleStartup({
             getDiscussContext,
             createInvocationContext,
             recoveryCoordinator,
-            providerOperationStartupOwnership,
+            providerOperationStartupAdmission,
             signal,
             recoverPersistedDiscussFn,
             interruptedAppServerReason: bound.acquiredViaHandoff ? 'handoff' : 'restart',
@@ -1127,20 +1154,7 @@ async function runLifecycleStartup({
       backendLog.error('Runtime component initialization dispatch failed — KB will be offline until restart', error);
     }
 
-    return {
-      port,
-      host,
-      socketPath,
-      token: identity.token,
-      bootToken: identity.bootToken,
-      shutdownToken: identity.shutdownToken,
-      version,
-      bundleHash,
-      flavor,
-      namespace,
-      instanceId,
-      startedAt,
-    };
+    return serverInfo;
   } catch (error: unknown) {
     if (error instanceof IncumbentMatchesError) {
       // Translate to the existing bootstrap-recognized "redundant contender"

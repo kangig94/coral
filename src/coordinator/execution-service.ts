@@ -273,13 +273,6 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     return this.recoveryService.captureProviderRecoveryAuthority(launchRecord);
   }
 
-  finalizeProviderRecoveryBindingFailure(
-    launchRecord: JobLaunch,
-    failure: Parameters<RecoveryService['finalizeProviderRecoveryBindingFailure']>[1],
-  ): ReturnType<RecoveryService['finalizeProviderRecoveryBindingFailure']> {
-    return this.recoveryService.finalizeProviderRecoveryBindingFailure(launchRecord, failure);
-  }
-
   adoptRunningJob(
     authority: ProviderRecoveryAuthority,
     runtimeRecord: JobRuntime,

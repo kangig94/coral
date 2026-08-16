@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { withImmediate, type Database } from './db.js';
+import { sha256Hex } from '../infra/hash.js';
 import {
   decodeProviderOperationRecord,
   encodeProviderOperationRecord,
@@ -90,10 +91,9 @@ const PROVIDER_OPERATION_DUE_PREFIX = `${PROVIDER_OPERATION_SAGA_PREFIX}due:`;
 /**
  * Generations this build addresses but cannot decode.
  *
- * Their rows are scanned for their **keys only** and never for their bytes. A key names the job
- * (`providerOperationJobIdFromRecordKey`), and that is the whole requirement: an operation an older build left
- * in flight must keep its job away from generic recovery across the upgrade. What the row means is not this
- * reader's to guess, and guessing is what a converting upcaster would be.
+ * Their rows are never decoded as this build's record type. Startup reads only generation-stable evidence:
+ * raw operation identity claims for attribution and signalable process targets for absence retirement. It
+ * never guesses at phase or converts the row into this generation.
  *
  * Empty is a legitimate value. A generation belongs here only while a build that wrote it can still have left
  * rows behind; once that build is out of the field the entry is deleted, not kept for symmetry.
@@ -449,9 +449,8 @@ export function readProviderOperationForJob(db: Database, jobId: string): Provid
  * run. That distinction is not hypothetical \u2014 every scan caller sits on a path that ends at the
  * coordinator's own startup.
  *
- * The scan reaches superseded generations too, and only their keys. A row an older build left in flight names
- * its job in the key, which is exactly what startup ownership needs to keep that job away from generic
- * recovery; the bytes stay unread because converting them would be a guess about someone else's shape.
+ * The scan reaches superseded generations too and reports their keys. Attribution separately examines only
+ * raw identity claims; it never converts the bytes into this generation's record shape.
  *
  * Unreadable rows are reported as keys, never as bytes. They are also left in place. Nothing is lost by
  * skipping one \u2014 the row stays, and a build that understands it can still act on it.
@@ -461,17 +460,6 @@ export type ProviderOperationScan = Readonly<{
   unreadableKeys: readonly string[];
 }>;
 
-/**
- * The sets an unreadable row could belong to — its key's, and the one its bytes claim.
- *
- * These are usually the same address and usually only the key is readable. They can differ, and that case is
- * the reason this exists: `decodeCanonicalValue` rejects a row whose payload identity disagrees with its key,
- * so such a row is reported under the *key's* address while its bytes name another set entirely. A fence that
- * consulted only the key would let that row pass while proving the set its payload names absent.
- *
- * `null` means the row could not be attributed at all, from either side. That fences every set, because a row
- * that names nothing could name anything.
- */
 /**
  * What a row could belong to along one dimension.
  *
@@ -490,6 +478,7 @@ export type ProviderOperationAttribution<T> =
 
 export type UnreadableProviderOperationAttribution = Readonly<{
   key: string;
+  revision: string;
   sets: ProviderOperationAttribution<Readonly<{ proxyInstanceId: string; buildSetId: string }>>;
   jobs: ProviderOperationAttribution<string>;
 }>;
@@ -498,25 +487,34 @@ export function attributeUnreadableProviderOperations(
   db: Database,
   unreadableKeys: readonly string[],
 ): readonly UnreadableProviderOperationAttribution[] {
-  return unreadableKeys.map((key) => {
-    // Read the bytes once and ask both questions of them independently. They are genuinely different
-    // questions, and one being unanswerable says nothing about the other.
+  return unreadableKeys.flatMap((key) => {
     const value = readCanonicalValue(db, key);
-    return {
-      key,
-      sets: attribute(providerOperationSetAddressFromRecordKey(key), claimedSetAddress(value), sameSetAddress),
-      jobs: attribute(providerOperationJobIdFromRecordKey(key), claimedJobId(value), (left, right) => left === right),
-    };
+    if (value === undefined) return [];
+    const claims = claimedOperationIdentities(value);
+    return [
+      {
+        key,
+        revision: `sha256:${sha256Hex(value)}`,
+        sets: attribute(providerOperationSetAddressFromRecordKey(key), claims.set, sameSetAddress),
+        jobs: attribute(providerOperationJobIdFromRecordKey(key), claims.job, (left, right) => left === right),
+      },
+    ];
   });
 }
 
+type IdentityClaim<T> =
+  | Readonly<{ kind: 'absent' }>
+  | Readonly<{ kind: 'complete'; value: T }>
+  | Readonly<{ kind: 'partial' }>;
+
 function attribute<T>(
   fromKey: T | null,
-  fromPayload: T | 'indeterminate' | null,
+  fromPayload: IdentityClaim<T>,
   same: (left: T, right: T) => boolean,
 ): ProviderOperationAttribution<T> {
-  if (fromPayload === 'indeterminate') return { kind: 'indeterminate' };
-  const claimed = [fromKey, fromPayload].filter((value): value is T => value !== null);
+  if (fromPayload.kind === 'partial') return { kind: 'indeterminate' };
+  const payloadValue = fromPayload.kind === 'complete' ? fromPayload.value : null;
+  const claimed = [fromKey, payloadValue].filter((value): value is T => value !== null);
   // Neither side named anything, which is not the same as "known to belong to nothing" — a row nobody can
   // attribute could belong to any of them. Empty is therefore indeterminate, never an empty `known`.
   if (claimed.length === 0) return { kind: 'indeterminate' };
@@ -530,63 +528,48 @@ function sameSetAddress(
   return left.proxyInstanceId === right.proxyInstanceId && left.buildSetId === right.buildSetId;
 }
 
-const claimedOperationSchema = z
-  .object({
-    operation: z.object({ proxyInstanceId: z.string(), buildSetId: z.string() }).passthrough(),
-  })
-  .passthrough();
-
-/**
- * The set a row's own bytes name, read permissively because the row is by definition not decodable.
- *
- * Three answers, and the third is the one that matters. `null` is bytes that are not a record at all — no
- * claim, so the key stands alone. An address is a complete claim. `indeterminate` is bytes that *are*
- * record-shaped but whose operation identity is missing or partial: a claim that exists and cannot be read,
- * which no key can stand in for.
- */
-function claimedSetAddress(
-  value: string | undefined,
-): Readonly<{ proxyInstanceId: string; buildSetId: string }> | 'indeterminate' | null {
-  if (value === undefined) return null;
+function claimedOperationIdentities(value: string | undefined): Readonly<{
+  job: IdentityClaim<string>;
+  set: IdentityClaim<Readonly<{ proxyInstanceId: string; buildSetId: string }>>;
+}> {
+  const absent = { kind: 'absent' } as const;
+  if (value === undefined) return { job: absent, set: absent };
   let parsed: unknown;
   try {
     parsed = JSON.parse(value);
   } catch {
-    return null;
+    return { job: absent, set: absent };
   }
-  if (!recordShapedSchema.safeParse(parsed).success) return null;
-  const result = claimedOperationSchema.safeParse(parsed);
-  if (!result.success) return 'indeterminate';
-  const { proxyInstanceId, buildSetId } = result.data.operation;
-  return proxyInstanceId.length === 0 || buildSetId.length === 0 ? 'indeterminate' : { proxyInstanceId, buildSetId };
-}
-
-/**
- * The job a row's own bytes name — the same three answers as its set address, and for the same reason.
- *
- * The key names a job too, and the two disagree exactly when that disagreement is why the row failed to
- * decode. Fencing on the key alone would hand the job the *payload* names to generic recovery, which can
- * terminalize it while the operation it represents is live.
- */
-function claimedJobId(value: string | undefined): string | 'indeterminate' | null {
-  if (value === undefined) return null;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(value);
-  } catch {
-    return null;
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return { job: absent, set: absent };
+  if (!Object.hasOwn(parsed, 'operation')) return { job: absent, set: absent };
+  const operation = (parsed as Record<string, unknown>).operation;
+  if (typeof operation !== 'object' || operation === null || Array.isArray(operation)) {
+    return { job: { kind: 'partial' }, set: { kind: 'partial' } };
   }
-  if (!recordShapedSchema.safeParse(parsed).success) return null;
-  const result = claimedJobSchema.safeParse(parsed);
-  if (!result.success) return 'indeterminate';
-  const jobId = result.data.operation.jobId;
-  return jobId.length === 0 ? 'indeterminate' : jobId;
+  const fields = operation as Record<string, unknown>;
+  const hasJobId = Object.hasOwn(fields, 'jobId');
+  const jobId = fields.jobId;
+  const job: IdentityClaim<string> = !hasJobId
+    ? absent
+    : typeof jobId === 'string' && jobId.length > 0
+      ? { kind: 'complete', value: jobId }
+      : { kind: 'partial' };
+
+  const hasProxyInstanceId = Object.hasOwn(fields, 'proxyInstanceId');
+  const hasBuildSetId = Object.hasOwn(fields, 'buildSetId');
+  const proxyInstanceId = fields.proxyInstanceId;
+  const buildSetId = fields.buildSetId;
+  const set: IdentityClaim<Readonly<{ proxyInstanceId: string; buildSetId: string }>> =
+    !hasProxyInstanceId && !hasBuildSetId
+      ? absent
+      : typeof proxyInstanceId === 'string' &&
+          proxyInstanceId.length > 0 &&
+          typeof buildSetId === 'string' &&
+          buildSetId.length > 0
+        ? { kind: 'complete', value: { proxyInstanceId, buildSetId } }
+        : { kind: 'partial' };
+  return { job, set };
 }
-
-const claimedJobSchema = z.object({ operation: z.object({ jobId: z.string() }).passthrough() }).passthrough();
-
-/** Bytes that are a provider-operation record of some generation, whatever else about them cannot be read. */
-const recordShapedSchema = z.object({ version: z.number(), locator: z.unknown() }).passthrough();
 
 /**
  * Every row under `prefix`, the bare prefix itself included.
@@ -669,7 +652,6 @@ const supersededRecordSchema = z
 
 export type SupersededProviderOperationRow = Readonly<{
   key: string;
-  jobId: string;
   processTargets: readonly number[] | null;
 }>;
 
@@ -677,9 +659,7 @@ export function readSupersededProviderOperations(db: Database): readonly Superse
   const rows: SupersededProviderOperationRow[] = [];
   for (const prefix of SUPERSEDED_PROVIDER_OPERATION_RECORD_PREFIXES) {
     forEachRowUnderPrefix(db, prefix, (row) => {
-      const jobId = providerOperationJobIdFromRecordKey(row.key);
-      if (jobId === null) return;
-      rows.push({ key: row.key, jobId, processTargets: observableProcessTargets(row.value) });
+      rows.push({ key: row.key, processTargets: observableProcessTargets(row.value) });
     });
   }
   return rows;
@@ -704,10 +684,9 @@ function observableProcessTargets(value: string): readonly number[] | null {
 /**
  * Removes one superseded row and every due entry pointing at it, in one transaction.
  *
- * Deleting the record is what *unfences* its job: startup ownership derives the fence from the rows present,
- * so once this row is gone the job reaches ordinary recovery and settles the way any interrupted job does.
- * That is the point — this build has no way to settle a provider operation it cannot read, and it does not
- * need one. It only needs to stop claiming ownership it cannot exercise.
+ * Deleting the record removes its startup claim. A canonical row thereby unfences the job its key names; a
+ * noncanonical row can remove a global admission blocker. This build does not settle or reinterpret either
+ * row—it retires only after every readable process target was observed absent.
  */
 export function retireSupersededProviderOperation(db: Database, key: string): void {
   if (!SUPERSEDED_PROVIDER_OPERATION_RECORD_PREFIXES.some((prefix) => key.startsWith(prefix))) {

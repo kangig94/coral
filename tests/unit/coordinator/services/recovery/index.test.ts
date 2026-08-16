@@ -14,7 +14,10 @@ import { testProjectPrincipal } from '#tests/helpers/principal.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { JobStore } from '#src/jobs/store.js';
-import { createRecoveryCoordinator } from '#src/coordinator/services/recovery/index.js';
+import {
+  createCoordinatorJobRecoveryRetryPlan,
+  createRecoveryCoordinator,
+} from '#src/coordinator/services/recovery/index.js';
 import type { RecoveryCapableService, ProviderRecoveryAuthority } from '#src/jobs/reconcile/contracts.js';
 import type { JobLaunch } from '#src/jobs/records.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
@@ -24,6 +27,8 @@ import { providerOperationRecordSchema, type ProviderOperationRecord } from '#sr
 import { ProviderOperationReconciler } from '#src/coordinator/services/provider-operation-reconciler.js';
 import type { DurableProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
 import { providerProxySetIdentityFromRecord } from '#src/coordinator/services/provider-proxy-set/identity.js';
+import { RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
+import { createRecoveryQuarantineRetryService, createRecoverySourceRegistry } from '#src/recovery/source-registry.js';
 
 import { providerOperationRecord } from '../../../store/provider-operation-fixtures.js';
 
@@ -162,7 +167,6 @@ function createFakeService(overrides: Partial<RecoveryCapableService> = {}): Rec
         boundProvider: { name: launchRecord.provider },
       } as unknown as ProviderRecoveryAuthority,
     })),
-    finalizeProviderRecoveryBindingFailure: vi.fn(),
     finalizeInterruptedAppServerJob: vi.fn(async () => {}),
     finalizeInterruptedDurableJob: vi.fn(async () => {}),
     adoptRunningJob: vi.fn(async () => ({ adopted: true, cleanup: vi.fn() })),
@@ -174,6 +178,119 @@ function createFakeService(overrides: Partial<RecoveryCapableService> = {}): Rec
 }
 
 describe('runStartupRecovery provider-operation ownership', () => {
+  it('retries repairable coordinator binding quarantine through the exact clear coordinate', async () => {
+    const runtime = createRealRuntime('prod');
+    const progressStore = createProgressStore(runtime);
+    const jobId = randomUUID();
+    const sessionId = randomUUID();
+    seedQueuedProviderJob(progressStore, { jobId, sessionId, enqueueSequence: 1 });
+    let bindingAvailable = false;
+    const recoverQueuedJob = vi.fn(async () => jobId);
+    const captureProviderRecoveryAuthority = vi.fn(async (launchRecord: JobLaunch) => {
+      if (!bindingAvailable) {
+        return {
+          ok: false as const,
+          failure: { reason: 'subject-mismatch' as const, provider: 'codex' },
+          remediation: 'Authenticate the original codex profile and retry.',
+        };
+      }
+      return {
+        ok: true as const,
+        authority: {
+          launchRecord,
+          session: {
+            sessionId: launchRecord.sessionId,
+            providerContinuity: null,
+            projectRoot: PROJECT_ROOT,
+            version: 1,
+          },
+          boundProvider: { name: launchRecord.provider },
+        } as unknown as ProviderRecoveryAuthority,
+      };
+    });
+    const fakeService = createFakeService({ captureProviderRecoveryAuthority, recoverQueuedJob });
+    const createInvocationContext = (projectRoot: string): InvocationContext => ({
+      projectRoot: fixtureCanonicalWorkDir(projectRoot),
+      pluginRoot: '/tmp/plugin',
+      coralEnv: {},
+      principal: testProjectPrincipal(projectRoot),
+    });
+    const getRecoveryService = (): RecoveryCapableService => fakeService;
+    const signal = new AbortController().signal;
+    const coordinatorCommit = (cb: Parameters<JobStore['commit']>[0]) => progressStore.commit(cb);
+    const boundRecovery = await createBoundJobsRecoveryHarness({
+      identity: {
+        pluginRoot: '/tmp/plugin',
+        namespace: NAMESPACE,
+        version: 'test-version',
+        buildSetId: '00000000-0000-4000-8000-000000000000',
+        bundleHash: 'test-bundle',
+        cliBundleHash: 'test-cli-bundle',
+        claudeAppserverBundleHash: 'test-claude-bundle',
+        flavor: 'prod',
+        instanceId: 'binding-retry-test',
+        token: 'test-token',
+        bootToken: 'test-boot-token',
+        shutdownToken: 'test-shutdown-token',
+        now: () => runtime.time.now(),
+        log: vi.fn(),
+      },
+      runtime,
+      progressStore,
+      providerRegistry: {} as never,
+      getRecoveryService,
+      createInvocationContext,
+      signal,
+      coordinatorCommit,
+    });
+    const recoveryCoordinator = createRecoveryCoordinator(
+      {
+        progressStore,
+        runtime,
+        runtimeState: { setLaunchFenceActive: vi.fn() },
+        eventBus: { emit: vi.fn() } as never,
+        getRecoveryService,
+        createInvocationContext,
+        log: vi.fn(),
+      },
+      boundRecovery.bound,
+    );
+
+    await boundRecovery.run(recoveryCoordinator);
+    const quarantine = new RecoveryQuarantineStore(progressStore.getDb(), runtime.time);
+    const retained = quarantine.read('coordinator-job-recovery', jobId);
+    expect(retained).toMatchObject({ state: 'active' });
+    expect(retained?.subject.revision.kind).toBe('fingerprint');
+    if (retained?.subject.revision.kind !== 'fingerprint') throw new Error('expected exact retry revision');
+    const retainedEntry = quarantine.list().find((entry) => entry.subject.key === jobId);
+    expect(retainedEntry?.detail).toContain('subject-mismatch');
+    expect(retainedEntry?.detail).toContain('Authenticate the original codex profile');
+
+    bindingAvailable = true;
+    const sources = createRecoverySourceRegistry();
+    sources.register('coordinator-job-recovery', (subject, retrySignal, retryQuarantine) =>
+      createCoordinatorJobRecoveryRetryPlan(progressStore.getDb(), subject, retrySignal, retryQuarantine),
+    );
+    const retryService = createRecoveryQuarantineRetryService({
+      instanceId: 'binding-retry-test',
+      ids: { uuid: () => randomUUID() },
+      quarantine,
+      sources,
+    });
+    await expect(
+      retryService.clear({
+        boundary: 'coordinator-job-recovery',
+        key: jobId,
+        revision: retained.subject.revision.value,
+      }),
+    ).resolves.toMatchObject({ disposition: 'advanced' });
+    expect(captureProviderRecoveryAuthority).toHaveBeenCalledTimes(2);
+    expect(recoverQueuedJob).toHaveBeenCalledTimes(1);
+    expect(quarantine.read('coordinator-job-recovery', jobId)).toBeNull();
+    expect(progressStore.readStatus(jobId)?.phase).toBe('queued');
+    await recoveryCoordinator.teardown();
+  });
+
   it('hands a post-snapshot local fallback to exact generic recovery before deleting the saga', async () => {
     const runtime = createRealRuntime('prod');
     const progressStore = createProgressStore(runtime);
@@ -374,7 +491,7 @@ describe('runStartupRecovery provider-operation ownership', () => {
     seedQueuedProviderJob(progressStore, { jobId: zeroTargetJobId, sessionId: randomUUID(), enqueueSequence: 4 });
     seedQueuedProviderJob(progressStore, { jobId: failedProbeJobId, sessionId: randomUUID(), enqueueSequence: 5 });
 
-    const seedSuperseded = (jobId: string, pid: number, processGroupId = pid): string => {
+    const seedSuperseded = (jobId: string, pid: number, processGroupId = pid, keyOverride?: string): string => {
       const fixture = providerOperationRecord('prepare-pending');
       const shipped = JSON.parse(encodeProviderOperationRecord(fixture)) as {
         locator: Record<string, Record<string, unknown>>;
@@ -390,8 +507,9 @@ describe('runStartupRecovery provider-operation ownership', () => {
       if (shipped.locator.containment !== undefined) shipped.locator.containment.processGroupId = processGroupId;
       if (shipped.providerRoot !== undefined) shipped.providerRoot.pid = pid;
       const key =
+        keyOverride ??
         `provider_operation_saga.v1:record:${jobId}:${fixture.operation.operationId}:` +
-        `${fixture.operation.proxyInstanceId}:${fixture.operation.buildSetId}`;
+          `${fixture.operation.proxyInstanceId}:${fixture.operation.buildSetId}`;
       progressStore
         .getDb()
         .prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)')
@@ -403,6 +521,12 @@ describe('runStartupRecovery provider-operation ownership', () => {
     const groupKey = seedSuperseded(groupJobId, 70_002, liveProcessGroupId);
     const zeroTargetKey = seedSuperseded(zeroTargetJobId, 0, 0);
     const failedProbeKey = seedSuperseded(failedProbeJobId, failedProbePid);
+    const noncanonicalGoneKey = seedSuperseded(
+      goneJobId,
+      0x7f_ff_ff_fe,
+      0x7f_ff_ff_fe,
+      'provider_operation_saga.v1:record:noncanonical-with-absent-targets',
+    );
 
     // The third case, and the one that must never be confused with absence: a row whose pids cannot be read at
     // all. "No pids observed" is not "no processes alive" — retiring on it would settle a job whose processes
@@ -476,24 +600,30 @@ describe('runStartupRecovery provider-operation ownership', () => {
       .prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)')
       .run(unattributableKey, JSON.stringify({ version: 1, locator: {} }));
 
-    const beforeRetirement = recoveryCoordinator.snapshotProviderOperationStartupOwnership();
-    expect(beforeRetirement.unattributableKeys).toEqual([unattributableKey]);
-    // Both names of every unreadable row, not just its key's. These fixtures key a fixture payload under a
-    // different job id, which is the shape `decodeCanonicalValue` rejects — so the payload's job is fenced
-    // too. Fencing the key's job alone would hand the payload's job to generic recovery, which can terminalize
-    // it while the operation the payload describes is still live.
-    const payloadJobId = providerOperationRecord('prepare-pending').operation.jobId;
-    expect([...beforeRetirement.jobIds].sort()).toEqual(
-      [goneJobId, liveJobId, groupJobId, zeroTargetJobId, failedProbeJobId, unwalkableJobId, payloadJobId].sort(),
-    );
+    const beforeRetirement = recoveryCoordinator.snapshotProviderOperationStartupAdmission();
+    expect(beforeRetirement).toEqual({
+      kind: 'refused',
+      blockers: [{ key: unattributableKey, revision: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u) }],
+    });
+    if (beforeRetirement.kind !== 'refused') throw new Error('expected startup refusal');
+    const firstRevision = beforeRetirement.blockers[0]?.revision;
+    progressStore
+      .getDb()
+      .prepare<[string, string]>('UPDATE meta SET value = ? WHERE key = ?')
+      .run(JSON.stringify({ version: 2, locator: {} }), unattributableKey);
+    const replacedAdmission = recoveryCoordinator.snapshotProviderOperationStartupAdmission();
+    expect(replacedAdmission.kind).toBe('refused');
+    if (replacedAdmission.kind !== 'refused') throw new Error('expected startup refusal after replacement');
+    expect(replacedAdmission.blockers[0]?.revision).not.toBe(firstRevision);
     expect([goneKey, liveKey, groupKey, zeroTargetKey, failedProbeKey, unwalkableKey].every(rowExists)).toBe(true);
 
     recoveryCoordinator.retireAbsentSupersededProviderOperations();
-    const ownership = recoveryCoordinator.snapshotProviderOperationStartupOwnership();
+    const ownership = recoveryCoordinator.snapshotProviderOperationStartupAdmission();
 
     expect({
-      fenced: [...ownership.jobIds].sort(),
+      admission: ownership,
       goneRowSurvives: rowExists(goneKey),
+      noncanonicalGoneRowSurvives: rowExists(noncanonicalGoneKey),
       liveRowSurvives: rowExists(liveKey),
       groupRowSurvives: rowExists(groupKey),
       zeroTargetRowSurvives: rowExists(zeroTargetKey),
@@ -502,9 +632,9 @@ describe('runStartupRecovery provider-operation ownership', () => {
     }).toEqual({
       // Only the row with a non-empty, completely absent target set is unfenced. A live leader, a live group,
       // an empty usable target set, and an unwalkable row all remain unknown or present and keep their fence.
-      // `payloadJobId` stays fenced because rows still present still claim it in their bytes.
-      fenced: [liveJobId, groupJobId, zeroTargetJobId, failedProbeJobId, unwalkableJobId, payloadJobId].sort(),
+      admission: replacedAdmission,
       goneRowSurvives: false,
+      noncanonicalGoneRowSurvives: false,
       liveRowSurvives: true,
       groupRowSurvives: true,
       zeroTargetRowSurvives: true,
@@ -580,10 +710,11 @@ describe('runStartupRecovery provider-operation ownership', () => {
       boundRecovery.bound,
     );
 
-    const startupOwnership = recoveryCoordinator.snapshotProviderOperationStartupOwnership();
-    expect(startupOwnership).toEqual({ jobIds: [jobId], unattributableKeys: [] });
-    expect(Object.isFrozen(startupOwnership)).toBe(true);
-    expect(Object.isFrozen(startupOwnership.jobIds)).toBe(true);
+    const startupAdmission = recoveryCoordinator.snapshotProviderOperationStartupAdmission();
+    expect(startupAdmission).toEqual({ kind: 'admitted', ownedJobIds: [jobId] });
+    expect(Object.isFrozen(startupAdmission)).toBe(true);
+    if (startupAdmission.kind !== 'admitted') throw new Error('expected provider-operation startup admission');
+    expect(Object.isFrozen(startupAdmission.ownedJobIds)).toBe(true);
 
     await boundRecovery.run(recoveryCoordinator);
     expect(recoverQueuedJob).toHaveBeenCalledTimes(1);

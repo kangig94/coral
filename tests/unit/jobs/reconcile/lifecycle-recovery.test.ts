@@ -38,7 +38,6 @@ import type {
   StartupRecoveryInputs,
 } from '#src/coordinator/lifecycle.js';
 import type { RunJobsStartupFn } from '#src/jobs/startup.js';
-import type { TimerHandle } from '#src/infra/port-types.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
 import { createBoundIpcLifecycleDeps } from '#tests/helpers/bound-ipc-lifecycle.js';
 import { createBoundJobsRecoveryHarness } from '#tests/helpers/bound-jobs-recovery.js';
@@ -308,35 +307,6 @@ function createRuntimeStateMock(registerRuntimeComponentFn?: (component: Runtime
   return { runtimeState };
 }
 
-function createControllableTimeoutRuntime(baseRuntime: ReturnType<typeof createRealRuntime>) {
-  const scheduled: Array<{ callback: () => void; handle: TimerHandle; ms: number }> = [];
-  const setTimeout = vi.fn((callback: () => void, ms: number): TimerHandle => {
-    const handle: TimerHandle = { unref: vi.fn() };
-    scheduled.push({ callback, handle, ms });
-    return handle;
-  });
-  const clearTimeout = vi.fn((handle: TimerHandle | null): void => {
-    const index = scheduled.findIndex((timer) => timer.handle === handle);
-    if (index !== -1) scheduled.splice(index, 1);
-  });
-
-  return {
-    runtime: {
-      ...baseRuntime,
-      time: { ...baseRuntime.time, setTimeout, clearTimeout },
-    },
-    setTimeout,
-    runNextTimeout(): number {
-      const timer = scheduled.shift();
-      if (!timer) throw new Error('No controlled timeout is scheduled.');
-      timer.callback();
-      return timer.ms;
-    },
-    pendingTimeoutCount: () => scheduled.length,
-    discardScheduledTimeouts: () => scheduled.splice(0),
-  };
-}
-
 function createFakeExecutionAndRecoveryService(overrides: Record<string, unknown> = {}) {
   return {
     start: vi.fn(async () => ({ status: 'running', job: 'started-job', session: 'started-session' })),
@@ -356,7 +326,6 @@ function createFakeExecutionAndRecoveryService(overrides: Record<string, unknown
           },
         }) as never,
     ),
-    finalizeProviderRecoveryBindingFailure: vi.fn(() => 'released' as const),
     recoverQueuedJob: vi.fn(async () => 'recovered-job'),
     completeRecoveredJob: vi.fn(),
     finalizeInterruptedAppServerJob: vi.fn(async () => {}),
@@ -747,6 +716,10 @@ function createLifecycleHarness(
     getExecutionService?: (ctx: { projectRoot: string }) => unknown;
     getRecoveryService?: (ctx: { projectRoot: string }) => unknown;
     runStartupRecoveryFn?: HarnessStartupRecoveryFn;
+    reconcileProviderOperationsAtStartup?: (signal: AbortSignal) => Promise<unknown>;
+    startProviderOperationReconciler?: () => void;
+    startupRecoveryBarrierPublisher?: Readonly<{ publish(): void }>;
+    writeBackendInfoFn?: () => void;
     cleanupStaleJobsFn?: (currentBundleHash: string, signal: AbortSignal) => void | Promise<void>;
     markJobsAsErrorFn?: (message: string, signal: AbortSignal) => void | Promise<void>;
     registerRuntimeComponentFn?: (component: RuntimeComponent) => void;
@@ -821,6 +794,9 @@ function createLifecycleHarness(
       getExecutionService: getExecutionService as never,
       getRecoveryService: getRecoveryService as never,
       listExecutionServices: () => [...new Set(servicesByProjectRoot.values())] as never[],
+      reconcileProviderOperationsAtStartup: options.reconcileProviderOperationsAtStartup as never,
+      startProviderOperationReconciler: options.startProviderOperationReconciler,
+      startupRecoveryBarrierPublisher: options.startupRecoveryBarrierPublisher,
       getDiscussStoreForSource:
         (options.discussion?.getDiscussStoreForSource as never) ??
         ((() => {
@@ -832,7 +808,7 @@ function createLifecycleHarness(
         (() => {
           throw new Error('Unexpected discuss context lookup');
         }),
-      writeBackendInfoFn: () => {},
+      writeBackendInfoFn: options.writeBackendInfoFn ?? (() => {}),
       removeBackendInfoIfOwnerFn: () => {},
       cleanupStaleJobsFn: options.cleanupStaleJobsFn ?? (() => {}),
       markJobsAsErrorFn: options.markJobsAsErrorFn ?? (() => {}),
@@ -863,7 +839,7 @@ function createLifecycleHarness(
         providerRegistry,
         getRecoveryService,
         createInvocationContext,
-        providerOperationStartupOwnership,
+        providerOperationStartupAdmission,
         signal,
         recoverPersistedDiscussFn,
         knownDiscussSources,
@@ -881,7 +857,7 @@ function createLifecycleHarness(
         signal,
         log: identity.log,
         coordinatorCommit: createTestJobJournalDeps(options.progressStore, runtime).coordinatorCommit,
-        providerOperationStartupOwnership,
+        providerOperationStartupAdmission,
         interruptedAppServerReason: options.interruptedAppServerReason,
       });
       return recoverPersistedDiscussFn({
@@ -995,6 +971,72 @@ describe('lifecycle recovery', () => {
     }
     mockState.tmpHome = '';
     mockState.tmpRoot = '';
+  });
+
+  it('refuses generic recovery after kernel readiness while unreadable provider evidence is unattributable', async () => {
+    const modules = await loadModules();
+    const pluginRoot = createPluginRoot('plugin-provider-operation-refusal');
+    const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
+    const eventBus = new modules.eventBusModule.TypedEventBus();
+    const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createEventBodyCodec(), {
+      db: openTestStoreDb(runtime, ':memory:'),
+      eventBus,
+      providers: permissiveProviderLookupPort,
+    });
+    const blockerKey = 'provider_operation_saga.v1:record:unattributable';
+    progressStore
+      .getDb()
+      .prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)')
+      .run(blockerKey, JSON.stringify({ version: 'unknown', locator: null }));
+
+    const runStartupRecoveryFn = vi.fn(async () => []);
+    const reconcileProviderOperationsAtStartup = vi.fn(async () => ({ examined: 0 }));
+    const startProviderOperationReconciler = vi.fn();
+    const publish = vi.fn();
+    const writeBackendInfoFn = vi.fn();
+    const cleanupStaleJobsFn = vi.fn();
+    const onRecoveryComplete = vi.fn(async () => {});
+    const log = vi.fn();
+    const { controller, runtimeState } = createLifecycleHarness(modules, {
+      pluginRoot,
+      progressStore,
+      eventBus,
+      runStartupRecoveryFn,
+      reconcileProviderOperationsAtStartup,
+      startProviderOperationReconciler,
+      startupRecoveryBarrierPublisher: { publish },
+      writeBackendInfoFn,
+      cleanupStaleJobsFn,
+      log,
+      discussion: {
+        getDiscussStoreForSource: vi.fn(),
+        knownDiscussSources: () => new Set(),
+        getDiscussContext: vi.fn(),
+        recoverPersistedDiscussFn: vi.fn(async () => []),
+        hooks: {
+          onShutdown: vi.fn(async () => {}),
+          onIdleCheck: () => false,
+          onRecoveryComplete,
+        },
+      },
+    });
+
+    try {
+      await expect(controller.start()).resolves.toMatchObject({ port: 4100, host: '127.0.0.1' });
+      expect(reconcileProviderOperationsAtStartup).toHaveBeenCalledTimes(1);
+      expect(writeBackendInfoFn).toHaveBeenCalledTimes(1);
+      expect(runtimeState.getLifecycle()).toBe('kernel-ready');
+      expect(runtimeState.getLaunchFenceActive()).toBe(true);
+      expect(runStartupRecoveryFn).not.toHaveBeenCalled();
+      expect(publish).not.toHaveBeenCalled();
+      expect(startProviderOperationReconciler).not.toHaveBeenCalled();
+      expect(cleanupStaleJobsFn).not.toHaveBeenCalled();
+      expect(onRecoveryComplete).not.toHaveBeenCalled();
+      expect(log).not.toHaveBeenCalled();
+      expect(runtimeState.setLifecycle).not.toHaveBeenCalledWith('running');
+    } finally {
+      await stopLifecycleController(controller);
+    }
   });
 
   it('P5 cursor barrier failure prevents recovery and never reaches running', async () => {
@@ -2175,7 +2217,7 @@ describe('lifecycle recovery', () => {
           getRecoveryService,
           createInvocationContext,
           recoveryCoordinator,
-          providerOperationStartupOwnership,
+          providerOperationStartupAdmission,
           signal,
         },
         runJobsStartup,
@@ -2200,7 +2242,7 @@ describe('lifecycle recovery', () => {
           signal,
           log: identity.log,
           coordinatorCommit: createTestJobJournalDeps(progressStore, runtime).coordinatorCommit,
-          providerOperationStartupOwnership,
+          providerOperationStartupAdmission,
         });
         return [];
       },
@@ -3851,245 +3893,138 @@ describe('lifecycle recovery', () => {
     }
   });
 
-  it('14d. app-server binding failure terminalizes instead of failing the boot', async () => {
+  it.each(
+    [
+      { reason: 'profile-unavailable', provider: 'codex', selector: 'original-profile' },
+      { reason: 'identity-unavailable', provider: 'codex' },
+      { reason: 'subject-mismatch', provider: 'codex' },
+    ].flatMap((failure) =>
+      (['durable-alive', 'durable-absent', 'durable-unknown', 'app-server-not-addressable'] as const).map(
+        (carrier) => ({ failure, carrier }),
+      ),
+    ),
+  )('14d-f. quarantines $failure.reason with $carrier without changing job or carrier ownership', async (fixture) => {
     const modules = await loadModules();
-    const pluginRoot = createPluginRoot('plugin-provider-authority-blocked');
+    const suffix = `${fixture.failure.reason}-${fixture.carrier}`;
+    const pluginRoot = createPluginRoot(`plugin-repairable-binding-${suffix}`);
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
-    const projectRoot = createProjectRoot('project-provider-authority-blocked');
+    const projectRoot = createProjectRoot(`project-repairable-binding-${suffix}`);
     const eventBus = new modules.eventBusModule.TypedEventBus();
     const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createEventBodyCodec(), {
       db: openTestStoreDb(runtime, ':memory:'),
       eventBus,
       providers: permissiveProviderLookupPort,
     });
-    const jobId = 'provider-authority-blocked-job';
-    const fakeService = createFakeExecutionAndRecoveryService({
-      captureProviderRecoveryAuthority: vi.fn(async () => ({
-        ok: false,
-        failure: { reason: 'subject-mismatch', provider: 'codex' },
-      })),
-      finalizeProviderRecoveryBindingFailure: vi.fn(() => 'owned_by_another_job' as const),
-    });
-    const log = vi.fn<(message: string) => void>();
-
-    stubLaunchRecord(progressStore, {
-      jobId,
-      sessionId: 'provider-authority-blocked-session',
-      provider: 'codex',
-      projectRoot,
-      backendNamespace: namespace,
-    });
-    progressStore.appendRuntimeStarted(jobId, {
-      transport: 'app-server',
-      startTime: '2026-03-31T00:00:00.000Z',
-      providerMeta: {
-        provider: 'codex',
-        leaseState: 'waiting',
-      },
-    });
-
-    const { controller, runtimeState } = createLifecycleHarness(modules, {
-      pluginRoot,
-      progressStore,
-      eventBus,
-      servicesByProjectRoot: new Map([[projectRoot, fakeService]]),
-      runtime,
-      log,
-    });
-
-    try {
-      // No process to stop and a structurally unresolvable persisted hostRef, so this
-      // takes the same treatment as the dead-durable case rather than failing the boot.
-      await controller.start();
-      expect(runtimeState.getLaunchFenceActive()).toBe(false);
-      expect(controller.getRecoveryRegistry()?.has(jobId) ?? false).toBe(false);
-      expect(fakeService.finalizeProviderRecoveryBindingFailure).not.toHaveBeenCalled();
-      expect(progressStore.readStatus(jobId)).toMatchObject({
-        phase: 'error',
-        result: { outcome: { kind: 'job_fault', fault: { kind: 'provider_binding' } } },
-      });
-      expect(log.mock.calls.flat().join('')).toContain('Rejected running recovery with invalid provider authority');
-    } finally {
-      await stopLifecycleController(controller);
-    }
-  });
-
-  it('14e. live durable binding failure requests process stop and then terminalizes', async () => {
-    const modules = await loadModules();
-    const pluginRoot = createPluginRoot('plugin-durable-binding-blocked');
-    const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
-    const projectRoot = createProjectRoot('project-durable-binding-blocked');
-    const eventBus = new modules.eventBusModule.TypedEventBus();
-    const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createEventBodyCodec(), {
-      db: openTestStoreDb(runtime, ':memory:'),
-      eventBus,
-      providers: permissiveProviderLookupPort,
-    });
-    const jobId = 'durable-binding-blocked-job';
-    const pid = 73_737;
-    const controlledTime = createControllableTimeoutRuntime(runtime);
-    const kill = vi.spyOn(runtime.process, 'kill').mockReturnValue(true);
-    vi.spyOn(runtime.process, 'observeLiveness').mockImplementation((candidatePid) =>
-      candidatePid === pid ? 'alive' : 'absent',
-    );
-    const fakeService = createFakeExecutionAndRecoveryService({
-      captureProviderRecoveryAuthority: vi.fn(async () => ({
-        ok: false,
-        failure: { reason: 'subject-mismatch', provider: 'codex' },
-      })),
-    });
-    const log = vi.fn<(message: string) => void>();
-
-    stubLaunchRecord(progressStore, {
-      jobId,
-      sessionId: 'durable-binding-blocked-session',
-      provider: 'codex',
-      projectRoot,
-      backendNamespace: namespace,
-    });
-    stubRuntimeRecord(progressStore, { jobId, pid });
-
-    const { controller, runtimeState } = createLifecycleHarness(modules, {
-      pluginRoot,
-      progressStore,
-      eventBus,
-      servicesByProjectRoot: new Map([[projectRoot, fakeService]]),
-      runtime: controlledTime.runtime,
-      log,
-    });
-
-    try {
-      expect(progressStore.readRuntimeProjection(jobId)).toMatchObject({ transport: 'durable-cli', pid });
-      await controller.start();
-      expect(fakeService.captureProviderRecoveryAuthority).toHaveBeenCalledTimes(1);
-      expect(runtime.process.observeLiveness).toHaveBeenCalledWith(pid);
-      expect(kill.mock.calls).toEqual([[pid, 'SIGTERM']]);
-      expect(controlledTime.setTimeout).toHaveBeenCalledTimes(1);
-      expect(controlledTime.runNextTimeout()).toBe(5_000);
-      expect(kill.mock.calls).toEqual([
-        [pid, 'SIGTERM'],
-        [pid, 'SIGKILL'],
-      ]);
-      expect(controlledTime.pendingTimeoutCount()).toBe(0);
-      expect(fakeService.finalizeProviderRecoveryBindingFailure).not.toHaveBeenCalled();
-      expect(progressStore.readStatus(jobId)).toMatchObject({
-        phase: 'error',
-        result: { outcome: { kind: 'job_fault', fault: { kind: 'provider_binding' } } },
-      });
-      expect(runtimeState.getLaunchFenceActive()).toBe(false);
-      expect(controller.getRecoveryRegistry()?.has(jobId) ?? false).toBe(false);
-    } finally {
-      await stopLifecycleController(controller);
-      controlledTime.discardScheduledTimeouts();
-    }
-  });
-
-  it('14e2. a failed required process stop is fatal after the durable rejection settlement', async () => {
-    const modules = await loadModules();
-    const pluginRoot = createPluginRoot('plugin-durable-kill-fails');
-    const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
-    const projectRoot = createProjectRoot('project-durable-kill-fails');
-    const eventBus = new modules.eventBusModule.TypedEventBus();
-    const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createEventBodyCodec(), {
-      db: openTestStoreDb(runtime, ':memory:'),
-      eventBus,
-      providers: permissiveProviderLookupPort,
-    });
-    const jobId = 'durable-kill-fails-job';
-    const pid = 73_939;
-    const controlledTime = createControllableTimeoutRuntime(runtime);
-    const kill = vi.spyOn(runtime.process, 'kill').mockImplementation(() => {
-      throw new Error('EPERM: operation not permitted');
-    });
-    vi.spyOn(runtime.process, 'observeLiveness').mockImplementation((candidatePid) =>
-      candidatePid === pid ? 'alive' : 'absent',
-    );
-    const fakeService = createFakeExecutionAndRecoveryService({
-      captureProviderRecoveryAuthority: vi.fn(async () => ({
-        ok: false,
-        failure: { reason: 'subject-mismatch', provider: 'codex' },
-      })),
-    });
-
-    stubLaunchRecord(progressStore, {
-      jobId,
-      sessionId: 'durable-kill-fails-session',
-      provider: 'codex',
-      projectRoot,
-      backendNamespace: namespace,
-    });
-    stubRuntimeRecord(progressStore, { jobId, pid });
-
-    const { controller, runtimeState } = createLifecycleHarness(modules, {
-      pluginRoot,
-      progressStore,
-      eventBus,
-      servicesByProjectRoot: new Map([[projectRoot, fakeService]]),
-      runtime: controlledTime.runtime,
-    });
-
-    try {
-      await expect(controller.start()).rejects.toThrow('EPERM: operation not permitted');
-      expect(kill.mock.calls).toEqual([[pid, 'SIGTERM']]);
-      expect(controlledTime.setTimeout).not.toHaveBeenCalled();
-      expect(controlledTime.pendingTimeoutCount()).toBe(0);
-      expect(fakeService.finalizeProviderRecoveryBindingFailure).not.toHaveBeenCalled();
-      expect(progressStore.readStatus(jobId)?.phase).toBe('error');
-      expect(runtimeState.getLaunchFenceActive()).toBe(true);
-      expect(controller.getRecoveryRegistry()?.has(jobId) ?? false).toBe(true);
-    } finally {
-      await stopLifecycleController(controller);
-      controlledTime.discardScheduledTimeouts();
-    }
-  });
-
-  it('14f. dead durable binding failure terminalizes only after liveness is disproved', async () => {
-    const modules = await loadModules();
-    const pluginRoot = createPluginRoot('plugin-dead-durable-binding');
-    const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
-    const projectRoot = createProjectRoot('project-dead-durable-binding');
-    const eventBus = new modules.eventBusModule.TypedEventBus();
-    const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createEventBodyCodec(), {
-      db: openTestStoreDb(runtime, ':memory:'),
-      eventBus,
-      providers: permissiveProviderLookupPort,
-    });
-    const jobId = 'dead-durable-binding-job';
-    const pid = 74_747;
+    const jobId = `repairable-binding-${suffix}`;
+    const sessionId = `${jobId}-session`;
+    const pid = 73_700;
+    const remediation = `Restore the original ${fixture.failure.reason} binding and authenticate it.`;
+    const observeLiveness = vi
+      .spyOn(runtime.process, 'observeLiveness')
+      .mockReturnValue(
+        fixture.carrier === 'durable-alive' ? 'alive' : fixture.carrier === 'durable-absent' ? 'absent' : 'unknown',
+      );
     const kill = vi.spyOn(runtime.process, 'kill');
-    vi.spyOn(runtime.process, 'observeLiveness').mockReturnValue('absent');
-    const failure = { reason: 'subject-mismatch', provider: 'codex' } as const;
     const fakeService = createFakeExecutionAndRecoveryService({
-      captureProviderRecoveryAuthority: vi.fn(async () => ({ ok: false, failure })),
+      captureProviderRecoveryAuthority: vi.fn(async () => ({
+        ok: false,
+        failure: fixture.failure,
+        remediation,
+      })),
     });
 
     stubLaunchRecord(progressStore, {
       jobId,
-      sessionId: 'dead-durable-binding-session',
+      sessionId,
       provider: 'codex',
       projectRoot,
       backendNamespace: namespace,
     });
-    stubRuntimeRecord(progressStore, { jobId, pid });
+    if (fixture.carrier === 'app-server-not-addressable') {
+      stubAppServerRuntime(progressStore, jobId, 'codex');
+    } else {
+      stubRuntimeRecord(progressStore, { jobId, pid });
+    }
+    const runtimeProjection = progressStore.readRuntimeProjection(jobId);
+    const interruptAppServerJob = fakeService.interruptAppServerJob;
+
+    const servicesByProjectRoot = new Map([[projectRoot, fakeService]]);
+    let healthyJobId: string | null = null;
+    let healthyService: ReturnType<typeof createFakeExecutionAndRecoveryService> | null = null;
+    if (fixture.failure.reason === 'profile-unavailable' && fixture.carrier === 'durable-alive') {
+      healthyJobId = 'repairable-binding-healthy-sibling';
+      const healthySessionId = `${healthyJobId}-session`;
+      const healthyProjectRoot = createProjectRoot('project-repairable-binding-healthy-sibling');
+      healthyService = createFakeExecutionAndRecoveryService();
+      servicesByProjectRoot.set(healthyProjectRoot, healthyService);
+      stubLaunchRecord(progressStore, {
+        jobId: healthyJobId,
+        sessionId: healthySessionId,
+        provider: 'codex',
+        projectRoot: healthyProjectRoot,
+        backendNamespace: namespace,
+      });
+      appendQueuedEvent(progressStore, healthyJobId, healthySessionId, namespace, healthyProjectRoot);
+    }
 
     const { controller, runtimeState } = createLifecycleHarness(modules, {
       pluginRoot,
       progressStore,
       eventBus,
-      servicesByProjectRoot: new Map([[projectRoot, fakeService]]),
+      servicesByProjectRoot,
       runtime,
     });
 
     try {
       await controller.start();
-      expect(kill).not.toHaveBeenCalled();
-      expect(fakeService.finalizeProviderRecoveryBindingFailure).not.toHaveBeenCalled();
-      expect(progressStore.readStatus(jobId)).toMatchObject({
-        phase: 'error',
-        result: { outcome: { kind: 'job_fault', fault: { kind: 'provider_binding', ...failure } } },
-      });
+      expect(runtimeState.getLifecycle()).toBe('running');
       expect(runtimeState.getLaunchFenceActive()).toBe(false);
+      expect(progressStore.readStatus(jobId)?.phase).toBe('running');
+      expect(progressStore.readRuntimeProjection(jobId)).toEqual(runtimeProjection);
+      expect(
+        new modules.sessionManagerModule.SessionManager(
+          projectRoot,
+          runtime,
+          undefined,
+          undefined,
+          progressStore.getDb(),
+          permissiveProviderLookupPort,
+        ).get('codex', sessionId)?.activeJobId,
+      ).toBe(jobId);
+      expect(
+        progressStore
+          .getDb()
+          .prepare("SELECT COUNT(*) AS count FROM events WHERE stream_id = ? AND type = 'job.terminal.recorded'")
+          .get(jobId),
+      ).toEqual({ count: 0 });
+      expect(
+        progressStore
+          .getDb()
+          .prepare("SELECT COUNT(*) AS count FROM events WHERE stream_id = ? AND type = 'session.claim.released'")
+          .get(sessionId),
+      ).toEqual({ count: 0 });
+      expect(observeLiveness).not.toHaveBeenCalledWith(pid);
+      expect(kill).not.toHaveBeenCalled();
+      expect(interruptAppServerJob).not.toHaveBeenCalled();
       expect(controller.getRecoveryRegistry()?.has(jobId) ?? false).toBe(false);
+      const quarantineRows = progressStore
+        .getDb()
+        .prepare(
+          `SELECT error_message, disposition_detail
+             FROM recovery_quarantine
+            WHERE boundary_id = 'coordinator-job-recovery'
+              AND subject_key = ?`,
+        )
+        .all(jobId) as Array<{ error_message: string; disposition_detail: string }>;
+      expect(quarantineRows).toHaveLength(1);
+      expect(quarantineRows[0]).toMatchObject({
+        error_message: expect.stringContaining(fixture.failure.reason),
+        disposition_detail: expect.stringContaining(remediation),
+      });
+      if (healthyJobId !== null && healthyService !== null) {
+        expect(healthyService.recoverQueuedJob).toHaveBeenCalledTimes(1);
+        expect(progressStore.readStatus(healthyJobId)?.phase).not.toBe('error');
+      }
     } finally {
       await stopLifecycleController(controller);
     }

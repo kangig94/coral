@@ -34,7 +34,7 @@ const runOrdinaryJobStartup: RunStartupRecoveryOrchestratorFn = async (inputs, r
     signal: inputs.signal,
     log: inputs.identity.log,
     coordinatorCommit: (callback) => inputs.progressStore.commit(callback),
-    providerOperationStartupOwnership: inputs.providerOperationStartupOwnership,
+    providerOperationStartupAdmission: inputs.providerOperationStartupAdmission,
     interruptedAppServerReason: inputs.interruptedAppServerReason ?? 'restart',
   });
   return [];
@@ -45,7 +45,6 @@ afterEach(async () => {
     await harness.cleanup();
   }
 });
-
 function createRecoveryProvider(): ProviderRegistry {
   const registry = new ProviderRegistry();
   const provider = defineFakeProvider({

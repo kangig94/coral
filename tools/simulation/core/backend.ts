@@ -84,7 +84,6 @@ type SimulationTerminalOutcome = ProviderTerminal['outcome'];
 function createSimulationSelectionSchema() {
   return z.object({ key: z.string() }).strict();
 }
-
 function createSimulationProfileSchema() {
   return z
     .object({
@@ -801,7 +800,7 @@ export function createSimulationBackend(
         getDiscussContext,
         createInvocationContext,
         recoveryCoordinator,
-        providerOperationStartupOwnership,
+        providerOperationStartupAdmission,
         signal,
         recoverPersistedDiscussFn,
       },
@@ -818,7 +817,7 @@ export function createSimulationBackend(
         signal,
         log: identity.log,
         coordinatorCommit: (cb) => progressStore.commit(cb),
-        providerOperationStartupOwnership,
+        providerOperationStartupAdmission,
       });
       signal.throwIfAborted();
 

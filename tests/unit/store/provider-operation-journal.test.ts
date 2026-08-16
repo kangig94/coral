@@ -1,6 +1,7 @@
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema, type Database } from '#src/store/db.js';
 import {
+  attributeUnreadableProviderOperations,
   completeExecutingProviderOperationAttachment,
   compareAndSwapProviderOperation,
   deleteProviderOperation,
@@ -25,7 +26,7 @@ import {
   PROVIDER_OPERATION_RECORD_VERSION,
 } from '#src/store/provider-operation-record.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { providerOperationRecord } from './provider-operation-fixtures.js';
 
@@ -608,6 +609,128 @@ describe('provider operation journal', () => {
     }
   });
 
+  it('classifies unreadable payload identity per dimension without an envelope gate', () => {
+    const db = createDb();
+    try {
+      const keyed = providerOperationRecord('prepare-pending', { job: 2 });
+      const claimed = providerOperationRecord('prepare-pending', { job: 3 });
+      const claimedProxyInstanceId = claimed.operation.jobId;
+      const claimedBuildSetId = claimed.operation.operationId;
+      const key =
+        `provider_operation_saga.v1:record:${keyed.operation.jobId}:${keyed.operation.operationId}:` +
+        `${keyed.operation.proxyInstanceId}:${keyed.operation.buildSetId}`;
+      const insert = db.prepare<[string, string]>('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)');
+      const attributionValue = (value: string, rowKey = key) => {
+        insert.run(rowKey, value);
+        const { revision: _revision, ...result } = attributeUnreadableProviderOperations(db, [rowKey])[0];
+        return result;
+      };
+      const attribution = (payload: unknown, rowKey = key) => attributionValue(JSON.stringify(payload), rowKey);
+      const keyJob = { kind: 'known', values: [keyed.operation.jobId] } as const;
+      const keySet = {
+        kind: 'known',
+        values: [
+          {
+            proxyInstanceId: keyed.operation.proxyInstanceId,
+            buildSetId: keyed.operation.buildSetId,
+          },
+        ],
+      } as const;
+
+      for (const payload of ['not json', 'false', '[]', '{}']) {
+        expect(attributionValue(payload)).toEqual({ key, jobs: keyJob, sets: keySet });
+      }
+      expect(attribution({ operation: {} })).toEqual({ key, jobs: keyJob, sets: keySet });
+      for (const operation of [false, []]) {
+        expect(attribution({ version: 'broken', locator: null, operation })).toEqual({
+          key,
+          jobs: { kind: 'indeterminate' },
+          sets: { kind: 'indeterminate' },
+        });
+      }
+      expect(
+        attribution({
+          version: 'broken',
+          locator: null,
+          operation: {
+            jobId: claimed.operation.jobId,
+            proxyInstanceId: claimedProxyInstanceId,
+            buildSetId: claimedBuildSetId,
+          },
+        }),
+      ).toEqual({
+        key,
+        jobs: { kind: 'known', values: [keyed.operation.jobId, claimed.operation.jobId] },
+        sets: {
+          kind: 'known',
+          values: [
+            { proxyInstanceId: keyed.operation.proxyInstanceId, buildSetId: keyed.operation.buildSetId },
+            { proxyInstanceId: claimedProxyInstanceId, buildSetId: claimedBuildSetId },
+          ],
+        },
+      });
+      expect(
+        attribution({
+          operation: {
+            jobId: claimed.operation.jobId,
+            proxyInstanceId: claimedProxyInstanceId,
+          },
+        }),
+      ).toEqual({
+        key,
+        jobs: { kind: 'known', values: [keyed.operation.jobId, claimed.operation.jobId] },
+        sets: { kind: 'indeterminate' },
+      });
+      expect(
+        attribution({
+          operation: {
+            jobId: '',
+            proxyInstanceId: claimedProxyInstanceId,
+            buildSetId: claimedBuildSetId,
+          },
+        }),
+      ).toEqual({
+        key,
+        jobs: { kind: 'indeterminate' },
+        sets: {
+          kind: 'known',
+          values: [
+            { proxyInstanceId: keyed.operation.proxyInstanceId, buildSetId: keyed.operation.buildSetId },
+            { proxyInstanceId: claimedProxyInstanceId, buildSetId: claimedBuildSetId },
+          ],
+        },
+      });
+      expect(
+        attribution({
+          operation: {
+            jobId: 42,
+            proxyInstanceId: '',
+            buildSetId: claimedBuildSetId,
+          },
+        }),
+      ).toEqual({
+        key,
+        jobs: { kind: 'indeterminate' },
+        sets: { kind: 'indeterminate' },
+      });
+
+      const malformedKey = 'provider_operation_saga.v1:record:not-canonical';
+      expect(attribution({ operation: {} }, malformedKey)).toEqual({
+        key: malformedKey,
+        jobs: { kind: 'indeterminate' },
+        sets: { kind: 'indeterminate' },
+      });
+
+      const parse = vi.spyOn(JSON, 'parse');
+      attribution({ operation: { jobId: claimed.operation.jobId, proxyInstanceId: claimedProxyInstanceId } });
+      expect(parse).toHaveBeenCalledTimes(1);
+      parse.mockRestore();
+    } finally {
+      vi.restoreAllMocks();
+      db.close();
+    }
+  });
+
   it('removes a bare-prefix due row pointing at the record it retires', () => {
     const db = createDb();
     try {
@@ -672,9 +795,9 @@ describe('provider operation journal', () => {
       expect(rows).toEqual([
         {
           key: supersededKey,
-          jobId: stranded.operation.jobId,
           processTargets: [9_001, 9_002, 9_003, -9_004],
         },
+        { key: 'provider_operation_saga.v1:record:not-a-canonical-key', processTargets: null },
       ]);
 
       retireSupersededProviderOperation(db, supersededKey);
@@ -684,8 +807,8 @@ describe('provider operation journal', () => {
         'retiring the row is what unfences its job',
       ).toEqual([]);
 
-      // The malformed key survives, reported and harmless. It is still a row this build cannot read, so the
-      // scan names it — but it fences nothing, because a key that is not the canonical shape names no job.
+      // The malformed key survives because its process targets were unreadable. It names no specific job, so
+      // startup admission refuses generic recovery rather than pretending the row fences nothing.
       expect(readProviderOperations(db).unreadableKeys).toEqual([
         'provider_operation_saga.v1:record:not-a-canonical-key',
       ]);
@@ -709,9 +832,7 @@ describe('provider operation journal', () => {
       db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)').run(supersededKey, 'not json');
 
       // `null`, never an absence conclusion. The row stays fenced because no process was observed at all.
-      expect(readSupersededProviderOperations(db)).toEqual([
-        { key: supersededKey, jobId: stranded.operation.jobId, processTargets: null },
-      ]);
+      expect(readSupersededProviderOperations(db)).toEqual([{ key: supersededKey, processTargets: null }]);
     } finally {
       db.close();
     }
@@ -740,9 +861,7 @@ describe('provider operation journal', () => {
         JSON.stringify(shipped),
       );
 
-      expect(readSupersededProviderOperations(db)).toEqual([
-        { key: supersededKey, jobId: stranded.operation.jobId, processTargets: [] },
-      ]);
+      expect(readSupersededProviderOperations(db)).toEqual([{ key: supersededKey, processTargets: [] }]);
     } finally {
       db.close();
     }

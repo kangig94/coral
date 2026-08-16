@@ -6,16 +6,14 @@ import type { Runtime } from '../runtime/ports.js';
 import type { InterruptedAppServerReason } from './reconcile/interrupted-reason.js';
 import type { CommitEventsFn } from '../store/append.js';
 
-export type ProviderOperationStartupOwnership = Readonly<{
-  jobIds: readonly string[];
-  /**
-   * Rows that could belong to any job, by key.
-   *
-   * Non-empty means the fence above is not exhaustive and generic recovery may claim nothing: a row that names
-   * no job could name the one being recovered. An empty list is the ordinary case.
-   */
-  unattributableKeys: readonly string[];
-}>;
+export type ProviderOperationStartupAdmission =
+  | Readonly<{ kind: 'admitted'; ownedJobIds: readonly string[] }>
+  | Readonly<{
+      kind: 'refused';
+      blockers: readonly Readonly<{ key: string; revision: string }>[];
+    }>;
+
+export type AdmittedProviderOperationStartup = Extract<ProviderOperationStartupAdmission, { kind: 'admitted' }>;
 
 export type JobsStartupContext = {
   namespace: string;
@@ -28,7 +26,7 @@ export type JobsStartupContext = {
   signal: AbortSignal;
   log: (message: string) => void;
   coordinatorCommit: CommitEventsFn;
-  providerOperationStartupOwnership: ProviderOperationStartupOwnership;
+  providerOperationStartupAdmission: AdmittedProviderOperationStartup;
   /**
    * Why the recovery is finalizing app-server jobs:
    * - `'restart'` (default): ordinary process restart recovery.

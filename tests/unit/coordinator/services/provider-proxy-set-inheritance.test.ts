@@ -1211,12 +1211,12 @@ describe('createProviderProxySetInheritance', () => {
     [
       'a foreign key whose bytes claim this set',
       () => `provider_operation_saga.v1:record:${randomUUID()}:${randomUUID()}:${randomUUID()}:${randomUUID()}`,
-      // Record-shaped, because a real key/value disagreement is a whole record written at the wrong key — not
-      // an arbitrary object. Bytes that are not a record at all make no claim, and the key stands alone.
+      // Envelope fields do not decide whether these bytes claim a set identity. The complete operation tuple
+      // does, even under an envelope this build cannot decode.
       (reference: ProviderProxySetLocator) =>
         JSON.stringify({
-          version: 2,
-          locator: {},
+          version: 'broken',
+          locator: null,
           operation: {
             proxyInstanceId: reference.operation.proxyInstanceId,
             buildSetId: reference.operation.buildSetId,
@@ -1224,7 +1224,7 @@ describe('createProviderProxySetInheritance', () => {
         }),
     ],
     [
-      'a foreign key whose record-shaped bytes name no set at all',
+      'a foreign key whose bytes make a partial set claim',
       () => `provider_operation_saga.v1:record:${randomUUID()}:${randomUUID()}:${randomUUID()}:${randomUUID()}`,
       () => JSON.stringify({ version: 2, locator: {}, operation: { proxyInstanceId: 'only-half' } }),
     ],
@@ -1252,7 +1252,10 @@ describe('createProviderProxySetInheritance', () => {
     // Same shape, different set. Before this was scoped, one such row anywhere in the store blocked the proof
     // for every set in it, indefinitely and invisibly.
     const foreignKey = `provider_operation_saga.v1:record:${randomUUID()}:${randomUUID()}:${randomUUID()}:${randomUUID()}`;
-    db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)').run(foreignKey, 'not json');
+    db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)').run(
+      foreignKey,
+      JSON.stringify({ version: 'broken', locator: null, operation: {} }),
+    );
     const process = proofRuntime(new Map());
     const inheritance = createProviderProxySetInheritance({
       runtime: process.runtime,
