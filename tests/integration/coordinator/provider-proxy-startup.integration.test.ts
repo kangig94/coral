@@ -193,14 +193,12 @@ function lifecycleFor(
   claims.initialize(records);
   const proveContainmentAbsent = options.proveContainmentAbsent ?? (async () => null);
   const retireCapsule = () => options.retireCapsule?.() ?? { kind: 'retired' as const };
-  const rewriteCapsule = () => undefined;
   const onFatal = options.onFatal ?? (() => undefined);
   const redeemCapsule = options.redeemCapsule;
   const recoveryDispatcher = createTestProviderProxyRecoveryDispatcher(
     {
       'containment-proof': ({ identity, signal }) => proveContainmentAbsent(identity, signal),
       'capsule-retirement': retireCapsule,
-      'capsule-rewrite': rewriteCapsule,
       ...(redeemCapsule === undefined
         ? {}
         : { 'capsule-redemption': ({ capsule, capsulePath, signal }) => redeemCapsule(capsule, capsulePath, signal) }),
@@ -583,7 +581,7 @@ async function roleRecoveryStartupCase(
   const record = deadlinePrecedenceRecord();
   const time = new VirtualTime();
   const realRuntime = createRealRuntime('prod');
-  const capsule = v1CapsuleFor(record);
+  const capsule = v3CapsuleFor(record);
   const capsuleStorage = capsuleBackedStorage(realRuntime.storage, realRuntime.paths.coral.generation.root, capsule, {
     discover: false,
     unlink: () => undefined,
@@ -679,7 +677,7 @@ async function inheritanceDeadlinePrecedenceStartupCase(mode: 'disagreement' | '
   const endpointTime = new VirtualTime();
   const deadline = controlledRecoveryDeadline(endpointTime);
   const realRuntime = createRealRuntime('prod');
-  const capsule = v1CapsuleFor(record);
+  const capsule = v3CapsuleFor(record);
   const capsuleStorage = capsuleBackedStorage(realRuntime.storage, realRuntime.paths.coral.generation.root, capsule, {
     discover: false,
     unlink: () => undefined,
@@ -753,7 +751,7 @@ async function discoveredCapsuleDeadlinePrecedenceCase(mode: 'disagreement' | 'd
   const scheduled = vi.spyOn(endpointTime, 'setTimeout');
   const deadline = controlledRecoveryDeadline(endpointTime);
   const runtime = { ...createRealRuntime('prod'), time: deadline.time } satisfies Runtime;
-  const capsule = v1CapsuleFor(record);
+  const capsule = v3CapsuleFor(record);
   const alternateOperation = { ...record.operation, jobId: randomUUID(), operationId: randomUUID() };
   const releaseFinalResponse = deferred<void>();
   const guardianOpen = vi.fn(async () => undefined);
@@ -1107,7 +1105,7 @@ describe('provider proxy startup set recovery', () => {
         incident: { kind: 'capsule-directory-durability-unavailable' },
       }),
     });
-    lifecycle.installDiscoveredCapsules([{ path: '/capsules/set-a.handoff.json', capsule: v1CapsuleFor(setA) }]);
+    lifecycle.installDiscoveredCapsules([{ path: '/capsules/set-a.handoff.json', capsule: v3CapsuleFor(setA) }]);
     const identityA = providerProxySetIdentityFromRecord(setA);
     const setBVisits = vi.fn();
     const startupSetRecovery: StartupSetRecoveryPort = {
@@ -1358,13 +1356,13 @@ describe('production provider proxy startup classification', () => {
         fatalCalls: 1,
         openCalls: [1, 1, 1],
         retryTimers: 0,
-        states: ['capsule-opaque'],
+        states: ['capsule-recovering'],
       },
       deadlineOnly: {
         fatalCalls: 0,
         openCalls: [1, 1, 1],
         retryTimers: 1,
-        states: ['capsule-opaque'],
+        states: ['capsule-recovering'],
       },
     });
   });

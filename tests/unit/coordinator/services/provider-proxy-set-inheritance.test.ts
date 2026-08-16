@@ -22,9 +22,10 @@ vi.mock('#src/infra/node-process.js', async (importOriginal) => {
 
 import {
   readHandoffCapsuleFile,
+  CURRENT_HANDOFF_CAPSULE_VERSION,
   type HandoffCapsule,
-  type HandoffCapsuleV1,
   type HandoffCapsuleV2,
+  type HandoffCapsuleV3,
 } from '#src/provider-proxy/handoff-capsule.js';
 import { probeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
@@ -203,10 +204,20 @@ beforeEach(() => {
   mockedProbe.mockImplementation(() => testIncarnation(1_700_000_000));
 });
 
-function capsuleFor(reference: ProviderProxySetLocator, overrides: Partial<HandoffCapsuleV1> = {}): HandoffCapsule {
+// The current generation, because that is the only one this build may inherit: a capsule whose identity it
+// cannot read is represented and never dialed, whatever the number on it.
+function capsuleFor(reference: ProviderProxySetLocator, overrides: Partial<HandoffCapsuleV3> = {}): HandoffCapsule {
   const { operation, locator: set } = reference;
   return {
-    version: 1,
+    version: CURRENT_HANDOFF_CAPSULE_VERSION,
+    guardianPid: set.guardian.pid,
+    guardianIncarnation: set.guardian.incarnation,
+    reaperPid: set.reaper.pid,
+    reaperIncarnation: set.reaper.incarnation,
+    proxyPid: set.proxy.pid,
+    proxyIncarnation: set.proxy.incarnation,
+    proxyProcessGroupId: set.containment.processGroupId,
+    containmentKind: set.containment.kind,
     grantId: randomUUID(),
     secret: 'f'.repeat(64),
     generation: 'gen2',
@@ -665,7 +676,7 @@ describe('attemptProviderProxySetInheritance', () => {
   it('reports not-bequeathed for a capsule that predates the incarnation token', async () => {
     const loc = locator();
     const shippedV2: HandoffCapsuleV2 = {
-      ...(capsuleFor(loc) as HandoffCapsuleV1),
+      ...(capsuleFor(loc) as HandoffCapsuleV3),
       version: 2,
       guardianPid: loc.locator.guardian.pid,
       guardianProcessStartedAtSeconds: 1_700_000_001,

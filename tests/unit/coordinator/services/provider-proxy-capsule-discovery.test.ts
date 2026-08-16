@@ -13,7 +13,11 @@ import {
   discoverProviderHandoffCapsules,
   retireProviderHandoffCapsule,
 } from '#src/coordinator/services/provider-proxy-capsule-discovery.js';
-import { CURRENT_HANDOFF_CAPSULE_VERSION, type HandoffCapsule } from '#src/provider-proxy/handoff-capsule.js';
+import {
+  CURRENT_HANDOFF_CAPSULE_VERSION,
+  SUPPORTED_HANDOFF_CAPSULE_VERSIONS,
+  type HandoffCapsule,
+} from '#src/provider-proxy/handoff-capsule.js';
 import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
 
 /** The build this fixture lifecycle belongs to — the same one its capsule carries, so discovery treats it as inheritable rather than foreign. */
@@ -97,6 +101,16 @@ describe('provider proxy capsule discovery', () => {
     // And the older generations stay exactly where they were, or this build stops finding what it must refuse.
     expect(V0_10_8_DISCOVERY_PATTERN.test(legacy)).toBe(true);
     expect(current).not.toBe(legacy);
+
+    // Stated over the whole owned list rather than two hand-picked members, so adding a generation cannot pass
+    // by nobody remembering to extend this: v0.10.8 sees exactly the two it shipped able to read, and nothing
+    // after them. A V4 added to the schema and forgotten here fails without anyone editing this test.
+    expect(
+      SUPPORTED_HANDOFF_CAPSULE_VERSIONS.map((version) => [
+        version,
+        V0_10_8_DISCOVERY_PATTERN.test(basename(providerHandoffCapsulePath(identity, version, { baseDir }))),
+      ]),
+    ).toEqual(SUPPORTED_HANDOFF_CAPSULE_VERSIONS.map((version) => [version, version <= 2]));
   });
 
   // The other direction, and the one that matters from here on: a build must not open a capsule it cannot
@@ -128,7 +142,7 @@ describe('provider proxy capsule discovery', () => {
     ).toEqual([]);
   });
 
-  it('discovers a canonical real-storage capsule and blocks matching fresh admission', () => {
+  it('represents a canonical real-storage capsule it cannot inherit without blocking fresh admission', () => {
     const baseDir = mkdtempSync(join(tmpdir(), 'coral-provider-capsule-discovery-'));
     const runtime = createRealRuntime('prod', { baseDir });
     const runDir = runtime.paths.coral.coordinator.runDir;
@@ -184,16 +198,20 @@ describe('provider proxy capsule discovery', () => {
       hostFingerprint: capsule.hostFingerprint,
     });
 
+    // Represented, and deliberately not blocking. A generation this build cannot name a set from is held only
+    // so its address cannot be aliased — it has no identity to compare an acquisition against, so denying one
+    // on its account would deny service over a capsule this build may not touch. The roles behind it are
+    // bounded by their own orphan deadline, which is what makes the overlap safe rather than merely tolerated.
     expect({
       canonicalBasename: /^provider-1[0-9a-f]{23}\.handoff\.json$/u.test(basename(path)),
       discovered,
       snapshotBeforeAdmission,
-      admission,
+      admitted: admission.kind,
     }).toEqual({
       canonicalBasename: true,
       discovered: [{ path, capsule }],
-      snapshotBeforeAdmission: expect.objectContaining({ represented: 1, states: ['capsule-opaque'] }),
-      admission: { kind: 'already-represented' },
+      snapshotBeforeAdmission: expect.objectContaining({ represented: 1, states: ['capsule-foreign'] }),
+      admitted: 'accepted',
     });
   });
 });

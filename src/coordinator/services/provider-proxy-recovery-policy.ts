@@ -5,7 +5,7 @@ import {
   ProviderOperationTerminalizationUnavailableError,
   type ProviderOperationTerminalizationResult,
 } from '../../jobs/provider-operation-terminalization.js';
-import type { HandoffCapsule, HandoffCapsuleV3 } from '../../provider-proxy/handoff-capsule.js';
+import type { HandoffCapsule } from '../../provider-proxy/handoff-capsule.js';
 import type { OperationIdentity } from '../../provider-proxy/protocol.js';
 import type { Database } from '../../store/db.js';
 import { ProviderOperationJournalError } from '../../store/provider-operation-journal.js';
@@ -41,7 +41,6 @@ export const PROVIDER_PROXY_RECOVERY_PRODUCERS = [
   'set-inheritance',
   'capsule-redemption',
   'containment-proof',
-  'capsule-rewrite',
   'capsule-retirement',
   'disappearance-consumer',
 ] as const;
@@ -54,8 +53,6 @@ export const PROVIDER_PROXY_RECOVERY_CONSUMER_SEAMS = [
   'ordinary-set-inheritance',
   'containment-attempt',
   'exact-capsule-recovery',
-  'opaque-capsule-redemption',
-  'opaque-capsule-rewrite',
   'capsule-retirement',
 ] as const;
 
@@ -88,7 +85,6 @@ type ContainmentProofInput = Readonly<{
   signal: AbortSignal;
 }>;
 
-type CapsuleRewriteInput = Readonly<{ path: string; capsule: HandoffCapsuleV3 }>;
 type CapsuleRetirementInput = Readonly<{ path: string }>;
 type DisappearanceConsumerInput = Readonly<{ notice: ContainmentDisappearanceNotice }>;
 
@@ -98,7 +94,6 @@ export type ProviderProxyRecoveryProducerInput = {
   'set-inheritance': SetInheritanceInput;
   'capsule-redemption': CapsuleRedemptionInput;
   'containment-proof': ContainmentProofInput;
-  'capsule-rewrite': CapsuleRewriteInput;
   'capsule-retirement': CapsuleRetirementInput;
   'disappearance-consumer': DisappearanceConsumerInput;
 };
@@ -111,7 +106,6 @@ export interface ProviderProxyRecoveryProducerPorts {
   'set-inheritance'(input: SetInheritanceInput): Promise<ProviderProxySetInheritanceOutcome>;
   'capsule-redemption'(input: CapsuleRedemptionInput): Promise<ProviderProxySetRedemptionOutcome>;
   'containment-proof'(input: ContainmentProofInput): Promise<string | null>;
-  'capsule-rewrite'(input: CapsuleRewriteInput): Promise<void> | void;
   'capsule-retirement'(
     input: CapsuleRetirementInput,
   ): Promise<ProviderHandoffCapsuleRetirementOutcome> | ProviderHandoffCapsuleRetirementOutcome;
@@ -336,9 +330,6 @@ function classifyFulfillment(
   if (producerId === 'containment-proof' && value !== null && typeof value !== 'string') {
     return unknown(producerId, new Error('provider_proxy_containment_proof_contract_violation'));
   }
-  if (producerId === 'capsule-rewrite' && value !== undefined) {
-    return unknown(producerId, new Error('provider_proxy_capsule_rewrite_contract_violation'));
-  }
   if (producerId === 'capsule-retirement') {
     if (
       typeof value !== 'object' ||
@@ -438,8 +429,6 @@ function invokeProducer(
       return producers['capsule-redemption'](source.input);
     case 'containment-proof':
       return producers['containment-proof'](source.input);
-    case 'capsule-rewrite':
-      return producers['capsule-rewrite'](source.input);
     case 'capsule-retirement':
       return producers['capsule-retirement'](source.input);
     case 'disappearance-consumer':

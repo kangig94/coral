@@ -247,9 +247,17 @@ export type ProviderProxySetInheritanceRefusal = 'other-build' | 'unreadable-ide
  * that fatally — taking this coordinator down over a set it never owned. `capsuleMatchesLocator` cannot catch
  * it either, because it compares a capsule against the *record's* build, and for a foreign set those agree.
  *
- * Version 2 alone is refused, not "anything older". V1 carries no process identity at all, which is why it
- * takes the opaque path and asks the roles instead. V2 carries one this build cannot verify, which is worse
- * than none: it looks like an answer.
+ * The rule has no version exceptions, and that is the whole of it: **a capsule this build cannot derive a set
+ * identity from is represented, never dialed.** `providerProxySetIdentityFromCapsule` accepts V3 alone, so V1
+ * and V2 both fail it and both are refused here.
+ *
+ * V1 used to take a third path — redeemed opaquely by asking the roles, on the reasoning that carrying no
+ * process identity is better than carrying one in seconds this build can no longer verify. That reasoning is
+ * sound about the *numbers* and irrelevant to whether the roles may be *dialed*, which is what the path
+ * actually did. Its only reachable population was a source-mode run meeting another source tree's capsule
+ * under the shared fallback build id, where "same build" is forged rather than true; and it wrote its
+ * upgraded bytes at the V1 filename, which discovery re-derives and rejects, so it manufactured a file
+ * guaranteed to fail its own author's next boot. Removed rather than repaired.
  */
 export type ProviderProxySetInheritanceVerdict<T> =
   | Readonly<{ kind: 'inheritable'; candidate: T }>
@@ -258,12 +266,15 @@ export type ProviderProxySetInheritanceVerdict<T> =
 export function classifyProviderProxySetInheritance<T extends Readonly<{ buildSetId: string; version?: number }>>(
   candidate: T,
   ownBuildSetId: string,
-): ProviderProxySetInheritanceVerdict<Exclude<T, { version: 2 }>> {
+): ProviderProxySetInheritanceVerdict<Exclude<T, { version: 1 | 2 }>> {
   if (candidate.buildSetId !== ownBuildSetId) return { kind: 'refused', reason: 'other-build' };
-  if (candidate.version === 2) return { kind: 'refused', reason: 'unreadable-identity' };
-  // The verdict carries the narrowing so callers need no cast: refusing `version === 2` is what leaves the
-  // shapes this build can actually act on, and saying so in the return type is what keeps it true.
-  return { kind: 'inheritable', candidate: candidate as Exclude<T, { version: 2 }> };
+  if (candidate.version === 1 || candidate.version === 2) {
+    return { kind: 'refused', reason: 'unreadable-identity' };
+  }
+  // The verdict carries the narrowing so callers need no cast: refusing every generation whose identity this
+  // build cannot read is what leaves the shapes it can actually act on, and saying so in the return type is
+  // what keeps it true.
+  return { kind: 'inheritable', candidate: candidate as Exclude<T, { version: 1 | 2 }> };
 }
 
 function canonicalOperationSet(operations: readonly OperationIdentity[]): string[] {

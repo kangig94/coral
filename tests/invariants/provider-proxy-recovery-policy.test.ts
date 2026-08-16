@@ -128,7 +128,6 @@ const producerIds = [
   'set-inheritance',
   'capsule-redemption',
   'containment-proof',
-  'capsule-rewrite',
   'capsule-retirement',
   'disappearance-consumer',
 ] as const;
@@ -1018,16 +1017,6 @@ describe('provider proxy recovery policy construction', () => {
       },
       {
         occurrence:
-          'src/coordinator/services/provider-proxy-set/index.ts :: #redeemOpaqueCapsule :: opaque-capsule-redemption',
-        justification: 'Opaque capsule redemption has one registered classification boundary.',
-      },
-      {
-        occurrence:
-          'src/coordinator/services/provider-proxy-set/index.ts :: #rewriteOpaqueCapsule :: opaque-capsule-rewrite',
-        justification: 'Opaque capsule rewriting has one registered classification boundary.',
-      },
-      {
-        occurrence:
           'src/coordinator/services/provider-proxy-set/index.ts :: #runContainmentAttempt :: containment-attempt',
         justification: 'The containment race reduces stop-and-reap and proof evidence in one registered turn.',
       },
@@ -1073,16 +1062,6 @@ describe('provider proxy recovery policy construction', () => {
         occurrence:
           'src/coordinator/services/provider-proxy-set/index.ts :: #recoverExactCapsule :: redemption/capsule-redemption',
         justification: 'Exact recovery contributes capsule redemption under the redemption source id.',
-      },
-      {
-        occurrence:
-          'src/coordinator/services/provider-proxy-set/index.ts :: #redeemOpaqueCapsule :: redemption/capsule-redemption',
-        justification: 'Opaque recovery invokes its sole capsule redemption producer.',
-      },
-      {
-        occurrence:
-          'src/coordinator/services/provider-proxy-set/index.ts :: #rewriteOpaqueCapsule :: rewrite/capsule-rewrite',
-        justification: 'Opaque recovery invokes its sole capsule rewrite producer.',
       },
       {
         occurrence:

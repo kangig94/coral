@@ -28,8 +28,10 @@ foreign capsule is rediscovered and warned about again, forever. The cost per ca
 two alias-map entries and one log line per boot — real, bounded, and no longer able to deny service.
 
 An earlier revision of this argument claimed the residue matched what stale V1 capsules already cost. That was
-wrong and is worth recording: a same-build V1 becomes `capsule-opaque`, which consumes capacity, starts
-redemption immediately and owns retry timers. It is not the same thing.
+wrong when written — a same-build V1 took a third path, `capsule-opaque`, which consumed capacity, started
+redemption immediately and owned retry timers. It is now true by construction rather than by coincidence: that
+path was **deleted**, and a V1 is classified exactly as a V2 is. The rule has no version exceptions left —
+a capsule this build cannot derive a set identity from is represented, never dialed.
 
 ## The shape of the fix
 
@@ -44,25 +46,19 @@ Three things stand in the way, and they are why this is a change rather than a p
    construction site — production plus roughly a dozen test harnesses — states it.
 2. The `capsule-foreign` slot deliberately keeps no capsule binding. Retirement by pid needs the pids, so the
    slot grows a field, which is the first thing that makes it more than an address.
-3. Retirement is a recovery turn. The rewrite path shows the shape (`#rewriteOpaqueCapsule`), but a foreign
-   capsule needs observe-then-retire rather than a single producer.
+3. Retirement is a recovery turn, and the codebase no longer holds a worked example of one. The opaque rewrite
+   used to be cited here as "the shape", which was a mistake in two directions: it was a _single_ producer,
+   and a foreign capsule needs observe-then-retire. Build the two-turn shape from the `capsule-retirement`
+   producer the lifecycle already dispatches, not from anything that used to exist.
 
 **Never signal.** A foreign capsule's processes belong to a build this one has no authority over; the pids may
 only be _observed_. Absence is the sole conclusion this path may draw.
 
-## Also here
-
-`#rewriteOpaqueCapsule` upgrades a V1 capsule in place and writes V3 bytes at the V1 filename — the one name
-an older build will open and refuse to start on (see `providerHandoffCapsulePath`). Reaching it needs a
-same-build V1 capsule, and V1 predates this build's format by two generations, so no such capsule can exist.
-It is left because the correct fix is a second recovery turn — write at the current generation, retire the
-old name — which is the same machinery this document is about.
-
 ## Explicitly out of scope
 
-The build gate itself, the capsule format, and `capsule-opaque`'s own lifetime. `capsule-opaque` is a
-terminating path — it exists for V1 capsules that will age out of the field — and deleting it is a separate
-decision.
+The build gate itself and the capsule format. The gate is worth naming rather than merely excluding: it is
+what let the deleted opaque path be reached at all, and it is now
+[`source-mode-build-identity-sentinel.md`](./source-mode-build-identity-sentinel.md).
 
 ## Start condition
 

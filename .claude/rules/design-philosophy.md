@@ -37,7 +37,7 @@
 
     Two consequences. A reader must accept only the generations it can decode; matching "any generation" reintroduces the same fatal aimed forward, at the build being rolled back _to_. And the generation needs one owner beside the schema that defines it, with addressing and the current-version pointer **derived** from that owner — three independent copies of the same number is a rollback that breaks the first time one is missed.
 
-    Known exception, recorded rather than hidden: `#rewriteOpaqueCapsule` upgrades a V1 capsule in place and would write V3 bytes at the V1 filename. It needs a same-build V1 capsule, which cannot exist, and it is tracked in [`docs/todo/foreign-capsule-retirement.md`](../../docs/todo/foreign-capsule-retirement.md).
+    This principle had one recorded exception, and the way it ended is the lesson. `#rewriteOpaqueCapsule` upgraded a V1 capsule in place and wrote V3 bytes at the V1 filename; it was kept because reaching it needed a same-build V1 capsule, which "cannot exist". It could — every source-mode run shares one fallback `buildSetId`, so the build gate that made it unreachable was forged rather than sound. It was also fatal to its _own_ build's next boot, since discovery re-derives a capsule's canonical path from its version and refuses a mismatch. Both facts were found only when someone went looking for the reachability argument rather than restating it. **An unreachable path that violates this principle is a liability, not an exception** — delete it, and record what made it reachable ([`docs/todo/source-mode-build-identity-sentinel.md`](../../docs/todo/source-mode-build-identity-sentinel.md)).
 
 ## Source Tree Policy
 

@@ -90,7 +90,6 @@ type ProviderProxySetLifecycleFixtureDeps = Omit<
       signal: AbortSignal,
     ): Promise<string | null>;
     retireCapsule?(path: string): Promise<CapsuleRetirementAttemptOutcome> | CapsuleRetirementAttemptOutcome;
-    rewriteCapsule?(path: string, capsule: HandoffCapsuleV3): Promise<void> | void;
     onFatal?(error: ProviderProxySetLifecycleFatalError): void;
     redeemCapsule?(
       capsule: HandoffCapsule,
@@ -101,7 +100,6 @@ type ProviderProxySetLifecycleFixtureDeps = Omit<
 
 function lifecycleFor(deps: ProviderProxySetLifecycleFixtureDeps): ProviderProxySetLifecycle {
   const retireCapsule = deps.retireCapsule ?? (() => ({ kind: 'retired' as const }));
-  const rewriteCapsule = deps.rewriteCapsule ?? (() => undefined);
   const onFatal = deps.onFatal ?? (() => undefined);
   const recoveryDispatcher = createTestProviderProxyRecoveryDispatcher(
     {
@@ -112,7 +110,6 @@ function lifecycleFor(deps: ProviderProxySetLifecycleFixtureDeps): ProviderProxy
               deps.redeemCapsule?.(capsule, capsulePath, signal) ?? Promise.reject(new Error('unconfigured')),
           }),
       'containment-proof': ({ identity, signal }) => deps.proveContainmentAbsent(identity, signal),
-      'capsule-rewrite': ({ path, capsule }) => rewriteCapsule(path, capsule),
       'capsule-retirement': ({ path }) => retireCapsule(path),
       'disappearance-consumer': ({ notice }) => deps.disappearanceConsumer.containmentDisappeared(notice),
     },
@@ -121,7 +118,6 @@ function lifecycleFor(deps: ProviderProxySetLifecycleFixtureDeps): ProviderProxy
   const {
     proveContainmentAbsent: _proveContainmentAbsent,
     retireCapsule: _retireCapsule,
-    rewriteCapsule: _rewriteCapsule,
     onFatal: _onFatal,
     redeemCapsule: _redeemCapsule,
     disappearanceConsumer: _disappearanceConsumer,
@@ -730,7 +726,12 @@ describe('ProviderProxySetLifecycle', () => {
     },
   );
 
-  it('reconstructs a zero-claim capsule before admitting an overlapping fresh set', async () => {
+  // The rule with no version exceptions: a capsule this build cannot derive a set identity from is represented
+  // so its address cannot be aliased, and dialed by nothing. It also does not deny an overlapping acquisition,
+  // because there is no identity here to deny one against — a `capsule-foreign` slot holds an address, a path
+  // and a reason, and no authority. Before this, a V1 took a third path that redeemed it and rewrote the file
+  // in place at the V1 name, which discovery re-derives and rejects on the very next boot.
+  it('represents a capsule it cannot inherit without dialing it or denying an overlapping fresh set', async () => {
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([]);
     const authority = fakeAuthority();
@@ -752,14 +753,16 @@ describe('ProviderProxySetLifecycle', () => {
     await Promise.resolve();
 
     expect(lifecycle.snapshot()).toEqual(
-      expect.objectContaining({ startupDiscoveryCompleted: true, represented: 1, states: ['capsule-opaque'] }),
+      expect.objectContaining({ startupDiscoveryCompleted: true, represented: 1, states: ['capsule-foreign'] }),
     );
     expect(
       lifecycle.beginFreshAcquisition('same-host-route', {
         buildSetId: capsule.buildSetId,
         hostFingerprint: capsule.hostFingerprint,
-      }),
-    ).toEqual({ kind: 'already-represented' });
+      }).kind,
+    ).toBe('accepted');
+    // Nothing was asked of the roles behind it — no redemption, and no containment proof either. The
+    // `redeemCapsule` above throws precisely so that reaching it would fail this test rather than pass it.
     expect(proveContainmentAbsent).not.toHaveBeenCalled();
   });
 
@@ -769,13 +772,6 @@ describe('ProviderProxySetLifecycle', () => {
     const authority = fakeAuthority();
     const established = vi.fn();
     const reportLifecycle = vi.fn();
-    const rewriteCapsule = vi.fn(async (_path: string, capsule: HandoffCapsuleV3) => {
-      expect(capsule).toMatchObject({
-        version: 3,
-        guardianPid: authority.setIdentity.guardianPid,
-        proxyProcessGroupId: authority.setIdentity.proxyProcessGroupId,
-      });
-    });
     const lifecycle = lifecycleFor({
       claims,
       controlEstablished: established,
@@ -783,17 +779,17 @@ describe('ProviderProxySetLifecycle', () => {
       time: new ManualClock(),
       proveContainmentAbsent: noContainmentProof,
       redeemCapsule: async () => ({ kind: 'redeemed', set: authority }),
-      rewriteCapsule,
       reportLifecycle,
     });
     lifecycle.initializeClaimSlots();
 
-    lifecycle.installDiscoveredCapsules([{ path: '/capsules/unmatched.handoff.json', capsule: capsuleFor(authority) }]);
+    lifecycle.installDiscoveredCapsules([
+      { path: '/capsules/unmatched.handoff.v3.json', capsule: capsuleV3For(authority) },
+    ]);
     await vi.waitFor(() => expect(lifecycle.snapshot().states).toEqual(['containing']));
 
     expect(established).not.toHaveBeenCalled();
     expect(lifecycle.authorityFor(authority.setIdentity)).toBeNull();
-    expect(rewriteCapsule).toHaveBeenCalledOnce();
     expect(reportLifecycle.mock.calls).toEqual([
       [
         'info',
@@ -810,7 +806,6 @@ describe('ProviderProxySetLifecycle', () => {
     const authority = fakeAuthority({ record, stopAndReap });
     const redemption = deferred<ProviderProxySetRedemptionOutcome>();
     const established = vi.fn();
-    const rewriteCapsule = vi.fn(async () => undefined);
     const reportLifecycle = vi.fn();
     const lifecycle = lifecycleFor({
       claims,
@@ -819,17 +814,15 @@ describe('ProviderProxySetLifecycle', () => {
       time: new ManualClock(),
       proveContainmentAbsent: noContainmentProof,
       redeemCapsule: () => redemption.promise,
-      rewriteCapsule,
       reportLifecycle,
     });
     lifecycle.initializeClaimSlots();
 
     lifecycle.installDiscoveredCapsules([
-      { path: '/capsules/claim-race.handoff.json', capsule: capsuleFor(authority) },
+      { path: '/capsules/claim-race.handoff.v3.json', capsule: capsuleV3For(authority) },
     ]);
     claims.applyMutation({ kind: 'upserted', record });
     redemption.resolve({ kind: 'redeemed', set: authority });
-    await vi.waitFor(() => expect(rewriteCapsule).toHaveBeenCalledOnce());
     await vi.waitFor(() => expect(lifecycle.authorityFor(authority.setIdentity)).toBe(authority));
 
     expect(stopAndReap).not.toHaveBeenCalled();
@@ -958,13 +951,12 @@ describe('ProviderProxySetLifecycle', () => {
     });
   });
 
-  it('fails opaque capsule recovery on redeemed identity corruption', async () => {
+  it('fails capsule recovery on redeemed identity corruption', async () => {
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([]);
     const clock = new ManualClock();
     const authority = fakeAuthority();
     const redemption = deferred<ProviderProxySetRedemptionOutcome>();
-    const rewriteCapsule = vi.fn();
     const fatals = vi.fn();
     const lifecycle = lifecycleFor({
       claims,
@@ -973,12 +965,11 @@ describe('ProviderProxySetLifecycle', () => {
       time: clock,
       proveContainmentAbsent: noContainmentProof,
       redeemCapsule: () => redemption.promise,
-      rewriteCapsule,
       onFatal: fatals,
     });
     lifecycle.initializeClaimSlots();
     lifecycle.installDiscoveredCapsules([
-      { path: '/capsules/opaque-corrupt-v1.handoff.json', capsule: capsuleFor(authority) },
+      { path: '/capsules/corrupt.handoff.v3.json', capsule: capsuleV3For(authority) },
     ]);
     const corrupted = {
       ...authority,
@@ -991,9 +982,8 @@ describe('ProviderProxySetLifecycle', () => {
     expect({
       fatalCalls: fatals.mock.calls.length,
       states: lifecycle.snapshot().states,
-      rewriteCalls: rewriteCapsule.mock.calls.length,
       activeTimers: clock.timers.filter((timer) => timer.active).length,
-    }).toEqual({ fatalCalls: 1, states: ['capsule-opaque'], rewriteCalls: 0, activeTimers: 0 });
+    }).toEqual({ fatalCalls: 1, states: ['capsule-recovering'], activeTimers: 0 });
   });
 
   it('fail-stops duplicate capsule addresses, grants, and claim-binding aliases during discovery', () => {

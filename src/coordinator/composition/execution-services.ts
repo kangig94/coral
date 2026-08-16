@@ -43,7 +43,6 @@ import {
   discoverProviderHandoffCapsules,
   retireProviderHandoffCapsule,
 } from '../services/provider-proxy-capsule-discovery.js';
-import { writeHandoffCapsuleFile } from '../../provider-proxy/handoff-capsule.js';
 import { proxyOperationStatusNonceSchema } from '../../provider-proxy/protocol.js';
 import { providerProxySetAvailabilityReason } from '../services/provider-proxy-set/inheritance.js';
 import {
@@ -118,11 +117,6 @@ export function createExecutionServices({
         providerProxyInheritance === undefined
           ? Promise.resolve(null)
           : providerProxyInheritance.proveContainmentAbsent(identity, getProgressStore().getDb(), signal),
-      'capsule-rewrite': ({ path, capsule }) =>
-        writeHandoffCapsuleFile(path, capsule, {
-          storage: runtime.storage,
-          uid: process.getuid?.() ?? 0,
-        }),
       'capsule-retirement': ({ path }) => retireProviderHandoffCapsule(runtime.storage, path),
       'disappearance-consumer': ({ notice }) => providerOperationReconciler.containmentDisappeared(notice),
     },
