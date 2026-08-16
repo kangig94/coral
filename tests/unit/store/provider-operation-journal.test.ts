@@ -636,6 +636,7 @@ describe('provider operation journal', () => {
         process.processStartedAtSeconds = 1_700_000_000;
         process.pid = pid;
       }
+      if (shipped.locator.containment !== undefined) shipped.locator.containment.processGroupId = 9_004;
       const insert = db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)');
       insert.run(supersededKey, JSON.stringify(shipped));
       insert.run('provider_operation_saga.v1:record:not-a-canonical-key', '{}');
@@ -643,7 +644,13 @@ describe('provider operation journal', () => {
 
       const rows = readSupersededProviderOperations(db);
 
-      expect(rows).toEqual([{ key: supersededKey, jobId: stranded.operation.jobId, pids: [9_001, 9_002, 9_003] }]);
+      expect(rows).toEqual([
+        {
+          key: supersededKey,
+          jobId: stranded.operation.jobId,
+          processTargets: [9_001, 9_002, 9_003, -9_004],
+        },
+      ]);
 
       retireSupersededProviderOperation(db, supersededKey);
 
@@ -667,7 +674,7 @@ describe('provider operation journal', () => {
     }
   });
 
-  it('reports pids as unknown rather than absent when the row cannot be walked', () => {
+  it('reports process targets as unknown rather than absent when the row cannot be walked', () => {
     const db = createDb();
     try {
       const stranded = providerOperationRecord('prepare-pending', { job: 2 });
@@ -676,11 +683,55 @@ describe('provider operation journal', () => {
         `${stranded.operation.proxyInstanceId}:${stranded.operation.buildSetId}`;
       db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)').run(supersededKey, 'not json');
 
-      // `null`, never `[]`. An empty pid list would read as "nothing alive, retire it" — settling a job whose
-      // processes were never observed at all.
+      // `null`, never an absence conclusion. The row stays fenced because no process was observed at all.
       expect(readSupersededProviderOperations(db)).toEqual([
-        { key: supersededKey, jobId: stranded.operation.jobId, pids: null },
+        { key: supersededKey, jobId: stranded.operation.jobId, processTargets: null },
       ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('keeps an empty usable target set distinct from proven absence', () => {
+    const db = createDb();
+    try {
+      const stranded = providerOperationRecord('prepare-pending', { job: 2 });
+      const supersededKey =
+        `provider_operation_saga.v1:record:${stranded.operation.jobId}:${stranded.operation.operationId}:` +
+        `${stranded.operation.proxyInstanceId}:${stranded.operation.buildSetId}`;
+      const shipped = JSON.parse(encodeProviderOperationRecord(stranded)) as {
+        locator: Record<string, Record<string, unknown>>;
+        providerRoot?: Record<string, unknown>;
+      };
+      for (const part of ['proxy', 'guardian', 'reaper', 'containment']) {
+        const process = shipped.locator[part];
+        if (process === undefined) continue;
+        process.pid = 0;
+      }
+      if (shipped.locator.containment !== undefined) shipped.locator.containment.processGroupId = 0;
+      if (shipped.providerRoot !== undefined) shipped.providerRoot.pid = 0;
+      db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)').run(
+        supersededKey,
+        JSON.stringify(shipped),
+      );
+
+      expect(readSupersededProviderOperations(db)).toEqual([
+        { key: supersededKey, jobId: stranded.operation.jobId, processTargets: [] },
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('rejects retirement of a current-generation row without orphaning its due entry', () => {
+    const db = createDb();
+    try {
+      const current = providerOperationRecord('prepare-pending', { retryNotBeforeMs: 100 });
+      insertProviderOperation(db, current);
+
+      expect(() => retireSupersededProviderOperation(db, recordKey(current))).toThrow(/not from a superseded/u);
+      expect(readProviderOperation(db, current.operation)).toEqual(current);
+      expect(readProviderOperationsDue(db, 100, 1)).toEqual([current]);
     } finally {
       db.close();
     }

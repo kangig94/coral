@@ -85,7 +85,7 @@ function durableCliEvidence(
     }
     return {
       carrierClass: 'durable-cli',
-      process: { kind: 'recorded', alive: false, matchesRecordedIncarnation: false, transportEvidence: true },
+      process: { kind: 'recorded', alive: false, matchesRecordedIncarnation: false },
     };
   }
 
@@ -95,7 +95,6 @@ function durableCliEvidence(
       kind: 'recorded',
       alive: true,
       matchesRecordedIncarnation: observedIncarnation === meta.incarnation,
-      transportEvidence: true,
     },
   };
 }

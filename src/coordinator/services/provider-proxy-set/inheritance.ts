@@ -1,10 +1,11 @@
 import { probeProcessIncarnation, type ProcessIncarnation } from '../../../infra/node-process.js';
 import { createMonotonicClock } from '../../../infra/monotonic-clock.js';
 import { reapRecordedContainment } from '../../../infra/process-containment.js';
+import { CURRENT_STATE_GENERATION } from '../../../infra/state-generation.js';
 import {
   currentHandoffCapsulePath,
   readHandoffCapsuleFile,
-  type HandoffCapsule,
+  type HandoffCapsuleV3,
   guardianHandoffRedeemFieldsSchema,
   guardianHandoffRedeemParamsSchema,
   proxyHandoffRedeemFieldsSchema,
@@ -303,7 +304,7 @@ function sameOperationSet(left: readonly OperationIdentity[], right: readonly Op
 /** Every field a capsule read back from disk must agree with the locator that named its address, plus this
  *  successor's own build, because bytes for any other set cannot establish authority over this one. */
 function capsuleMatchesLocator(
-  capsule: HandoffCapsule,
+  capsule: HandoffCapsuleV3,
   reference: ProviderProxySetLocator,
   successor: CoordinatorIdentity,
 ): boolean {
@@ -331,6 +332,11 @@ async function proveProviderProxySetContainmentAbsent(
   signal: AbortSignal,
 ): Promise<string | null> {
   const platform = runtime.env.platform() as NodeJS.Platform;
+  const operationScan = readProviderOperations(db);
+  // An unreadable row may name another provider root for this set. Acting on the decoded subset would let a
+  // live root survive outside the process group while this function minted a disappearance receipt, so the
+  // entire proof remains unknown until every row participating in the root inventory is readable.
+  if (operationScan.unreadableKeys.length > 0) return null;
   const enforcerIdentities = [
     { pid: identity.guardianPid, incarnation: identity.guardianIncarnation },
     { pid: identity.reaperPid, incarnation: identity.reaperIncarnation },
@@ -363,7 +369,7 @@ async function proveProviderProxySetContainmentAbsent(
   signal.throwIfAborted();
 
   const roots = new Map<string, Readonly<{ pid: number; incarnation: ProcessIncarnation }>>();
-  for (const record of readProviderOperations(db).records) {
+  for (const record of operationScan.records) {
     if (
       !('providerRoot' in record) ||
       !providerProxySetIdentitiesEqual(providerProxySetIdentityFromRecord(record), identity)
@@ -407,7 +413,7 @@ async function proveProviderProxySetContainmentAbsent(
  */
 async function redeemCapsule(
   capsulePath: string,
-  capsule: HandoffCapsule,
+  capsule: HandoffCapsuleV3,
   expectedIdentity: ProviderProxySetIdentity | null,
   deps: ProviderProxySetInheritanceDeps,
   signal: AbortSignal,
@@ -641,13 +647,21 @@ async function redeem(
     uid: process.getuid?.() ?? 0,
   });
   if (capsule === null) return { kind: 'not-bequeathed', reason: NOTHING_TO_INHERIT_REASON };
-  if (classifyProviderProxySetInheritance(capsule, deps.coordinatorIdentity.buildSetId).kind === 'refused') {
+  const verdict = classifyProviderProxySetInheritance(capsule, deps.coordinatorIdentity.buildSetId);
+  if (verdict.kind === 'refused') {
     return { kind: 'not-bequeathed', reason: 'the capsule predates the process incarnation token' };
   }
-  if (!capsuleMatchesLocator(capsule, reference, deps.coordinatorIdentity)) {
+  const inheritableCapsule = verdict.candidate;
+  if (!capsuleMatchesLocator(inheritableCapsule, reference, deps.coordinatorIdentity)) {
     return { kind: 'not-bequeathed', reason: 'capsule identity disagrees with the committed locator' };
   }
-  const set = await redeemCapsule(capsulePath, capsule, providerProxySetIdentityFromRecord(reference), deps, signal);
+  const set = await redeemCapsule(
+    capsulePath,
+    inheritableCapsule,
+    providerProxySetIdentityFromRecord(reference),
+    deps,
+    signal,
+  );
   return { kind: 'inherited', set };
 }
 
@@ -706,7 +720,7 @@ export interface ProviderProxySetInheritance {
     signal: AbortSignal,
   ): Promise<ProviderProxySetInheritanceOutcome>;
   redeemDiscoveredCapsule(
-    capsule: HandoffCapsule,
+    capsule: HandoffCapsuleV3,
     capsulePath: string,
     signal: AbortSignal,
   ): Promise<ProviderProxySetRedemptionOutcome>;
@@ -746,7 +760,7 @@ export function createProviderProxySetInheritance(
         instanceId: options.identity.instanceId,
         pid,
         incarnation,
-        generation: 'gen2',
+        generation: CURRENT_STATE_GENERATION,
         flavor: options.identity.flavor,
         buildSetId: options.identity.buildSetId,
       },

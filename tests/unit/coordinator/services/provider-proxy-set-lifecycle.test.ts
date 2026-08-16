@@ -831,11 +831,11 @@ describe('ProviderProxySetLifecycle', () => {
     expect(reportLifecycle).not.toHaveBeenCalled();
   });
 
-  it('retires an unmatched exact v2 capsule after independent absence proof', async () => {
+  it('retires an unmatched exact v3 capsule after independent absence proof', async () => {
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([]);
     const authority = fakeAuthority();
-    const proveContainmentAbsent = vi.fn(async () => 'exact-v2-absence');
+    const proveContainmentAbsent = vi.fn(async () => 'exact-v3-absence');
     const retireCapsule = vi.fn(async () => ({ kind: 'retired' as const }));
     const lifecycle = lifecycleFor({
       claims,

@@ -213,10 +213,15 @@ const lastErrorSchema = z
  * matched the incarnation-bearing rows this build writes, and its bare strict decode on the startup claim scan
  * would have thrown — the older daemon simply would not boot. The rows have to be somewhere it does not look.
  *
- * Bump this whenever the durable shape stops satisfying the previous generation's schema, and add the
- * generation left behind to `SUPERSEDED_PROVIDER_OPERATION_RECORD_VERSIONS` so its jobs keep their fence.
+ * Bump this whenever the durable shape stops satisfying the previous generation's schema, moving the old
+ * current generation into `retainedSuperseded` so its jobs keep their fence.
  */
-export const PROVIDER_OPERATION_RECORD_VERSION = 2;
+export const PROVIDER_OPERATION_RECORD_GENERATIONS = {
+  retainedSuperseded: [1],
+  current: 2,
+} as const;
+
+export const PROVIDER_OPERATION_RECORD_VERSION = PROVIDER_OPERATION_RECORD_GENERATIONS.current;
 
 const commonFields = {
   version: z.literal(PROVIDER_OPERATION_RECORD_VERSION),

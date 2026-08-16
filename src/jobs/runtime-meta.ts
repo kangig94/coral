@@ -9,6 +9,8 @@ const canonicalUuidSchema = z
   .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
 const nonNegativeSafeIntegerSchema = z.number().int().nonnegative().safe();
 
+export const DURABLE_CLI_PROCESS_RUNTIME_META_VERSION = 1 as const;
+
 /**
  * `durable_cli_process.v1:<jobId>` — the recorded identity of one durable CLI child.
  *
@@ -22,7 +24,7 @@ const nonNegativeSafeIntegerSchema = z.number().int().nonnegative().safe();
  */
 export const durableCliProcessRuntimeMetaSchema = z
   .object({
-    version: z.literal(1),
+    version: z.literal(DURABLE_CLI_PROCESS_RUNTIME_META_VERSION),
     jobId: canonicalUuidSchema,
     pid: nonNegativeSafeIntegerSchema,
     incarnation: processIncarnationSchema,
@@ -33,7 +35,7 @@ export type DurableCliProcessRuntimeMeta = z.infer<typeof durableCliProcessRunti
 
 /** The meta table key for one durable CLI child's recorded identity. Only the coordinator writes this key. */
 export function durableCliProcessRuntimeMetaKey(jobId: string): string {
-  return `durable_cli_process.v1:${jobId}`;
+  return `durable_cli_process.v${DURABLE_CLI_PROCESS_RUNTIME_META_VERSION}:${jobId}`;
 }
 
 export function encodeDurableCliProcessRuntimeMeta(meta: DurableCliProcessRuntimeMeta): string {

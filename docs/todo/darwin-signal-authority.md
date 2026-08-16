@@ -76,7 +76,7 @@ reviewers falsified that independently and the correction is the useful part**, 
 - Even when a handle exists it may name an already-exited child. `shutdownHandle` reaps _after_ graceful
   shutdown, and `app-server-transport.ts:359` resolves that path from the child's own close event. Node reaps
   on exit; a reaped pid is free. Retaining the JavaScript object proves nothing about the pid.
-- And the signal targets the **group**, not the leader, which is a *narrower* hazard than an earlier revision
+- And the signal targets the **group**, not the leader, which is a _narrower_ hazard than an earlier revision
   claimed. POSIX reserves a process-group id for the lifetime of the group, and that lifetime ends only when
   its last member leaves — so while descendants survive, no unrelated group can hold that pgid. What remains
   is the ordinary case: once the group is genuinely empty the id is free, and "the leader was alive when I
@@ -91,6 +91,24 @@ So the rule to implement is one sentence with two limbs: **signal a recorded pid
 not to have exited, or when the platform's incarnation may authorize a signal and it matches.** The first limb
 is what lets macOS keep tearing down its own live children; the second is what stops it from guessing about
 anything else.
+
+## A second thing this path reports that it cannot prove
+
+`observeContainment` returns `absent` when the recorded leader's incarnation no longer matches — and its own
+comment says what that costs: "This can strand original members: the guarantee is never to signal the wrong
+group, not always to reap ours." The signal side of that is right. The _reporting_ side is not: a POSIX group
+outlives its leader, so `isAlive(-processGroupId)` can be true at the moment this answers `absent`, and every
+caller reads that answer as teardown having succeeded.
+
+A delegated repair pass changed it to throw `process_identity_unverified` when the group is still alive. That
+was reverted rather than kept, and the reason is the same one that reverted the Darwin containment close:
+`closeProviderServerEntry` has no reclaimer, and `provider-hosts/index.ts`'s close-all rethrows the first
+rejection — so a case that used to end shutdown cleanly would end it with an error instead. Trading a silent
+strand for a failed shutdown is not obviously the better half.
+
+The property is right and the delivery is what is open. Whatever closes this has to answer what a caller with
+no reclaimer does with the truth, which is the same question the caller split above is already blocked on.
+Close them together.
 
 ## The cheap partial, recorded because it is easy to miss
 

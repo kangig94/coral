@@ -65,7 +65,7 @@ export type JobRecoveryCoverage = 'in-progress' | 'accounted-for' | 'unaccounted
  * was learned about the child, only about the record.
  */
 export type DurableCliProcessEvidence =
-  | Readonly<{ kind: 'recorded'; alive: boolean; matchesRecordedIncarnation: boolean; transportEvidence: boolean }>
+  | Readonly<{ kind: 'recorded'; alive: boolean; matchesRecordedIncarnation: boolean }>
   | Readonly<{ kind: 'uncaptured' }>;
 
 /** The evidence one stored-nonterminal job's class is judged by. */
@@ -141,15 +141,14 @@ function acquiredVerdict(evidence: Extract<CarrierEvidence, { carrierClass: 'app
 }
 
 /**
- * Two of the three recorded facts actually vary: pid liveness alone is not enough, since a recycled pid is
- * alive and is not this job, so `matchesRecordedIncarnation` is what tells a resurrected identity from the genuine
- * one. `transportEvidence` stays fixed `true` at every production evidence builder — a durable CLI has no
- * control channel to source a contradicting signal from (`runtime-meta.ts`'s own doc on why the recorded
- * identity is a pid and an incarnation and nothing more) — so today only the first two can turn this `absent`.
+ * Pid liveness alone is not enough, since a recycled pid is alive and is not this job. The recorded
+ * incarnation tells a resurrected identity from the genuine one. A durable CLI has no separate transport
+ * evidence (`runtime-meta.ts` explains why), so admitting such a boolean here only manufactured an impossible
+ * "missing evidence" value that the classifier could mistake for positive absence.
  */
 function durableCliVerdict(process: DurableCliProcessEvidence): Verdict {
   if (process.kind === 'uncaptured') return { liveness: 'unknown', source: 'no-local-evidence' };
-  const live = process.alive && process.matchesRecordedIncarnation && process.transportEvidence;
+  const live = process.alive && process.matchesRecordedIncarnation;
   return { liveness: live ? 'live' : 'absent', source: 'durable-cli-process' };
 }
 

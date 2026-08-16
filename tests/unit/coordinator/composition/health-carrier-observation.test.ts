@@ -5,12 +5,14 @@ import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
 import type * as HttpHandlerMod from '#src/transport/http/handler.js';
 import type * as CompositionWorldMod from '#src/coordinator/composition/world.js';
 import type * as CarrierObserverMod from '#src/coordinator/live/carrier-observer.js';
+import type * as NodeProcessMod from '#src/infra/node-process.js';
 
 const captured = vi.hoisted(() => ({
   healthRead: null as HttpHandlerPorts['health']['read'] | null,
   publishRecovery: null as (() => void) | null,
 }));
 const observeCarrierStatuses = vi.hoisted(() => vi.fn(async () => new Map()));
+const probeSelfIncarnation = vi.hoisted(() => vi.fn());
 
 vi.mock('#src/transport/http/handler.js', async (importOriginal) => {
   const actual = await importOriginal<typeof HttpHandlerMod>();
@@ -40,6 +42,11 @@ vi.mock('#src/coordinator/live/carrier-observer.js', async (importOriginal) => {
   return { ...actual, observeCarrierStatuses };
 });
 
+vi.mock('#src/infra/node-process.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof NodeProcessMod>();
+  return { ...actual, probeProcessIncarnation: probeSelfIncarnation };
+});
+
 import { createCoordinatorCore } from '#src/coordinator/composition/index.js';
 import type { FetchFn } from '#src/coordinator/composition/types.js';
 import { LocalOperationRegistry } from '#src/coordinator/services/operation-registry.js';
@@ -58,6 +65,7 @@ import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-superviso
 import { setStoreServicesForTest } from '#tools/testing/store-services.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
 type ExecutingRecord = Extract<ProviderOperationRecord, { phase: 'executing' }>;
 
@@ -170,6 +178,7 @@ beforeEach(() => {
   captured.healthRead = null;
   captured.publishRecovery = null;
   observeCarrierStatuses.mockClear();
+  probeSelfIncarnation.mockReset().mockReturnValue(testIncarnation('health-default'));
 });
 
 afterEach(() => {
@@ -178,6 +187,24 @@ afterEach(() => {
 });
 
 describe('health local carrier observation', () => {
+  it('retries a failed self-incarnation probe and caches the first success', () => {
+    const incarnation = testIncarnation('health-retry-success');
+    probeSelfIncarnation.mockReset().mockReturnValueOnce(null).mockReturnValue(incarnation);
+    createCore(
+      new LocalOperationRegistry(),
+      vi.fn(async () => ({ ok: true }) as never),
+    );
+
+    const first = readHealth();
+    const second = readHealth();
+    const third = readHealth();
+
+    expect([first.incarnation, second.incarnation, third.incarnation]).toEqual([undefined, incarnation, incarnation]);
+    expect(probeSelfIncarnation).toHaveBeenCalledTimes(2);
+    expect(probeSelfIncarnation).toHaveBeenNthCalledWith(1, process.pid, process.platform);
+    expect(probeSelfIncarnation).toHaveBeenNthCalledWith(2, process.pid, process.platform);
+  });
+
   it('reports exact live, unknown, and recovery-defect counts without probing the network', () => {
     const db = createDb();
     insertProviderOperation(db, providerOperationRecord('executing', { job: 98 }));

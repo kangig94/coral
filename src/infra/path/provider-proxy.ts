@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import type { BuildFlavor } from '../build-flavor.js';
 import { hashToken } from '../hash.js';
 import type { StorageBigIntStat, StoragePort } from '../port-types.js';
+import type { CURRENT_STATE_GENERATION } from '../state-generation.js';
 import { generationRunDir, socketPathByteLimit } from './coordinator.js';
 
 const PROVIDER_PATH_IDENTITY_HASH_LENGTH = 24;
@@ -23,7 +24,7 @@ export type ProviderProxyEndpointEnvironment = {
 };
 
 type ProviderSetIdentity = {
-  readonly generation: 'gen2';
+  readonly generation: typeof CURRENT_STATE_GENERATION;
   readonly flavor: BuildFlavor;
   readonly buildSetId: string;
   readonly hostFingerprint: string;

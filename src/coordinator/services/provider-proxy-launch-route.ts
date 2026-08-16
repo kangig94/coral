@@ -2,6 +2,7 @@ import type { AppServerProxyRoute, AppServerProxyRouteRequest } from '../../jobs
 import {
   operationIdentitySchema,
   proxyPreparedAppServerOperationSchema,
+  PROXY_PREPARED_APP_SERVER_OPERATION_VERSION,
   type OperationIdentity,
   type ProxyPreparedAppServerOperation,
 } from '../../provider-proxy/protocol.js';
@@ -50,7 +51,7 @@ export function createAppServerProxyRoute(deps: {
       }
       const operation: OperationIdentity = parsedOperation.data;
       const prepared: ProxyPreparedAppServerOperation = proxyPreparedAppServerOperationSchema.parse({
-        version: 1,
+        version: PROXY_PREPARED_APP_SERVER_OPERATION_VERSION,
         provider: request.provider,
         binding: request.binding,
         request: request.request,

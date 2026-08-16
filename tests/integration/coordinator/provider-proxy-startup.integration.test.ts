@@ -35,7 +35,7 @@ import {
   readProviderOperation,
   readProviderOperationsDue,
 } from '#src/store/provider-operation-journal.js';
-import type { HandoffCapsule, HandoffCapsuleV1, HandoffCapsuleV3 } from '#src/provider-proxy/handoff-capsule.js';
+import type { HandoffCapsuleV1, HandoffCapsuleV3 } from '#src/provider-proxy/handoff-capsule.js';
 import type { ProviderOperationRecord } from '#src/store/provider-operation-record.js';
 import { createControlEndpoint, type ControlChallengeAuthority } from '#src/provider-proxy/control-endpoint.js';
 import { PROXY_CONTROL_RPC_TIMEOUT_MS, ProxyControlProtocolError } from '#src/provider-proxy/protocol.js';
@@ -182,7 +182,7 @@ function lifecycleFor(
       signal: AbortSignal,
     ) => Promise<string | null>;
     redeemCapsule?: (
-      capsule: HandoffCapsule,
+      capsule: HandoffCapsuleV3,
       path: string,
       signal: AbortSignal,
     ) => Promise<ProviderProxySetRedemptionOutcome>;
@@ -970,11 +970,11 @@ describe('provider proxy startup set recovery', () => {
     await expect(first).resolves.toMatchObject({ kind: 'absence-accepted' });
   });
 
-  it('retires an unmatched exact v2 capsule after independent absence proof', async () => {
+  it('retires an unmatched exact v3 capsule after independent absence proof', async () => {
     const record = providerOperationRecord('executing');
     const time = new VirtualTime();
     const scheduled = vi.spyOn(time, 'setTimeout');
-    const proof = vi.fn(async () => 'exact-v2-proof');
+    const proof = vi.fn(async () => 'exact-v3-proof');
     const retirementStarted = deferred<void>();
     const retirementOutcome = deferred<Readonly<{ kind: 'retired' }>>();
     const retirement = vi.fn(() => {

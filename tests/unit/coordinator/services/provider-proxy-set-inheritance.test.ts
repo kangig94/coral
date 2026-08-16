@@ -1158,7 +1158,7 @@ describe('createProviderProxySetInheritance', () => {
     const base = createRealRuntime('prod');
     const boundedRuntime = {
       ...base,
-      process: { ...base.process, isAlive: () => true, kill: () => true },
+      process: { ...base.process, isAlive: (target: number) => target > 0, kill: () => true },
     };
     // Every pid is readable, and every one of them reads back as someone else.
     mockedProbe.mockImplementation(() => testIncarnation(9_999_999));
@@ -1174,6 +1174,26 @@ describe('createProviderProxySetInheritance', () => {
       inheritance.proveContainmentAbsent(providerProxySetIdentityFromRecord(reference), db, controller.signal),
       'a pid that is provably someone else does not keep this set alive',
     ).resolves.not.toBeNull();
+  });
+
+  it('keeps containment proof unknown when an unreadable operation row may hide another root', async () => {
+    const reference = locator();
+    const db = proofDatabase([proofRecord(reference, { pid: 104, incarnation: testIncarnation(1_003) })]);
+    const unreadableKey = `provider_operation_saga.v1:record:${randomUUID()}:${randomUUID()}:${randomUUID()}:${randomUUID()}`;
+    db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)').run(unreadableKey, 'not json');
+    const process = proofRuntime(new Map());
+    mockedProbe.mockImplementation(() => testIncarnation('replacement'));
+    const inheritance = createProviderProxySetInheritance({
+      runtime: process.runtime,
+      identity,
+      operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
+      registerInheritedSet: () => undefined,
+    });
+
+    await expect(
+      inheritance.proveContainmentAbsent(providerProxySetIdentityFromRecord(reference), db, neverAborts),
+    ).resolves.toBeNull();
+    expect(process.signals).toEqual([]);
   });
 
   it('proves containment through the public factory without selecting an address-distinct root', async () => {
@@ -1276,7 +1296,8 @@ describe('createProviderProxySetInheritance', () => {
       operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
       registerInheritedSet,
     });
-    const outcome = await inheritance.inheritProviderProxySet(locator(), unusedDb, neverAborts);
+    const db = proofDatabase([]);
+    const outcome = await inheritance.inheritProviderProxySet(locator(), db, neverAborts).finally(() => db.close());
 
     expect(outcome.kind).toBe('not-bequeathed');
     expect(registerInheritedSet).not.toHaveBeenCalled();

@@ -116,9 +116,10 @@ export interface HandoffOptions {
 
 type HandoffSignal = 'SIGTERM' | 'SIGKILL';
 type HandoffSignalResult = 'sent' | 'send_failed';
+const HANDOFF_SIGNAL_RECORD_VERSION = 1 as const;
 
 export type HandoffSignalRecord = {
-  version: 1;
+  version: typeof HANDOFF_SIGNAL_RECORD_VERSION;
   socketPath: string;
   pid: number;
   incarnation?: ProcessIncarnation;
@@ -166,7 +167,7 @@ function isHandoffSignalRecord(value: unknown): value is HandoffSignalRecord {
   }
   const record = value as Record<string, unknown>;
   return (
-    record.version === 1 &&
+    record.version === HANDOFF_SIGNAL_RECORD_VERSION &&
     typeof record.socketPath === 'string' &&
     Number.isInteger(record.pid) &&
     (record.incarnation === undefined || isProcessIncarnation(record.incarnation)) &&
@@ -295,7 +296,7 @@ function assertSignalCooldown(opts: HandoffOptions, incumbent: IncumbentIdentity
 
 function recordSignal(opts: HandoffOptions, incumbent: IncumbentIdentity, signal: HandoffSignal): void {
   opts.signalLedger?.write({
-    version: 1,
+    version: HANDOFF_SIGNAL_RECORD_VERSION,
     socketPath: opts.socketPath,
     pid: incumbent.pid,
     ...(incumbent.incarnation === undefined ? {} : { incarnation: incumbent.incarnation }),

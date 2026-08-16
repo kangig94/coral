@@ -7,7 +7,6 @@ import {
   successionOperationRegisterResultSchema,
   CURRENT_HANDOFF_CAPSULE_VERSION,
   writeHandoffCapsuleFile,
-  type HandoffCapsule,
   type HandoffCapsuleV3,
   proxyHandoffInstallParamsSchema,
 } from '../../../provider-proxy/handoff-capsule.js';
@@ -81,8 +80,8 @@ export type ProviderProxySetAuthorityDependencies = Readonly<{
   runtime: Pick<Runtime, 'ids' | 'env' | 'storage'>;
   /** The capsule this set was redeemed from, when it was redeemed rather than freshly acquired. Only its
    *  presence is read: a redeemed set already has its credential installed, so this authority mints and
-   *  writes nothing for it. A redeemed capsule may be any readable version; a minted one is always V3. */
-  recoveryCapsule?: HandoffCapsule;
+   *  writes nothing for it. Only V3 can reach redemption, and a minted capsule is always V3. */
+  recoveryCapsule?: HandoffCapsuleV3;
   /** `stopAndReap`'s source for provider roots this generation can still name in set agreement. */
   operationRegistry: ProviderProxyOperationSnapshot;
 }>;

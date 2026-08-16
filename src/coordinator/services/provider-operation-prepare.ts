@@ -6,6 +6,7 @@ import { applyInjectBundle } from '../../providers/inject.js';
 import {
   providerOperationPreparePermanentRefusalSchema,
   proxyPreparedAppServerOperationSchema,
+  PROXY_PREPARED_APP_SERVER_OPERATION_VERSION,
   type ProviderOperationPreparePermanentRefusal,
 } from '../../provider-proxy/protocol.js';
 import type { Runtime } from '../../runtime/ports.js';
@@ -135,7 +136,7 @@ export function materializeProviderOperationPrepare(
   return {
     state: 'prepared',
     prepared: proxyPreparedAppServerOperationSchema.parse({
-      version: 1,
+      version: PROXY_PREPARED_APP_SERVER_OPERATION_VERSION,
       provider: launch.provider,
       binding: session.binding,
       request: requestWithInject,

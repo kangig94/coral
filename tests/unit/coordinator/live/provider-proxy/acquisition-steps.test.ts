@@ -233,7 +233,7 @@ describe('createProviderProxyAcquisitionSteps', () => {
       throw new Error('reaper heartbeat rejected');
     };
     mockedEstablishRoleControl.mockImplementation(async (opened, _timer, _retry, plan) => {
-      const role = plan.role as keyof typeof clients;
+      const role = plan.role;
       const client = clients[role];
       opened.push(client);
       const identity =

@@ -5,7 +5,7 @@ import {
   ProviderOperationTerminalizationUnavailableError,
   type ProviderOperationTerminalizationResult,
 } from '../../jobs/provider-operation-terminalization.js';
-import type { HandoffCapsule } from '../../provider-proxy/handoff-capsule.js';
+import type { HandoffCapsuleV3 } from '../../provider-proxy/handoff-capsule.js';
 import type { OperationIdentity } from '../../provider-proxy/protocol.js';
 import type { Database } from '../../store/db.js';
 import { ProviderOperationJournalError } from '../../store/provider-operation-journal.js';
@@ -75,7 +75,7 @@ type SetInheritanceInput = Readonly<{
 }>;
 
 type CapsuleRedemptionInput = Readonly<{
-  capsule: HandoffCapsule;
+  capsule: HandoffCapsuleV3;
   capsulePath: string;
   signal: AbortSignal;
 }>;
@@ -185,7 +185,7 @@ export interface ProviderProxyRecoveryFatalSink {
 export type ProviderProxyRecoveryExactContext = Readonly<{
   operation?: OperationIdentity;
   setIdentity?: ProviderProxySetIdentity;
-  capsule?: HandoffCapsule;
+  capsule?: HandoffCapsuleV3;
 }>;
 
 export type ProviderProxyRecoverySource<ProducerId extends ProviderProxyRecoveryProducerId> = Readonly<{

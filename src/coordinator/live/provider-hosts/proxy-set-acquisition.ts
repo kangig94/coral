@@ -1,4 +1,5 @@
 import { probeProcessIncarnation } from '../../../infra/node-process.js';
+import { CURRENT_STATE_GENERATION } from '../../../infra/state-generation.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { CoordinatorIdentity as ProviderProxyCoordinatorIdentity } from '../../../provider-proxy/protocol.js';
 import type { ProviderEventHandler } from '../../../provider-proxy/control-client.js';
@@ -102,7 +103,7 @@ export function ensureProviderProxySet(
     instanceId: env.identity.instanceId,
     pid,
     incarnation,
-    generation: 'gen2',
+    generation: CURRENT_STATE_GENERATION,
     flavor: env.identity.flavor,
     buildSetId: env.identity.buildSetId,
   };

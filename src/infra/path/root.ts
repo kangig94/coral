@@ -2,8 +2,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import type { BuildFlavor } from '../build-flavor.js';
-
-const STATE_GENERATION = 'gen2';
+import { CURRENT_STATE_GENERATION } from '../state-generation.js';
 
 /**
  * Resolves the Coral root directory (`~/.coral` by default). Tests pass an
@@ -43,7 +42,7 @@ export interface GenerationPathOptions {
 }
 
 export function generationRoot(opts?: GenerationPathOptions): string {
-  return join(coralStateRoot(opts?.baseDir), STATE_GENERATION);
+  return join(coralStateRoot(opts?.baseDir), CURRENT_STATE_GENERATION);
 }
 
 export function generationStateRoot(flavor: BuildFlavor, opts?: GenerationPathOptions): string {

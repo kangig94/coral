@@ -190,26 +190,42 @@ export type RoleControlPlan<
   /** No default: `RoleControlPlan<TOpened>` would make `openParams` `any` and quietly undo the check below.
    *  Every use infers it from the schema at a call site, so there is nothing for a default to serve. */
   TOpenParams extends z.ZodTypeAny,
-> = Readonly<{
-  role: ProviderProxyRole;
-  endpoint: string;
-  openMethod: ProviderProxyRoleOpenMethod;
-  /** Typed as the schema's own output rather than as its own parameter: an indexed access is not an inference
-   *  site, so the schema below decides the shape instead of being inferred from whatever payload was written.
-   *  Inferring the other way is how a `paramsSchema` argument ends up accepting any schema at all. */
-  openParams: z.output<TOpenParams>;
-  /** Required, which is the whole point: `openParams` used to be `Record<string, unknown>` while the reply
-   *  right below it was schema-checked, so every role parsed its own open request against a declaration its
-   *  one sender could not name. An open that skips validation no longer type-checks. */
-  openParamsSchema: TOpenParams;
-  openResultSchema: z.ZodType<TOpened>;
-  identity: (opened: TOpened) => Record<string, unknown>;
-  heartbeatMethod: ProviderProxyHeartbeatMethod;
-  expectedIdentity: Readonly<Record<string, string | number>>;
-  /** Only the proxy role ever pushes `provider.event.v1` back over this connection (`protocol.ts`'s own
-   *  doc), so only the proxy's plan supplies this. */
-  onProviderEvent?: ProviderEventHandler;
-}>;
+> = Readonly<
+  {
+    endpoint: string;
+    /** Typed as the schema's own output rather than as its own parameter: an indexed access is not an inference
+     *  site, so the schema below decides the shape instead of being inferred from whatever payload was written.
+     *  Inferring the other way is how a `paramsSchema` argument ends up accepting any schema at all. */
+    openParams: z.output<TOpenParams>;
+    /** Required, which is the whole point: `openParams` used to be `Record<string, unknown>` while the reply
+     *  right below it was schema-checked, so every role parsed its own open request against a declaration its
+     *  one sender could not name. An open that skips validation no longer type-checks. */
+    openParamsSchema: TOpenParams;
+    openResultSchema: z.ZodType<TOpened>;
+    identity: (opened: TOpened) => Record<string, unknown>;
+    expectedIdentity: Readonly<Record<string, string | number>>;
+  } & (
+    | Readonly<{
+        role: 'proxy';
+        openMethod: 'control.open.v1' | 'handoff.redeem.v1';
+        heartbeatMethod: 'control.heartbeat.v1';
+        /** Only the proxy role ever pushes `provider.event.v1` back over this connection. */
+        onProviderEvent?: ProviderEventHandler;
+      }>
+    | Readonly<{
+        role: 'guardian';
+        openMethod: 'guardian.open.v1' | 'guardian.handoff-redeem.v1';
+        heartbeatMethod: 'guardian.heartbeat.v1';
+        onProviderEvent?: never;
+      }>
+    | Readonly<{
+        role: 'reaper';
+        openMethod: 'reaper.open.v1' | 'reaper.handoff-rotate.v1';
+        heartbeatMethod: 'reaper.heartbeat.v1';
+        onProviderEvent?: never;
+      }>
+  )
+>;
 
 /**
  * Connects one role's control endpoint, opens it, verifies the identity it reports against what this

@@ -11,6 +11,7 @@ import {
   parseStoreResetIncidentManifest,
   projectStoreResetPublicReport,
   STORE_RESET_EVIDENCE_FILE_NAMES,
+  STORE_RESET_INCIDENT_SCHEMA_VERSION,
   STORE_RESET_MANIFEST_FILE_NAME,
   StoreResetManifestDecodeError,
   type StoreResetIncidentLocalReport,
@@ -185,7 +186,8 @@ function readListEntry(
       resetAt: manifest.resetAt,
       reason: manifest.reason,
       schemaVersion: manifest.schemaVersion,
-      resetPolicyCause: manifest.schemaVersion === 3 ? manifest.resetPolicyCause : null,
+      resetPolicyCause:
+        manifest.schemaVersion === STORE_RESET_INCIDENT_SCHEMA_VERSION ? manifest.resetPolicyCause : null,
       fileCount: manifest.files.length,
     };
   } catch (error: unknown) {

@@ -17,7 +17,7 @@ describe('classifyCarrier', () => {
     const observation = observe(
       {
         carrierClass: 'durable-cli',
-        process: { kind: 'recorded', alive: false, matchesRecordedIncarnation: false, transportEvidence: true },
+        process: { kind: 'recorded', alive: false, matchesRecordedIncarnation: false },
       },
       { storedPhase: 'launching', observedMaxJournalSeq: 41 },
     );
@@ -94,21 +94,18 @@ describe('classifyCarrier', () => {
   });
 
   describe('durable CLI', () => {
-    const recorded = (
-      overrides: Partial<{ alive: boolean; matchesRecordedIncarnation: boolean; transportEvidence: boolean }>,
-    ) =>
+    const recorded = (overrides: Partial<{ alive: boolean; matchesRecordedIncarnation: boolean }>) =>
       observe({
         carrierClass: 'durable-cli',
         process: {
           kind: 'recorded',
           alive: true,
           matchesRecordedIncarnation: true,
-          transportEvidence: true,
           ...overrides,
         },
       });
 
-    it('is live only when liveness, recorded incarnation, and transport evidence all agree', () => {
+    it('is live only when liveness and the recorded incarnation agree', () => {
       expect(recorded({}).liveness).toBe('live');
       expect(recorded({}).source).toBe('durable-cli-process');
     });
@@ -118,11 +115,8 @@ describe('classifyCarrier', () => {
       expect(recorded({ matchesRecordedIncarnation: false }).liveness).toBe('absent');
     });
 
-    it.each([
-      ['the process is gone', { alive: false }],
-      ['durable transport evidence is missing', { transportEvidence: false }],
-    ])('is absent when %s', (_label, overrides) => {
-      expect(recorded(overrides).liveness).toBe('absent');
+    it('is absent when the process is gone', () => {
+      expect(recorded({ alive: false }).liveness).toBe('absent');
     });
 
     it('is unknown when the launch never captured its process identity', () => {

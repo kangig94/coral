@@ -62,6 +62,7 @@ import { resolveRunningBundleDir } from '../infra/bundle-manifest.js';
 import type { ValidatedHandoffTarget } from '../infra/handoff-target.js';
 import type { Database } from '../store/db.js';
 import { routeOrOpenBackendStoreAtStartup } from '../store/startup-store-routing.js';
+import { ACTIVE_STORE_SELECTION_VERSION } from '../store/active-store-selection.js';
 import { validateForeignHandoffTarget } from './handoff-runner.js';
 import type { CoordinatorStoreServices, StoreServicesRef } from './composition/store-services-ref.js';
 import type { KbDaemonSupervisor } from './live/kb-daemon-supervisor.js';
@@ -953,7 +954,7 @@ async function runLifecycleStartup({
           storeFormat: deps.storeFormat,
           startupBusyTimeoutMs: STARTUP_STORE_BUSY_TIMEOUT_MS,
           currentSelection: {
-            version: 1,
+            version: ACTIVE_STORE_SELECTION_VERSION,
             manifest: currentBuild,
             bundleDir: currentBundleDir,
             activeStoreFingerprint: currentBuild.storeFormatFingerprint,
@@ -998,6 +999,7 @@ async function runLifecycleStartup({
     );
     state.recoveryCoordinator = recoveryCoordinator;
     connectProviderOperationRecovery?.(recoveryCoordinator);
+    recoveryCoordinator.retireAbsentSupersededProviderOperations();
     const providerOperationStartupOwnership = recoveryCoordinator.snapshotProviderOperationStartupOwnership();
     signal.throwIfAborted();
 

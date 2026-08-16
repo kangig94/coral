@@ -5,6 +5,7 @@ import {
   decodeProviderOperationRecord,
   encodeProviderOperationRecord,
   providerOperationIdentitySchema,
+  PROVIDER_OPERATION_RECORD_GENERATIONS,
   PROVIDER_OPERATION_RECORD_VERSION,
   type ProviderOperationIdentity,
   type ProviderOperationRecord,
@@ -98,12 +99,11 @@ const PROVIDER_OPERATION_DUE_PREFIX = `${PROVIDER_OPERATION_SAGA_PREFIX}due:`;
  * rows behind; once that build is out of the field the entry is deleted, not kept for symmetry.
  *
  * These rows do not accumulate forever. `readSupersededProviderOperations` reads the one thing every
- * generation records the same way — the pids — and startup retires a row whose processes are all absent, so
- * the fence it holds is released and its job settles through ordinary recovery.
+ * generation records the same way — signalable process targets — and startup retires a row whose targets are
+ * all absent, so the fence it holds is released and its job settles through ordinary recovery.
  */
-const SUPERSEDED_PROVIDER_OPERATION_RECORD_VERSIONS: readonly number[] = [1];
 const SUPERSEDED_PROVIDER_OPERATION_RECORD_PREFIXES: readonly string[] =
-  SUPERSEDED_PROVIDER_OPERATION_RECORD_VERSIONS.map((version) => `${sagaPrefix(version)}record:`);
+  PROVIDER_OPERATION_RECORD_GENERATIONS.retainedSuperseded.map((version) => `${sagaPrefix(version)}record:`);
 
 const PROVIDER_OPERATION_READ_PAGE_SIZE = 128;
 const FIXED_WIDTH_INTEGER_DIGITS = String(Number.MAX_SAFE_INTEGER).length;
@@ -457,16 +457,17 @@ function forEachRowUnderPrefix(db: Database, prefix: string, visit: (row: MetaRo
 }
 
 /**
- * The pids a superseded row names, and nothing else it says.
+ * The signalable process targets a superseded row names, and nothing else it says.
  *
  * A generation this build cannot decode is still not opaque: every generation of this record has carried the
- * same three process locators plus an optional provider root, and a **pid is readable without trusting
- * anything else in the row**. That is the whole observation this permissive shape exists to take. It reads no
- * start time, no incarnation and no phase — the fields whose meaning changed are exactly the fields it must
- * not interpret, and `.passthrough()` is what lets the rest of the row stay unread rather than rejected.
+ * same three process locators, a containment group, and an optional provider root. A **signalable target is
+ * readable without trusting anything else in the row**. That is the whole observation this permissive shape
+ * exists to take. It reads no start time, no incarnation and no phase — the fields whose meaning changed are
+ * exactly the fields it must not interpret, and `.passthrough()` is what lets the rest of the row stay unread
+ * rather than rejected.
  *
- * `pids: null` means the row could not even be walked for pids. That is not absence and must never be treated
- * as it: an unwalkable row keeps its fence.
+ * `processTargets: null` means the row could not even be walked for targets. An empty list means the row named
+ * no signalable target (all recorded values were zero). Neither is absence; both keep the fence.
  */
 const supersededProcessSchema = z.object({ pid: z.number().int().nonnegative().safe() }).passthrough();
 const supersededRecordSchema = z
@@ -476,6 +477,7 @@ const supersededRecordSchema = z
         proxy: supersededProcessSchema,
         guardian: supersededProcessSchema,
         reaper: supersededProcessSchema,
+        containment: z.object({ processGroupId: z.number().int().nonnegative().safe() }).passthrough(),
       })
       .passthrough(),
     providerRoot: supersededProcessSchema.optional(),
@@ -485,7 +487,7 @@ const supersededRecordSchema = z
 export type SupersededProviderOperationRow = Readonly<{
   key: string;
   jobId: string;
-  pids: readonly number[] | null;
+  processTargets: readonly number[] | null;
 }>;
 
 export function readSupersededProviderOperations(db: Database): readonly SupersededProviderOperationRow[] {
@@ -494,13 +496,13 @@ export function readSupersededProviderOperations(db: Database): readonly Superse
     forEachRowUnderPrefix(db, prefix, (row) => {
       const jobId = providerOperationJobIdFromRecordKey(row.key);
       if (jobId === null) return;
-      rows.push({ key: row.key, jobId, pids: observableProcessIds(row.value) });
+      rows.push({ key: row.key, jobId, processTargets: observableProcessTargets(row.value) });
     });
   }
   return rows;
 }
 
-function observableProcessIds(value: string): readonly number[] | null {
+function observableProcessTargets(value: string): readonly number[] | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(value);
@@ -510,9 +512,10 @@ function observableProcessIds(value: string): readonly number[] | null {
   const result = supersededRecordSchema.safeParse(parsed);
   if (!result.success) return null;
   const { locator, providerRoot } = result.data;
-  const pids: number[] = [locator.proxy.pid, locator.guardian.pid, locator.reaper.pid];
-  if (providerRoot !== undefined) pids.push(providerRoot.pid);
-  return [...new Set(pids)].filter((pid) => pid > 0);
+  const targets = [locator.proxy.pid, locator.guardian.pid, locator.reaper.pid];
+  if (providerRoot !== undefined) targets.push(providerRoot.pid);
+  if (locator.containment.processGroupId > 0) targets.push(-locator.containment.processGroupId);
+  return [...new Set(targets)].filter((target) => target !== 0);
 }
 
 /**
@@ -524,6 +527,9 @@ function observableProcessIds(value: string): readonly number[] | null {
  * need one. It only needs to stop claiming ownership it cannot exercise.
  */
 export function retireSupersededProviderOperation(db: Database, key: string): void {
+  if (!SUPERSEDED_PROVIDER_OPERATION_RECORD_PREFIXES.some((prefix) => key.startsWith(prefix))) {
+    throw new ProviderOperationJournalError(`Provider operation row '${key}' is not from a superseded generation.`);
+  }
   withImmediate(db, () => {
     db.prepare<[string]>('DELETE FROM meta WHERE key = ?').run(key);
     for (const prefix of SUPERSEDED_PROVIDER_OPERATION_RECORD_PREFIXES) {

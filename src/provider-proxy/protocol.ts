@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { nonEmptyStringSchema } from '../infra/identifiers.js';
 import { jsonValueSchema } from '../infra/json-value.js';
 import { providerBindingEnvelopeSchema } from '../infra/provider-binding-envelope.js';
+import { CURRENT_STATE_GENERATION } from '../infra/state-generation.js';
 import {
   providerArtifactHandleEventBodySchema,
   providerContinuityEventBodySchema,
@@ -178,7 +179,7 @@ export const providerHostEvictResultSchema = z.discriminatedUnion('state', [
   z.object({ state: z.literal('evicted') }).strict(),
   z.object({ state: z.literal('stale') }).strict(),
 ]);
-export const generationSchema = z.literal('gen2');
+export const generationSchema = z.literal(CURRENT_STATE_GENERATION);
 export const flavorSchema = z.enum(['prod', 'dev']);
 export const canonicalEndpointSchema = z
   .string()
@@ -312,9 +313,11 @@ const providerEventSeqSchema = z.number().int().positive().safe();
  * exactly the environment that process would otherwise receive at spawn — so this widens no trust boundary.
  * It is kept separate from `baseEnv` so a future audit surface can redact one without the other.
  */
+export const PROXY_PREPARED_APP_SERVER_OPERATION_VERSION = 1 as const;
+
 export const proxyPreparedAppServerOperationSchema = z
   .object({
-    version: z.literal(1),
+    version: z.literal(PROXY_PREPARED_APP_SERVER_OPERATION_VERSION),
     provider: persistedProviderNameSchema,
     binding: providerBindingEnvelopeSchema,
     request: providerRequestSchema,

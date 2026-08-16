@@ -62,6 +62,7 @@ export async function createBoundJobsRecoveryHarness(
   return {
     bound,
     run: async (recoveryCoordinator) => {
+      recoveryCoordinator.retireAbsentSupersededProviderOperations();
       await bound.runStartupRecovery({
         identity: options.identity,
         runtime: options.runtime,

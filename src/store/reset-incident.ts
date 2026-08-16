@@ -1,4 +1,9 @@
-export const STORE_RESET_INCIDENT_SCHEMA_VERSION = 3 as const;
+export const STORE_RESET_INCIDENT_SCHEMA_GENERATIONS = {
+  retainedReadable: [2],
+  current: 3,
+} as const;
+export const STORE_RESET_INCIDENT_SCHEMA_VERSION = STORE_RESET_INCIDENT_SCHEMA_GENERATIONS.current;
+export const STORE_RESET_RETAINED_INCIDENT_SCHEMA_VERSION = STORE_RESET_INCIDENT_SCHEMA_GENERATIONS.retainedReadable[0];
 export const STORE_RESET_QUARANTINE_DIRECTORY = 'store-reset-quarantine';
 export const STORE_RESET_STAGING_DIRECTORY = '.staging';
 export const STORE_RESET_MANIFEST_FILE_NAME = 'reset-manifest.json';
@@ -49,7 +54,7 @@ export type StoreResetIncidentFile = {
 };
 
 export type StoreResetIncidentManifestV2 = {
-  readonly schemaVersion: 2;
+  readonly schemaVersion: typeof STORE_RESET_RETAINED_INCIDENT_SCHEMA_VERSION;
   readonly incidentId: string;
   readonly resetAt: string;
   readonly reason: StoreResetReason;
@@ -120,7 +125,9 @@ export type StoreResetIncidentListEntry =
       readonly state: 'ready';
       readonly resetAt: string;
       readonly reason: StoreResetReason;
-      readonly schemaVersion: 2 | typeof STORE_RESET_INCIDENT_SCHEMA_VERSION;
+      readonly schemaVersion:
+        | typeof STORE_RESET_RETAINED_INCIDENT_SCHEMA_VERSION
+        | typeof STORE_RESET_INCIDENT_SCHEMA_VERSION;
       readonly resetPolicyCause: StoreResetPolicyCause | null;
       readonly fileCount: number;
     }
@@ -144,7 +151,9 @@ export type StoreResetPublicReport = {
   readonly incidentId: string;
   readonly resetAt: string;
   readonly reason: StoreResetReason;
-  readonly schemaVersion: 2 | typeof STORE_RESET_INCIDENT_SCHEMA_VERSION;
+  readonly schemaVersion:
+    | typeof STORE_RESET_RETAINED_INCIDENT_SCHEMA_VERSION
+    | typeof STORE_RESET_INCIDENT_SCHEMA_VERSION;
   readonly resetPolicyCause: StoreResetPolicyCause | null;
   readonly resetPolicyEvidence: StoreResetNewerTargetEvidence | null;
   readonly storedFingerprint: string | null;
@@ -595,7 +604,10 @@ function nullableExactString(value: unknown, pattern: RegExp, maxLength: number)
 function validateManifest(value: unknown): StoreResetIncidentManifest {
   const root = objectValue(value);
   const schemaVersion = requiredValue(root, 'schemaVersion');
-  if (schemaVersion !== 2 && schemaVersion !== STORE_RESET_INCIDENT_SCHEMA_VERSION) {
+  if (
+    schemaVersion !== STORE_RESET_RETAINED_INCIDENT_SCHEMA_VERSION &&
+    schemaVersion !== STORE_RESET_INCIDENT_SCHEMA_VERSION
+  ) {
     fail('manifest_invalid_schema');
   }
   const isV3 = schemaVersion === STORE_RESET_INCIDENT_SCHEMA_VERSION;
@@ -722,7 +734,7 @@ function validateManifest(value: unknown): StoreResetIncidentManifest {
   };
 
   if (!isV3) {
-    return Object.freeze({ schemaVersion: 2 as const, ...common });
+    return Object.freeze({ schemaVersion: STORE_RESET_RETAINED_INCIDENT_SCHEMA_VERSION, ...common });
   }
 
   const resetPolicyCause = requiredValue(root, 'resetPolicyCause');
@@ -817,8 +829,9 @@ export function projectStoreResetPublicReport(local: StoreResetIncidentLocalRepo
     resetAt: manifest.resetAt,
     reason: manifest.reason,
     schemaVersion: manifest.schemaVersion,
-    resetPolicyCause: manifest.schemaVersion === 3 ? manifest.resetPolicyCause : null,
-    resetPolicyEvidence: manifest.schemaVersion === 3 ? manifest.resetPolicyEvidence : null,
+    resetPolicyCause: manifest.schemaVersion === STORE_RESET_INCIDENT_SCHEMA_VERSION ? manifest.resetPolicyCause : null,
+    resetPolicyEvidence:
+      manifest.schemaVersion === STORE_RESET_INCIDENT_SCHEMA_VERSION ? manifest.resetPolicyEvidence : null,
     storedFingerprint: manifest.storedFingerprint,
     expectedFingerprint: manifest.expectedFingerprint,
     build: Object.freeze({

@@ -89,6 +89,7 @@ export type ProviderOperationRecoveryAcceptance = Readonly<{
 }>;
 
 export interface RecoveryCoordinator {
+  retireAbsentSupersededProviderOperations(): void;
   snapshotProviderOperationStartupOwnership(): ProviderOperationStartupOwnership;
   recoverProviderOperationJob(
     record: Extract<ProviderOperationRecord, { phase: 'local-recovery-pending' }>,
@@ -1154,20 +1155,28 @@ export function createRecoveryCoordinator(
    * `jobs` and unending under `wait` for as long as the store exists. That is the cost of the fence, and this
    * is what pays it.
    *
-   * A dead pid is dead regardless of which generation recorded it, and that is the one observation available
-   * here. Every generation of this record carries the same three process locators, so the pids are readable
-   * without trusting anything whose meaning changed. If **none** of them is alive the set is gone, the row is
-   * removed, and the job reaches ordinary recovery and is interrupted like any other — this build never has to
-   * interpret a shape it cannot read, only to stop claiming a set that no longer exists.
+   * A dead process target is dead regardless of which generation recorded it, and that is the one observation
+   * available here. Every retained generation carries the same three process locators and containment group,
+   * so the signalable targets are readable without trusting anything whose meaning changed. If **none** of
+   * them is alive the set is gone, the row is removed, and the job reaches ordinary recovery and is interrupted
+   * like any other — this build never has to interpret a shape it cannot read, only to stop claiming a set that
+   * no longer exists.
    *
    * **Never signal.** These processes belong to a build this one has no authority over; their pids may only be
-   * observed. Anything short of "all absent" — one pid alive, or a row that cannot even be walked for pids —
-   * keeps the fence, because absence is the sole conclusion this path may draw.
+   * observed. Anything short of "all absent" — one target alive, a row that cannot be walked, or a row naming
+   * no signalable target — keeps the fence, because absence is the sole conclusion this path may draw.
    */
   const retireAbsentSupersededProviderOperations = (): void => {
     for (const row of readSupersededProviderOperations(progressStore.getDb())) {
-      if (row.pids === null) continue;
-      if (row.pids.some((pid) => runtime.process.isAlive(pid))) continue;
+      if (row.processTargets === null || row.processTargets.length === 0) continue;
+      let everyTargetAbsent: boolean;
+      try {
+        everyTargetAbsent = row.processTargets.every((target) => !runtime.process.isAlive(target));
+      } catch {
+        // A failed probe did not observe absence. Keep this row's fence and continue checking independent rows.
+        continue;
+      }
+      if (!everyTargetAbsent) continue;
       retireSupersededProviderOperation(progressStore.getDb(), row.key);
       backendLog.warn(
         `Retired a provider operation record this build cannot read whose processes are all absent: ${row.key}`,
@@ -1176,7 +1185,6 @@ export function createRecoveryCoordinator(
   };
 
   const snapshotProviderOperationStartupOwnership = (): ProviderOperationStartupOwnership => {
-    retireAbsentSupersededProviderOperations();
     const scan = readProviderOperations(progressStore.getDb());
     // A row this build cannot read still names a job the provider saga owns. Fencing only the decoded ones
     // hands that job to generic recovery, which then does a keyed strict read of the same row and throws —
@@ -1288,6 +1296,7 @@ export function createRecoveryCoordinator(
     registerCoordinatorStartupRecovery(bound, runStartupRecovery);
   }
   return {
+    retireAbsentSupersededProviderOperations,
     snapshotProviderOperationStartupOwnership,
     recoverProviderOperationJob,
     completeProviderOperationJobRecovery,
