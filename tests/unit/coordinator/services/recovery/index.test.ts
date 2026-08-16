@@ -18,6 +18,7 @@ import type { RecoveryCapableService, ProviderRecoveryAuthority } from '#src/job
 import type { JobLaunch } from '#src/jobs/records.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import { insertProviderOperation, readProviderOperation } from '#src/store/provider-operation-journal.js';
+import { encodeProviderOperationRecord } from '#src/store/provider-operation-record.js';
 import { providerOperationRecordSchema, type ProviderOperationRecord } from '#src/store/provider-operation-record.js';
 import { ProviderOperationReconciler } from '#src/coordinator/services/provider-operation-reconciler.js';
 import type { DurableProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
@@ -343,6 +344,123 @@ describe('runStartupRecovery provider-operation ownership', () => {
     expect.soft(recoverTargetQueuedJob, 'recoverQueuedJob').toHaveBeenCalledTimes(1);
     expect.soft(recoveredLaunchCount).toBe(1);
     await recoveryCoordinator.teardown();
+  });
+
+  // The fence's other half. A row this build cannot read keeps its job away from generic recovery so the boot
+  // survives — but nothing decodes the row, so nothing settles the job either, and it stays live in `jobs` and
+  // unending under `wait` forever. Absence of every recorded process is provable without decoding anything,
+  // and once the row is gone the job reaches ordinary recovery like any other.
+  it('retires a superseded saga row whose processes are all absent, and keeps one that is not', async () => {
+    const runtime = createRealRuntime('prod');
+    const progressStore = createProgressStore(runtime);
+    const goneJobId = randomUUID();
+    const liveJobId = randomUUID();
+    seedQueuedProviderJob(progressStore, { jobId: goneJobId, sessionId: randomUUID(), enqueueSequence: 1 });
+    seedQueuedProviderJob(progressStore, { jobId: liveJobId, sessionId: randomUUID(), enqueueSequence: 2 });
+
+    // `process.pid` is this very process, so the "live" row is alive by construction rather than by a mock —
+    // and the absent pids are the ones the OS reserves and never assigns.
+    const seedSuperseded = (jobId: string, pid: number): string => {
+      const fixture = providerOperationRecord('prepare-pending');
+      const shipped = JSON.parse(encodeProviderOperationRecord(fixture)) as {
+        locator: Record<string, Record<string, unknown>>;
+      };
+      for (const part of ['proxy', 'guardian', 'reaper', 'containment']) {
+        const entry = shipped.locator[part];
+        if (entry === undefined) continue;
+        delete entry.incarnation;
+        entry.processStartedAtSeconds = 1_700_000_000;
+        entry.pid = pid;
+      }
+      const key =
+        `provider_operation_saga.v1:record:${jobId}:${fixture.operation.operationId}:` +
+        `${fixture.operation.proxyInstanceId}:${fixture.operation.buildSetId}`;
+      progressStore
+        .getDb()
+        .prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)')
+        .run(key, JSON.stringify(shipped));
+      return key;
+    };
+    const goneKey = seedSuperseded(goneJobId, 0x7f_ff_ff_ff);
+    const liveKey = seedSuperseded(liveJobId, process.pid);
+
+    // The third case, and the one that must never be confused with absence: a row whose pids cannot be read at
+    // all. "No pids observed" is not "no processes alive" — retiring on it would settle a job whose processes
+    // were never looked at.
+    const unwalkableJobId = randomUUID();
+    seedQueuedProviderJob(progressStore, { jobId: unwalkableJobId, sessionId: randomUUID(), enqueueSequence: 3 });
+    const unwalkableKey = `provider_operation_saga.v1:record:${unwalkableJobId}:${randomUUID()}:${randomUUID()}:${randomUUID()}`;
+    progressStore
+      .getDb()
+      .prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)')
+      .run(unwalkableKey, 'not json at all');
+
+    const fakeService = createFakeService({ recoverQueuedJob: vi.fn(async () => goneJobId) });
+    const getRecoveryService = (): RecoveryCapableService => fakeService;
+    const createInvocationContext = (projectRoot: string): InvocationContext => ({
+      projectRoot: fixtureCanonicalWorkDir(projectRoot),
+      pluginRoot: '/tmp/plugin',
+      coralEnv: {},
+      principal: testProjectPrincipal(projectRoot),
+    });
+    const signal = new AbortController().signal;
+    const log = vi.fn();
+    const boundRecovery = await createBoundJobsRecoveryHarness({
+      identity: {
+        pluginRoot: '/tmp/plugin',
+        namespace: NAMESPACE,
+        version: 'test-version',
+        buildSetId: '00000000-0000-4000-8000-000000000000',
+        bundleHash: 'test-bundle',
+        cliBundleHash: 'test-cli-bundle',
+        claudeAppserverBundleHash: 'test-claude-bundle',
+        flavor: 'prod',
+        instanceId: 'superseded-retirement-test',
+        token: 'test-token',
+        bootToken: 'test-boot-token',
+        shutdownToken: 'test-shutdown-token',
+        now: () => runtime.time.now(),
+        log,
+      },
+      runtime,
+      progressStore,
+      providerRegistry: {} as never,
+      getRecoveryService,
+      createInvocationContext,
+      signal,
+      coordinatorCommit: (cb: Parameters<JobStore['commit']>[0]) => progressStore.commit(cb),
+    });
+    const recoveryCoordinator = createRecoveryCoordinator(
+      {
+        progressStore,
+        runtime,
+        runtimeState: { setLaunchFenceActive: vi.fn() },
+        eventBus: { emit: vi.fn() } as never,
+        getRecoveryService,
+        createInvocationContext,
+        log,
+      },
+      boundRecovery.bound,
+    );
+
+    const ownership = recoveryCoordinator.snapshotProviderOperationStartupOwnership();
+    const rowExists = (key: string): boolean =>
+      progressStore.getDb().prepare<[string], { key: string }>('SELECT key FROM meta WHERE key = ?').all(key).length >
+      0;
+
+    expect({
+      fenced: [...ownership.jobIds].sort(),
+      goneRowSurvives: rowExists(goneKey),
+      liveRowSurvives: rowExists(liveKey),
+      unwalkableRowSurvives: rowExists(unwalkableKey),
+    }).toEqual({
+      // The job whose processes are still around, and the one nothing could be observed about. Only the job
+      // proven gone is unfenced, and ordinary recovery owns it from here.
+      fenced: [liveJobId, unwalkableJobId].sort(),
+      goneRowSurvives: false,
+      liveRowSurvives: true,
+      unwalkableRowSurvives: true,
+    });
   });
 
   it('deduplicates a startup local-recovery handoff until the saga confirms deletion', async () => {

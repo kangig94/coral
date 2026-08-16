@@ -10,6 +10,8 @@ import {
   readProviderOperationDueSelections,
   providerOperationJobIdFromRecordKey,
   readProviderOperations,
+  readSupersededProviderOperations,
+  retireSupersededProviderOperation,
   readProviderOperationsDue,
   subscribeProviderOperationMutations,
 } from '#src/store/provider-operation-journal.js';
@@ -601,6 +603,84 @@ describe('provider operation journal', () => {
         db.prepare<[string], { key: string }>('SELECT key FROM meta WHERE key = ?').all(supersededKey),
         'a generation this build cannot read is not a generation it may delete',
       ).toEqual([{ key: supersededKey }]);
+    } finally {
+      db.close();
+    }
+  });
+
+  // The other half of the fence: a fenced job that nothing can ever settle is a job that stays live in `jobs`
+  // and unending under `wait` forever. A pid is readable out of a row whose meaning this build cannot read, so
+  // absence is provable without interpreting anything — and once the row is gone the job reaches ordinary
+  // recovery and is interrupted like any other.
+  it('reads the pids out of a superseded row without trusting anything else it says', () => {
+    const db = createDb();
+    try {
+      const stranded = providerOperationRecord('prepare-pending', { job: 2 });
+      const supersededKey =
+        `provider_operation_saga.v1:record:${stranded.operation.jobId}:${stranded.operation.operationId}:` +
+        `${stranded.operation.proxyInstanceId}:${stranded.operation.buildSetId}`;
+      // A genuine v0.10.8 payload: the process identity is seconds, which is exactly what this build cannot
+      // read. The pids sit beside them and are readable regardless.
+      const shipped = JSON.parse(encodeProviderOperationRecord(stranded)) as {
+        locator: Record<string, Record<string, unknown>>;
+      };
+      for (const [part, pid] of [
+        ['proxy', 9_001],
+        ['guardian', 9_002],
+        ['reaper', 9_003],
+        ['containment', 9_001],
+      ] as const) {
+        const process = shipped.locator[part];
+        if (process === undefined) continue;
+        delete process.incarnation;
+        process.processStartedAtSeconds = 1_700_000_000;
+        process.pid = pid;
+      }
+      const insert = db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)');
+      insert.run(supersededKey, JSON.stringify(shipped));
+      insert.run('provider_operation_saga.v1:record:not-a-canonical-key', '{}');
+      insert.run(`${supersededKey.replace(':record:', ':due:')}-unwalkable`, 'not json at all');
+
+      const rows = readSupersededProviderOperations(db);
+
+      expect(rows).toEqual([{ key: supersededKey, jobId: stranded.operation.jobId, pids: [9_001, 9_002, 9_003] }]);
+
+      retireSupersededProviderOperation(db, supersededKey);
+
+      expect(
+        db.prepare<[string], { key: string }>('SELECT key FROM meta WHERE key = ?').all(supersededKey),
+        'retiring the row is what unfences its job',
+      ).toEqual([]);
+
+      // The malformed key survives, reported and harmless. It is still a row this build cannot read, so the
+      // scan names it — but it fences nothing, because a key that is not the canonical shape names no job.
+      expect(readProviderOperations(db).unreadableKeys).toEqual([
+        'provider_operation_saga.v1:record:not-a-canonical-key',
+      ]);
+      expect(providerOperationJobIdFromRecordKey('provider_operation_saga.v1:record:not-a-canonical-key')).toBeNull();
+      expect(
+        providerOperationJobIdFromRecordKey(`provider_operation_saga.v1:record:${stranded.operation.jobId}:garbage`),
+        'a real job id behind a malformed tail must not fence that job',
+      ).toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+
+  it('reports pids as unknown rather than absent when the row cannot be walked', () => {
+    const db = createDb();
+    try {
+      const stranded = providerOperationRecord('prepare-pending', { job: 2 });
+      const supersededKey =
+        `provider_operation_saga.v1:record:${stranded.operation.jobId}:${stranded.operation.operationId}:` +
+        `${stranded.operation.proxyInstanceId}:${stranded.operation.buildSetId}`;
+      db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)').run(supersededKey, 'not json');
+
+      // `null`, never `[]`. An empty pid list would read as "nothing alive, retire it" — settling a job whose
+      // processes were never observed at all.
+      expect(readSupersededProviderOperations(db)).toEqual([
+        { key: supersededKey, jobId: stranded.operation.jobId, pids: null },
+      ]);
     } finally {
       db.close();
     }

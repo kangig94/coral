@@ -3,11 +3,14 @@ import { ZodError } from 'zod';
 import { errorMessage, formatError } from '../../../infra/error-format.js';
 import { StoreDecodeError } from '../../../store/body-codec.js';
 import { ProcessContainmentError } from '../../../infra/process-containment.js';
+import { backendLog } from '../../../infra/backend-log.js';
 import { isTerminalPhase } from '../../../jobs/phase.js';
 import { isAppServerRuntime, type JobTerminalInput } from '../../../jobs/records.js';
 import {
   providerOperationJobIdFromRecordKey,
   readProviderOperations,
+  readSupersededProviderOperations,
+  retireSupersededProviderOperation,
 } from '../../../store/provider-operation-journal.js';
 import type { ProviderOperationRecord } from '../../../store/provider-operation-record.js';
 import { isDurableCliRuntime } from '../../../runtime/durable-runtime.js';
@@ -1142,7 +1145,38 @@ export function createRecoveryCoordinator(
     state.providerOperationRecoveries.delete(jobId);
   };
 
+  /**
+   * Retires the superseded rows whose processes are all gone, before the fence is computed from what is left.
+   *
+   * The fence keeps a job this build cannot read away from generic recovery, which is what stops an
+   * undecodable row from turning a stalled operation into a failed startup. But a fence with nothing behind it
+   * is a job that never settles: nothing decodes the row, so nothing terminalizes it, and it stays live in
+   * `jobs` and unending under `wait` for as long as the store exists. That is the cost of the fence, and this
+   * is what pays it.
+   *
+   * A dead pid is dead regardless of which generation recorded it, and that is the one observation available
+   * here. Every generation of this record carries the same three process locators, so the pids are readable
+   * without trusting anything whose meaning changed. If **none** of them is alive the set is gone, the row is
+   * removed, and the job reaches ordinary recovery and is interrupted like any other — this build never has to
+   * interpret a shape it cannot read, only to stop claiming a set that no longer exists.
+   *
+   * **Never signal.** These processes belong to a build this one has no authority over; their pids may only be
+   * observed. Anything short of "all absent" — one pid alive, or a row that cannot even be walked for pids —
+   * keeps the fence, because absence is the sole conclusion this path may draw.
+   */
+  const retireAbsentSupersededProviderOperations = (): void => {
+    for (const row of readSupersededProviderOperations(progressStore.getDb())) {
+      if (row.pids === null) continue;
+      if (row.pids.some((pid) => runtime.process.isAlive(pid))) continue;
+      retireSupersededProviderOperation(progressStore.getDb(), row.key);
+      backendLog.warn(
+        `Retired a provider operation record this build cannot read whose processes are all absent: ${row.key}`,
+      );
+    }
+  };
+
   const snapshotProviderOperationStartupOwnership = (): ProviderOperationStartupOwnership => {
+    retireAbsentSupersededProviderOperations();
     const scan = readProviderOperations(progressStore.getDb());
     // A row this build cannot read still names a job the provider saga owns. Fencing only the decoded ones
     // hands that job to generic recovery, which then does a keyed strict read of the same row and throws —

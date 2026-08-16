@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import type { Database } from './db.js';
+import { withImmediate, type Database } from './db.js';
 import {
   decodeProviderOperationRecord,
   encodeProviderOperationRecord,
@@ -96,6 +96,10 @@ const PROVIDER_OPERATION_DUE_PREFIX = `${PROVIDER_OPERATION_SAGA_PREFIX}due:`;
  *
  * Empty is a legitimate value. A generation belongs here only while a build that wrote it can still have left
  * rows behind; once that build is out of the field the entry is deleted, not kept for symmetry.
+ *
+ * These rows do not accumulate forever. `readSupersededProviderOperations` reads the one thing every
+ * generation records the same way — the pids — and startup retires a row whose processes are all absent, so
+ * the fence it holds is released and its job settles through ordinary recovery.
  */
 const SUPERSEDED_PROVIDER_OPERATION_RECORD_VERSIONS: readonly number[] = [1];
 const SUPERSEDED_PROVIDER_OPERATION_RECORD_PREFIXES: readonly string[] =
@@ -108,6 +112,17 @@ const IDENTITY_KEY_SOURCE = `${UUID_KEY_SOURCE}:${UUID_KEY_SOURCE}:${UUID_KEY_SO
 const PROVIDER_OPERATION_RECORD_KEY_PATTERN = new RegExp(
   `^${escapeKeyPrefix(PROVIDER_OPERATION_RECORD_PREFIX)}${IDENTITY_KEY_SOURCE}$`,
   'u',
+);
+/** Every generation's canonical record key, each capturing the job id it names. */
+const RECORD_KEY_PATTERNS: readonly RegExp[] = [
+  PROVIDER_OPERATION_RECORD_PREFIX,
+  ...SUPERSEDED_PROVIDER_OPERATION_RECORD_PREFIXES,
+].map(
+  (prefix) =>
+    new RegExp(
+      `^${escapeKeyPrefix(prefix)}(${UUID_KEY_SOURCE}):${UUID_KEY_SOURCE}:${UUID_KEY_SOURCE}:${UUID_KEY_SOURCE}$`,
+      'u',
+    ),
 );
 const PROVIDER_OPERATION_DUE_KEY_PATTERN = new RegExp(
   `^${escapeKeyPrefix(PROVIDER_OPERATION_DUE_PREFIX)}[0-9]{${FIXED_WIDTH_INTEGER_DIGITS}}:` +
@@ -215,12 +230,11 @@ function canReadCanonicalValue(key: string, value: string): boolean {
 /** The job a canonical key names, without decoding the value — the only identity available for a row this
  *  build cannot read, and the one startup ownership needs to keep that job away from generic recovery. */
 export function providerOperationJobIdFromRecordKey(key: string): string | null {
-  const prefix = [PROVIDER_OPERATION_RECORD_PREFIX, ...SUPERSEDED_PROVIDER_OPERATION_RECORD_PREFIXES].find(
-    (candidate) => key.startsWith(candidate),
-  );
-  if (prefix === undefined) return null;
-  const jobId = key.slice(prefix.length).split(':')[0];
-  return jobId === undefined || jobId.length === 0 ? null : jobId;
+  // The *whole* canonical shape, not just the prefix and the first segment. A key like
+  // `<prefix>:<real-job-uuid>:garbage` would otherwise hand back a real job id and fence that unrelated job
+  // for as long as the row exists — a malformed row taking a healthy job down with it.
+  const match = RECORD_KEY_PATTERNS.map((pattern) => pattern.exec(key)).find((result) => result !== null);
+  return match?.[1] ?? null;
 }
 
 function readCanonicalRecord(db: Database, key: string): ProviderOperationRecord | undefined {
@@ -440,6 +454,87 @@ function forEachRowUnderPrefix(db: Database, prefix: string, visit: (row: MetaRo
     if (rows.length < PROVIDER_OPERATION_READ_PAGE_SIZE) return;
     cursor = rows.at(-1)?.key ?? cursor;
   }
+}
+
+/**
+ * The pids a superseded row names, and nothing else it says.
+ *
+ * A generation this build cannot decode is still not opaque: every generation of this record has carried the
+ * same three process locators plus an optional provider root, and a **pid is readable without trusting
+ * anything else in the row**. That is the whole observation this permissive shape exists to take. It reads no
+ * start time, no incarnation and no phase — the fields whose meaning changed are exactly the fields it must
+ * not interpret, and `.passthrough()` is what lets the rest of the row stay unread rather than rejected.
+ *
+ * `pids: null` means the row could not even be walked for pids. That is not absence and must never be treated
+ * as it: an unwalkable row keeps its fence.
+ */
+const supersededProcessSchema = z.object({ pid: z.number().int().nonnegative().safe() }).passthrough();
+const supersededRecordSchema = z
+  .object({
+    locator: z
+      .object({
+        proxy: supersededProcessSchema,
+        guardian: supersededProcessSchema,
+        reaper: supersededProcessSchema,
+      })
+      .passthrough(),
+    providerRoot: supersededProcessSchema.optional(),
+  })
+  .passthrough();
+
+export type SupersededProviderOperationRow = Readonly<{
+  key: string;
+  jobId: string;
+  pids: readonly number[] | null;
+}>;
+
+export function readSupersededProviderOperations(db: Database): readonly SupersededProviderOperationRow[] {
+  const rows: SupersededProviderOperationRow[] = [];
+  for (const prefix of SUPERSEDED_PROVIDER_OPERATION_RECORD_PREFIXES) {
+    forEachRowUnderPrefix(db, prefix, (row) => {
+      const jobId = providerOperationJobIdFromRecordKey(row.key);
+      if (jobId === null) return;
+      rows.push({ key: row.key, jobId, pids: observableProcessIds(row.value) });
+    });
+  }
+  return rows;
+}
+
+function observableProcessIds(value: string): readonly number[] | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return null;
+  }
+  const result = supersededRecordSchema.safeParse(parsed);
+  if (!result.success) return null;
+  const { locator, providerRoot } = result.data;
+  const pids: number[] = [locator.proxy.pid, locator.guardian.pid, locator.reaper.pid];
+  if (providerRoot !== undefined) pids.push(providerRoot.pid);
+  return [...new Set(pids)].filter((pid) => pid > 0);
+}
+
+/**
+ * Removes one superseded row and every due entry pointing at it, in one transaction.
+ *
+ * Deleting the record is what *unfences* its job: startup ownership derives the fence from the rows present,
+ * so once this row is gone the job reaches ordinary recovery and settles the way any interrupted job does.
+ * That is the point — this build has no way to settle a provider operation it cannot read, and it does not
+ * need one. It only needs to stop claiming ownership it cannot exercise.
+ */
+export function retireSupersededProviderOperation(db: Database, key: string): void {
+  withImmediate(db, () => {
+    db.prepare<[string]>('DELETE FROM meta WHERE key = ?').run(key);
+    for (const prefix of SUPERSEDED_PROVIDER_OPERATION_RECORD_PREFIXES) {
+      const duePrefix = `${prefix.slice(0, prefix.length - 'record:'.length)}due:`;
+      db.prepare<[string, string, string]>('DELETE FROM meta WHERE key > ? AND key < ? AND value = ?').run(
+        duePrefix,
+        `${duePrefix}\uffff`,
+        key,
+      );
+    }
+  });
 }
 
 export function readProviderOperations(db: Database): ProviderOperationScan {
