@@ -114,16 +114,21 @@ const PROVIDER_OPERATION_RECORD_KEY_PATTERN = new RegExp(
   'u',
 );
 /** Every generation's canonical record key, each capturing the job id it names. */
+/** Every generation's canonical record key, capturing job, operation, proxy instance and build set in order. */
 const RECORD_KEY_PATTERNS: readonly RegExp[] = [
   PROVIDER_OPERATION_RECORD_PREFIX,
   ...SUPERSEDED_PROVIDER_OPERATION_RECORD_PREFIXES,
 ].map(
   (prefix) =>
     new RegExp(
-      `^${escapeKeyPrefix(prefix)}(${UUID_KEY_SOURCE}):${UUID_KEY_SOURCE}:${UUID_KEY_SOURCE}:${UUID_KEY_SOURCE}$`,
+      `^${escapeKeyPrefix(prefix)}(${UUID_KEY_SOURCE}):(${UUID_KEY_SOURCE}):(${UUID_KEY_SOURCE}):(${UUID_KEY_SOURCE})$`,
       'u',
     ),
 );
+
+function matchRecordKey(key: string): RegExpExecArray | null {
+  return RECORD_KEY_PATTERNS.map((pattern) => pattern.exec(key)).find((result) => result !== null) ?? null;
+}
 const PROVIDER_OPERATION_DUE_KEY_PATTERN = new RegExp(
   `^${escapeKeyPrefix(PROVIDER_OPERATION_DUE_PREFIX)}[0-9]{${FIXED_WIDTH_INTEGER_DIGITS}}:` +
     `${IDENTITY_KEY_SOURCE}:[0-9]{${FIXED_WIDTH_INTEGER_DIGITS}}$`,
@@ -233,8 +238,24 @@ export function providerOperationJobIdFromRecordKey(key: string): string | null 
   // The *whole* canonical shape, not just the prefix and the first segment. A key like
   // `<prefix>:<real-job-uuid>:garbage` would otherwise hand back a real job id and fence that unrelated job
   // for as long as the row exists — a malformed row taking a healthy job down with it.
-  const match = RECORD_KEY_PATTERNS.map((pattern) => pattern.exec(key)).find((result) => result !== null);
-  return match?.[1] ?? null;
+  return matchRecordKey(key)?.[1] ?? null;
+}
+
+/**
+ * The proxy set a canonical key names, without decoding the row.
+ *
+ * A row this build cannot read may still name a provider root belonging to some set, and a containment proof
+ * that ignored it could mint a disappearance receipt while that root was alive. But the key says *which* set
+ * it belongs to, so the proof only has to stay unknown for that one — fencing every set on any unreadable row
+ * anywhere blocks recovery for sets that row has nothing to do with.
+ */
+export function providerOperationSetAddressFromRecordKey(
+  key: string,
+): Readonly<{ proxyInstanceId: string; buildSetId: string }> | null {
+  const match = matchRecordKey(key);
+  const proxyInstanceId = match?.[3];
+  const buildSetId = match?.[4];
+  return proxyInstanceId === undefined || buildSetId === undefined ? null : { proxyInstanceId, buildSetId };
 }
 
 function readCanonicalRecord(db: Database, key: string): ProviderOperationRecord | undefined {

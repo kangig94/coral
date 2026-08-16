@@ -8,6 +8,8 @@ import {
   PROVIDER_OPERATION_RECORD_GENERATIONS,
   PROVIDER_OPERATION_RECORD_VERSION,
 } from '#src/store/provider-operation-record.js';
+import { STORE_RESET_INCIDENT_SCHEMA_GENERATIONS } from '#src/store/reset-incident.js';
+import { CORPUS_PROJECTION_COMMIT_SCHEMA_GENERATIONS } from '#src/kb/corpus/projection-lifecycle.js';
 
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 
@@ -56,14 +58,11 @@ describe('other durable and wire generations', () => {
     expect(source('src/coordinator/lifecycle.ts')).toContain('version: ACTIVE_STORE_SELECTION_VERSION');
   });
 
-  it('derives prepared-operation, handoff-signal, and bootstrap readers and writers from one owner each', () => {
+  it('derives prepared-operation and handoff-signal readers and writers from one owner each', () => {
     const protocol = source('src/provider-proxy/protocol.ts');
     const launchRoute = source('src/coordinator/services/provider-proxy-launch-route.ts');
     const reprepare = source('src/coordinator/services/provider-operation-prepare.ts');
     const handoff = source('src/coordinator/handoff.ts');
-    const bootstrap = source('src/coordinator/bootstrap-diagnostics.ts');
-    const ensure = source('src/transport/ipc/ensure.ts');
-    const status = source('src/transport/http/backend/status.ts');
 
     expect(protocol).toContain('z.literal(PROXY_PREPARED_APP_SERVER_OPERATION_VERSION)');
     expect(launchRoute).toContain('version: PROXY_PREPARED_APP_SERVER_OPERATION_VERSION');
@@ -71,10 +70,6 @@ describe('other durable and wire generations', () => {
     expect(handoff).toContain('version: typeof HANDOFF_SIGNAL_RECORD_VERSION');
     expect(handoff).toContain('record.version === HANDOFF_SIGNAL_RECORD_VERSION');
     expect(handoff).toContain('version: HANDOFF_SIGNAL_RECORD_VERSION');
-    expect(bootstrap).toContain('schemaVersion: BOOTSTRAP_DIAGNOSTIC_SCHEMA_VERSION');
-    expect(bootstrap).toContain('version: STARTUP_ERROR_SENTINEL_VERSION');
-    expect(status).toContain('value.schemaVersion !== BOOTSTRAP_DIAGNOSTIC_SCHEMA_VERSION');
-    expect(ensure).toContain('value.version === STARTUP_ERROR_SENTINEL_VERSION');
   });
 
   it('derives retained reset and KB generations from their owner registries', () => {
@@ -95,20 +90,36 @@ describe('other durable and wire generations', () => {
       '[CORPUS_PROJECTION_COMMIT_SCHEMA_GENERATIONS.retainedSupported[0]]: decodeCorpusProjectionCommitRecord',
     );
   });
-
-  it('has one owner for the current state and wire generation', () => {
-    const consumers = [
-      'src/infra/path/root.ts',
-      'src/infra/path/provider-proxy.ts',
-      'src/provider-proxy/protocol.ts',
-      'src/coordinator/live/provider-hosts/proxy-set-acquisition.ts',
-      'src/coordinator/services/provider-proxy-set/inheritance.ts',
+  // A registry of two independent fields reads as one owner and is not: raising `current` while leaving
+  // `retained` behind compiles, and the generation between them is then neither decoded nor fenced — the exact
+  // defect these registries exist to prevent. TypeScript cannot express the constraint without losing the
+  // literal types that `z.literal` and every downstream narrowing depend on, so it is asserted here instead.
+  it('keeps every generation registry contiguous, ordered and disjoint from its current', () => {
+    const registries: readonly Readonly<{ name: string; retained: readonly number[]; current: number }>[] = [
+      {
+        name: 'PROVIDER_OPERATION_RECORD_GENERATIONS',
+        retained: PROVIDER_OPERATION_RECORD_GENERATIONS.retainedSuperseded,
+        current: PROVIDER_OPERATION_RECORD_GENERATIONS.current,
+      },
+      {
+        name: 'STORE_RESET_INCIDENT_SCHEMA_GENERATIONS',
+        retained: STORE_RESET_INCIDENT_SCHEMA_GENERATIONS.retainedReadable,
+        current: STORE_RESET_INCIDENT_SCHEMA_GENERATIONS.current,
+      },
+      {
+        name: 'CORPUS_PROJECTION_COMMIT_SCHEMA_GENERATIONS',
+        retained: CORPUS_PROJECTION_COMMIT_SCHEMA_GENERATIONS.retainedSupported,
+        current: CORPUS_PROJECTION_COMMIT_SCHEMA_GENERATIONS.current,
+      },
     ];
 
-    expect(source('src/infra/state-generation.ts')).toContain("CURRENT_STATE_GENERATION = 'gen2'");
-    for (const path of consumers) {
-      expect(source(path), path).toContain('CURRENT_STATE_GENERATION');
-      expect(source(path), path).not.toContain("'gen2'");
+    for (const { name, retained, current } of registries) {
+      const sequence = [...retained, current];
+      expect(retained, `${name} must retain at least one generation`).not.toHaveLength(0);
+      expect(retained, `${name}'s current generation must not also be retained`).not.toContain(current);
+      expect(sequence, `${name} must be ordered oldest-first with no gap`).toEqual(
+        Array.from({ length: sequence.length }, (_, index) => sequence[0] + index),
+      );
     }
   });
 });

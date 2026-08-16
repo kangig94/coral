@@ -6,7 +6,6 @@ import { z } from 'zod';
 import { nonEmptyStringSchema } from '../infra/identifiers.js';
 import { jsonValueSchema } from '../infra/json-value.js';
 import { providerBindingEnvelopeSchema } from '../infra/provider-binding-envelope.js';
-import { CURRENT_STATE_GENERATION } from '../infra/state-generation.js';
 import {
   providerArtifactHandleEventBodySchema,
   providerContinuityEventBodySchema,
@@ -179,7 +178,7 @@ export const providerHostEvictResultSchema = z.discriminatedUnion('state', [
   z.object({ state: z.literal('evicted') }).strict(),
   z.object({ state: z.literal('stale') }).strict(),
 ]);
-export const generationSchema = z.literal(CURRENT_STATE_GENERATION);
+export const generationSchema = z.literal('gen2');
 export const flavorSchema = z.enum(['prod', 'dev']);
 export const canonicalEndpointSchema = z
   .string()

@@ -15,7 +15,6 @@ import type { CoordinatorPaths } from '../../infra/path/index.js';
 import { HEALTH_TIMEOUT_MS } from '../http/sse.js';
 import { BackendUnreachableError } from '../../infra/http-errors.js';
 import { isNoEntryError } from '../../infra/fs-errors.js';
-import { STARTUP_ERROR_SENTINEL_VERSION } from '../../infra/bootstrap-diagnostic-contract.js';
 import { isRecord } from '../../infra/json.js';
 import { readBuildFlavor, readBundleHash, resolveStrictBundleIdentity } from '../../infra/bundle-manifest.js';
 import { createIpcClient, type IpcClient } from './client.js';
@@ -112,7 +111,7 @@ type ReadyCoordinatorEvidence = Readonly<{
 }>;
 
 type StartupErrorSentinel = {
-  readonly version: typeof STARTUP_ERROR_SENTINEL_VERSION;
+  readonly version: 1;
   readonly attemptId: string;
   readonly pid: number;
   readonly startedAt: number;
@@ -267,7 +266,7 @@ function isSerializedStartupError(value: unknown): value is SerializedCoralSetup
 function isStartupErrorSentinel(value: unknown): value is StartupErrorSentinel {
   return (
     isRecord(value) &&
-    value.version === STARTUP_ERROR_SENTINEL_VERSION &&
+    value.version === 1 &&
     typeof value.attemptId === 'string' &&
     Number.isInteger(value.pid) &&
     (value.pid as number) > 0 &&

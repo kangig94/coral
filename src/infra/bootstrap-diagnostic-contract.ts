@@ -1,2 +1,0 @@
-export const BOOTSTRAP_DIAGNOSTIC_SCHEMA_VERSION = 1 as const;
-export const STARTUP_ERROR_SENTINEL_VERSION = 1 as const;

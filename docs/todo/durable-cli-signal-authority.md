@@ -1,4 +1,4 @@
-# TODO — four durable-CLI signal paths hold the evidence and do not read it
+# TODO — the durable-CLI signal paths hold the evidence and do not read it
 
 **Status**: open. Found on `refactor/process-incarnation-token` by the scan in
 `tests/invariants/signal-authority.test.ts`, not by review — five reviewers read the same branch and none of

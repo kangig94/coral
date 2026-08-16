@@ -1,7 +1,6 @@
 import { readBackendInfo } from '../../../infra/backend-discovery.js';
 import { readBuildFlavor } from '../../../infra/bundle-manifest.js';
 import { isRecord } from '../../../infra/json.js';
-import { BOOTSTRAP_DIAGNOSTIC_SCHEMA_VERSION } from '../../../infra/bootstrap-diagnostic-contract.js';
 import { isProcessAlive } from '../../../infra/node-process.js';
 import type { StoragePort } from '../../../infra/port-types.js';
 import { parseIsoTimestamp } from '../../../infra/time.js';
@@ -76,7 +75,7 @@ export function statusFromStartupDiagnostic(
 ): RecentFailureStatus | null {
   if (
     !isRecord(value) ||
-    value.schemaVersion !== BOOTSTRAP_DIAGNOSTIC_SCHEMA_VERSION ||
+    value.schemaVersion !== 1 ||
     value.state !== 'stopped_with_diagnostic' ||
     value.retryable !== false ||
     !isPublicDiagnosticPhase(value.phase) ||

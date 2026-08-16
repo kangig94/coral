@@ -1,7 +1,6 @@
 import { probeProcessIncarnation, type ProcessIncarnation } from '../../../infra/node-process.js';
 import { createMonotonicClock } from '../../../infra/monotonic-clock.js';
 import { reapRecordedContainment } from '../../../infra/process-containment.js';
-import { CURRENT_STATE_GENERATION } from '../../../infra/state-generation.js';
 import {
   currentHandoffCapsulePath,
   readHandoffCapsuleFile,
@@ -29,7 +28,10 @@ import {
 import { PROXY_TEARDOWN_RESERVE_MS } from '../../../provider-proxy/orphan-deadline.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { Database } from '../../../store/db.js';
-import { readProviderOperations } from '../../../store/provider-operation-journal.js';
+import {
+  providerOperationSetAddressFromRecordKey,
+  readProviderOperations,
+} from '../../../store/provider-operation-journal.js';
 import type { ProviderOperationIdentity, ProviderOperationRecord } from '../../../store/provider-operation-record.js';
 import {
   ESTABLISH_CONTROL_CONNECT_TIMEOUT_MS,
@@ -333,10 +335,18 @@ async function proveProviderProxySetContainmentAbsent(
 ): Promise<string | null> {
   const platform = runtime.env.platform() as NodeJS.Platform;
   const operationScan = readProviderOperations(db);
-  // An unreadable row may name another provider root for this set. Acting on the decoded subset would let a
-  // live root survive outside the process group while this function minted a disappearance receipt, so the
-  // entire proof remains unknown until every row participating in the root inventory is readable.
-  if (operationScan.unreadableKeys.length > 0) return null;
+  // An unreadable row may name another provider root for *this* set, and acting on the decoded subset would
+  // let that root survive outside the process group while this function minted a disappearance receipt. So the
+  // proof stays unknown — but only for the set the row belongs to. The key names that set without the row
+  // being decodable, and a key too malformed to name one could belong to any set, so it fences all of them.
+  const hidesARootOfThisSet = operationScan.unreadableKeys.some((key) => {
+    const address = providerOperationSetAddressFromRecordKey(key);
+    return (
+      address === null ||
+      (address.proxyInstanceId === identity.proxyInstanceId && address.buildSetId === identity.buildSetId)
+    );
+  });
+  if (hidesARootOfThisSet) return null;
   const enforcerIdentities = [
     { pid: identity.guardianPid, incarnation: identity.guardianIncarnation },
     { pid: identity.reaperPid, incarnation: identity.reaperIncarnation },
@@ -760,7 +770,7 @@ export function createProviderProxySetInheritance(
         instanceId: options.identity.instanceId,
         pid,
         incarnation,
-        generation: CURRENT_STATE_GENERATION,
+        generation: 'gen2',
         flavor: options.identity.flavor,
         buildSetId: options.identity.buildSetId,
       },

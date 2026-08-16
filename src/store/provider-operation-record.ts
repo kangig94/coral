@@ -215,6 +215,12 @@ const lastErrorSchema = z
  *
  * Bump this whenever the durable shape stops satisfying the previous generation's schema, moving the old
  * current generation into `retainedSuperseded` so its jobs keep their fence.
+ *
+ * Two fields rather than a derived pair because TypeScript loses the literal through a slice, and the literal
+ * is what makes `z.literal` and every downstream narrowing work. What keeps them honest is
+ * `tests/invariants/provider-operation-generation-registry.test.ts`, which asserts they are contiguous and
+ * disjoint — so raising `current` while forgetting `retainedSuperseded` fails there rather than leaving a
+ * generation neither decoded nor fenced.
  */
 export const PROVIDER_OPERATION_RECORD_GENERATIONS = {
   retainedSuperseded: [1],

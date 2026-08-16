@@ -3,10 +3,6 @@ import { dirname } from 'node:path';
 import { writeAuditEvent } from '../infra/audit-log.js';
 import { backendLog } from '../infra/backend-log.js';
 import { resolveBuildFlavor } from '../infra/build-flavor.js';
-import {
-  BOOTSTRAP_DIAGNOSTIC_SCHEMA_VERSION,
-  STARTUP_ERROR_SENTINEL_VERSION,
-} from '../infra/bootstrap-diagnostic-contract.js';
 import { readBundleHash } from '../infra/bundle-manifest.js';
 import { errorMessage } from '../infra/error-format.js';
 import { pluginRootNamespace } from '../infra/plugin-identity.js';
@@ -57,7 +53,7 @@ export function writeBootstrapDiagnostic(
     const runtime = createRealRuntime(flavor);
     const diagnosticFile = runtime.paths.coral.coordinator.startupDiagnosticFile;
     const diagnostic = {
-      schemaVersion: BOOTSTRAP_DIAGNOSTIC_SCHEMA_VERSION,
+      schemaVersion: 1,
       phase,
       state: 'stopped_with_diagnostic',
       retryable: false,
@@ -138,7 +134,7 @@ export function writeStartupErrorSentinel(
     const startupErrorFile = runtime.paths.coral.coordinator.startupErrorFile;
     const startedAt = Number(process.env.CORAL_STARTUP_STARTED_AT);
     const sentinel = {
-      version: STARTUP_ERROR_SENTINEL_VERSION,
+      version: 1,
       attemptId,
       pid: process.pid,
       startedAt: Number.isFinite(startedAt) && startedAt > 0 ? startedAt : Date.now(),

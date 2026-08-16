@@ -50,7 +50,7 @@ token, from four call sites:
 | ---------------------------------------------------------------- | ------------------------------------------------------- |
 | `src/coordinator/live/provider-hosts/drain.ts:46`                | a provider host this coordinator spawned                |
 | `src/coordinator/services/recovery/interrupted-performer.ts:105` | a previous coordinator process's work                   |
-| `src/coordinator/services/provider-proxy-set/inheritance.ts:372` | another build's proxy set                               |
+| `src/coordinator/services/provider-proxy-set/inheritance.ts`     | another build's proxy set                               |
 | `src/provider-proxy/enforcement.ts:133`                          | the detached set group, from the guardian or the reaper |
 
 ## Why the guard cannot simply be added — measured, not reasoned

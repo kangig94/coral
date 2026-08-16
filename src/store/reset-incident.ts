@@ -1,9 +1,17 @@
+/**
+ * The generations of this manifest, oldest retained first. `provider-operation-generation-registry.test.ts`
+ * asserts the two fields stay contiguous and disjoint, so a bump cannot leave a generation unreadable.
+ *
+ * `validateManifest` below reads **exactly two**, branching on `isV3` with a hand-written type per generation.
+ * A third entry is validator work, not configuration.
+ */
 export const STORE_RESET_INCIDENT_SCHEMA_GENERATIONS = {
   retainedReadable: [2],
   current: 3,
 } as const;
 export const STORE_RESET_INCIDENT_SCHEMA_VERSION = STORE_RESET_INCIDENT_SCHEMA_GENERATIONS.current;
 export const STORE_RESET_RETAINED_INCIDENT_SCHEMA_VERSION = STORE_RESET_INCIDENT_SCHEMA_GENERATIONS.retainedReadable[0];
+
 export const STORE_RESET_QUARANTINE_DIRECTORY = 'store-reset-quarantine';
 export const STORE_RESET_STAGING_DIRECTORY = '.staging';
 export const STORE_RESET_MANIFEST_FILE_NAME = 'reset-manifest.json';

@@ -1158,7 +1158,7 @@ describe('createProviderProxySetInheritance', () => {
     const base = createRealRuntime('prod');
     const boundedRuntime = {
       ...base,
-      process: { ...base.process, isAlive: (target: number) => target > 0, kill: () => true },
+      process: { ...base.process, isAlive: () => true, kill: () => true },
     };
     // Every pid is readable, and every one of them reads back as someone else.
     mockedProbe.mockImplementation(() => testIncarnation(9_999_999));
@@ -1176,10 +1176,16 @@ describe('createProviderProxySetInheritance', () => {
     ).resolves.not.toBeNull();
   });
 
-  it('keeps containment proof unknown when an unreadable operation row may hide another root', async () => {
+  // The row may name a provider root that never enters the decoded inventory, so the proof cannot conclude
+  // absence — but only for the set the row belongs to. Its key says which set that is without the row being
+  // decodable, and fencing every set on any unreadable row anywhere blocks recovery for sets it has nothing to
+  // do with. The key here therefore carries *this* set's proxy instance and build set.
+  it('keeps containment proof unknown when an unreadable operation row may hide a root of this set', async () => {
     const reference = locator();
     const db = proofDatabase([proofRecord(reference, { pid: 104, incarnation: testIncarnation(1_003) })]);
-    const unreadableKey = `provider_operation_saga.v1:record:${randomUUID()}:${randomUUID()}:${randomUUID()}:${randomUUID()}`;
+    const unreadableKey =
+      `provider_operation_saga.v1:record:${randomUUID()}:${randomUUID()}:` +
+      `${reference.operation.proxyInstanceId}:${reference.operation.buildSetId}`;
     db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)').run(unreadableKey, 'not json');
     const process = proofRuntime(new Map());
     mockedProbe.mockImplementation(() => testIncarnation('replacement'));
@@ -1194,6 +1200,26 @@ describe('createProviderProxySetInheritance', () => {
       inheritance.proveContainmentAbsent(providerProxySetIdentityFromRecord(reference), db, neverAborts),
     ).resolves.toBeNull();
     expect(process.signals).toEqual([]);
+  });
+
+  it('proves absence despite an unreadable row belonging to some other set', async () => {
+    const reference = locator();
+    const db = proofDatabase([proofRecord(reference, { pid: 104, incarnation: testIncarnation(1_003) })]);
+    // Same shape, different set. Before this was scoped, one such row anywhere in the store blocked the proof
+    // for every set in it, indefinitely and invisibly.
+    const foreignKey = `provider_operation_saga.v1:record:${randomUUID()}:${randomUUID()}:${randomUUID()}:${randomUUID()}`;
+    db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)').run(foreignKey, 'not json');
+    const process = proofRuntime(new Map());
+    const inheritance = createProviderProxySetInheritance({
+      runtime: process.runtime,
+      identity,
+      operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
+      registerInheritedSet: () => undefined,
+    });
+
+    await expect(
+      inheritance.proveContainmentAbsent(providerProxySetIdentityFromRecord(reference), db, neverAborts),
+    ).resolves.not.toBeNull();
   });
 
   it('proves containment through the public factory without selecting an address-distinct root', async () => {
