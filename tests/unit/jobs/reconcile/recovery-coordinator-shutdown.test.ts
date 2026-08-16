@@ -722,6 +722,74 @@ describe('recovery coordinator shutdown', () => {
     }
   });
 
+  // The third answer, at the site where reading it as the second would be worst: a probe that cannot answer
+  // adopts rather than finalizing. The failure this rules out is the one the boolean primitive produced —
+  // "could not tell" settling a job whose process may still be running.
+  //
+  // It pins the *adoption* decision only. The poller's own unknown branch is not observable through this
+  // harness — shutdown suppresses the finalization it would otherwise start, so mutating that branch to read
+  // unknown as absent leaves this green. Pinning it needs a harness where the controller stays up across
+  // ticks, and saying so here is the point: a green test read as covering both would be worse than no test.
+  it('keeps an adopted job adopted while its liveness probe cannot answer', async () => {
+    const modules = await loadModules();
+    const virtualRuntime = new SimulationRuntime();
+    const runtime: Runtime = { ...createRealRuntime('prod'), time: virtualRuntime.time };
+    const pluginRoot = createPluginRoot('plugin-unknown-liveness');
+    const projectRoot = createProjectRoot('project-unknown-liveness');
+    const cleanupSpy = vi.fn();
+    const recoveryPollMs = 500;
+    const pid = 41_425;
+    let recoveryPollHandle: ReturnType<typeof runtime.time.setInterval> | null = null;
+    // eslint-disable-next-line prefer-const -- circular: the discuss hook reads controller, whose assignment depends on the harness that wires the hook
+    let controller!: ReturnType<LoadedModules['lifecycleModule']['createLifecycle']>;
+
+    const originalSetInterval = runtime.time.setInterval.bind(runtime.time);
+    vi.spyOn(runtime.time, 'setInterval').mockImplementation((fn, ms) => {
+      const handle = originalSetInterval(fn, ms);
+      if (ms === recoveryPollMs && recoveryPollHandle === null) recoveryPollHandle = handle;
+      return handle;
+    });
+    // Never answers, for this pid or any other.
+    const observeLiveness = vi.spyOn(runtime.process, 'observeLiveness').mockReturnValue('unknown');
+
+    const harness = createCoordinatorShutdownHarness({
+      modules,
+      runtime,
+      pluginRoot,
+      projectRoot,
+      serviceOverrides: { adoptRunningJob: vi.fn(() => ({ adopted: true, cleanup: cleanupSpy })) },
+      recoverPersistedDiscussImpl: async () => {
+        expect(recoveryPollHandle).not.toBeNull();
+        void controller.shutdown('test-unknown-liveness');
+        return [];
+      },
+    });
+    controller = harness.controller;
+
+    stubRuntimeRecord(harness.progressStore, runtime, { jobId: 'running-adoption-job', pid });
+
+    try {
+      await controller.start().catch(() => undefined);
+      await controller.waitForShutdown();
+
+      expect(
+        harness.fakeService.adoptRunningJob,
+        'an unanswerable probe adopts rather than finalizing',
+      ).toHaveBeenCalledTimes(1);
+      expect(observeLiveness).toHaveBeenCalled();
+
+      virtualRuntime.time.tick(recoveryPollMs * 3 + 1);
+
+      expect(
+        harness.fakeService.completeRecoveredJob,
+        'nothing may be completed on evidence nobody has',
+      ).not.toHaveBeenCalled();
+      expect(cleanupSpy, 'and the adoption is not released either').toHaveBeenCalledTimes(1);
+    } finally {
+      await stopLifecycleController(controller);
+    }
+  });
+
   it('continues to the second workflow and lets start resolve after finalizing the first recovery failure', async () => {
     const modules = await loadModules();
     const runtime = createRealRuntime('prod');

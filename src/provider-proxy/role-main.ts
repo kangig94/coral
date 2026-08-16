@@ -287,7 +287,7 @@ async function signalAndConfirmAbsence<Scope extends symbol>(
     const remainingMs = clock.millisecondsBetween(clock.now(), confirmDeadline);
     await clock.sleep(Math.max(0, Math.min(ABSENCE_POLL_MS, remainingMs)));
   }
-  return !(environment.process.observeLiveness(target) !== 'absent');
+  return environment.process.observeLiveness(target) === 'absent';
 }
 
 /** Reaps one signal target — SIGTERM, escalating to SIGKILL after the standard grace period, absence
