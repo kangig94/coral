@@ -9,7 +9,12 @@
 import { join } from 'node:path';
 
 import { writeAuditEvent } from '../infra/audit-log.js';
-import { isProcessIncarnation, probeProcessIncarnation, type ProcessIncarnation } from '../infra/node-process.js';
+import {
+  incarnationMayAuthorizeSignal,
+  isProcessIncarnation,
+  probeProcessIncarnation,
+  type ProcessIncarnation,
+} from '../infra/node-process.js';
 import { backendLog } from '../infra/backend-log.js';
 import { SIGKILL_GRACE_MS, SIGTERM_GRACE_MS } from '../infra/process-constants.js';
 import type { Runtime } from '../runtime/ports.js';
@@ -425,6 +430,15 @@ function verifySignalTarget(
     return process.isAlive(incumbent.pid)
       ? refuseSignal(incumbent, 'process incarnation unavailable while pid is alive')
       : 'gone';
+  }
+  // Checked after "gone", so a dead incumbent is still recognised as dead and escalation simply stops. What
+  // this refuses is the live case: a platform whose identity two processes can share cannot say which one
+  // this pid is, and signalling on it would be a coin toss with someone else's process.
+  if (!incarnationMayAuthorizeSignal(platform)) {
+    return refuseSignal(
+      incumbent,
+      'this platform cannot produce a process identity strong enough to signal on — stop the Coral backend by its service or socket',
+    );
   }
   if (incumbent.incarnation === undefined) {
     return refuseSignal(

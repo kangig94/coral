@@ -61,6 +61,7 @@ function buildHarness(opts?: {
   signalPolicy?: HandoffSignalPolicy;
   signal?: AbortSignal;
   runStartupRecovery?: HandoffOptions['runStartupRecovery'];
+  platform?: NodeJS.Platform;
 }) {
   const time = new VirtualTime();
   const killCalls: KillCall[] = [];
@@ -78,7 +79,7 @@ function buildHarness(opts?: {
       isAlive: isAliveImpl,
     } as unknown as Runtime['process'],
     env: {
-      platform: () => 'linux',
+      platform: () => opts?.platform ?? 'linux',
     } as unknown as Runtime['env'],
   };
 
@@ -632,6 +633,43 @@ describe('bindWithHandoff', () => {
     expect(mockedShutdown).toHaveBeenCalledWith(expect.objectContaining({ bootToken: 'boot-token-legacy' }));
     expect(outcome).toBeInstanceOf(HandoffEscalationError);
     expect(killCalls, 'an incumbent that published no incarnation must never be signalled').toEqual([]);
+  });
+
+  // Everything an eviction needs is present here — a published incarnation, a matching probe, a live pid —
+  // and it is still refused, because on macOS that agreement is not proof. `ps -o lstart=` is wall clock at
+  // one-second resolution and macOS exposes no boot-relative start, so a backward clock step inside one boot
+  // lets a later process reuse a pid and land on the same displayed second. Two processes, one token. The
+  // graceful path is untouched: the shutdown RPC still ran with the token, which is how an ordinary upgrade
+  // proceeds. What macOS gives up is forcing out a peer that will not answer.
+  it('refuses to signal on a platform whose identity two processes can share', async () => {
+    const verifiedIdentity: IncumbentIdentity = { pid: 8181, incarnation: testIncarnation(700), source: 'health' };
+    const { options, time, killCalls } = buildHarness({
+      bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
+      totalBudgetMs: 1_000,
+      isAlive: () => true,
+      platform: 'darwin',
+      readDiscovery: () => ({
+        ...verifiedIdentity,
+        source: 'discovery',
+        instanceId: 'darwin-incumbent',
+        token: 'token-darwin',
+        bootToken: 'boot-token-darwin',
+        shutdownToken: 'shutdown-token-darwin',
+      }),
+    });
+    mockedShutdown.mockResolvedValue(shutdownResult({ health: null, verifiedIdentity }));
+    mockedProbe.mockReturnValue(testIncarnation(700));
+
+    const promise = bindWithHandoff(options).catch((e: Error) => e);
+    for (let i = 0; i < (SIGTERM_GRACE_MS + SIGKILL_GRACE_MS) / 200 + 40; i += 1) {
+      await flush();
+      time.tick(200);
+    }
+    const outcome = await promise;
+
+    expect(mockedShutdown).toHaveBeenCalledWith(expect.objectContaining({ bootToken: 'boot-token-darwin' }));
+    expect(outcome).toBeInstanceOf(HandoffEscalationError);
+    expect(killCalls, 'a matching incarnation is not proof on a platform that cannot make it one').toEqual([]);
   });
 
   // The guarantee that survives: between the handshake and the signal, the pid must still name the same

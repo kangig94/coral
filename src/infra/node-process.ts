@@ -104,6 +104,26 @@ function probeLinuxProcessIncarnation(pid: number): ProcessIncarnation | null {
  * failure means, and both answers are wrong: remembering `null` blinds every later probe until restart, and
  * remembering a value asserts across a boundary this function cannot see.
  */
+/**
+ * Whether an incarnation from this platform is strong enough to authorize a signal.
+ *
+ * Linux's is boot-relative. `startTicks` counts from boot, so no wall-clock change can move it, and two
+ * processes share one only by starting in the same tick — which needs the pid space to wrap inside ~10ms.
+ *
+ * Darwin's cannot be, and no amount of framing fixes it. macOS exposes no boot-relative start without a
+ * native addon: `ps -o lstart=` is wall clock at one-second resolution, and `kern.boottime` is itself derived
+ * from calendar time. The boot session id closes the across-reboot half, but *within* one boot a backward
+ * clock change — an NTP step, a DST fallback — lets a later process reuse a pid and land on the same
+ * displayed second, so two processes produce one token. Equality there would authorize SIGKILL against a
+ * stranger, so on Darwin it authorizes nothing.
+ *
+ * The token stays useful on Darwin for the conservative direction, which is most of what it is for: a false
+ * match reads as "still alive", blocking a disappearance claim rather than licensing an action.
+ */
+export function incarnationMayAuthorizeSignal(platform: NodeJS.Platform): boolean {
+  return platform === 'linux';
+}
+
 function readMacBootSessionId(): string | null {
   try {
     const raw = execFileSync('sysctl', ['-n', 'kern.bootsessionuuid'], {
