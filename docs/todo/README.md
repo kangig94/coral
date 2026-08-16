@@ -74,9 +74,17 @@ landing does not unblock it — that was the record direction.
 
 ## Containment that outlives its enforcer
 
-|                                                                                  |                                                        |
-| -------------------------------------------------------------------------------- | ------------------------------------------------------ |
-| [`kb-daemon-independent-containment.md`](./kb-daemon-independent-containment.md) | The KB daemon has no enforcer outside its own process. |
+|                                                                                  |                                                                                                                                                                                                                                                                                                                                                      |
+| -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`kb-daemon-independent-containment.md`](./kb-daemon-independent-containment.md) | The KB daemon has no enforcer outside its own process.                                                                                                                                                                                                                                                                                               |
+| [`darwin-signal-authority.md`](./darwin-signal-authority.md)                     | **Handoff half closed, containment half measured and reverted.** A macOS incarnation is wall-clock at one-second resolution, and `ps -o lstart=` prints local time — so DST fallback widens the collision window from a second to an hour, annually. The fix is not a guard: one of the four reap callers holds the child and needs no token at all. |
+| [`wedged-coordinator-self-drain.md`](./wedged-coordinator-self-drain.md)         | Every self-termination path Coral has is scheduled by the process it is meant to end. The 6h idle drain is tidiness for a healthy daemon, not a liveness backstop — reading it as one is what produced this entry.                                                                                                                                   |
+
+The three are one concept — something must end a process that will not end itself — but they close
+separately and in this order of tractability. `darwin-signal-authority` is about the **authority** to signal a
+correctly identified target; the other two are about there being **no party left** to signal at all, and a fix
+for either still has to answer the first. The kb-daemon still has a supervising parent; a wedged coordinator is
+the top of the tree, which is why its answer leaves the codebase entirely.
 
 **Do not merge this with shutdown quiescence**, however alike the one-sentence summaries read. One is a
 process-lifetime guarantee whose whole premise is that the closer may already be dead; the other
