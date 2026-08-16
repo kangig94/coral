@@ -1,7 +1,12 @@
 import type { TimePort, TimerHandle } from '../../../infra/port-types.js';
 import { errorMessage } from '../../../infra/error-format.js';
 import type { OperationIdentity } from '../../../provider-proxy/protocol.js';
-import type { HandoffCapsule, HandoffCapsuleV1, HandoffCapsuleV3 } from '../../../provider-proxy/handoff-capsule.js';
+import {
+  CURRENT_HANDOFF_CAPSULE_VERSION,
+  type HandoffCapsule,
+  type HandoffCapsuleV1,
+  type HandoffCapsuleV3,
+} from '../../../provider-proxy/handoff-capsule.js';
 import type { DurableProviderProxyOperationAuthority } from '../../live/provider-proxy/operation-route.js';
 import type { ProviderHandoffCapsuleRetirementOutcome } from '../provider-proxy-capsule-discovery.js';
 import { classifyProviderProxySetInheritance, type ProviderProxySetRedemptionOutcome } from './inheritance.js';
@@ -815,7 +820,7 @@ export class ProviderProxySetLifecycle {
           const identity = outcome.set.setIdentity;
           const upgraded: HandoffCapsuleV3 = {
             ...slot.capsuleBinding,
-            version: 3,
+            version: CURRENT_HANDOFF_CAPSULE_VERSION,
             guardianPid: identity.guardianPid,
             guardianIncarnation: identity.guardianIncarnation,
             proxyPid: identity.proxyPid,

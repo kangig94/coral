@@ -5,6 +5,7 @@ import {
   handoffSecretDigest,
   successionOperationRegisterParamsSchema,
   successionOperationRegisterResultSchema,
+  CURRENT_HANDOFF_CAPSULE_VERSION,
   writeHandoffCapsuleFile,
   type HandoffCapsule,
   type HandoffCapsuleV3,
@@ -116,7 +117,7 @@ export function createProviderProxySetAuthority(
     if (mintedRecoveryCapsule !== null) return mintedRecoveryCapsule;
     const deadlineConfig = resolveProviderProxyDeadlineConfiguration(runtime.env);
     mintedRecoveryCapsule = {
-      version: 3,
+      version: CURRENT_HANDOFF_CAPSULE_VERSION,
       grantId: runtime.ids.uuid(),
       secret: runtime.ids.randomBytes(32).toString('hex'),
       generation: guardianIdentity.generation,

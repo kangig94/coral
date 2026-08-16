@@ -278,8 +278,18 @@ export const handoffCapsuleSchema = z.discriminatedUnion('version', [
  * agree, so the other two read these rather than restating them. A V4 that updates the union and forgets the
  * filename would write a capsule an older build opens and dies on — silently, and only in the field.
  */
-export const SUPPORTED_HANDOFF_CAPSULE_VERSIONS = [1, 2, 3] as const;
-export const CURRENT_HANDOFF_CAPSULE_VERSION = 3;
+export const SUPPORTED_HANDOFF_CAPSULE_VERSIONS = handoffCapsuleSchema.options.map(
+  (member) => member.shape.version.value,
+);
+
+/**
+ * Derived from the schema that defines it, and literal-typed on purpose. A hand-written `3` here would be a
+ * second copy: repointing it to 4 while leaving the writer producing V3 compiles cleanly, and the result is a
+ * `.v4.json` name holding V3 bytes — which discovery then re-derives as `.v3.json` and rejects as relocated,
+ * aborting startup. Taking the value from the schema makes that mismatch a compile error instead: the writer
+ * is typed on the same schema, so the two move together or neither moves.
+ */
+export const CURRENT_HANDOFF_CAPSULE_VERSION = handoffCapsuleV3Schema.shape.version.value;
 
 export type HandoffCapsuleV1 = z.output<typeof handoffCapsuleV1Schema>;
 export type HandoffCapsuleV2 = z.output<typeof handoffCapsuleV2Schema>;
