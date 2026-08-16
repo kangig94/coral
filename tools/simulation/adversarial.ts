@@ -351,8 +351,11 @@ export class SimulationWorld {
       }
       throw new Error('Cannot kill without a pid or jobId');
     }
-    if (!this.current.backend.runtime.process.observeLiveness(pid)) {
-      throw new Error(`Cannot kill inactive pid ${pid}`);
+    // Observed life, not truthiness. `ProcessLiveness` is a string union, so every one of its three values is
+    // truthy — `!observeLiveness(pid)` was never true and this guard never fired, letting the simulator report
+    // a kill of an inactive pid as a success.
+    if (this.current.backend.runtime.process.observeLiveness(pid) !== 'alive') {
+      throw new Error(`Cannot kill pid ${pid}: it was not observed alive`);
     }
     this.current.backend.runtime.process.kill(pid, 'SIGTERM');
   }
@@ -513,7 +516,7 @@ export class SimulationWorld {
 
   isPidAlive(pid: number): boolean {
     this.assertUsable();
-    return this.current.backend.runtime.process.observeLiveness(pid) !== 'absent';
+    return this.current.backend.runtime.process.observeLiveness(pid) === 'alive';
   }
 
   async teardown(): Promise<void> {

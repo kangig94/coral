@@ -7,7 +7,7 @@ import { backendLog } from '../../../infra/backend-log.js';
 import { isTerminalPhase } from '../../../jobs/phase.js';
 import { isAppServerRuntime, type JobTerminalInput } from '../../../jobs/records.js';
 import {
-  providerOperationJobIdFromRecordKey,
+  attributeUnreadableProviderOperations,
   readProviderOperations,
   readSupersededProviderOperations,
   retireSupersededProviderOperation,
@@ -898,9 +898,12 @@ export function createRecoveryCoordinator(
               const unanswered = (state.unansweredAdoptionProbes.get(jobId) ?? 0) + 1;
               state.unansweredAdoptionProbes.set(jobId, unanswered);
               if (unanswered === UNANSWERED_ADOPTION_PROBE_REPORT_THRESHOLD) {
-                controls.report(
+                // Not `controls.report`: that appends to the recovery walk's own message array, which is
+                // flushed once at the end of startup — long before ten poll ticks. The report would never have
+                // been seen, which is exactly the silence this counter exists to break.
+                backendLog.warn(
                   `Liveness of adopted job ${jobId} (pid ${runtimeRecord.pid}) has been unobservable for ` +
-                    `${unanswered} checks; it stays adopted until a probe answers.\n`,
+                    `${unanswered} checks; it stays adopted until a probe answers.`,
                 );
               }
               return;
@@ -1209,11 +1212,17 @@ export function createRecoveryCoordinator(
     const scan = readProviderOperations(progressStore.getDb());
     // A row this build cannot read still names a job the provider saga owns. Fencing only the decoded ones
     // hands that job to generic recovery, which then does a keyed strict read of the same row and throws —
-    // turning a stalled operation back into a failed startup. The key carries the job id without decoding
-    // anything, which is the whole identity this fence needs.
-    const unreadableJobIds = scan.unreadableKeys
-      .map((key) => providerOperationJobIdFromRecordKey(key))
-      .filter((jobId): jobId is string => jobId !== null);
+    // turning a stalled operation back into a failed startup.
+    //
+    // Both names, not just the key's. `decodeCanonicalValue` rejects a row whose payload identity disagrees
+    // with its key, so those are exactly the rows where the two differ — fencing the key's job alone would
+    // hand the payload's job to generic recovery, which can terminalize it while its operation is live. This
+    // is the sibling of the proxy-set fence in `provider-proxy-set/inheritance.ts` and was left key-only when
+    // that one was fixed.
+    const unreadableJobIds = attributeUnreadableProviderOperations(progressStore.getDb(), scan.unreadableKeys)
+      // `null` is a row attributable to no job from either side. It cannot be fenced by job id at all, so the
+      // reported keys stay the operator's signal for it.
+      .flatMap((attribution) => attribution.jobIds ?? []);
     return Object.freeze({
       jobIds: Object.freeze([
         ...new Set([...scan.records.map((record) => record.operation.jobId), ...unreadableJobIds]),

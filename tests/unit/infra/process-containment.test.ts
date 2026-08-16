@@ -28,7 +28,7 @@ type FakeState = {
 
 function createFakeEnvironment(
   state: FakeState,
-  options: { signalCostMs?: number; unreadablePids?: ReadonlySet<number> } = {},
+  options: { signalCostMs?: number; unreadablePids?: ReadonlySet<number>; groupLiveness?: ProcessLiveness } = {},
 ): {
   environment: ProcessContainmentEnvironment<typeof containmentClockScope>;
   now: () => number;
@@ -37,7 +37,9 @@ function createFakeEnvironment(
   let elapsedMs = 0;
   const signals: Array<{ pid: number; signal: NodeJS.Signals | 0; at: number }> = [];
   const observeLiveness = (pid: number): ProcessLiveness => {
-    if (pid === -containment.processGroupId) return state.groupAlive ? 'alive' : 'absent';
+    if (pid === -containment.processGroupId) {
+      return options.groupLiveness ?? (state.groupAlive ? 'alive' : 'absent');
+    }
     if (pid === containment.pid) return state.leaderAlive ? 'alive' : 'absent';
     if (pid === providerRoot.pid) return state.providerRootAlive ? 'alive' : 'absent';
     return 'absent';
@@ -174,6 +176,27 @@ describe('recorded process containment', () => {
     expect(failure).toBeInstanceOf(ProcessContainmentError);
     expect(failure).toMatchObject({ code: 'process_identity_unverified' });
     expect(fake.signals).toEqual([]);
+  });
+
+  // The third answer at a signalling boundary. A group whose liveness cannot be observed is not a group that
+  // may be signalled: SIGTERM and then SIGKILL would land on a numeric group nobody saw, and the leader's id
+  // may have been reused since. This is the case `!== 'absent'` silently authorized.
+  it('refuses to signal a recorded group whose liveness cannot be observed', async () => {
+    const fake = createFakeEnvironment(
+      { groupAlive: true, leaderAlive: true, providerRootAlive: false },
+      { groupLiveness: 'unknown' },
+    );
+
+    const failure = await reapRecordedContainment(
+      containment,
+      [],
+      deadlineAfter(fake.environment, 10_000),
+      fake.environment,
+    ).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(ProcessContainmentError);
+    expect(failure).toMatchObject({ code: 'process_identity_unverified' });
+    expect(fake.signals, 'nothing may be signalled on an answer nobody has').toEqual([]);
   });
 
   it('rejects provider root 129 before probing or signalling', async () => {

@@ -475,6 +475,8 @@ export type ProviderOperationScan = Readonly<{
 export type UnreadableProviderOperationAttribution = Readonly<{
   key: string;
   addresses: readonly Readonly<{ proxyInstanceId: string; buildSetId: string }>[] | null;
+  /** Every job the row could belong to, or `null` when it could not be attributed to any. */
+  jobIds: readonly string[] | null;
 }>;
 
 export function attributeUnreadableProviderOperations(
@@ -489,9 +491,19 @@ export function attributeUnreadableProviderOperations(
     // `indeterminate` is not "no payload address" — it is a payload that looks like a record and does not name
     // a set. Falling back to the key alone there would attribute the row to one set while its bytes could
     // belong to another, which is exactly what the key cannot settle.
-    if (claimed === 'indeterminate') return { key, addresses: null };
+    const claimedJob = claimedJobId(readCanonicalValue(db, key));
+    if (claimed === 'indeterminate' || claimedJob === 'indeterminate') {
+      return { key, addresses: null, jobIds: null };
+    }
     if (claimed !== null) addresses.push(claimed);
-    return { key, addresses: addresses.length === 0 ? null : addresses };
+    const jobIds = [providerOperationJobIdFromRecordKey(key), claimedJob].filter(
+      (jobId): jobId is string => jobId !== null,
+    );
+    return {
+      key,
+      addresses: addresses.length === 0 ? null : addresses,
+      jobIds: jobIds.length === 0 ? null : [...new Set(jobIds)],
+    };
   });
 }
 
@@ -525,6 +537,30 @@ function claimedSetAddress(
   const { proxyInstanceId, buildSetId } = result.data.operation;
   return proxyInstanceId.length === 0 || buildSetId.length === 0 ? 'indeterminate' : { proxyInstanceId, buildSetId };
 }
+
+/**
+ * The job a row's own bytes name — the same three answers as its set address, and for the same reason.
+ *
+ * The key names a job too, and the two disagree exactly when that disagreement is why the row failed to
+ * decode. Fencing on the key alone would hand the job the *payload* names to generic recovery, which can
+ * terminalize it while the operation it represents is live.
+ */
+function claimedJobId(value: string | undefined): string | 'indeterminate' | null {
+  if (value === undefined) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return null;
+  }
+  if (!recordShapedSchema.safeParse(parsed).success) return null;
+  const result = claimedJobSchema.safeParse(parsed);
+  if (!result.success) return 'indeterminate';
+  const jobId = result.data.operation.jobId;
+  return jobId.length === 0 ? 'indeterminate' : jobId;
+}
+
+const claimedJobSchema = z.object({ operation: z.object({ jobId: z.string() }).passthrough() }).passthrough();
 
 /** Bytes that are a provider-operation record of some generation, whatever else about them cannot be read. */
 const recordShapedSchema = z.object({ version: z.number(), locator: z.unknown() }).passthrough();
@@ -658,7 +694,9 @@ export function retireSupersededProviderOperation(db: Database, key: string): vo
     db.prepare<[string]>('DELETE FROM meta WHERE key = ?').run(key);
     for (const prefix of SUPERSEDED_PROVIDER_OPERATION_RECORD_PREFIXES) {
       const duePrefix = `${prefix.slice(0, prefix.length - 'record:'.length)}due:`;
-      db.prepare<[string, string, string]>('DELETE FROM meta WHERE key > ? AND key < ? AND value = ?').run(
+      // `>=`, for the same reason the record scan's first page is inclusive: a due key that is exactly the bare
+      // prefix is malformed, and excluding it leaves a pointer to a record this call just retired.
+      db.prepare<[string, string, string]>('DELETE FROM meta WHERE key >= ? AND key < ? AND value = ?').run(
         duePrefix,
         keyPrefixUpperBound(duePrefix),
         key,

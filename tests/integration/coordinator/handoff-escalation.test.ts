@@ -1,3 +1,4 @@
+import type { ProcessLiveness } from '#src/infra/node-process.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 // AC7: handoff-escalation integration coverage. Drives `bindWithHandoff`
 // against a virtual incumbent that holds the socket past the drain budget,
@@ -47,10 +48,12 @@ function buildEscalationHarness(opts: {
   const start = time.now();
   const killCalls: KillCall[] = [];
 
-  const observeLiveness = (pid: number): boolean => {
-    if (pid !== opts.identity?.pid) return false;
-    if (opts.incumbentExitsAt === null) return true;
-    return time.now() - start < opts.incumbentExitsAt;
+  // The port's own type. A double that answers `boolean` behind a cast compares as "not absent" for BOTH of
+  // its values, so an exited incumbent reads as still there and the path this test names never runs.
+  const observeLiveness = (pid: number): ProcessLiveness => {
+    if (pid !== opts.identity?.pid) return 'absent';
+    if (opts.incumbentExitsAt === null) return 'alive';
+    return time.now() - start < opts.incumbentExitsAt ? 'alive' : 'absent';
   };
 
   const runtime: Pick<Runtime, 'time' | 'process' | 'env'> = {

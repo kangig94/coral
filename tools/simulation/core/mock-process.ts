@@ -1,4 +1,4 @@
-import type { ProcessIncarnation } from '../../../src/infra/node-process.js';
+import type { ProcessIncarnation, ProcessLiveness } from '../../../src/infra/node-process.js';
 import { EventEmitter } from 'node:events';
 import { join, normalize } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -338,8 +338,13 @@ export class MockProcessSpawner {
     return true;
   }
 
-  observeLiveness(pid: number): boolean {
-    return this.resolveKillTargets(pid).some((record) => record.alive);
+  /**
+   * The simulator can always answer, so it never returns `unknown` — but it returns the union, not a boolean.
+   * A fake that answers a different type from the port it stands in for is how a conversion bug reaches
+   * production untested, and every one of the union's values is truthy.
+   */
+  observeLiveness(pid: number): ProcessLiveness {
+    return this.resolveKillTargets(pid).some((record) => record.alive) ? 'alive' : 'absent';
   }
 
   readProcessIncarnation(pid: number): ProcessIncarnation | null {

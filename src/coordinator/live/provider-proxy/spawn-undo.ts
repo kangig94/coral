@@ -51,7 +51,9 @@ export function buildGuardianSpawnUndo(
     while (runtime.process.observeLiveness(group) !== 'absent' && runtime.time.now() < graceDeadline) {
       await runtime.time.sleep(ABSENCE_POLL_MS);
     }
-    if (runtime.process.observeLiveness(group) !== 'absent') {
+    // Escalation needs observed life, not merely "not observed gone". The group may have exited during the
+    // grace and had its id reused; SIGKILL on an unanswerable probe would land on whoever holds it now.
+    if (runtime.process.observeLiveness(group) === 'alive') {
       runtime.process.kill(group, 'SIGKILL');
     }
   };

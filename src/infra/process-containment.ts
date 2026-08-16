@@ -189,13 +189,24 @@ function observeContainment<Scope extends symbol>(
     );
   }
 
-  const groupIsAlive = environment.process.observeLiveness(-containment.processGroupId) !== 'absent';
-  if (observedIncarnation === containment.incarnation && !groupIsAlive) {
+  // Three answers, and only two of them may decide. A group observed absent is absent; one observed alive is
+  // present and may be signalled. A group that could not be observed authorizes nothing — reading it as
+  // present would deliver SIGTERM and then SIGKILL to a numeric group nobody saw, which is what the boolean
+  // primitive threw to prevent and what `!== 'absent'` quietly reinstated.
+  const groupLiveness = environment.process.observeLiveness(-containment.processGroupId);
+  if (groupLiveness === 'unknown') {
+    throw new ProcessContainmentError(
+      'process_identity_unverified',
+      `Refusing to signal process group ${containment.processGroupId} because its liveness could not be observed.`,
+      { pid: containment.pid, processGroupId: containment.processGroupId },
+    );
+  }
+  if (observedIncarnation === containment.incarnation && groupLiveness === 'absent') {
     return 'absent';
   }
   // A detached group remains signalable after its verified leader exits; treating leader exit as group
   // absence would strand the containment's remaining members.
-  return groupIsAlive ? 'present' : 'absent';
+  return groupLiveness === 'alive' ? 'present' : 'absent';
 }
 
 function observeRecordedSet<Scope extends symbol>(

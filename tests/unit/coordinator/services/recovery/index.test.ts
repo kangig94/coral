@@ -468,8 +468,13 @@ describe('runStartupRecovery provider-operation ownership', () => {
       0;
 
     const beforeRetirement = recoveryCoordinator.snapshotProviderOperationStartupOwnership();
+    // Both names of every unreadable row, not just its key's. These fixtures key a fixture payload under a
+    // different job id, which is the shape `decodeCanonicalValue` rejects — so the payload's job is fenced
+    // too. Fencing the key's job alone would hand the payload's job to generic recovery, which can terminalize
+    // it while the operation the payload describes is still live.
+    const payloadJobId = providerOperationRecord('prepare-pending').operation.jobId;
     expect([...beforeRetirement.jobIds].sort()).toEqual(
-      [goneJobId, liveJobId, groupJobId, zeroTargetJobId, failedProbeJobId, unwalkableJobId].sort(),
+      [goneJobId, liveJobId, groupJobId, zeroTargetJobId, failedProbeJobId, unwalkableJobId, payloadJobId].sort(),
     );
     expect([goneKey, liveKey, groupKey, zeroTargetKey, failedProbeKey, unwalkableKey].every(rowExists)).toBe(true);
 
@@ -487,7 +492,8 @@ describe('runStartupRecovery provider-operation ownership', () => {
     }).toEqual({
       // Only the row with a non-empty, completely absent target set is unfenced. A live leader, a live group,
       // an empty usable target set, and an unwalkable row all remain unknown or present and keep their fence.
-      fenced: [liveJobId, groupJobId, zeroTargetJobId, failedProbeJobId, unwalkableJobId].sort(),
+      // `payloadJobId` stays fenced because rows still present still claim it in their bytes.
+      fenced: [liveJobId, groupJobId, zeroTargetJobId, failedProbeJobId, unwalkableJobId, payloadJobId].sort(),
       goneRowSurvives: false,
       liveRowSurvives: true,
       groupRowSurvives: true,

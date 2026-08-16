@@ -8,6 +8,7 @@ import {
   incarnationMayAuthorizeSignal,
   probeProcessIncarnation,
   type ProcessIncarnation,
+  type ProcessLiveness,
 } from '../infra/node-process.js';
 import { providerProxyBootstrapCapsulePath, providerReaperBootstrapCapsulePath } from '../infra/path/index.js';
 import {
@@ -273,21 +274,23 @@ async function signalAndConfirmAbsence<Scope extends symbol>(
   graceMs: number,
   clock: MonotonicClock<Scope>,
   environment: ProcessContainmentEnvironment<Scope>,
-): Promise<boolean> {
+): Promise<ProcessLiveness> {
   environment.process.kill(target, signal);
   const waitDeadline = clock.shiftMilliseconds(clock.now(), graceMs);
-  while (environment.process.observeLiveness(target) !== 'absent' && clock.compare(clock.now(), waitDeadline) < 0) {
+  while (environment.process.observeLiveness(target) === 'alive' && clock.compare(clock.now(), waitDeadline) < 0) {
     await clock.sleep(ABSENCE_POLL_MS);
   }
-  if (environment.process.observeLiveness(target) !== 'absent') return false;
+  const afterGrace = environment.process.observeLiveness(target);
+  if (afterGrace !== 'absent') return afterGrace;
 
   const confirmDeadline = clock.shiftMilliseconds(clock.now(), CONTAINMENT_DISAPPEARANCE_CONFIRM_MS);
   while (clock.compare(clock.now(), confirmDeadline) < 0) {
-    if (environment.process.observeLiveness(target) !== 'absent') return false;
+    const observed = environment.process.observeLiveness(target);
+    if (observed !== 'absent') return observed;
     const remainingMs = clock.millisecondsBetween(clock.now(), confirmDeadline);
     await clock.sleep(Math.max(0, Math.min(ABSENCE_POLL_MS, remainingMs)));
   }
-  return environment.process.observeLiveness(target) === 'absent';
+  return environment.process.observeLiveness(target);
 }
 
 /** Reaps one signal target — SIGTERM, escalating to SIGKILL after the standard grace period, absence
@@ -298,8 +301,19 @@ async function reapUnheldTarget<Scope extends symbol>(
   clock: MonotonicClock<Scope>,
   environment: ProcessContainmentEnvironment<Scope>,
 ): Promise<void> {
-  if (await signalAndConfirmAbsence(target, 'SIGTERM', SIGTERM_GRACE_MS, clock, environment)) return;
-  if (await signalAndConfirmAbsence(target, 'SIGKILL', SIGKILL_GRACE_MS, clock, environment)) return;
+  const afterTerm = await signalAndConfirmAbsence(target, 'SIGTERM', SIGTERM_GRACE_MS, clock, environment);
+  if (afterTerm === 'absent') return;
+  // Escalation needs observed life. `unknown` is not permission to send SIGKILL — the target may have exited
+  // during the grace and had its id reused, and this path signals a bare number.
+  //
+  // Unpinned, and worth saying so: guardian-construction unwind is private and reachable only by driving a
+  // real guardian to fail mid-construction, so mutating this branch away leaves the suite green. The identical
+  // rule at `spawn-undo.ts` and `process-containment.ts` is pinned; this one rides on their being the same
+  // rule, which is weaker than a test and stronger than nothing.
+  if (afterTerm === 'unknown') {
+    throw new Error(`Could not observe ${targetLabel} after SIGTERM; refusing to escalate to SIGKILL.`);
+  }
+  if ((await signalAndConfirmAbsence(target, 'SIGKILL', SIGKILL_GRACE_MS, clock, environment)) === 'absent') return;
   throw new Error(`Could not confirm ${targetLabel} exited after SIGTERM and SIGKILL.`);
 }
 

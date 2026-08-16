@@ -1,3 +1,4 @@
+import type { ProcessLiveness } from '#src/infra/node-process.js';
 import type { ProcessIncarnation } from '#src/infra/node-process.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
@@ -503,7 +504,12 @@ type SignalCall = { pid: number; signal: NodeJS.Signals | 0 };
  * and "escalate", so a runtime missing it would let the escalation path pass untested — which is how the
  * partial mock this replaces went unnoticed.
  */
-function guardianUndoRuntime(time: VirtualTime, isAlive: () => boolean, killCalls: SignalCall[]): Runtime {
+function guardianUndoRuntime(
+  time: VirtualTime,
+  isAlive: () => boolean,
+  killCalls: SignalCall[],
+  observe?: () => ProcessLiveness,
+): Runtime {
   return {
     time,
     process: {
@@ -511,7 +517,7 @@ function guardianUndoRuntime(time: VirtualTime, isAlive: () => boolean, killCall
         killCalls.push({ pid, signal });
         return true;
       },
-      observeLiveness: () => (isAlive() ? 'alive' : 'absent'),
+      observeLiveness: () => observe?.() ?? (isAlive() ? 'alive' : 'absent'),
     },
   } as unknown as Runtime;
 }
@@ -568,6 +574,26 @@ describe('buildGuardianSpawnUndo', () => {
   // On darwin an incarnation is wall-clock at one-second resolution, so a match is not proof the pid is still
   // the process this acquisition spawned. Refusing costs the guardian's orphan deadline — it never received
   // control, so it ends itself — and signalling a matching-but-different pid costs an unrelated process.
+  // Escalation needs observed life. The group may have exited during the TERM grace and had its id reused, so
+  // an unanswerable probe is not permission to SIGKILL a bare number.
+  it("does not escalate to SIGKILL when the group's liveness cannot be observed", async () => {
+    const time = new VirtualTime();
+    const killCalls: SignalCall[] = [];
+    const runtime = guardianUndoRuntime(
+      time,
+      () => true,
+      killCalls,
+      () => 'unknown',
+    );
+    const spawned = fakeSpawnedGuardian(4_242, 1_000);
+
+    const pending = buildGuardianSpawnUndo(runtime, spawned, 'linux', () => spawned.incarnation)();
+    time.tick(PROXY_TEARDOWN_RESERVE_MS);
+    await pending;
+
+    expect(killCalls).toEqual([{ pid: -spawned.pid, signal: 'SIGTERM' }]);
+  });
+
   it('declines to signal on a platform whose incarnation cannot authorize one', async () => {
     const time = new VirtualTime();
     const killCalls: SignalCall[] = [];

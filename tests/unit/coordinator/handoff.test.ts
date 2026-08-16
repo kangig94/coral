@@ -66,7 +66,7 @@ function buildHarness(opts?: {
 }) {
   const time = new VirtualTime();
   const killCalls: KillCall[] = [];
-  const isAliveImpl = opts?.observeLiveness ?? (() => true);
+  const observeLivenessImpl = opts?.observeLiveness ?? ((): ProcessLiveness => 'alive');
   const runtime: Pick<Runtime, 'time' | 'process' | 'env'> = {
     time,
     process: {
@@ -77,7 +77,7 @@ function buildHarness(opts?: {
         }
         return true;
       },
-      observeLiveness: isAliveImpl,
+      observeLiveness: observeLivenessImpl,
     } as unknown as Runtime['process'],
     env: {
       platform: () => opts?.platform ?? 'linux',
