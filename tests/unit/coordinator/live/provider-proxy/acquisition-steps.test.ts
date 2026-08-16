@@ -286,6 +286,14 @@ describe('createProviderProxyAcquisitionSteps', () => {
     const unsubscribe = subscribeProviderProxyControlEstablished(establishedEvents);
     const established = await steps.establishControl();
     if (!isProviderProxyOperationAuthority(established.set)) throw new Error('expected durable authority');
+
+    // The address the real writer produced, checked here because this is the only place it is produced. The
+    // generation lives in the filename precisely so a v0.10.8 build never opens what this build writes, and a
+    // capsule handed to the authority under the wrong name is that build refusing to boot. Asserting the
+    // suffix that v0.10.8's own discovery pattern cannot match is the whole property.
+    expect(mockedCreateSetAuthority.mock.calls[0]?.[0]?.handoffCapsulePath).toMatch(
+      /\/provider-1[0-9a-f]{23}\.handoff\.v3\.json$/u,
+    );
     const set = established.set;
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([]);

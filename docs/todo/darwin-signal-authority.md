@@ -31,17 +31,27 @@ action.
 was the dangerous half: a durable handoff record can be arbitrarily old and can name a pid this build never
 spawned, so the recorded identity is the _only_ thing standing between the coordinator and a stranger.
 
+Two more paths were closed after review found them, and they are closed rather than deferred because a proxy
+role that is never given control ends itself: `buildGuardianSpawnUndo`
+(`src/coordinator/live/provider-proxy/spawn-undo.ts`) and `isStillTheRecordedProcess`
+(`src/provider-proxy/role-main.ts`), the guardian-construction unwind. Refusing there costs the orphan
+deadline — 37 seconds by default — and nothing permanent.
+
+`tests/invariants/signal-authority.test.ts` now enumerates every file that signals a bare pid, so this
+document is no longer the only place the open ones are written down. It found four more, unrelated to
+containment; they are [`durable-cli-signal-authority.md`](./durable-cli-signal-authority.md).
+
 ## What is open
 
 `reapRecordedContainment` (`src/infra/process-containment.ts:366`) still signals on Darwin against the same
-token. Four call sites:
+token, from four call sites:
 
-| Call site                                                        | Reaps                                        | Holds the child? |
-| ---------------------------------------------------------------- | -------------------------------------------- | ---------------- |
-| `src/coordinator/live/provider-hosts/drain.ts:46`                | a provider host this coordinator spawned     | **yes**          |
-| `src/coordinator/services/recovery/interrupted-performer.ts:105` | a previous coordinator process's work        | no               |
-| `src/coordinator/services/provider-proxy-set/inheritance.ts:372` | another build's proxy set                    | no               |
-| `src/provider-proxy/enforcement.ts:133`                          | the detached set group, from the reaper role | no               |
+| Call site                                                        | Reaps                                                   |
+| ---------------------------------------------------------------- | ------------------------------------------------------- |
+| `src/coordinator/live/provider-hosts/drain.ts:46`                | a provider host this coordinator spawned                |
+| `src/coordinator/services/recovery/interrupted-performer.ts:105` | a previous coordinator process's work                   |
+| `src/coordinator/services/provider-proxy-set/inheritance.ts:372` | another build's proxy set                               |
+| `src/provider-proxy/enforcement.ts:133`                          | the detached set group, from the guardian or the reaper |
 
 ## Why the guard cannot simply be added — measured, not reasoned
 
@@ -54,20 +64,30 @@ behind it. A proxy set's guardian and reaper self-terminate when their deadline 
 not, and nothing else reclaims it. Refusing there trades an identity risk for a **certain** leak of a child
 process with no reclaimer — strictly worse on the platform the guard is meant to protect.
 
-## The shape of the fix — split by whether the caller holds the child
+## The shape of the fix — split by live-child proof, not by call site
 
-The table above is the fix. `drain.ts` is the only caller holding a live, unreaped child handle:
-`ProviderServerEntry.child` (`src/providers/app-server-transport.ts:145`), reachable from the
-`ContainedProviderServerHandle` that same path already carries (`:136-141`). POSIX does not reuse the pid of an
-unreaped child, and the recorded process group id **is** the leader's pid — so _holding the handle is itself
-the proof the identity was not recycled_. That path needs no token on any platform.
+An earlier revision of this document said `drain.ts` is the one caller that holds a live, unreaped child, so
+holding the handle is itself proof the pid was not recycled, and the split is therefore per call site. **Two
+reviewers falsified that independently and the correction is the useful part**, so it is kept in place:
 
-The other three reap processes they did not spawn — a previous coordinator's, another build's, a deliberately
-detached group. They have no handle, the token is doing real work there, and that is exactly where the Darwin
-refusal belongs and where it costs nothing to add.
+- `drain.ts:174` reaps with `handle === null`. When a spawn fails after containment was recorded,
+  `provider-hosts/recovery.ts:71` closes an entry that has no handle at all, and the same call site then reaps
+  from the recorded identity alone.
+- Even when a handle exists it may name an already-exited child. `shutdownHandle` reaps _after_ graceful
+  shutdown, and `app-server-transport.ts:359` resolves that path from the child's own close event. Node reaps
+  on exit; a reaped pid is free. Retaining the JavaScript object proves nothing about the pid.
+- And the signal targets the **group**, not the leader. Once the leader exits, the pgid can be recycled while
+  surviving group members still run, so "the leader is alive" would not settle it either.
 
-So this is not a guard to insert. It is either a parameter that tells `reapRecordedContainment` which of its
-callers already holds the proof, or a split into the two functions its callers already are.
+The real predicate is therefore _"has this child exited yet"_, evaluated at the moment of the signal — and
+`ChildProcessLike` (`src/infra/port-types.ts:117`) cannot answer it: it exposes `pid`, `kill`, and a `'close'`
+event, with no synchronous exit state. Adding one touches every fake in the suite, which is why this is a
+change rather than a guard.
+
+So the rule to implement is one sentence with two limbs: **signal a recorded pid only when the child is known
+not to have exited, or when the platform's incarnation may authorize a signal and it matches.** The first limb
+is what lets macOS keep tearing down its own live children; the second is what stops it from guessing about
+anything else.
 
 ## The cheap partial, recorded because it is easy to miss
 
@@ -91,8 +111,9 @@ read.
 
 ## Start condition
 
-None — the disposition is decided. What remains is the caller split above, plus one test per branch: a Darwin
-harness where a handle-holding caller still reaps, and a non-handle caller refuses before signalling.
+None — the disposition is decided. What remains is a synchronous exit state on `ChildProcessLike` and the
+two-limbed rule above, plus one test per limb: a Darwin harness where a caller with a not-yet-exited child
+still reaps, and one whose child has closed refuses before signalling.
 
 ## How this interacts
 

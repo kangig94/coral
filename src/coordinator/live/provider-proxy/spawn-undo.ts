@@ -1,4 +1,4 @@
-import type { ProcessIncarnation } from '../../../infra/node-process.js';
+import { incarnationMayAuthorizeSignal, type ProcessIncarnation } from '../../../infra/node-process.js';
 import { ABSENCE_POLL_MS } from '../../../infra/process-containment.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import { PROXY_TEARDOWN_RESERVE_MS } from '../../../provider-proxy/orphan-deadline.js';
@@ -39,6 +39,11 @@ export function buildGuardianSpawnUndo(
   readProcessIncarnation: (pid: number, platform: NodeJS.Platform) => ProcessIncarnation | null,
 ): () => Promise<void> {
   return async () => {
+    // The same rule the reap paths apply: where an incarnation cannot authorize a signal, a match proves
+    // nothing and this declines rather than guessing. Declining is affordable here and only here because the
+    // guardian this undo would signal never received control, so its own orphan deadline ends it and the
+    // reaper it holds along with it. Signalling a recycled pid is not affordable anywhere.
+    if (!incarnationMayAuthorizeSignal(platform)) return;
     if (readProcessIncarnation(spawned.pid, platform) !== spawned.incarnation) return;
     const group = -spawned.pid;
     runtime.process.kill(group, 'SIGTERM');

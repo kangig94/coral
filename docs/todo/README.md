@@ -78,10 +78,14 @@ landing does not unblock it — that was the record direction.
 | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [`kb-daemon-independent-containment.md`](./kb-daemon-independent-containment.md) | The KB daemon has no enforcer outside its own process.                                                                                                                                                                                                                                                                                               |
 | [`darwin-signal-authority.md`](./darwin-signal-authority.md)                     | **Handoff half closed, containment half measured and reverted.** A macOS incarnation is wall-clock at one-second resolution, and `ps -o lstart=` prints local time — so DST fallback widens the collision window from a second to an hour, annually. The fix is not a guard: one of the four reap callers holds the child and needs no token at all. |
+| [`durable-cli-signal-authority.md`](./durable-cli-signal-authority.md)           | **Four sites hold the evidence and never read it.** A durable CLI child's pid is signalled on idle timeout, on abort, and on abort-after-restart, while `durable_cli_process.v1` carries the incarnation that would settle it. Found by the scan, not by five reviewers. Each is one ALLOWLIST entry to delete.                                      |
 | [`wedged-coordinator-self-drain.md`](./wedged-coordinator-self-drain.md)         | Every self-termination path Coral has is scheduled by the process it is meant to end. The 6h idle drain is tidiness for a healthy daemon, not a liveness backstop — reading it as one is what produced this entry.                                                                                                                                   |
 
-The three are one concept — something must end a process that will not end itself — but they close
-separately and in this order of tractability. `darwin-signal-authority` is about the **authority** to signal a
+These four are one concept — something must end a process that will not end itself, and it must be sure of
+what it is ending — but they close separately and in this order of tractability.
+`durable-cli-signal-authority` is the tractable one and should go first: the evidence already exists in the
+record. `tests/invariants/signal-authority.test.ts` enumerates every open site across both signal entries, so
+neither document is the only place its gaps are written down. `darwin-signal-authority` is about the **authority** to signal a
 correctly identified target; the other two are about there being **no party left** to signal at all, and a fix
 for either still has to answer the first. The kb-daemon still has a supervising parent; a wedged coordinator is
 the top of the tree, which is why its answer leaves the codebase entirely.

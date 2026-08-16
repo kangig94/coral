@@ -565,6 +565,20 @@ describe('buildGuardianSpawnUndo', () => {
     ]);
   });
 
+  // On darwin an incarnation is wall-clock at one-second resolution, so a match is not proof the pid is still
+  // the process this acquisition spawned. Refusing costs the guardian's orphan deadline — it never received
+  // control, so it ends itself — and signalling a matching-but-different pid costs an unrelated process.
+  it('declines to signal on a platform whose incarnation cannot authorize one', async () => {
+    const time = new VirtualTime();
+    const killCalls: SignalCall[] = [];
+    const runtime = guardianUndoRuntime(time, () => true, killCalls);
+    const spawned = fakeSpawnedGuardian(4_242, 1_000);
+
+    await buildGuardianSpawnUndo(runtime, spawned, 'darwin', () => spawned.incarnation)();
+
+    expect(killCalls).toEqual([]);
+  });
+
   it('refuses to signal once the recorded incarnation no longer matches (recycled pid)', async () => {
     const time = new VirtualTime();
     const killCalls: SignalCall[] = [];

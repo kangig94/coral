@@ -4,7 +4,11 @@ import { BUILD_FLAVOR_ENV_KEY, resolveBuildFlavor } from '../infra/build-flavor.
 import { backendLog } from '../infra/backend-log.js';
 import type { StrictBundleIdentityResult } from '../infra/bundle-manifest.js';
 import { createMonotonicClock, type MonotonicClock } from '../infra/monotonic-clock.js';
-import { probeProcessIncarnation, type ProcessIncarnation } from '../infra/node-process.js';
+import {
+  incarnationMayAuthorizeSignal,
+  probeProcessIncarnation,
+  type ProcessIncarnation,
+} from '../infra/node-process.js';
 import { providerProxyBootstrapCapsulePath, providerReaperBootstrapCapsulePath } from '../infra/path/index.js';
 import {
   CONTAINMENT_DISAPPEARANCE_CONFIRM_MS,
@@ -242,6 +246,11 @@ function isStillTheRecordedProcess<Scope extends symbol>(
   identity: RecordedProcessIdentity,
   environment: ProcessContainmentEnvironment<Scope>,
 ): boolean {
+  // Where an incarnation cannot authorize a signal, a match is not evidence and this answers no. It is the
+  // conservative direction: the caller declines to reap, and the role it declined to reap is a role that
+  // never received control, so its own orphan deadline ends it. A few tens of seconds of an orphaned group
+  // is the whole cost; SIGKILL to whatever else now holds the pid is not recoverable at all.
+  if (!incarnationMayAuthorizeSignal(environment.platform)) return false;
   const read = environment.readProcessIncarnation ?? probeProcessIncarnation;
   try {
     return read(identity.pid, environment.platform) === identity.incarnation;

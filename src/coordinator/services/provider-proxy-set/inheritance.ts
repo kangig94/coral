@@ -1,9 +1,8 @@
-import { providerHandoffCapsulePath } from '../../../infra/path/index.js';
 import { probeProcessIncarnation, type ProcessIncarnation } from '../../../infra/node-process.js';
 import { createMonotonicClock } from '../../../infra/monotonic-clock.js';
 import { reapRecordedContainment } from '../../../infra/process-containment.js';
 import {
-  CURRENT_HANDOFF_CAPSULE_VERSION,
+  currentHandoffCapsulePath,
   readHandoffCapsuleFile,
   type HandoffCapsule,
   guardianHandoffRedeemFieldsSchema,
@@ -70,7 +69,7 @@ import {
  * spawning a new one. Fresh acquisition installs the role digests and durable capsule before publishing the
  * set; this file is the read half.
  *
- * The capsule is addressable, never discovered: `providerHandoffCapsulePath` hashes `flavor`/`generation`
+ * The capsule is addressable, never discovered: `currentHandoffCapsulePath` hashes `flavor`/`generation`
  * (this successor's own — a grant is build-bound) and `buildSetId`/`hostFingerprint`/`proxyInstanceId` (the
  * locator's — the predecessor's), so there is exactly one path to check, never a scan. Absent, stale, or
  * wrong-identity capsules mean no credential exists for this exact address. Redemption and proof failures
@@ -616,7 +615,7 @@ async function redeem(
   if (classifyProviderProxySetInheritance(operation, deps.coordinatorIdentity.buildSetId).kind === 'refused') {
     return { kind: 'not-bequeathed', reason: 'the recorded set belongs to another build' };
   }
-  const capsulePath = providerHandoffCapsulePath(
+  const capsulePath = currentHandoffCapsulePath(
     {
       generation: deps.coordinatorIdentity.generation,
       flavor: deps.coordinatorIdentity.flavor,
@@ -624,7 +623,6 @@ async function redeem(
       hostFingerprint: locator.hostFingerprint,
       proxyInstanceId: operation.proxyInstanceId,
     },
-    CURRENT_HANDOFF_CAPSULE_VERSION,
     deps.baseDir === undefined ? undefined : { baseDir: deps.baseDir },
   );
   const capsule = readHandoffCapsuleFile(capsulePath, {

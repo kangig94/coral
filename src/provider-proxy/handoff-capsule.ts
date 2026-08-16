@@ -5,6 +5,11 @@ import { isAbsolute, normalize } from 'node:path';
 import { z } from 'zod';
 
 import { readBoundedFileAtIdentity } from '../infra/bounded-file-read.js';
+import {
+  providerHandoffCapsulePath,
+  type ProviderBootstrapCapsulePathOptions,
+  type ProviderProxyEndpointIdentity,
+} from '../infra/path/index.js';
 import type { StorageBigIntStat, StoragePort } from '../infra/port-types.js';
 import {
   PERMISSION_BITS_MASK,
@@ -290,6 +295,22 @@ export const SUPPORTED_HANDOFF_CAPSULE_VERSIONS = handoffCapsuleSchema.options.m
  * is typed on the same schema, so the two move together or neither moves.
  */
 export const CURRENT_HANDOFF_CAPSULE_VERSION = handoffCapsuleV3Schema.shape.version.value;
+
+/**
+ * Where a capsule this build writes goes — and the only address a writer is offered.
+ *
+ * `providerHandoffCapsulePath` takes a generation because a *reader* has to name one: discovery opens a file
+ * at the version the capsule it decoded says it is. A writer has no such choice. It always writes the current
+ * generation, so a version parameter there is not a decision, it is a place to be wrong — and being wrong
+ * means V3 bytes under the name v0.10.8 opens, which is that build refusing to start. Passing the generation
+ * is simply not expressible here.
+ */
+export function currentHandoffCapsulePath(
+  identity: ProviderProxyEndpointIdentity,
+  options?: ProviderBootstrapCapsulePathOptions,
+): string {
+  return providerHandoffCapsulePath(identity, CURRENT_HANDOFF_CAPSULE_VERSION, options);
+}
 
 export type HandoffCapsuleV1 = z.output<typeof handoffCapsuleV1Schema>;
 export type HandoffCapsuleV2 = z.output<typeof handoffCapsuleV2Schema>;
