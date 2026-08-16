@@ -29,7 +29,7 @@ import { PROXY_TEARDOWN_RESERVE_MS } from '../../../provider-proxy/orphan-deadli
 import type { Runtime } from '../../../runtime/ports.js';
 import type { Database } from '../../../store/db.js';
 import {
-  providerOperationSetAddressFromRecordKey,
+  attributeUnreadableProviderOperations,
   readProviderOperations,
 } from '../../../store/provider-operation-journal.js';
 import type { ProviderOperationIdentity, ProviderOperationRecord } from '../../../store/provider-operation-record.js';
@@ -337,15 +337,16 @@ async function proveProviderProxySetContainmentAbsent(
   const operationScan = readProviderOperations(db);
   // An unreadable row may name another provider root for *this* set, and acting on the decoded subset would
   // let that root survive outside the process group while this function minted a disappearance receipt. So the
-  // proof stays unknown — but only for the set the row belongs to. The key names that set without the row
-  // being decodable, and a key too malformed to name one could belong to any set, so it fences all of them.
-  const hidesARootOfThisSet = operationScan.unreadableKeys.some((key) => {
-    const address = providerOperationSetAddressFromRecordKey(key);
-    return (
-      address === null ||
-      (address.proxyInstanceId === identity.proxyInstanceId && address.buildSetId === identity.buildSetId)
-    );
-  });
+  // proof stays unknown — but only for the sets the row could belong to, which is asked of both its key and
+  // its bytes. Those disagree exactly when the decode failed *because* they disagree, and a row attributable
+  // from neither side could belong to any set, so it fences all of them.
+  const hidesARootOfThisSet = attributeUnreadableProviderOperations(db, operationScan.unreadableKeys).some(
+    ({ addresses }) =>
+      addresses === null ||
+      addresses.some(
+        (address) => address.proxyInstanceId === identity.proxyInstanceId && address.buildSetId === identity.buildSetId,
+      ),
+  );
   if (hidesARootOfThisSet) return null;
   const enforcerIdentities = [
     { pid: identity.guardianPid, incarnation: identity.guardianIncarnation },

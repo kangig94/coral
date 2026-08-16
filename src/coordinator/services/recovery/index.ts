@@ -881,7 +881,16 @@ export function createRecoveryCoordinator(
 
           const pollInterval = runtime.time.setInterval(() => {
             drainRecoveredProgress();
-            if (runtime.process.isAlive(runtimeRecord.pid)) return;
+            // A throw escaping a timer callback is an uncaught exception, which is the coordinator exiting over
+            // one job's probe. It is also not evidence: an unanswerable probe leaves the adoption exactly as it
+            // was, to be asked again on the next tick.
+            let adopteeAbsent: boolean;
+            try {
+              adopteeAbsent = !runtime.process.isAlive(runtimeRecord.pid);
+            } catch {
+              return;
+            }
+            if (!adopteeAbsent) return;
 
             clearRecoveryPoller(jobId);
             state.adoptedRunningPids.delete(jobId);

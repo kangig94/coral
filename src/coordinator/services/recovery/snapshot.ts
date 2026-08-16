@@ -96,7 +96,17 @@ export function buildRecoverySnapshot(
       },
     listSessionRefs: (): Array<{ sessionId: string; provider: string }> => [...sessionRefs],
     readSession: (sessionId: string): RecoverySessionFacts | null => sessionsById.get(sessionId) ?? null,
-    isPidAlive: (pid: number): boolean => process.isAlive(pid),
+    // A probe that cannot answer is not an answer. Recovery planning runs before any per-item boundary, so a
+    // throw here ends startup for every job rather than one — and "could not tell" must never read as "gone",
+    // because that is the reading that destroys a live job's record. Conservatively alive, and the per-item
+    // paths that follow observe again with their own handling.
+    isPidAlive: (pid: number): boolean => {
+      try {
+        return process.isAlive(pid);
+      } catch {
+        return true;
+      }
+    },
   };
 
   return Object.freeze(snapshot);

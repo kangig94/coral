@@ -121,7 +121,8 @@ const RECORD_KEY_PATTERNS: readonly RegExp[] = [
 ].map(
   (prefix) =>
     new RegExp(
-      `^${escapeKeyPrefix(prefix)}(${UUID_KEY_SOURCE}):(${UUID_KEY_SOURCE}):(${UUID_KEY_SOURCE}):(${UUID_KEY_SOURCE})$`,
+      `^${escapeKeyPrefix(prefix)}(?<jobId>${UUID_KEY_SOURCE}):(?<operationId>${UUID_KEY_SOURCE}):` +
+        `(?<proxyInstanceId>${UUID_KEY_SOURCE}):(?<buildSetId>${UUID_KEY_SOURCE})$`,
       'u',
     ),
 );
@@ -238,7 +239,7 @@ export function providerOperationJobIdFromRecordKey(key: string): string | null 
   // The *whole* canonical shape, not just the prefix and the first segment. A key like
   // `<prefix>:<real-job-uuid>:garbage` would otherwise hand back a real job id and fence that unrelated job
   // for as long as the row exists — a malformed row taking a healthy job down with it.
-  return matchRecordKey(key)?.[1] ?? null;
+  return matchRecordKey(key)?.groups?.jobId ?? null;
 }
 
 /**
@@ -252,9 +253,9 @@ export function providerOperationJobIdFromRecordKey(key: string): string | null 
 export function providerOperationSetAddressFromRecordKey(
   key: string,
 ): Readonly<{ proxyInstanceId: string; buildSetId: string }> | null {
-  const match = matchRecordKey(key);
-  const proxyInstanceId = match?.[3];
-  const buildSetId = match?.[4];
+  const groups = matchRecordKey(key)?.groups;
+  const proxyInstanceId = groups?.proxyInstanceId;
+  const buildSetId = groups?.buildSetId;
   return proxyInstanceId === undefined || buildSetId === undefined ? null : { proxyInstanceId, buildSetId };
 }
 
@@ -460,17 +461,86 @@ export type ProviderOperationScan = Readonly<{
   unreadableKeys: readonly string[];
 }>;
 
+/**
+ * The sets an unreadable row could belong to — its key's, and the one its bytes claim.
+ *
+ * These are usually the same address and usually only the key is readable. They can differ, and that case is
+ * the reason this exists: `decodeCanonicalValue` rejects a row whose payload identity disagrees with its key,
+ * so such a row is reported under the *key's* address while its bytes name another set entirely. A fence that
+ * consulted only the key would let that row pass while proving the set its payload names absent.
+ *
+ * `null` means the row could not be attributed at all, from either side. That fences every set, because a row
+ * that names nothing could name anything.
+ */
+export type UnreadableProviderOperationAttribution = Readonly<{
+  key: string;
+  addresses: readonly Readonly<{ proxyInstanceId: string; buildSetId: string }>[] | null;
+}>;
+
+export function attributeUnreadableProviderOperations(
+  db: Database,
+  unreadableKeys: readonly string[],
+): readonly UnreadableProviderOperationAttribution[] {
+  return unreadableKeys.map((key) => {
+    const addresses: Readonly<{ proxyInstanceId: string; buildSetId: string }>[] = [];
+    const fromKey = providerOperationSetAddressFromRecordKey(key);
+    if (fromKey !== null) addresses.push(fromKey);
+    const claimed = claimedSetAddress(readCanonicalValue(db, key));
+    if (claimed !== null) addresses.push(claimed);
+    return { key, addresses: addresses.length === 0 ? null : addresses };
+  });
+}
+
+const claimedOperationSchema = z
+  .object({
+    operation: z.object({ proxyInstanceId: z.string(), buildSetId: z.string() }).passthrough(),
+  })
+  .passthrough();
+
+/** The set a row's own bytes name, read permissively because the row is by definition not decodable. */
+function claimedSetAddress(
+  value: string | undefined,
+): Readonly<{ proxyInstanceId: string; buildSetId: string }> | null {
+  if (value === undefined) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return null;
+  }
+  const result = claimedOperationSchema.safeParse(parsed);
+  if (!result.success) return null;
+  const { proxyInstanceId, buildSetId } = result.data.operation;
+  return proxyInstanceId.length === 0 || buildSetId.length === 0 ? null : { proxyInstanceId, buildSetId };
+}
+
+/**
+ * Every row under `prefix`, the bare prefix itself included.
+ *
+ * The inclusive first page is the whole reason this is spelled out. A key that is *exactly* the prefix is
+ * malformed — it names no operation — and starting the walk at `key > prefix` skipped it silently. That made
+ * it invisible to the scan, and a row invisible to the scan cannot fence anything, which is precisely the
+ * opposite of what an unaddressable key is supposed to do. Subsequent pages advance strictly past the cursor,
+ * or the last row of each page would be visited forever.
+ */
 function forEachRowUnderPrefix(db: Database, prefix: string, visit: (row: MetaRow) => void): void {
+  const page = db.prepare<[string, string, number], MetaRow>(
+    `SELECT key, value FROM meta
+       WHERE key > ? AND key < ?
+       ORDER BY key
+       LIMIT ?`,
+  );
+  const firstPage = db.prepare<[string, string, number], MetaRow>(
+    `SELECT key, value FROM meta
+       WHERE key >= ? AND key < ?
+       ORDER BY key
+       LIMIT ?`,
+  );
   let cursor = prefix;
+  let inclusive = true;
   for (;;) {
-    const rows = db
-      .prepare<[string, string, number], MetaRow>(
-        `SELECT key, value FROM meta
-         WHERE key > ? AND key < ?
-         ORDER BY key
-         LIMIT ?`,
-      )
-      .all(cursor, `${prefix}\uffff`, PROVIDER_OPERATION_READ_PAGE_SIZE);
+    const rows = (inclusive ? firstPage : page).all(cursor, `${prefix}\uffff`, PROVIDER_OPERATION_READ_PAGE_SIZE);
+    inclusive = false;
     for (const row of rows) visit(row);
     if (rows.length < PROVIDER_OPERATION_READ_PAGE_SIZE) return;
     cursor = rows.at(-1)?.key ?? cursor;

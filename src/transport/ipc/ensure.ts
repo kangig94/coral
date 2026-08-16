@@ -1,3 +1,4 @@
+import { isProcessAlive } from '../../infra/node-process.js';
 import { processIncarnationSchema, type ProcessIncarnation } from '../../infra/node-process.js';
 declare const __PLUGIN_ROOT__: string;
 declare const __BUNDLE_DIR__: string | undefined;
@@ -429,15 +430,6 @@ function clearStartupErrorSentinel(paths: CoordinatorPaths): void {
   }
 }
 
-function isPidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 function matchingStartupError(
   paths: CoordinatorPaths,
   desired: DesiredCoordinator,
@@ -467,7 +459,7 @@ function matchingStartupError(
   if (observedPid !== undefined && sentinel.pid !== observedPid) {
     return null;
   }
-  if (!isPidAlive(sentinel.pid)) {
+  if (!isProcessAlive(sentinel.pid)) {
     clearStartupErrorSentinel(paths);
     return null;
   }

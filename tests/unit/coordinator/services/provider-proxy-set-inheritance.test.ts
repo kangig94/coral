@@ -1202,6 +1202,40 @@ describe('createProviderProxySetInheritance', () => {
     expect(process.signals).toEqual([]);
   });
 
+  // Two rows the key alone cannot attribute correctly. The first names nothing — a key that cannot say which
+  // set it belongs to could belong to any of them. The second's key names a foreign set while its bytes claim
+  // this one, which is precisely why its decode failed, so consulting only the key would wave it through.
+  it.each([
+    ['a key that names no set', () => 'provider_operation_saga.v1:record:not-canonical', () => 'not json'],
+    [
+      'a foreign key whose bytes claim this set',
+      () => `provider_operation_saga.v1:record:${randomUUID()}:${randomUUID()}:${randomUUID()}:${randomUUID()}`,
+      (reference: ProviderProxySetLocator) =>
+        JSON.stringify({
+          operation: {
+            proxyInstanceId: reference.operation.proxyInstanceId,
+            buildSetId: reference.operation.buildSetId,
+          },
+        }),
+    ],
+  ])('keeps containment proof unknown for %s', async (_label, keyFor, valueFor) => {
+    const reference = locator();
+    const db = proofDatabase([proofRecord(reference, { pid: 104, incarnation: testIncarnation(1_003) })]);
+    db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)').run(keyFor(), valueFor(reference));
+    const process = proofRuntime(new Map());
+    const inheritance = createProviderProxySetInheritance({
+      runtime: process.runtime,
+      identity,
+      operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
+      registerInheritedSet: () => undefined,
+    });
+
+    await expect(
+      inheritance.proveContainmentAbsent(providerProxySetIdentityFromRecord(reference), db, neverAborts),
+    ).resolves.toBeNull();
+    expect(process.signals).toEqual([]);
+  });
+
   it('proves absence despite an unreadable row belonging to some other set', async () => {
     const reference = locator();
     const db = proofDatabase([proofRecord(reference, { pid: 104, incarnation: testIncarnation(1_003) })]);

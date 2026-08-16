@@ -1,3 +1,4 @@
+import { isProcessAlive } from '../infra/node-process.js';
 import {
   KB_DAEMON_EVENT_MESSAGE,
   KB_DAEMON_PARENT_REQUEST_MESSAGE,
@@ -95,15 +96,6 @@ export function resolveKbDaemonParentPid(value: string | undefined, selfPid = pr
     return null;
   }
   return pid;
-}
-
-export function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error: unknown) {
-    return (error as { code?: unknown }).code === 'EPERM';
-  }
 }
 
 export async function handleKbDaemonExpansionRpcRequest(

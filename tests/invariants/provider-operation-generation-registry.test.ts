@@ -115,7 +115,9 @@ describe('other durable and wire generations', () => {
 
     for (const { name, retained, current } of registries) {
       const sequence = [...retained, current];
-      expect(retained, `${name} must retain at least one generation`).not.toHaveLength(0);
+      // Deliberately not "must retain at least one": an empty retained window is legitimate once no build that
+      // wrote the previous generation can still be in the field, and the journal's own doc says so. What must
+      // hold is that a *retained* window is contiguous with the current generation and does not contain it.
       expect(retained, `${name}'s current generation must not also be retained`).not.toContain(current);
       expect(sequence, `${name} must be ordered oldest-first with no gap`).toEqual(
         Array.from({ length: sequence.length }, (_, index) => sequence[0] + index),
