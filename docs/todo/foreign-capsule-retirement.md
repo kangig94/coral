@@ -37,8 +37,9 @@ a capsule this build cannot derive a set identity from is represented, never dia
 
 A dead pid is dead regardless of identity, and that is the one observation available here. A foreign capsule
 carries `guardianPid`, `reaperPid` and `proxyPid` in every version that has them, so absence is provable
-without redeeming anything and without ever signalling: if none of the three is alive, the set is gone and the
-file can be retired through the `capsule-retirement` producer the lifecycle already dispatches.
+without redeeming anything and without ever signalling: if every one of the three is observed _absent_, the set is gone and the
+file can be retired. Not "none is alive": liveness has three answers and `unknown` is not `absent`, so two
+absences and one unobservable pid must keep the capsule through the `capsule-retirement` producer the lifecycle already dispatches.
 
 Three things stand in the way, and they are why this is a change rather than a patch:
 

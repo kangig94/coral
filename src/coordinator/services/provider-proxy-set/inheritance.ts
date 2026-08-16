@@ -341,9 +341,9 @@ async function proveProviderProxySetContainmentAbsent(
   // its bytes. Those disagree exactly when the decode failed *because* they disagree, and a row attributable
   // from neither side could belong to any set, so it fences all of them.
   const hidesARootOfThisSet = attributeUnreadableProviderOperations(db, operationScan.unreadableKeys).some(
-    ({ addresses }) =>
-      addresses === null ||
-      addresses.some(
+    ({ sets }) =>
+      sets.kind === 'indeterminate' ||
+      sets.values.some(
         (address) => address.proxyInstanceId === identity.proxyInstanceId && address.buildSetId === identity.buildSetId,
       ),
   );

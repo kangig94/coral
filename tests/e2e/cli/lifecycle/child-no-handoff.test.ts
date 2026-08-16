@@ -126,7 +126,7 @@ describe('bundled child coordinator confinement', () => {
     expect(after?.bundleHash).toBe(before.bundleHash);
     expect(after?.bundleHash).toBe(parentFixture.bundleHash);
     expect(readFileSync(paths.infoFile, 'utf-8')).toBe(discoveryBefore);
-    expect(observeProcessLiveness(before.pid) !== 'absent').toBe(true);
+    expect(observeProcessLiveness(before.pid)).toBe('alive');
 
     if (logBefore === null) {
       expect(existsSync(logPath)).toBe(false);

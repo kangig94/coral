@@ -1,3 +1,4 @@
+import { backendLog } from '../../../infra/backend-log.js';
 import { formatError } from '../../../infra/error-format.js';
 import { isTerminalPhase } from '../../../jobs/phase.js';
 import { isAppServerRuntime, type JobRuntime } from '../../../jobs/records.js';
@@ -157,19 +158,31 @@ async function registerRunningRecovery(
   const captured = await service.captureProviderRecoveryAuthority(action.launchRecord);
   signal.throwIfAborted();
   if (!captured.ok) {
-    // Only an observed-alive process gets a pid-kill cleanup installed. Unknown installs none — signalling a
-    // pid nobody could observe is the one action this branch must not take — and the binding failure below is
-    // settled either way, which is what the probe used to skip by throwing.
-    if (
-      isDurableCliRuntime(action.runtimeRecord) &&
-      runtime.process.observeLiveness(action.runtimeRecord.pid) === 'alive'
-    ) {
-      const pid = action.runtimeRecord.pid;
+    // Three answers, three dispositions, and the reasoning is worth stating because the terminal one is not
+    // obvious. The binding failure itself is observed and deterministic — the provider authority is invalid,
+    // and it will be invalid on the next boot too — so it settles regardless of what the process is doing.
+    // What differs is what happens to that process.
+    //
+    // `alive`: install the pid-kill cleanup, as before.
+    // `absent`: nothing to clean up.
+    // `unknown`: install nothing — signalling a pid nobody could observe is the one action this branch must
+    //   not take — but say so. The alternative, leaving the job non-terminal to retry, trades a reported
+    //   possibly-orphaned process for a job that never settles while the probe never answers, and a
+    //   deterministic binding failure gives the retry nothing new to find.
+    const durableRecord = isDurableCliRuntime(action.runtimeRecord) ? action.runtimeRecord : null;
+    const durableLiveness = durableRecord === null ? 'absent' : runtime.process.observeLiveness(durableRecord.pid);
+    if (durableRecord !== null && durableLiveness === 'alive') {
+      const pid = durableRecord.pid;
       const releaseRegistry = (): void => recoveryRegistry.remove(action.jobId);
       setProcessLocalCleanup(() => {
         gracefulKillByPid(runtime, pid);
         releaseRegistry();
       });
+    } else if (durableRecord !== null && durableLiveness === 'unknown') {
+      backendLog.warn(
+        `Terminalizing job ${action.jobId} for a provider binding failure while its durable process ` +
+          `(pid ${durableRecord.pid}) could not be observed; no signal was sent to it.`,
+      );
     }
     const message = `Provider '${captured.failure.provider}' recovery binding failed: ${captured.failure.reason}.`;
     const facts = settleFault(

@@ -472,11 +472,26 @@ export type ProviderOperationScan = Readonly<{
  * `null` means the row could not be attributed at all, from either side. That fences every set, because a row
  * that names nothing could name anything.
  */
+/**
+ * What a row could belong to along one dimension.
+ *
+ * `known` lists what it names — possibly nothing, when neither side made a claim on this dimension.
+ * `indeterminate` is a claim that exists and cannot be read: it could name *anything*, and a consumer must
+ * fence accordingly.
+ *
+ * Two dimensions, each with its own answer, rather than `T[] | null` twice. `null` had been made to mean both
+ * "could be anything" and "could be nothing" in the same returned object — a null address list fenced every
+ * set while a null job list fenced no job — and a shared early return let one dimension being unreadable erase
+ * the other's perfectly good answer.
+ */
+export type ProviderOperationAttribution<T> =
+  | Readonly<{ kind: 'known'; values: readonly T[] }>
+  | Readonly<{ kind: 'indeterminate' }>;
+
 export type UnreadableProviderOperationAttribution = Readonly<{
   key: string;
-  addresses: readonly Readonly<{ proxyInstanceId: string; buildSetId: string }>[] | null;
-  /** Every job the row could belong to, or `null` when it could not be attributed to any. */
-  jobIds: readonly string[] | null;
+  sets: ProviderOperationAttribution<Readonly<{ proxyInstanceId: string; buildSetId: string }>>;
+  jobs: ProviderOperationAttribution<string>;
 }>;
 
 export function attributeUnreadableProviderOperations(
@@ -484,27 +499,35 @@ export function attributeUnreadableProviderOperations(
   unreadableKeys: readonly string[],
 ): readonly UnreadableProviderOperationAttribution[] {
   return unreadableKeys.map((key) => {
-    const addresses: Readonly<{ proxyInstanceId: string; buildSetId: string }>[] = [];
-    const fromKey = providerOperationSetAddressFromRecordKey(key);
-    if (fromKey !== null) addresses.push(fromKey);
-    const claimed = claimedSetAddress(readCanonicalValue(db, key));
-    // `indeterminate` is not "no payload address" — it is a payload that looks like a record and does not name
-    // a set. Falling back to the key alone there would attribute the row to one set while its bytes could
-    // belong to another, which is exactly what the key cannot settle.
-    const claimedJob = claimedJobId(readCanonicalValue(db, key));
-    if (claimed === 'indeterminate' || claimedJob === 'indeterminate') {
-      return { key, addresses: null, jobIds: null };
-    }
-    if (claimed !== null) addresses.push(claimed);
-    const jobIds = [providerOperationJobIdFromRecordKey(key), claimedJob].filter(
-      (jobId): jobId is string => jobId !== null,
-    );
+    // Read the bytes once and ask both questions of them independently. They are genuinely different
+    // questions, and one being unanswerable says nothing about the other.
+    const value = readCanonicalValue(db, key);
     return {
       key,
-      addresses: addresses.length === 0 ? null : addresses,
-      jobIds: jobIds.length === 0 ? null : [...new Set(jobIds)],
+      sets: attribute(providerOperationSetAddressFromRecordKey(key), claimedSetAddress(value), sameSetAddress),
+      jobs: attribute(providerOperationJobIdFromRecordKey(key), claimedJobId(value), (left, right) => left === right),
     };
   });
+}
+
+function attribute<T>(
+  fromKey: T | null,
+  fromPayload: T | 'indeterminate' | null,
+  same: (left: T, right: T) => boolean,
+): ProviderOperationAttribution<T> {
+  if (fromPayload === 'indeterminate') return { kind: 'indeterminate' };
+  const claimed = [fromKey, fromPayload].filter((value): value is T => value !== null);
+  // Neither side named anything, which is not the same as "known to belong to nothing" — a row nobody can
+  // attribute could belong to any of them. Empty is therefore indeterminate, never an empty `known`.
+  if (claimed.length === 0) return { kind: 'indeterminate' };
+  return { kind: 'known', values: claimed.filter((v, i) => claimed.findIndex((o) => same(o, v)) === i) };
+}
+
+function sameSetAddress(
+  left: Readonly<{ proxyInstanceId: string; buildSetId: string }>,
+  right: Readonly<{ proxyInstanceId: string; buildSetId: string }>,
+): boolean {
+  return left.proxyInstanceId === right.proxyInstanceId && left.buildSetId === right.buildSetId;
 }
 
 const claimedOperationSchema = z

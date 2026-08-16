@@ -8,6 +8,13 @@ import type { CommitEventsFn } from '../store/append.js';
 
 export type ProviderOperationStartupOwnership = Readonly<{
   jobIds: readonly string[];
+  /**
+   * Rows that could belong to any job, by key.
+   *
+   * Non-empty means the fence above is not exhaustive and generic recovery may claim nothing: a row that names
+   * no job could name the one being recovered. An empty list is the ordinary case.
+   */
+  unattributableKeys: readonly string[];
 }>;
 
 export type JobsStartupContext = {

@@ -404,7 +404,9 @@ function providerSocketCount(fixture: Fixture): number {
 }
 
 async function shutdownBackend(record: CoordinatorDiscoveryRecord | null): Promise<void> {
-  if (!record || observeProcessLiveness(record.pid) === 'absent') {
+  // Observed life, not 'not proven gone'. This helper signals a bare pid, so it acts only on the one
+  // answer that says the recorded process is there.
+  if (!record || observeProcessLiveness(record.pid) !== 'alive') {
     return;
   }
 
@@ -424,7 +426,7 @@ async function shutdownBackend(record: CoordinatorDiscoveryRecord | null): Promi
   }
 
   await waitForCondition(() => observeProcessLiveness(record.pid) === 'absent', 10_000).catch(() => {
-    if (observeProcessLiveness(record.pid) !== 'absent') {
+    if (observeProcessLiveness(record.pid) === 'alive') {
       try {
         process.kill(record.pid, 'SIGKILL');
       } catch (error: unknown) {
@@ -575,9 +577,9 @@ describe('mutating commands via IPC', () => {
         'proxy',
         'reaper',
       ]);
-      expect(observeProcessLiveness(secondOperationBeforeThread.locator.proxy.pid) !== 'absent').toBe(true);
-      expect(observeProcessLiveness(secondOperationBeforeThread.locator.guardian.pid) !== 'absent').toBe(true);
-      expect(observeProcessLiveness(secondOperationBeforeThread.locator.reaper.pid) !== 'absent').toBe(true);
+      expect(observeProcessLiveness(secondOperationBeforeThread.locator.proxy.pid)).toBe('alive');
+      expect(observeProcessLiveness(secondOperationBeforeThread.locator.guardian.pid)).toBe('alive');
+      expect(observeProcessLiveness(secondOperationBeforeThread.locator.reaper.pid)).toBe('alive');
       expect(secondOperationBeforeThread.locator.containment).toMatchObject({
         pid: secondOperationBeforeThread.locator.proxy.pid,
         incarnation: secondOperationBeforeThread.locator.proxy.incarnation,
@@ -626,7 +628,7 @@ describe('mutating commands via IPC', () => {
       discoveryRecord = readDiscoveryRecord(fixture.home, fixture.flavor);
 
       expect(discoveryRecord).not.toBeNull();
-      expect(discoveryRecord && observeProcessLiveness(discoveryRecord.pid) !== 'absent').toBe(true);
+      expect(discoveryRecord !== null && observeProcessLiveness(discoveryRecord.pid) === 'alive').toBe(true);
       expect(discoveryRecord?.socketPath).toContain('.sock');
 
       const runtime = createRealRuntime('prod');

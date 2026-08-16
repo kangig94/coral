@@ -608,6 +608,31 @@ describe('provider operation journal', () => {
     }
   });
 
+  it('removes a bare-prefix due row pointing at the record it retires', () => {
+    const db = createDb();
+    try {
+      const stranded = providerOperationRecord('prepare-pending', { job: 2 });
+      const supersededKey =
+        `provider_operation_saga.v1:record:${stranded.operation.jobId}:${stranded.operation.operationId}:` +
+        `${stranded.operation.proxyInstanceId}:${stranded.operation.buildSetId}`;
+      const bareDueKey = 'provider_operation_saga.v1:due:';
+      const insert = db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)');
+      insert.run(supersededKey, 'not json');
+      // Malformed, and pointing at the record about to be retired. `key > duePrefix` excluded it, leaving a
+      // pointer to a row that no longer exists.
+      insert.run(bareDueKey, supersededKey);
+
+      retireSupersededProviderOperation(db, supersededKey);
+
+      expect(
+        db.prepare<[string], { key: string }>('SELECT key FROM meta WHERE key = ?').all(bareDueKey),
+        'a due row naming the retired record goes with it, whatever its own key looks like',
+      ).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
   // The other half of the fence: a fenced job that nothing can ever settle is a job that stays live in `jobs`
   // and unending under `wait` forever. A pid is readable out of a row whose meaning this build cannot read, so
   // absence is provable without interpreting anything — and once the row is gone the job reaches ordinary

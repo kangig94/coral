@@ -60,7 +60,7 @@ describe('coordinator warm-start integration', () => {
 
     const initial = await waitForDiscoveryRecord(home, 'prod', 15_000);
     expect(initial.bundleHash).toBe(firstFixture.bundleHash);
-    expect(observeProcessLiveness(initial.pid) !== 'absent').toBe(true);
+    expect(observeProcessLiveness(initial.pid)).toBe('alive');
 
     // An ordinary rebuild without a version bump: same product version, different bundle hash.
     const secondFixture = updatePluginFixtureBundleHash(firstFixture, 'bbbbbbbbbbbbbbbb');
@@ -96,6 +96,6 @@ describe('coordinator warm-start integration', () => {
     expect(afterContender?.pid).toBe(initial.pid);
     expect(afterContender?.bundleHash).toBe(firstFixture.bundleHash);
     expect(afterContender?.instanceId).toBe(initial.instanceId);
-    expect(observeProcessLiveness(initial.pid) !== 'absent').toBe(true);
+    expect(observeProcessLiveness(initial.pid)).toBe('alive');
   });
 });

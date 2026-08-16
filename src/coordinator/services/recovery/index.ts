@@ -1219,14 +1219,21 @@ export function createRecoveryCoordinator(
     // hand the payload's job to generic recovery, which can terminalize it while its operation is live. This
     // is the sibling of the proxy-set fence in `provider-proxy-set/inheritance.ts` and was left key-only when
     // that one was fixed.
-    const unreadableJobIds = attributeUnreadableProviderOperations(progressStore.getDb(), scan.unreadableKeys)
-      // `null` is a row attributable to no job from either side. It cannot be fenced by job id at all, so the
-      // reported keys stay the operator's signal for it.
-      .flatMap((attribution) => attribution.jobIds ?? []);
+    const attributions = attributeUnreadableProviderOperations(progressStore.getDb(), scan.unreadableKeys);
+    const unreadableJobIds = attributions.flatMap((attribution) =>
+      attribution.jobs.kind === 'known' ? attribution.jobs.values : [],
+    );
+    // A row that could name any job cannot be fenced by listing job ids, and listing none would hand every job
+    // to generic recovery while that row may own one of them. The keys travel with the fence so the caller
+    // fails closed on them rather than silently proceeding.
+    const unattributableKeys = attributions
+      .filter((attribution) => attribution.jobs.kind === 'indeterminate')
+      .map((attribution) => attribution.key);
     return Object.freeze({
       jobIds: Object.freeze([
         ...new Set([...scan.records.map((record) => record.operation.jobId), ...unreadableJobIds]),
       ]),
+      unattributableKeys: Object.freeze(unattributableKeys),
     });
   };
 
@@ -1254,6 +1261,17 @@ export function createRecoveryCoordinator(
     const queuedRecoverable: QueuedRecoverableJob[] = [];
     const runningRecoverable: RunningRecoverableJob[] = [];
     const sagaOwnedJobIds = new Set(ctx.providerOperationStartupOwnership.jobIds);
+    // While any unreadable row could belong to any job, generic recovery may take none of them: it would
+    // terminalize a job the provider saga still owns and cannot name. Loud, because it holds back every
+    // recovery until an operator removes the row.
+    const unattributable = ctx.providerOperationStartupOwnership.unattributableKeys;
+    const sagaCouldOwnAnyJob = unattributable.length > 0;
+    if (sagaCouldOwnAnyJob) {
+      backendLog.warn(
+        `Generic job recovery is held back: ${unattributable.length} provider operation record(s) could ` +
+          `belong to any job: ${unattributable.join(', ')}`,
+      );
+    }
 
     const recoveryItems: CoordinatorRecoveryItem[] = [];
     await runCoordinatorWalk({
@@ -1261,7 +1279,7 @@ export function createRecoveryCoordinator(
       coordinatorCommit: ctx.coordinatorCommit,
       summary: 'Coordinator recovery snapshot hydration',
       settle: (item) => {
-        if (!sagaOwnedJobIds.has(item.jobId)) recoveryItems.push(item);
+        if (!sagaCouldOwnAnyJob && !sagaOwnedJobIds.has(item.jobId)) recoveryItems.push(item);
         return {
           kind: 'advanced',
           outcome: 'settled',

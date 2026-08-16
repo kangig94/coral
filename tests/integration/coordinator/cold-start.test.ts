@@ -89,7 +89,7 @@ describe('coordinator cold-start integration', () => {
     }
 
     await waitForCondition(() => observeProcessLiveness(discovery.pid) !== 'absent', 1_000);
-    expect(observeProcessLiveness(discovery.pid) !== 'absent').toBe(true);
+    expect(observeProcessLiveness(discovery.pid)).toBe('alive');
     expect(discovery.port).toBeGreaterThan(0);
 
     // Shutdown removes coordinator.json (Phase B+C contract).

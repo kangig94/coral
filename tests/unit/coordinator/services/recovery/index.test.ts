@@ -467,7 +467,17 @@ describe('runStartupRecovery provider-operation ownership', () => {
       progressStore.getDb().prepare<[string], { key: string }>('SELECT key FROM meta WHERE key = ?').all(key).length >
       0;
 
+    // A row that names no job on either side is reported by key rather than folded into an empty fence list.
+    // Listing no job would hand every job to generic recovery while that row may own one of them, so the
+    // caller holds recovery back entirely on a non-empty list.
+    const unattributableKey = 'provider_operation_saga.v1:record:not-canonical';
+    progressStore
+      .getDb()
+      .prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)')
+      .run(unattributableKey, JSON.stringify({ version: 1, locator: {} }));
+
     const beforeRetirement = recoveryCoordinator.snapshotProviderOperationStartupOwnership();
+    expect(beforeRetirement.unattributableKeys).toEqual([unattributableKey]);
     // Both names of every unreadable row, not just its key's. These fixtures key a fixture payload under a
     // different job id, which is the shape `decodeCanonicalValue` rejects — so the payload's job is fenced
     // too. Fencing the key's job alone would hand the payload's job to generic recovery, which can terminalize
@@ -571,7 +581,7 @@ describe('runStartupRecovery provider-operation ownership', () => {
     );
 
     const startupOwnership = recoveryCoordinator.snapshotProviderOperationStartupOwnership();
-    expect(startupOwnership).toEqual({ jobIds: [jobId] });
+    expect(startupOwnership).toEqual({ jobIds: [jobId], unattributableKeys: [] });
     expect(Object.isFrozen(startupOwnership)).toBe(true);
     expect(Object.isFrozen(startupOwnership.jobIds)).toBe(true);
 
