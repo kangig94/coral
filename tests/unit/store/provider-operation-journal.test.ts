@@ -20,13 +20,14 @@ import {
   providerOperationRecordSchema,
   type ProviderOperationPhase,
   type ProviderOperationRecord,
+  PROVIDER_OPERATION_RECORD_VERSION,
 } from '#src/store/provider-operation-record.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
 import { providerOperationRecord } from './provider-operation-fixtures.js';
 
-const SAGA_PREFIX = 'provider_operation_saga.v1:';
+const SAGA_PREFIX = `provider_operation_saga.v${PROVIDER_OPERATION_RECORD_VERSION}:`;
 const RECORD_PREFIX = `${SAGA_PREFIX}record:`;
 const DUE_PREFIX = `${SAGA_PREFIX}due:`;
 const PHASES = [
@@ -142,9 +143,9 @@ describe('provider operation journal', () => {
       insertProviderOperation(db, record);
       insertProviderOperation(db, executing);
       expect(sagaRows(db).map(({ key }) => key)).toEqual([
-        expect.stringMatching(/^provider_operation_saga\.v1:due:/u),
-        expect.stringMatching(/^provider_operation_saga\.v1:record:/u),
-        expect.stringMatching(/^provider_operation_saga\.v1:record:/u),
+        expect.stringMatching(new RegExp(`^${DUE_PREFIX}`, 'u')),
+        expect.stringMatching(new RegExp(`^${RECORD_PREFIX}`, 'u')),
+        expect.stringMatching(new RegExp(`^${RECORD_PREFIX}`, 'u')),
       ]);
       expect(
         db
@@ -505,9 +506,12 @@ describe('provider operation journal', () => {
     }
   });
 
-  // The incarnation token changed this record's shape while leaving `version: 1` on it, so every row written
-  // by v0.10.6-v0.10.8 fails validation here. Every scan caller sits on the coordinator's boot path, so a
-  // throw is not "one stalled operation" — it is no daemon at all. The row is reported and left in place.
+  // A row at this build's own address whose bytes it cannot read — a truncated or partially written value, or
+  // a shape a later generation forgot to move. Every scan caller sits on the coordinator's boot path, so a
+  // throw is not "one stalled operation", it is no daemon at all. The row is reported and left in place.
+  //
+  // The value used here is a v0.10.8 payload because that is a shape known to fail this schema; the address is
+  // this build's, which is what makes it a corruption case rather than the upgrade case below.
   it('reports a row this build cannot read instead of refusing the whole scan', () => {
     const db = createDb();
     try {
@@ -565,6 +569,61 @@ describe('provider operation journal', () => {
         readProviderOperationsDue(db, Number.MAX_SAFE_INTEGER, 1),
         'a single unusable row at the head must not hide the whole queue behind it',
       ).toEqual([readableDue]);
+    } finally {
+      db.close();
+    }
+  });
+  // The upgrade case, at the address a real predecessor row actually occupies. v0.10.8 wrote its rows under
+  // `provider_operation_saga.v1:`, and this build's decoder cannot read them — but the key still names the job,
+  // and that is the whole requirement: an operation left in flight across the upgrade must keep its job away
+  // from generic recovery, which would strict-read the same row and abort the boot it just survived.
+  it('fences a superseded generation by key without ever reading its bytes', () => {
+    const db = createDb();
+    try {
+      const readable = providerOperationRecord('executing');
+      insertProviderOperation(db, readable);
+
+      const stranded = providerOperationRecord('prepare-pending', { job: 2 });
+      const supersededKey =
+        `provider_operation_saga.v1:record:${stranded.operation.jobId}:${stranded.operation.operationId}:` +
+        `${stranded.operation.proxyInstanceId}:${stranded.operation.buildSetId}`;
+      db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)').run(
+        supersededKey,
+        'not json, and never parsed',
+      );
+
+      const scan = readProviderOperations(db);
+
+      expect(scan.records).toEqual([readable]);
+      expect(scan.unreadableKeys).toEqual([supersededKey]);
+      expect(providerOperationJobIdFromRecordKey(supersededKey)).toBe(stranded.operation.jobId);
+      expect(
+        db.prepare<[string], { key: string }>('SELECT key FROM meta WHERE key = ?').all(supersededKey),
+        'a generation this build cannot read is not a generation it may delete',
+      ).toEqual([{ key: supersededKey }]);
+    } finally {
+      db.close();
+    }
+  });
+
+  // The rollback direction, and the reason the generation lives in the key rather than only in the payload.
+  // v0.10.8 selects saga rows by literal key prefix and then parses them strictly, with no tolerance on its
+  // startup claim scan — a `version` field inside the payload is a warning it never reaches. The literal
+  // prefixes below are its source text, frozen; the keys they are tested against are built by this build's own
+  // writer. If the two ever meet, that daemon does not boot.
+  it('writes rows the shipped v0.10.8 selector cannot see', () => {
+    const db = createDb();
+    try {
+      insertProviderOperation(db, providerOperationRecord('prepare-pending'));
+      insertProviderOperation(db, providerOperationRecord('executing', { job: 2 }));
+      expect(sagaRows(db).length, 'the rows exist to be missed').toBeGreaterThan(0);
+
+      const shippedSelect = db.prepare<[string, string], { key: string }>(
+        'SELECT key FROM meta WHERE key > ? AND key < ? ORDER BY key',
+      );
+      for (const shippedPrefix of ['provider_operation_saga.v1:record:', 'provider_operation_saga.v1:due:']) {
+        expect(shippedSelect.all(shippedPrefix, `${shippedPrefix}\uffff`), shippedPrefix).toEqual([]);
+      }
     } finally {
       db.close();
     }

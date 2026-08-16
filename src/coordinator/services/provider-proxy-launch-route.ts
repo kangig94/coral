@@ -5,7 +5,10 @@ import {
   type OperationIdentity,
   type ProxyPreparedAppServerOperation,
 } from '../../provider-proxy/protocol.js';
-import { providerOperationRecordSchema } from '../../store/provider-operation-record.js';
+import {
+  providerOperationRecordSchema,
+  PROVIDER_OPERATION_RECORD_VERSION,
+} from '../../store/provider-operation-record.js';
 import type { ProviderHostManager } from '../live/provider-hosts/index.js';
 import { isProviderProxyOperationAuthority } from '../live/provider-proxy/operation-route.js';
 import { providerOperationPrepareAttempt, providerOperationSetLocator } from './provider-proxy-operation-activation.js';
@@ -59,7 +62,7 @@ export function createAppServerProxyRoute(deps: {
       const prepareAttemptNumber = 1;
       const attempt = providerOperationPrepareAttempt(authority, operation, prepared, prepareAttemptNumber);
       const record = providerOperationRecordSchema.parse({
-        version: 1,
+        version: PROVIDER_OPERATION_RECORD_VERSION,
         operation,
         locator: providerOperationSetLocator(authority.setIdentity),
         prepareAttemptNumber,

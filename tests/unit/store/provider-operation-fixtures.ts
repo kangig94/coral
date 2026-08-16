@@ -1,6 +1,7 @@
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import {
   providerOperationRecordSchema,
+  PROVIDER_OPERATION_RECORD_VERSION,
   type ProviderOperationPhase,
   type ProviderOperationRecord,
 } from '#src/store/provider-operation-record.js';
@@ -27,7 +28,7 @@ export function providerOperationRecord(
 ): ProviderOperationRecord {
   const proxyInstanceId = options.operation?.proxyInstanceId ?? uuid(3);
   const common = {
-    version: 1,
+    version: PROVIDER_OPERATION_RECORD_VERSION,
     operation: options.operation ?? {
       jobId: uuid(options.job ?? 1),
       operationId: uuid(2),

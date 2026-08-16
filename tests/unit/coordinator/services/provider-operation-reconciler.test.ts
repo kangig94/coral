@@ -29,7 +29,11 @@ import {
   readProviderOperationsDue,
   subscribeProviderOperationMutations,
 } from '#src/store/provider-operation-journal.js';
-import { providerOperationRecordSchema, type ProviderOperationRecord } from '#src/store/provider-operation-record.js';
+import {
+  providerOperationRecordSchema,
+  PROVIDER_OPERATION_RECORD_VERSION,
+  type ProviderOperationRecord,
+} from '#src/store/provider-operation-record.js';
 import { OperationSupervisor } from '#src/provider-proxy/operation-supervisor.js';
 import {
   providerOperationPreparePermanentRefusalSchema,
@@ -277,7 +281,7 @@ function operationUuid(value: number): string {
 function legacyDueKey(record: ProviderOperationRecord): string {
   const fixed = (value: number): string => String(value).padStart(String(Number.MAX_SAFE_INTEGER).length, '0');
   return (
-    `provider_operation_saga.v1:due:${fixed(record.retryNotBeforeMs)}:` +
+    `provider_operation_saga.v${PROVIDER_OPERATION_RECORD_VERSION}:due:${fixed(record.retryNotBeforeMs)}:` +
     `${record.operation.jobId}:${record.operation.operationId}:${record.operation.proxyInstanceId}:` +
     `${record.operation.buildSetId}:${fixed(record.revision)}`
   );
@@ -285,7 +289,7 @@ function legacyDueKey(record: ProviderOperationRecord): string {
 
 function canonicalOperationKey(record: ProviderOperationRecord): string {
   return (
-    `provider_operation_saga.v1:record:${record.operation.jobId}:${record.operation.operationId}:` +
+    `provider_operation_saga.v${PROVIDER_OPERATION_RECORD_VERSION}:record:${record.operation.jobId}:${record.operation.operationId}:` +
     `${record.operation.proxyInstanceId}:${record.operation.buildSetId}`
   );
 }

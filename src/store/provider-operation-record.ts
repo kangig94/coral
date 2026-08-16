@@ -203,8 +203,23 @@ const lastErrorSchema = z
   .strict()
   .nullable();
 
+/**
+ * The generation of this record, and the only place it is written down.
+ *
+ * It is not only the payload's `version` field — `provider-operation-journal.ts` derives the meta-key namespace
+ * from it, so moving this number moves the address the rows live at. That coupling is the point. A shipped
+ * reader selects rows by key prefix and then parses them strictly; a payload field it never reaches cannot warn
+ * it. v0.10.8 renamed nothing and moved nothing, so its `provider_operation_saga.v1:` selector would have
+ * matched the incarnation-bearing rows this build writes, and its bare strict decode on the startup claim scan
+ * would have thrown — the older daemon simply would not boot. The rows have to be somewhere it does not look.
+ *
+ * Bump this whenever the durable shape stops satisfying the previous generation's schema, and add the
+ * generation left behind to `SUPERSEDED_PROVIDER_OPERATION_RECORD_VERSIONS` so its jobs keep their fence.
+ */
+export const PROVIDER_OPERATION_RECORD_VERSION = 2;
+
 const commonFields = {
-  version: z.literal(1),
+  version: z.literal(PROVIDER_OPERATION_RECORD_VERSION),
   operation: providerOperationIdentitySchema,
   locator: providerOperationSetLocatorSchema,
   prepareAttemptNumber: z.number().int().positive().safe(),

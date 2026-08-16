@@ -5,6 +5,7 @@ import {
   decodeProviderOperationRecord,
   encodeProviderOperationRecord,
   providerOperationIdentitySchema,
+  PROVIDER_OPERATION_RECORD_VERSION,
   type ProviderOperationIdentity,
   type ProviderOperationRecord,
 } from './provider-operation-record.js';
@@ -73,18 +74,44 @@ type ProviderOperationDueEntry = Readonly<{
   revision: number;
 }>;
 
-const PROVIDER_OPERATION_SAGA_PREFIX = 'provider_operation_saga.v1:';
+function sagaPrefix(version: number): string {
+  return `provider_operation_saga.v${version}:`;
+}
+
+function escapeKeyPrefix(prefix: string): string {
+  return prefix.replaceAll(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+}
+
+const PROVIDER_OPERATION_SAGA_PREFIX = sagaPrefix(PROVIDER_OPERATION_RECORD_VERSION);
 const PROVIDER_OPERATION_RECORD_PREFIX = `${PROVIDER_OPERATION_SAGA_PREFIX}record:`;
 const PROVIDER_OPERATION_DUE_PREFIX = `${PROVIDER_OPERATION_SAGA_PREFIX}due:`;
+
+/**
+ * Generations this build addresses but cannot decode.
+ *
+ * Their rows are scanned for their **keys only** and never for their bytes. A key names the job
+ * (`providerOperationJobIdFromRecordKey`), and that is the whole requirement: an operation an older build left
+ * in flight must keep its job away from generic recovery across the upgrade. What the row means is not this
+ * reader's to guess, and guessing is what a converting upcaster would be.
+ *
+ * Empty is a legitimate value. A generation belongs here only while a build that wrote it can still have left
+ * rows behind; once that build is out of the field the entry is deleted, not kept for symmetry.
+ */
+const SUPERSEDED_PROVIDER_OPERATION_RECORD_VERSIONS: readonly number[] = [1];
+const SUPERSEDED_PROVIDER_OPERATION_RECORD_PREFIXES: readonly string[] =
+  SUPERSEDED_PROVIDER_OPERATION_RECORD_VERSIONS.map((version) => `${sagaPrefix(version)}record:`);
+
 const PROVIDER_OPERATION_READ_PAGE_SIZE = 128;
 const FIXED_WIDTH_INTEGER_DIGITS = String(Number.MAX_SAFE_INTEGER).length;
 const UUID_KEY_SOURCE = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+const IDENTITY_KEY_SOURCE = `${UUID_KEY_SOURCE}:${UUID_KEY_SOURCE}:${UUID_KEY_SOURCE}:${UUID_KEY_SOURCE}`;
 const PROVIDER_OPERATION_RECORD_KEY_PATTERN = new RegExp(
-  `^provider_operation_saga\\.v1:record:${UUID_KEY_SOURCE}:${UUID_KEY_SOURCE}:${UUID_KEY_SOURCE}:${UUID_KEY_SOURCE}$`,
+  `^${escapeKeyPrefix(PROVIDER_OPERATION_RECORD_PREFIX)}${IDENTITY_KEY_SOURCE}$`,
   'u',
 );
 const PROVIDER_OPERATION_DUE_KEY_PATTERN = new RegExp(
-  `^provider_operation_saga\\.v1:due:[0-9]{${FIXED_WIDTH_INTEGER_DIGITS}}:${UUID_KEY_SOURCE}:${UUID_KEY_SOURCE}:${UUID_KEY_SOURCE}:${UUID_KEY_SOURCE}:[0-9]{${FIXED_WIDTH_INTEGER_DIGITS}}$`,
+  `^${escapeKeyPrefix(PROVIDER_OPERATION_DUE_PREFIX)}[0-9]{${FIXED_WIDTH_INTEGER_DIGITS}}:` +
+    `${IDENTITY_KEY_SOURCE}:[0-9]{${FIXED_WIDTH_INTEGER_DIGITS}}$`,
   'u',
 );
 const providerOperationDueEntrySchema = z
@@ -188,8 +215,11 @@ function canReadCanonicalValue(key: string, value: string): boolean {
 /** The job a canonical key names, without decoding the value — the only identity available for a row this
  *  build cannot read, and the one startup ownership needs to keep that job away from generic recovery. */
 export function providerOperationJobIdFromRecordKey(key: string): string | null {
-  if (!key.startsWith(PROVIDER_OPERATION_RECORD_PREFIX)) return null;
-  const jobId = key.slice(PROVIDER_OPERATION_RECORD_PREFIX.length).split(':')[0];
+  const prefix = [PROVIDER_OPERATION_RECORD_PREFIX, ...SUPERSEDED_PROVIDER_OPERATION_RECORD_PREFIXES].find(
+    (candidate) => key.startsWith(candidate),
+  );
+  if (prefix === undefined) return null;
+  const jobId = key.slice(prefix.length).split(':')[0];
   return jobId === undefined || jobId.length === 0 ? null : jobId;
 }
 
@@ -380,23 +410,23 @@ export function readProviderOperationForJob(db: Database, jobId: string): Provid
  *
  * A keyed lookup that fails is a caller asking for a record that must exist, and it still throws. A *scan*
  * is different: it is startup asking what is here, and one row it cannot parse is not a reason to refuse to
- * run. That distinction is not hypothetical \u2014 the incarnation token changed this record's shape while
- * leaving `version: 1` on it, so a row written by v0.10.6-v0.10.8 fails validation, and every scan caller
- * sits on a path that ends at the coordinator's own startup.
+ * run. That distinction is not hypothetical \u2014 every scan caller sits on a path that ends at the
+ * coordinator's own startup.
  *
- * Unreadable rows are reported as keys, never as bytes: what they mean is not this reader's to guess. They
- * are also left in place. Nothing is lost by skipping one \u2014 the row stays, and a build that understands it
- * can still act on it.
+ * The scan reaches superseded generations too, and only their keys. A row an older build left in flight names
+ * its job in the key, which is exactly what startup ownership needs to keep that job away from generic
+ * recovery; the bytes stay unread because converting them would be a guess about someone else's shape.
+ *
+ * Unreadable rows are reported as keys, never as bytes. They are also left in place. Nothing is lost by
+ * skipping one \u2014 the row stays, and a build that understands it can still act on it.
  */
 export type ProviderOperationScan = Readonly<{
   records: readonly ProviderOperationRecord[];
   unreadableKeys: readonly string[];
 }>;
 
-export function readProviderOperations(db: Database): ProviderOperationScan {
-  const records: ProviderOperationRecord[] = [];
-  const unreadableKeys: string[] = [];
-  let cursor = PROVIDER_OPERATION_RECORD_PREFIX;
+function forEachRowUnderPrefix(db: Database, prefix: string, visit: (row: MetaRow) => void): void {
+  let cursor = prefix;
   for (;;) {
     const rows = db
       .prepare<[string, string, number], MetaRow>(
@@ -405,19 +435,27 @@ export function readProviderOperations(db: Database): ProviderOperationScan {
          ORDER BY key
          LIMIT ?`,
       )
-      .all(cursor, `${PROVIDER_OPERATION_RECORD_PREFIX}\uffff`, PROVIDER_OPERATION_READ_PAGE_SIZE);
-    for (const row of rows) {
-      try {
-        records.push(decodeCanonicalValue(row.key, row.value));
-      } catch {
-        unreadableKeys.push(row.key);
-      }
-    }
-    if (rows.length < PROVIDER_OPERATION_READ_PAGE_SIZE) {
-      return { records, unreadableKeys };
-    }
+      .all(cursor, `${prefix}\uffff`, PROVIDER_OPERATION_READ_PAGE_SIZE);
+    for (const row of rows) visit(row);
+    if (rows.length < PROVIDER_OPERATION_READ_PAGE_SIZE) return;
     cursor = rows.at(-1)?.key ?? cursor;
   }
+}
+
+export function readProviderOperations(db: Database): ProviderOperationScan {
+  const records: ProviderOperationRecord[] = [];
+  const unreadableKeys: string[] = [];
+  forEachRowUnderPrefix(db, PROVIDER_OPERATION_RECORD_PREFIX, (row) => {
+    try {
+      records.push(decodeCanonicalValue(row.key, row.value));
+    } catch {
+      unreadableKeys.push(row.key);
+    }
+  });
+  for (const prefix of SUPERSEDED_PROVIDER_OPERATION_RECORD_PREFIXES) {
+    forEachRowUnderPrefix(db, prefix, (row) => unreadableKeys.push(row.key));
+  }
+  return { records, unreadableKeys };
 }
 
 export function readProviderOperationsDue(
