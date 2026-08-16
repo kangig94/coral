@@ -58,6 +58,18 @@ const TIME_FLAVOURED_NAME = /startedat|starttime|recordedstart|seconds|timestamp
 /** The probes that hand back an incarnation. A value taken from one is an identity whatever it is called. */
 const INCARNATION_PROBE = /^(probe|read|canProbe)ProcessIncarnation$/;
 
+/**
+ * Readings of *now*, which is the one thing an identity may never contain.
+ *
+ * `Date.parse` is deliberately absent: the Darwin probe parses a start time the OS reported for the target
+ * process, which is a coordinate belonging to that process. `Date.now()` belongs to the moment of the probe,
+ * so a token built from it changes every time it is read — the previous primitive's exact defect, where two
+ * processes disagreed by the age gap between their reads. That is the difference this rule turns on, and it
+ * is why the rule names sources rather than the `Date` object.
+ */
+const CLOCK_SOURCE = /^(now|hrtime|uptime|getTime|valueOf)$/;
+const CLOCK_OWNER = /^(Date|performance|process)$/;
+
 type Offender = Readonly<{ file: string; detail: string }>;
 
 function parse(file: string): ts.SourceFile {
@@ -187,6 +199,46 @@ describe('process incarnation opacity', () => {
     expect(
       offenders,
       `only ${LEGACY_SCHEMA_NAME} may name the retired field, and only to keep reading capsules v0.10.6-v0.10.8 wrote`,
+    ).toEqual([]);
+  });
+
+  // The two rules above look for the *old* shape — the boot clock's file, and the retired field's name. Both
+  // stay green on a token minted from a fresh clock reading under the new vocabulary:
+  //
+  //     return `linux:${bootId}:${Date.now()}` as ProcessIncarnation;
+  //
+  // That is the identical defect wearing the identical names, and it is the mutation this rule exists for. A
+  // mint is recognisable without data flow because there is exactly one way to make one: an assertion to
+  // `ProcessIncarnation`. Whatever is inside that assertion is the identity, and nothing that reads the
+  // current time may be.
+  it('mints no identity from a reading of now', () => {
+    const offenders: Offender[] = [];
+    for (const file of listProductionSourceFiles(SRC_ROOT)) {
+      const source = parse(file);
+      const relative = file.slice(SRC_ROOT.length + 1);
+      walk(source, (node) => {
+        if (!ts.isAsExpression(node) || !/\bProcessIncarnation\b/.test(node.type.getText(source))) return;
+        walk(node.expression, (inner) => {
+          if (
+            ts.isNewExpression(inner) &&
+            ts.isIdentifier(inner.expression) &&
+            CLOCK_OWNER.test(inner.expression.text)
+          ) {
+            offenders.push({ file: relative, detail: `mints from new ${inner.expression.text}()` });
+            return;
+          }
+          if (!ts.isCallExpression(inner) || !ts.isPropertyAccessExpression(inner.expression)) return;
+          const owner = inner.expression.expression;
+          if (!CLOCK_SOURCE.test(inner.expression.name.text)) return;
+          if (!ts.isIdentifier(owner) || !CLOCK_OWNER.test(owner.text)) return;
+          offenders.push({ file: relative, detail: `mints from ${owner.text}.${inner.expression.name.text}()` });
+        });
+      });
+    }
+
+    expect(
+      offenders,
+      "an incarnation is the process's own coordinate, not the moment it was observed; a token that moves between reads is not an identity",
     ).toEqual([]);
   });
 });

@@ -986,6 +986,21 @@ export function createCoordinatorCore(
     },
     expansion: createKbDaemonExpansionRpc(kbDaemonSupervisorWithTrackedShutdown),
   };
+  /**
+   * This process's own incarnation, read once.
+   *
+   * It was read per health response, and a health response is the most frequently served thing this daemon
+   * does. On macOS the probe is two synchronous `execFileSync` calls — `sysctl` and `ps` — so every reader
+   * asking whether the coordinator is up forked twice and blocked the loop that was supposed to answer.
+   *
+   * Reading it once is not a cache with a staleness question attached. An incarnation names the process that
+   * holds it, `world.backendPid` is this process, and nothing about it can change while there is anyone left
+   * to read it. `undefined` stays possible and stays meaningful: it is "this platform could not observe one",
+   * which every consumer already distinguishes from a mismatch.
+   */
+  const selfIncarnation =
+    probeProcessIncarnation(world.backendPid, runtime.env.platform() as NodeJS.Platform) ?? undefined;
+
   const httpHandlerDeps: HttpHandlerPorts = {
     identity,
     time: runtime.time,
@@ -1026,7 +1041,7 @@ export function createCoordinatorCore(
           coarseStatus = 'starting';
         }
         const platform = runtime.env.platform() as NodeJS.Platform;
-        const incarnation = probeProcessIncarnation(world.backendPid, platform) ?? undefined;
+        const incarnation = selfIncarnation;
 
         // Strip the branded `RuntimeComponentId` to plain string at the wire boundary;
         // transport types use `string` because the brand is enforced producer-side.

@@ -41,9 +41,10 @@ describe('darwin process incarnation', () => {
   });
 
   it('reads the boot session every time rather than remembering it', () => {
-    // A cache here has to answer what a transient failure means, and both answers are wrong: remembering
-    // `null` blinds every later probe until the process restarts, and remembering a value asserts across a
-    // boundary this function cannot see. Linux rereads `boot_id` per probe; this must match it.
+    // Caching a *success* would actually be sound — a boot session id changes only at a reboot, which no
+    // process survives. Caching a *failure* is not: a transient `sysctl` error would blind every later probe
+    // until restart. This pins the half that matters, and `linux-process-incarnation.test.ts` pins the same
+    // property on the file-read side, since the two frames must not drift apart.
     scriptDarwin({ bootSession: new Error('sysctl unavailable') });
     expect(probeProcessIncarnation(4321, 'darwin')).toBeNull();
 
