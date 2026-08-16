@@ -19,6 +19,14 @@
 //
 // Signal 0 is not a signal. `kill(pid, 0)` and `kill(-pid, 0)` are liveness probes; the worst a recycled pid
 // does there is answer a question wrongly, which every caller already treats as inconclusive.
+//
+// One limitation, stated because a scan that hides its blind spots is worse than none: a signal delivered
+// through a *helper* is attributed to the helper's file, not the caller's. `gracefulKillByPid` lives in
+// `infra/process-supervision.ts`, so its three callers (`live/durable-transport.ts` twice,
+// `services/recovery/actions.ts` once) are invisible here. Guarding one call inside an allowlisted file and
+// deleting its entry would therefore pass while its siblings stay unguarded. Until every pid signal goes
+// through one identity-bearing helper, the ALLOWLIST names modules, and
+// `docs/todo/durable-cli-signal-authority.md` names the behavioural paths.
 
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, relative } from 'node:path';
@@ -73,6 +81,15 @@ const ALLOWLIST = new Map<string, string>([
     'src/infra/process-supervision.ts',
     'UNGUARDED (gracefulKillByPid), tracked in docs/todo/durable-cli-signal-authority.md',
   ],
+  [
+    'src/runtime/exec-builder.ts',
+    // Signals the child it is at that moment awaiting, on timeout or maxBuffer, through an injected `kill`.
+    // The exposure is real but a different size from the durable four: the window is the single event-loop
+    // turn between the child exiting and its 'close' reaching the `resolved` guard, not a pid recovered from
+    // a record written before a restart. Recorded rather than waved through, and it is the site that proved
+    // the scan's own blind spot.
+    'signals a child it currently holds and awaits; one-turn exit/close race, tracked with the others',
+  ],
 ]);
 
 function listSourceFiles(root: string): string[] {
@@ -103,19 +120,23 @@ function canonicalSrcPath(filePath: string): string {
  * Read from the AST rather than a regex, because the distinction that matters is the call's *arity and
  * argument shape*: `kill(sig)` is a handle, `kill(pid, sig)` is a number, and `kill(pid, 0)` is a question.
  * Text cannot separate those without reimplementing the parser.
+ *
+ * Both call shapes count, and the second is why: an earlier version matched only `something.kill(pid, sig)`
+ * and was blind to `kill(-child.pid, signal)` where `kill` is an *injected function* — which is exactly what
+ * `runtime/exec-builder.ts` does. The scan reported a complete enumeration while missing a real signal path,
+ * which is worse than not scanning, because the empty result was read as proof.
  */
 function signalsABarePid(source: string, fileName: string): boolean {
   const parsed = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true);
   let found = false;
 
+  const namesKill = (callee: ts.Expression): boolean =>
+    (ts.isPropertyAccessExpression(callee) && callee.name.text === 'kill') ||
+    (ts.isIdentifier(callee) && callee.text === 'kill');
+
   const visit = (node: ts.Node): void => {
     if (found) return;
-    if (
-      ts.isCallExpression(node) &&
-      ts.isPropertyAccessExpression(node.expression) &&
-      node.expression.name.text === 'kill' &&
-      node.arguments.length >= 2
-    ) {
+    if (ts.isCallExpression(node) && namesKill(node.expression) && node.arguments.length >= 2) {
       const signal = node.arguments[1];
       const isProbe = signal !== undefined && ts.isNumericLiteral(signal) && signal.text === '0';
       if (!isProbe) {
@@ -157,15 +178,36 @@ describe('a signal aimed at a pid establishes that the pid is still its recorded
     expect(stale.sort()).toEqual([]);
   });
 
-  // The scan answers "did the file consult the rule", never "did it obey the answer". These two are where the
-  // answer is acted on, and pinning them here means deleting the branch inside either one fails an invariant
-  // as well as its own unit test.
-  it('the two gated signal paths refuse rather than merely asking', () => {
+  // The scan answers "did the file consult the rule", never "did it obey the answer", and never "did it ask
+  // about the platform it is actually running on". A guard-shaped statement reading
+  // `incarnationMayAuthorizeSignal('linux')` satisfies the first two and is a constant `true` — the whole
+  // refusal deleted, in a form that still greps as present. That mutation survived the first version of this
+  // test, so the argument is checked here rather than only the shape.
+  it('the two gated signal paths refuse, and ask about the running platform rather than a constant', () => {
     for (const canonical of ['src/coordinator/live/provider-proxy/spawn-undo.ts', 'src/provider-proxy/role-main.ts']) {
-      const source = codeTextOnly(readFileSync(join(REPO_ROOT, canonical), 'utf-8'));
-      expect(/if\s*\(\s*!\s*incarnationMayAuthorizeSignal\s*\([^)]*\)\s*\)\s*return/u.test(source), canonical).toBe(
-        true,
-      );
+      const raw = readFileSync(join(REPO_ROOT, canonical), 'utf-8');
+      expect(
+        /if\s*\(\s*!\s*incarnationMayAuthorizeSignal\s*\([^)]*\)\s*\)\s*return/u.test(codeTextOnly(raw)),
+        `${canonical} must refuse, not merely ask`,
+      ).toBe(true);
+
+      const parsed = ts.createSourceFile(canonical, raw, ts.ScriptTarget.Latest, true);
+      const constantArguments: string[] = [];
+      const visit = (node: ts.Node): void => {
+        if (
+          ts.isCallExpression(node) &&
+          ts.isIdentifier(node.expression) &&
+          node.expression.text === 'incarnationMayAuthorizeSignal'
+        ) {
+          for (const argument of node.arguments) {
+            if (ts.isStringLiteralLike(argument)) constantArguments.push(argument.getText(parsed));
+          }
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(parsed);
+
+      expect(constantArguments, `${canonical} must ask about the platform it is running on`).toEqual([]);
     }
   });
 });

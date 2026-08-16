@@ -1,6 +1,6 @@
 # TODO — on macOS a process incarnation cannot authorize a signal
 
-**Status**: open, and deliberately half-closed. Decided on `fix/workflow-replacement-cleanup-envelope` after the
+**Status**: open, and deliberately half-closed. Decided on `refactor/process-incarnation-token` after the
 handoff half shipped and the containment half was attempted, measured against the suite, and reverted.
 
 ## The token, and the one thing it cannot do on Darwin
@@ -20,7 +20,7 @@ second but **one hour, once a year, on a schedule anyone can look up**. Inside i
 displayed second produces a byte-identical token for a different process — and equality on this path
 authorizes `SIGKILL`.
 
-`incarnationMayAuthorizeSignal(platform)` (`src/infra/node-process.ts:123`) is where this is stated. It returns
+`incarnationMayAuthorizeSignal(platform)` (`src/infra/node-process.ts`) is where this is stated. It returns
 true only for linux. The token stays useful on Darwin for the _conservative_ direction, which is most of what
 it is for: a false match reads as "still alive", which blocks a disappearance claim rather than licensing an
 action.
@@ -76,8 +76,11 @@ reviewers falsified that independently and the correction is the useful part**, 
 - Even when a handle exists it may name an already-exited child. `shutdownHandle` reaps _after_ graceful
   shutdown, and `app-server-transport.ts:359` resolves that path from the child's own close event. Node reaps
   on exit; a reaped pid is free. Retaining the JavaScript object proves nothing about the pid.
-- And the signal targets the **group**, not the leader. Once the leader exits, the pgid can be recycled while
-  surviving group members still run, so "the leader is alive" would not settle it either.
+- And the signal targets the **group**, not the leader, which is a *narrower* hazard than an earlier revision
+  claimed. POSIX reserves a process-group id for the lifetime of the group, and that lifetime ends only when
+  its last member leaves — so while descendants survive, no unrelated group can hold that pgid. What remains
+  is the ordinary case: once the group is genuinely empty the id is free, and "the leader was alive when I
+  looked" does not establish that the group is still ours at the moment the signal lands.
 
 The real predicate is therefore _"has this child exited yet"_, evaluated at the moment of the signal — and
 `ChildProcessLike` (`src/infra/port-types.ts:117`) cannot answer it: it exposes `pid`, `kill`, and a `'close'`

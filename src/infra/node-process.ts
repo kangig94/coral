@@ -151,10 +151,13 @@ function readMacBootSessionId(): string | null {
  * is most likely to name. The boot session id is what makes the pair an identity — the same role `boot_id`
  * plays on Linux, and for the same reason.
  *
- * The residual, stated because equality here authorizes a signal: two processes that hold the same pid *and*
- * the same displayed start second *within one boot* are indistinguishable. That needs the pid space to wrap
- * inside a second. It does not extend across boots or across a clock change, because the frame is a UUID that
- * neither event preserves.
+ * The residual, stated because it is the reason `incarnationMayAuthorizeSignal` refuses this platform: two
+ * processes that hold the same pid *and* the same displayed start second *within one boot* are
+ * indistinguishable. The boot session id closes the across-reboot half completely — a UUID minted per boot
+ * that no reboot preserves. It does **not** close a clock change, and an earlier version of this comment
+ * claimed it did. `ps -o lstart=` prints local time and `Date.parse` reads a zone-less string as local, so a
+ * backward step — an NTP correction, the autumn DST fallback — makes one displayed string name two instants.
+ * The window is then an hour rather than a second, which is why equality here authorizes nothing.
  *
  * Either half unreadable returns null rather than a guess — "could not observe", which every caller already
  * distinguishes from absence.

@@ -1,23 +1,30 @@
 # TODO — four durable-CLI signal paths hold the evidence and do not read it
 
-**Status**: open. Found on `fix/workflow-replacement-cleanup-envelope` by the scan in
+**Status**: open. Found on `refactor/process-incarnation-token` by the scan in
 `tests/invariants/signal-authority.test.ts`, not by review — five reviewers read the same branch and none of
 these four came up, which is most of the argument for the scan existing.
 
 ## What exists now
 
-Four call sites signal a pid that came out of a durable record, with no check that the pid still names the
-process the record was written for:
+Signals aimed at a pid that came out of a durable record, with no check that the pid still names the process
+the record was written for. Note the two columns are different things and the difference matters:
 
-| Site                                                     | When it fires                                                 |
-| -------------------------------------------------------- | ------------------------------------------------------------- |
-| `src/coordinator/live/durable-transport.ts`              | a durable child idles past `IDLE_TIMEOUT` — **minutes** later |
-| `src/jobs/reconcile/registry.ts`                         | the user aborts a job, arbitrarily long after launch          |
-| `src/coordinator/services/recovery/service.ts`           | an adopted job is aborted **after a coordinator restart**     |
-| `src/infra/process-supervision.ts` (`gracefulKillByPid`) | the generic pid-based escalation the others resemble          |
+| Module (what the invariant names)              | Signal paths inside it                                                         |
+| ---------------------------------------------- | ------------------------------------------------------------------------------ |
+| `src/coordinator/live/durable-transport.ts`    | **three** — two `gracefulKillByPid`, one direct `kill` on idle timeout         |
+| `src/coordinator/services/recovery/actions.ts` | one `gracefulKillByPid`, in the recovery-binding-failure cleanup               |
+| `src/coordinator/services/recovery/service.ts` | one direct `kill`, in the abort handler for an **adopted** job                 |
+| `src/jobs/reconcile/registry.ts`               | one direct `kill`, in the abort handler for a live job                         |
+| `src/infra/process-supervision.ts`             | `gracefulKillByPid` itself — the escalation the three callers above go through |
 
-The third is the sharpest. Adoption exists precisely because the record outlived the process that wrote it, so
-the pid has already survived one process boundary before anyone signals it.
+`tests/invariants/signal-authority.test.ts` is a **module**-level scan, and a helper-delivered signal is
+attributed to the helper's file rather than the caller's — which is why `recovery/actions.ts` does not appear
+in its ALLOWLIST at all. Guarding one call inside `durable-transport.ts` and deleting that module's entry
+would pass the invariant while its other two paths stayed open. Treat the ALLOWLIST as a checklist of modules
+and this table as the checklist of behaviours; neither is a substitute for the other.
+
+The `recovery/service.ts` row is the sharpest. Adoption exists precisely because the record outlived the
+process that wrote it, so its pid has already survived one process boundary before anyone signals it.
 
 ## Why this is a defect and not a nit
 
@@ -46,8 +53,10 @@ Read the recorded incarnation next to the pid, probe, compare, and refuse on mis
 
 1. **`gracefulKillByPid` has no record at all.** It takes a number. Either it grows a
    `RecordedProcessIdentity` parameter, and its callers supply one, or it stays the deliberate escape hatch
-   with the check pushed to each caller. Prefer the first: an escape hatch that is easier to call than the safe
-   path is how these four happened.
+   with the check pushed to each caller. Prefer the first, for a reason the table above makes concrete: while
+   the identity check lives at each caller, the invariant can only see modules, and one guarded call hides its
+   unguarded siblings. Routing every pid signal through one identity-bearing helper is what would let the scan
+   become exact instead of coarse.
 2. **What refusal means to an abort.** A user pressing abort expects the job to stop. If the identity no
    longer matches, the process is already gone and the abort has trivially succeeded — but the job's terminal
    state must still be written, so refusing to signal cannot mean returning early from the abort.
@@ -59,7 +68,7 @@ stays visible and its child is reclaimed by whatever ends it normally.
 
 ## Start condition
 
-None. The evidence exists, the comparison exists, and
-`tests/invariants/signal-authority.test.ts`'s ALLOWLIST names all four; closing one means deleting its entry,
-which is the smallest possible unit of progress here. The test that pins each: a recorded identity whose probe
+None. The evidence exists and the comparison exists. The smallest unit of progress is one **behaviour** from
+the table above, not one ALLOWLIST entry — a module's entry may only be deleted once every path inside it is
+guarded. The test that pins each: a recorded identity whose probe
 returns a _different_ incarnation, asserting no signal is sent and the job still reaches its terminal state.

@@ -36,7 +36,7 @@ import {
 } from '../../discuss/shell/tools.js';
 import { createHttpHandler, sendJson } from '../../transport/http/handler.js';
 import { closeIpcServer, createIpcServer, listenIpcServer } from '../../transport/ipc/server.js';
-import { probeProcessIncarnation } from '../../infra/node-process.js';
+import { probeProcessIncarnation, type ProcessIncarnation } from '../../infra/node-process.js';
 import type { RpcPorts } from '../../transport/rpc/ports.js';
 import {
   providerHostEvictResponseSchema,
@@ -987,19 +987,27 @@ export function createCoordinatorCore(
     expansion: createKbDaemonExpansionRpc(kbDaemonSupervisorWithTrackedShutdown),
   };
   /**
-   * This process's own incarnation, read once.
+   * This process's own incarnation, probed until it is known and then never again.
    *
-   * It was read per health response, and a health response is the most frequently served thing this daemon
+   * It was probed per health response, and a health response is the most frequently served thing this daemon
    * does. On macOS the probe is two synchronous `execFileSync` calls — `sysctl` and `ps` — so every reader
    * asking whether the coordinator is up forked twice and blocked the loop that was supposed to answer.
    *
-   * Reading it once is not a cache with a staleness question attached. An incarnation names the process that
-   * holds it, `world.backendPid` is this process, and nothing about it can change while there is anyone left
-   * to read it. `undefined` stays possible and stays meaningful: it is "this platform could not observe one",
-   * which every consumer already distinguishes from a mismatch.
+   * Remembering a *success* carries no staleness question: an incarnation names the process that holds it,
+   * `world.backendPid` is this process, and nothing can change it while there is anyone left to read it.
+   *
+   * Remembering a *failure* is a different thing entirely, and reading it exactly once got that wrong. The
+   * discovery record runs its own probe (`infra/backend-discovery.ts`), so one transient failure here while
+   * that one succeeded leaves discovery publishing an incarnation and health publishing none — and
+   * `discoveryMatchesHealth` (`coordinator/handoff-runner.ts`) compares the two for equality. A single
+   * unlucky read at composition would have made every later takeover fail identity for the life of the
+   * daemon, with no path back. So `null` is retried, and only success is kept.
    */
-  const selfIncarnation =
-    probeProcessIncarnation(world.backendPid, runtime.env.platform() as NodeJS.Platform) ?? undefined;
+  let rememberedSelfIncarnation: ProcessIncarnation | null = null;
+  const readSelfIncarnation = (): ProcessIncarnation | undefined => {
+    rememberedSelfIncarnation ??= probeProcessIncarnation(world.backendPid, runtime.env.platform() as NodeJS.Platform);
+    return rememberedSelfIncarnation ?? undefined;
+  };
 
   const httpHandlerDeps: HttpHandlerPorts = {
     identity,
@@ -1041,7 +1049,7 @@ export function createCoordinatorCore(
           coarseStatus = 'starting';
         }
         const platform = runtime.env.platform() as NodeJS.Platform;
-        const incarnation = selfIncarnation;
+        const incarnation = readSelfIncarnation();
 
         // Strip the branded `RuntimeComponentId` to plain string at the wire boundary;
         // transport types use `string` because the brand is enforced producer-side.
