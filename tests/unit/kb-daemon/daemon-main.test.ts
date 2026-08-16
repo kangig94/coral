@@ -50,7 +50,7 @@ describe('KB daemon main parent watchdog', () => {
     const watchdog = startKbDaemonParentWatchdog({
       parentPid: 123,
       intervalMs: 25,
-      isAlive: () => true,
+      observeLiveness: () => 'alive' as const,
       getCurrentParentPid: () => 123,
       setIntervalFn: (fn, ms) => {
         tick = fn;
@@ -77,7 +77,7 @@ describe('KB daemon main parent watchdog', () => {
 
     startKbDaemonParentWatchdog({
       parentPid: 123,
-      isAlive: () => true,
+      observeLiveness: () => 'alive' as const,
       getCurrentParentPid: () => currentParentPid,
       setIntervalFn: (fn) => {
         tick = fn;
@@ -104,7 +104,7 @@ describe('KB daemon main parent watchdog', () => {
 
     startKbDaemonParentWatchdog({
       parentPid: 123,
-      isAlive: () => alive,
+      observeLiveness: () => (alive ? 'alive' : 'absent'),
       getCurrentParentPid: () => 123,
       setIntervalFn: (fn) => {
         tick = fn;

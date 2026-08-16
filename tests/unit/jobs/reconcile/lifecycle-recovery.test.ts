@@ -3929,7 +3929,9 @@ describe('lifecycle recovery', () => {
     const pid = 73_737;
     const controlledTime = createControllableTimeoutRuntime(runtime);
     const kill = vi.spyOn(runtime.process, 'kill').mockReturnValue(true);
-    vi.spyOn(runtime.process, 'isAlive').mockImplementation((candidatePid) => candidatePid === pid);
+    vi.spyOn(runtime.process, 'observeLiveness').mockImplementation((candidatePid) =>
+      candidatePid === pid ? 'alive' : 'absent',
+    );
     const fakeService = createFakeExecutionAndRecoveryService({
       captureProviderRecoveryAuthority: vi.fn(async () => ({
         ok: false,
@@ -3960,7 +3962,7 @@ describe('lifecycle recovery', () => {
       expect(progressStore.readRuntimeProjection(jobId)).toMatchObject({ transport: 'durable-cli', pid });
       await controller.start();
       expect(fakeService.captureProviderRecoveryAuthority).toHaveBeenCalledTimes(1);
-      expect(runtime.process.isAlive).toHaveBeenCalledWith(pid);
+      expect(runtime.process.observeLiveness).toHaveBeenCalledWith(pid);
       expect(kill.mock.calls).toEqual([[pid, 'SIGTERM']]);
       expect(controlledTime.setTimeout).toHaveBeenCalledTimes(1);
       expect(controlledTime.runNextTimeout()).toBe(5_000);
@@ -3999,7 +4001,9 @@ describe('lifecycle recovery', () => {
     const kill = vi.spyOn(runtime.process, 'kill').mockImplementation(() => {
       throw new Error('EPERM: operation not permitted');
     });
-    vi.spyOn(runtime.process, 'isAlive').mockImplementation((candidatePid) => candidatePid === pid);
+    vi.spyOn(runtime.process, 'observeLiveness').mockImplementation((candidatePid) =>
+      candidatePid === pid ? 'alive' : 'absent',
+    );
     const fakeService = createFakeExecutionAndRecoveryService({
       captureProviderRecoveryAuthority: vi.fn(async () => ({
         ok: false,
@@ -4053,7 +4057,7 @@ describe('lifecycle recovery', () => {
     const jobId = 'dead-durable-binding-job';
     const pid = 74_747;
     const kill = vi.spyOn(runtime.process, 'kill');
-    vi.spyOn(runtime.process, 'isAlive').mockReturnValue(false);
+    vi.spyOn(runtime.process, 'observeLiveness').mockReturnValue('absent');
     const failure = { reason: 'subject-mismatch', provider: 'codex' } as const;
     const fakeService = createFakeExecutionAndRecoveryService({
       captureProviderRecoveryAuthority: vi.fn(async () => ({ ok: false, failure })),

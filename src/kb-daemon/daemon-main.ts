@@ -1,4 +1,4 @@
-import { isProcessAlive } from '../infra/node-process.js';
+import { observeProcessLiveness, type ProcessLiveness } from '../infra/node-process.js';
 import {
   KB_DAEMON_EVENT_MESSAGE,
   KB_DAEMON_PARENT_REQUEST_MESSAGE,
@@ -170,7 +170,7 @@ export async function handleKbDaemonExpansionRpcRequest(
 export type KbDaemonParentWatchdogOptions = {
   parentPid: number | null | undefined;
   intervalMs?: number;
-  isAlive?: (pid: number) => boolean;
+  observeLiveness?: (pid: number) => ProcessLiveness;
   getCurrentParentPid?: () => number;
   setIntervalFn?: (fn: () => void, ms: number) => IntervalHandle;
   clearIntervalFn?: (handle: IntervalHandle) => void;
@@ -186,7 +186,7 @@ export function startKbDaemonParentWatchdog(options: KbDaemonParentWatchdogOptio
     options.intervalMs !== undefined && Number.isFinite(options.intervalMs) && options.intervalMs > 0
       ? options.intervalMs
       : DEFAULT_PARENT_WATCHDOG_INTERVAL_MS;
-  const isAlive = options.isAlive ?? isProcessAlive;
+  const observeLiveness = options.observeLiveness ?? observeProcessLiveness;
   const getCurrentParentPid = options.getCurrentParentPid ?? (() => process.ppid);
   const setIntervalFn = options.setIntervalFn ?? setInterval;
   const clearIntervalFn = options.clearIntervalFn ?? clearInterval;
@@ -208,15 +208,8 @@ export function startKbDaemonParentWatchdog(options: KbDaemonParentWatchdogOptio
       stopForParentExit();
       return;
     }
-    // A probe that cannot answer is not a parent that exited, and a throw escaping a timer callback would end
-    // this daemon over the question rather than the answer. Ask again on the next tick.
-    let parentAbsent: boolean;
-    try {
-      parentAbsent = !isAlive(parentPid);
-    } catch {
-      return;
-    }
-    if (parentAbsent) stopForParentExit();
+    // Only an observed absence is a parent that exited. Unknown asks again on the next tick.
+    if (observeLiveness(parentPid) === 'absent') stopForParentExit();
   }, intervalMs);
   (handle as { unref?: () => void }).unref?.();
   return handle;

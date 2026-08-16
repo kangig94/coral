@@ -46,7 +46,7 @@ import { composeChildEnv, parsePassthrough, resolveEnvBudgetBytes } from '../inf
 import { isDurableCliRuntime, type DurableCliRuntimeRecord, type DurableProcessExit } from './durable-runtime.js';
 import { buildExecPromise } from './exec-builder.js';
 import { createRealTimePort } from '../infra/time.js';
-import { isProcessAlive, probeProcessIncarnation } from '../infra/node-process.js';
+import { observeProcessLiveness, probeProcessIncarnation } from '../infra/node-process.js';
 
 const DURABLE_POLL_INTERVAL_MS = 100;
 const DURABLE_POLL_TIMEOUT_MS = 5_000;
@@ -306,7 +306,9 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
       if (!exitPromise) {
         let exitedAt = null as number | null;
         while (true) {
-          if (!isProcessAlive(handle.pid)) {
+          // Only an observed absence ends the wait. An unanswerable probe leaves the wrapper exactly as it
+          // was — failing a durable job here would abandon a process that may still be running.
+          if (observeProcessLiveness(handle.pid) === 'absent') {
             exitedAt ??= time.now();
             if (time.now() - exitedAt >= DURABLE_EXIT_GRACE_MS) {
               throw new Error(`Durable process ${handle.pid} exited before the wrapper reported completion`);
@@ -356,7 +358,7 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
         return false;
       }
     },
-    isAlive: (pid) => isProcessAlive(pid),
+    observeLiveness: (pid) => observeProcessLiveness(pid),
     readProcessIncarnation: (pid, platform) => probeProcessIncarnation(pid, platform),
     durable,
   } as ProcessPort;

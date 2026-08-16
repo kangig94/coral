@@ -133,7 +133,7 @@ function buildContainmentEnvironment<Scope extends symbol>(
   return {
     maxRecordedRoots: MAX_PROXY_RECORDED_PROVIDER_ROOTS,
     clock,
-    process: { kill: ports.runtime.process.kill, isAlive: ports.runtime.process.isAlive },
+    process: { kill: ports.runtime.process.kill, observeLiveness: ports.runtime.process.observeLiveness },
     platform: ports.runtime.env.platform() as NodeJS.Platform,
     ...(ports.readProcessIncarnation === undefined ? {} : { readProcessIncarnation: ports.readProcessIncarnation }),
   };
@@ -276,18 +276,18 @@ async function signalAndConfirmAbsence<Scope extends symbol>(
 ): Promise<boolean> {
   environment.process.kill(target, signal);
   const waitDeadline = clock.shiftMilliseconds(clock.now(), graceMs);
-  while (environment.process.isAlive(target) && clock.compare(clock.now(), waitDeadline) < 0) {
+  while (environment.process.observeLiveness(target) !== 'absent' && clock.compare(clock.now(), waitDeadline) < 0) {
     await clock.sleep(ABSENCE_POLL_MS);
   }
-  if (environment.process.isAlive(target)) return false;
+  if (environment.process.observeLiveness(target) !== 'absent') return false;
 
   const confirmDeadline = clock.shiftMilliseconds(clock.now(), CONTAINMENT_DISAPPEARANCE_CONFIRM_MS);
   while (clock.compare(clock.now(), confirmDeadline) < 0) {
-    if (environment.process.isAlive(target)) return false;
+    if (environment.process.observeLiveness(target) !== 'absent') return false;
     const remainingMs = clock.millisecondsBetween(clock.now(), confirmDeadline);
     await clock.sleep(Math.max(0, Math.min(ABSENCE_POLL_MS, remainingMs)));
   }
-  return !environment.process.isAlive(target);
+  return !(environment.process.observeLiveness(target) !== 'absent');
 }
 
 /** Reaps one signal target — SIGTERM, escalating to SIGKILL after the standard grace period, absence

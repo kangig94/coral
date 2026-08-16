@@ -69,7 +69,7 @@ type PerformerRuntime = Readonly<{
 
 /** Keeps process observation injectable because recovery must distinguish a recycled pid from its recorded process. */
 export type CarrierReapDeps<Scope extends symbol> = Readonly<{
-  process: Pick<Runtime['process'], 'kill' | 'isAlive'>;
+  process: Pick<Runtime['process'], 'kill' | 'observeLiveness'>;
   platform: NodeJS.Platform;
   db: Database;
   clock: MonotonicClock<Scope>;

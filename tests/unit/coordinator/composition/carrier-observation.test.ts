@@ -9,19 +9,19 @@ import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { writeDurableCliProcessRuntimeMeta } from '#src/jobs/runtime-meta-store.js';
 import type * as NodeProcess from '#src/infra/node-process.js';
 
-// `isProcessAlive`/`probeProcessIncarnation` default to the real implementation so every existing test
+// `observeProcessLiveness`/`probeProcessIncarnation` default to the real implementation so every existing test
 // below keeps observing genuine OS state; only the ambiguous-evidence test overrides them (once each) to
 // stage the alive-but-unreadable-start-time combination without depending on real `/proc` timing.
 vi.mock('#src/infra/node-process.js', async (importOriginal) => {
   const original = await importOriginal<typeof NodeProcess>();
   return {
     ...original,
-    isProcessAlive: vi.fn(original.isProcessAlive),
+    observeProcessLiveness: vi.fn(original.observeProcessLiveness),
     probeProcessIncarnation: vi.fn(original.probeProcessIncarnation),
   };
 });
 
-import { isProcessAlive, probeProcessIncarnation } from '#src/infra/node-process.js';
+import { observeProcessLiveness, probeProcessIncarnation } from '#src/infra/node-process.js';
 import {
   admittedByThisCoordinator,
   classifyLocalCarriers,
@@ -37,7 +37,7 @@ import type { JobRuntime, JobStatus } from '#src/jobs/records.js';
 import { insertProviderOperation } from '#src/store/provider-operation-journal.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 
-const mockedIsAlive = vi.mocked(isProcessAlive);
+const mockedIsAlive = vi.mocked(observeProcessLiveness);
 const mockedProbe = vi.mocked(probeProcessIncarnation);
 
 const PLATFORM = process.platform;
@@ -410,7 +410,7 @@ describe('createObserveCarriers', () => {
       incarnation: testIncarnation(1),
     });
     mockedProbe.mockReturnValueOnce(null);
-    mockedIsAlive.mockReturnValueOnce(true);
+    mockedIsAlive.mockReturnValueOnce('alive');
     const observe = createObserveCarriers(registriesFor(details, { getDb: () => db }), () => 7);
 
     expect(await observe([DURABLE_JOB_ID])).toEqual([

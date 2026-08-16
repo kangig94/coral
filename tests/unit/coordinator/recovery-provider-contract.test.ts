@@ -1,3 +1,4 @@
+import type { ProcessLiveness } from '#src/infra/node-process.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -664,10 +665,14 @@ describe('provider-operation carrier reap', () => {
     const state = { groupAlive: true, providerRootAlive: true };
     const signals: Array<{ pid: number; signal: NodeJS.Signals | 0 }> = [];
     const process = {
-      isAlive: (pid: number): boolean => {
-        if (pid === -providerOperationCarrier.locator.containment.processGroupId) return state.groupAlive;
-        if (pid === providerOperationCarrier.providerRoot.pid) return state.providerRootAlive;
-        return false;
+      observeLiveness: (pid: number): ProcessLiveness => {
+        if (pid === -providerOperationCarrier.locator.containment.processGroupId) {
+          return state.groupAlive ? 'alive' : 'absent';
+        }
+        if (pid === providerOperationCarrier.providerRoot.pid) {
+          return state.providerRootAlive ? 'alive' : 'absent';
+        }
+        return 'absent';
       },
       kill: (pid: number, signal: NodeJS.Signals | 0): boolean => {
         signals.push({ pid, signal });
@@ -714,7 +719,7 @@ describe('provider-operation carrier reap', () => {
 
   it('leaves the saga in place when absence cannot be confirmed', async () => {
     const db = seededDb();
-    const process = { isAlive: () => true, kill: () => true };
+    const process = { observeLiveness: () => 'alive' as const, kill: () => true };
 
     try {
       await expect(

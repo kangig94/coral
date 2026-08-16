@@ -25,7 +25,7 @@ const clock = createMonotonicClock(containmentClockScope, {
   },
 });
 
-function isAlive(pid: number): boolean {
+function observeLiveness(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
@@ -99,7 +99,7 @@ function environment(
   return {
     clock,
     process: {
-      isAlive: runtime.process.isAlive,
+      observeLiveness: runtime.process.observeLiveness,
       kill: (pid, signal) => {
         signals.push({ pid, signal });
         return runtime.process.kill(pid, signal);
@@ -160,8 +160,8 @@ describe('real recorded process containment', () => {
     if (!Number.isSafeInteger(memberPid)) throw new Error('Group member did not report a valid process id.');
     await recordProcess(memberPid);
     process.kill(leaderIdentity.pid, 'SIGKILL');
-    await waitFor(() => !isAlive(leaderIdentity.pid));
-    expect(isAlive(memberPid)).toBe(true);
+    await waitFor(() => !observeLiveness(leaderIdentity.pid));
+    expect(observeLiveness(memberPid)).toBe(true);
     const signals: Array<{ pid: number; signal: NodeJS.Signals | 0 }> = [];
 
     await reapRecordedContainment(
@@ -172,8 +172,8 @@ describe('real recorded process containment', () => {
     );
 
     expect(signals).toContainEqual({ pid: -leaderIdentity.pid, signal: 'SIGTERM' });
-    expect(isAlive(leaderIdentity.pid)).toBe(false);
-    expect(isAlive(memberPid)).toBe(false);
+    expect(observeLiveness(leaderIdentity.pid)).toBe(false);
+    expect(observeLiveness(memberPid)).toBe(false);
   });
 
   // @flaky — process scheduling and OS signal delivery are timing-sensitive.
@@ -199,8 +199,8 @@ describe('real recorded process containment', () => {
       cleanupGroups.add(escapedPid);
 
       process.kill(leaderIdentity.pid, 'SIGKILL');
-      await waitFor(() => !isAlive(leaderIdentity.pid));
-      expect(isAlive(escapedPid)).toBe(true);
+      await waitFor(() => !observeLiveness(leaderIdentity.pid));
+      expect(observeLiveness(escapedPid)).toBe(true);
       const signals: Array<{ pid: number; signal: NodeJS.Signals | 0 }> = [];
 
       await reapRecordedContainment(
@@ -211,7 +211,7 @@ describe('real recorded process containment', () => {
       );
 
       expect(signals).toContainEqual({ pid: escapedPid, signal: 'SIGTERM' });
-      expect(isAlive(escapedPid)).toBe(false);
+      expect(observeLiveness(escapedPid)).toBe(false);
     },
   );
 
@@ -248,8 +248,8 @@ describe('real recorded process containment', () => {
         environment([]),
       );
 
-      expect(isAlive(leaderIdentity.pid)).toBe(false);
-      expect(isAlive(escapeePid)).toBe(true);
+      expect(observeLiveness(leaderIdentity.pid)).toBe(false);
+      expect(observeLiveness(escapeePid)).toBe(true);
     },
   );
 
@@ -271,7 +271,7 @@ describe('real recorded process containment', () => {
     );
 
     expect(signals).toEqual([]);
-    expect(isAlive(actualIdentity.pid)).toBe(true);
+    expect(observeLiveness(actualIdentity.pid)).toBe(true);
   });
 
   // @flaky — process scheduling and OS signal delivery are timing-sensitive.
@@ -290,6 +290,6 @@ describe('real recorded process containment', () => {
     );
 
     expect(signals).toContainEqual({ pid: -identity.pid, signal: 'SIGKILL' });
-    expect(isAlive(identity.pid)).toBe(false);
+    expect(observeLiveness(identity.pid)).toBe(false);
   });
 });

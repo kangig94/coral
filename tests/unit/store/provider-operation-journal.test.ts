@@ -737,6 +737,25 @@ describe('provider operation journal', () => {
     }
   });
 
+  // Keys the scan must not be able to miss. SQLite compares TEXT as UTF-8 bytes, so `${prefix}\uffff` is not
+  // the successor of an ASCII prefix — U+FFFF is `EF BF BF` and anything above the BMP starts at `F0`, which
+  // sorts above it. A row outside the scan is reported by nothing, fences nothing and is retired by nothing.
+  it('sees every malformed key under the prefix, including the bare prefix and one sorting above U+FFFF', () => {
+    const db = createDb();
+    try {
+      const readable = providerOperationRecord('executing');
+      insertProviderOperation(db, readable);
+      const insert = db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)');
+      const edgeKeys = ['provider_operation_saga.v1:record:', 'provider_operation_saga.v1:record:\u{1F600}'];
+      for (const key of edgeKeys) insert.run(key, 'not json');
+
+      expect([...readProviderOperations(db).unreadableKeys].sort()).toEqual([...edgeKeys].sort());
+      expect(readProviderOperations(db).records).toEqual([readable]);
+    } finally {
+      db.close();
+    }
+  });
+
   // The rollback direction, and the reason the generation lives in the key rather than only in the payload.
   // v0.10.8 selects saga rows by literal key prefix and then parses them strictly, with no tolerance on its
   // startup claim scan — a `version` field inside the payload is a warning it never reaches. The literal

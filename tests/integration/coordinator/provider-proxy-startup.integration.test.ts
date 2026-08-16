@@ -332,7 +332,7 @@ function sandboxedRuntime(time: TimePort): Runtime {
 function absentProcessPort(base: ProcessPort): ProcessPort {
   return {
     ...base,
-    isAlive: () => false,
+    observeLiveness: () => 'absent' as const,
     kill: () => false,
     readProcessIncarnation: () => FIXTURE_PROCESS_LONG_GONE_INCARNATION,
   };

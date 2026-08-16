@@ -424,7 +424,7 @@ export function hasProviderOperationForJob(db: Database, jobId: string): boolean
         [string, string],
         Pick<MetaRow, 'key'>
       >('SELECT key FROM meta WHERE key >= ? AND key < ? ORDER BY key LIMIT 1')
-      .get(prefix, `${prefix}\uffff`) !== undefined
+      .get(prefix, keyPrefixUpperBound(prefix)) !== undefined
   );
 }
 
@@ -432,7 +432,7 @@ export function readProviderOperationForJob(db: Database, jobId: string): Provid
   const prefix = providerOperationRecordKeyPrefix(jobId);
   const rows = db
     .prepare<[string, string], MetaRow>('SELECT key, value FROM meta WHERE key >= ? AND key < ? ORDER BY key LIMIT 2')
-    .all(prefix, `${prefix}\uffff`);
+    .all(prefix, keyPrefixUpperBound(prefix));
   if (rows.length > 1) {
     throw new ProviderOperationJournalError(`Job '${jobId}' has more than one live provider operation.`);
   }
@@ -486,6 +486,10 @@ export function attributeUnreadableProviderOperations(
     const fromKey = providerOperationSetAddressFromRecordKey(key);
     if (fromKey !== null) addresses.push(fromKey);
     const claimed = claimedSetAddress(readCanonicalValue(db, key));
+    // `indeterminate` is not "no payload address" — it is a payload that looks like a record and does not name
+    // a set. Falling back to the key alone there would attribute the row to one set while its bytes could
+    // belong to another, which is exactly what the key cannot settle.
+    if (claimed === 'indeterminate') return { key, addresses: null };
     if (claimed !== null) addresses.push(claimed);
     return { key, addresses: addresses.length === 0 ? null : addresses };
   });
@@ -497,10 +501,17 @@ const claimedOperationSchema = z
   })
   .passthrough();
 
-/** The set a row's own bytes name, read permissively because the row is by definition not decodable. */
+/**
+ * The set a row's own bytes name, read permissively because the row is by definition not decodable.
+ *
+ * Three answers, and the third is the one that matters. `null` is bytes that are not a record at all — no
+ * claim, so the key stands alone. An address is a complete claim. `indeterminate` is bytes that *are*
+ * record-shaped but whose operation identity is missing or partial: a claim that exists and cannot be read,
+ * which no key can stand in for.
+ */
 function claimedSetAddress(
   value: string | undefined,
-): Readonly<{ proxyInstanceId: string; buildSetId: string }> | null {
+): Readonly<{ proxyInstanceId: string; buildSetId: string }> | 'indeterminate' | null {
   if (value === undefined) return null;
   let parsed: unknown;
   try {
@@ -508,11 +519,15 @@ function claimedSetAddress(
   } catch {
     return null;
   }
+  if (!recordShapedSchema.safeParse(parsed).success) return null;
   const result = claimedOperationSchema.safeParse(parsed);
-  if (!result.success) return null;
+  if (!result.success) return 'indeterminate';
   const { proxyInstanceId, buildSetId } = result.data.operation;
-  return proxyInstanceId.length === 0 || buildSetId.length === 0 ? null : { proxyInstanceId, buildSetId };
+  return proxyInstanceId.length === 0 || buildSetId.length === 0 ? 'indeterminate' : { proxyInstanceId, buildSetId };
 }
+
+/** Bytes that are a provider-operation record of some generation, whatever else about them cannot be read. */
+const recordShapedSchema = z.object({ version: z.number(), locator: z.unknown() }).passthrough();
 
 /**
  * Every row under `prefix`, the bare prefix itself included.
@@ -523,6 +538,20 @@ function claimedSetAddress(
  * opposite of what an unaddressable key is supposed to do. Subsequent pages advance strictly past the cursor,
  * or the last row of each page would be visited forever.
  */
+/**
+ * The first key that is *not* under `prefix`, in SQLite's BINARY collation.
+ *
+ * `${prefix}\uffff` is not that bound and reads as if it were. SQLite compares TEXT as UTF-8 bytes, and U+FFFF
+ * encodes as `EF BF BF` while anything above the BMP starts at `F0` — so a key like `<prefix>\u{1F600}` sorts
+ * *above* it and fell outside every range query here. A row nothing scans cannot be reported, cannot fence and
+ * cannot be retired: it is invisible, which is the one state a malformed row must not be in.
+ *
+ * Incrementing the last character is the actual successor, and these prefixes end in ASCII by construction.
+ */
+function keyPrefixUpperBound(prefix: string): string {
+  return `${prefix.slice(0, -1)}${String.fromCharCode(prefix.charCodeAt(prefix.length - 1) + 1)}`;
+}
+
 function forEachRowUnderPrefix(db: Database, prefix: string, visit: (row: MetaRow) => void): void {
   const page = db.prepare<[string, string, number], MetaRow>(
     `SELECT key, value FROM meta
@@ -539,7 +568,11 @@ function forEachRowUnderPrefix(db: Database, prefix: string, visit: (row: MetaRo
   let cursor = prefix;
   let inclusive = true;
   for (;;) {
-    const rows = (inclusive ? firstPage : page).all(cursor, `${prefix}\uffff`, PROVIDER_OPERATION_READ_PAGE_SIZE);
+    const rows = (inclusive ? firstPage : page).all(
+      cursor,
+      keyPrefixUpperBound(prefix),
+      PROVIDER_OPERATION_READ_PAGE_SIZE,
+    );
     inclusive = false;
     for (const row of rows) visit(row);
     if (rows.length < PROVIDER_OPERATION_READ_PAGE_SIZE) return;
@@ -627,7 +660,7 @@ export function retireSupersededProviderOperation(db: Database, key: string): vo
       const duePrefix = `${prefix.slice(0, prefix.length - 'record:'.length)}due:`;
       db.prepare<[string, string, string]>('DELETE FROM meta WHERE key > ? AND key < ? AND value = ?').run(
         duePrefix,
-        `${duePrefix}\uffff`,
+        keyPrefixUpperBound(duePrefix),
         key,
       );
     }

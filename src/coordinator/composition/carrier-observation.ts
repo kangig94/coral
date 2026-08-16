@@ -1,5 +1,5 @@
 import type { Database } from '../../store/db.js';
-import { isProcessAlive, probeProcessIncarnation } from '../../infra/node-process.js';
+import { observeProcessLiveness, probeProcessIncarnation } from '../../infra/node-process.js';
 import {
   classifyCarrier,
   type CarrierEvidence,
@@ -78,7 +78,8 @@ function durableCliEvidence(
 
   const observedIncarnation = probeProcessIncarnation(meta.pid, platform);
   if (observedIncarnation === null) {
-    if (isProcessAlive(meta.pid)) {
+    // Alive OR unanswerable both mean 'not observed gone', which is what this branch needs.
+    if (observeProcessLiveness(meta.pid) !== 'absent') {
       // Alive but its incarnation is unreadable: cannot tell a recycled pid from the same process, so this
       // stays "nothing to check against" rather than a guess in either direction.
       return { carrierClass: 'durable-cli', process: { kind: 'uncaptured' } };

@@ -68,6 +68,8 @@ type RecoveryCoordinatorState = {
   recoveryRegistry: RecoveryRegistry | null;
   cancelledRecoveryJobIds: Set<string>;
   adoptedRunningPids: Map<string, { pid: number; pool: string }>;
+  /** Consecutive ticks whose liveness probe could not answer, per adopted job. Reset by any answer. */
+  unansweredAdoptionProbes: Map<string, number>;
   recoveryPollIntervals: Map<string, TimerHandle>;
   adoptedRunningJobCleanups: Map<string, () => void>;
   inflightFinalizations: Map<
@@ -350,6 +352,9 @@ function settleCoordinatorRecoveryItem(
   ]);
 }
 
+/** How many consecutive unanswerable probes before an adopted job's stuck liveness is reported once. */
+const UNANSWERED_ADOPTION_PROBE_REPORT_THRESHOLD = 10;
+
 export function createRecoveryCoordinator(
   {
     progressStore,
@@ -366,6 +371,7 @@ export function createRecoveryCoordinator(
     recoveryRegistry: null,
     cancelledRecoveryJobIds: new Set<string>(),
     adoptedRunningPids: new Map<string, { pid: number; pool: string }>(),
+    unansweredAdoptionProbes: new Map<string, number>(),
     recoveryPollIntervals: new Map<string, TimerHandle>(),
     adoptedRunningJobCleanups: new Map<string, () => void>(),
     inflightFinalizations: new Map(),
@@ -819,7 +825,10 @@ export function createRecoveryCoordinator(
             }
           };
 
-          if (!runtime.process.isAlive(runtimeRecord.pid)) {
+          // Only an observed absence finalizes. An unanswerable probe used to throw here and reach the walk's
+          // generic catch, which recorded `recovery_parse_failed` — "could not ask" terminalized as "job
+          // failed". It now adopts instead, and the poller below re-asks.
+          if (runtime.process.observeLiveness(runtimeRecord.pid) === 'absent') {
             drainRecoveredProgress();
             await startTrackedFinalization(jobId, signal, (fence) =>
               finalizeDeadAdoptedJob({
@@ -881,19 +890,27 @@ export function createRecoveryCoordinator(
 
           const pollInterval = runtime.time.setInterval(() => {
             drainRecoveredProgress();
-            // A throw escaping a timer callback is an uncaught exception, which is the coordinator exiting over
-            // one job's probe. It is also not evidence: an unanswerable probe leaves the adoption exactly as it
-            // was, to be asked again on the next tick.
-            let adopteeAbsent: boolean;
-            try {
-              adopteeAbsent = !runtime.process.isAlive(runtimeRecord.pid);
-            } catch {
+            // Only an observed absence finalizes. Unknown re-asks — but silently re-asking forever is how an
+            // adoption never settles, so a run of them is reported once and the job stays visibly adopted
+            // rather than quietly stuck.
+            const liveness = runtime.process.observeLiveness(runtimeRecord.pid);
+            if (liveness === 'unknown') {
+              const unanswered = (state.unansweredAdoptionProbes.get(jobId) ?? 0) + 1;
+              state.unansweredAdoptionProbes.set(jobId, unanswered);
+              if (unanswered === UNANSWERED_ADOPTION_PROBE_REPORT_THRESHOLD) {
+                controls.report(
+                  `Liveness of adopted job ${jobId} (pid ${runtimeRecord.pid}) has been unobservable for ` +
+                    `${unanswered} checks; it stays adopted until a probe answers.\n`,
+                );
+              }
               return;
             }
-            if (!adopteeAbsent) return;
+            state.unansweredAdoptionProbes.delete(jobId);
+            if (liveness === 'alive') return;
 
             clearRecoveryPoller(jobId);
             state.adoptedRunningPids.delete(jobId);
+            state.unansweredAdoptionProbes.delete(jobId);
             const retainedCleanup = takeAdoptedJobCleanup(jobId);
             if (state.teardownRequested) {
               retainedCleanup?.();
@@ -1178,14 +1195,9 @@ export function createRecoveryCoordinator(
   const retireAbsentSupersededProviderOperations = (): void => {
     for (const row of readSupersededProviderOperations(progressStore.getDb())) {
       if (row.processTargets === null || row.processTargets.length === 0) continue;
-      let everyTargetAbsent: boolean;
-      try {
-        everyTargetAbsent = row.processTargets.every((target) => !runtime.process.isAlive(target));
-      } catch {
-        // A failed probe did not observe absence. Keep this row's fence and continue checking independent rows.
-        continue;
-      }
-      if (!everyTargetAbsent) continue;
+      // Every target observed absent, and nothing short of it: an unanswerable probe did not observe absence,
+      // so the row keeps its fence and the next boot asks again.
+      if (!row.processTargets.every((target) => runtime.process.observeLiveness(target) === 'absent')) continue;
       retireSupersededProviderOperation(progressStore.getDb(), row.key);
       backendLog.warn(
         `Retired a provider operation record this build cannot read whose processes are all absent: ${row.key}`,

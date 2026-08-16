@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { isProcessAlive } from '#src/infra/node-process.js';
+import { observeProcessLiveness } from '#src/infra/node-process.js';
 import {
   buildArtifactsAvailable,
   coordinatorFilesForHome,
@@ -88,8 +88,8 @@ describe('coordinator cold-start integration', () => {
       db.close();
     }
 
-    await waitForCondition(() => isProcessAlive(discovery.pid), 1_000);
-    expect(isProcessAlive(discovery.pid)).toBe(true);
+    await waitForCondition(() => observeProcessLiveness(discovery.pid) !== 'absent', 1_000);
+    expect(observeProcessLiveness(discovery.pid) !== 'absent').toBe(true);
     expect(discovery.port).toBeGreaterThan(0);
 
     // Shutdown removes coordinator.json (Phase B+C contract).

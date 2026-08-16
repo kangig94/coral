@@ -1,3 +1,4 @@
+import type { ProcessLiveness } from '#src/infra/node-process.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 // Unit coverage for the bind/escalation state machine in
 // `src/coordinator/handoff.ts`. All cases use VirtualTime + a stubbed
@@ -53,7 +54,7 @@ interface KillCall {
 function buildHarness(opts?: {
   bindSequence?: Array<{ kind: 'bound' } | { kind: 'incumbent'; reason: string }>;
   totalBudgetMs?: number;
-  isAlive?: (pid: number) => boolean;
+  observeLiveness?: (pid: number) => ProcessLiveness;
   killThrows?: boolean;
   readDiscovery?: HandoffOptions['readVerifiedIncumbentFromDiscovery'];
   signalLedger?: HandoffSignalLedger;
@@ -65,7 +66,7 @@ function buildHarness(opts?: {
 }) {
   const time = new VirtualTime();
   const killCalls: KillCall[] = [];
-  const isAliveImpl = opts?.isAlive ?? (() => true);
+  const isAliveImpl = opts?.observeLiveness ?? (() => true);
   const runtime: Pick<Runtime, 'time' | 'process' | 'env'> = {
     time,
     process: {
@@ -76,7 +77,7 @@ function buildHarness(opts?: {
         }
         return true;
       },
-      isAlive: isAliveImpl,
+      observeLiveness: isAliveImpl,
     } as unknown as Runtime['process'],
     env: {
       platform: () => opts?.platform ?? 'linux',
@@ -527,7 +528,7 @@ describe('bindWithHandoff', () => {
     };
     const { options, time, killCalls } = buildHarness({
       bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }, { kind: 'bound' }],
-      isAlive: () => alive,
+      observeLiveness: () => (alive ? 'alive' : 'absent'),
       totalBudgetMs: 500,
       readDiscovery: () => ({ ...verifiedIdentity, source: 'discovery', bootToken: 'boot-token' }),
     });
@@ -536,7 +537,7 @@ describe('bindWithHandoff', () => {
       // Simulate process gone right at SIGTERM revalidation: probe returns null.
       return null;
     });
-    // For verifySignalTarget to return 'gone', isAlive must also return false.
+    // For verifySignalTarget to return 'gone', observeLiveness must also return false.
     alive = false;
 
     const promise = bindWithHandoff(options);
@@ -567,7 +568,7 @@ describe('bindWithHandoff', () => {
     const { options, time, killCalls } = buildHarness({
       bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
       totalBudgetMs: 1_000,
-      isAlive: () => true,
+      observeLiveness: () => 'alive' as const,
       readDiscovery: () => ({
         ...verifiedIdentity,
         source: 'discovery',
@@ -610,7 +611,7 @@ describe('bindWithHandoff', () => {
     const { options, time, killCalls } = buildHarness({
       bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
       totalBudgetMs: 1_000,
-      isAlive: () => true,
+      observeLiveness: () => 'alive' as const,
       readDiscovery: () => ({
         pid: 7777,
         source: 'discovery',
@@ -646,7 +647,7 @@ describe('bindWithHandoff', () => {
     const { options, time, killCalls } = buildHarness({
       bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
       totalBudgetMs: 1_000,
-      isAlive: () => true,
+      observeLiveness: () => 'alive' as const,
       platform: 'darwin',
       readDiscovery: () => ({
         ...verifiedIdentity,
@@ -679,7 +680,7 @@ describe('bindWithHandoff', () => {
     const { options, time, killCalls } = buildHarness({
       bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
       totalBudgetMs: 500,
-      isAlive: () => true,
+      observeLiveness: () => 'alive' as const,
       readDiscovery: () => ({ ...verifiedIdentity, source: 'discovery', bootToken: 'boot-token' }),
     });
     mockedShutdown.mockResolvedValue(shutdownResult({ health: null, verifiedIdentity }));
@@ -716,7 +717,7 @@ describe('bindWithHandoff', () => {
     const { options, time, killCalls } = buildHarness({
       bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
       totalBudgetMs: 500,
-      isAlive: () => true,
+      observeLiveness: () => 'alive' as const,
       readDiscovery: () => verifiedFromDiscovery,
     });
     mockedShutdown.mockResolvedValue(shutdownResult({ health: null, verifiedIdentity: null }));
@@ -740,7 +741,7 @@ describe('bindWithHandoff', () => {
     const { options, time, killCalls } = buildHarness({
       bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
       totalBudgetMs: 500,
-      isAlive: () => true,
+      observeLiveness: () => 'alive' as const,
       readDiscovery: () => ({ ...verifiedIdentity, source: 'discovery', bootToken: 'boot-token' }),
     });
     mockedShutdown.mockResolvedValue(shutdownResult({ health: null, verifiedIdentity }));

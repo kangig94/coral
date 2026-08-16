@@ -16,7 +16,7 @@ vi.mock('#src/infra/bundle-manifest.js', () => ({
 }));
 
 vi.mock('#src/infra/node-process.js', () => ({
-  isProcessAlive: vi.fn(() => true),
+  observeProcessLiveness: vi.fn(() => true),
 }));
 
 vi.mock('#src/runtime/real.js', () => ({

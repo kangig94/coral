@@ -1,3 +1,4 @@
+import type { ProcessLiveness } from '#src/infra/node-process.js';
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -354,12 +355,13 @@ describe('runStartupRecovery provider-operation ownership', () => {
     const baseRuntime = createRealRuntime('prod');
     const liveProcessGroupId = 70_001;
     const failedProbePid = 70_003;
-    const isAlive = vi.fn((target: number) => {
-      if (target === failedProbePid) throw new Error('liveness probe unavailable');
-      return target === process.pid || target === -liveProcessGroupId;
+    const observeLiveness = vi.fn((target: number): ProcessLiveness => {
+      // The probe that cannot answer is now a value, not a throw — which is the whole point of the change.
+      if (target === failedProbePid) return 'unknown';
+      return target === process.pid || target === -liveProcessGroupId ? 'alive' : 'absent';
     });
     const kill = vi.fn(baseRuntime.process.kill);
-    const runtime = { ...baseRuntime, process: { ...baseRuntime.process, isAlive, kill } };
+    const runtime = { ...baseRuntime, process: { ...baseRuntime.process, observeLiveness, kill } };
     const progressStore = createProgressStore(runtime);
     const goneJobId = randomUUID();
     const liveJobId = randomUUID();
@@ -493,8 +495,8 @@ describe('runStartupRecovery provider-operation ownership', () => {
       failedProbeRowSurvives: true,
       unwalkableRowSurvives: true,
     });
-    expect(isAlive).toHaveBeenCalledWith(-liveProcessGroupId);
-    expect(isAlive).not.toHaveBeenCalledWith(0);
+    expect(observeLiveness).toHaveBeenCalledWith(-liveProcessGroupId);
+    expect(observeLiveness).not.toHaveBeenCalledWith(0);
     expect(kill).not.toHaveBeenCalled();
   });
 

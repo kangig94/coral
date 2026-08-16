@@ -605,7 +605,7 @@ describe('coordinator continuity lifecycle integration', () => {
     const { sessionManager } = getInternals(service);
     // `durable_cli_process.v1` keys on a canonical UUID; the job id must be one to write it below.
     const jobId = randomUUID();
-    // A pid this OS will never assign: `probeProcessIncarnation` and `isProcessAlive` both answer
+    // A pid this OS will never assign: `probeProcessIncarnation` and `observeProcessLiveness` both answer
     // "nothing there" for it locally, with no network call involved.
     const deadPid = 2_147_483_647;
     const session = allocateTestSession(

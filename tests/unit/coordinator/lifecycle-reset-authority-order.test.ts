@@ -147,7 +147,7 @@ function makeRuntime(): Runtime {
       writeAtomicSync: vi.fn(),
     },
     process: {
-      isAlive: () => false,
+      observeLiveness: () => 'absent' as const,
       kill: vi.fn(),
     },
     ids: {

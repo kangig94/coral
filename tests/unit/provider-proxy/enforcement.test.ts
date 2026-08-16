@@ -87,7 +87,7 @@ function createHarness(options: { adoptionInMs: number; alive?: Set<number>; stu
           }
           return true;
         },
-        isAlive: (pid) => (pid < 0 ? alive.has(-pid) : alive.has(pid)),
+        observeLiveness: (pid) => ((pid < 0 ? alive.has(-pid) : alive.has(pid)) ? 'alive' : 'absent'),
       },
       platform: 'linux',
       maxRecordedRoots: MAX_PROXY_RECORDED_PROVIDER_ROOTS,

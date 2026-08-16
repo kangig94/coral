@@ -1,4 +1,4 @@
-import type { ProcessIncarnation } from '../infra/node-process.js';
+import type { ProcessIncarnation, ProcessLiveness } from '../infra/node-process.js';
 import type { BuildFlavor } from '../infra/build-flavor.js';
 import type { CoralPaths } from '../infra/path/index.js';
 import type { ChildProcessLike, EnvPort, StoragePort, TimePort } from '../infra/port-types.js';
@@ -95,7 +95,7 @@ export interface ProcessPort {
   // Sync exec uses spawnSync semantics, including SIGTERM-only timeout handling.
   execSync(command: string, args: string[], options?: RuntimeExecOptions): ExecResult;
   kill(pid: number, signal: NodeJS.Signals | 0): boolean;
-  isAlive(pid: number): boolean;
+  observeLiveness(pid: number): ProcessLiveness;
   readProcessIncarnation(pid: number, platform: NodeJS.Platform): ProcessIncarnation | null;
   durable: DurableExecutionTransport;
 }

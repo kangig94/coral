@@ -39,7 +39,7 @@ interface KillCall {
 }
 
 function buildEscalationHarness(opts: {
-  incumbentExitsAt: number | null; // virtual time when isAlive flips false
+  incumbentExitsAt: number | null; // virtual time when observeLiveness flips false
   totalBudgetMs: number;
   identity: IncumbentIdentity | null;
 }) {
@@ -47,7 +47,7 @@ function buildEscalationHarness(opts: {
   const start = time.now();
   const killCalls: KillCall[] = [];
 
-  const isAlive = (pid: number): boolean => {
+  const observeLiveness = (pid: number): boolean => {
     if (pid !== opts.identity?.pid) return false;
     if (opts.incumbentExitsAt === null) return true;
     return time.now() - start < opts.incumbentExitsAt;
@@ -60,7 +60,7 @@ function buildEscalationHarness(opts: {
         killCalls.push({ pid, signal, at: time.now() - start });
         return true;
       },
-      isAlive,
+      observeLiveness,
     } as unknown as Runtime['process'],
     env: { platform: () => 'linux' } as unknown as Runtime['env'],
   };

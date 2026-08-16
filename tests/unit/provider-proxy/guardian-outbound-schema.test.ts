@@ -168,7 +168,7 @@ function createGuardianHarness() {
     deadlines: deadlinesFor(clock),
     containmentEnvironment: {
       clock,
-      process: { kill: () => true, isAlive: () => true },
+      process: { kill: () => true, observeLiveness: () => 'alive' as const },
       platform: 'linux',
       maxRecordedRoots: 128,
       readProcessIncarnation: () => CONTAINMENT.incarnation,

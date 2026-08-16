@@ -2,15 +2,30 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { z } from 'zod';
 
-export function isProcessAlive(pid: number): boolean {
+/**
+ * What a liveness probe can actually report — three outcomes, because there are three.
+ *
+ * This was a `boolean` that threw on the third, and the type is the whole point of the change. A signature
+ * saying `boolean` hides the third outcome from the compiler, so every caller looks total while a third of the
+ * behaviour is invisible; four successive hand audits of the same eighteen call sites each missed different
+ * ones, and two of the misses were a coordinator that exits and a job terminalized as failed. Naming the third
+ * outcome moves that audit from a person to `tsc`: a caller must now say which of the three it means.
+ *
+ * `unknown` is not a weaker `absent` and must never be read as one. It is "the question could not be asked" —
+ * `EPERM` is a process this caller may not signal, which is still a process, and an unexpected errno is a probe
+ * that failed rather than a process that is gone. Only `absent` may finalize anything.
+ */
+export type ProcessLiveness = 'alive' | 'absent' | 'unknown';
+
+export function observeProcessLiveness(pid: number): ProcessLiveness {
   try {
     process.kill(pid, 0);
-    return true;
+    return 'alive';
   } catch (error: unknown) {
     const code = (error as NodeJS.ErrnoException).code;
-    if (code === 'ESRCH') return false;
-    if (code === 'EPERM') return true;
-    throw error;
+    if (code === 'ESRCH') return 'absent';
+    if (code === 'EPERM') return 'alive';
+    return 'unknown';
   }
 }
 

@@ -261,7 +261,7 @@ function removeDeadWriterLeases(runtime: Runtime, paths: GenerationBoundaryPaths
       live.push(entry);
       continue;
     }
-    if (runtime.process.isAlive(holder.pid)) {
+    if (runtime.process.observeLiveness(holder.pid) !== 'absent') {
       live.push(holder.description);
       continue;
     }

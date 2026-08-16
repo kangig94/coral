@@ -157,7 +157,13 @@ async function registerRunningRecovery(
   const captured = await service.captureProviderRecoveryAuthority(action.launchRecord);
   signal.throwIfAborted();
   if (!captured.ok) {
-    if (isDurableCliRuntime(action.runtimeRecord) && runtime.process.isAlive(action.runtimeRecord.pid)) {
+    // Only an observed-alive process gets a pid-kill cleanup installed. Unknown installs none — signalling a
+    // pid nobody could observe is the one action this branch must not take — and the binding failure below is
+    // settled either way, which is what the probe used to skip by throwing.
+    if (
+      isDurableCliRuntime(action.runtimeRecord) &&
+      runtime.process.observeLiveness(action.runtimeRecord.pid) === 'alive'
+    ) {
       const pid = action.runtimeRecord.pid;
       const releaseRegistry = (): void => recoveryRegistry.remove(action.jobId);
       setProcessLocalCleanup(() => {

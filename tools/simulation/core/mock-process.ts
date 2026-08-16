@@ -338,7 +338,7 @@ export class MockProcessSpawner {
     return true;
   }
 
-  isAlive(pid: number): boolean {
+  observeLiveness(pid: number): boolean {
     return this.resolveKillTargets(pid).some((record) => record.alive);
   }
 

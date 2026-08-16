@@ -1,4 +1,9 @@
-import { isProcessIncarnation, probeProcessIncarnation, type ProcessIncarnation } from './node-process.js';
+import {
+  isProcessIncarnation,
+  probeProcessIncarnation,
+  type ProcessIncarnation,
+  type ProcessLiveness,
+} from './node-process.js';
 import type { MonotonicClock, MonotonicInstant } from './monotonic-clock.js';
 import {
   CONTAINMENT_DISAPPEARANCE_CONFIRM_MS,
@@ -35,7 +40,7 @@ export type ProcessContainmentEnvironment<Scope extends symbol> = {
   readonly clock: MonotonicClock<Scope>;
   readonly process: {
     kill(pid: number, signal: NodeJS.Signals | 0): boolean;
-    isAlive(pid: number): boolean;
+    observeLiveness(pid: number): ProcessLiveness;
   };
   readonly platform: NodeJS.Platform;
   readonly readProcessIncarnation?: (pid: number, platform: NodeJS.Platform) => ProcessIncarnation | null;
@@ -154,7 +159,7 @@ function observeProcessIdentity<Scope extends symbol>(
   if (observedIncarnation !== null) {
     return 'absent';
   }
-  if (!environment.process.isAlive(identity.pid)) {
+  if (environment.process.observeLiveness(identity.pid) === 'absent') {
     return 'absent';
   }
   throw new ProcessContainmentError(
@@ -176,7 +181,7 @@ function observeContainment<Scope extends symbol>(
     // group, not always to reap ours.
     return 'absent';
   }
-  if (observedIncarnation === null && environment.process.isAlive(containment.pid)) {
+  if (observedIncarnation === null && environment.process.observeLiveness(containment.pid) !== 'absent') {
     throw new ProcessContainmentError(
       'process_identity_unverified',
       `Refusing to signal process group ${containment.processGroupId} because its leader incarnation is unavailable while pid=${containment.pid} is alive.`,
@@ -184,7 +189,7 @@ function observeContainment<Scope extends symbol>(
     );
   }
 
-  const groupIsAlive = environment.process.isAlive(-containment.processGroupId);
+  const groupIsAlive = environment.process.observeLiveness(-containment.processGroupId) !== 'absent';
   if (observedIncarnation === containment.incarnation && !groupIsAlive) {
     return 'absent';
   }

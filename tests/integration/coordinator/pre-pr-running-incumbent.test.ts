@@ -115,7 +115,7 @@ describe('pre-PR running incumbent (R6)', () => {
       time,
       process: {
         kill: () => undefined,
-        isAlive: () => true,
+        observeLiveness: () => 'alive' as const,
       } as unknown as Runtime['process'],
       env: { platform: () => 'linux' } as unknown as Runtime['env'],
     };
@@ -180,7 +180,7 @@ describe('pre-PR running incumbent (R6)', () => {
       time,
       process: {
         kill: () => undefined,
-        isAlive: () => true,
+        observeLiveness: () => 'alive' as const,
       } as unknown as Runtime['process'],
       env: { platform: () => 'linux' } as unknown as Runtime['env'],
     };
@@ -239,7 +239,7 @@ describe('pre-PR running incumbent (R6)', () => {
       time,
       process: {
         kill: () => undefined,
-        isAlive: () => true,
+        observeLiveness: () => 'alive' as const,
       } as unknown as Runtime['process'],
       env: { platform: () => 'linux' } as unknown as Runtime['env'],
     };

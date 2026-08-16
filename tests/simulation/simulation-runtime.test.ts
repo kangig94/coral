@@ -245,18 +245,18 @@ describe('simulation runtime', () => {
     expect(stderr).toBe('child-err\n');
     expect(runtime.storage.readFileSync(durable.stdoutPath, 'utf-8')).toBe('progress-one\n');
     expect(runtime.storage.readFileSync(durable.stderrPath, 'utf-8')).toBe('warn-one\n');
-    expect(runtime.process.isAlive(durable.pid)).toBe(true);
+    expect(runtime.process.observeLiveness(durable.pid)).toBe('alive');
 
     runtime.process.kill(durable.pid, 'SIGTERM');
     expect(runtime.spawner.killCalls).toContainEqual({ pid: 30_001, signal: 'SIGTERM' });
-    expect(runtime.process.isAlive(durable.pid)).toBe(true);
+    expect(runtime.process.observeLiveness(durable.pid)).toBe('alive');
 
     runtime.time.tick(1);
     await expect(durableExitPromise).resolves.toMatchObject({
       exitCode: null,
       signal: 'SIGTERM',
     });
-    expect(runtime.process.isAlive(durable.pid)).toBe(false);
+    expect(runtime.process.observeLiveness(durable.pid)).toBe('absent');
 
     const ids = new SequentialIds();
     expect(ids.uuid()).toBe('00000000-0000-0000-0000-000000000001');

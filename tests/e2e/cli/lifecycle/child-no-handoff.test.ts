@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { isProcessAlive } from '#src/infra/node-process.js';
+import { observeProcessLiveness } from '#src/infra/node-process.js';
 import type { BuildFlavor } from '#src/infra/build-flavor.js';
 import {
   buildArtifactsAvailable,
@@ -126,7 +126,7 @@ describe('bundled child coordinator confinement', () => {
     expect(after?.bundleHash).toBe(before.bundleHash);
     expect(after?.bundleHash).toBe(parentFixture.bundleHash);
     expect(readFileSync(paths.infoFile, 'utf-8')).toBe(discoveryBefore);
-    expect(isProcessAlive(before.pid)).toBe(true);
+    expect(observeProcessLiveness(before.pid) !== 'absent').toBe(true);
 
     if (logBefore === null) {
       expect(existsSync(logPath)).toBe(false);

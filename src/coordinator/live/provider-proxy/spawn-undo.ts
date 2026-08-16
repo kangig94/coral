@@ -48,10 +48,10 @@ export function buildGuardianSpawnUndo(
     const group = -spawned.pid;
     runtime.process.kill(group, 'SIGTERM');
     const graceDeadline = runtime.time.now() + PROXY_TEARDOWN_RESERVE_MS;
-    while (runtime.process.isAlive(group) && runtime.time.now() < graceDeadline) {
+    while (runtime.process.observeLiveness(group) !== 'absent' && runtime.time.now() < graceDeadline) {
       await runtime.time.sleep(ABSENCE_POLL_MS);
     }
-    if (runtime.process.isAlive(group)) {
+    if (runtime.process.observeLiveness(group) !== 'absent') {
       runtime.process.kill(group, 'SIGKILL');
     }
   };

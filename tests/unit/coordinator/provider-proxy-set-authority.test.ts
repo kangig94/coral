@@ -499,7 +499,7 @@ function fakeSpawnedGuardian(pid: number, seed: number): SpawnedRoleProcess {
 type SignalCall = { pid: number; signal: NodeJS.Signals | 0 };
 
 /**
- * `isAlive` is answered by the test, not stubbed away: it is what decides between "the group went quietly"
+ * `observeLiveness` is answered by the test, not stubbed away: it is what decides between "the group went quietly"
  * and "escalate", so a runtime missing it would let the escalation path pass untested — which is how the
  * partial mock this replaces went unnoticed.
  */
@@ -511,7 +511,7 @@ function guardianUndoRuntime(time: VirtualTime, isAlive: () => boolean, killCall
         killCalls.push({ pid, signal });
         return true;
       },
-      isAlive,
+      observeLiveness: () => (isAlive() ? 'alive' : 'absent'),
     },
   } as unknown as Runtime;
 }

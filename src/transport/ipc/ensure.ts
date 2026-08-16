@@ -1,4 +1,4 @@
-import { isProcessAlive } from '../../infra/node-process.js';
+import { observeProcessLiveness } from '../../infra/node-process.js';
 import { processIncarnationSchema, type ProcessIncarnation } from '../../infra/node-process.js';
 declare const __PLUGIN_ROOT__: string;
 declare const __BUNDLE_DIR__: string | undefined;
@@ -459,16 +459,9 @@ function matchingStartupError(
   if (observedPid !== undefined && sentinel.pid !== observedPid) {
     return null;
   }
-  // Only a process observed gone may retire its sentinel. An unanswerable probe is not that observation, and
-  // clearing on it would discard a live coordinator's recorded startup failure — so the sentinel stands, and
-  // this runs on a startup path where a throw would be no daemon at all.
-  let sentinelOwnerAbsent: boolean;
-  try {
-    sentinelOwnerAbsent = !isProcessAlive(sentinel.pid);
-  } catch {
-    sentinelOwnerAbsent = false;
-  }
-  if (sentinelOwnerAbsent) {
+  // Only a process observed gone may retire its sentinel: clearing on an unanswerable probe would discard a
+  // live coordinator's recorded startup failure.
+  if (observeProcessLiveness(sentinel.pid) === 'absent') {
     clearStartupErrorSentinel(paths);
     return null;
   }

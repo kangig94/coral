@@ -1,3 +1,4 @@
+import type { ProcessLiveness } from '#src/infra/node-process.js';
 import type { ProcessIncarnation } from '#src/infra/node-process.js';
 import { describe, expect, it } from 'vitest';
 
@@ -52,7 +53,7 @@ describe('interrupted provider-operation carrier reclamation', () => {
         platform: 'linux',
         signal: controller.signal,
         process: {
-          isAlive: (pid) => live.has(pid),
+          observeLiveness: (pid) => (live.has(pid) ? 'alive' : 'absent'),
           kill: (pid, signal) => {
             signals.push({ pid, signal });
             if (signal === 'SIGKILL') live.clear();
@@ -117,7 +118,7 @@ describe('interrupted provider-operation carrier reclamation', () => {
       ...baseRuntime,
       process: {
         ...baseRuntime.process,
-        isAlive: (pid: number) => live.has(pid),
+        observeLiveness: (pid: number) => (live.has(pid) ? 'alive' : 'absent') as ProcessLiveness,
         readProcessIncarnation: (pid: number) => live.get(pid) ?? null,
         kill: (pid: number, signal: NodeJS.Signals | 0) => {
           signals.push({ pid, signal });

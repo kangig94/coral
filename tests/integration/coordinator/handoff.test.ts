@@ -114,7 +114,7 @@ describe('handoff integration (AC2 + AC3 happy path)', () => {
         time,
         process: {
           kill: () => undefined,
-          isAlive: () => true,
+          observeLiveness: () => 'alive' as const,
         } as unknown as Runtime['process'],
         env: { platform: () => 'linux' } as unknown as Runtime['env'],
       };

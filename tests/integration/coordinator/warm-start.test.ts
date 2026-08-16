@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { isProcessAlive } from '#src/infra/node-process.js';
+import { observeProcessLiveness } from '#src/infra/node-process.js';
 import {
   buildArtifactsAvailable,
   createPluginFixture,
@@ -60,7 +60,7 @@ describe('coordinator warm-start integration', () => {
 
     const initial = await waitForDiscoveryRecord(home, 'prod', 15_000);
     expect(initial.bundleHash).toBe(firstFixture.bundleHash);
-    expect(isProcessAlive(initial.pid)).toBe(true);
+    expect(observeProcessLiveness(initial.pid) !== 'absent').toBe(true);
 
     // An ordinary rebuild without a version bump: same product version, different bundle hash.
     const secondFixture = updatePluginFixtureBundleHash(firstFixture, 'bbbbbbbbbbbbbbbb');
@@ -96,6 +96,6 @@ describe('coordinator warm-start integration', () => {
     expect(afterContender?.pid).toBe(initial.pid);
     expect(afterContender?.bundleHash).toBe(firstFixture.bundleHash);
     expect(afterContender?.instanceId).toBe(initial.instanceId);
-    expect(isProcessAlive(initial.pid)).toBe(true);
+    expect(observeProcessLiveness(initial.pid) !== 'absent').toBe(true);
   });
 });

@@ -74,7 +74,7 @@ function noSignalRuntime(): Pick<Runtime, 'time' | 'process' | 'env'> {
       kill: () => {
         throw new Error('signal escalation must not be reached in this scenario');
       },
-      isAlive: () => true,
+      observeLiveness: () => 'alive' as const,
     } as unknown as Runtime['process'],
     env: { platform: () => 'linux' } as unknown as Runtime['env'],
   };

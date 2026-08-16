@@ -422,13 +422,13 @@ type SignalVerificationResult = 'matched' | 'gone';
 function verifySignalTarget(
   incumbent: IncumbentIdentity,
   anchoredIncarnation: ProcessIncarnation | null,
-  process: Pick<Runtime['process'], 'isAlive'>,
+  process: Pick<Runtime['process'], 'observeLiveness'>,
   platform: NodeJS.Platform,
 ): SignalVerificationResult {
   const liveIncarnation = probeProcessIncarnation(incumbent.pid, platform);
   if (liveIncarnation === null) {
     // Unreadable is not gone. Only a pid that no longer exists is gone.
-    return process.isAlive(incumbent.pid)
+    return process.observeLiveness(incumbent.pid) !== 'absent'
       ? refuseSignal(incumbent, 'process incarnation unavailable while pid is alive')
       : 'gone';
   }

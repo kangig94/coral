@@ -1,3 +1,4 @@
+import type { ProcessLiveness } from '#src/infra/node-process.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -135,7 +136,8 @@ async function startSet(options: { recordContainment?: boolean } = {}) {
         for (const target of pid < 0 ? [...alive] : [pid]) alive.delete(target);
         return true;
       },
-      isAlive: (pid: number) => (pid < 0 ? alive.has(-pid) : alive.has(pid)),
+      observeLiveness: (pid: number) =>
+        ((pid < 0 ? alive.has(-pid) : alive.has(pid)) ? 'alive' : 'absent') as ProcessLiveness,
     },
     platform: 'linux' as const,
     maxRecordedRoots: 128,
@@ -518,7 +520,7 @@ async function startBareReaper<Scope extends symbol>(
     deadlines,
     containmentEnvironment: {
       clock,
-      process: { kill: () => true, isAlive: () => true },
+      process: { kill: () => true, observeLiveness: () => 'alive' as const },
       platform: 'linux' as const,
       maxRecordedRoots: 128,
       readProcessIncarnation: () => CONTAINMENT.incarnation,
@@ -687,7 +689,7 @@ describe('provider-proxy guardian and reaper', () => {
     const clock = createMonotonicClock(Symbol('arm-before-forward'), { readMilliseconds: () => 0n });
     const containmentEnvironment = {
       clock,
-      process: { kill: () => true, isAlive: () => true },
+      process: { kill: () => true, observeLiveness: () => 'alive' as const },
       platform: 'linux' as const,
       maxRecordedRoots: 128,
       readProcessIncarnation: () => CONTAINMENT.incarnation,
@@ -1000,7 +1002,7 @@ describe('provider-proxy guardian and reaper', () => {
     const clock = createMonotonicClock(Symbol('bare-guardian'), { readMilliseconds: () => 0n });
     const containmentEnvironment = {
       clock,
-      process: { kill: () => true, isAlive: () => true },
+      process: { kill: () => true, observeLiveness: () => 'alive' as const },
       platform: 'linux' as const,
       maxRecordedRoots: 128,
       readProcessIncarnation: () => CONTAINMENT.incarnation,
@@ -1845,7 +1847,7 @@ describe('provider-proxy guardian and reaper', () => {
       },
       containmentEnvironment: {
         clock,
-        process: { kill: () => true, isAlive: () => false },
+        process: { kill: () => true, observeLiveness: () => 'absent' as const },
         platform: 'linux' as const,
         maxRecordedRoots: 128,
         readProcessIncarnation: () => null,
@@ -2013,7 +2015,8 @@ describe('provider-proxy guardian and reaper', () => {
           for (const target of pid < 0 ? [...alive] : [pid]) alive.delete(target);
           return true;
         },
-        isAlive: (pid: number) => (pid < 0 ? alive.has(-pid) : alive.has(pid)),
+        observeLiveness: (pid: number) =>
+          ((pid < 0 ? alive.has(-pid) : alive.has(pid)) ? 'alive' : 'absent') as ProcessLiveness,
       },
       platform: 'linux' as const,
       maxRecordedRoots: MAX_PROXY_RECORDED_PROVIDER_ROOTS,

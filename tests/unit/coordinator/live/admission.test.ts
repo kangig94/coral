@@ -81,9 +81,9 @@ function createProviderProcessRuntime(
     queueMicrotask(() => events.emit('close', 0, signal));
     return true;
   });
-  const isAlive = vi.fn<ProcessPort['isAlive']>((targetPid) => {
-    if (Math.abs(targetPid) !== pid) return false;
-    return targetPid < 0 ? groupAlive : processAlive;
+  const observeLiveness = vi.fn<ProcessPort['observeLiveness']>((targetPid) => {
+    if (Math.abs(targetPid) !== pid) return 'absent';
+    return (targetPid < 0 ? groupAlive : processAlive) ? 'alive' : 'absent';
   });
   const readProcessIncarnation = vi.fn<ProcessPort['readProcessIncarnation']>((targetPid) =>
     targetPid === pid && processAlive ? incarnation : null,
@@ -93,7 +93,7 @@ function createProviderProcessRuntime(
     runtime: {
       ...base,
       env: { ...base.env, platform: readPlatform },
-      process: { ...base.process, spawn, kill: processKill, isAlive, readProcessIncarnation },
+      process: { ...base.process, spawn, kill: processKill, observeLiveness, readProcessIncarnation },
     },
     spawn,
     childKill,

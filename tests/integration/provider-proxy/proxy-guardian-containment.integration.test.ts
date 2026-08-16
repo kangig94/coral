@@ -1,3 +1,4 @@
+import type { ProcessLiveness } from '#src/infra/node-process.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -260,7 +261,8 @@ async function startGuardianAndReaper() {
         for (const target of pid < 0 ? [...alive] : [pid]) alive.delete(target);
         return true;
       },
-      isAlive: (pid: number) => (pid < 0 ? alive.has(-pid) : alive.has(pid)),
+      observeLiveness: (pid: number) =>
+        ((pid < 0 ? alive.has(-pid) : alive.has(pid)) ? 'alive' : 'absent') as ProcessLiveness,
     },
     platform: 'linux' as const,
     maxRecordedRoots: 128,

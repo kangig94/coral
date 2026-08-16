@@ -369,7 +369,9 @@ async function proveProviderProxySetContainmentAbsent(
   const enforcerMayStillBeLive = enforcerIdentities.some((enforcer) => {
     try {
       const live = probeProcessIncarnation(enforcer.pid, platform);
-      return live === null ? runtime.process.isAlive(enforcer.pid) : live === enforcer.incarnation;
+      // Unreadable identity falls back to liveness, where anything but an observed absence keeps this enforcer
+      // "may still be live" — the conservative direction, since the caller may only conclude absence.
+      return live === null ? runtime.process.observeLiveness(enforcer.pid) !== 'absent' : live === enforcer.incarnation;
     } catch {
       return true;
     }

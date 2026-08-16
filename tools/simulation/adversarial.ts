@@ -351,7 +351,7 @@ export class SimulationWorld {
       }
       throw new Error('Cannot kill without a pid or jobId');
     }
-    if (!this.current.backend.runtime.process.isAlive(pid)) {
+    if (!this.current.backend.runtime.process.observeLiveness(pid)) {
       throw new Error(`Cannot kill inactive pid ${pid}`);
     }
     this.current.backend.runtime.process.kill(pid, 'SIGTERM');
@@ -513,7 +513,7 @@ export class SimulationWorld {
 
   isPidAlive(pid: number): boolean {
     this.assertUsable();
-    return this.current.backend.runtime.process.isAlive(pid);
+    return this.current.backend.runtime.process.observeLiveness(pid) !== 'absent';
   }
 
   async teardown(): Promise<void> {

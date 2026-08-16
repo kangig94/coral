@@ -1,3 +1,4 @@
+import type { ProcessLiveness } from '#src/infra/node-process.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -186,7 +187,7 @@ function proofRuntime(liveProcesses: ReadonlyMap<number, ProcessIncarnation>) {
     ...base,
     process: {
       ...base.process,
-      isAlive: (pid: number) => live.has(pid),
+      observeLiveness: (pid: number) => (live.has(pid) ? 'alive' : 'absent') as ProcessLiveness,
       kill: (pid: number, signal: NodeJS.Signals | 0) => {
         signals.push({ pid, signal });
         live.delete(pid);
@@ -1070,7 +1071,7 @@ describe('createProviderProxySetInheritance', () => {
       ...base,
       process: {
         ...base.process,
-        isAlive: (pid: number) => live.has(pid),
+        observeLiveness: (pid: number) => (live.has(pid) ? 'alive' : 'absent') as ProcessLiveness,
         kill: (pid: number, signal: NodeJS.Signals | 0) => {
           signals.push({ pid, signal });
           if (signal === 'SIGKILL') live.clear();
@@ -1123,7 +1124,7 @@ describe('createProviderProxySetInheritance', () => {
       ...base,
       process: {
         ...base.process,
-        isAlive: () => true,
+        observeLiveness: () => 'alive' as const,
         kill: (pid: number, signal: NodeJS.Signals | 0) => {
           signals.push({ pid, signal });
           return true;
@@ -1158,7 +1159,7 @@ describe('createProviderProxySetInheritance', () => {
     const base = createRealRuntime('prod');
     const boundedRuntime = {
       ...base,
-      process: { ...base.process, isAlive: () => true, kill: () => true },
+      process: { ...base.process, observeLiveness: () => 'alive' as const, kill: () => true },
     };
     // Every pid is readable, and every one of them reads back as someone else.
     mockedProbe.mockImplementation(() => testIncarnation(9_999_999));
@@ -1210,13 +1211,22 @@ describe('createProviderProxySetInheritance', () => {
     [
       'a foreign key whose bytes claim this set',
       () => `provider_operation_saga.v1:record:${randomUUID()}:${randomUUID()}:${randomUUID()}:${randomUUID()}`,
+      // Record-shaped, because a real key/value disagreement is a whole record written at the wrong key — not
+      // an arbitrary object. Bytes that are not a record at all make no claim, and the key stands alone.
       (reference: ProviderProxySetLocator) =>
         JSON.stringify({
+          version: 2,
+          locator: {},
           operation: {
             proxyInstanceId: reference.operation.proxyInstanceId,
             buildSetId: reference.operation.buildSetId,
           },
         }),
+    ],
+    [
+      'a foreign key whose record-shaped bytes name no set at all',
+      () => `provider_operation_saga.v1:record:${randomUUID()}:${randomUUID()}:${randomUUID()}:${randomUUID()}`,
+      () => JSON.stringify({ version: 2, locator: {}, operation: { proxyInstanceId: 'only-half' } }),
     ],
   ])('keeps containment proof unknown for %s', async (_label, keyFor, valueFor) => {
     const reference = locator();

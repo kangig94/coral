@@ -1,3 +1,4 @@
+import type { ProcessLiveness } from '#src/infra/node-process.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { describe, expect, it } from 'vitest';
 
@@ -35,11 +36,11 @@ function createFakeEnvironment(
 } {
   let elapsedMs = 0;
   const signals: Array<{ pid: number; signal: NodeJS.Signals | 0; at: number }> = [];
-  const isAlive = (pid: number): boolean => {
-    if (pid === -containment.processGroupId) return state.groupAlive;
-    if (pid === containment.pid) return state.leaderAlive;
-    if (pid === providerRoot.pid) return state.providerRootAlive;
-    return false;
+  const observeLiveness = (pid: number): ProcessLiveness => {
+    if (pid === -containment.processGroupId) return state.groupAlive ? 'alive' : 'absent';
+    if (pid === containment.pid) return state.leaderAlive ? 'alive' : 'absent';
+    if (pid === providerRoot.pid) return state.providerRootAlive ? 'alive' : 'absent';
+    return 'absent';
   };
 
   const clock = createMonotonicClock(containmentClockScope, {
@@ -55,7 +56,7 @@ function createFakeEnvironment(
     environment: {
       clock,
       process: {
-        isAlive,
+        observeLiveness,
         kill: (pid, signal) => {
           signals.push({ pid, signal, at: elapsedMs });
           elapsedMs += options.signalCostMs ?? 0;
@@ -63,7 +64,7 @@ function createFakeEnvironment(
             if (pid === -containment.processGroupId) state.groupAlive = false;
             if (pid === providerRoot.pid) state.providerRootAlive = false;
           }
-          return isAlive(pid);
+          return observeLiveness(pid) !== 'absent';
         },
       },
       platform: 'linux',

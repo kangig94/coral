@@ -42,7 +42,8 @@ function createRecordingReaper(incarnation = containment.incarnation) {
       env: { ...runtime.env, platform: () => 'linux' },
       process: {
         ...runtime.process,
-        isAlive: (pid) => pid === containment.pid || (pid === -containment.processGroupId && groupAlive),
+        observeLiveness: (pid) =>
+          pid === containment.pid || (pid === -containment.processGroupId && groupAlive) ? 'alive' : 'absent',
         kill: (pid, signal) => {
           signals.push([pid, signal]);
           if (signal === 'SIGKILL') groupAlive = false;
@@ -104,7 +105,7 @@ describe('provider host drain properties', () => {
       process: {
         ...runtime.process,
         kill: () => false,
-        isAlive: () => false,
+        observeLiveness: () => 'absent' as const,
         readProcessIncarnation: () => null,
       },
     });
@@ -187,7 +188,8 @@ describe('provider host drain properties', () => {
         env: { ...runtime.env, platform: () => 'linux' },
         process: {
           ...runtime.process,
-          isAlive: (pid) => pid === containment.pid || pid === -containment.processGroupId,
+          observeLiveness: (pid) =>
+            pid === containment.pid || pid === -containment.processGroupId ? 'alive' : 'absent',
           kill: (pid, signal) => {
             signals.push([pid, signal]);
             return true;

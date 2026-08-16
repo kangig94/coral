@@ -669,7 +669,9 @@ describe('recovery coordinator shutdown', () => {
       }
       return handle;
     });
-    vi.spyOn(runtime.process, 'isAlive').mockImplementation((candidatePid: number) => candidatePid === pid && pidAlive);
+    vi.spyOn(runtime.process, 'observeLiveness').mockImplementation((candidatePid: number) =>
+      candidatePid === pid && pidAlive ? 'alive' : 'absent',
+    );
 
     const harness = createCoordinatorShutdownHarness({
       modules,
@@ -803,7 +805,9 @@ describe('recovery coordinator shutdown', () => {
     const cleanupSpy = vi.fn();
     const pid = 51_515;
     let pidAlive = true;
-    vi.spyOn(runtime.process, 'isAlive').mockImplementation((candidatePid: number) => candidatePid === pid && pidAlive);
+    vi.spyOn(runtime.process, 'observeLiveness').mockImplementation((candidatePid: number) =>
+      candidatePid === pid && pidAlive ? 'alive' : 'absent',
+    );
 
     const harness = createCoordinatorShutdownHarness({
       modules,
@@ -854,7 +858,9 @@ describe('recovery coordinator shutdown', () => {
     const pid = 60_606;
     let pidAlive = true;
     let providerSignal: AbortSignal | null = null;
-    vi.spyOn(runtime.process, 'isAlive').mockImplementation((candidatePid: number) => candidatePid === pid && pidAlive);
+    vi.spyOn(runtime.process, 'observeLiveness').mockImplementation((candidatePid: number) =>
+      candidatePid === pid && pidAlive ? 'alive' : 'absent',
+    );
 
     const harness = createCoordinatorShutdownHarness({
       modules,
@@ -897,7 +903,9 @@ describe('recovery coordinator shutdown', () => {
     const finalizerBlocked = new Promise<void>((resolve) => {
       releaseFinalizer = resolve;
     });
-    vi.spyOn(runtime.process, 'isAlive').mockImplementation((candidatePid: number) => candidatePid === pid && pidAlive);
+    vi.spyOn(runtime.process, 'observeLiveness').mockImplementation((candidatePid: number) =>
+      candidatePid === pid && pidAlive ? 'alive' : 'absent',
+    );
 
     const harness = createCoordinatorShutdownHarness({
       modules,
