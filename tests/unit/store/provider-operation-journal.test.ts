@@ -554,6 +554,17 @@ describe('provider operation journal', () => {
       // is the shape a real orphaned operation has, and the reconciler treats a throw here as fatal.
       expect(() => readProviderOperationsDue(db, Number.MAX_SAFE_INTEGER, 10)).not.toThrow();
       expect(readProviderOperationsDue(db, Number.MAX_SAFE_INTEGER, 10)).toEqual([]);
+
+      // And it must not stand in front of work this build *can* do. Due keys sort by retry time, so an older
+      // build's rows are the oldest there are and land at the head of every scan. Filtering one page after
+      // reading it returns nothing while readable work sits immediately behind — on every poll, forever,
+      // because the reconciler reads an empty selection as "nothing due".
+      const readableDue = providerOperationRecord('prepare-pending', { job: 3 });
+      insertProviderOperation(db, readableDue);
+      expect(
+        readProviderOperationsDue(db, Number.MAX_SAFE_INTEGER, 1),
+        'a single unusable row at the head must not hide the whole queue behind it',
+      ).toEqual([readableDue]);
     } finally {
       db.close();
     }

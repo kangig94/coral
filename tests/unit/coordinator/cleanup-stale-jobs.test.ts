@@ -179,7 +179,7 @@ describe('cleanupStaleJobs', () => {
   });
 
   it('reclaims the pruned job’s recorded carrier identity and leaves every other one', async () => {
-    // Nothing deletes this row when a job ends — a durable CLI's recorded pid and start second describe a
+    // Nothing deletes this row when a job ends — a durable CLI's recorded pid and incarnation describe a
     // process, not a phase — so the retention prune is the only thing standing between it and unbounded
     // growth. It is reclaimed with the artifact because it is scoped to exactly the same job.
     const { survivingIdentities } = await runCleanup({

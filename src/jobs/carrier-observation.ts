@@ -145,7 +145,7 @@ function acquiredVerdict(evidence: Extract<CarrierEvidence, { carrierClass: 'app
  * alive and is not this job, so `matchesRecordedIncarnation` is what tells a resurrected identity from the genuine
  * one. `transportEvidence` stays fixed `true` at every production evidence builder — a durable CLI has no
  * control channel to source a contradicting signal from (`runtime-meta.ts`'s own doc on why the recorded
- * identity is pid-plus-start-time and nothing more) — so today only the first two can turn this `absent`.
+ * identity is a pid and an incarnation and nothing more) — so today only the first two can turn this `absent`.
  */
 function durableCliVerdict(process: DurableCliProcessEvidence): Verdict {
   if (process.kind === 'uncaptured') return { liveness: 'unknown', source: 'no-local-evidence' };

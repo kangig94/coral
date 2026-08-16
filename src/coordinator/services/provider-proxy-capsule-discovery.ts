@@ -9,12 +9,18 @@ import {
 } from '../../provider-proxy/handoff-capsule.js';
 
 /**
- * Both names, because this build must find every capsule that exists — the generations it wrote and the ones
- * older builds left. The optional `.v<n>` is the format generation, which lives in the filename so a build
- * that predates a generation never opens its files (see `providerHandoffCapsulePath`). v0.10.8's own copy of
- * this pattern has no such branch, which is exactly the point: to it, a `.handoff.v3.json` is not a capsule.
+ * Exactly the generations this build can decode, and no others.
+ *
+ * The format generation lives in the filename so a build never opens a capsule it cannot parse — refusing one
+ * is a *fatal* startup error, so the only safe way to meet a foreign generation is not to meet it. That has to
+ * hold in both directions. Matching `.v<n>` for any n would make this build discover a future `.v4.json`, hand
+ * it to a decoder that knows V1 through V3, and abort the boot of the very build someone rolled back to — the
+ * failure this mechanism exists to prevent, pointing the other way.
+ *
+ * So this pattern names its generations one at a time and grows only when the decoder does. The unsuffixed
+ * name is V1 and V2, which shipped before the suffix existed and must still be found in order to be refused.
  */
-const HANDOFF_CAPSULE_FILENAME = /^provider-1[0-9a-f]{23}\.handoff(\.v[0-9]+)?\.json$/u;
+const HANDOFF_CAPSULE_FILENAME = /^provider-1[0-9a-f]{23}\.handoff(\.v3)?\.json$/u;
 
 export type DiscoveredProviderHandoffCapsule = Readonly<{
   path: string;

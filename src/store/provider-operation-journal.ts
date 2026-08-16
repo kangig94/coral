@@ -435,38 +435,50 @@ export function readProviderOperationDueSelections(
 ): readonly ProviderOperationDueSelection[] {
   const encodedNow = encodeFixedWidthInteger(nowMs, 'nowMs');
   if (!Number.isSafeInteger(limit) || limit <= 0) throw new RangeError('limit must be a positive safe integer.');
-  const rows = db
-    .prepare<[string, string, number], MetaRow>(
-      `SELECT key, value FROM meta
-       WHERE key >= ? AND key < ?
+  const upperBound = `${PROVIDER_OPERATION_DUE_PREFIX}${encodedNow};`;
+  const page = db.prepare<[string, string, number], MetaRow>(
+    `SELECT key, value FROM meta
+       WHERE key > ? AND key < ?
        ORDER BY key
        LIMIT ?`,
-    )
-    .all(PROVIDER_OPERATION_DUE_PREFIX, `${PROVIDER_OPERATION_DUE_PREFIX}${encodedNow};`, limit);
-  return rows.flatMap((row) => {
-    const due = decodeDueEntry(row);
-    const value = readCanonicalValue(db, due.recordKey);
-    if (value !== undefined && !canReadCanonicalValue(due.recordKey, value)) {
-      // A pointer to a record this build cannot read. There is no work here for it to do, and throwing takes
-      // the whole coordinator down — the reconciler classifies a due-scan failure as fatal — which is the
-      // trade `readProviderOperations` already refused for the record itself. Quiet on purpose: this is the
-      // same canonical row that scan skips, and it reports the key once at startup. Reporting again here
-      // would name it twice for one condition.
-      return [];
+  );
+
+  // Paged until `limit` *selectable* rows are found, not until `limit` rows are read. Due keys sort by retry
+  // time, so rows this build cannot use sort to the front — an older build's are the oldest there are. Taking
+  // one page and filtering afterwards would hand back nothing while readable work sat immediately behind them,
+  // on every poll, forever: the reconciler reads an empty selection as "nothing due" and never advances.
+  const selections: ProviderOperationDueSelection[] = [];
+  let cursor = PROVIDER_OPERATION_DUE_PREFIX;
+  while (selections.length < limit) {
+    const rows = page.all(cursor, upperBound, limit - selections.length);
+    if (rows.length === 0) break;
+    cursor = rows.at(-1)?.key ?? cursor;
+    for (const row of rows) {
+      const due = decodeDueEntry(row);
+      const value = readCanonicalValue(db, due.recordKey);
+      if (value !== undefined && !canReadCanonicalValue(due.recordKey, value)) {
+        // A pointer to a record this build cannot read. There is no work here for it to do, and throwing takes
+        // the whole coordinator down — the reconciler classifies a due-scan failure as fatal — which is the
+        // trade `readProviderOperations` already refused for the record itself. Quiet on purpose: this is the
+        // same canonical row that scan skips, and it reports the key once at startup. Reporting again here
+        // would name it twice for one condition.
+        continue;
+      }
+      const record = readCanonicalRecord(db, due.recordKey);
+      if (record === undefined) {
+        throw new ProviderOperationJournalError(
+          `Provider operation due row '${due.key}' references a missing canonical record.`,
+        );
+      }
+      if (!dueEntryMatchesRecord(due, record)) {
+        throw new ProviderOperationJournalError(
+          `Provider operation due row '${due.key}' is stale or disagrees with its canonical record.`,
+        );
+      }
+      selections.push({ rawKey: row.key, rawValue: row.value, record });
     }
-    const record = readCanonicalRecord(db, due.recordKey);
-    if (record === undefined) {
-      throw new ProviderOperationJournalError(
-        `Provider operation due row '${due.key}' references a missing canonical record.`,
-      );
-    }
-    if (!dueEntryMatchesRecord(due, record)) {
-      throw new ProviderOperationJournalError(
-        `Provider operation due row '${due.key}' is stale or disagrees with its canonical record.`,
-      );
-    }
-    return { rawKey: row.key, rawValue: row.value, record };
-  });
+  }
+  return selections;
 }
 
 export function finishProviderOperationDueSelection(

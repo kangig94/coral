@@ -36,8 +36,21 @@ const SRC_ROOT = join(process.cwd(), 'src');
  */
 const BOOT_CLOCK_FILE = '/proc/stat';
 
-/** The one module that may still spell the retired field: its V2 schema is how shipped capsules stay readable. */
+/** The one module that may still spell the retired field, and the one declaration inside it that may. */
 const LEGACY_FIELD_READER = 'provider-proxy/handoff-capsule.ts';
+const LEGACY_SCHEMA_NAME = 'handoffCapsuleV2Schema';
+
+/** The source span of the shipped V2 schema, or null when that declaration is gone — in which case nothing in
+ *  the file is exempt, which is the correct answer. */
+function legacySchemaSpan(source: ts.SourceFile): Readonly<{ start: number; end: number }> | null {
+  let span: Readonly<{ start: number; end: number }> | null = null;
+  walk(source, (node) => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === LEGACY_SCHEMA_NAME) {
+      span = { start: node.getStart(source), end: node.getEnd() };
+    }
+  });
+  return span;
+}
 
 /** A name that promises a point in time. An incarnation is a token; the two must never meet. */
 const TIME_FLAVOURED_NAME = /startedat|starttime|recordedstart|seconds|timestamp|epoch/i;
@@ -154,22 +167,26 @@ describe('process incarnation opacity', () => {
   // local — `const observed = identity.incarnation` — reaches a `processStartedAtSeconds:` property
   // invisibly. Banning the spelling closes that without pretending an AST scan can do data flow.
   it('does not reintroduce the retired field name', () => {
-    const offenders = listProductionSourceFiles(SRC_ROOT)
-      .filter((file) => !file.endsWith(LEGACY_FIELD_READER))
-      .filter((file) => {
-        let found = false;
-        walk(parse(file), (node) => {
-          if ((ts.isIdentifier(node) || ts.isStringLiteralLike(node)) && /ProcessStartedAtSeconds$/i.test(node.text)) {
-            found = true;
-          }
-        });
-        return found;
-      })
-      .map((file) => file.slice(SRC_ROOT.length + 1));
+    const offenders: Offender[] = [];
+    for (const file of listProductionSourceFiles(SRC_ROOT)) {
+      const source = parse(file);
+      const relative = file.slice(SRC_ROOT.length + 1);
+      // The exemption is a *span*, not a file. Only the shipped V2 schema may spell these, and a
+      // reintroduction elsewhere in the same file would use the very same names, so a filename allowlist
+      // cannot tell the two apart — one was added to production code here and all three rules stayed green.
+      const exempt = file.endsWith(LEGACY_FIELD_READER) ? legacySchemaSpan(source) : null;
+      walk(source, (node) => {
+        if (!ts.isIdentifier(node) && !ts.isStringLiteralLike(node)) return;
+        if (!/ProcessStartedAtSeconds$/i.test(node.text)) return;
+        const start = node.getStart(source);
+        if (exempt !== null && start >= exempt.start && start < exempt.end) return;
+        offenders.push({ file: relative, detail: `names '${node.text}'` });
+      });
+    }
 
     expect(
       offenders,
-      `only ${LEGACY_FIELD_READER} may name the retired field, and only to keep reading capsules v0.10.6-v0.10.8 wrote`,
+      `only ${LEGACY_SCHEMA_NAME} may name the retired field, and only to keep reading capsules v0.10.6-v0.10.8 wrote`,
     ).toEqual([]);
   });
 });

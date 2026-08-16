@@ -240,10 +240,15 @@ export function verifiedIncumbentFromDiscovery(
   }
   return {
     pid: info.pid,
-    // Health is the incumbent's own live statement about itself and the pids have already been cross-checked,
-    // so when the durable record is missing this, health supplies it. Without that an incumbent whose single
-    // startup probe failed could never be signalled — a current build made unevictable by a transient read.
-    incarnation: info.incarnation ?? lastHealth?.incarnation,
+    // Health may only supply what the record omits when health also *named the same pid*. Without that the
+    // fallback is a way to borrow identity: a stale record naming a recycled pid, plus any live peer on that
+    // socket answering with its own incarnation and no pid, yields `{ victimPid, peerIncarnation }` — and the
+    // pid is what everything downstream signals. Ping is unauthenticated, so the peer is not required to be
+    // the incumbent; the pid agreement is the only thing tying the two statements to one process.
+    //
+    // Fail closed when health omits its pid, rather than fall back to the record's silence: an incumbent that
+    // cannot prove which process it is stays replaceable over IPC and un-signallable, which is the safe half.
+    incarnation: info.incarnation ?? (lastHealth?.pid === info.pid ? lastHealth.incarnation : undefined),
     source: 'discovery',
     instanceId: info.instanceId,
     token: info.token,

@@ -131,9 +131,11 @@ export function readDiscoveryRecord(runtime: DiscoveryRuntime): CoordinatorDisco
  *
  * Nothing here acts on `pid`. This returns a token and a socket path, and a record whose pid was recycled is
  * safe to return only because of what the *signalling* sites do with it: `verifySignalTarget`
- * (`coordinator/handoff.ts`) requires the record's own incarnation to be present and to match a live probe,
- * and refuses otherwise. The IPC side is not the guarantee — a connect can succeed and its shutdown still
- * fail authentication — so do not read this paragraph as licence to relax that check.
+ * (`coordinator/handoff.ts`) requires a published incarnation that matches a live probe, and refuses
+ * otherwise. Health may fill that in when the record is silent, but only for the same pid
+ * (`verifiedIncumbentFromDiscovery`) — the pid agreement is what ties two statements to one process. The IPC
+ * side is not the guarantee: a connect can succeed and its shutdown still fail authentication, and ping is
+ * unauthenticated. Do not read this paragraph as licence to relax either check.
  *
  * The probe still runs, but only as a cheap filter. It yields `null` for an absent process *and* for a
  * read, parse, or unsupported-platform failure, so this is "could not observe a process", not proof of

@@ -34,7 +34,7 @@
   "tags": ["-knipignore"],
   // Host system binaries invoked by name (not npm bins). `codex` is the external Codex CLI
   // Coral integrates with, resolved from PATH the same way.
-  "ignoreBinaries": ["getconf", "ps", "wmic", "flock", "codex"],
+  "ignoreBinaries": ["getconf", "ps", "sysctl", "wmic", "flock", "codex"],
   // mammoth/turndown: loaded via dynamic require() in kb source conversion
   // (conversion-worker.ts), which knip's static import graph does not resolve;
   // @types/turndown backs turndown. vite: a type-only import (vitest/raw-sql-plugin.ts)

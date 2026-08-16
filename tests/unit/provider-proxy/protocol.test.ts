@@ -144,7 +144,7 @@ describe('provider proxy protocol vocabulary', () => {
     expect(operationIdentitySchema.parse(operationIdentity)).toEqual(operationIdentity);
   });
 
-  it('refuses a provider root pid or incarnation outside the safe-integer range', () => {
+  it('refuses an unsafe provider-root pid or a non-string incarnation', () => {
     // `providerRootSchema` is this domain's single canonical shape for a provider-root identity, shared by
     // every request or response that names one. Every other pid/incarnation field in this file
     // (`coordinatorIdentitySchema`, `guardianIdentitySchema`, `reaperIdentitySchema`, `proxyIdentitySchema`)

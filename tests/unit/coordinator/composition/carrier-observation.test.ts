@@ -339,10 +339,10 @@ describe('createObserveCarriers', () => {
     ]);
   });
 
-  it('reports a durable CLI job as live when the recorded pid and start second both still match', async () => {
-    const ownStartedAt = probeProcessIncarnation(process.pid, PLATFORM);
+  it('reports a durable CLI job as live when the recorded pid and incarnation both still match', async () => {
+    const ownIncarnation = probeProcessIncarnation(process.pid, PLATFORM);
     // Only the current test process's own pid is guaranteed alive and probeable from this test.
-    if (ownStartedAt === null) return;
+    if (ownIncarnation === null) return;
     const runtime: JobRuntime = {
       transport: 'durable-cli',
       pid: process.pid,
@@ -356,7 +356,7 @@ describe('createObserveCarriers', () => {
       version: 1,
       jobId: DURABLE_JOB_ID,
       pid: process.pid,
-      incarnation: ownStartedAt,
+      incarnation: ownIncarnation,
     });
     const observe = createObserveCarriers(registriesFor(details, { getDb: () => db }), () => 7);
 
@@ -365,9 +365,9 @@ describe('createObserveCarriers', () => {
     ]);
   });
 
-  it('reports a durable CLI job as absent when the pid is alive but its start second no longer matches — a recycled pid', async () => {
-    const ownStartedAt = probeProcessIncarnation(process.pid, PLATFORM);
-    if (ownStartedAt === null) return;
+  it('reports a durable CLI job as absent when the pid is alive but its incarnation no longer matches — a recycled pid', async () => {
+    const ownIncarnation = probeProcessIncarnation(process.pid, PLATFORM);
+    if (ownIncarnation === null) return;
     const runtime: JobRuntime = {
       transport: 'durable-cli',
       pid: process.pid,
@@ -390,9 +390,9 @@ describe('createObserveCarriers', () => {
     ]);
   });
 
-  it('reports a durable CLI job as unknown when the pid is alive but its start second is unreadable — the ambiguous case the tri-state exists for', async () => {
+  it('reports a durable CLI job as unknown when the pid is alive but its incarnation is unreadable — the ambiguous case the tri-state exists for', async () => {
     // A recycled pid cannot be told apart from the same process without a start-time reading, so an alive
-    // pid whose start second the OS probe could not produce must stay `unknown`, never fall through to the
+    // pid whose incarnation the OS probe could not produce must stay `unknown`, never fall through to the
     // `alive: false` shape that would report `absent` — that is exactly the guard this test pins.
     const runtime: JobRuntime = {
       transport: 'durable-cli',

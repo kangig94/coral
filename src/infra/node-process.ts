@@ -92,8 +92,45 @@ function probeLinuxProcessIncarnation(pid: number): ProcessIncarnation | null {
   }
 }
 
+/** This boot, as the kernel reports it. macOS has no `boot_id`, and `kern.boottime` is the nearest thing:
+ *  it changes on every boot, and it moves if the wall clock is reset — both of which must invalidate every
+ *  token derived from a wall-clock start time. Cached because a boot does not happen mid-process. */
+let macBootStampCache: string | null | undefined;
+function readMacBootStamp(): string | null {
+  if (macBootStampCache !== undefined) return macBootStampCache;
+  try {
+    const raw = execFileSync('sysctl', ['-n', 'kern.boottime'], {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    // `{ sec = 1700000000, usec = 123456 } Tue Nov 14 ...` — the numbers are the part that identifies a boot.
+    const sec = /sec\s*=\s*(\d+)/u.exec(raw)?.[1];
+    const usec = /usec\s*=\s*(\d+)/u.exec(raw)?.[1];
+    macBootStampCache = sec === undefined ? null : `${sec}.${usec ?? '0'}`;
+  } catch {
+    macBootStampCache = null;
+  }
+  return macBootStampCache;
+}
+
+/**
+ * macOS has no `/proc`, so the start time comes from `ps` at **one-second resolution** and on the wall clock.
+ * Neither is enough on its own: a wall-clock start time repeats after a clock reset, and a reboot restarts the
+ * pid space at exactly the values a stale record is most likely to name. `kern.boottime` is what makes the
+ * pair an identity — the same role `boot_id` plays on Linux, and for the same reason.
+ *
+ * What remains, stated because equality here authorizes a signal: two processes that hold the same pid within
+ * one displayed second of one boot are indistinguishable. Reaching that needs the pid space to wrap inside a
+ * second, which is ~100k spawns per second sustained. It is a residual, not a guarantee — and it is why this
+ * returns null rather than guessing whenever either half is unreadable.
+ */
 function probeMacProcessIncarnation(pid: number): ProcessIncarnation | null {
   try {
+    const bootStamp = readMacBootStamp();
+    if (bootStamp === null) {
+      return null;
+    }
+
     const raw = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], {
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
@@ -102,9 +139,8 @@ function probeMacProcessIncarnation(pid: number): ProcessIncarnation | null {
       return null;
     }
 
-    // Already a kernel-stored creation stamp rather than a synthesised one, so it needs no frame.
     const parsed = Date.parse(raw);
-    return Number.isFinite(parsed) ? (`darwin:${parsed}` as ProcessIncarnation) : null;
+    return Number.isFinite(parsed) ? (`darwin:${bootStamp}:${parsed}` as ProcessIncarnation) : null;
   } catch {
     return null;
   }

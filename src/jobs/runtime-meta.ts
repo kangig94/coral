@@ -14,7 +14,7 @@ const nonNegativeSafeIntegerSchema = z.number().int().nonnegative().safe();
  *
  * Small on purpose. A durable CLI has no operation tuple and no control channel, so the only thing that can
  * later be checked against it is which process was launched — and a pid alone cannot answer that, because
- * the OS recycles it. Pairing the pid with the kernel-supplied start second is what makes "the process we
+ * the OS recycles it. Pairing the pid with the process's incarnation token is what makes "the process we
  * launched is still running" distinguishable from "some unrelated process now holds that number".
  *
  * This is ordinary key/value `meta`, not domain history or a substitute for `job.runtime.started`, because
