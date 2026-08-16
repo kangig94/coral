@@ -204,9 +204,19 @@ export function startKbDaemonParentWatchdog(options: KbDaemonParentWatchdogOptio
     options.onParentExit();
   };
   handle = setIntervalFn(() => {
-    if (getCurrentParentPid() !== parentPid || !isAlive(parentPid)) {
+    if (getCurrentParentPid() !== parentPid) {
       stopForParentExit();
+      return;
     }
+    // A probe that cannot answer is not a parent that exited, and a throw escaping a timer callback would end
+    // this daemon over the question rather than the answer. Ask again on the next tick.
+    let parentAbsent: boolean;
+    try {
+      parentAbsent = !isAlive(parentPid);
+    } catch {
+      return;
+    }
+    if (parentAbsent) stopForParentExit();
   }, intervalMs);
   (handle as { unref?: () => void }).unref?.();
   return handle;

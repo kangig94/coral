@@ -459,7 +459,16 @@ function matchingStartupError(
   if (observedPid !== undefined && sentinel.pid !== observedPid) {
     return null;
   }
-  if (!isProcessAlive(sentinel.pid)) {
+  // Only a process observed gone may retire its sentinel. An unanswerable probe is not that observation, and
+  // clearing on it would discard a live coordinator's recorded startup failure — so the sentinel stands, and
+  // this runs on a startup path where a throw would be no daemon at all.
+  let sentinelOwnerAbsent: boolean;
+  try {
+    sentinelOwnerAbsent = !isProcessAlive(sentinel.pid);
+  } catch {
+    sentinelOwnerAbsent = false;
+  }
+  if (sentinelOwnerAbsent) {
     clearStartupErrorSentinel(paths);
     return null;
   }
