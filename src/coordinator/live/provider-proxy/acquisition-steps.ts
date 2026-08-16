@@ -29,6 +29,7 @@ import {
   type RoleSpawnPorts,
   type SpawnedRoleProcess,
 } from '../../../provider-proxy/role-spawn.js';
+import { CURRENT_HANDOFF_CAPSULE_VERSION } from '../../../provider-proxy/handoff-capsule.js';
 import { DETACHED_CONTAINMENT_KIND } from '../../../provider-proxy/guardian.js';
 import type { ControlClient, ProviderEventHandler } from '../../../provider-proxy/control-client.js';
 import { PROXY_CONTROL_ESTABLISH_READY_MS } from '../../../provider-proxy/orphan-deadline.js';
@@ -420,6 +421,7 @@ export function createProviderProxyAcquisitionSteps(
 
         const handoffCapsulePath = providerHandoffCapsulePath(
           { generation, flavor, buildSetId, hostFingerprint, proxyInstanceId: setMinted.proxyInstanceId },
+          CURRENT_HANDOFF_CAPSULE_VERSION,
           options.baseDir === undefined ? undefined : { baseDir: options.baseDir },
         );
         const base = createProviderProxySetAuthority({

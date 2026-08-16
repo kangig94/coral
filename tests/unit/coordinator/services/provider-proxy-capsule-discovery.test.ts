@@ -13,7 +13,7 @@ import {
   discoverProviderHandoffCapsules,
   retireProviderHandoffCapsule,
 } from '#src/coordinator/services/provider-proxy-capsule-discovery.js';
-import type { HandoffCapsule } from '#src/provider-proxy/handoff-capsule.js';
+import { CURRENT_HANDOFF_CAPSULE_VERSION, type HandoffCapsule } from '#src/provider-proxy/handoff-capsule.js';
 import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
 
 /** The build this fixture lifecycle belongs to — the same one its capsule carries, so discovery treats it as inheritable rather than foreign. */
@@ -87,8 +87,8 @@ describe('provider proxy capsule discovery', () => {
     };
     const baseDir = '/tmp/coral-capsule-generation';
 
-    const current = basename(providerHandoffCapsulePath(identity, { baseDir }));
-    const legacy = basename(providerHandoffCapsulePath(identity, { baseDir }, 2));
+    const current = basename(providerHandoffCapsulePath(identity, CURRENT_HANDOFF_CAPSULE_VERSION, { baseDir }));
+    const legacy = basename(providerHandoffCapsulePath(identity, 2, { baseDir }));
 
     expect(
       V0_10_8_DISCOVERY_PATTERN.test(current),
@@ -97,6 +97,35 @@ describe('provider proxy capsule discovery', () => {
     // And the older generations stay exactly where they were, or this build stops finding what it must refuse.
     expect(V0_10_8_DISCOVERY_PATTERN.test(legacy)).toBe(true);
     expect(current).not.toBe(legacy);
+  });
+
+  // The other direction, and the one that matters from here on: a build must not open a capsule it cannot
+  // decode, because refusing one is fatal at startup. A future generation's file has to be invisible to this
+  // build exactly as this build's is to v0.10.8 — otherwise rolling back onto it kills the coordinator.
+  it('does not discover a capsule generation it cannot decode', () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'coral-capsule-future-'));
+    const runtime = createRealRuntime('prod', { baseDir });
+    const runDir = runtime.paths.coral.coordinator.runDir;
+    runtime.storage.mkdirSync(runDir, { recursive: true, mode: 0o700 });
+    const stat = runtime.storage.statSync(baseDir, { bigint: true });
+    if (stat.uid === undefined) throw new Error('real storage did not report the temporary directory owner');
+
+    // A well-formed name of a generation this build has never heard of, holding bytes it cannot parse.
+    const future = join(runDir, 'provider-1aaaaaaaaaaaaaaaaaaaaaaa.handoff.v4.json');
+    runtime.storage.writeAtomicDurableSync(future, JSON.stringify({ version: 4 }), {
+      encoding: 'utf-8',
+      mode: 0o600,
+    });
+
+    expect(
+      discoverProviderHandoffCapsules({
+        runDir,
+        generationRoot: runtime.paths.coral.generation.root,
+        storage: runtime.storage,
+        uid: Number(stat.uid),
+      }),
+      'a generation this build cannot decode must never reach the decoder',
+    ).toEqual([]);
   });
 
   it('discovers a canonical real-storage capsule and blocks matching fresh admission', () => {
@@ -121,7 +150,7 @@ describe('provider proxy capsule discovery', () => {
       orphanTimeoutMs: 30_000,
       teardownReserveMs: 14_000,
     };
-    const path = providerHandoffCapsulePath(capsule, { baseDir }, capsule.version);
+    const path = providerHandoffCapsulePath(capsule, capsule.version, { baseDir });
     const stat = runtime.storage.statSync(baseDir, { bigint: true });
     if (stat.uid === undefined) throw new Error('real storage did not report the temporary directory owner');
     // Placed as bytes rather than through `writeHandoffCapsuleFile`, which now accepts V3 alone. This case is

@@ -269,6 +269,18 @@ export const handoffCapsuleSchema = z.discriminatedUnion('version', [
   handoffCapsuleV3Schema,
 ]);
 
+/**
+ * The generations this build can decode, and the one it writes — owned here, beside the union that defines
+ * them, because everything else about a capsule generation is derived from this fact.
+ *
+ * A generation is encoded in three places by nature: the schema union, the filename a capsule is written
+ * under, and the filenames discovery is willing to open. Adjacent-version rollback holds only while all three
+ * agree, so the other two read these rather than restating them. A V4 that updates the union and forgets the
+ * filename would write a capsule an older build opens and dies on — silently, and only in the field.
+ */
+export const SUPPORTED_HANDOFF_CAPSULE_VERSIONS = [1, 2, 3] as const;
+export const CURRENT_HANDOFF_CAPSULE_VERSION = 3;
+
 export type HandoffCapsuleV1 = z.output<typeof handoffCapsuleV1Schema>;
 export type HandoffCapsuleV2 = z.output<typeof handoffCapsuleV2Schema>;
 export type HandoffCapsuleV3 = z.output<typeof handoffCapsuleV3Schema>;

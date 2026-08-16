@@ -99,6 +99,23 @@ describe('verifiedIncumbentFromDiscovery', () => {
     expect(incumbent?.incarnation).toBe(incarnation);
   });
 
+  // The pid is the only thing tying health's statement to the record's. Ping is unauthenticated, so the peer
+  // answering is not required to be the incumbent — without the pid agreement a stale record naming a
+  // recycled pid could take any live peer's incarnation and become signal-capable against a stranger.
+  it('ignores health’s incarnation when health did not name the same pid', () => {
+    const incarnation = testIncarnation(5_150);
+    const base: IncumbentHealth = { flavor: 'prod', namespace: 'ns', bundleHash: 'incumbent-bundle' };
+
+    expect(
+      verifiedIncumbentFromDiscovery(preTokenRecord(), evidence({ ...base, incarnation }))?.incarnation,
+      'health that names no pid has said nothing about this one',
+    ).toBeUndefined();
+    expect(
+      verifiedIncumbentFromDiscovery(preTokenRecord(), evidence({ ...base, pid: 4321, incarnation }))?.incarnation,
+      'the same pid is what makes it the same process',
+    ).toBe(incarnation);
+  });
+
   it('is not the incumbent when the record contradicts health read from the same socket', () => {
     const health: IncumbentHealth = { flavor: 'prod', namespace: 'ns', bundleHash: 'incumbent-bundle', pid: 4321 };
 

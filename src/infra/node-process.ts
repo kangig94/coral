@@ -92,42 +92,48 @@ function probeLinuxProcessIncarnation(pid: number): ProcessIncarnation | null {
   }
 }
 
-/** This boot, as the kernel reports it. macOS has no `boot_id`, and `kern.boottime` is the nearest thing:
- *  it changes on every boot, and it moves if the wall clock is reset — both of which must invalidate every
- *  token derived from a wall-clock start time. Cached because a boot does not happen mid-process. */
-let macBootStampCache: string | null | undefined;
-function readMacBootStamp(): string | null {
-  if (macBootStampCache !== undefined) return macBootStampCache;
+/**
+ * This boot's identity on macOS — `kern.bootsessionuuid`, not `kern.boottime`.
+ *
+ * The two are not interchangeable and the difference is the whole point. `kern.boottime` is *derived* from
+ * calendar time, so XNU adjusts it whenever the wall clock is set; a frame that moves with the clock cannot
+ * frame a wall-clock start time, because both sides shift together and a later process can land on an earlier
+ * one's coordinates. The session UUID is minted once per boot and never moves.
+ *
+ * Read fresh every time, exactly as `readLinuxBootId` is. A cache here would have to answer what a transient
+ * failure means, and both answers are wrong: remembering `null` blinds every later probe until restart, and
+ * remembering a value asserts across a boundary this function cannot see.
+ */
+function readMacBootSessionId(): string | null {
   try {
-    const raw = execFileSync('sysctl', ['-n', 'kern.boottime'], {
+    const raw = execFileSync('sysctl', ['-n', 'kern.bootsessionuuid'], {
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
-    });
-    // `{ sec = 1700000000, usec = 123456 } Tue Nov 14 ...` — the numbers are the part that identifies a boot.
-    const sec = /sec\s*=\s*(\d+)/u.exec(raw)?.[1];
-    const usec = /usec\s*=\s*(\d+)/u.exec(raw)?.[1];
-    macBootStampCache = sec === undefined ? null : `${sec}.${usec ?? '0'}`;
+    }).trim();
+    return raw.length > 0 ? raw : null;
   } catch {
-    macBootStampCache = null;
+    return null;
   }
-  return macBootStampCache;
 }
 
 /**
- * macOS has no `/proc`, so the start time comes from `ps` at **one-second resolution** and on the wall clock.
- * Neither is enough on its own: a wall-clock start time repeats after a clock reset, and a reboot restarts the
- * pid space at exactly the values a stale record is most likely to name. `kern.boottime` is what makes the
- * pair an identity — the same role `boot_id` plays on Linux, and for the same reason.
+ * macOS has no `/proc`, so the start time comes from `ps` at **one-second resolution**. That is a coordinate
+ * within a boot, not an identity: the pid space restarts after a reboot at exactly the values a stale record
+ * is most likely to name. The boot session id is what makes the pair an identity — the same role `boot_id`
+ * plays on Linux, and for the same reason.
  *
- * What remains, stated because equality here authorizes a signal: two processes that hold the same pid within
- * one displayed second of one boot are indistinguishable. Reaching that needs the pid space to wrap inside a
- * second, which is ~100k spawns per second sustained. It is a residual, not a guarantee — and it is why this
- * returns null rather than guessing whenever either half is unreadable.
+ * The residual, stated because equality here authorizes a signal: two processes that hold the same pid *and*
+ * the same displayed start second *within one boot* are indistinguishable. That needs the pid space to wrap
+ * inside a second. It does not extend across boots or across a clock change, because the frame is a UUID that
+ * neither event preserves.
+ *
+ * Either half unreadable returns null rather than a guess — "could not observe", which every caller already
+ * distinguishes from absence.
  */
 function probeMacProcessIncarnation(pid: number): ProcessIncarnation | null {
   try {
-    const bootStamp = readMacBootStamp();
-    if (bootStamp === null) {
+    const bootSessionId = readMacBootSessionId();
+    if (bootSessionId === null) {
       return null;
     }
 
@@ -140,7 +146,7 @@ function probeMacProcessIncarnation(pid: number): ProcessIncarnation | null {
     }
 
     const parsed = Date.parse(raw);
-    return Number.isFinite(parsed) ? (`darwin:${bootStamp}:${parsed}` as ProcessIncarnation) : null;
+    return Number.isFinite(parsed) ? (`darwin:${bootSessionId}:${parsed}` as ProcessIncarnation) : null;
   } catch {
     return null;
   }

@@ -3,6 +3,7 @@ import { probeProcessIncarnation, type ProcessIncarnation } from '../../../infra
 import { createMonotonicClock } from '../../../infra/monotonic-clock.js';
 import { reapRecordedContainment } from '../../../infra/process-containment.js';
 import {
+  CURRENT_HANDOFF_CAPSULE_VERSION,
   readHandoffCapsuleFile,
   type HandoffCapsule,
   guardianHandoffRedeemFieldsSchema,
@@ -623,6 +624,7 @@ async function redeem(
       hostFingerprint: locator.hostFingerprint,
       proxyInstanceId: operation.proxyInstanceId,
     },
+    CURRENT_HANDOFF_CAPSULE_VERSION,
     deps.baseDir === undefined ? undefined : { baseDir: deps.baseDir },
   );
   const capsule = readHandoffCapsuleFile(capsulePath, {

@@ -184,6 +184,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
+import { CURRENT_HANDOFF_CAPSULE_VERSION } from '#src/provider-proxy/handoff-capsule.js';
 
 /** The build this fixture lifecycle belongs to — the same one `providerOperationRecord` stamps on its identities, so a discovered capsule is inheritable rather than foreign. */
 const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
@@ -1087,6 +1088,7 @@ describe('provider-proxy process topology: acquisition', () => {
             hostFingerprint: shared.hostFingerprint,
             proxyInstanceId: result.set.proxyInstanceId,
           },
+          CURRENT_HANDOFF_CAPSULE_VERSION,
           { baseDir },
         ),
       ),

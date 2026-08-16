@@ -409,7 +409,7 @@ function capsuleBackedStorage(
     syncDirectoryDurableSync(): boolean;
   }>,
 ): Readonly<{ storage: StoragePort; path: string; exists(): boolean }> {
-  const path = providerHandoffCapsulePath(capsule, { baseDir: dirname(generationRoot) });
+  const path = providerHandoffCapsulePath(capsule, capsule.version, { baseDir: dirname(generationRoot) });
   const bytes = Buffer.from(JSON.stringify(capsule));
   const uid = BigInt(process.getuid?.() ?? 0);
   const stat: StorageBigIntStat = {

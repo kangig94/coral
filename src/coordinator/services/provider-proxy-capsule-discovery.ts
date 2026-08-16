@@ -1,26 +1,36 @@
 import { dirname, join } from 'node:path';
 
-import { providerHandoffCapsulePath } from '../../infra/path/index.js';
+import { providerHandoffCapsuleFileSuffix, providerHandoffCapsulePath } from '../../infra/path/index.js';
 import type { StoragePort } from '../../infra/port-types.js';
 import {
+  SUPPORTED_HANDOFF_CAPSULE_VERSIONS,
   readHandoffCapsuleFile,
   type HandoffCapsule,
   type HandoffCapsuleFileEnvironment,
 } from '../../provider-proxy/handoff-capsule.js';
 
 /**
- * Exactly the generations this build can decode, and no others.
+ * Exactly the generations this build can decode — derived from the decoder's own list rather than restated,
+ * so the two cannot disagree.
  *
- * The format generation lives in the filename so a build never opens a capsule it cannot parse — refusing one
+ * The format generation lives in the filename so a build never opens a capsule it cannot parse: refusing one
  * is a *fatal* startup error, so the only safe way to meet a foreign generation is not to meet it. That has to
  * hold in both directions. Matching `.v<n>` for any n would make this build discover a future `.v4.json`, hand
  * it to a decoder that knows V1 through V3, and abort the boot of the very build someone rolled back to — the
  * failure this mechanism exists to prevent, pointing the other way.
  *
- * So this pattern names its generations one at a time and grows only when the decoder does. The unsuffixed
- * name is V1 and V2, which shipped before the suffix existed and must still be found in order to be refused.
+ * Deriving it is what keeps that true across the next change. A V4 that extends the union and forgets this
+ * pattern would leave its own capsules undiscoverable; one that extends this pattern and forgets the union
+ * would reopen the fatal. Neither is possible while there is one list.
  */
-const HANDOFF_CAPSULE_FILENAME = /^provider-1[0-9a-f]{23}\.handoff(\.v3)?\.json$/u;
+const HANDOFF_CAPSULE_FILENAME = new RegExp(
+  `^provider-1[0-9a-f]{23}\\.(?:${[
+    ...new Set(SUPPORTED_HANDOFF_CAPSULE_VERSIONS.map((version) => providerHandoffCapsuleFileSuffix(version))),
+  ]
+    .map((suffix) => suffix.replaceAll('.', '\\.'))
+    .join('|')})$`,
+  'u',
+);
 
 export type DiscoveredProviderHandoffCapsule = Readonly<{
   path: string;
@@ -48,7 +58,7 @@ export function discoverProviderHandoffCapsules(
     if (capsule === null) throw new Error(`provider_proxy_handoff_capsule_disappeared:${path}`);
     // The capsule's own version, not this build's: an older generation is canonical at the name it shipped
     // under, and holding it to the current one would read every legacy capsule as relocated.
-    const canonicalPath = providerHandoffCapsulePath(capsule, { baseDir }, capsule.version);
+    const canonicalPath = providerHandoffCapsulePath(capsule, capsule.version, { baseDir });
     if (canonicalPath !== path) throw new Error(`provider_proxy_handoff_capsule_path_mismatch:${path}`);
     return Object.freeze({ path, capsule });
   });
