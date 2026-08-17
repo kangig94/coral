@@ -3,46 +3,31 @@ import { readFileSync } from 'node:fs';
 import { z } from 'zod';
 
 /**
- * Bounds one probe *subprocess*, which is not the same as one probe. `probeMacProcessIncarnation` issues two
- * in sequence — `sysctl` then `ps` — so a fully wedged darwin probe costs twice this, and the boot session id
- * is deliberately uncached, so the `sysctl` half is re-forked on every observation rather than once. Callers
- * that re-observe in a loop pay the bound per iteration, not per operation: `waitForAbsence` polls every
- * `ABSENCE_POLL_MS` (25ms). Budget worst-case latency from those two facts, not from this number alone.
+ * Bounds one probe *subprocess*, not one probe: `probeMacProcessIncarnation` issues two in sequence and does
+ * not cache the first, so a wedged darwin probe costs twice this.
  *
- * Best-effort, and nothing may rely on it being more: Node implements a synchronous timeout by sending
- * `killSignal` (SIGTERM by default) and then continuing to wait for the child to exit, so a child that blocks
- * or ignores the signal still overruns. Nothing *can* rely on hardness anyway — every deadline mechanism here
- * is asynchronous (`AbortSignal`, monotonic-clock polling) and none of them preempt a synchronous
- * `execFileSync`, which blocks the event loop outright. This narrows that hole; it does not close it.
+ * Best-effort, and nothing may rely on more. Node implements a synchronous timeout by sending `killSignal`
+ * and then continuing to wait for the child to exit, so a child that blocks or ignores it still overruns.
+ * Nothing *can* rely on hardness anyway: every deadline mechanism here is asynchronous, and none of them
+ * preempt a synchronous `execFileSync`, which blocks the event loop outright. This makes a wedged probe
+ * return; it does not make any caller's deadline enforceable, and the difference is not academic for callers
+ * that sweep a recorded set — `docs/todo/containment-observation-deadline.md` owns that analysis, deliberately
+ * rather than here, because every fact in it belongs to a module this one cannot see change.
  *
- * 2s is generous against the sub-100ms these commands normally take. It deliberately exceeds
- * `CONTAINMENT_PROCESS_CONTROL_CALL_MAX_MS` (500ms), which bounds kill syscalls inside the measured signal
- * window; these probes run outside that window. Do not read that as "the caller's deadline still holds":
- * `waitForAbsence` runs the whole synchronous sweep *before* computing its remaining budget
- * (`process-containment.ts`), and `observeRecordedSet` probes every recorded root rather than stopping at the
- * first failure, so one sweep costs this bound times two subprocesses times up to
- * `MAX_PROXY_RECORDED_PROVIDER_ROOTS` + 1 targets. This bound makes a wedged probe *return*; it does not make
- * any caller's deadline enforceable. Making it enforceable needs a deadline-aware asynchronous probe, which is
- * a larger change than this one.
+ * 2s matches the bound `env-sanitize.ts` already uses for a synchronous subprocess; there is no measurement
+ * behind either number, and an earlier version of this comment asserted one.
  *
- * What the timeout cannot do, which is the part that makes it safe: it can only turn a *would-be-successful*
- * observation into a throw, and every call site's existing `catch` answers `null`. It therefore cannot
- * fabricate a token, so no equality-gated authorization can newly pass — and equality is what gates the
- * signal paths that compare a recorded incarnation.
- *
- * Two things it is *not* safe to conclude from that, both true before this change and both reachable through
- * a transient timeout after it. `null` is not uniformly "could not observe" to every consumer:
- * `probeCoordinator` (`backend-discovery.ts`) collapses "no record" and "unobservable process" into one
- * `null`, and `handoff-runner.ts` reads that as no live coordinator and routes to the current backend — so a
- * transient probe timeout can drop a live incumbent from routing. And not every signal here is
- * equality-gated: `observeContainment` answers `present` from an ESRCH-absent leader plus a live group, which
- * authorizes a group signal, and owned-child compensation signals on the handle it just created.
+ * What the bound cannot do is the part that makes it safe: it turns a would-be-successful observation into a
+ * throw, and every call site's existing `catch` answers `null`. It cannot fabricate a token, so it cannot
+ * make an equality check newly pass. That is narrower than "it cannot authorize a signal" — not every signal
+ * is equality-gated — so it is the only claim to rely on.
  */
 const PROCESS_INCARNATION_PROBE_TIMEOUT_MS = 2_000;
 
 /**
- * The one exec shape every incarnation probe uses. Named because the three platform probes must not drift
- * apart on it — a site that quietly loses the timeout is the defect this bound exists to prevent.
+ * The one exec shape the incarnation probes share. Named so the three call sites cannot drift apart on it —
+ * a site that quietly loses the timeout is the defect the bound exists to prevent, and
+ * `tests/invariants/sync-subprocess-timeout.test.ts` fails when one does.
  */
 const PROBE_EXEC_OPTIONS: ExecFileSyncOptionsWithStringEncoding = {
   encoding: 'utf-8',

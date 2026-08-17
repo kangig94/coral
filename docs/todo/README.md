@@ -56,6 +56,8 @@ signal a correctly identified target, they are about there being no party left t
 asks for a reachable cause before either half is built. `proxy-set-acquisition` requires a deliberate
 reproduction as its entry price — it has been wrong about its own cause twice. `store-format-routing`
 is dormant. `cli-terminal-width-layout` and `export-lifetime` wait on product decisions, not on code.
+`containment-observation-deadline` is arithmetic derived from constants and asks for a measured teardown that
+misses its deadline before either half of its fix is built — the same entry price, for the same reason.
 
 ---
 
@@ -122,6 +124,7 @@ landing does not unblock it — that was the record direction.
 | [`durable-cli-signal-authority.md`](./durable-cli-signal-authority.md)           | **Six signal behaviours hold the evidence and never read it.** A durable CLI child's pid is signalled on idle timeout, on abort, and on abort-after-restart, while `durable_cli_process.v1` carries the incarnation that would settle it. Found by the scan, not by five reviewers. The invariant names four modules, not six behaviours — three `durable-transport.ts` calls share one entry and the helper-delivered one is invisible to it, so the document's table is the checklist.                                                                                                                                                                                                                       |
 | [`coordinator-process-disposition.md`](./coordinator-process-disposition.md)     | **A quarantine that releases the job's only owner is not better than terminalizing it** — which is why the repairable-binding quarantine was reverted rather than kept. Recovery commits its disposition before process-local cleanup, and that cleanup drops the `RecoveryRegistry` entry unconditionally, so a quarantined job with a live carrier has no owner and `jobs abort` cannot reach it. Custody must transfer by verified receipt before ownership is released, and process absence must become a completion obligation ahead of terminal and claim-release facts.                                                                                                                                 |
 | [`wedged-coordinator-self-drain.md`](./wedged-coordinator-self-drain.md)         | Every self-termination path Coral has is scheduled by the process it is meant to end. The 6h idle drain is tidiness for a healthy daemon, not a liveness backstop — reading it as one is what produced this entry.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| [`containment-observation-deadline.md`](./containment-observation-deadline.md)   | **Not the authority to signal — the cost of deciding whether to.** Every deadline that bounds teardown measures around `process.kill`; the observation that feeds it runs outside all of them. `waitForAbsence` completes a full sweep before checking its clock, `observeRecordedSet` probes every root rather than stopping at the first, and a synchronous probe blocks the event loop so no abort can interrupt it. Arithmetic, not a reproduction: its entry price is a measured case.                                                                                                                                                                                                                    |
 
 These four are one concept — something must end a process that will not end itself, and it must be sure of
 what it is ending — but they close separately and in this order of tractability.
@@ -133,6 +136,13 @@ neither document is the only place its gaps are written down. `darwin-signal-aut
 correctly identified target; the other two are about there being **no party left** to signal at all, and a fix
 for either still has to answer the first. The kb-daemon still has a supervising parent; a wedged coordinator is
 the top of the tree, which is why its answer leaves the codebase entirely.
+
+`containment-observation-deadline` sits beside these four rather than inside them. They ask what may end a
+process and on what evidence; it asks what taking that evidence costs, and answers about cost do not settle
+authority. It overlaps `darwin-signal-authority` on one function and nowhere else — that entry decides whether
+a macOS incarnation may authorize a signal, this one counts the subprocesses spent deriving it, and closing
+either leaves the other untouched. It cannot ship with them either: its own required shape is an asynchronous
+observation port, which the signal-authority entries do not need and would have to absorb.
 
 **Do not merge this with shutdown quiescence**, however alike the one-sentence summaries read. One is a
 process-lifetime guarantee whose whole premise is that the closer may already be dead; the other

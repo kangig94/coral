@@ -195,10 +195,8 @@ describe('coordinator discovery', () => {
       kind: 'live',
       record: { pid: process.pid, bootToken: 'boot-token-legacy' },
     });
-    expect(
-      probed.kind === 'live' ? probed.record.incarnation : 'unreachable',
-      'and it simply has no token',
-    ).toBeUndefined();
+    if (probed.kind !== 'live') throw new Error(`expected a live probe, got ${probed.kind}`);
+    expect(probed.record.incarnation, 'and it simply has no token').toBeUndefined();
   });
 
   it('probeCoordinator reports absence for a record whose pid names no process', async () => {

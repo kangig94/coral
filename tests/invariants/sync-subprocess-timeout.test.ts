@@ -7,11 +7,11 @@
 // wedged child is therefore not "slow"; it is a process that never continues, on paths that include coordinator
 // startup.
 //
-// It is enforced here rather than left to review because the drift already happened twice, silently and in
-// opposite directions: `env-sanitize.ts` bounded its `getconf` from the start, `node-process.ts` shipped three
-// unbounded probes, and `project-source.ts` shipped an unbounded `git` call that sat on the startup path for
-// releases without anyone noticing the inconsistency. Nothing failed; the two bounded sites simply did not
-// argue with the unbounded ones.
+// It is enforced here rather than left to review because the three sites disagreed for a long time and
+// nothing said so. `env-sanitize.ts` bounded its `getconf` from the start; `node-process.ts` shipped three
+// unbounded probes; `project-source.ts` shipped an unbounded `git remote get-url` in the v0.6.0 rewrite
+// (`618c95d1`) that was still unbounded ten minor versions later, on the coordinator startup path the whole
+// time. Nothing failed, because a bounded site does not argue with an unbounded one. A scan does.
 //
 // What this does NOT assert: that the timeout is honoured. Node implements a synchronous timeout by signalling
 // the child and continuing to wait, so a child that blocks or ignores the signal still overruns. The bound is
@@ -110,8 +110,15 @@ function optionsConstants(sourceFile: ts.SourceFile): Map<string, ts.ObjectLiter
 type Unbounded = Readonly<{ file: string; line: number; callee: string; reason: string }>;
 
 function unboundedCalls(filePath: string): Unbounded[] {
-  const file = canonicalSrcPath(filePath);
-  const source = readFileSync(filePath, 'utf-8');
+  return unboundedCallsInSource(canonicalSrcPath(filePath), readFileSync(filePath, 'utf-8'));
+}
+
+/**
+ * Split from the file read so the fixtures below can drive this exact function. An earlier revision of this
+ * test reimplemented the walk inline for its negative cases, which meant the fixtures agreed with a copy of
+ * the detector rather than the detector — and the copy kept a bug the real one had already lost.
+ */
+function unboundedCallsInSource(file: string, source: string): Unbounded[] {
   if (![...SYNC_SUBPROCESS_PRIMITIVES].some((name) => source.includes(name))) return [];
 
   const sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
@@ -125,8 +132,13 @@ function unboundedCalls(filePath: string): Unbounded[] {
     if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && primitives.has(node.expression.text)) {
       const callee = node.expression.text;
       const line = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1;
-      // `execSync(cmd, options)` takes options second; the other two take them third.
-      const options = node.arguments[callee === 'execSync' ? 1 : 2];
+      // Options are always last, but the arity is not fixed: `execFileSync` and `spawnSync` each accept both
+      // `(file, args, options)` and `(file, options)`, so indexing a position would flag a legitimate
+      // two-argument call as having none. Take the final argument and let its shape say whether it is options
+      // at all — an args array or a bare command string means the call passed none.
+      const last = node.arguments.at(-1);
+      const options =
+        last === undefined || ts.isArrayLiteralExpression(last) || ts.isStringLiteralLike(last) ? undefined : last;
 
       if (options === undefined) {
         found.push({ file, line, callee, reason: 'no options argument, so no timeout' });
@@ -187,51 +199,49 @@ describe('synchronous subprocess timeout invariant', () => {
     ]);
   });
 
-  it('rejects each way a call can arrive without a timeout', () => {
-    const cases: ReadonlyArray<readonly [string, string]> = [
-      ['inline options without a timeout', `execFileSync('git', ['status'], { encoding: 'utf8' });`],
-      ['no options argument at all', `execSync('ls');`],
-      [
-        'a hoisted options constant without a timeout',
-        `const OPTS = { encoding: 'utf8' };\nspawnSync('ls', [], OPTS);`,
-      ],
-    ];
+  const fixture = (body: string): Unbounded[] =>
+    unboundedCallsInSource(
+      'src/fixture.ts',
+      `import { execFileSync, execSync, spawnSync } from 'node:child_process';\n${body}\n`,
+    );
 
-    for (const [label, body] of cases) {
-      const source = `import { execFileSync, execSync, spawnSync } from 'node:child_process';\n${body}\n`;
-      const sourceFile = ts.createSourceFile('fixture.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-      const primitives = childProcessImports(sourceFile);
-      const constants = optionsConstants(sourceFile);
-
-      let flagged = 0;
-      const visit = (node: ts.Node): void => {
-        if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && primitives.has(node.expression.text)) {
-          const options = node.arguments[node.expression.text === 'execSync' ? 1 : 2];
-          const resolved =
-            options !== undefined && ts.isIdentifier(options) ? constants.get(options.text) : (options ?? undefined);
-          if (resolved === undefined || !ts.isObjectLiteralExpression(resolved) || !hasTimeoutProperty(resolved)) {
-            flagged += 1;
-          }
-        }
-        ts.forEachChild(node, visit);
-      };
-      ts.forEachChild(sourceFile, visit);
-
-      expect(flagged, label).toBe(1);
-    }
+  it.each([
+    ['inline options without a timeout', `execFileSync('git', ['status'], { encoding: 'utf8' });`],
+    ['no options argument at all', `execSync('ls');`],
+    ['a hoisted options constant without a timeout', `const OPTS = { encoding: 'utf8' };\nspawnSync('ls', [], OPTS);`],
+    // Options sit where an args array otherwise would; indexing a fixed position missed this.
+    ['the (file, options) overload without a timeout', `execFileSync('git', { encoding: 'utf8' });`],
+    // Args but no options at all — the distinction from the overload above is exactly what the shape test
+    // draws, and both are violations: a subprocess with no options object has no bound either.
+    ['args with no options object', `execFileSync('git', ['status']);`],
+  ])('rejects %s', (_label, body) => {
+    expect(fixture(body)).toHaveLength(1);
   });
 
-  it('accepts a bound expressed through a hoisted options constant', () => {
-    const source = [
-      `import { execFileSync } from 'node:child_process';`,
-      `const OPTS = { encoding: 'utf-8', timeout: 2_000 } as const;`,
-      `execFileSync('ps', [], OPTS);`,
-    ].join('\n');
-    const sourceFile = ts.createSourceFile('fixture.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-    const constants = optionsConstants(sourceFile);
-    const opts = constants.get('OPTS');
+  it.each([
+    ['an inline bound', `execFileSync('ps', ['-p', '1'], { encoding: 'utf8', timeout: 2_000 });`],
+    // node-process.ts is written this way; a literal-only check would read its bounded probes as unbounded.
+    [
+      'a hoisted options constant',
+      `const OPTS = { encoding: 'utf8', timeout: 2_000 } as const;\nexecFileSync('ps', [], OPTS);`,
+    ],
+    ['the (file, options) overload', `execFileSync('git', { encoding: 'utf8', timeout: 2_000 });`],
+  ])('accepts %s', (_label, body) => {
+    expect(fixture(body)).toEqual([]);
+  });
 
-    expect(opts, 'the hoisted constant must resolve, or node-process.ts would read as unbounded').toBeDefined();
-    expect(opts !== undefined && hasTimeoutProperty(opts)).toBe(true);
+  it('ignores a look-alike that is not the node:child_process primitive', () => {
+    // `host.execFileSync(...)` and an injected port are that port's contract, not this one.
+    expect(
+      unboundedCallsInSource(
+        'src/fixture.ts',
+        [
+          `import { execFileSync } from 'node:child_process';`,
+          `declare const host: { execFileSync(c: string): void };`,
+          `host.execFileSync('git');`,
+          `execFileSync('ps', [], { timeout: 1 });`,
+        ].join('\n'),
+      ),
+    ).toEqual([]);
   });
 });

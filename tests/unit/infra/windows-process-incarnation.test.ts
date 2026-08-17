@@ -1,6 +1,6 @@
 // The Windows probe is defensive — win32 is not a supported host — but it is the only coverage this function
-// has, and it is one of the three subprocess probes that must carry a timeout. The subprocess is mocked, so
-// this test is platform-independent and never invokes wmic.
+// has, and one of the three synchronous subprocess call sites that must carry a timeout. The subprocess is
+// mocked, so this test is platform-independent and never invokes wmic.
 //
 // There is deliberately no "returns null when the probe times out" test here. The probe's `catch` is bare, so
 // such a test passes whether or not the timeout option is present and proves nothing about the bound. The
@@ -21,7 +21,7 @@ const mockedExec = vi.mocked(execFileSync);
 const BOUNDED = expect.objectContaining({ timeout: 2_000 });
 
 describe('windows process incarnation', () => {
-  it('bounds the wmic probe', () => {
+  it('derives a token from wmic output, and bounds the probe', () => {
     mockedExec.mockReturnValue('CreationDate=20250817123456.000000+540');
 
     expect(probeProcessIncarnation(4321, 'win32')).toBe('win32:20250817123456.000000+540');
