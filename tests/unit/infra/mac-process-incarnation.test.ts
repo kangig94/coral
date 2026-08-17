@@ -21,6 +21,10 @@ const mockedExec = vi.mocked(execFileSync);
 
 const BOOT_SESSION = '3F2504E0-4F89-11D3-9A0C-0305E82C3301';
 const LSTART = 'Fri Nov 14 09:41:00 2025';
+// The bound is asserted as an independent literal, not imported from production: importing the constant would
+// make the assertion tautological, so a changed bound would pass silently. Matched as a subset so unrelated
+// exec options stay free to change — only the timeout is this test's business.
+const BOUNDED = expect.objectContaining({ timeout: 2_000 });
 
 function scriptDarwin(overrides: { bootSession?: string | Error; lstart?: string | Error } = {}): void {
   mockedExec.mockReset();
@@ -32,12 +36,12 @@ function scriptDarwin(overrides: { bootSession?: string | Error; lstart?: string
 }
 
 describe('darwin process incarnation', () => {
-  it('frames the start coordinate with the boot session id', () => {
+  it('frames the start coordinate with the boot session id, and bounds both subprocesses', () => {
     scriptDarwin();
 
     expect(probeProcessIncarnation(4321, 'darwin')).toBe(`darwin:${BOOT_SESSION}:${Date.parse(LSTART)}`);
-    expect(mockedExec).toHaveBeenCalledWith('sysctl', ['-n', 'kern.bootsessionuuid'], expect.anything());
-    expect(mockedExec).toHaveBeenCalledWith('ps', ['-o', 'lstart=', '-p', '4321'], expect.anything());
+    expect(mockedExec).toHaveBeenNthCalledWith(1, 'sysctl', ['-n', 'kern.bootsessionuuid'], BOUNDED);
+    expect(mockedExec).toHaveBeenNthCalledWith(2, 'ps', ['-o', 'lstart=', '-p', '4321'], BOUNDED);
   });
 
   it('reads the boot session every time rather than remembering it', () => {
