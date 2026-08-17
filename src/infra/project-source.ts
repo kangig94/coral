@@ -69,21 +69,34 @@ function rememberProjectSource(projectRoot: string, source: string): void {
 }
 
 /**
- * Whether the probe failed for a reason that could answer differently next time. Only the timeout can: it says
- * the mount or the process was busy just now, which is a statement about this moment.
+ * Failures that describe this moment rather than this environment. Each says the system could not run the
+ * probe just now: it took too long, there were no process slots, or there were no file descriptors. Ask again
+ * later and the answer can differ.
  *
- * Everything else is a standing fact about the environment and is cached as one. `git` exiting non-zero
- * (`status: 128`) is the ordinary "not a repository" / "no such remote" answer. `ENOENT` is git not being
- * installed, which will not change under a running daemon. An earlier version of this predicate asked the
- * opposite question — "did git answer at all", keyed on `status` being a number — and `ENOENT` has
- * `status: null`, so a machine without git re-spawned it on every call for the daemon's lifetime. That is the
- * common case on a non-developer machine, and `resolveProjectSource` runs per provider operation and per KB
- * tool call.
+ * Not claimed to be exhaustive — errno space is larger than any list — which is why the criterion is written
+ * down beside it. Anything not named here is cached, so adding an entry is how a newly-recognised transient
+ * failure stops being remembered as a standing fact.
+ */
+const TRANSIENT_PROBE_ERRNOS: ReadonlySet<string> = new Set(['ETIMEDOUT', 'EAGAIN', 'EMFILE', 'ENFILE']);
+
+/**
+ * Whether the probe failed for a reason that could answer differently next time.
+ *
+ * Everything outside `TRANSIENT_PROBE_ERRNOS` is a standing fact about the environment and is cached as one.
+ * `git` exiting non-zero (`status: 128`) is the ordinary "not a repository" / "no such remote" answer, and
+ * `ENOENT` is git not being installed, which will not change under a running daemon.
+ *
+ * Both directions of this have been wrong here. The first predicate asked "did git answer at all", keyed on
+ * `status` being a number; `ENOENT` has `status: null`, so a machine without git re-spawned it on every call
+ * for the daemon's lifetime — and `resolveProjectSource` runs per provider operation and per KB tool call. The
+ * second named only `ETIMEDOUT`, which cached a fork that failed for want of process slots as though it were a
+ * fact about the repository.
  */
 function probeWasTransient(error: unknown): boolean {
   if (typeof error !== 'object' || error === null) return false;
   try {
-    return Reflect.get(error, 'code') === 'ETIMEDOUT';
+    const code = Reflect.get(error, 'code');
+    return typeof code === 'string' && TRANSIENT_PROBE_ERRNOS.has(code);
   } catch {
     return false;
   }

@@ -7,8 +7,8 @@ one call's worth of wrong answer, and closing it needs a disposition in a port's
 
 `resolveProjectSource` (`src/infra/project-source.ts`) answers with a `string`: `<owner>/<repo>` from the git
 origin remote, or `local/<basename>`. Two different things produce the second one — git ran and said there is
-no remote, and git never answered at all (spawn failure, or the `GIT_REMOTE_PROBE_TIMEOUT_MS` bound on a
-stalled mount). The return type cannot tell them apart, and neither can any caller.
+no remote, and git could not be run just now (the `GIT_REMOTE_PROBE_TIMEOUT_MS` bound on a stalled mount, or a
+spawn that failed for want of a process slot or descriptor). The return type cannot tell them apart, and neither can any caller.
 
 That matters because the string is an identity, not a label. `runtime.paths.projectData` derives the
 per-project directory from it (`src/runtime/real.ts`), and `src/kb/paths.ts` puts `memo/` inside that
@@ -18,8 +18,9 @@ Nothing reports this; both directories are legitimate names.
 
 ## What is already decided, and what it did not close
 
-The **durable** half is closed. `resolveProjectSource` declines to cache exactly one outcome — a probe that
-timed out — because that is the only failure whose answer could differ next time. The fallback is still
+The **durable** half is closed. `resolveProjectSource` declines to cache a probe that failed for a reason
+describing this moment rather than this environment — it timed out, or the system had no process slot or file
+descriptor to run it with — because those are the failures whose answer can differ next time. The fallback is still
 returned, so the caller gets a usable name; it is simply not remembered, and the next call probes again, so a
 recovered mount self-heals. The predicate is `probeWasTransient` in that file.
 
@@ -27,7 +28,9 @@ The narrowness is deliberate and was arrived at by getting it wrong first. An ea
 answer at all", keyed on the error carrying a numeric `status`. A missing git binary carries
 `code: 'ENOENT'` and `status: null`, so on a machine without git nothing was ever cached and every provider
 operation and KB tool call re-spawned git for the daemon's lifetime. A standing fact about the environment —
-no repository, no remote, no git — is cached like any other answer.
+no repository, no remote, no git — is cached like any other answer. A later revision then named only
+`ETIMEDOUT` as transient, which cached a fork that failed for want of process slots as a fact about the
+repository; the set is `TRANSIENT_PROBE_ERRNOS`, and it does not claim to be exhaustive.
 
 That was the important half — before it, one wedge rerouted a project's data directory for the daemon's
 lifetime with no invalidation path. It does not close the residue: **within** the window, the caller still

@@ -49,6 +49,25 @@ describe('resolveProjectSource', () => {
     expect(execFileSyncMock, 'a standing fact is asked once').toHaveBeenCalledOnce();
   });
 
+  it.each([
+    ['ETIMEDOUT — the mount did not answer in time', 'ETIMEDOUT'],
+    // Not the timeout, and just as transient: the system had no process slot or no descriptor to spare. An
+    // earlier revision named only ETIMEDOUT and cached these as though they described the repository.
+    ['EAGAIN — no process slot right now', 'EAGAIN'],
+    ['EMFILE — no file descriptor right now', 'EMFILE'],
+  ])('does not cache the local fallback after %s', async (_label, code) => {
+    const { resolveProjectSource } = await loadProjectSourceModule();
+    execFileSyncMock.mockImplementationOnce(() => {
+      throw failure({ status: null, code });
+    });
+
+    expect(resolveProjectSource('/tmp/busy'), 'the fallback is still answered').toBe('local/busy');
+
+    execFileSyncMock.mockImplementation(() => remoteForProjectRoot('/tmp/busy'));
+    expect(resolveProjectSource('/tmp/busy'), 'and re-probed once the system can run it').toBe('owner/busy');
+    expect(execFileSyncMock).toHaveBeenCalledTimes(2);
+  });
+
   it('does not cache the local fallback after a timeout, so a recovered mount self-heals', async () => {
     const { resolveProjectSource } = await loadProjectSourceModule();
     execFileSyncMock.mockImplementationOnce(() => {
