@@ -879,11 +879,13 @@ async function runLifecycleStartup({
         },
         runStartupRecovery,
         runtime,
-        readVerifiedIncumbentFromDiscovery: (evidence) =>
-          verifiedIncumbentFromDiscovery(
-            probeCoordinator({ storage: runtime.storage, env: runtime.env, paths: runtime.paths }),
-            evidence,
-          ),
+        readVerifiedIncumbentFromDiscovery: (evidence) => {
+          // An unobservable pid keeps its record: `verifiedIncumbentFromDiscovery` is agreement checking, and
+          // it refuses on its own terms when the record cannot be tied to the socket. Dropping the record here
+          // would instead assert there is no incumbent, which an unanswered probe does not establish.
+          const probe = probeCoordinator({ storage: runtime.storage, env: runtime.env, paths: runtime.paths });
+          return verifiedIncumbentFromDiscovery(probe.kind === 'absent' ? null : probe.record, evidence);
+        },
         signalLedger: createFileHandoffSignalLedger({
           storage: runtime.storage,
           runDir: runtime.paths.coral.coordinator.runDir,

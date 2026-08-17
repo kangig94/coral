@@ -231,8 +231,13 @@ async function readLiveCoordinatorHealth(
   runtime: Pick<Runtime, 'env' | 'paths' | 'storage'>,
   time: TimePort,
 ): Promise<LiveIncumbentHealth | null> {
-  const discovery = probeCoordinator({ storage: runtime.storage, env: runtime.env, paths: runtime.paths });
-  if (discovery === null) return null;
+  const probe = probeCoordinator({ storage: runtime.storage, env: runtime.env, paths: runtime.paths });
+  // Only decisive absence short-circuits. An unobservable pid still has a record, and authenticated health is
+  // a stronger statement about whether an incumbent is serving than a pid probe ever was — so ask it rather
+  // than concluding nobody is there. Reporting "no live coordinator" from an unanswered probe is what routed
+  // a contender to `use-current` while an incumbent was still up.
+  if (probe.kind === 'absent') return null;
+  const discovery = probe.record;
 
   const health = await readAuthenticatedHealth(discovery, time);
   return health !== null &&

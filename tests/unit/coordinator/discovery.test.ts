@@ -90,7 +90,7 @@ describe('coordinator discovery', () => {
     });
   });
 
-  it('probeCoordinator returns the record when pid and process incarnation match', async () => {
+  it('probeCoordinator reports a live record for a pid that names a running process', async () => {
     makeHome();
     const { probeCoordinator, writeDiscoveryRecord } = await importDiscovery();
     const { probeProcessIncarnation } = await import('#src/infra/node-process.js');
@@ -113,13 +113,16 @@ describe('coordinator discovery', () => {
     );
 
     expect(probeCoordinator(runtime)).toMatchObject({
-      pid: process.pid,
-      port: 9021,
-      bundleHash: 'bundle-b',
-      flavor: 'dev',
-      namespace: 'ns-b',
-      token: 'token-b',
-      bootToken: 'boot-token-b',
+      kind: 'live',
+      record: {
+        pid: process.pid,
+        port: 9021,
+        bundleHash: 'bundle-b',
+        flavor: 'dev',
+        namespace: 'ns-b',
+        token: 'token-b',
+        bootToken: 'boot-token-b',
+      },
     });
   });
 
@@ -153,7 +156,7 @@ describe('coordinator discovery', () => {
     expect(
       probeCoordinator(runtime),
       'the credential beside a live pid must survive a clock base this reader does not share',
-    ).toMatchObject({ pid: process.pid, bootToken: 'boot-token-c' });
+    ).toMatchObject({ kind: 'live', record: { pid: process.pid, bootToken: 'boot-token-c' } });
   });
 
   // The upgrade that introduces the token. A coordinator from a build that predates it writes no
@@ -189,13 +192,16 @@ describe('coordinator discovery', () => {
 
     const probed = probeCoordinator(runtime);
     expect(probed, 'a pre-token record must still carry its credential').toMatchObject({
-      pid: process.pid,
-      bootToken: 'boot-token-legacy',
+      kind: 'live',
+      record: { pid: process.pid, bootToken: 'boot-token-legacy' },
     });
-    expect(probed?.incarnation, 'and it simply has no token').toBeUndefined();
+    expect(
+      probed.kind === 'live' ? probed.record.incarnation : 'unreachable',
+      'and it simply has no token',
+    ).toBeUndefined();
   });
 
-  it('probeCoordinator rejects a record whose pid names no process', async () => {
+  it('probeCoordinator reports absence for a record whose pid names no process', async () => {
     makeHome();
     const { probeCoordinator, writeDiscoveryRecord } = await importDiscovery();
     const runtime = makeDiscoveryRuntime('prod');
@@ -215,7 +221,44 @@ describe('coordinator discovery', () => {
       runtime,
     );
 
-    expect(probeCoordinator(runtime), 'liveness is an observation this reader can make alone').toBeNull();
+    expect(probeCoordinator(runtime), 'liveness is an observation this reader can make alone').toEqual({
+      kind: 'absent',
+    });
+  });
+
+  // The third answer, and the reason this reader returns three. A pid it cannot observe is not a pid it has
+  // shown to be gone, and the record beside it carries the `bootToken` a contender needs to ask an incumbent
+  // to stand down. Collapsing this into `absent` is what let a transient probe failure route a contender past
+  // a coordinator that was still serving.
+  it('probeCoordinator reports unobservable, keeping the credential, when the pid cannot be observed', async () => {
+    makeHome();
+    const { probeCoordinator, writeDiscoveryRecord } = await importDiscovery();
+    const runtime = makeDiscoveryRuntime('prod');
+
+    writeDiscoveryRecord(
+      {
+        pid: process.pid,
+        port: 9024,
+        socketPath: coordinatorPaths('prod').socketPath,
+        bundleHash: 'bundle-e',
+        flavor: 'prod',
+        namespace: 'ns-e',
+        startedAt: Date.now(),
+        token: 'token-e',
+        bootToken: 'boot-token-e',
+      },
+      runtime,
+    );
+
+    // Neither ESRCH nor EPERM, which is what `observeProcessLiveness` answers `unknown` to.
+    vi.spyOn(process, 'kill').mockImplementation(() => {
+      throw Object.assign(new Error('probe refused'), { code: 'EIO' });
+    });
+
+    expect(probeCoordinator(runtime), 'an unanswered probe is not proof of absence').toMatchObject({
+      kind: 'unobservable',
+      record: { pid: process.pid, bootToken: 'boot-token-e' },
+    });
   });
 
   it('reads a discovery record that carries a field this build predates', async () => {

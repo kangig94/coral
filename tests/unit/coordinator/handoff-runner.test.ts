@@ -100,12 +100,15 @@ function createBundle(): string {
 
 function configureNewerIncumbent(bundleDir = createBundle()): string {
   mockState.probeCoordinator.mockReturnValue({
-    socketPath,
-    pid: 4242,
-    bundleHash: manifest.bundleHash,
-    flavor: manifest.flavor,
-    namespace: 'handoff-runner',
-    bootToken: 'boot-token',
+    kind: 'live',
+    record: {
+      socketPath,
+      pid: 4242,
+      bundleHash: manifest.bundleHash,
+      flavor: manifest.flavor,
+      namespace: 'handoff-runner',
+      bootToken: 'boot-token',
+    },
   });
   mockState.health.mockResolvedValue({
     status: 'ok',
@@ -227,7 +230,7 @@ describe('handoff-runner', () => {
   });
 
   it('should return run-current without spawning when no incumbent is discoverable', async () => {
-    mockState.probeCoordinator.mockReturnValue(null);
+    mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
 
     await expect(runHandoff(cliOperation('run'), { pluginRoot: '/plugin/root' })).resolves.toEqual({
       kind: 'run-current',
@@ -366,7 +369,7 @@ describe('handoff-runner', () => {
     async (code) => {
       const target = validatedTarget(roots[0]);
       let child: ChildProcess | undefined;
-      mockState.probeCoordinator.mockReturnValue(null);
+      mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
       mockState.spawn.mockImplementationOnce(() => {
         child = childThatExits(code, null);
         return child;

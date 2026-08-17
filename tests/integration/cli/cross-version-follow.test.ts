@@ -180,13 +180,16 @@ describe('cross-version follow', () => {
     }) as typeof process.stderr.write);
 
     mockState.ensure.mockResolvedValueOnce(makeBackend(subscribe)).mockResolvedValueOnce(makeBackend());
-    mockState.probeCoordinator.mockReturnValueOnce(null).mockReturnValue({
-      socketPath,
-      pid: 4242,
-      bundleHash: target.manifest.bundleHash,
-      flavor: 'prod',
-      namespace: 'cross-version-follow',
-      bootToken: 'boot-token',
+    mockState.probeCoordinator.mockReturnValueOnce({ kind: 'absent' }).mockReturnValue({
+      kind: 'live',
+      record: {
+        socketPath,
+        pid: 4242,
+        bundleHash: target.manifest.bundleHash,
+        flavor: 'prod',
+        namespace: 'cross-version-follow',
+        bootToken: 'boot-token',
+      },
     });
     mockState.health.mockResolvedValue({
       status: 'ok',

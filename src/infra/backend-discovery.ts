@@ -4,7 +4,12 @@ import { z } from 'zod';
 import type { BuildFlavor } from './build-flavor.js';
 import type { CoralPaths } from './path/index.js';
 import type { EnvPort, StoragePort } from './port-types.js';
-import { processIncarnationSchema, probeProcessIncarnation, type ProcessIncarnation } from './node-process.js';
+import {
+  observeProcessLiveness,
+  processIncarnationSchema,
+  probeProcessIncarnation,
+  type ProcessIncarnation,
+} from './node-process.js';
 import { backendLog } from './backend-log.js';
 import { isNoEntryError } from './fs-errors.js';
 
@@ -137,18 +142,43 @@ export function readDiscoveryRecord(runtime: DiscoveryRuntime): CoordinatorDisco
  * side is not the guarantee: a connect can succeed and its shutdown still fail authentication, and ping is
  * unauthenticated. Do not read this paragraph as licence to relax either check.
  *
- * The probe still runs, but only as a cheap filter. It yields `null` for an absent process *and* for a
- * read, parse, or unsupported-platform failure, so this is "could not observe a process", not proof of
- * absence — nothing downstream may treat it as proof.
+ * The probe still runs, but only as a cheap filter, and it answers three things rather than two. An earlier
+ * version of this comment ended "nothing downstream may treat it as proof" while the return type was
+ * `record | null`, which left a caller no way to obey: "no record" and "could not observe this pid" arrived
+ * as the same value, and `readLiveCoordinatorHealth` read both as no incumbent. The instruction is now in the
+ * type instead of in prose.
+ *
+ * `observeProcessLiveness` rather than `probeProcessIncarnation`, because liveness is the whole question here
+ * and it is the answer this reader can reach alone. It is one `kill(pid, 0)`; the incarnation probe forks two
+ * subprocesses on darwin to derive a token this function then discards, and a slow or wedged one of those
+ * would have made a live coordinator read as absent.
  */
-export function probeCoordinator(runtime: DiscoveryRuntime): CoordinatorDiscoveryRecord | null {
+export type CoordinatorProbe =
+  /** A record exists and its pid names a live process. */
+  | Readonly<{ kind: 'live'; record: CoordinatorDiscoveryRecord }>
+  /** No record, or a record whose pid decisively names no process. Either way there is no incumbent. */
+  | Readonly<{ kind: 'absent' }>
+  /**
+   * A record exists and its pid could not be observed. The record rides along deliberately: it carries the
+   * `bootToken` a contender needs to ask an incumbent to stand down, and discarding it over an unanswered
+   * probe is what turns "could not observe" into a false "nobody is there".
+   */
+  | Readonly<{ kind: 'unobservable'; record: CoordinatorDiscoveryRecord }>;
+
+export function probeCoordinator(runtime: DiscoveryRuntime): CoordinatorProbe {
   const record = readDiscoveryRecord(runtime);
   if (!record) {
-    return null;
+    return { kind: 'absent' };
   }
 
-  const live = probeProcessIncarnation(record.pid, runtime.env.platform() as NodeJS.Platform);
-  return live === null ? null : record;
+  switch (observeProcessLiveness(record.pid)) {
+    case 'alive':
+      return { kind: 'live', record };
+    case 'absent':
+      return { kind: 'absent' };
+    case 'unknown':
+      return { kind: 'unobservable', record };
+  }
 }
 
 export function writeBackendInfo(info: BackendInfo, runtime: DiscoveryRuntime): void {
