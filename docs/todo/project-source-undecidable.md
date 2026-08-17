@@ -18,14 +18,20 @@ Nothing reports this; both directories are legitimate names.
 
 ## What is already decided, and what it did not close
 
-The **durable** half is closed. `resolveProjectSource` now caches only a decisive answer: if git ran and
-exited with a status, the result is remembered; if git never answered, the fallback is returned and _not_
-remembered, so the next call probes again and a recovered mount self-heals. The distinction is `gitAnswered`
-in that file.
+The **durable** half is closed. `resolveProjectSource` declines to cache exactly one outcome — a probe that
+timed out — because that is the only failure whose answer could differ next time. The fallback is still
+returned, so the caller gets a usable name; it is simply not remembered, and the next call probes again, so a
+recovered mount self-heals. The predicate is `probeWasTransient` in that file.
+
+The narrowness is deliberate and was arrived at by getting it wrong first. An earlier predicate asked "did git
+answer at all", keyed on the error carrying a numeric `status`. A missing git binary carries
+`code: 'ENOENT'` and `status: null`, so on a machine without git nothing was ever cached and every provider
+operation and KB tool call re-spawned git for the daemon's lifetime. A standing fact about the environment —
+no repository, no remote, no git — is cached like any other answer.
 
 That was the important half — before it, one wedge rerouted a project's data directory for the daemon's
 lifetime with no invalidation path. It does not close the residue: **within** the window, the caller still
-receives `local/<basename>` and still cannot tell that it is a guess.
+receives `local/<basename>` and still cannot tell that it is a guess rather than the absence of a remote.
 
 Also decided, and not in question: the bound itself stays, and stays best-effort
 (`tests/invariants/sync-subprocess-timeout.test.ts`). Removing it would replace a wrong answer with a hang,

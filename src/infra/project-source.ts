@@ -69,16 +69,21 @@ function rememberProjectSource(projectRoot: string, source: string): void {
 }
 
 /**
- * Whether git ran and answered. A non-null `status` means the process started, did its work, and exited with
- * that code — including the ordinary "not a repository" and "no such remote" answers, which are answers. A
- * spawn failure or a timeout has no `status`: git never told us anything.
+ * Whether the probe failed for a reason that could answer differently next time. Only the timeout can: it says
+ * the mount or the process was busy just now, which is a statement about this moment.
  *
- * The distinction decides what may be cached, and getting it wrong is not cosmetic — see `resolveProjectSource`.
+ * Everything else is a standing fact about the environment and is cached as one. `git` exiting non-zero
+ * (`status: 128`) is the ordinary "not a repository" / "no such remote" answer. `ENOENT` is git not being
+ * installed, which will not change under a running daemon. An earlier version of this predicate asked the
+ * opposite question — "did git answer at all", keyed on `status` being a number — and `ENOENT` has
+ * `status: null`, so a machine without git re-spawned it on every call for the daemon's lifetime. That is the
+ * common case on a non-developer machine, and `resolveProjectSource` runs per provider operation and per KB
+ * tool call.
  */
-function gitAnswered(error: unknown): boolean {
+function probeWasTransient(error: unknown): boolean {
   if (typeof error !== 'object' || error === null) return false;
   try {
-    return typeof Reflect.get(error, 'status') === 'number';
+    return Reflect.get(error, 'code') === 'ETIMEDOUT';
   } catch {
     return false;
   }
@@ -89,18 +94,20 @@ function gitAnswered(error: unknown): boolean {
  * `local/<basename>` when there is no remote to read. Cached per projectRoot to avoid re-shelling to git on
  * every call.
  *
- * **Only a decisive answer is cached.** `local/<basename>` means two different things — "this project has no
- * git remote", which git told us, and "git never answered", which is a guess — and this cache outlives the
- * condition that produced it. Caching the guess is how a transient wedge becomes permanent: `projectData`
- * derives the per-project directory from this string (`runtime/real.ts`), and `kb/paths.ts` puts memos inside
- * it, so a wedged probe would file a memo under `local/<basename>` while every later read — after the mount
- * recovers and the real source resolves — looks under `<owner>/<repo>` and does not find it.
+ * **A transient failure is answered but not remembered.** `local/<basename>` covers two situations — there is
+ * no git remote, which is a standing fact, and the probe timed out, which is a statement about one moment —
+ * and this cache outlives the second. Caching it is how a wedge becomes permanent: `projectData` derives the
+ * per-project directory from this string (`runtime/real.ts`) and `kb/paths.ts` puts memos inside it, so a
+ * timed-out probe would file a memo under `local/<basename>` while every later read, after the mount
+ * recovers, looks under `<owner>/<repo>` and does not find it.
  *
- * So a non-answer is returned but not remembered, and the next call probes again. What that costs is a repeat
- * of the bound above on a permanently unreachable root; what it buys is that the fallback stops being durable.
- * It does not make the two meanings distinguishable to a caller — this function still returns one `string`,
+ * Only the timeout is treated that way — see `probeWasTransient`. A missing git binary or a non-zero exit is
+ * cached like any other answer, because re-asking cannot change either, and not caching them would re-spawn
+ * git on every call for the life of the daemon.
+ *
+ * This does not make the two meanings distinguishable to a caller: the function still returns one `string`,
  * and a caller inside the wedged window still gets the local name. Closing that needs a disposition in the
- * return type, which is `docs/todo/project-source-undecidable.md`.
+ * return type — `docs/todo/project-source-undecidable.md`.
  */
 export function resolveProjectSource(projectRoot: string): string {
   const cached = projectSourceCache.get(projectRoot);
@@ -119,7 +126,7 @@ export function resolveProjectSource(projectRoot: string): string {
       timeout: GIT_REMOTE_PROBE_TIMEOUT_MS,
     }).trim();
   } catch (error: unknown) {
-    if (gitAnswered(error)) rememberProjectSource(projectRoot, local);
+    if (!probeWasTransient(error)) rememberProjectSource(projectRoot, local);
     return local;
   }
 
