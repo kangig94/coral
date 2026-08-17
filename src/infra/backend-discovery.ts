@@ -115,6 +115,17 @@ export function writeDiscoveryRecord(record: CoordinatorDiscoveryRecord, runtime
  * that no coordinator claimed this socket. `undecodable` is a file that exists and could not be read as a
  * record — truncated mid-write, or written by a build whose shape this one rejects — which says nothing about
  * whether a coordinator is running.
+ *
+ * A fourth outcome exists and is deliberately not a variant: this function throws when the file cannot be
+ * opened at all (`EACCES`, `EIO`) or when `JSON.parse` fails with something other than a `SyntaxError`. Those
+ * are not statements about the incumbent — they are this process being unable to read its own run directory —
+ * and making them a variant would ask every caller to invent a policy for a condition none of them can act on.
+ *
+ * Throwing is not silence here, which is the usual objection. The coordinator paths are on startup, where
+ * failing loudly beats continuing on an unread file. The two CLI paths, `backend status` and
+ * `backend shutdown`, reach `src/cli/run.ts`'s top-level handler, which renders the error through `emitError`
+ * and exits non-zero — an operator is told the run directory is unreadable rather than told the daemon is not
+ * running. That distinction is the whole point of this type, so the throw serves it rather than escaping it.
  */
 export type DiscoveryRead =
   | Readonly<{ kind: 'record'; record: CoordinatorDiscoveryRecord }>
@@ -173,19 +184,39 @@ export type CoordinatorProbe =
   | Readonly<{ kind: 'unobservable'; reason: 'unreadable-process'; record: CoordinatorDiscoveryRecord }>;
 
 /**
- * Two other sites ask the same question and deliberately do not use this type: `transport/http/backend/status.ts`
- * and `.../shutdown.ts` each read a `BackendInfo` and test `observeProcessLiveness(info.pid) === 'absent'`
- * themselves. That is not drift left unfixed — they cannot use this shape.
+ * Two other sites ask *this* question — whether an incumbent exists — without this type:
+ * `transport/http/backend/status.ts` and `.../shutdown.ts`. They keep their own shape because `status.ts`
+ * reports the not-running case with the dead record's `pid` and `startedAt`, which `absent` does not carry —
+ * the coordinator paths that consume this type have no use for a dead record and would destructure around it.
  *
- * `status.ts` reports the *not-running* case with the dead record's `pid` and `startedAt`, so it needs a record
- * on the absence answer, which `absent` does not carry and should not: the coordinator paths that consume this
- * type have no use for a dead record and would have to destructure around it. A shared reader would need four
- * states to serve both, which is a bigger type than either caller wants.
+ * `readBackendInfo` has two further callers and neither is one of these, which is the distinction rather than
+ * an omission. `coordinator/ownership-checker.ts` asks whether someone *replaced* it, and is the shape this
+ * type is arguing for: it acts only on a positive observation (a record naming a different `instanceId`) and
+ * says out loud that an absent record is a deleted file, not a takeover. `tools/simulation` is a harness.
  *
- * What actually binds the three is the rule, not the shape — only an observed `'absent'` is an absence, never
- * `!== 'alive'` — and `tests/invariants/liveness-is-never-a-boolean.test.ts` does not enforce it: it bans
- * coercing a liveness value to a boolean, which all three already avoid, and permits either comparison. If a
- * fourth site appears, the thing to share is that sentence.
+ * An earlier version of this note went further and said there was nothing to fix at those sites, because they
+ * already test `observeProcessLiveness(info.pid) === 'absent'` on the process axis. That was one axis of two.
+ * Both obtain their record through `readBackendInfo` → `readDiscoveryRecord`, whose `null` covers a missing
+ * file, an undecodable one, *and* a record that decodes but omits `version` or `instanceId` — so both reported
+ * a confident `not_running` from evidence they could not read, which is the same collapse this type exists to
+ * end. They now consult `readDiscoveryRecordDisposition` first.
+ *
+ * That closes two of those three, and the third is stated here rather than left to be discovered the same way:
+ * a record that decodes and omits either field still reaches `!info` and still reports `not_running`. Nothing
+ * this build writes produces one — `writeBackendInfo` takes a `BackendInfo`, where both are required — so the
+ * case is a coordinator from a build that predates them, which is the cross-version scenario `.passthrough()`
+ * exists for. Closing it means `status.ts` reporting from the raw record, whose `host`/`port`/`bootToken` are
+ * all present, and deciding what to display where the version was. That is a change to what the command shows,
+ * not a disposition fix, and it is not made here.
+ *
+ * The note is kept, corrected twice, because certifying an unfinished job as a decision cost more than leaving
+ * it unexamined would have — and the first correction did it again by enumerating three causes and closing on
+ * a sentence that reads as all three.
+ *
+ * What binds all three is the rule rather than the shape: only an observed `'absent'` is an absence. There is
+ * no invariant test behind that sentence and one was tried — see the rejection recorded in
+ * `tests/invariants/liveness-is-never-a-boolean.test.ts`. The rule is held by these return types and by the
+ * tests that assert what each variant does, so a fourth site adding itself is caught by review, not by a scan.
  */
 
 /**

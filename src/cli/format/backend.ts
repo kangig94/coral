@@ -14,6 +14,15 @@ export function formatBackendStatus(result: BackendStatusFull): string {
       return formatRunningStatus(result.health);
     case 'not_running':
       return 'Backend not running. Any coral-cli mutating command (or a Claude Code session start) relaunches it.';
+    case 'undecodable_record':
+      // Deliberately not "not running": the record exists and could not be read, which says nothing about
+      // whether a coordinator is serving. The remedy names the file because nothing in Coral rewrites it while
+      // a coordinator is up — it is written once at startup — so an operator is the only party who can clear it.
+      return [
+        `Backend state is unknown: the coordinator discovery record could not be read (${result.reason}).`,
+        'A coordinator may still be running; this is not a report that none is.',
+        'Next step: stop any running coordinator, delete the discovery record under the Coral run directory, then run a coral-cli mutating command to relaunch.',
+      ].join('\n');
     case 'recent_failure': {
       const lines = ['Backend is not running after a recent coordinator failure.', `Phase: ${result.phase}`];
       if (result.setupError === undefined) {

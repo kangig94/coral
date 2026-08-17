@@ -41,7 +41,12 @@ import type {
   RuntimePaths,
 } from './ports.js';
 import { errorMessage } from '../infra/error-format.js';
-import { DEFAULT_SYNC_EXEC_TIMEOUT_MS, MAX_BUFFER } from '../infra/process-constants.js';
+import {
+  DEFAULT_SYNC_EXEC_TIMEOUT_MS,
+  EXEC_MAXBUFFER_CODE,
+  EXEC_TIMEOUT_CODE,
+  MAX_BUFFER,
+} from '../infra/process-constants.js';
 import { composeChildEnv, parsePassthrough, resolveEnvBudgetBytes } from '../infra/env-sanitize.js';
 import { isDurableCliRuntime, type DurableCliRuntimeRecord, type DurableProcessExit } from './durable-runtime.js';
 import { buildExecPromise } from './exec-builder.js';
@@ -387,15 +392,19 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
   runtimeProcess.execSync = (command, args, options = {}) => {
     const execOptions: RuntimeExecOptions = { ...options };
     execOptions.maxBuffer ??= MAX_BUFFER;
-    // Bounded for the same reason `maxBuffer` is, and only on the synchronous variant: `exec` above returns a
-    // promise a caller can abandon, while this one blocks the event loop until the child decides otherwise, so
-    // no `AbortSignal` or shutdown budget in this process can reach it. `RuntimeExecOptions.timeout` stays
-    // optional so a caller may widen or tighten it, but omission must not mean unbounded.
+    // Bounded for the same reason `maxBuffer` is, and only on the synchronous variant. Abandoning `exec`'s
+    // promise does not stop its child either — what differs is that the event loop keeps running while it
+    // finishes, so an `AbortSignal` or a shutdown budget still gets its turn. This one blocks until the child
+    // decides otherwise, and nothing in this process gets a turn at all. `RuntimeExecOptions.timeout` stays
+    // optional so a caller may widen or tighten it, but omission must not mean unbounded — and `0`, which
+    // `spawnSync` reads as no bound, is not a tightening, so it is corrected rather than honoured.
     //
     // `tests/invariants/sync-subprocess-timeout.test.ts` excludes port callers from its literal-requiring scan
     // on the stated grounds that this port owns their bound. Until this line, nothing here had taken that
     // ownership up — the exclusion named a successor that had not accepted.
-    execOptions.timeout ??= DEFAULT_SYNC_EXEC_TIMEOUT_MS;
+    if (execOptions.timeout === undefined || execOptions.timeout <= 0) {
+      execOptions.timeout = DEFAULT_SYNC_EXEC_TIMEOUT_MS;
+    }
     const encoding = execOptions.encoding ?? 'utf-8';
     const maxBuffer = execOptions.maxBuffer;
     const spawnOptions = {
@@ -426,6 +435,11 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
     const stdout = normalizeSpawnSyncOutput(result.stdout, encoding);
     const stderr = normalizeSpawnSyncOutput(result.stderr, encoding);
 
+    // The two substituted errors below carry a `code` because callers sort on it — `git-sync.ts`'s `isGitRepo`
+    // decides from it whether a failure is worth caching. Both branches are causal guesses and the codes are
+    // no more precise than the messages they accompany: any signal death reads as a timeout, and output plus
+    // no signal reads as maxBuffer. What the codes are relied on for is narrower and holds for every case they
+    // cover — the command did not answer — so a mislabel costs a caller a retry, never a wrong answer kept.
     if (result.error) {
       const hasOutput = stdout.length > 0 || stderr.length > 0;
       const errorCode = (result.error as NodeJS.ErrnoException).code;
@@ -434,7 +448,7 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
           stdout,
           stderr,
           status: null,
-          error: new Error(`maxBuffer exceeded: ${command}`),
+          error: Object.assign(new Error(`maxBuffer exceeded: ${command}`), { code: EXEC_MAXBUFFER_CODE }),
         };
       }
       if (result.signal) {
@@ -442,7 +456,7 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
           stdout,
           stderr,
           status: null,
-          error: new Error(`timeout: ${command}`),
+          error: Object.assign(new Error(`timeout: ${command}`), { code: EXEC_TIMEOUT_CODE }),
         };
       }
       return {
@@ -458,7 +472,7 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
         stdout,
         stderr,
         status: null,
-        error: new Error(`timeout: ${command}`),
+        error: Object.assign(new Error(`timeout: ${command}`), { code: EXEC_TIMEOUT_CODE }),
       };
     }
 

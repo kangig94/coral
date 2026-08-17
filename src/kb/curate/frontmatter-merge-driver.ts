@@ -38,7 +38,7 @@ export type FrontmatterMergeDriverResult = {
  * it should finish in milliseconds; the bound exists because a synchronous subprocess that does not finish
  * cannot be interrupted by anything, not because this one is expected to be slow.
  *
- * `timeout` is required rather than optional on the host type above. An optional bound here would be no bound:
+ * `timeout` is required rather than optional on `FrontmatterMergeDriverHost` below. An optional bound here would be no bound:
  * this host is constructed in `cli/commands/kb.ts`, which forwards whatever it is handed, and
  * `tests/invariants/sync-subprocess-timeout.test.ts` would then have had to exempt that adapter — which it did,
  * on the stated premise that the caller supplies the bound. The caller could not: the type forbade it.

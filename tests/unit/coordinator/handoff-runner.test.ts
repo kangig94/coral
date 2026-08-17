@@ -389,6 +389,13 @@ describe('handoff-runner', () => {
   });
 
   // The other half: with no record there is nothing to ask with, so `run-current` is the only available answer.
+  //
+  // This one does not hold the guard, and cannot. Deleting the `unreadable-record` return leaves
+  // `probe.record` on a variant that has no `record`, so the mutant does not compile — there is no program for
+  // a test to fail against. It was briefly rewritten on the belief that it should fail there; the belief was
+  // wrong, and the rewrite would have been a test asserting the type-checker. What it does hold is the end of
+  // the path: this variant reaches `run-current` with nothing asked, which is the disposition the variant
+  // exists to produce and is not implied by the shape of the union.
   it('should not ask health when the discovery record itself could not be decoded', async () => {
     mockState.probeCoordinator.mockReturnValue({ kind: 'unobservable', reason: 'unreadable-record' });
 

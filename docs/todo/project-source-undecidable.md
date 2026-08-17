@@ -1,14 +1,16 @@
 # TODO — a project source that could not be derived is returned as one that was
 
-**Status**: open, narrow, and already half-closed. The durable half was fixed on 2026-08-18; what remains is
-one call's worth of wrong answer, and closing it needs a disposition in a port's return type.
+**Status**: open and narrow. The durable half was fixed on 2026-08-18; what remains is that one project root
+can answer with two different identities inside one process, and one of those identities gets persisted.
+Closing it needs a disposition in a port's return type.
 
 ## What exists
 
 `resolveProjectSource` (`src/infra/project-source.ts`) answers with a `string`: `<owner>/<repo>` from the git
 origin remote, or `local/<basename>`. Two different things produce the second one — git ran and said there is
 no remote, and git could not be run just now (the `GIT_REMOTE_PROBE_TIMEOUT_MS` bound on a stalled mount, or a
-spawn that failed for want of a process slot or descriptor). The return type cannot tell them apart, and neither can any caller.
+spawn that failed for want of a process slot or descriptor). The return type cannot tell them apart, and
+neither can any caller.
 
 That matters because the string is an identity, not a label. `runtime.paths.projectData` derives the
 per-project directory from it (`src/runtime/real.ts`), and `src/kb/paths.ts` puts `memo/` inside that
@@ -18,23 +20,44 @@ Nothing reports this; both directories are legitimate names.
 
 ## What is already decided, and what it did not close
 
-The **durable** half is closed. `resolveProjectSource` declines to cache a probe that failed for a reason
-describing this moment rather than this environment — it timed out, or the system had no process slot or file
-descriptor to run it with — because those are the failures whose answer can differ next time. The fallback is still
-returned, so the caller gets a usable name; it is simply not remembered, and the next call probes again, so a
-recovered mount self-heals. The predicate is `probeWasTransient` in that file.
+The **lifetime-durable** half is closed. `resolveProjectSource` caches only a probe that answered: git ran and
+exited, or it could not be launched for a reason that will not change under a running daemon
+(`STANDING_PROBE_ERRNOS` in `src/infra/process-constants.ts` — no git binary, no permission to execute it, no
+such directory). A probe that could not be answered is remembered separately and only until
+`INDECISIVE_PROBE_REPROBE_INTERVAL_MS`, so a recovered mount self-heals without a restart, and a wedged one
+costs one probe per interval per root instead of one per call. The predicate is `probeWasDecisive`.
 
-The narrowness is deliberate and was arrived at by getting it wrong first. An earlier predicate asked "did git
-answer at all", keyed on the error carrying a numeric `status`. A missing git binary carries
-`code: 'ENOENT'` and `status: null`, so on a machine without git nothing was ever cached and every provider
-operation and KB tool call re-spawned git for the daemon's lifetime. A standing fact about the environment —
-no repository, no remote, no git — is cached like any other answer. A later revision then named only
-`ETIMEDOUT` as transient, which cached a fork that failed for want of process slots as a fact about the
-repository; the set is `TRANSIENT_PROBE_ERRNOS`, and it does not claim to be exhaustive.
+The enumeration sits on the standing side, and it was written the other way round first. Listing the
+_transient_ errnos and caching everything else puts the dangerous outcome on the default: every errno nobody
+listed becomes a project identity durably misrouted, and the list needed a correction each time one was
+noticed — `EAGAIN` and `EMFILE` in one pass, then `ENOMEM`, `ESTALE` and `EIO` in review. Before that, an even
+earlier predicate asked "did git answer at all", keyed on the error carrying a numeric `status`; a missing git
+binary carries `code: 'ENOENT'` and `status: null`, so on a machine without git nothing was ever cached and
+every provider operation and KB tool call re-spawned git for the daemon's lifetime.
 
 That was the important half — before it, one wedge rerouted a project's data directory for the daemon's
-lifetime with no invalidation path. It does not close the residue: **within** the window, the caller still
-receives `local/<basename>` and still cannot tell that it is a guess rather than the absence of a remote.
+lifetime with no invalidation path.
+
+## The residue, stated correctly
+
+It is not "one call's answer may be a guess". Making the fallback expire is what created the residue's actual
+shape: **one project root can now resolve to `local/x` early in a process and `<owner>/x` later in the same
+process**, and callers are not written for an identity that changes underneath them.
+
+Two consequences, in increasing order of how hard they are to notice:
+
+- `discuss/shell/runtime-services.ts` keys live per-source state by this string — `getDiscussStoreForSource`
+  at :138, the membership test at :81, the enumeration at :112. A root that resolves differently after the
+  interval gets a second, unrelated set of state, and a lookup made with one identity misses rows filed under
+  the other.
+- `discuss/shell/recovery.ts` writes it into a persisted continuation as `sourceId` (:252, :820) and then
+  **re-derives it on read and rejects the row when the two disagree** (:235,
+  `continuation.sourceId !== sourceId`). That is the sharpest form of this: a continuation written while git
+  could not answer is not merely filed oddly, it is discarded by the next recovery run as belonging to another
+  source. Durable, outlives the process, and reads as an ordinary "no continuation to resume".
+
+So the fix moved the problem from "wrong for the process lifetime, invisibly" to "wrong for one interval, and
+whatever was persisted during it stays wrong". That is a real improvement and is not a closure.
 
 Also decided, and not in question: the bound itself stays, and stays best-effort
 (`tests/invariants/sync-subprocess-timeout.test.ts`). Removing it would replace a wrong answer with a hang,
@@ -46,21 +69,28 @@ which is worse.
 - `containment-observation-deadline`, which is also about a synchronous probe that cannot be interrupted but
   asks whether a _deadline_ survives it, not what its answer means. Sharing the observation that a wedged
   subprocess blocks everything does not make them one entry, and neither fix produces the other.
+- `isGitRepo` in `src/kb/curate/git-sync.ts`, which had the same collapse and was fixed the same way on the
+  same day. It is not part of this entry because its residue is different: it gates behaviour rather than
+  naming anything, so a wrong answer suspends git sync for an interval and persists nothing.
 
 ## Required shape
 
 A third answer, in the type: `resolved | no-remote | undecidable`, with `projectData` refusing to derive a
-directory from the third rather than deriving one from a guess.
+directory from the third rather than deriving one from a guess, and with the persisting callers above refusing
+to write a `sourceId` they were told is undecidable.
 
 The cost is the reason this is a TODO and not a fix. `RuntimePaths.projectSource` returns `string`
-(`src/runtime/ports.ts`), and every consumer — provider inject's `{{PROJECT_SOURCE}}` substitution, the KB
-tool handlers, discuss's `sourceId`, `projectData` itself — is written against a value that always exists.
-Some of them genuinely cannot proceed without one and would need their own disposition for the third answer,
-which is where the work actually is.
+(`src/runtime/ports.ts`), and every consumer is written against a value that always exists. The graph puts the
+count in double digits and it is not a short list to work through: `providers/inject.ts` for the
+`{{PROJECT_SOURCE}}` substitution, `kb/tool-handlers.ts`, `runtime/real.ts` for `projectData` and
+`buildSpawnEnv`, `jobs/shell/launch.ts`, `provider-proxy/semantic-operation-runner.ts`,
+`coordinator/services/provider-operation-prepare.ts`, and the two discuss sites above. Some of them genuinely
+cannot proceed without a value and would need their own disposition for the third answer, which is where the
+work actually is.
 
 ## What would have to be true to start
 
-Either a report of a memo landing in the wrong directory, or a decision that the port's return type should
-carry dispositions generally — this would be the first one that does. Absent both, the recorded residue is
-the honest state: one call's answer may be a guess, it is no longer remembered as fact, and the guess is
-`local/<basename>`, which is a real directory a reader can find by hand.
+Either a report of a memo landing in the wrong directory or a discuss row that stopped matching its source, or
+a decision that the port's return type should carry dispositions generally — this would be the first one that
+does. Absent both, the recorded residue is the honest state: an identity that can change once per interval per
+root, and that is persisted by two discuss callers when it does.

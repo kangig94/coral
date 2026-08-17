@@ -1,4 +1,4 @@
-import { readBackendInfo } from '../../../infra/backend-discovery.js';
+import { readBackendInfo, readDiscoveryRecordDisposition } from '../../../infra/backend-discovery.js';
 import { readBuildFlavor } from '../../../infra/bundle-manifest.js';
 import { observeProcessLiveness } from '../../../infra/node-process.js';
 import { createRealRuntime } from '../../../runtime/real.js';
@@ -25,11 +25,16 @@ export async function shutdownBackend(pluginRoot: string): Promise<ShutdownResul
         "this nested Coral process cannot shut down its parent coordinator; return to the top-level Coral session and run 'coral-cli backend shutdown' there",
     };
   }
-  const info = readBackendInfo({
-    storage: runtime.storage,
-    env: runtime.env,
-    paths: runtime.paths,
-  });
+  const discoveryRuntime = { storage: runtime.storage, env: runtime.env, paths: runtime.paths };
+
+  // A record that cannot be decoded is not an absent coordinator, and reporting `not_running` here would skip
+  // a shutdown request a live daemon is waiting for. Same split as `getBackendStatusFull`.
+  const read = readDiscoveryRecordDisposition(discoveryRuntime);
+  if (read.kind === 'undecodable') {
+    return { ok: false, reason: `discovery_record_${read.reason.replace('-', '_')}` };
+  }
+
+  const info = readBackendInfo(discoveryRuntime);
   // Only an observed absence skips the shutdown request. Unknown still tries, which is the safe direction.
   if (!info || observeProcessLiveness(info.pid) === 'absent') {
     return { ok: false, reason: 'not_running' };

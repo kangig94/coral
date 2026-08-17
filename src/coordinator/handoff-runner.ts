@@ -232,19 +232,36 @@ async function readLiveCoordinatorHealth(
   time: TimePort,
 ): Promise<LiveIncumbentHealth | null> {
   const probe = probeCoordinator({ storage: runtime.storage, env: runtime.env, paths: runtime.paths });
-  // Only decisive absence short-circuits. An unobservable pid still has a record, and authenticated health is
-  // a stronger statement about whether an incumbent is serving than a pid probe ever was — so ask it rather
-  // than concluding nobody is there. Returning `null` here reports no live coordinator, and this caller's
-  // answer becomes `use-current`: an unanswered probe would route a contender past an incumbent that is
-  // still serving.
-  if (probe.kind === 'absent') return null;
-  // An undecodable record leaves nothing to ask with — no socket path, no `bootToken` — so "no live incumbent
-  // health" is the only answer available here, not a judgement that none exists. It is reported rather than
-  // inferred: `probeCoordinator` warns on this branch. What keeps it from becoming a second daemon is not this
-  // function but the kernel's exclusive bind on the IPC socket, which `transport/ipc/ensure.ts` documents as
-  // the single arbiter of the canonical incumbent.
-  if (!('record' in probe)) return null;
-  const discovery = probe.record;
+  // Switched rather than tested for a `record` field. The `in` check this replaced was not wrong — deleting it
+  // does not even compile, because `probe.record` is then read on a variant that has none — but it silently
+  // absorbs whatever comes next: a fifth `CoordinatorProbe` shape without a record joins the `null` that means
+  // "nobody is there", and one with a record joins the branch that asks health, neither on purpose. Definite
+  // assignment is what the switch buys: a new shape leaves `discovery` unassigned and fails the build here
+  // until someone says which of the two answers below it is.
+  let discovery: CoordinatorDiscoveryRecord;
+  switch (probe.kind) {
+    case 'absent':
+      // The only decisive short-circuit. Returning `null` reports no live coordinator and this caller's answer
+      // becomes `use-current`, so reaching it from anything less than an observed absence would route a
+      // contender past an incumbent that is still serving.
+      return null;
+    case 'unobservable':
+      if (probe.reason === 'unreadable-record') {
+        // An undecodable record leaves nothing to ask with — no socket path, no `bootToken` — so "no live
+        // incumbent health" is the only answer available here, not a judgement that none exists. It is
+        // reported rather than inferred: `probeCoordinator` warns on this branch. What keeps it from becoming
+        // a second daemon is not this function but the kernel's exclusive bind on the IPC socket, which
+        // `transport/ipc/ensure.ts` documents as the single arbiter of the canonical incumbent.
+        return null;
+      }
+      // An unobservable pid still has a record, and authenticated health is a stronger statement about whether
+      // an incumbent is serving than a pid probe ever was — so ask it rather than concluding nobody is there.
+      discovery = probe.record;
+      break;
+    case 'live':
+      discovery = probe.record;
+      break;
+  }
 
   const health = await readAuthenticatedHealth(discovery, time);
   return health !== null &&

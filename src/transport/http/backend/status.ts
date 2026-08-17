@@ -1,4 +1,4 @@
-import { readBackendInfo } from '../../../infra/backend-discovery.js';
+import { readBackendInfo, readDiscoveryRecordDisposition } from '../../../infra/backend-discovery.js';
 import { readBuildFlavor } from '../../../infra/bundle-manifest.js';
 import { isRecord } from '../../../infra/json.js';
 import { observeProcessLiveness } from '../../../infra/node-process.js';
@@ -59,6 +59,12 @@ export type PublicSetupErrorSummary = {
 export type BackendStatusFull =
   | { status: 'ok'; health: Extract<BackendStatus, { status: 'ok' }> }
   | { status: 'shutting_down' | 'unauthorized' | 'not_running' }
+  /**
+   * The discovery record exists and could not be read, so whether a coordinator is running is unknown. Kept
+   * distinct from `not_running` because that is a claim, and this reader has not earned it: a truncated write
+   * or a record shaped by a build this one rejects both produce it while a coordinator may be serving.
+   */
+  | { status: 'undecodable_record'; reason: 'corrupt-json' | 'shape-rejected' }
   | { status: 'recent_failure'; phase: PublicDiagnosticPhase; setupError?: PublicSetupErrorSummary };
 
 type RecentFailureStatus = Extract<BackendStatusFull, { status: 'recent_failure' }>;
@@ -130,11 +136,18 @@ function noDaemonStatus(
 
 export async function getBackendStatusFull(pluginRoot: string): Promise<BackendStatusFull> {
   const runtime = createRealRuntime(readBuildFlavor(pluginRoot));
-  const info = readBackendInfo({
-    storage: runtime.storage,
-    env: runtime.env,
-    paths: runtime.paths,
-  });
+  const discoveryRuntime = { storage: runtime.storage, env: runtime.env, paths: runtime.paths };
+
+  // Two axes can each fail to answer, and both used to arrive as `not_running`. The process axis was already
+  // handled below; the record axis was not — `readBackendInfo` returns `null` for a missing file and for one it
+  // could not decode alike, so a truncated `coordinator.json` reported a confident absence while a coordinator
+  // was serving. `.passthrough()` on the record schema makes the cross-version case realistic, not theoretical.
+  const read = readDiscoveryRecordDisposition(discoveryRuntime);
+  if (read.kind === 'undecodable') {
+    return { status: 'undecodable_record', reason: read.reason };
+  }
+
+  const info = readBackendInfo(discoveryRuntime);
   // Only an observed absence reports not-running; an unanswerable probe is not that observation.
   if (!info || observeProcessLiveness(info.pid) === 'absent') {
     return noDaemonStatus(

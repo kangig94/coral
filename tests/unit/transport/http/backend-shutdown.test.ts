@@ -1,14 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { BackendInfo } from '#src/infra/backend-discovery.js';
+import type { BackendInfo, DiscoveryRead } from '#src/infra/backend-discovery.js';
 import { readBackendInfo } from '#src/infra/backend-discovery.js';
 
 const mockState = vi.hoisted(() => ({
   info: null as BackendInfo | null,
+  read: { kind: 'missing' } as DiscoveryRead,
   env: {} as Record<string, string>,
 }));
 
 vi.mock('#src/infra/backend-discovery.js', () => ({
   readBackendInfo: vi.fn(() => mockState.info),
+  readDiscoveryRecordDisposition: vi.fn(() => mockState.read),
 }));
 
 vi.mock('#src/infra/bundle-manifest.js', () => ({
@@ -49,6 +51,7 @@ function backendInfo(overrides: Partial<BackendInfo> = {}): BackendInfo {
 describe('shutdownBackend', () => {
   beforeEach(() => {
     mockState.info = backendInfo();
+    mockState.read = { kind: 'record', record: backendInfo() };
     mockState.env = {};
     vi.mocked(readBackendInfo).mockClear();
     vi.stubGlobal(
@@ -130,5 +133,22 @@ describe('shutdownBackend', () => {
     const { shutdownBackend } = await import('#src/transport/http/backend/shutdown.js');
 
     await expect(shutdownBackend('/plugin-root')).resolves.toEqual({ ok: true, alreadyDraining: true });
+  });
+
+  // A file that exists and cannot be decoded is not an absent coordinator. Reporting `not_running` here would
+  // skip a shutdown request a live daemon is waiting for, and the operator would then be told the thing they
+  // are trying to stop is already stopped.
+  it.each([
+    ['corrupt-json', 'discovery_record_corrupt_json'],
+    ['shape-rejected', 'discovery_record_shape_rejected'],
+  ] as const)('refuses to report not_running when the discovery record is %s', async (reason, expected) => {
+    mockState.read = { kind: 'undecodable', reason };
+    // The record-derived view is still available, so a consumer reading only that would proceed as normal —
+    // which is exactly the collapse this branch exists to stop.
+    mockState.info = backendInfo();
+
+    const { shutdownBackend } = await import('#src/transport/http/backend/shutdown.js');
+
+    await expect(shutdownBackend('/plugin-root')).resolves.toEqual({ ok: false, reason: expected });
   });
 });

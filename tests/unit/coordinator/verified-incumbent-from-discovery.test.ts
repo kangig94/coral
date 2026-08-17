@@ -12,8 +12,8 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { verifiedIncumbentFromDiscovery } from '#src/coordinator/lifecycle.js';
-import type { CoordinatorDiscoveryRecord } from '#src/infra/backend-discovery.js';
+import { verifiedIncumbentFromDiscovery, verifiedIncumbentFromProbe } from '#src/coordinator/lifecycle.js';
+import type { CoordinatorDiscoveryRecord, CoordinatorProbe } from '#src/infra/backend-discovery.js';
 import type { DesiredIncumbentIdentity, IncumbentHealth } from '#src/transport/ipc/handoff.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
@@ -129,5 +129,50 @@ describe('verifiedIncumbentFromDiscovery', () => {
         evidence({ ...health, incarnation: testIncarnation(7) }),
       ),
     ).toBeNull();
+  });
+});
+
+// The same closure-with-no-test failure, one call earlier. `verifiedIncumbentFromDiscovery` decides what to do
+// with a record; this decides whether there is a record to decide about, and the difference between its two
+// `null`s — nobody is there, versus the file could not be read — is the one the whole `CoordinatorProbe` type
+// exists to keep apart. It was an inline closure on the bind path until this file could hold it.
+describe('verifiedIncumbentFromProbe', () => {
+  const probes: ReadonlyArray<readonly [string, CoordinatorProbe]> = [
+    ['a live record', { kind: 'live', record: preTokenRecord() }],
+    [
+      'a record whose pid could not be observed',
+      { kind: 'unobservable', reason: 'unreadable-process', record: preTokenRecord() },
+    ],
+  ];
+
+  it.each(probes)('contends with the incumbent behind %s', (_label, probe) => {
+    const incumbent = verifiedIncumbentFromProbe(probe, evidence());
+
+    expect(incumbent, 'an unanswered pid probe is not the incumbent being absent').not.toBeNull();
+    expect(incumbent?.bootToken, 'dropping the record drops the credential for a peaceful handoff').toBe(
+      'incumbent-boot-token',
+    );
+  });
+
+  it('has no incumbent to contend with when the probe observed absence', () => {
+    expect(verifiedIncumbentFromProbe({ kind: 'absent' }, evidence())).toBeNull();
+  });
+
+  it('has no incumbent to contend with when the record could not be decoded', () => {
+    // Not the same statement as the case above, and this call cannot say so — there is no record to agree
+    // with, so `null` is the only value available. What keeps it from reading as "nobody is there" is outside
+    // this function: `probeCoordinator` warns, and the exclusive bind arbitrates.
+    expect(verifiedIncumbentFromProbe({ kind: 'unobservable', reason: 'unreadable-record' }, evidence())).toBeNull();
+  });
+
+  it('still applies the record checks it delegates', () => {
+    // Guards against this becoming a pass-through: selecting the record is not accepting it.
+    const mismatched: CoordinatorProbe = {
+      kind: 'unobservable',
+      reason: 'unreadable-process',
+      record: preTokenRecord({ socketPath: '/tmp/coral-other.sock' }),
+    };
+
+    expect(verifiedIncumbentFromProbe(mismatched, evidence())).toBeNull();
   });
 });

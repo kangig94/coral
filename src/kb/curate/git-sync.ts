@@ -1,6 +1,7 @@
 import { isAbsolute, join } from 'node:path';
 import { backendLog } from '../../infra/backend-log.js';
 import type { TimerHandle } from '../../infra/port-types.js';
+import { INDECISIVE_PROBE_REPROBE_INTERVAL_MS, STANDING_PROBE_ERRNOS } from '../../infra/process-constants.js';
 import { nowIsoString } from '../../infra/time.js';
 import type { KbRuntime } from '../contract.js';
 import { communityEntryId, noteEntryId, sourceEntryId, wikiEntryId, type KbEntryId } from '../entry-types.js';
@@ -159,7 +160,9 @@ export function createGitSyncController({
   kb: KbRuntime;
   curateAssistant: CurateAssistantPort;
 } & GitSyncRuntimePicks): GitSyncController {
+  // Only a decisive answer. A probe that could not be answered lives in the timestamp below.
   let cachedIsGitRepo: boolean | null = null;
+  let lastUnansweredGitRepoProbeAt: number | null = null;
   let deferredCommitTimer: TimerHandle | null = null;
   const root = kb.markdownRoot;
 
@@ -202,19 +205,75 @@ export function createGitSyncController({
     }
   }
 
+  /**
+   * Whether `git()` failed because git answered, or because it could not be asked.
+   *
+   * The discriminator is the `code`, and what it means is narrower than "did git run". A non-zero exit — which
+   * is how `rev-parse --is-inside-work-tree` says "no" — reaches `git()` in-band and is rethrown as a
+   * synthesized `Error` with no `code`, so codeless means git reported. Everything with a `code` is a failure
+   * the port named, and those split by whether the name describes this environment (`STANDING_PROBE_ERRNOS`)
+   * or this moment.
+   *
+   * Not "a launch that never got that far": the most important member of the second group is a timeout, where
+   * git launched, ran, and was killed. It reaches here as `ETIMEDOUT` only because `real.ts` puts that code
+   * back on the error it substitutes for `spawnSync`'s — `spawnSync` supplies it, the port used to drop it
+   * while rewriting the message, and a timeout was then indistinguishable here from git answering "no" and
+   * was cached as one.
+   */
+  function gitAnswered(error: unknown): boolean {
+    const code = (error as NodeJS.ErrnoException | null)?.code;
+    return typeof code !== 'string' || STANDING_PROBE_ERRNOS.has(code);
+  }
+
+  /**
+   * Every git-sync operation gates on this, so a wrong `false` is not a degraded mode — it is the KB silently
+   * ceasing to be version-controlled, with no commit, no push, and nothing said. That is what caching every
+   * failure produced: one `EAGAIN` under fork pressure, or one 5s timeout on a busy disk, and the answer was
+   * `false` for the lifetime of the daemon.
+   *
+   * So only an answer is cached. A non-answer is remembered with an expiry instead — long enough that a wedged
+   * environment is not re-probed on each of the seven call sites, short enough that a recovered one heals
+   * without a restart. Within the window the operations are skipped, which is the same conservative direction
+   * as before; the difference is that it ends.
+   */
   function isGitRepo(): boolean {
     if (cachedIsGitRepo !== null) {
       return cachedIsGitRepo;
     }
+    if (
+      lastUnansweredGitRepoProbeAt !== null &&
+      kb.time.now() - lastUnansweredGitRepoProbeAt < INDECISIVE_PROBE_REPROBE_INTERVAL_MS
+    ) {
+      return false;
+    }
     try {
       git(['rev-parse', '--is-inside-work-tree'], 5000);
-      cachedIsGitRepo = true;
-    } catch {
+    } catch (error: unknown) {
+      if (!gitAnswered(error)) {
+        // Once per interval rather than once per call, and said at all because the consequence — a KB that
+        // stops committing — is otherwise indistinguishable from a KB that was never a repository.
+        backendLog.warn(
+          `KB git sync could not determine whether ${root} is a git work tree; skipping git operations for now.`,
+        );
+        lastUnansweredGitRepoProbeAt = kb.time.now();
+        return false;
+      }
+      lastUnansweredGitRepoProbeAt = null;
       cachedIsGitRepo = false;
+      return false;
     }
-    return cachedIsGitRepo;
+    lastUnansweredGitRepoProbeAt = null;
+    cachedIsGitRepo = true;
+    return true;
   }
 
+  /**
+   * The blanket catch here is deliberate, and the difference from `isGitRepo` above is that nothing is
+   * remembered. A `git remote` that could not be answered skips this one cycle of `gitSync`/`gitPush`, and the
+   * scheduler asks again on the next; the same failure in `isGitRepo` was cached and skipped every cycle
+   * until the daemon restarted. Splitting the disposition here would buy a re-probe that the next call already
+   * makes.
+   */
   function isGitSyncEnabled(): boolean {
     if (envPort.get('CORAL_KB_GIT_SYNC') !== '1') {
       return false;
