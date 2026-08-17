@@ -33,12 +33,24 @@ export type FrontmatterMergeDriverResult = {
   bodyConflict: boolean;
 };
 
+/**
+ * `git merge-file` runs synchronously in the CLI process on three local temp files this driver just wrote, so
+ * it should finish in milliseconds; the bound exists because a synchronous subprocess that does not finish
+ * cannot be interrupted by anything, not because this one is expected to be slow.
+ *
+ * `timeout` is required rather than optional on the host type above. An optional bound here would be no bound:
+ * this host is constructed in `cli/commands/kb.ts`, which forwards whatever it is handed, and
+ * `tests/invariants/sync-subprocess-timeout.test.ts` would then have had to exempt that adapter — which it did,
+ * on the stated premise that the caller supplies the bound. The caller could not: the type forbade it.
+ */
+const GIT_MERGE_FILE_TIMEOUT_MS = 2_000;
+
 export type FrontmatterMergeDriverHost = {
   readFileSync(path: string, encoding: 'utf-8'): string;
   writeFileSync(path: string, data: string, encoding: 'utf-8'): void;
   createTempDir(prefix: string): string;
   rmSync(path: string, options: { recursive: boolean; force: boolean }): void;
-  execFileSync(command: string, args: string[], options: { stdio: 'ignore' }): Buffer | string;
+  execFileSync(command: string, args: string[], options: { stdio: 'ignore'; timeout: number }): Buffer | string;
 };
 
 type MarkdownDocument = {
@@ -150,7 +162,7 @@ function mergeBodiesWithGit(
           basePath,
           theirsPath,
         ],
-        { stdio: 'ignore' },
+        { stdio: 'ignore', timeout: GIT_MERGE_FILE_TIMEOUT_MS },
       );
     } catch (error: unknown) {
       status = extractExitStatus(error);

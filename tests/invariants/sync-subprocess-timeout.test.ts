@@ -18,11 +18,17 @@
 // best-effort by construction. This test asserts only that every site asks for one, which is the part a scan
 // can see.
 //
-// Scope is direct calls to the `node:child_process` primitives. Calls routed through a port or an injected
-// host (`processPort.execSync`, `host.execFileSync`) are that port's contract, not this one — `runtime/real.ts`
-// forwards its caller's `timeout`, and requiring a literal there would be wrong.
+// Scope is direct calls to the `node:child_process` primitives, including through a namespace import. A call
+// routed through a port or an injected host (`processPort.execSync`, `host.execFileSync`) is that port's
+// contract, not this one.
+//
+// That exclusion is only honest if the port actually holds the bound, and for a while it did not:
+// `runtime/real.ts` forwarded `timeout: execOptions.timeout` from an optional field, so omission meant
+// unbounded, and this comment named a successor that had never accepted the obligation. `execSync` there now
+// defaults it the way it has always defaulted `maxBuffer`.
 
 import { readFileSync, readdirSync } from 'node:fs';
+import type { FrontmatterMergeDriverHost } from '#src/kb/curate/frontmatter-merge-driver.js';
 import { join, relative } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import ts from 'typescript';
@@ -34,13 +40,22 @@ const SYNC_SUBPROCESS_PRIMITIVES = new Set(['execFileSync', 'execSync', 'spawnSy
 
 /**
  * Call sites that forward an options value they did not author, so there is no literal to require. Each entry
- * is a pass-through adapter whose caller owns the bound. Adding one is a conscious decision: it asserts that
- * the options object genuinely arrives from elsewhere, not that the timeout was inconvenient to add.
+ * asserts that some *other* module supplies the bound, which is a claim this scan cannot check on its own —
+ * so an entry is only as good as the type it points at, and must be pinned by a test that fails when that
+ * type changes.
+ *
+ * The one entry here was false when written. `cli/commands/kb.ts` forwards into `FrontmatterMergeDriverHost`,
+ * whose `execFileSync` typed its options as `{ stdio: 'ignore' }` — a closed type that could not carry a
+ * timeout — so the caller credited with owning the bound was statically forbidden from supplying one, and
+ * `git merge-file` ran unbounded while this test reported the file compliant. It is true now because that
+ * host type requires `timeout`, and `pins the type that makes the one allowlist entry true` fails if it stops
+ * requiring it. Check the forwarding caller's *type*, not its prose.
  */
 const FORWARDING_ALLOWLIST = new Map<string, string>([
   [
     'src/cli/commands/kb.ts',
-    'Adapts `execFileSync` into a host object and forwards the caller-supplied options object verbatim.',
+    'Adapter for `FrontmatterMergeDriverHost`, whose `execFileSync` options type *requires* `timeout: number` ' +
+      '— so every caller must supply one and the forward cannot be unbounded. Pinned by the type assertion below.',
   ],
 ]);
 
@@ -68,28 +83,87 @@ function canonicalSrcPath(filePath: string): string {
   return relative(REPO_ROOT, filePath).replace(/\\/g, '/');
 }
 
-/** Names imported from `node:child_process` in this file, so `host.execFileSync` and look-alikes are ignored. */
-function childProcessImports(sourceFile: ts.SourceFile): Set<string> {
-  const imported = new Set<string>();
+type ChildProcessBindings = Readonly<{
+  /** Local names bound directly to a primitive: `import { execFileSync }`, or aliased. */
+  direct: ReadonlySet<string>;
+  /** Namespace names: `import * as cp` — a call is then `cp.execFileSync(...)`. */
+  namespaces: ReadonlySet<string>;
+}>;
+
+/**
+ * How this file reaches the primitives. Both forms are recognised because only recognising named imports made
+ * a namespace import invisible to the scan *and* to the vacuity guard below, which used to compute its file
+ * list with this same function — one blind spot, counted twice, agreeing with itself.
+ *
+ * A method on some other object (`processPort.execSync`, `host.execFileSync`) is deliberately not a binding:
+ * that call's bound is its port's contract, not this scan's.
+ */
+function childProcessImports(sourceFile: ts.SourceFile): ChildProcessBindings {
+  const direct = new Set<string>();
+  const namespaces = new Set<string>();
   for (const statement of sourceFile.statements) {
     if (!ts.isImportDeclaration(statement)) continue;
     if (!ts.isStringLiteral(statement.moduleSpecifier)) continue;
     if (statement.moduleSpecifier.text !== 'node:child_process') continue;
     const bindings = statement.importClause?.namedBindings;
-    if (bindings === undefined || !ts.isNamedImports(bindings)) continue;
+    if (bindings === undefined) continue;
+    if (ts.isNamespaceImport(bindings)) {
+      namespaces.add(bindings.name.text);
+      continue;
+    }
+    if (!ts.isNamedImports(bindings)) continue;
     for (const element of bindings.elements) {
       const original = element.propertyName?.text ?? element.name.text;
-      if (SYNC_SUBPROCESS_PRIMITIVES.has(original)) imported.add(element.name.text);
+      if (SYNC_SUBPROCESS_PRIMITIVES.has(original)) direct.add(element.name.text);
     }
   }
-  return imported;
+  return { direct, namespaces };
 }
 
-function hasTimeoutProperty(node: ts.ObjectLiteralExpression): boolean {
+/** The primitive a call expression invokes, or null when it is not one of ours. */
+function calleeName(node: ts.CallExpression, bindings: ChildProcessBindings): string | null {
+  if (ts.isIdentifier(node.expression)) {
+    return bindings.direct.has(node.expression.text) ? node.expression.text : null;
+  }
+  if (
+    ts.isPropertyAccessExpression(node.expression) &&
+    ts.isIdentifier(node.expression.expression) &&
+    bindings.namespaces.has(node.expression.expression.text) &&
+    SYNC_SUBPROCESS_PRIMITIVES.has(node.expression.name.text)
+  ) {
+    return node.expression.name.text;
+  }
+  return null;
+}
+
+/**
+ * Whether an options object states a bound — not merely whether it mentions one.
+ *
+ * `timeout: undefined` and `timeout: 0` both name the property and neither is a bound: Node treats both as
+ * "no timeout". A name-only check accepted them, which mattered concretely, because `runtime/real.ts` writes
+ * `timeout: execOptions.timeout` from an optional field and would have passed this scan on the spelling while
+ * being unbounded whenever its caller omitted one.
+ *
+ * A spread is resolved against the file's own option constants, so `{ ...PROBE_EXEC_OPTIONS, env }` — the
+ * shape `darwin-signal-authority`'s recorded `TZ=UTC` partial needs — is bounded if the spread source is.
+ */
+function statesTimeout(
+  node: ts.ObjectLiteralExpression,
+  constants: ReadonlyMap<string, ts.ObjectLiteralExpression>,
+): boolean {
   return node.properties.some((property) => {
+    if (ts.isSpreadAssignment(property)) {
+      if (!ts.isIdentifier(property.expression)) return false;
+      const spread = constants.get(property.expression.text);
+      return spread !== undefined && statesTimeout(spread, constants);
+    }
     const name = property.name;
     if (name === undefined) return false;
-    return (ts.isIdentifier(name) || ts.isStringLiteral(name)) && name.text === 'timeout';
+    if (!((ts.isIdentifier(name) || ts.isStringLiteral(name)) && name.text === 'timeout')) return false;
+    if (!ts.isPropertyAssignment(property)) return true;
+    const value = property.initializer;
+    if (ts.isIdentifier(value) && value.text === 'undefined') return false;
+    return !(ts.isNumericLiteral(value) && Number(value.text) === 0);
   });
 }
 
@@ -122,15 +196,15 @@ function unboundedCallsInSource(file: string, source: string): Unbounded[] {
   if (![...SYNC_SUBPROCESS_PRIMITIVES].some((name) => source.includes(name))) return [];
 
   const sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-  const primitives = childProcessImports(sourceFile);
-  if (primitives.size === 0) return [];
+  const bindings = childProcessImports(sourceFile);
+  if (bindings.direct.size === 0 && bindings.namespaces.size === 0) return [];
 
   const constants = optionsConstants(sourceFile);
   const found: Unbounded[] = [];
 
   const visit = (node: ts.Node): void => {
-    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && primitives.has(node.expression.text)) {
-      const callee = node.expression.text;
+    const callee = ts.isCallExpression(node) ? calleeName(node, bindings) : null;
+    if (ts.isCallExpression(node) && callee !== null) {
       const line = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1;
       // Options are always last, but the arity is not fixed: `execFileSync` and `spawnSync` each accept both
       // `(file, args, options)` and `(file, options)`, so indexing a position would flag a legitimate
@@ -143,8 +217,8 @@ function unboundedCallsInSource(file: string, source: string): Unbounded[] {
       if (options === undefined) {
         found.push({ file, line, callee, reason: 'no options argument, so no timeout' });
       } else if (ts.isObjectLiteralExpression(options)) {
-        if (!hasTimeoutProperty(options)) {
-          found.push({ file, line, callee, reason: 'inline options without a timeout' });
+        if (!statesTimeout(options, constants)) {
+          found.push({ file, line, callee, reason: 'inline options state no timeout' });
         }
       } else if (ts.isIdentifier(options)) {
         const resolved = constants.get(options.text);
@@ -152,8 +226,8 @@ function unboundedCallsInSource(file: string, source: string): Unbounded[] {
           if (!FORWARDING_ALLOWLIST.has(file)) {
             found.push({ file, line, callee, reason: `options \`${options.text}\` is forwarded, not authored here` });
           }
-        } else if (!hasTimeoutProperty(resolved)) {
-          found.push({ file, line, callee, reason: `options constant \`${options.text}\` has no timeout` });
+        } else if (!statesTimeout(resolved, constants)) {
+          found.push({ file, line, callee, reason: `options constant \`${options.text}\` states no timeout` });
         }
       } else if (!FORWARDING_ALLOWLIST.has(file)) {
         found.push({ file, line, callee, reason: 'options expression could not be resolved to a timeout' });
@@ -177,26 +251,41 @@ describe('synchronous subprocess timeout invariant', () => {
   });
 
   it('finds the sites it is meant to protect, so a passing run is not vacuous', () => {
-    // Without this, deleting every sync subprocess call — or breaking the import detection — would leave the
-    // assertion above green and prove nothing. These are the three direct call sites that exist today.
-    const scanned = listSourceFiles(SRC_ROOT).filter((filePath) => {
-      const sourceFile = ts.createSourceFile(
-        canonicalSrcPath(filePath),
-        readFileSync(filePath, 'utf-8'),
-        ts.ScriptTarget.Latest,
-        true,
-        ts.ScriptKind.TS,
-      );
-      return childProcessImports(sourceFile).size > 0;
-    });
+    // The oracle here is TEXT, not the AST detector, and that is the whole point. An earlier revision filtered
+    // with `childProcessImports` — the same function the scan uses — so a file the detector could not see
+    // (a namespace import, say) vanished from the scan and from this guard at the same moment, and both stayed
+    // green. A guard that shares the blind spot it exists to detect is not a guard.
+    // Both halves are needed. The module specifier alone over-matches — `transport/ipc/ensure.ts` imports the
+    // asynchronous `spawn`, which this invariant has no claim on — and a primitive name alone would match
+    // prose. Together they are still pure text, which is what keeps the oracle independent of the detector.
+    const importers = listSourceFiles(SRC_ROOT)
+      .filter((filePath) => {
+        const source = readFileSync(filePath, 'utf-8');
+        return (
+          source.includes("'node:child_process'") && [...SYNC_SUBPROCESS_PRIMITIVES].some((n) => source.includes(n))
+        );
+      })
+      .map(canonicalSrcPath)
+      .sort();
 
-    expect(scanned.map(canonicalSrcPath).sort()).toEqual([
+    expect(importers, 'every file importing the primitives must be one the detector can see').toEqual([
       'src/cli/commands/kb.ts',
       'src/infra/env-sanitize.ts',
       'src/infra/node-process.ts',
       'src/infra/project-source.ts',
       'src/runtime/real.ts',
     ]);
+
+    // And the detector must actually recognise each of them, which is the half the text oracle cannot prove.
+    for (const file of importers) {
+      const source = readFileSync(join(REPO_ROOT, file), 'utf-8');
+      const sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+      const { direct, namespaces } = childProcessImports(sourceFile);
+      expect(
+        direct.size + namespaces.size,
+        `${file} imports the primitives but the detector sees none`,
+      ).toBeGreaterThan(0);
+    }
   });
 
   const fixture = (body: string): Unbounded[] =>
@@ -214,6 +303,10 @@ describe('synchronous subprocess timeout invariant', () => {
     // Args but no options at all — the distinction from the overload above is exactly what the shape test
     // draws, and both are violations: a subprocess with no options object has no bound either.
     ['args with no options object', `execFileSync('git', ['status']);`],
+    // Named but not stated: Node treats both as no timeout.
+    ['an explicitly undefined timeout', `execSync('ls', { timeout: undefined });`],
+    ['a zero timeout', `execSync('ls', { timeout: 0 });`],
+    ['a spread whose source states no timeout', `const BASE = { encoding: 'utf8' };\nexecSync('ls', { ...BASE });`],
   ])('rejects %s', (_label, body) => {
     expect(fixture(body)).toHaveLength(1);
   });
@@ -226,8 +319,38 @@ describe('synchronous subprocess timeout invariant', () => {
       `const OPTS = { encoding: 'utf8', timeout: 2_000 } as const;\nexecFileSync('ps', [], OPTS);`,
     ],
     ['the (file, options) overload', `execFileSync('git', { encoding: 'utf8', timeout: 2_000 });`],
+    // The shape `darwin-signal-authority`'s recorded TZ=UTC partial needs.
+    [
+      'a spread of a bounded constant, extended',
+      `const BASE = { encoding: 'utf8', timeout: 2_000 } as const;\nexecFileSync('ps', [], { ...BASE, env: { TZ: 'UTC' } });`,
+    ],
   ])('accepts %s', (_label, body) => {
     expect(fixture(body)).toEqual([]);
+  });
+
+  it('pins the type that makes the one allowlist entry true', () => {
+    // The allowlist credits `cli/commands/kb.ts` with forwarding a bound its caller must supply. That is only
+    // true while the host type *requires* `timeout`. When it did not — it was `{ stdio: 'ignore' }`, a closed
+    // type that could not carry one — the entry was false and this invariant certified an unbounded
+    // `git merge-file` as compliant. Loosening it back must fail here, not silently re-open the exemption.
+    type Options = Parameters<FrontmatterMergeDriverHost['execFileSync']>[2];
+    const bounded: Options = { stdio: 'ignore', timeout: 2_000 };
+    expect(bounded.timeout).toBeTypeOf('number');
+
+    // @ts-expect-error `timeout` is required; if this stops erroring, the allowlist entry has become false.
+    const unbounded: Options = { stdio: 'ignore' };
+    expect(unbounded).toBeDefined();
+  });
+
+  it('sees a namespace import, which a named-import-only detector missed entirely', () => {
+    expect(
+      unboundedCallsInSource(
+        'src/fixture.ts',
+        [`import * as cp from 'node:child_process';`, `cp.execFileSync('git', ['remote'], { encoding: 'utf8' });`].join(
+          '\n',
+        ),
+      ),
+    ).toHaveLength(1);
   });
 
   it('ignores a look-alike that is not the node:child_process primitive', () => {

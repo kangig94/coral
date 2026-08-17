@@ -6,7 +6,7 @@ reproduction, and the entry price for starting is a measured case rather than a 
 ## What exists
 
 Containment teardown is budgeted. `PROXY_TEARDOWN_RESERVE_MS` (`src/provider-proxy/orphan-deadline.ts:25`)
-sums to 13,000ms, of which `PROXY_PROCESS_CONTROL_BUDGET_MS` allots `2 × CONTAINMENT_PROCESS_CONTROL_CALL_MAX_MS`
+sums to 14,000ms, of which `PROXY_PROCESS_CONTROL_BUDGET_MS` allots `2 × CONTAINMENT_PROCESS_CONTROL_CALL_MAX_MS`
 = 1,000ms to process control. Every step of the _signalling_ sweep honours that: `signalRecordedSet`
 (`src/infra/process-containment.ts:284-293`) calls `assertSignalCallWithinBounds` immediately before and after
 each `environment.process.kill`, and its comment states the model correctly — the bound is per call, not per
@@ -15,8 +15,8 @@ sweep, and `exitDeadline` bounds the whole.
 The observation is not in that model. Two facts put it outside every window that exists:
 
 1. **`waitForAbsence` observes before it checks the clock.** `src/infra/process-containment.ts:337-352` runs
-   `observeRecordedSet(...)` as the first statement of each loop turn and only then computes `remainingMs`
-   against `waitDeadline`. A sweep that overshoots the deadline overshoots it in full; the check that would
+   `observeRecordedSet(...)` before it computes `remainingMs` against `waitDeadline` — the abort check
+   (`assertContainmentAuthorized`) comes first, but it does not consult the deadline. A sweep that overshoots the deadline overshoots it in full; the check that would
    have stopped it runs after it returns.
 2. **`observeRecordedSet` does not short-circuit.** `src/infra/process-containment.ts:225-234` iterates every
    recorded root, catching each failure into `firstFailure` and continuing, and throws only after the loop
@@ -31,7 +31,7 @@ which is what makes the cost finite and therefore statable at all; before that b
 
 `MAX_PROXY_RECORDED_PROVIDER_ROOTS` is 128 (`src/provider-proxy/enforcement.ts:31`). So the worst-case Darwin
 observation sweep is (1 containment + 128 roots) × 2 subprocesses × 2,000ms ≈ **516 seconds**, against a
-13-second reserve, and `waitForAbsence` re-observes every `ABSENCE_POLL_MS` (25ms) until absence or deadline.
+14-second reserve, and `waitForAbsence` re-observes every `ABSENCE_POLL_MS` (25ms) until absence or deadline.
 
 And a synchronous subprocess is not merely slow: it blocks the event loop, so no `AbortSignal`, no monotonic
 clock check, and no budgeted shutdown step can interrupt it. `assertContainmentAuthorized` at the top of each
@@ -53,9 +53,21 @@ loop turn cannot fire while the sweep is inside `execFileSync`.
 - `darwin-signal-authority`. That entry is about whether a macOS incarnation may _authorize a signal_ — a
   resolution question. This one is about what the probe _costs_ to take. They touch the same function and
   answer different questions; fixing either leaves the other exactly as it was.
-- The three signal-authority entries generally. Nothing here changes who may be signalled or on what evidence.
-- `probeCoordinator`'s disposition, closed 2026-08-18: it no longer probes incarnation at all, so the
-  coordinator discovery path is out of this entry's reach.
+- `durable-cli-signal-authority` as well. Nothing here changes who may be signalled or on what evidence.
+- `wedged-coordinator-self-drain`, which is the closest neighbour and needs saying because it already points
+  at this function: it names `probeMacProcessIncarnation`'s two uncached synchronous calls as the place to
+  look first for a coordinator that stops answering. Same evidence, different question — that entry asks what
+  ends a process nothing else will end, this one asks whether a budgeted operation can hold its deadline while
+  observing. They share one prerequisite, an interruptible incarnation probe, so whichever is built first
+  gives the other its mechanism; neither closes the other, and both still owe their own reproduction.
+- `probeCoordinator`'s disposition, closed 2026-08-18. Its _read_ half no longer derives an incarnation at
+  all — it observes liveness — so nothing on that path forks a subprocess. The **write** half still does:
+  `writeDiscoveryRecord` (`src/infra/backend-discovery.ts:89`) probes an incarnation when its caller supplies
+  none, and `src/coordinator/lifecycle.ts:1016` supplies none, so a darwin boot pays two `execFileSync` calls
+  between the listener opening and `kernel-ready`. That is one probe of one pid, not a sweep, and it is inside
+  the CLI's `KERNEL_READY_DEADLINE_MS` rather than a teardown reserve — related, bounded, and not what this
+  entry is about, but an earlier revision of this bullet claimed the whole discovery path was out of reach and
+  that was wrong.
 
 ## Required shape
 
@@ -65,7 +77,15 @@ existing per-call model extends to observation unchanged. That is a larger chang
 synchronous at every call site, including `observeContainment`, and `ProcessContainmentEnvironment` is
 synchronous throughout.
 
-Two smaller things are worth doing first and neither needs that:
+Three smaller things are worth doing first and none needs that. The first is the one that actually caps the
+overshoot; the other two only reduce the multiplier:
+
+- **Check the deadline inside the observation loop.** `observeRecordedSet`
+  (`src/infra/process-containment.ts:225-234`) already receives an environment carrying `environment.clock`,
+  and `waitForAbsence` already holds `waitDeadline`. Threading it in and breaking when it passes bounds a
+  sweep to the deadline plus one in-flight probe — roughly 4s on darwin — instead of the figure above. It
+  changes no disposition: a sweep that stops early has not observed all targets absent, which is already the
+  `false` return `waitForAbsence` has for running out of time.
 
 - **Batch the Darwin sweep.** Read the boot session id once per sweep rather than once per root, halving the
   subprocess count. `readMacBootSessionId`'s comment (`src/infra/node-process.ts:155-162`) already weighed

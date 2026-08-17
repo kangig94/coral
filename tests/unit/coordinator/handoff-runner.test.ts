@@ -364,6 +364,40 @@ describe('handoff-runner', () => {
     expect(child?.unref).toHaveBeenCalledOnce();
   });
 
+  // The behaviour `5ad55ded` exists to produce, and the one nothing asserted: an unobservable pid is not an
+  // absent one. Flipping the guard back to `probe.kind !== 'live'` reintroduces the false absence and left the
+  // whole suite green before this test — established by mutation, not assumed.
+  it('should still ask health when the incumbent pid could not be observed', async () => {
+    mockState.probeCoordinator.mockReturnValue({
+      kind: 'unobservable',
+      reason: 'unreadable-process',
+      record: {
+        socketPath,
+        pid: 4242,
+        bundleHash: manifest.bundleHash,
+        flavor: manifest.flavor,
+        namespace: 'handoff-runner',
+        bootToken: 'boot-token',
+      },
+    });
+    mockState.spawn.mockImplementationOnce(() => childThatExits(0, null));
+
+    await expect(runHandoff(cliOperation('backend', 'status'), { pluginRoot: '/plugin/root' })).resolves.toMatchObject({
+      kind: 'delegated',
+    });
+    expect(mockState.health, 'an unanswered pid probe must not stand in for asking the incumbent').toHaveBeenCalled();
+  });
+
+  // The other half: with no record there is nothing to ask with, so `run-current` is the only available answer.
+  it('should not ask health when the discovery record itself could not be decoded', async () => {
+    mockState.probeCoordinator.mockReturnValue({ kind: 'unobservable', reason: 'unreadable-record' });
+
+    await expect(runHandoff(cliOperation('backend', 'status'), { pluginRoot: '/plugin/root' })).resolves.toEqual({
+      kind: 'run-current',
+    });
+    expect(mockState.health, 'there is no socket path or boot token to ask with').not.toHaveBeenCalled();
+  });
+
   it.each([0, 23])(
     'should report an immediate backend startup exit with code %s when no coordinator is live',
     async (code) => {

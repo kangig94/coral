@@ -41,7 +41,7 @@ import type {
   RuntimePaths,
 } from './ports.js';
 import { errorMessage } from '../infra/error-format.js';
-import { MAX_BUFFER } from '../infra/process-constants.js';
+import { DEFAULT_SYNC_EXEC_TIMEOUT_MS, MAX_BUFFER } from '../infra/process-constants.js';
 import { composeChildEnv, parsePassthrough, resolveEnvBudgetBytes } from '../infra/env-sanitize.js';
 import { isDurableCliRuntime, type DurableCliRuntimeRecord, type DurableProcessExit } from './durable-runtime.js';
 import { buildExecPromise } from './exec-builder.js';
@@ -387,6 +387,15 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
   runtimeProcess.execSync = (command, args, options = {}) => {
     const execOptions: RuntimeExecOptions = { ...options };
     execOptions.maxBuffer ??= MAX_BUFFER;
+    // Bounded for the same reason `maxBuffer` is, and only on the synchronous variant: `exec` above returns a
+    // promise a caller can abandon, while this one blocks the event loop until the child decides otherwise, so
+    // no `AbortSignal` or shutdown budget in this process can reach it. `RuntimeExecOptions.timeout` stays
+    // optional so a caller may widen or tighten it, but omission must not mean unbounded.
+    //
+    // `tests/invariants/sync-subprocess-timeout.test.ts` excludes port callers from its literal-requiring scan
+    // on the stated grounds that this port owns their bound. Until this line, nothing here had taken that
+    // ownership up — the exclusion named a successor that had not accepted.
+    execOptions.timeout ??= DEFAULT_SYNC_EXEC_TIMEOUT_MS;
     const encoding = execOptions.encoding ?? 'utf-8';
     const maxBuffer = execOptions.maxBuffer;
     const spawnOptions = {

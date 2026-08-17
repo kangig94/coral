@@ -883,8 +883,12 @@ async function runLifecycleStartup({
           // An unobservable pid keeps its record: `verifiedIncumbentFromDiscovery` is agreement checking, and
           // it refuses on its own terms when the record cannot be tied to the socket. Dropping the record here
           // would instead assert there is no incumbent, which an unanswered probe does not establish.
+          // `unreadable-record` has no record to agree with, so `null` is the only value this call can take —
+          // and `verifiedIncumbentFromDiscovery` refuses on `null` anyway, which is the conservative direction.
+          // It is not read as proof of absence: `probeCoordinator` warns, and the bind arbitrates.
           const probe = probeCoordinator({ storage: runtime.storage, env: runtime.env, paths: runtime.paths });
-          return verifiedIncumbentFromDiscovery(probe.kind === 'absent' ? null : probe.record, evidence);
+          const record = 'record' in probe ? probe.record : null;
+          return verifiedIncumbentFromDiscovery(record, evidence);
         },
         signalLedger: createFileHandoffSignalLedger({
           storage: runtime.storage,

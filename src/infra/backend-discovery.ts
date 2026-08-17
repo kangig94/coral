@@ -109,30 +109,68 @@ export function writeDiscoveryRecord(record: CoordinatorDiscoveryRecord, runtime
   }
 }
 
-export function readDiscoveryRecord(runtime: DiscoveryRuntime): CoordinatorDiscoveryRecord | null {
+/**
+ * What the discovery file says, in the three shapes it can say it. `null` used to serve for all three and
+ * that is what `probeCoordinator` then turned into a false "nobody is there": only `missing` is a statement
+ * that no coordinator claimed this socket. `undecodable` is a file that exists and could not be read as a
+ * record — truncated mid-write, or written by a build whose shape this one rejects — which says nothing about
+ * whether a coordinator is running.
+ */
+export type DiscoveryRead =
+  | Readonly<{ kind: 'record'; record: CoordinatorDiscoveryRecord }>
+  | Readonly<{ kind: 'missing' }>
+  | Readonly<{ kind: 'undecodable'; reason: 'corrupt-json' | 'shape-rejected' }>;
+
+export function readDiscoveryRecordDisposition(runtime: DiscoveryRuntime): DiscoveryRead {
+  let raw: string;
   try {
-    const raw = runtime.storage.readFileSync(discoveryFilePath(runtime), 'utf-8');
-    return normalizeDiscoveryRecord(JSON.parse(raw));
+    raw = runtime.storage.readFileSync(discoveryFilePath(runtime), 'utf-8');
   } catch (error: unknown) {
-    if (isNoEntryError(error) || error instanceof SyntaxError) {
-      return null;
-    }
+    if (isNoEntryError(error)) return { kind: 'missing' };
     throw error;
   }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error: unknown) {
+    if (error instanceof SyntaxError) return { kind: 'undecodable', reason: 'corrupt-json' };
+    throw error;
+  }
+
+  const record = normalizeDiscoveryRecord(parsed);
+  return record === null ? { kind: 'undecodable', reason: 'shape-rejected' } : { kind: 'record', record };
 }
 
-/** What a discovery probe can report about the recorded coordinator — three answers, because there are three. */
+/**
+ * The record, or `null` for every reason there might not be one. Kept for callers that genuinely cannot act on
+ * the difference; anything deciding whether an incumbent exists wants `readDiscoveryRecordDisposition`.
+ */
+export function readDiscoveryRecord(runtime: DiscoveryRuntime): CoordinatorDiscoveryRecord | null {
+  const read = readDiscoveryRecordDisposition(runtime);
+  return read.kind === 'record' ? read.record : null;
+}
+
+/**
+ * What a discovery probe can report about the recorded coordinator — three answers, because there are three,
+ * and because there are two independent ways to fail to reach one. The pid can be unobservable; so can the
+ * record itself. An earlier version split only the pid, and an undecodable file still reported a confident
+ * absence.
+ */
 export type CoordinatorProbe =
   /** A record exists and its pid names a live process. */
   | Readonly<{ kind: 'live'; record: CoordinatorDiscoveryRecord }>
-  /** No record, or a record whose pid decisively names no process. Either way there is no incumbent. */
+  /** No record was written, or the recorded pid decisively names no process. Either is a real absence. */
   | Readonly<{ kind: 'absent' }>
   /**
-   * A record exists and its pid could not be observed. The record rides along deliberately: it carries the
-   * `bootToken` a contender needs to ask an incumbent to stand down, and discarding it over an unanswered
-   * probe is what turns "could not observe" into a false "nobody is there".
+   * Nothing here is proof of absence, from either input. `unreadable-record` is a file that exists and could
+   * not be decoded; `unreadable-process` is a record whose pid could not be observed — that one carries its
+   * record deliberately, because the record holds the `bootToken` a contender needs to ask an incumbent to
+   * stand down, and discarding it over an unanswered probe is what makes "could not observe" read as "nobody
+   * is there".
    */
-  | Readonly<{ kind: 'unobservable'; record: CoordinatorDiscoveryRecord }>;
+  | Readonly<{ kind: 'unobservable'; reason: 'unreadable-record' }>
+  | Readonly<{ kind: 'unobservable'; reason: 'unreadable-process'; record: CoordinatorDiscoveryRecord }>;
 
 /**
  * The record's `incarnation` is not compared here, and the reason is narrower than it once was.
@@ -165,18 +203,26 @@ export type CoordinatorProbe =
  * subprocesses to derive a token this function discards.
  */
 export function probeCoordinator(runtime: DiscoveryRuntime): CoordinatorProbe {
-  const record = readDiscoveryRecord(runtime);
-  if (!record) {
-    return { kind: 'absent' };
+  const read = readDiscoveryRecordDisposition(runtime);
+  if (read.kind === 'missing') return { kind: 'absent' };
+  if (read.kind === 'undecodable') {
+    // Said out loud because it is otherwise invisible and its consequence arrives elsewhere: a contender that
+    // reads this as "no incumbent" starts a second coordinator beside a live one. The write path warns when it
+    // cannot record an incarnation; the read path was silent about a file it could not read at all.
+    backendLog.warn(
+      `Coordinator discovery record could not be decoded (${read.reason}); treating the incumbent as unobservable, not absent.`,
+    );
+    return { kind: 'unobservable', reason: 'unreadable-record' };
   }
 
+  const { record } = read;
   switch (observeProcessLiveness(record.pid)) {
     case 'alive':
       return { kind: 'live', record };
     case 'absent':
       return { kind: 'absent' };
     case 'unknown':
-      return { kind: 'unobservable', record };
+      return { kind: 'unobservable', reason: 'unreadable-process', record };
   }
 }
 

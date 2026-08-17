@@ -238,6 +238,12 @@ async function readLiveCoordinatorHealth(
   // answer becomes `use-current`: an unanswered probe would route a contender past an incumbent that is
   // still serving.
   if (probe.kind === 'absent') return null;
+  // An undecodable record leaves nothing to ask with — no socket path, no `bootToken` — so "no live incumbent
+  // health" is the only answer available here, not a judgement that none exists. It is reported rather than
+  // inferred: `probeCoordinator` warns on this branch. What keeps it from becoming a second daemon is not this
+  // function but the kernel's exclusive bind on the IPC socket, which `transport/ipc/ensure.ts` documents as
+  // the single arbiter of the canonical incumbent.
+  if (!('record' in probe)) return null;
   const discovery = probe.record;
 
   const health = await readAuthenticatedHealth(discovery, time);
