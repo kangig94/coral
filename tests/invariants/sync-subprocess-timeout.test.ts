@@ -137,12 +137,14 @@ function calleeName(node: ts.CallExpression, bindings: ChildProcessBindings): st
 }
 
 /**
- * Whether an options object states a bound — not merely whether it mentions one.
+ * Whether an options object states a bound — not merely whether it mentions one. `timeout: undefined` and
+ * `timeout: 0` both name the property and neither is a bound; Node treats both as no timeout.
  *
- * `timeout: undefined` and `timeout: 0` both name the property and neither is a bound: Node treats both as
- * "no timeout". A name-only check accepted them, which mattered concretely, because `runtime/real.ts` writes
- * `timeout: execOptions.timeout` from an optional field and would have passed this scan on the spelling while
- * being unbounded whenever its caller omitted one.
+ * What this deliberately does **not** reach: a value this scan cannot evaluate. `runtime/real.ts` writes
+ * `timeout: execOptions.timeout`, a property access, and that passes here on the spelling — as it would have
+ * before this check existed. A scan without a type-checker cannot know whether that field is populated, so the
+ * bound at that site is held by `execSync` defaulting it (`process-constants.ts`), not by anything asserted
+ * here. Do not read a passing scan as "every site is bounded"; read it as "no site states a non-bound".
  *
  * A spread is resolved against the file's own option constants, so `{ ...PROBE_EXEC_OPTIONS, env }` — the
  * shape `darwin-signal-authority`'s recorded `TZ=UTC` partial needs — is bounded if the spread source is.

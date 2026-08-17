@@ -1,7 +1,7 @@
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { coordinatorPaths } from '#src/infra/path/coordinator.js';
@@ -224,6 +224,28 @@ describe('coordinator discovery', () => {
     });
   });
 
+  // The *other* axis, and the one an earlier revision collapsed: the pid is not the only thing that can be
+  // unobservable — so can the record. Both of these used to report a confident `absent`, so a truncated or
+  // undecodable `coordinator.json` read as "no incumbent" and a contender routed straight past a live one.
+  it.each([
+    ['truncated mid-write', '{"pid": 4242, "socketPath"', 'corrupt-json'],
+    ['a shape this build rejects', '{"pid": "not-a-number"}', 'shape-rejected'],
+  ])('probeCoordinator reports unobservable, not absent, for a record %s', async (_label, raw) => {
+    const home = makeHome();
+    const { probeCoordinator } = await importDiscovery();
+    const runtime = makeDiscoveryRuntime('prod');
+
+    const infoFile = runtime.paths.coral.coordinator.infoFile;
+    mkdirSync(dirname(infoFile), { recursive: true });
+    writeFileSync(infoFile, raw, 'utf-8');
+    expect(home).toBeTruthy();
+
+    expect(probeCoordinator(runtime), 'a file that cannot be read is not a statement that nobody is there').toEqual({
+      kind: 'unobservable',
+      reason: 'unreadable-record',
+    });
+  });
+
   // The third answer, and the reason this reader returns three. A pid it cannot observe is not a pid it has
   // shown to be gone, and the record beside it carries the `bootToken` a contender needs to ask an incumbent
   // to stand down. Collapsing this into `absent` is what let a transient probe failure route a contender past
@@ -255,6 +277,9 @@ describe('coordinator discovery', () => {
 
     expect(probeCoordinator(runtime), 'an unanswered probe is not proof of absence').toMatchObject({
       kind: 'unobservable',
+      // The discriminant, asserted: a subset match without it passed unchanged when the variant gained one,
+      // which is how a test stops distinguishing the two ways this answer is reached.
+      reason: 'unreadable-process',
       record: { pid: process.pid, bootToken: 'boot-token-e' },
     });
   });
