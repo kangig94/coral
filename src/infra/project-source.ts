@@ -3,6 +3,24 @@ import { basename } from 'node:path';
 
 export const PROJECT_SOURCE_CACHE_MAX_ENTRIES = 256;
 
+/**
+ * `git remote get-url` is a config read, but it stats up the directory tree and honours `include.path`, so a
+ * `projectRoot` on a stalled network mount wedges it the same way any other subprocess wedges. This call runs
+ * synchronously on the coordinator's startup path (`runtime.paths.projectSource`), and the cache below means
+ * one wedge is enough — the entry it would have written never appears, but the boot it blocks never finishes
+ * either.
+ *
+ * Its own bound rather than the incarnation probe's: that one observes a local process and normally answers in
+ * well under 100ms, while this one may legitimately touch a slow filesystem. Sharing a number would tie two
+ * schedules that have no reason to move together. Five seconds is long enough not to mistake a cold mount for
+ * a hang, and short enough that a hung mount does not hold a boot.
+ *
+ * Best-effort in the same way and for the same reason as every synchronous timeout here: Node signals the
+ * child and keeps waiting, so a child that ignores the signal still overruns. On timeout the existing `catch`
+ * already falls back to the deterministic local source name, which is the conservative answer.
+ */
+const GIT_REMOTE_PROBE_TIMEOUT_MS = 5_000;
+
 const projectSourceCache = new Map<string, string>();
 
 function localProjectSource(projectRoot: string): string {
@@ -65,6 +83,7 @@ export function resolveProjectSource(projectRoot: string): string {
       cwd: projectRoot,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: GIT_REMOTE_PROBE_TIMEOUT_MS,
     }).trim();
     source = parseRemoteSource(remote) ?? source;
   } catch {
