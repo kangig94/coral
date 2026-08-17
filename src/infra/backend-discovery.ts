@@ -173,6 +173,22 @@ export type CoordinatorProbe =
   | Readonly<{ kind: 'unobservable'; reason: 'unreadable-process'; record: CoordinatorDiscoveryRecord }>;
 
 /**
+ * Two other sites ask the same question and deliberately do not use this type: `transport/http/backend/status.ts`
+ * and `.../shutdown.ts` each read a `BackendInfo` and test `observeProcessLiveness(info.pid) === 'absent'`
+ * themselves. That is not drift left unfixed — they cannot use this shape.
+ *
+ * `status.ts` reports the *not-running* case with the dead record's `pid` and `startedAt`, so it needs a record
+ * on the absence answer, which `absent` does not carry and should not: the coordinator paths that consume this
+ * type have no use for a dead record and would have to destructure around it. A shared reader would need four
+ * states to serve both, which is a bigger type than either caller wants.
+ *
+ * What actually binds the three is the rule, not the shape — only an observed `'absent'` is an absence, never
+ * `!== 'alive'` — and `tests/invariants/liveness-is-never-a-boolean.test.ts` does not enforce it: it bans
+ * coercing a liveness value to a boolean, which all three already avoid, and permits either comparison. If a
+ * fourth site appears, the thing to share is that sentence.
+ */
+
+/**
  * The record's `incarnation` is not compared here, and the reason is narrower than it once was.
  *
  * The old rationale — that the derived value carried a per-process clock term and so was not
