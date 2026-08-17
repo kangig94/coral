@@ -1,3 +1,4 @@
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
@@ -10,11 +11,11 @@ import {
   type EnforcementScheduler,
 } from '#src/provider-proxy/enforcement.js';
 
-const CONTAINMENT = { pid: 4_242, processStartedAtSeconds: 1_000, processGroupId: 4_242 } as const;
+const CONTAINMENT = { pid: 4_242, incarnation: testIncarnation(1_000), processGroupId: 4_242 } as const;
 const enforcementClockScope: unique symbol = Symbol('enforcement-clock');
 
 function root(pid: number): RecordedProcessIdentity {
-  return { pid, processStartedAtSeconds: 2_000 };
+  return { pid, incarnation: testIncarnation(2_000) };
 }
 
 /** A scheduler whose queued callbacks only run when the test says so. */
@@ -86,14 +87,14 @@ function createHarness(options: { adoptionInMs: number; alive?: Set<number>; stu
           }
           return true;
         },
-        isAlive: (pid) => (pid < 0 ? alive.has(-pid) : alive.has(pid)),
+        observeLiveness: (pid) => ((pid < 0 ? alive.has(-pid) : alive.has(pid)) ? 'alive' : 'absent'),
       },
       platform: 'linux',
       maxRecordedRoots: MAX_PROXY_RECORDED_PROVIDER_ROOTS,
-      // A start time is only readable while the process exists, which is what makes it identity evidence.
-      readProcessStartedAtSeconds: (pid) => {
+      // A incarnation is only readable while the process exists, which is what makes it identity evidence.
+      readProcessIncarnation: (pid) => {
         if (!alive.has(pid)) return null;
-        return pid === CONTAINMENT.pid ? CONTAINMENT.processStartedAtSeconds : 2_000;
+        return pid === CONTAINMENT.pid ? CONTAINMENT.incarnation : testIncarnation(2_000);
       },
     },
     scheduler,
@@ -130,7 +131,7 @@ describe('armed provider-proxy enforcer', () => {
     expect(outcome.kind).toBe('containment-absent');
     // Leader exit alone is never absence evidence, so the receipt must account for each target separately.
     expect(outcome).toMatchObject({
-      disappearanceReceipt: `group:4242,leader:4242@1000,root:7001@2000,root:7002@2000`,
+      disappearanceReceipt: `group:4242,leader:4242@linux:00000000-0000-4000-8000-000000000000:1000,root:7001@linux:00000000-0000-4000-8000-000000000000:2000,root:7002@linux:00000000-0000-4000-8000-000000000000:2000`,
     });
   });
 
@@ -211,12 +212,12 @@ describe('armed provider-proxy enforcer', () => {
     expect(harness.enforcer.recordedRoots()).toHaveLength(128);
   });
 
-  it('treats a different start time on the same pid as a different target', () => {
+  it('treats a different incarnation on the same pid as a different target', () => {
     const harness = createHarness({ adoptionInMs: 60_000 });
     harness.enforcer.registerProviderRoot(root(7_001));
 
     // A recycled pid is not the process that was recorded, so it is a separate target rather than a clash.
-    harness.enforcer.registerProviderRoot({ pid: 7_001, processStartedAtSeconds: 3_000 });
+    harness.enforcer.registerProviderRoot({ pid: 7_001, incarnation: testIncarnation(3_000) });
 
     expect(harness.enforcer.recordedRoots()).toHaveLength(2);
   });

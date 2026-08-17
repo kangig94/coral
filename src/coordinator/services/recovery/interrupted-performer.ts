@@ -1,3 +1,4 @@
+import type { ProcessIncarnation } from '../../../infra/node-process.js';
 import { join } from 'node:path';
 
 import { backendLog } from '../../../infra/backend-log.js';
@@ -68,13 +69,13 @@ type PerformerRuntime = Readonly<{
 
 /** Keeps process observation injectable because recovery must distinguish a recycled pid from its recorded process. */
 export type CarrierReapDeps<Scope extends symbol> = Readonly<{
-  process: Pick<Runtime['process'], 'kill' | 'isAlive'>;
+  process: Pick<Runtime['process'], 'kill' | 'observeLiveness'>;
   platform: NodeJS.Platform;
   db: Database;
   clock: MonotonicClock<Scope>;
   signal: AbortSignal;
   /** Tests replace the platform probe so ambiguous process identity can be exercised without real children. */
-  readProcessStartedAtSeconds?(pid: number, platform: NodeJS.Platform): number | null;
+  readProcessIncarnation?(pid: number, platform: NodeJS.Platform): ProcessIncarnation | null;
 }>;
 
 /**
@@ -92,7 +93,7 @@ export async function reapProviderOperationCarrier<Scope extends symbol>(
   const { locator } = record;
   const containment: RecordedContainmentIdentity = {
     pid: locator.containment.pid,
-    processStartedAtSeconds: locator.containment.processStartedAtSeconds,
+    incarnation: locator.containment.incarnation,
     processGroupId: locator.containment.processGroupId,
   };
   const recordedRoots: readonly RecordedProcessIdentity[] = [record.providerRoot];
@@ -107,9 +108,7 @@ export async function reapProviderOperationCarrier<Scope extends symbol>(
     process: deps.process,
     platform: deps.platform,
     signal: deps.signal,
-    ...(deps.readProcessStartedAtSeconds === undefined
-      ? {}
-      : { readProcessStartedAtSeconds: deps.readProcessStartedAtSeconds }),
+    ...(deps.readProcessIncarnation === undefined ? {} : { readProcessIncarnation: deps.readProcessIncarnation }),
   });
 
   try {

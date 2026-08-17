@@ -24,7 +24,7 @@ function makeRuntime(): Runtime {
       writeAtomicSync: () => {},
     },
     process: {
-      isAlive: () => false,
+      observeLiveness: () => 'absent' as const,
       kill: () => {},
     },
     ids: {

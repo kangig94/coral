@@ -46,10 +46,6 @@ export type ProviderRecoveryAuthorityCapture =
 
 export interface RecoveryCapableService {
   captureProviderRecoveryAuthority(launchRecord: JobLaunch): Promise<ProviderRecoveryAuthorityCapture>;
-  finalizeProviderRecoveryBindingFailure(
-    launchRecord: JobLaunch,
-    failure: ProviderBindingFailure,
-  ): SessionJobClaimReleaseResult;
   finalizeInterruptedAppServerJob(
     authority: ProviderRecoveryAuthority,
     runtimeRecord: AppServerRuntime,

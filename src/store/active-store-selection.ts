@@ -13,9 +13,11 @@ import { resolveGenerationBoundaryPaths } from './generation-mutation-coordinati
 
 export const ACTIVE_STORE_SELECTION_MAX_BYTES = 16 * 1024;
 export const ACTIVE_STORE_TRANSITION_MAX_BYTES = 32 * 1024;
+export const ACTIVE_STORE_SELECTION_VERSION = 1 as const;
+export const ACTIVE_STORE_TRANSITION_VERSION = 1 as const;
 
-const ACTIVE_STORE_SELECTION_FILE_NAME = 'active-store-selection.v1.json';
-const ACTIVE_STORE_TRANSITION_FILE_NAME = 'active-store-transition.v1.json';
+const ACTIVE_STORE_SELECTION_FILE_NAME = `active-store-selection.v${ACTIVE_STORE_SELECTION_VERSION}.json`;
+const ACTIVE_STORE_TRANSITION_FILE_NAME = `active-store-transition.v${ACTIVE_STORE_TRANSITION_VERSION}.json`;
 const PRIVATE_FILE_MODE = 0o600n;
 const PERMISSION_BITS = 0o777n;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
@@ -52,7 +54,7 @@ export type ActiveStoreRecordReadFailureCode =
   | 'record_unavailable';
 
 export type ActiveStoreSelection = Readonly<{
-  version: 1;
+  version: typeof ACTIVE_STORE_SELECTION_VERSION;
   manifest: StrictBundleManifest;
   bundleDir: string;
   activeStoreFingerprint: string;
@@ -98,7 +100,7 @@ export type ActiveStoreTransitionEvidence =
     }>;
 
 export type ActiveStoreTransition = Readonly<{
-  version: 1;
+  version: typeof ACTIVE_STORE_TRANSITION_VERSION;
   transitionId: string;
   kind: 'selection-recovery';
   evidence: ActiveStoreTransitionEvidence;
@@ -128,7 +130,7 @@ export type ActiveStoreSelectionRelation = 'exact' | 'advance' | 'selected-newer
 
 const activeStoreSelectionStructuralSchema = z
   .object({
-    version: z.literal(1),
+    version: z.literal(ACTIVE_STORE_SELECTION_VERSION),
     manifest: strictBundleManifestSchema,
     bundleDir: z.string().min(1),
     activeStoreFingerprint: strictBundleManifestSchema.shape.storeFormatFingerprint,
@@ -273,7 +275,7 @@ function classifiedStoreEvidence(evidence: ActiveStoreTransitionEvidence): Newer
 
 export const activeStoreTransitionSchema = z
   .object({
-    version: z.literal(1),
+    version: z.literal(ACTIVE_STORE_TRANSITION_VERSION),
     transitionId: z.string().regex(TRANSITION_ID_PATTERN),
     kind: z.literal('selection-recovery'),
     evidence: activeStoreTransitionEvidenceSchema,

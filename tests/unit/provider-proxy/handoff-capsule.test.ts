@@ -1,3 +1,4 @@
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { chmodSync, mkdtempSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
@@ -13,9 +14,8 @@ import {
   handoffSecretDigest,
   readHandoffCapsuleFile,
   writeHandoffCapsuleFile,
-  type HandoffCapsule,
   type HandoffCapsuleV1,
-  type HandoffCapsuleV2,
+  type HandoffCapsuleV3,
   type HandoffCapsuleFileEnvironment,
   type InstalledGrant,
 } from '#src/provider-proxy/handoff-capsule.js';
@@ -44,17 +44,17 @@ function capsuleFor(): HandoffCapsuleV1 {
   };
 }
 
-function capsuleV2For(): HandoffCapsuleV2 {
+function capsuleV3For(): HandoffCapsuleV3 {
   return {
     ...capsuleFor(),
-    version: 2,
+    version: 3,
     guardianPid: 101,
-    guardianProcessStartedAtSeconds: 1_001,
+    guardianIncarnation: testIncarnation(1_001),
     proxyPid: 102,
     reaperPid: 103,
-    reaperProcessStartedAtSeconds: 1_003,
+    reaperIncarnation: testIncarnation(1_003),
     containmentKind: 'detached-process-group',
-    proxyProcessStartedAtSeconds: 1_002,
+    proxyIncarnation: testIncarnation(1_002),
     proxyProcessGroupId: 102,
   };
 }
@@ -127,8 +127,48 @@ describe('provider-proxy handoff capsule', () => {
     expect(decoded.grantId).toBe('11111111-1111-4111-8111-111111111111');
   });
 
-  it('decodes a v2 capsule with the complete containment identity', () => {
-    expect(decodeHandoffCapsule(encode(capsuleV2For()))).toEqual(capsuleV2For());
+  it('decodes a v3 capsule with the complete containment identity', () => {
+    expect(decodeHandoffCapsule(encode(capsuleV3For()))).toEqual(capsuleV3For());
+  });
+
+  // Spelled out rather than derived, and that is the whole point. Every other fixture here is built from the
+  // current schema, so a rename moves the fixture with it and nothing fails — which is how V2 came to be
+  // renamed in place while still calling itself version 2, and how a build that could not boot against a
+  // v0.10.6-v0.10.8 capsule passed every gate. This literal is what those builds actually wrote. It may be
+  // corrected only against a real capsule from one of those versions, never to match a schema change.
+  const SHIPPED_V2_CAPSULE = {
+    version: 2,
+    grantId: '11111111-1111-4111-8111-111111111111',
+    secret: 'a'.repeat(64),
+    generation: 'gen2',
+    flavor: 'prod',
+    buildSetId: '22222222-2222-4222-8222-222222222222',
+    hostFingerprint: 'b'.repeat(64),
+    guardianInstanceId: '33333333-3333-4333-8333-333333333333',
+    reaperInstanceId: '44444444-4444-4444-8444-444444444444',
+    proxyInstanceId: '55555555-5555-4555-8555-555555555555',
+    guardianControlEndpoint: '/tmp/coral-shipped-guardian.sock',
+    reaperControlEndpoint: '/tmp/coral-shipped-reaper.sock',
+    proxyEndpoint: '/tmp/coral-shipped-proxy.sock',
+    orphanTimeoutMs: 30_000,
+    teardownReserveMs: 14_000,
+    guardianPid: 101,
+    guardianProcessStartedAtSeconds: 1_700_000_001,
+    proxyPid: 102,
+    reaperPid: 103,
+    reaperProcessStartedAtSeconds: 1_700_000_003,
+    containmentKind: 'detached-process-group',
+    proxyProcessStartedAtSeconds: 1_700_000_002,
+    proxyProcessGroupId: 102,
+  } as const;
+
+  it('still decodes the v2 capsule v0.10.6 through v0.10.8 wrote', () => {
+    const decoded = decodeHandoffCapsule(new TextEncoder().encode(JSON.stringify(SHIPPED_V2_CAPSULE)));
+
+    // Seconds stay seconds. Promoting them to a `ProcessIncarnation` would make a live process compare unequal
+    // to its own record and read as absent, which mints a disappearance receipt for a running set.
+    expect(decoded).toEqual(SHIPPED_V2_CAPSULE);
+    expect(decoded.version).toBe(2);
   });
 
   it('refuses an oversize capsule before parsing it', () => {
@@ -370,12 +410,12 @@ describe('provider-proxy handoff capsule file I/O', () => {
   }
 
   it('writes a private mode-0600 capsule and reads it back unchanged', () => {
-    writeHandoffCapsuleFile(capsulePath, capsuleFor(), env);
+    writeHandoffCapsuleFile(capsulePath, capsuleV3For(), env);
 
     const stat = statSync(capsulePath, { bigint: true });
     expect(stat.uid).toBe(BigInt(env.uid));
     expect(stat.mode & 0o777n).toBe(0o600n);
-    expect(readHandoffCapsuleFile(capsulePath, env)).toEqual(capsuleFor());
+    expect(readHandoffCapsuleFile(capsulePath, env)).toEqual(capsuleV3For());
   });
 
   it('returns null for an absent capsule', () => {
@@ -383,14 +423,14 @@ describe('provider-proxy handoff capsule file I/O', () => {
   });
 
   it('refuses a capsule whose mode is not 0600', () => {
-    writeHandoffCapsuleFile(capsulePath, capsuleFor(), env);
+    writeHandoffCapsuleFile(capsulePath, capsuleV3For(), env);
     chmodSync(capsulePath, 0o644);
 
     expect(readCapsuleFailure(capsulePath, env).code).toBe('handoff_capsule_not_private');
   });
 
   it('refuses a capsule whose filesystem owner is not the reading uid', () => {
-    writeHandoffCapsuleFile(capsulePath, capsuleFor(), env);
+    writeHandoffCapsuleFile(capsulePath, capsuleV3For(), env);
 
     expect(readCapsuleFailure(capsulePath, { ...env, uid: env.uid + 1 }).code).toBe('handoff_capsule_not_private');
   });
@@ -401,8 +441,8 @@ describe('provider-proxy handoff capsule file I/O', () => {
   // (`infra/bundle-manifest.ts`) closes that: swapping the underlying inode is caught even when the byte
   // count never moves.
   it('refuses a capsule swapped for a same-length twin between the ownership check and the open', () => {
-    const capsuleA = capsuleFor();
-    const capsuleB: HandoffCapsule = { ...capsuleA, grantId: '99999999-9999-4999-8999-999999999999' };
+    const capsuleA = capsuleV3For();
+    const capsuleB: HandoffCapsuleV3 = { ...capsuleA, grantId: '99999999-9999-4999-8999-999999999999' };
     expect(JSON.stringify(capsuleA).length).toBe(JSON.stringify(capsuleB).length);
     writeHandoffCapsuleFile(capsulePath, capsuleA, env);
 
@@ -419,7 +459,7 @@ describe('provider-proxy handoff capsule file I/O', () => {
   });
 
   it('refuses a capsule swapped for a symlink while the read was still in flight', () => {
-    writeHandoffCapsuleFile(capsulePath, capsuleFor(), env);
+    writeHandoffCapsuleFile(capsulePath, capsuleV3For(), env);
     const targetPath = join(tempRoot, 'elsewhere.json');
 
     let readCount = 0;

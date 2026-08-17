@@ -1,4 +1,4 @@
-import { probeProcessStartedAtSeconds } from '../../../infra/node-process.js';
+import { probeProcessIncarnation } from '../../../infra/node-process.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { CoordinatorIdentity as ProviderProxyCoordinatorIdentity } from '../../../provider-proxy/protocol.js';
 import type { ProviderEventHandler } from '../../../provider-proxy/control-client.js';
@@ -20,7 +20,7 @@ const PROVIDER_PROXY_SET_ACQUISITION_DEADLINE_MS = 45_000;
 /**
  * The pieces of the coordinator's own protocol identity this file cannot derive on its own. `generation` is
  * the fixed protocol constant every set-identity path/schema in this codebase already hardcodes; `pid` and
- * `processStartedAtSeconds` are this process's own observable state, read fresh from `runtime` at the moment
+ * `incarnation` are this process's own observable state, read fresh from `runtime` at the moment
  * of acquisition rather than threaded in, so a coordinator that has been running a while still reports itself
  * honestly.
  */
@@ -90,18 +90,18 @@ export function ensureProviderProxySet(
 ): void {
   const pid = env.runtime.env.pid();
   const platform = env.runtime.env.platform() as NodeJS.Platform;
-  const processStartedAtSeconds = probeProcessStartedAtSeconds(pid, platform);
-  if (processStartedAtSeconds === null) {
-    // This process's own start time is not a value this file may guess at: the coordinator identity it feeds
+  const incarnation = probeProcessIncarnation(pid, platform);
+  if (incarnation === null) {
+    // This process's own incarnation is not a value this file may guess at: the coordinator identity it feeds
     // the handshake is a security-relevant field, not a diagnostic one, so an unreadable read is a failed
     // attempt rather than a fabricated `0`.
-    onSettled({ kind: 'failed', reason: 'could not read this coordinator process’s own start time' });
+    onSettled({ kind: 'failed', reason: 'could not read this coordinator process’s own incarnation' });
     return;
   }
   const coordinatorIdentity: ProviderProxyCoordinatorIdentity = {
     instanceId: env.identity.instanceId,
     pid,
-    processStartedAtSeconds,
+    incarnation,
     generation: 'gen2',
     flavor: env.identity.flavor,
     buildSetId: env.identity.buildSetId,

@@ -17,7 +17,7 @@ describe('classifyCarrier', () => {
     const observation = observe(
       {
         carrierClass: 'durable-cli',
-        process: { kind: 'recorded', alive: false, matchesRecordedStart: false, transportEvidence: true },
+        process: { kind: 'recorded', alive: false, matchesRecordedIncarnation: false },
       },
       { storedPhase: 'launching', observedMaxJournalSeq: 41 },
     );
@@ -94,29 +94,29 @@ describe('classifyCarrier', () => {
   });
 
   describe('durable CLI', () => {
-    const recorded = (
-      overrides: Partial<{ alive: boolean; matchesRecordedStart: boolean; transportEvidence: boolean }>,
-    ) =>
+    const recorded = (overrides: Partial<{ alive: boolean; matchesRecordedIncarnation: boolean }>) =>
       observe({
         carrierClass: 'durable-cli',
-        process: { kind: 'recorded', alive: true, matchesRecordedStart: true, transportEvidence: true, ...overrides },
+        process: {
+          kind: 'recorded',
+          alive: true,
+          matchesRecordedIncarnation: true,
+          ...overrides,
+        },
       });
 
-    it('is live only when liveness, recorded start time, and transport evidence all agree', () => {
+    it('is live only when liveness and the recorded incarnation agree', () => {
       expect(recorded({}).liveness).toBe('live');
       expect(recorded({}).source).toBe('durable-cli-process');
     });
 
     it('refuses to call a recycled pid live', () => {
       // The pid is alive and is not this job; pid liveness alone is explicitly insufficient.
-      expect(recorded({ matchesRecordedStart: false }).liveness).toBe('absent');
+      expect(recorded({ matchesRecordedIncarnation: false }).liveness).toBe('absent');
     });
 
-    it.each([
-      ['the process is gone', { alive: false }],
-      ['durable transport evidence is missing', { transportEvidence: false }],
-    ])('is absent when %s', (_label, overrides) => {
-      expect(recorded(overrides).liveness).toBe('absent');
+    it('is absent when the process is gone', () => {
+      expect(recorded({ alive: false }).liveness).toBe('absent');
     });
 
     it('is unknown when the launch never captured its process identity', () => {

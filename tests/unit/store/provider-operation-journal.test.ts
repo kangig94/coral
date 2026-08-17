@@ -1,6 +1,7 @@
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema, type Database } from '#src/store/db.js';
 import {
+  attributeUnreadableProviderOperations,
   completeExecutingProviderOperationAttachment,
   compareAndSwapProviderOperation,
   deleteProviderOperation,
@@ -8,7 +9,10 @@ import {
   insertProviderOperation,
   readProviderOperation,
   readProviderOperationDueSelections,
+  providerOperationJobIdFromRecordKey,
   readProviderOperations,
+  readSupersededProviderOperations,
+  retireSupersededProviderOperation,
   readProviderOperationsDue,
   subscribeProviderOperationMutations,
 } from '#src/store/provider-operation-journal.js';
@@ -19,13 +23,14 @@ import {
   providerOperationRecordSchema,
   type ProviderOperationPhase,
   type ProviderOperationRecord,
+  PROVIDER_OPERATION_RECORD_VERSION,
 } from '#src/store/provider-operation-record.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { providerOperationRecord } from './provider-operation-fixtures.js';
 
-const SAGA_PREFIX = 'provider_operation_saga.v1:';
+const SAGA_PREFIX = `provider_operation_saga.v${PROVIDER_OPERATION_RECORD_VERSION}:`;
 const RECORD_PREFIX = `${SAGA_PREFIX}record:`;
 const DUE_PREFIX = `${SAGA_PREFIX}due:`;
 const PHASES = [
@@ -141,9 +146,9 @@ describe('provider operation journal', () => {
       insertProviderOperation(db, record);
       insertProviderOperation(db, executing);
       expect(sagaRows(db).map(({ key }) => key)).toEqual([
-        expect.stringMatching(/^provider_operation_saga\.v1:due:/u),
-        expect.stringMatching(/^provider_operation_saga\.v1:record:/u),
-        expect.stringMatching(/^provider_operation_saga\.v1:record:/u),
+        expect.stringMatching(new RegExp(`^${DUE_PREFIX}`, 'u')),
+        expect.stringMatching(new RegExp(`^${RECORD_PREFIX}`, 'u')),
+        expect.stringMatching(new RegExp(`^${RECORD_PREFIX}`, 'u')),
       ]);
       expect(
         db
@@ -462,7 +467,7 @@ describe('provider operation journal', () => {
       );
       for (const record of records) insertProviderOperation(db, record);
 
-      expect(readProviderOperations(db)).toEqual(
+      expect(readProviderOperations(db).records).toEqual(
         [...records].sort((left, right) => left.operation.jobId.localeCompare(right.operation.jobId)),
       );
     } finally {
@@ -499,6 +504,420 @@ describe('provider operation journal', () => {
       );
 
       expect(() => readProviderOperationsDue(db, 100, 1)).toThrow(/is stale or disagrees with its canonical record/u);
+    } finally {
+      db.close();
+    }
+  });
+
+  // A row at this build's own address whose bytes it cannot read — a truncated or partially written value, or
+  // a shape a later generation forgot to move. Every scan caller sits on the coordinator's boot path, so a
+  // throw is not "one stalled operation", it is no daemon at all. The row is reported and left in place.
+  //
+  // The value used here is a v0.10.8 payload because that is a shape known to fail this schema; the address is
+  // this build's, which is what makes it a corruption case rather than the upgrade case below.
+  it('reports a row this build cannot read instead of refusing the whole scan', () => {
+    const db = createDb();
+    try {
+      const readable = providerOperationRecord('executing');
+      insertProviderOperation(db, readable);
+
+      // A genuine v0.10.8 row, at its own canonical key and carrying the due entry a real one carries. The key
+      // must be well-formed: a malformed key is rejected for its shape before the value is ever judged, which
+      // makes the test pass whatever the value says.
+      const legacy = providerOperationRecord('prepare-pending', { job: 2 });
+      const shipped = JSON.parse(encodeProviderOperationRecord(legacy)) as {
+        locator: Record<string, Record<string, unknown>>;
+        providerRoot?: Record<string, unknown>;
+      };
+      for (const part of ['proxy', 'guardian', 'reaper', 'containment']) {
+        const process = shipped.locator[part];
+        if (process === undefined) continue;
+        delete process.incarnation;
+        process.processStartedAtSeconds = 1_700_000_000;
+      }
+      if (shipped.providerRoot !== undefined) {
+        delete shipped.providerRoot.incarnation;
+        shipped.providerRoot.processStartedAtSeconds = 1_700_000_000;
+      }
+      const legacyKey = recordKey(legacy);
+      const insert = db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)');
+      insert.run(legacyKey, JSON.stringify(shipped));
+      insert.run(dueKey(legacy), legacyKey);
+
+      const scan = readProviderOperations(db);
+
+      expect(scan.records).toEqual([readable]);
+      expect(scan.unreadableKeys).toEqual([legacyKey]);
+      expect(
+        sagaRows(db).some((row) => row.key === legacyKey),
+        'the row is skipped, never removed',
+      ).toBe(true);
+
+      // The job the row names, without decoding it. Startup ownership needs exactly this to keep that job away
+      // from generic recovery, which would strict-read the same row and abort the boot it just survived.
+      expect(providerOperationJobIdFromRecordKey(legacyKey)).toBe(legacy.operation.jobId);
+
+      // And the due index must not reintroduce the fatality. Every non-executing row has a due entry, so this
+      // is the shape a real orphaned operation has, and the reconciler treats a throw here as fatal.
+      expect(() => readProviderOperationsDue(db, Number.MAX_SAFE_INTEGER, 10)).not.toThrow();
+      expect(readProviderOperationsDue(db, Number.MAX_SAFE_INTEGER, 10)).toEqual([]);
+
+      // And it must not stand in front of work this build *can* do. Due keys sort by retry time, so an older
+      // build's rows are the oldest there are and land at the head of every scan. Filtering one page after
+      // reading it returns nothing while readable work sits immediately behind — on every poll, forever,
+      // because the reconciler reads an empty selection as "nothing due".
+      const readableDue = providerOperationRecord('prepare-pending', { job: 3 });
+      insertProviderOperation(db, readableDue);
+      expect(
+        readProviderOperationsDue(db, Number.MAX_SAFE_INTEGER, 1),
+        'a single unusable row at the head must not hide the whole queue behind it',
+      ).toEqual([readableDue]);
+    } finally {
+      db.close();
+    }
+  });
+  // The upgrade case, at the address a real predecessor row actually occupies. v0.10.8 wrote its rows under
+  // `provider_operation_saga.v1:`, and this build's decoder cannot read them — but the key still names the job,
+  // and that is the whole requirement: an operation left in flight across the upgrade must keep its job away
+  // from generic recovery, which would strict-read the same row and abort the boot it just survived.
+  it('fences a superseded generation by key without ever reading its bytes', () => {
+    const db = createDb();
+    try {
+      const readable = providerOperationRecord('executing');
+      insertProviderOperation(db, readable);
+
+      const stranded = providerOperationRecord('prepare-pending', { job: 2 });
+      const supersededKey =
+        `provider_operation_saga.v1:record:${stranded.operation.jobId}:${stranded.operation.operationId}:` +
+        `${stranded.operation.proxyInstanceId}:${stranded.operation.buildSetId}`;
+      db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)').run(
+        supersededKey,
+        'not json, and never parsed',
+      );
+
+      const scan = readProviderOperations(db);
+
+      expect(scan.records).toEqual([readable]);
+      expect(scan.unreadableKeys).toEqual([supersededKey]);
+      expect(providerOperationJobIdFromRecordKey(supersededKey)).toBe(stranded.operation.jobId);
+      expect(
+        db.prepare<[string], { key: string }>('SELECT key FROM meta WHERE key = ?').all(supersededKey),
+        'a generation this build cannot read is not a generation it may delete',
+      ).toEqual([{ key: supersededKey }]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('classifies unreadable payload identity per dimension without an envelope gate', () => {
+    const db = createDb();
+    try {
+      const keyed = providerOperationRecord('prepare-pending', { job: 2 });
+      const claimed = providerOperationRecord('prepare-pending', { job: 3 });
+      const claimedProxyInstanceId = claimed.operation.jobId;
+      const claimedBuildSetId = claimed.operation.operationId;
+      const key =
+        `provider_operation_saga.v1:record:${keyed.operation.jobId}:${keyed.operation.operationId}:` +
+        `${keyed.operation.proxyInstanceId}:${keyed.operation.buildSetId}`;
+      const insert = db.prepare<[string, string]>('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)');
+      const attributionValue = (value: string, rowKey = key) => {
+        insert.run(rowKey, value);
+        const { revision: _revision, ...result } = attributeUnreadableProviderOperations(db, [rowKey])[0];
+        return result;
+      };
+      const attribution = (payload: unknown, rowKey = key) => attributionValue(JSON.stringify(payload), rowKey);
+      const keyJob = { kind: 'known', values: [keyed.operation.jobId] } as const;
+      const keySet = {
+        kind: 'known',
+        values: [
+          {
+            proxyInstanceId: keyed.operation.proxyInstanceId,
+            buildSetId: keyed.operation.buildSetId,
+          },
+        ],
+      } as const;
+
+      for (const payload of ['not json', 'false', '[]', '{}']) {
+        expect(attributionValue(payload)).toEqual({ key, jobs: keyJob, sets: keySet });
+      }
+      expect(attribution({ operation: {} })).toEqual({ key, jobs: keyJob, sets: keySet });
+      for (const operation of [false, []]) {
+        expect(attribution({ version: 'broken', locator: null, operation })).toEqual({
+          key,
+          jobs: { kind: 'indeterminate' },
+          sets: { kind: 'indeterminate' },
+        });
+      }
+      expect(
+        attribution({
+          version: 'broken',
+          locator: null,
+          operation: {
+            jobId: claimed.operation.jobId,
+            proxyInstanceId: claimedProxyInstanceId,
+            buildSetId: claimedBuildSetId,
+          },
+        }),
+      ).toEqual({
+        key,
+        jobs: { kind: 'known', values: [keyed.operation.jobId, claimed.operation.jobId] },
+        sets: {
+          kind: 'known',
+          values: [
+            { proxyInstanceId: keyed.operation.proxyInstanceId, buildSetId: keyed.operation.buildSetId },
+            { proxyInstanceId: claimedProxyInstanceId, buildSetId: claimedBuildSetId },
+          ],
+        },
+      });
+      expect(
+        attribution({
+          operation: {
+            jobId: claimed.operation.jobId,
+            proxyInstanceId: claimedProxyInstanceId,
+          },
+        }),
+      ).toEqual({
+        key,
+        jobs: { kind: 'known', values: [keyed.operation.jobId, claimed.operation.jobId] },
+        sets: { kind: 'indeterminate' },
+      });
+      expect(
+        attribution({
+          operation: {
+            jobId: '',
+            proxyInstanceId: claimedProxyInstanceId,
+            buildSetId: claimedBuildSetId,
+          },
+        }),
+      ).toEqual({
+        key,
+        jobs: { kind: 'indeterminate' },
+        sets: {
+          kind: 'known',
+          values: [
+            { proxyInstanceId: keyed.operation.proxyInstanceId, buildSetId: keyed.operation.buildSetId },
+            { proxyInstanceId: claimedProxyInstanceId, buildSetId: claimedBuildSetId },
+          ],
+        },
+      });
+      expect(
+        attribution({
+          operation: {
+            jobId: 42,
+            proxyInstanceId: '',
+            buildSetId: claimedBuildSetId,
+          },
+        }),
+      ).toEqual({
+        key,
+        jobs: { kind: 'indeterminate' },
+        sets: { kind: 'indeterminate' },
+      });
+
+      const malformedKey = 'provider_operation_saga.v1:record:not-canonical';
+      expect(attribution({ operation: {} }, malformedKey)).toEqual({
+        key: malformedKey,
+        jobs: { kind: 'indeterminate' },
+        sets: { kind: 'indeterminate' },
+      });
+
+      const parse = vi.spyOn(JSON, 'parse');
+      attribution({ operation: { jobId: claimed.operation.jobId, proxyInstanceId: claimedProxyInstanceId } });
+      expect(parse).toHaveBeenCalledTimes(1);
+      parse.mockRestore();
+    } finally {
+      vi.restoreAllMocks();
+      db.close();
+    }
+  });
+
+  it('removes a bare-prefix due row pointing at the record it retires', () => {
+    const db = createDb();
+    try {
+      const stranded = providerOperationRecord('prepare-pending', { job: 2 });
+      const supersededKey =
+        `provider_operation_saga.v1:record:${stranded.operation.jobId}:${stranded.operation.operationId}:` +
+        `${stranded.operation.proxyInstanceId}:${stranded.operation.buildSetId}`;
+      const bareDueKey = 'provider_operation_saga.v1:due:';
+      const insert = db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)');
+      insert.run(supersededKey, 'not json');
+      // Malformed, and pointing at the record about to be retired. `key > duePrefix` excluded it, leaving a
+      // pointer to a row that no longer exists.
+      insert.run(bareDueKey, supersededKey);
+
+      retireSupersededProviderOperation(db, supersededKey);
+
+      expect(
+        db.prepare<[string], { key: string }>('SELECT key FROM meta WHERE key = ?').all(bareDueKey),
+        'a due row naming the retired record goes with it, whatever its own key looks like',
+      ).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
+  // The other half of the fence: a fenced job that nothing can ever settle is a job that stays live in `jobs`
+  // and unending under `wait` forever. A pid is readable out of a row whose meaning this build cannot read, so
+  // absence is provable without interpreting anything — and once the row is gone the job reaches ordinary
+  // recovery and is interrupted like any other.
+  it('reads the pids out of a superseded row without trusting anything else it says', () => {
+    const db = createDb();
+    try {
+      const stranded = providerOperationRecord('prepare-pending', { job: 2 });
+      const supersededKey =
+        `provider_operation_saga.v1:record:${stranded.operation.jobId}:${stranded.operation.operationId}:` +
+        `${stranded.operation.proxyInstanceId}:${stranded.operation.buildSetId}`;
+      // A genuine v0.10.8 payload: the process identity is seconds, which is exactly what this build cannot
+      // read. The pids sit beside them and are readable regardless.
+      const shipped = JSON.parse(encodeProviderOperationRecord(stranded)) as {
+        locator: Record<string, Record<string, unknown>>;
+      };
+      for (const [part, pid] of [
+        ['proxy', 9_001],
+        ['guardian', 9_002],
+        ['reaper', 9_003],
+        ['containment', 9_001],
+      ] as const) {
+        const process = shipped.locator[part];
+        if (process === undefined) continue;
+        delete process.incarnation;
+        process.processStartedAtSeconds = 1_700_000_000;
+        process.pid = pid;
+      }
+      if (shipped.locator.containment !== undefined) shipped.locator.containment.processGroupId = 9_004;
+      const insert = db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)');
+      insert.run(supersededKey, JSON.stringify(shipped));
+      insert.run('provider_operation_saga.v1:record:not-a-canonical-key', '{}');
+      insert.run(`${supersededKey.replace(':record:', ':due:')}-unwalkable`, 'not json at all');
+
+      const rows = readSupersededProviderOperations(db);
+
+      expect(rows).toEqual([
+        {
+          key: supersededKey,
+          processTargets: [9_001, 9_002, 9_003, -9_004],
+        },
+        { key: 'provider_operation_saga.v1:record:not-a-canonical-key', processTargets: null },
+      ]);
+
+      retireSupersededProviderOperation(db, supersededKey);
+
+      expect(
+        db.prepare<[string], { key: string }>('SELECT key FROM meta WHERE key = ?').all(supersededKey),
+        'retiring the row is what unfences its job',
+      ).toEqual([]);
+
+      // The malformed key survives because its process targets were unreadable. It names no specific job, so
+      // startup admission refuses generic recovery rather than pretending the row fences nothing.
+      expect(readProviderOperations(db).unreadableKeys).toEqual([
+        'provider_operation_saga.v1:record:not-a-canonical-key',
+      ]);
+      expect(providerOperationJobIdFromRecordKey('provider_operation_saga.v1:record:not-a-canonical-key')).toBeNull();
+      expect(
+        providerOperationJobIdFromRecordKey(`provider_operation_saga.v1:record:${stranded.operation.jobId}:garbage`),
+        'a real job id behind a malformed tail must not fence that job',
+      ).toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+
+  it('reports process targets as unknown rather than absent when the row cannot be walked', () => {
+    const db = createDb();
+    try {
+      const stranded = providerOperationRecord('prepare-pending', { job: 2 });
+      const supersededKey =
+        `provider_operation_saga.v1:record:${stranded.operation.jobId}:${stranded.operation.operationId}:` +
+        `${stranded.operation.proxyInstanceId}:${stranded.operation.buildSetId}`;
+      db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)').run(supersededKey, 'not json');
+
+      // `null`, never an absence conclusion. The row stays fenced because no process was observed at all.
+      expect(readSupersededProviderOperations(db)).toEqual([{ key: supersededKey, processTargets: null }]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('keeps an empty usable target set distinct from proven absence', () => {
+    const db = createDb();
+    try {
+      const stranded = providerOperationRecord('prepare-pending', { job: 2 });
+      const supersededKey =
+        `provider_operation_saga.v1:record:${stranded.operation.jobId}:${stranded.operation.operationId}:` +
+        `${stranded.operation.proxyInstanceId}:${stranded.operation.buildSetId}`;
+      const shipped = JSON.parse(encodeProviderOperationRecord(stranded)) as {
+        locator: Record<string, Record<string, unknown>>;
+        providerRoot?: Record<string, unknown>;
+      };
+      for (const part of ['proxy', 'guardian', 'reaper', 'containment']) {
+        const process = shipped.locator[part];
+        if (process === undefined) continue;
+        process.pid = 0;
+      }
+      if (shipped.locator.containment !== undefined) shipped.locator.containment.processGroupId = 0;
+      if (shipped.providerRoot !== undefined) shipped.providerRoot.pid = 0;
+      db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)').run(
+        supersededKey,
+        JSON.stringify(shipped),
+      );
+
+      expect(readSupersededProviderOperations(db)).toEqual([{ key: supersededKey, processTargets: [] }]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('rejects retirement of a current-generation row without orphaning its due entry', () => {
+    const db = createDb();
+    try {
+      const current = providerOperationRecord('prepare-pending', { retryNotBeforeMs: 100 });
+      insertProviderOperation(db, current);
+
+      expect(() => retireSupersededProviderOperation(db, recordKey(current))).toThrow(/not from a superseded/u);
+      expect(readProviderOperation(db, current.operation)).toEqual(current);
+      expect(readProviderOperationsDue(db, 100, 1)).toEqual([current]);
+    } finally {
+      db.close();
+    }
+  });
+
+  // Keys the scan must not be able to miss. SQLite compares TEXT as UTF-8 bytes, so `${prefix}\uffff` is not
+  // the successor of an ASCII prefix — U+FFFF is `EF BF BF` and anything above the BMP starts at `F0`, which
+  // sorts above it. A row outside the scan is reported by nothing, fences nothing and is retired by nothing.
+  it('sees every malformed key under the prefix, including the bare prefix and one sorting above U+FFFF', () => {
+    const db = createDb();
+    try {
+      const readable = providerOperationRecord('executing');
+      insertProviderOperation(db, readable);
+      const insert = db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)');
+      const edgeKeys = ['provider_operation_saga.v1:record:', 'provider_operation_saga.v1:record:\u{1F600}'];
+      for (const key of edgeKeys) insert.run(key, 'not json');
+
+      expect([...readProviderOperations(db).unreadableKeys].sort()).toEqual([...edgeKeys].sort());
+      expect(readProviderOperations(db).records).toEqual([readable]);
+    } finally {
+      db.close();
+    }
+  });
+
+  // The rollback direction, and the reason the generation lives in the key rather than only in the payload.
+  // v0.10.8 selects saga rows by literal key prefix and then parses them strictly, with no tolerance on its
+  // startup claim scan — a `version` field inside the payload is a warning it never reaches. The literal
+  // prefixes below are its source text, frozen; the keys they are tested against are built by this build's own
+  // writer. If the two ever meet, that daemon does not boot.
+  it('writes rows the shipped v0.10.8 selector cannot see', () => {
+    const db = createDb();
+    try {
+      insertProviderOperation(db, providerOperationRecord('prepare-pending'));
+      insertProviderOperation(db, providerOperationRecord('executing', { job: 2 }));
+      expect(sagaRows(db).length, 'the rows exist to be missed').toBeGreaterThan(0);
+
+      const shippedSelect = db.prepare<[string, string], { key: string }>(
+        'SELECT key FROM meta WHERE key > ? AND key < ? ORDER BY key',
+      );
+      for (const shippedPrefix of ['provider_operation_saga.v1:record:', 'provider_operation_saga.v1:due:']) {
+        expect(shippedSelect.all(shippedPrefix, `${shippedPrefix}\uffff`), shippedPrefix).toEqual([]);
+      }
     } finally {
       db.close();
     }

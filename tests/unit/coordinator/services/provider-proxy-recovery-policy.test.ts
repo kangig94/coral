@@ -33,9 +33,7 @@ const seamFor = (producerId: ProviderProxyRecoveryProducerId): ProviderProxyReco
     case 'set-inheritance':
       return 'startup-set-inheritance';
     case 'capsule-redemption':
-      return 'opaque-capsule-redemption';
-    case 'capsule-rewrite':
-      return 'opaque-capsule-rewrite';
+      return 'exact-capsule-recovery';
     case 'capsule-retirement':
       return 'capsule-retirement';
     case 'disappearance-consumer':
@@ -59,8 +57,15 @@ async function observe(
     if (settlement.kind === 'throw') throw settlement.error;
     return settlement.value;
   };
+  // `capsule-redemption`'s only seam reduces two sources — a redemption and an independent containment proof —
+  // and emits nothing until both have landed. Supplying the absence half is what lets this matrix observe the
+  // redemption producer's own classification rather than the reducer still waiting.
+  const pairsWithAbsence = producerId === 'capsule-redemption';
   const dispatcher = createTestProviderProxyRecoveryDispatcher(
-    { [producerId]: producer } as Partial<ProviderProxyRecoveryProducerPorts>,
+    {
+      [producerId]: producer,
+      ...(pairsWithAbsence ? { 'containment-proof': () => null } : {}),
+    } as Partial<ProviderProxyRecoveryProducerPorts>,
     () => {
       globalFatal += 1;
     },
@@ -77,10 +82,13 @@ async function observe(
     },
   });
   turn.start({
-    sourceId: 'matrix-source',
+    sourceId: pairsWithAbsence ? 'redemption' : 'matrix-source',
     producerId,
     input: {},
   } as ProviderProxyRecoveryAnySource);
+  if (pairsWithAbsence) {
+    turn.start({ sourceId: 'absence', producerId: 'containment-proof', input: {} } as ProviderProxyRecoveryAnySource);
+  }
   for (let index = 0; index < 4; index += 1) await Promise.resolve();
   return { evidence, retry, localFatal, globalFatal };
 }
@@ -94,7 +102,6 @@ describe('provider proxy recovery producer classification', () => {
       ['set-inheritance', { kind: 'not-bequeathed', reason: 'no capsule' }],
       ['capsule-redemption', { kind: 'redeemed', set: {} }],
       ['containment-proof', 'containment-absent'],
-      ['capsule-rewrite', undefined],
       ['capsule-retirement', { kind: 'retired' }],
       [
         'disappearance-consumer',
@@ -184,12 +191,6 @@ describe('provider proxy recovery producer classification', () => {
         },
       }),
     ).resolves.toEqual({ evidence: 0, retry: 1, localFatal: 0, globalFatal: 0 });
-    await expect(observe('capsule-rewrite', { kind: 'value', value: 'invalid-success' })).resolves.toEqual({
-      evidence: 0,
-      retry: 0,
-      localFatal: 1,
-      globalFatal: 1,
-    });
   });
 
   it('classifies disappearance delivery only from the strict outcome and complete operation identity', async () => {

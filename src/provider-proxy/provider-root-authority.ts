@@ -1,5 +1,5 @@
 import { backendLog } from '../infra/backend-log.js';
-import { probeProcessStartedAtSeconds } from '../infra/node-process.js';
+import { probeProcessIncarnation, type ProcessIncarnation } from '../infra/node-process.js';
 import type { Runtime } from '../runtime/ports.js';
 import {
   spawnProviderServerTransport,
@@ -185,7 +185,7 @@ type HostPoolEntry = {
   readonly instanceId: string;
   readonly handle: ProviderServerHandle;
   readonly transport: AppServerTransport;
-  readonly processStartedAtSeconds: number;
+  readonly incarnation: ProcessIncarnation;
   readonly jobId: string | undefined;
   readonly cancellationMode: ProxyHostCancellationMode;
   refCount: number;
@@ -247,7 +247,7 @@ export interface ProxyAppServerHostAuthority {
   beginOperation(key: ProviderOperationKey): ProxyOperationHostScope;
   /** The raw process identity behind an already-open `HostRef`, for the guardian containment report. `null`
    *  when the reference no longer names a live entry this authority holds. */
-  rootIdentity(hostRef: HostRef): Readonly<{ pid: number; processStartedAtSeconds: number }> | null;
+  rootIdentity(hostRef: HostRef): Readonly<{ pid: number; incarnation: ProcessIncarnation }> | null;
   closed(hostRef: HostRef): Promise<Error | void> | null;
   forceClose(hostRef: HostRef): Promise<void>;
   evictHost(hostRef: HostRef): Promise<boolean>;
@@ -333,10 +333,10 @@ class ProxyProviderRootPool {
     return matches;
   }
 
-  rootIdentity(hostRef: HostRef): Readonly<{ pid: number; processStartedAtSeconds: number }> | null {
+  rootIdentity(hostRef: HostRef): Readonly<{ pid: number; incarnation: ProcessIncarnation }> | null {
     for (const entry of this.entries.values()) {
       if (this.matches(hostRef, entry)) {
-        return { pid: entry.handle.pid, processStartedAtSeconds: entry.processStartedAtSeconds };
+        return { pid: entry.handle.pid, incarnation: entry.incarnation };
       }
     }
     return null;
@@ -447,12 +447,9 @@ class ProxyProviderRootPool {
     transaction.liveRootCommitted = true;
 
     const retirement = this.installRetirement(transaction, handle);
-    const processStartedAtSeconds = probeProcessStartedAtSeconds(
-      handle.pid,
-      this.runtime.env.platform() as NodeJS.Platform,
-    );
-    if (processStartedAtSeconds === null || handle.isClosed()) {
-      throw new Error(`Provider server ${spec.provider} could not have its own start time read after spawn.`);
+    const incarnation = probeProcessIncarnation(handle.pid, this.runtime.env.platform() as NodeJS.Platform);
+    if (incarnation === null || handle.isClosed()) {
+      throw new Error(`Provider server ${spec.provider} could not have its own incarnation read after spawn.`);
     }
     const entry: HostPoolEntry = {
       hostKey,
@@ -460,7 +457,7 @@ class ProxyProviderRootPool {
       instanceId,
       handle,
       transport: transportFor(handle),
-      processStartedAtSeconds,
+      incarnation,
       jobId: options?.jobId,
       cancellationMode,
       refCount: 0,

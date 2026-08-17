@@ -1,3 +1,4 @@
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { JobProgressStore } from '#src/jobs/contracts/job-store.js';
@@ -28,7 +29,11 @@ import {
   readProviderOperationsDue,
   subscribeProviderOperationMutations,
 } from '#src/store/provider-operation-journal.js';
-import { providerOperationRecordSchema, type ProviderOperationRecord } from '#src/store/provider-operation-record.js';
+import {
+  providerOperationRecordSchema,
+  PROVIDER_OPERATION_RECORD_VERSION,
+  type ProviderOperationRecord,
+} from '#src/store/provider-operation-record.js';
 import { OperationSupervisor } from '#src/provider-proxy/operation-supervisor.js';
 import {
   providerOperationPreparePermanentRefusalSchema,
@@ -55,6 +60,9 @@ function proxyHeartbeatFault(error: unknown): ProviderProxyAuthorityFault {
 }
 
 import { providerOperationRecord } from '../../store/provider-operation-fixtures.js';
+
+/** The build this fixture lifecycle belongs to — the same one `providerOperationRecord` stamps on its identities, so a discovered capsule is inheritable rather than foreign. */
+const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
 
 const activationAck = {
   state: 'executing',
@@ -131,6 +139,7 @@ function lifecycleForSchedule(
   const claims = new ProviderProxySetClaimMirror();
   claims.initialize([record]);
   const lifecycle = new ProviderProxySetLifecycle({
+    buildSetId: FIXTURE_BUILD_SET_ID,
     claims,
     controlEstablished: () => undefined,
     time: {
@@ -272,7 +281,7 @@ function operationUuid(value: number): string {
 function legacyDueKey(record: ProviderOperationRecord): string {
   const fixed = (value: number): string => String(value).padStart(String(Number.MAX_SAFE_INTEGER).length, '0');
   return (
-    `provider_operation_saga.v1:due:${fixed(record.retryNotBeforeMs)}:` +
+    `provider_operation_saga.v${PROVIDER_OPERATION_RECORD_VERSION}:due:${fixed(record.retryNotBeforeMs)}:` +
     `${record.operation.jobId}:${record.operation.operationId}:${record.operation.proxyInstanceId}:` +
     `${record.operation.buildSetId}:${fixed(record.revision)}`
   );
@@ -280,7 +289,7 @@ function legacyDueKey(record: ProviderOperationRecord): string {
 
 function canonicalOperationKey(record: ProviderOperationRecord): string {
   return (
-    `provider_operation_saga.v1:record:${record.operation.jobId}:${record.operation.operationId}:` +
+    `provider_operation_saga.v${PROVIDER_OPERATION_RECORD_VERSION}:record:${record.operation.jobId}:${record.operation.operationId}:` +
     `${record.operation.proxyInstanceId}:${record.operation.buildSetId}`
   );
 }
@@ -334,7 +343,7 @@ async function activationAckFromRealProxy(provider: string, operation: ProviderO
     stageProviderRoot: () => ({
       result: Promise.resolve({
         state: 'staged',
-        providerRoot: { pid: 104, processStartedAtSeconds: 1_003 },
+        providerRoot: { pid: 104, incarnation: testIncarnation(1_003) },
         receipt: jointContainmentReceipt,
       }),
       confirmActivation: async () => undefined,
@@ -478,16 +487,16 @@ function createHarness(
       hostFingerprint: record.locator.hostFingerprint,
       guardianInstanceId: record.locator.guardian.instanceId,
       guardianPid: record.locator.guardian.pid,
-      guardianProcessStartedAtSeconds: record.locator.guardian.processStartedAtSeconds,
+      guardianIncarnation: record.locator.guardian.incarnation,
       guardianControlEndpoint: record.locator.guardian.controlEndpoint,
       proxyInstanceId: record.locator.proxy.instanceId,
       proxyPid: record.locator.proxy.pid,
       reaperInstanceId: record.locator.reaper.instanceId,
       reaperPid: record.locator.reaper.pid,
-      reaperProcessStartedAtSeconds: record.locator.reaper.processStartedAtSeconds,
+      reaperIncarnation: record.locator.reaper.incarnation,
       reaperControlEndpoint: record.locator.reaper.controlEndpoint,
       containmentKind: record.locator.containment.kind,
-      proxyProcessStartedAtSeconds: record.locator.proxy.processStartedAtSeconds,
+      proxyIncarnation: record.locator.proxy.incarnation,
       proxyProcessGroupId: record.locator.containment.processGroupId,
       canonicalEndpoint: record.locator.proxy.controlEndpoint,
     },
@@ -503,7 +512,7 @@ function createHarness(
           state: 'pending-activation',
           reservation: asReservation('00000000-0000-4000-8000-000000000007'),
           leaseExpiresInMs: 15_000,
-          providerRoot: { pid: 104, processStartedAtSeconds: 1_003 },
+          providerRoot: { pid: 104, incarnation: testIncarnation(1_003) },
           jointContainmentReceipt: asJointContainmentReceipt('containment-receipt'),
         };
       }),
@@ -926,7 +935,7 @@ describe('ProviderOperationReconciler publication', () => {
             state: 'pending-activation',
             reservation: asReservation('00000000-0000-4000-8000-000000000007'),
             leaseExpiresInMs: 15_000,
-            providerRoot: { pid: 104, processStartedAtSeconds: 1_003 },
+            providerRoot: { pid: 104, incarnation: testIncarnation(1_003) },
             jointContainmentReceipt: asJointContainmentReceipt('containment-receipt'),
           };
         },
@@ -1071,7 +1080,7 @@ describe('ProviderOperationReconciler publication', () => {
       state: 'pending-activation' as const,
       reservation: asReservation('00000000-0000-4000-8000-000000000007'),
       leaseExpiresInMs: 15_000,
-      providerRoot: { pid: 104, processStartedAtSeconds: 1_003 },
+      providerRoot: { pid: 104, incarnation: testIncarnation(1_003) },
       jointContainmentReceipt: asJointContainmentReceipt('containment-receipt'),
     }));
     const harness = createHarness({
@@ -1724,7 +1733,7 @@ describe('ProviderOperationReconciler publication', () => {
         state: 'prepared',
         reservation: asReservation('00000000-0000-4000-8000-000000000007'),
         leaseExpiresInMs: 15_000,
-        providerRoot: { pid: 104, processStartedAtSeconds: 1_003 },
+        providerRoot: { pid: 104, incarnation: testIncarnation(1_003) },
         jointContainmentReceipt: asJointContainmentReceipt('containment-receipt'),
       }),
       activatePreparedOperation,
@@ -1875,7 +1884,7 @@ describe('ProviderOperationReconciler publication', () => {
       state: 'prepared' as const,
       reservation: asReservation('00000000-0000-4000-8000-000000000007'),
       leaseExpiresInMs: 15_000,
-      providerRoot: { pid: 104, processStartedAtSeconds: 1_003 },
+      providerRoot: { pid: 104, incarnation: testIncarnation(1_003) },
       jointContainmentReceipt: asJointContainmentReceipt('containment-receipt'),
     }));
     const harness = createHarness({ activatePreparedOperation, inspectOperation });
@@ -1983,7 +1992,7 @@ describe('ProviderOperationReconciler publication', () => {
           state: 'pending-activation',
           reservation: asReservation('00000000-0000-4000-8000-000000000007'),
           leaseExpiresInMs: 15_000,
-          providerRoot: { pid: 104, processStartedAtSeconds: 1_003 },
+          providerRoot: { pid: 104, incarnation: testIncarnation(1_003) },
           jointContainmentReceipt: asJointContainmentReceipt('containment-receipt'),
         };
       },
@@ -2225,7 +2234,7 @@ describe('ProviderOperationReconciler publication', () => {
         state: 'pending-activation' as const,
         reservation: asReservation('00000000-0000-4000-8000-000000000007'),
         leaseExpiresInMs: 15_000,
-        providerRoot: { pid: 104, processStartedAtSeconds: 1_003 },
+        providerRoot: { pid: 104, incarnation: testIncarnation(1_003) },
         jointContainmentReceipt: asJointContainmentReceipt('containment-receipt'),
       };
     });
@@ -2346,7 +2355,7 @@ describe('ProviderOperationReconciler publication', () => {
         state: 'pending-activation' as const,
         reservation: asReservation('00000000-0000-4000-8000-000000000007'),
         leaseExpiresInMs: 15_000,
-        providerRoot: { pid: 104, processStartedAtSeconds: 1_003 },
+        providerRoot: { pid: 104, incarnation: testIncarnation(1_003) },
         jointContainmentReceipt: asJointContainmentReceipt('containment-receipt'),
       };
     });
@@ -2698,7 +2707,7 @@ describe('ProviderOperationReconciler fault-injection matrix', () => {
               state: 'pending-activation' as const,
               reservation: asReservation('00000000-0000-4000-8000-000000000007'),
               leaseExpiresInMs: 15_000,
-              providerRoot: { pid: 104, processStartedAtSeconds: 1_003 },
+              providerRoot: { pid: 104, incarnation: testIncarnation(1_003) },
               jointContainmentReceipt: asJointContainmentReceipt('containment-receipt'),
             }),
             () => {
@@ -2712,7 +2721,7 @@ describe('ProviderOperationReconciler fault-injection matrix', () => {
           state: 'pending-activation' as const,
           reservation: asReservation('00000000-0000-4000-8000-000000000007'),
           leaseExpiresInMs: 15_000,
-          providerRoot: { pid: 104, processStartedAtSeconds: 1_003 },
+          providerRoot: { pid: 104, incarnation: testIncarnation(1_003) },
           jointContainmentReceipt: asJointContainmentReceipt('containment-receipt'),
         };
       },
@@ -2722,7 +2731,7 @@ describe('ProviderOperationReconciler fault-injection matrix', () => {
               state: 'prepared' as const,
               reservation: asReservation('00000000-0000-4000-8000-000000000007'),
               leaseExpiresInMs: 15_000,
-              providerRoot: { pid: 104, processStartedAtSeconds: 1_003 },
+              providerRoot: { pid: 104, incarnation: testIncarnation(1_003) },
               jointContainmentReceipt: asJointContainmentReceipt('containment-receipt'),
             }
           : { state: 'absent' as const },

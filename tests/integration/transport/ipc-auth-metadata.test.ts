@@ -1,3 +1,4 @@
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { createServer, type Server, type Socket } from 'node:net';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -73,7 +74,7 @@ function healthSnapshot(): HealthSnapshot {
     namespace: 'test-namespace',
     instanceId: 'test-instance',
     pid: 12345,
-    processStartedAt: 1_700_000_000,
+    incarnation: testIncarnation(1_700_000_000),
     uptimeMs: 10,
     active: 0,
     activeJobs: 0,

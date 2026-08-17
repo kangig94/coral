@@ -1,3 +1,4 @@
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { createConnection, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -393,16 +394,16 @@ describe('provider-proxy control endpoint', () => {
       hostFingerprint: 'b'.repeat(64),
       guardianInstanceId: '22222222-2222-4222-8222-222222222222',
       guardianPid: 101,
-      guardianProcessStartedAtSeconds: 1_001,
+      guardianIncarnation: testIncarnation(1_001),
       guardianControlEndpoint: `${socketPath}.guardian`,
       proxyInstanceId: '33333333-3333-4333-8333-333333333333',
       proxyPid: 102,
       reaperInstanceId: '44444444-4444-4444-8444-444444444444',
       reaperPid: 103,
-      reaperProcessStartedAtSeconds: 1_003,
+      reaperIncarnation: testIncarnation(1_003),
       reaperControlEndpoint: `${socketPath}.reaper`,
       containmentKind: 'posix-group',
-      proxyProcessStartedAtSeconds: 1_002,
+      proxyIncarnation: testIncarnation(1_002),
       proxyProcessGroupId: 102,
       canonicalEndpoint: socketPath,
     };

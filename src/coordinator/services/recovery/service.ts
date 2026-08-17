@@ -35,7 +35,6 @@ import { CHILD_PRINCIPAL_CAPABILITIES, type ChildPrincipalRegistry } from '../..
 import { CORAL_CHILD_PRINCIPAL_HANDLE } from '../../../security/child-principal-env.js';
 import type { ProviderOperationProtectedEnvironment } from '../../../jobs/contracts/provider-operation-lifecycle.js';
 import type { Principal } from '../../../security/principal.js';
-import { elapsedDurationMs } from '../../../jobs/duration.js';
 import { snapshotProviderRecoveryAuthority } from './authority-snapshot.js';
 import { planInterruptedAppServerRecovery, planInterruptedDurableRecovery } from './interrupted-plan.js';
 import {
@@ -146,32 +145,6 @@ export class RecoveryService {
     const readiness = await binding.value.readiness('recovery', this.deps.runtime.storage);
     if (!readiness.ok) return { ok: false, failure: readiness.failure };
     return { ok: true, session, bound: binding.value, continuity: continuity.value };
-  }
-
-  finalizeProviderRecoveryBindingFailure(
-    launchRecord: JobLaunch,
-    failure: ProviderBindingFailure,
-  ): SessionJobClaimReleaseResult {
-    requireProviderLaunchRecord(launchRecord, 'finalizeProviderRecoveryBindingFailure');
-    const message = this.deps.providerRegistry.renderBindingFailure(failure);
-    return this.completeRecoveredJob(
-      launchRecord.jobId,
-      launchRecord.sessionId,
-      {
-        content: message,
-        durationMs: elapsedDurationMs(
-          launchRecord.createdAt,
-          this.deps.runtime.time.now(),
-          `job ${launchRecord.jobId}`,
-        ),
-        outcome: {
-          kind: 'job_fault',
-          fault: { kind: 'provider_binding', provider: failure.provider, reason: failure.reason, message },
-        },
-      },
-      'error',
-      { pool: launchRecord.pool },
-    );
   }
 
   async captureProviderRecoveryAuthority(launchRecord: JobLaunch): Promise<ProviderRecoveryAuthorityCapture> {

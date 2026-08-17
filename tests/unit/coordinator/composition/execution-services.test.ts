@@ -34,6 +34,9 @@ import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { seedTestSessionProjection } from '#tests/helpers/session.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 
+/** The build these fixture worlds belong to; capsules built from the same fixtures are inheritable, not foreign. */
+const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
+
 type SharedSetControl = 'settlement-timeout' | 'control-channel-fault' | 'heartbeat-failed';
 
 function setReference(identity: ProviderProxySetIdentity): string {
@@ -54,6 +57,7 @@ async function createSharedSetHarness(control: SharedSetControl) {
   const lifecycleRef = new ProviderProxySetLifecycleRef();
   const operationRegistry = new LocalOperationRegistry();
   const world = {
+    identity: { buildSetId: FIXTURE_BUILD_SET_ID },
     storeServicesRef: { tryGet: () => ({ progressStore }) },
     operationRegistry,
     providerProxyClaims: claims,
@@ -189,6 +193,80 @@ async function createSharedSetHarness(control: SharedSetControl) {
 }
 
 describe('execution services provider-proxy proof composition', () => {
+  // Skipping a row this build cannot read is only half the contract; the other half is that an operator can
+  // find out. The skip was pinned and the reporting was not — deleting the whole warn block left every gate
+  // green, which turns "tolerated and reported" into "silently dropped" without a single test noticing.
+  //
+  // This is the first scan on the boot path, so it is the one place the news can be delivered at all.
+  it('reports the rows it skipped, by key, on the first boot-path scan', async () => {
+    const runtime = createRealRuntime('prod');
+    const db = newRawDatabase(':memory:');
+    applyBundledStoreSchema(db, currentCoralStoreFormat());
+    const namespace = 'execution-services-unreadable-report';
+    const progressStore = new JobStore(namespace, runtime, createEventBodyCodec(), {
+      db,
+      providers: permissiveProviderLookupPort,
+    });
+    const claims = new ProviderProxySetClaimMirror();
+
+    const readable = providerOperationRecord('executing');
+    insertProviderOperation(db, readable);
+
+    // A genuine predecessor row, at the address v0.10.8 actually wrote to. Its bytes are never parsed — the
+    // generation is in the key — so this needs no forged payload to be exactly what the field will hold.
+    const stranded = providerOperationRecord('prepare-pending', { job: 2 });
+    const supersededKey =
+      `provider_operation_saga.v1:record:${stranded.operation.jobId}:${stranded.operation.operationId}:` +
+      `${stranded.operation.proxyInstanceId}:${stranded.operation.buildSetId}`;
+    db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)').run(supersededKey, 'unparsed');
+
+    const world = {
+      identity: { buildSetId: FIXTURE_BUILD_SET_ID },
+      storeServicesRef: { tryGet: () => ({ progressStore }) },
+      operationRegistry: new LocalOperationRegistry(),
+      providerProxyClaims: claims,
+      providerProxyLifecycleRef: new ProviderProxySetLifecycleRef(),
+      providerHostManager: {},
+    } as never;
+
+    const services = createExecutionServices({
+      world,
+      runtime,
+      bundleHash: namespace,
+      backendNamespace: namespace,
+      onProviderProxyLifecycleFatal: (error) => {
+        throw error;
+      },
+      createExecutionService: (() => {
+        throw new Error('execution service creation was not expected');
+      }) as never,
+    });
+
+    // Captured inside the try, never read off the spy afterwards: `mockRestore()` clears `mock.calls`, so an
+    // assertion placed after the teardown reads an empty array and fails whatever the code did.
+    const reported: string[] = [];
+    const warning = vi.spyOn(backendLog, 'warn').mockImplementation((message) => {
+      reported.push(String(message));
+    });
+    try {
+      await services.reconcileProviderOperationsAtStartup(new AbortController().signal);
+    } finally {
+      warning.mockRestore();
+      services.stopProviderOperationReconciler();
+      db.close();
+    }
+
+    const skipped = reported.filter((line) => line.includes('Skipped'));
+    expect(skipped).toHaveLength(1);
+    // By key, because the key is the only thing about the row this build is entitled to claim it understands.
+    expect(skipped[0]).toContain(supersededKey);
+    // And the boot still happened, on the rows it could read. A report that cost the daemon its startup would
+    // be the fatality this whole path exists to avoid, and a scan that reported the skip and then initialized
+    // nothing would satisfy the assertion above while losing every live claim.
+    expect(claims.claimFor(readable.operation), 'the readable row still became a live claim').not.toBeNull();
+    expect(claims.size, 'and the unreadable one contributed none').toBe(1);
+  });
+
   it('does not invoke the disappearance consumer producer during assembly', async () => {
     const runtime = createRealRuntime('prod');
     const claims = new ProviderProxySetClaimMirror();
@@ -200,6 +278,7 @@ describe('execution services provider-proxy proof composition', () => {
     });
     const proveContainmentAbsent = vi.fn(async () => null);
     const world = {
+      identity: { buildSetId: FIXTURE_BUILD_SET_ID },
       storeServicesRef: { tryGet: () => null },
       operationRegistry,
       providerProxyClaims: claims,
@@ -242,6 +321,7 @@ describe('execution services provider-proxy proof composition', () => {
     const lifecycleRef = new ProviderProxySetLifecycleRef();
     const operationRegistry = new LocalOperationRegistry();
     const world = {
+      identity: { buildSetId: FIXTURE_BUILD_SET_ID },
       storeServicesRef: { tryGet: () => ({ progressStore: { getDb: () => db } }) },
       operationRegistry,
       providerProxyClaims: claims,
@@ -327,6 +407,7 @@ describe('execution services provider-proxy proof composition', () => {
       request: { prompt: 'test', cwd: '/workspace', bypassPermissions: false, coralEnv: {} },
     }));
     const world = {
+      identity: { buildSetId: FIXTURE_BUILD_SET_ID },
       storeServicesRef: { tryGet: () => ({ progressStore: { getDb: () => db, readLaunchProjection } }) },
       operationRegistry,
       providerProxyClaims: claims,
@@ -511,6 +592,7 @@ describe('execution services provider-proxy proof composition', () => {
       (identity: ProviderProxySetIdentity, db: Database, signal: AbortSignal) => Promise<string | null>
     >(async () => 'process-proof-receipt');
     const world = {
+      identity: { buildSetId: FIXTURE_BUILD_SET_ID },
       storeServicesRef: {
         tryGet: () => ({ progressStore: { getDb: () => db } }),
       },
@@ -617,6 +699,7 @@ describe('execution services provider-proxy proof composition', () => {
       disappearanceReceipt: 'inheritance-process-proof',
     }));
     const world = {
+      identity: { buildSetId: FIXTURE_BUILD_SET_ID },
       storeServicesRef: {
         tryGet: () => ({ progressStore: { getDb: () => db } }),
       },

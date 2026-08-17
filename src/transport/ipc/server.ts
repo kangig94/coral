@@ -1,3 +1,4 @@
+import type { ProcessIncarnation } from '../../infra/node-process.js';
 import { timingSafeEqual } from 'node:crypto';
 import { chmodSync, mkdirSync, unlinkSync } from 'node:fs';
 import { createConnection, createServer, type Server as NetServer, type Socket } from 'node:net';
@@ -280,7 +281,7 @@ function readPingSnapshot(rpcPorts: HttpHandlerPorts): {
   namespace: string;
   instanceId: string;
   pid: number;
-  processStartedAt?: number;
+  incarnation?: ProcessIncarnation;
 } {
   const health = rpcPorts.health.read();
   return {
@@ -291,7 +292,7 @@ function readPingSnapshot(rpcPorts: HttpHandlerPorts): {
     namespace: health.namespace,
     instanceId: health.instanceId,
     pid: health.pid,
-    ...(health.processStartedAt === undefined ? {} : { processStartedAt: health.processStartedAt }),
+    ...(health.incarnation === undefined ? {} : { incarnation: health.incarnation }),
   };
 }
 

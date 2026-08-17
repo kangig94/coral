@@ -5,8 +5,9 @@ import {
   handoffSecretDigest,
   successionOperationRegisterParamsSchema,
   successionOperationRegisterResultSchema,
+  CURRENT_HANDOFF_CAPSULE_VERSION,
   writeHandoffCapsuleFile,
-  type HandoffCapsule,
+  type HandoffCapsuleV3,
   proxyHandoffInstallParamsSchema,
 } from '../../../provider-proxy/handoff-capsule.js';
 import type { ProviderProxyOperationSnapshot } from '../../services/operation-registry.js';
@@ -77,7 +78,10 @@ export type ProviderProxySetAuthorityDependencies = Readonly<{
   handoffCapsulePath: string;
   /** Kept outside SQLite so the credential secret never enters durable domain records. */
   runtime: Pick<Runtime, 'ids' | 'env' | 'storage'>;
-  recoveryCapsule?: HandoffCapsule;
+  /** The capsule this set was redeemed from, when it was redeemed rather than freshly acquired. Only its
+   *  presence is read: a redeemed set already has its credential installed, so this authority mints and
+   *  writes nothing for it. Only V3 can reach redemption, and a minted capsule is always V3. */
+  recoveryCapsule?: HandoffCapsuleV3;
   /** `stopAndReap`'s source for provider roots this generation can still name in set agreement. */
   operationRegistry: ProviderProxyOperationSnapshot;
 }>;
@@ -105,12 +109,14 @@ export function createProviderProxySetAuthority(
     operationRegistry,
   } = deps;
 
-  let recoveryCapsule: HandoffCapsule | null = deps.recoveryCapsule ?? null;
-  const requireRecoveryCapsule = (): HandoffCapsule => {
-    if (recoveryCapsule !== null) return recoveryCapsule;
+  // Distinct from `deps.recoveryCapsule` on purpose: this one is *this* build's, and the writer accepts only
+  // V3. Conflating them let a redeemed V1 reach a write that must never emit a shape this build cannot verify.
+  let mintedRecoveryCapsule: HandoffCapsuleV3 | null = null;
+  const mintRecoveryCapsule = (): HandoffCapsuleV3 => {
+    if (mintedRecoveryCapsule !== null) return mintedRecoveryCapsule;
     const deadlineConfig = resolveProviderProxyDeadlineConfiguration(runtime.env);
-    recoveryCapsule = {
-      version: 2,
+    mintedRecoveryCapsule = {
+      version: CURRENT_HANDOFF_CAPSULE_VERSION,
       grantId: runtime.ids.uuid(),
       secret: runtime.ids.randomBytes(32).toString('hex'),
       generation: guardianIdentity.generation,
@@ -126,15 +132,15 @@ export function createProviderProxySetAuthority(
       orphanTimeoutMs: deadlineConfig.orphanTimeoutMs,
       teardownReserveMs: deadlineConfig.teardownReserveMs,
       guardianPid: guardianIdentity.pid,
-      guardianProcessStartedAtSeconds: guardianIdentity.processStartedAtSeconds,
+      guardianIncarnation: guardianIdentity.incarnation,
       proxyPid: proxyIdentityFields.pid,
       reaperPid: reaperIdentity.pid,
-      reaperProcessStartedAtSeconds: reaperIdentity.processStartedAtSeconds,
+      reaperIncarnation: reaperIdentity.incarnation,
       containmentKind: reaperIdentity.containmentKind,
-      proxyProcessStartedAtSeconds: proxyIdentityFields.processStartedAtSeconds,
+      proxyIncarnation: proxyIdentityFields.incarnation,
       proxyProcessGroupId: proxyIdentityFields.processGroupId,
     };
-    return recoveryCapsule;
+    return mintedRecoveryCapsule;
   };
   let recoveryCredentialInstalled = deps.recoveryCapsule !== undefined;
   let recoveryCredentialInstall: Promise<void> | null = null;
@@ -143,7 +149,7 @@ export function createProviderProxySetAuthority(
     if (recoveryCredentialInstalled) return;
     signal.throwIfAborted();
     recoveryCredentialInstall ??= (async () => {
-      const capsule = requireRecoveryCapsule();
+      const capsule = mintRecoveryCapsule();
       const secretSha256 = handoffSecretDigest(capsule.secret);
       const guardianReaperInstallPayload = guardianReaperHandoffInstallParamsSchema.parse({
         grantId: capsule.grantId,

@@ -1,3 +1,4 @@
+import { isProcessIncarnation, type ProcessIncarnation } from '../../infra/node-process.js';
 // Transport-owned IPC handoff helper. Shared by both daemon-side
 // `bindWithHandoff` (`src/coordinator/handoff.ts`) and CLI-side `ensure()`.
 // Carries no coordinator vocabulary: any caller that wants to ask a peer
@@ -13,12 +14,17 @@ import type { TimePort } from '../../infra/port-types.js';
 /**
  * Identity tuple proving "this incumbent is who it claims to be" — used to
  * gate signal escalation. `pid` alone is insufficient because pids wrap;
- * `processStartedAt` is the kernel-supplied second of process creation
- * (probed via `probeProcessStartedAtSeconds`).
+ * `incarnation` is an opaque token for one run of one process, compared only
+ * for equality (probed via `probeProcessIncarnation`).
  */
 export type IncumbentIdentity = {
   pid: number;
-  processStartedAt: number;
+  /** Absent when the incumbent predates the token. Required to *signal*, and only to signal: it is the one
+   *  piece of identity evidence that predates this contender, so without it a pid recycled before the
+   *  contender ever looked cannot be told from the incumbent. Shutdown over IPC needs no such proof — the
+   *  socket and the boot token are the authority there — so a pre-token incumbent still steps down
+   *  gracefully; it is escalation that stops. */
+  incarnation?: ProcessIncarnation;
   source: 'health' | 'discovery';
   instanceId?: string;
   token?: string;
@@ -45,7 +51,7 @@ export type IncumbentHealth = {
   namespace: string;
   status?: 'starting' | 'ok' | 'draining';
   pid?: number;
-  processStartedAt?: number;
+  incarnation?: ProcessIncarnation;
   instanceId?: string;
 };
 
@@ -123,7 +129,7 @@ function isShutdownUnauthorizedError(error: unknown): boolean {
  *
  * Returns:
  *   - `health`: last non-null health snapshot, or null if never reachable.
- *   - `verifiedIdentity`: pid+processStartedAt sourced from health, or null.
+ *   - `verifiedIdentity`: pid+incarnation sourced from health, or null.
  *
  * Throws `IncumbentMatchesError` when the incumbent outranks the contender
  * (`incumbentOutranksContender`: matching flavor/namespace, same-or-newer
@@ -182,10 +188,10 @@ export async function requestIncumbentShutdown(opts: {
   }
 
   const verifiedIdentity: IncumbentIdentity | null =
-    health && typeof health.pid === 'number' && typeof health.processStartedAt === 'number'
+    health && typeof health.pid === 'number' && isProcessIncarnation(health.incarnation)
       ? {
           pid: health.pid,
-          processStartedAt: health.processStartedAt,
+          incarnation: health.incarnation,
           source: 'health',
           ...(typeof health.instanceId === 'string' && health.instanceId.length > 0
             ? { instanceId: health.instanceId }

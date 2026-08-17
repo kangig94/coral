@@ -1,10 +1,13 @@
 import { z } from 'zod';
 
-import type { Database } from './db.js';
+import { withImmediate, type Database } from './db.js';
+import { sha256Hex } from '../infra/hash.js';
 import {
   decodeProviderOperationRecord,
   encodeProviderOperationRecord,
   providerOperationIdentitySchema,
+  PROVIDER_OPERATION_RECORD_GENERATIONS,
+  PROVIDER_OPERATION_RECORD_VERSION,
   type ProviderOperationIdentity,
   type ProviderOperationRecord,
 } from './provider-operation-record.js';
@@ -73,18 +76,63 @@ type ProviderOperationDueEntry = Readonly<{
   revision: number;
 }>;
 
-const PROVIDER_OPERATION_SAGA_PREFIX = 'provider_operation_saga.v1:';
+function sagaPrefix(version: number): string {
+  return `provider_operation_saga.v${version}:`;
+}
+
+function escapeKeyPrefix(prefix: string): string {
+  return prefix.replaceAll(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+}
+
+const PROVIDER_OPERATION_SAGA_PREFIX = sagaPrefix(PROVIDER_OPERATION_RECORD_VERSION);
 const PROVIDER_OPERATION_RECORD_PREFIX = `${PROVIDER_OPERATION_SAGA_PREFIX}record:`;
 const PROVIDER_OPERATION_DUE_PREFIX = `${PROVIDER_OPERATION_SAGA_PREFIX}due:`;
+
+/**
+ * Generations this build addresses but cannot decode.
+ *
+ * Their rows are never decoded as this build's record type. Startup reads only generation-stable evidence:
+ * raw operation identity claims for attribution and signalable process targets for absence retirement. It
+ * never guesses at phase or converts the row into this generation.
+ *
+ * Empty is a legitimate value. A generation belongs here only while a build that wrote it can still have left
+ * rows behind; once that build is out of the field the entry is deleted, not kept for symmetry.
+ *
+ * These rows do not accumulate forever. `readSupersededProviderOperations` reads the one thing every
+ * generation records the same way — signalable process targets — and startup retires a row whose targets are
+ * all absent, so the fence it holds is released and its job settles through ordinary recovery.
+ */
+const SUPERSEDED_PROVIDER_OPERATION_RECORD_PREFIXES: readonly string[] =
+  PROVIDER_OPERATION_RECORD_GENERATIONS.retainedSuperseded.map((version) => `${sagaPrefix(version)}record:`);
+
 const PROVIDER_OPERATION_READ_PAGE_SIZE = 128;
 const FIXED_WIDTH_INTEGER_DIGITS = String(Number.MAX_SAFE_INTEGER).length;
 const UUID_KEY_SOURCE = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+const IDENTITY_KEY_SOURCE = `${UUID_KEY_SOURCE}:${UUID_KEY_SOURCE}:${UUID_KEY_SOURCE}:${UUID_KEY_SOURCE}`;
 const PROVIDER_OPERATION_RECORD_KEY_PATTERN = new RegExp(
-  `^provider_operation_saga\\.v1:record:${UUID_KEY_SOURCE}:${UUID_KEY_SOURCE}:${UUID_KEY_SOURCE}:${UUID_KEY_SOURCE}$`,
+  `^${escapeKeyPrefix(PROVIDER_OPERATION_RECORD_PREFIX)}${IDENTITY_KEY_SOURCE}$`,
   'u',
 );
+/** Every generation's canonical record key, each capturing the job id it names. */
+/** Every generation's canonical record key, capturing job, operation, proxy instance and build set in order. */
+const RECORD_KEY_PATTERNS: readonly RegExp[] = [
+  PROVIDER_OPERATION_RECORD_PREFIX,
+  ...SUPERSEDED_PROVIDER_OPERATION_RECORD_PREFIXES,
+].map(
+  (prefix) =>
+    new RegExp(
+      `^${escapeKeyPrefix(prefix)}(?<jobId>${UUID_KEY_SOURCE}):(?<operationId>${UUID_KEY_SOURCE}):` +
+        `(?<proxyInstanceId>${UUID_KEY_SOURCE}):(?<buildSetId>${UUID_KEY_SOURCE})$`,
+      'u',
+    ),
+);
+
+function matchRecordKey(key: string): RegExpExecArray | null {
+  return RECORD_KEY_PATTERNS.map((pattern) => pattern.exec(key)).find((result) => result !== null) ?? null;
+}
 const PROVIDER_OPERATION_DUE_KEY_PATTERN = new RegExp(
-  `^provider_operation_saga\\.v1:due:[0-9]{${FIXED_WIDTH_INTEGER_DIGITS}}:${UUID_KEY_SOURCE}:${UUID_KEY_SOURCE}:${UUID_KEY_SOURCE}:${UUID_KEY_SOURCE}:[0-9]{${FIXED_WIDTH_INTEGER_DIGITS}}$`,
+  `^${escapeKeyPrefix(PROVIDER_OPERATION_DUE_PREFIX)}[0-9]{${FIXED_WIDTH_INTEGER_DIGITS}}:` +
+    `${IDENTITY_KEY_SOURCE}:[0-9]{${FIXED_WIDTH_INTEGER_DIGITS}}$`,
   'u',
 );
 const providerOperationDueEntrySchema = z
@@ -172,6 +220,43 @@ function decodeCanonicalValue(key: string, value: string): ProviderOperationReco
     throw new ProviderOperationJournalError(`Provider operation record '${key}' disagrees with its key identity.`);
   }
   return record;
+}
+
+/** Whether this build can decode the value at a canonical key. Shared by both scans so "unreadable" means one
+ *  thing: the row a record scan skips is exactly the row a due scan must not fault on. */
+function canReadCanonicalValue(key: string, value: string): boolean {
+  try {
+    decodeCanonicalValue(key, value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The job a canonical key names, without decoding the value — the only identity available for a row this
+ *  build cannot read, and the one startup ownership needs to keep that job away from generic recovery. */
+export function providerOperationJobIdFromRecordKey(key: string): string | null {
+  // The *whole* canonical shape, not just the prefix and the first segment. A key like
+  // `<prefix>:<real-job-uuid>:garbage` would otherwise hand back a real job id and fence that unrelated job
+  // for as long as the row exists — a malformed row taking a healthy job down with it.
+  return matchRecordKey(key)?.groups?.jobId ?? null;
+}
+
+/**
+ * The proxy set a canonical key names, without decoding the row.
+ *
+ * A row this build cannot read may still name a provider root belonging to some set, and a containment proof
+ * that ignored it could mint a disappearance receipt while that root was alive. But the key says *which* set
+ * it belongs to, so the proof only has to stay unknown for that one — fencing every set on any unreadable row
+ * anywhere blocks recovery for sets that row has nothing to do with.
+ */
+export function providerOperationSetAddressFromRecordKey(
+  key: string,
+): Readonly<{ proxyInstanceId: string; buildSetId: string }> | null {
+  const groups = matchRecordKey(key)?.groups;
+  const proxyInstanceId = groups?.proxyInstanceId;
+  const buildSetId = groups?.buildSetId;
+  return proxyInstanceId === undefined || buildSetId === undefined ? null : { proxyInstanceId, buildSetId };
 }
 
 function readCanonicalRecord(db: Database, key: string): ProviderOperationRecord | undefined {
@@ -339,7 +424,7 @@ export function hasProviderOperationForJob(db: Database, jobId: string): boolean
         [string, string],
         Pick<MetaRow, 'key'>
       >('SELECT key FROM meta WHERE key >= ? AND key < ? ORDER BY key LIMIT 1')
-      .get(prefix, `${prefix}\uffff`) !== undefined
+      .get(prefix, keyPrefixUpperBound(prefix)) !== undefined
   );
 }
 
@@ -347,7 +432,7 @@ export function readProviderOperationForJob(db: Database, jobId: string): Provid
   const prefix = providerOperationRecordKeyPrefix(jobId);
   const rows = db
     .prepare<[string, string], MetaRow>('SELECT key, value FROM meta WHERE key >= ? AND key < ? ORDER BY key LIMIT 2')
-    .all(prefix, `${prefix}\uffff`);
+    .all(prefix, keyPrefixUpperBound(prefix));
   if (rows.length > 1) {
     throw new ProviderOperationJournalError(`Job '${jobId}' has more than one live provider operation.`);
   }
@@ -355,22 +440,287 @@ export function readProviderOperationForJob(db: Database, jobId: string): Provid
   return row === undefined ? null : decodeCanonicalValue(row.key, row.value);
 }
 
-export function readProviderOperations(db: Database): readonly ProviderOperationRecord[] {
-  const records: ProviderOperationRecord[] = [];
-  let cursor = PROVIDER_OPERATION_RECORD_PREFIX;
+/**
+ * The result of walking every saga row, with the rows this build could not read kept separate rather than
+ * thrown.
+ *
+ * A keyed lookup that fails is a caller asking for a record that must exist, and it still throws. A *scan*
+ * is different: it is startup asking what is here, and one row it cannot parse is not a reason to refuse to
+ * run. That distinction is not hypothetical \u2014 every scan caller sits on a path that ends at the
+ * coordinator's own startup.
+ *
+ * The scan reaches superseded generations too and reports their keys. Attribution separately examines only
+ * raw identity claims; it never converts the bytes into this generation's record shape.
+ *
+ * Unreadable rows are reported as keys, never as bytes. They are also left in place. Nothing is lost by
+ * skipping one \u2014 the row stays, and a build that understands it can still act on it.
+ */
+export type ProviderOperationScan = Readonly<{
+  records: readonly ProviderOperationRecord[];
+  unreadableKeys: readonly string[];
+}>;
+
+/**
+ * What a row could belong to along one dimension.
+ *
+ * `known` lists what it names — possibly nothing, when neither side made a claim on this dimension.
+ * `indeterminate` is a claim that exists and cannot be read: it could name *anything*, and a consumer must
+ * fence accordingly.
+ *
+ * Two dimensions, each with its own answer, rather than `T[] | null` twice. `null` had been made to mean both
+ * "could be anything" and "could be nothing" in the same returned object — a null address list fenced every
+ * set while a null job list fenced no job — and a shared early return let one dimension being unreadable erase
+ * the other's perfectly good answer.
+ */
+export type ProviderOperationAttribution<T> =
+  | Readonly<{ kind: 'known'; values: readonly T[] }>
+  | Readonly<{ kind: 'indeterminate' }>;
+
+export type UnreadableProviderOperationAttribution = Readonly<{
+  key: string;
+  revision: string;
+  sets: ProviderOperationAttribution<Readonly<{ proxyInstanceId: string; buildSetId: string }>>;
+  jobs: ProviderOperationAttribution<string>;
+}>;
+
+export function attributeUnreadableProviderOperations(
+  db: Database,
+  unreadableKeys: readonly string[],
+): readonly UnreadableProviderOperationAttribution[] {
+  return unreadableKeys.flatMap((key) => {
+    const value = readCanonicalValue(db, key);
+    if (value === undefined) return [];
+    const claims = claimedOperationIdentities(value);
+    return [
+      {
+        key,
+        revision: `sha256:${sha256Hex(value)}`,
+        sets: attribute(providerOperationSetAddressFromRecordKey(key), claims.set, sameSetAddress),
+        jobs: attribute(providerOperationJobIdFromRecordKey(key), claims.job, (left, right) => left === right),
+      },
+    ];
+  });
+}
+
+type IdentityClaim<T> =
+  | Readonly<{ kind: 'absent' }>
+  | Readonly<{ kind: 'complete'; value: T }>
+  | Readonly<{ kind: 'partial' }>;
+
+function attribute<T>(
+  fromKey: T | null,
+  fromPayload: IdentityClaim<T>,
+  same: (left: T, right: T) => boolean,
+): ProviderOperationAttribution<T> {
+  if (fromPayload.kind === 'partial') return { kind: 'indeterminate' };
+  const payloadValue = fromPayload.kind === 'complete' ? fromPayload.value : null;
+  const claimed = [fromKey, payloadValue].filter((value): value is T => value !== null);
+  // Neither side named anything, which is not the same as "known to belong to nothing" — a row nobody can
+  // attribute could belong to any of them. Empty is therefore indeterminate, never an empty `known`.
+  if (claimed.length === 0) return { kind: 'indeterminate' };
+  return { kind: 'known', values: claimed.filter((v, i) => claimed.findIndex((o) => same(o, v)) === i) };
+}
+
+function sameSetAddress(
+  left: Readonly<{ proxyInstanceId: string; buildSetId: string }>,
+  right: Readonly<{ proxyInstanceId: string; buildSetId: string }>,
+): boolean {
+  return left.proxyInstanceId === right.proxyInstanceId && left.buildSetId === right.buildSetId;
+}
+
+function claimedOperationIdentities(value: string | undefined): Readonly<{
+  job: IdentityClaim<string>;
+  set: IdentityClaim<Readonly<{ proxyInstanceId: string; buildSetId: string }>>;
+}> {
+  const absent = { kind: 'absent' } as const;
+  if (value === undefined) return { job: absent, set: absent };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return { job: absent, set: absent };
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return { job: absent, set: absent };
+  if (!Object.hasOwn(parsed, 'operation')) return { job: absent, set: absent };
+  const operation = (parsed as Record<string, unknown>).operation;
+  if (typeof operation !== 'object' || operation === null || Array.isArray(operation)) {
+    return { job: { kind: 'partial' }, set: { kind: 'partial' } };
+  }
+  const fields = operation as Record<string, unknown>;
+  const hasJobId = Object.hasOwn(fields, 'jobId');
+  const jobId = fields.jobId;
+  const job: IdentityClaim<string> = !hasJobId
+    ? absent
+    : typeof jobId === 'string' && jobId.length > 0
+      ? { kind: 'complete', value: jobId }
+      : { kind: 'partial' };
+
+  const hasProxyInstanceId = Object.hasOwn(fields, 'proxyInstanceId');
+  const hasBuildSetId = Object.hasOwn(fields, 'buildSetId');
+  const proxyInstanceId = fields.proxyInstanceId;
+  const buildSetId = fields.buildSetId;
+  const set: IdentityClaim<Readonly<{ proxyInstanceId: string; buildSetId: string }>> =
+    !hasProxyInstanceId && !hasBuildSetId
+      ? absent
+      : typeof proxyInstanceId === 'string' &&
+          proxyInstanceId.length > 0 &&
+          typeof buildSetId === 'string' &&
+          buildSetId.length > 0
+        ? { kind: 'complete', value: { proxyInstanceId, buildSetId } }
+        : { kind: 'partial' };
+  return { job, set };
+}
+
+/**
+ * Every row under `prefix`, the bare prefix itself included.
+ *
+ * The inclusive first page is the whole reason this is spelled out. A key that is *exactly* the prefix is
+ * malformed — it names no operation — and starting the walk at `key > prefix` skipped it silently. That made
+ * it invisible to the scan, and a row invisible to the scan cannot fence anything, which is precisely the
+ * opposite of what an unaddressable key is supposed to do. Subsequent pages advance strictly past the cursor,
+ * or the last row of each page would be visited forever.
+ */
+/**
+ * The first key that is *not* under `prefix`, in SQLite's BINARY collation.
+ *
+ * `${prefix}\uffff` is not that bound and reads as if it were. SQLite compares TEXT as UTF-8 bytes, and U+FFFF
+ * encodes as `EF BF BF` while anything above the BMP starts at `F0` — so a key like `<prefix>\u{1F600}` sorts
+ * *above* it and fell outside every range query here. A row nothing scans cannot be reported, cannot fence and
+ * cannot be retired: it is invisible, which is the one state a malformed row must not be in.
+ *
+ * Incrementing the last character is the actual successor, and these prefixes end in ASCII by construction.
+ */
+function keyPrefixUpperBound(prefix: string): string {
+  return `${prefix.slice(0, -1)}${String.fromCharCode(prefix.charCodeAt(prefix.length - 1) + 1)}`;
+}
+
+function forEachRowUnderPrefix(db: Database, prefix: string, visit: (row: MetaRow) => void): void {
+  const page = db.prepare<[string, string, number], MetaRow>(
+    `SELECT key, value FROM meta
+       WHERE key > ? AND key < ?
+       ORDER BY key
+       LIMIT ?`,
+  );
+  const firstPage = db.prepare<[string, string, number], MetaRow>(
+    `SELECT key, value FROM meta
+       WHERE key >= ? AND key < ?
+       ORDER BY key
+       LIMIT ?`,
+  );
+  let cursor = prefix;
+  let inclusive = true;
   for (;;) {
-    const rows = db
-      .prepare<[string, string, number], MetaRow>(
-        `SELECT key, value FROM meta
-         WHERE key > ? AND key < ?
-         ORDER BY key
-         LIMIT ?`,
-      )
-      .all(cursor, `${PROVIDER_OPERATION_RECORD_PREFIX}\uffff`, PROVIDER_OPERATION_READ_PAGE_SIZE);
-    for (const row of rows) records.push(decodeCanonicalValue(row.key, row.value));
-    if (rows.length < PROVIDER_OPERATION_READ_PAGE_SIZE) return records;
+    const rows = (inclusive ? firstPage : page).all(
+      cursor,
+      keyPrefixUpperBound(prefix),
+      PROVIDER_OPERATION_READ_PAGE_SIZE,
+    );
+    inclusive = false;
+    for (const row of rows) visit(row);
+    if (rows.length < PROVIDER_OPERATION_READ_PAGE_SIZE) return;
     cursor = rows.at(-1)?.key ?? cursor;
   }
+}
+
+/**
+ * The signalable process targets a superseded row names, and nothing else it says.
+ *
+ * A generation this build cannot decode is still not opaque: every generation of this record has carried the
+ * same three process locators, a containment group, and an optional provider root. A **signalable target is
+ * readable without trusting anything else in the row**. That is the whole observation this permissive shape
+ * exists to take. It reads no start time, no incarnation and no phase — the fields whose meaning changed are
+ * exactly the fields it must not interpret, and `.passthrough()` is what lets the rest of the row stay unread
+ * rather than rejected.
+ *
+ * `processTargets: null` means the row could not even be walked for targets. An empty list means the row named
+ * no signalable target (all recorded values were zero). Neither is absence; both keep the fence.
+ */
+const supersededProcessSchema = z.object({ pid: z.number().int().nonnegative().safe() }).passthrough();
+const supersededRecordSchema = z
+  .object({
+    locator: z
+      .object({
+        proxy: supersededProcessSchema,
+        guardian: supersededProcessSchema,
+        reaper: supersededProcessSchema,
+        containment: z.object({ processGroupId: z.number().int().nonnegative().safe() }).passthrough(),
+      })
+      .passthrough(),
+    providerRoot: supersededProcessSchema.optional(),
+  })
+  .passthrough();
+
+export type SupersededProviderOperationRow = Readonly<{
+  key: string;
+  processTargets: readonly number[] | null;
+}>;
+
+export function readSupersededProviderOperations(db: Database): readonly SupersededProviderOperationRow[] {
+  const rows: SupersededProviderOperationRow[] = [];
+  for (const prefix of SUPERSEDED_PROVIDER_OPERATION_RECORD_PREFIXES) {
+    forEachRowUnderPrefix(db, prefix, (row) => {
+      rows.push({ key: row.key, processTargets: observableProcessTargets(row.value) });
+    });
+  }
+  return rows;
+}
+
+function observableProcessTargets(value: string): readonly number[] | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return null;
+  }
+  const result = supersededRecordSchema.safeParse(parsed);
+  if (!result.success) return null;
+  const { locator, providerRoot } = result.data;
+  const targets = [locator.proxy.pid, locator.guardian.pid, locator.reaper.pid];
+  if (providerRoot !== undefined) targets.push(providerRoot.pid);
+  if (locator.containment.processGroupId > 0) targets.push(-locator.containment.processGroupId);
+  return [...new Set(targets)].filter((target) => target !== 0);
+}
+
+/**
+ * Removes one superseded row and every due entry pointing at it, in one transaction.
+ *
+ * Deleting the record removes its startup claim. A canonical row thereby unfences the job its key names; a
+ * noncanonical row can remove a global admission blocker. This build does not settle or reinterpret either
+ * row—it retires only after every readable process target was observed absent.
+ */
+export function retireSupersededProviderOperation(db: Database, key: string): void {
+  if (!SUPERSEDED_PROVIDER_OPERATION_RECORD_PREFIXES.some((prefix) => key.startsWith(prefix))) {
+    throw new ProviderOperationJournalError(`Provider operation row '${key}' is not from a superseded generation.`);
+  }
+  withImmediate(db, () => {
+    db.prepare<[string]>('DELETE FROM meta WHERE key = ?').run(key);
+    for (const prefix of SUPERSEDED_PROVIDER_OPERATION_RECORD_PREFIXES) {
+      const duePrefix = `${prefix.slice(0, prefix.length - 'record:'.length)}due:`;
+      // `>=`, for the same reason the record scan's first page is inclusive: a due key that is exactly the bare
+      // prefix is malformed, and excluding it leaves a pointer to a record this call just retired.
+      db.prepare<[string, string, string]>('DELETE FROM meta WHERE key >= ? AND key < ? AND value = ?').run(
+        duePrefix,
+        keyPrefixUpperBound(duePrefix),
+        key,
+      );
+    }
+  });
+}
+
+export function readProviderOperations(db: Database): ProviderOperationScan {
+  const records: ProviderOperationRecord[] = [];
+  const unreadableKeys: string[] = [];
+  forEachRowUnderPrefix(db, PROVIDER_OPERATION_RECORD_PREFIX, (row) => {
+    try {
+      records.push(decodeCanonicalValue(row.key, row.value));
+    } catch {
+      unreadableKeys.push(row.key);
+    }
+  });
+  for (const prefix of SUPERSEDED_PROVIDER_OPERATION_RECORD_PREFIXES) {
+    forEachRowUnderPrefix(db, prefix, (row) => unreadableKeys.push(row.key));
+  }
+  return { records, unreadableKeys };
 }
 
 export function readProviderOperationsDue(
@@ -388,29 +738,50 @@ export function readProviderOperationDueSelections(
 ): readonly ProviderOperationDueSelection[] {
   const encodedNow = encodeFixedWidthInteger(nowMs, 'nowMs');
   if (!Number.isSafeInteger(limit) || limit <= 0) throw new RangeError('limit must be a positive safe integer.');
-  const rows = db
-    .prepare<[string, string, number], MetaRow>(
-      `SELECT key, value FROM meta
-       WHERE key >= ? AND key < ?
+  const upperBound = `${PROVIDER_OPERATION_DUE_PREFIX}${encodedNow};`;
+  const page = db.prepare<[string, string, number], MetaRow>(
+    `SELECT key, value FROM meta
+       WHERE key > ? AND key < ?
        ORDER BY key
        LIMIT ?`,
-    )
-    .all(PROVIDER_OPERATION_DUE_PREFIX, `${PROVIDER_OPERATION_DUE_PREFIX}${encodedNow};`, limit);
-  return rows.map((row) => {
-    const due = decodeDueEntry(row);
-    const record = readCanonicalRecord(db, due.recordKey);
-    if (record === undefined) {
-      throw new ProviderOperationJournalError(
-        `Provider operation due row '${due.key}' references a missing canonical record.`,
-      );
+  );
+
+  // Paged until `limit` *selectable* rows are found, not until `limit` rows are read. Due keys sort by retry
+  // time, so rows this build cannot use sort to the front — an older build's are the oldest there are. Taking
+  // one page and filtering afterwards would hand back nothing while readable work sat immediately behind them,
+  // on every poll, forever: the reconciler reads an empty selection as "nothing due" and never advances.
+  const selections: ProviderOperationDueSelection[] = [];
+  let cursor = PROVIDER_OPERATION_DUE_PREFIX;
+  while (selections.length < limit) {
+    const rows = page.all(cursor, upperBound, limit - selections.length);
+    if (rows.length === 0) break;
+    cursor = rows.at(-1)?.key ?? cursor;
+    for (const row of rows) {
+      const due = decodeDueEntry(row);
+      const value = readCanonicalValue(db, due.recordKey);
+      if (value !== undefined && !canReadCanonicalValue(due.recordKey, value)) {
+        // A pointer to a record this build cannot read. There is no work here for it to do, and throwing takes
+        // the whole coordinator down — the reconciler classifies a due-scan failure as fatal — which is the
+        // trade `readProviderOperations` already refused for the record itself. Quiet on purpose: this is the
+        // same canonical row that scan skips, and it reports the key once at startup. Reporting again here
+        // would name it twice for one condition.
+        continue;
+      }
+      const record = readCanonicalRecord(db, due.recordKey);
+      if (record === undefined) {
+        throw new ProviderOperationJournalError(
+          `Provider operation due row '${due.key}' references a missing canonical record.`,
+        );
+      }
+      if (!dueEntryMatchesRecord(due, record)) {
+        throw new ProviderOperationJournalError(
+          `Provider operation due row '${due.key}' is stale or disagrees with its canonical record.`,
+        );
+      }
+      selections.push({ rawKey: row.key, rawValue: row.value, record });
     }
-    if (!dueEntryMatchesRecord(due, record)) {
-      throw new ProviderOperationJournalError(
-        `Provider operation due row '${due.key}' is stale or disagrees with its canonical record.`,
-      );
-    }
-    return { rawKey: row.key, rawValue: row.value, record };
-  });
+  }
+  return selections;
 }
 
 export function finishProviderOperationDueSelection(

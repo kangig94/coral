@@ -1,3 +1,4 @@
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -10,7 +11,7 @@ vi.mock('#src/provider-proxy/role-spawn.js', async (importOriginal) => {
   const original = await importOriginal<object>();
   return {
     ...original,
-    spawnRoleProcess: vi.fn(() => ({ pid: 101, processStartedAtSeconds: 11 })),
+    spawnRoleProcess: vi.fn(() => ({ pid: 101, incarnation: testIncarnation(11) })),
   };
 });
 
@@ -42,6 +43,9 @@ import type { CoordinatorIdentity } from '#src/provider-proxy/protocol.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { flushMicrotasks, VirtualTime } from '#tools/simulation/core/virtual-time.js';
 import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
+
+/** The build this fixture lifecycle belongs to — the same one `providerOperationRecord` stamps on its identities, so a discovered capsule is inheritable rather than foreign. */
+const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
 
 const mockedEstablishRoleControl = vi.mocked(establishRoleControl);
 const mockedCreateSetAuthority = vi.mocked(createProviderProxySetAuthority);
@@ -159,9 +163,9 @@ describe('createProviderProxyAcquisitionSteps', () => {
       opened.push(client);
       const identity =
         role === 'proxy'
-          ? { ...plan.expectedIdentity, pid: 201, processStartedAtSeconds: 21, processGroupId: 201 }
+          ? { ...plan.expectedIdentity, pid: 201, incarnation: testIncarnation(21), processGroupId: 201 }
           : role === 'reaper'
-            ? { ...plan.expectedIdentity, pid: 301, processStartedAtSeconds: 31 }
+            ? { ...plan.expectedIdentity, pid: 301, incarnation: testIncarnation(31) }
             : plan.expectedIdentity;
       return {
         client,
@@ -188,7 +192,7 @@ describe('createProviderProxyAcquisitionSteps', () => {
     const coordinatorIdentity: CoordinatorIdentity = {
       instanceId: randomUUID(),
       pid: 1,
-      processStartedAtSeconds: 1,
+      incarnation: testIncarnation(1),
       generation: 'gen2',
       flavor: 'prod',
       buildSetId: randomUUID(),
@@ -229,14 +233,14 @@ describe('createProviderProxyAcquisitionSteps', () => {
       throw new Error('reaper heartbeat rejected');
     };
     mockedEstablishRoleControl.mockImplementation(async (opened, _timer, _retry, plan) => {
-      const role = plan.role as keyof typeof clients;
+      const role = plan.role;
       const client = clients[role];
       opened.push(client);
       const identity =
         role === 'proxy'
-          ? { ...plan.expectedIdentity, pid: 201, processStartedAtSeconds: 21, processGroupId: 201 }
+          ? { ...plan.expectedIdentity, pid: 201, incarnation: testIncarnation(21), processGroupId: 201 }
           : role === 'reaper'
-            ? { ...plan.expectedIdentity, pid: 301, processStartedAtSeconds: 31 }
+            ? { ...plan.expectedIdentity, pid: 301, incarnation: testIncarnation(31) }
             : plan.expectedIdentity;
       return {
         client,
@@ -263,7 +267,7 @@ describe('createProviderProxyAcquisitionSteps', () => {
     const coordinatorIdentity: CoordinatorIdentity = {
       instanceId: randomUUID(),
       pid: 1,
-      processStartedAtSeconds: 1,
+      incarnation: testIncarnation(1),
       generation: 'gen2',
       flavor: 'prod',
       buildSetId: randomUUID(),
@@ -282,10 +286,19 @@ describe('createProviderProxyAcquisitionSteps', () => {
     const unsubscribe = subscribeProviderProxyControlEstablished(establishedEvents);
     const established = await steps.establishControl();
     if (!isProviderProxyOperationAuthority(established.set)) throw new Error('expected durable authority');
+
+    // The address the real writer produced, checked here because this is the only place it is produced. The
+    // generation lives in the filename precisely so a v0.10.8 build never opens what this build writes, and a
+    // capsule handed to the authority under the wrong name is that build refusing to boot. Asserting the
+    // suffix that v0.10.8's own discovery pattern cannot match is the whole property.
+    expect(mockedCreateSetAuthority.mock.calls[0]?.[0]?.handoffCapsulePath).toMatch(
+      /\/provider-1[0-9a-f]{23}\.handoff\.v3\.json$/u,
+    );
     const set = established.set;
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([]);
     const lifecycle = new ProviderProxySetLifecycle({
+      buildSetId: FIXTURE_BUILD_SET_ID,
       claims,
       controlEstablished: notifyProviderProxyControlEstablished,
       time,

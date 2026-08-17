@@ -2,10 +2,14 @@ import type { AppServerProxyRoute, AppServerProxyRouteRequest } from '../../jobs
 import {
   operationIdentitySchema,
   proxyPreparedAppServerOperationSchema,
+  PROXY_PREPARED_APP_SERVER_OPERATION_VERSION,
   type OperationIdentity,
   type ProxyPreparedAppServerOperation,
 } from '../../provider-proxy/protocol.js';
-import { providerOperationRecordSchema } from '../../store/provider-operation-record.js';
+import {
+  providerOperationRecordSchema,
+  PROVIDER_OPERATION_RECORD_VERSION,
+} from '../../store/provider-operation-record.js';
 import type { ProviderHostManager } from '../live/provider-hosts/index.js';
 import { isProviderProxyOperationAuthority } from '../live/provider-proxy/operation-route.js';
 import { providerOperationPrepareAttempt, providerOperationSetLocator } from './provider-proxy-operation-activation.js';
@@ -47,7 +51,7 @@ export function createAppServerProxyRoute(deps: {
       }
       const operation: OperationIdentity = parsedOperation.data;
       const prepared: ProxyPreparedAppServerOperation = proxyPreparedAppServerOperationSchema.parse({
-        version: 1,
+        version: PROXY_PREPARED_APP_SERVER_OPERATION_VERSION,
         provider: request.provider,
         binding: request.binding,
         request: request.request,
@@ -59,7 +63,7 @@ export function createAppServerProxyRoute(deps: {
       const prepareAttemptNumber = 1;
       const attempt = providerOperationPrepareAttempt(authority, operation, prepared, prepareAttemptNumber);
       const record = providerOperationRecordSchema.parse({
-        version: 1,
+        version: PROVIDER_OPERATION_RECORD_VERSION,
         operation,
         locator: providerOperationSetLocator(authority.setIdentity),
         prepareAttemptNumber,

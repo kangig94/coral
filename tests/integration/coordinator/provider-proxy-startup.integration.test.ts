@@ -1,3 +1,4 @@
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { randomUUID } from 'node:crypto';
 import { basename, dirname } from 'node:path';
 
@@ -34,7 +35,7 @@ import {
   readProviderOperation,
   readProviderOperationsDue,
 } from '#src/store/provider-operation-journal.js';
-import type { HandoffCapsuleV1, HandoffCapsuleV2 } from '#src/provider-proxy/handoff-capsule.js';
+import type { HandoffCapsuleV1, HandoffCapsuleV3 } from '#src/provider-proxy/handoff-capsule.js';
 import type { ProviderOperationRecord } from '#src/store/provider-operation-record.js';
 import { createControlEndpoint, type ControlChallengeAuthority } from '#src/provider-proxy/control-endpoint.js';
 import { PROXY_CONTROL_RPC_TIMEOUT_MS, ProxyControlProtocolError } from '#src/provider-proxy/protocol.js';
@@ -48,6 +49,9 @@ import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provid
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 import type { JobProgressStore } from '#src/jobs/contracts/job-store.js';
+
+/** The build this fixture lifecycle belongs to — the same one `providerOperationRecord` stamps on its identities, so a discovered capsule is inheritable rather than foreign. */
+const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
 
 function deferred<T>(): Readonly<{ promise: Promise<T>; resolve(value: T): void }> {
   let resolve!: (value: T) => void;
@@ -178,7 +182,7 @@ function lifecycleFor(
       signal: AbortSignal,
     ) => Promise<string | null>;
     redeemCapsule?: (
-      capsule: HandoffCapsuleV1 | HandoffCapsuleV2,
+      capsule: HandoffCapsuleV3,
       path: string,
       signal: AbortSignal,
     ) => Promise<ProviderProxySetRedemptionOutcome>;
@@ -189,14 +193,12 @@ function lifecycleFor(
   claims.initialize(records);
   const proveContainmentAbsent = options.proveContainmentAbsent ?? (async () => null);
   const retireCapsule = () => options.retireCapsule?.() ?? { kind: 'retired' as const };
-  const rewriteCapsule = () => undefined;
   const onFatal = options.onFatal ?? (() => undefined);
   const redeemCapsule = options.redeemCapsule;
   const recoveryDispatcher = createTestProviderProxyRecoveryDispatcher(
     {
       'containment-proof': ({ identity, signal }) => proveContainmentAbsent(identity, signal),
       'capsule-retirement': retireCapsule,
-      'capsule-rewrite': rewriteCapsule,
       ...(redeemCapsule === undefined
         ? {}
         : { 'capsule-redemption': ({ capsule, capsulePath, signal }) => redeemCapsule(capsule, capsulePath, signal) }),
@@ -205,6 +207,7 @@ function lifecycleFor(
     onFatal,
   );
   const lifecycle = new ProviderProxySetLifecycle({
+    buildSetId: FIXTURE_BUILD_SET_ID,
     claims,
     controlEstablished: () => undefined,
     time: options.time,
@@ -274,18 +277,18 @@ function v1CapsuleFor(record: ProviderOperationRecord): HandoffCapsuleV1 {
   };
 }
 
-function v2CapsuleFor(record: ProviderOperationRecord): HandoffCapsuleV2 {
+function v3CapsuleFor(record: ProviderOperationRecord): HandoffCapsuleV3 {
   const identity = providerProxySetIdentityFromRecord(record);
   return {
     ...v1CapsuleFor(record),
-    version: 2,
+    version: 3,
     guardianPid: identity.guardianPid,
-    guardianProcessStartedAtSeconds: identity.guardianProcessStartedAtSeconds,
+    guardianIncarnation: identity.guardianIncarnation,
     proxyPid: identity.proxyPid,
     reaperPid: identity.reaperPid,
-    reaperProcessStartedAtSeconds: identity.reaperProcessStartedAtSeconds,
+    reaperIncarnation: identity.reaperIncarnation,
     containmentKind: identity.containmentKind,
-    proxyProcessStartedAtSeconds: identity.proxyProcessStartedAtSeconds,
+    proxyIncarnation: identity.proxyIncarnation,
     proxyProcessGroupId: identity.proxyProcessGroupId,
   };
 }
@@ -298,8 +301,8 @@ type ProductionStartupHarness = Readonly<{
   services: ReturnType<typeof createExecutionServices>;
 }>;
 
-/** Later than every `processStartedAtSeconds` the shared fixture records, so no recorded identity can match. */
-const FIXTURE_PROCESS_LONG_GONE_STARTED_AT_SECONDS = 9_000;
+/** Later than every `incarnation` the shared fixture records, so no recorded identity can match. */
+const FIXTURE_PROCESS_LONG_GONE_INCARNATION = testIncarnation(9_000);
 
 function noCapsuleStorage(base: StoragePort): StoragePort {
   return { ...base, readdirSync: (() => []) as StoragePort['readdirSync'] };
@@ -329,9 +332,9 @@ function sandboxedRuntime(time: TimePort): Runtime {
 function absentProcessPort(base: ProcessPort): ProcessPort {
   return {
     ...base,
-    isAlive: () => false,
+    observeLiveness: () => 'absent' as const,
     kill: () => false,
-    readProcessStartedAtSeconds: () => FIXTURE_PROCESS_LONG_GONE_STARTED_AT_SECONDS,
+    readProcessIncarnation: () => FIXTURE_PROCESS_LONG_GONE_INCARNATION,
   };
 }
 
@@ -366,6 +369,7 @@ function composeProductionStartup(
     ...options.progressStore,
   };
   const world = {
+    identity: { buildSetId: FIXTURE_BUILD_SET_ID },
     storeServicesRef: { tryGet: () => ({ progressStore }) },
     operationRegistry: new LocalOperationRegistry(),
     providerProxyClaims: new ProviderProxySetClaimMirror(),
@@ -396,14 +400,14 @@ async function productionStartupOutcome(harness: ProductionStartupHarness) {
 function capsuleBackedStorage(
   base: StoragePort,
   generationRoot: string,
-  capsule: HandoffCapsuleV1 | HandoffCapsuleV2,
+  capsule: HandoffCapsuleV1 | HandoffCapsuleV3,
   options: Readonly<{
     discover: boolean;
     unlink(): void;
     syncDirectoryDurableSync(): boolean;
   }>,
 ): Readonly<{ storage: StoragePort; path: string; exists(): boolean }> {
-  const path = providerHandoffCapsulePath(capsule, { baseDir: dirname(generationRoot) });
+  const path = providerHandoffCapsulePath(capsule, capsule.version, { baseDir: dirname(generationRoot) });
   const bytes = Buffer.from(JSON.stringify(capsule));
   const uid = BigInt(process.getuid?.() ?? 0);
   const stat: StorageBigIntStat = {
@@ -467,7 +471,7 @@ function guardianFields(record: ProviderOperationRecord, operations: readonly Pr
     guardian: {
       guardianInstanceId: identity.guardianInstanceId,
       pid: identity.guardianPid,
-      processStartedAtSeconds: identity.guardianProcessStartedAtSeconds,
+      incarnation: identity.guardianIncarnation,
       generation: 'gen2',
       flavor: 'prod',
       buildSetId: identity.buildSetId,
@@ -477,7 +481,7 @@ function guardianFields(record: ProviderOperationRecord, operations: readonly Pr
     reaper: {
       reaperInstanceId: identity.reaperInstanceId,
       pid: identity.reaperPid,
-      processStartedAtSeconds: identity.reaperProcessStartedAtSeconds,
+      incarnation: identity.reaperIncarnation,
       guardianInstanceId: identity.guardianInstanceId,
       generation: 'gen2',
       flavor: 'prod',
@@ -488,7 +492,7 @@ function guardianFields(record: ProviderOperationRecord, operations: readonly Pr
     },
     containment: {
       pid: identity.proxyPid,
-      processStartedAtSeconds: identity.proxyProcessStartedAtSeconds,
+      incarnation: identity.proxyIncarnation,
       processGroupId: identity.proxyProcessGroupId,
       containmentKind: identity.containmentKind,
     },
@@ -513,7 +517,7 @@ function proxyFields(record: ProviderOperationRecord, operations: readonly Provi
     proxy: {
       proxyInstanceId: identity.proxyInstanceId,
       pid: identity.proxyPid,
-      processStartedAtSeconds: identity.proxyProcessStartedAtSeconds,
+      incarnation: identity.proxyIncarnation,
       processGroupId: identity.proxyProcessGroupId,
       guardianInstanceId: identity.guardianInstanceId,
       reaperInstanceId: identity.reaperInstanceId,
@@ -577,7 +581,7 @@ async function roleRecoveryStartupCase(
   const record = deadlinePrecedenceRecord();
   const time = new VirtualTime();
   const realRuntime = createRealRuntime('prod');
-  const capsule = v1CapsuleFor(record);
+  const capsule = v3CapsuleFor(record);
   const capsuleStorage = capsuleBackedStorage(realRuntime.storage, realRuntime.paths.coral.generation.root, capsule, {
     discover: false,
     unlink: () => undefined,
@@ -632,7 +636,7 @@ async function roleRecoveryStartupCase(
           coordinatorIdentity: {
             instanceId: randomUUID(),
             pid: process.pid,
-            processStartedAtSeconds: 1,
+            incarnation: testIncarnation(1),
             generation: 'gen2',
             flavor: 'prod',
             buildSetId: record.operation.buildSetId,
@@ -673,7 +677,7 @@ async function inheritanceDeadlinePrecedenceStartupCase(mode: 'disagreement' | '
   const endpointTime = new VirtualTime();
   const deadline = controlledRecoveryDeadline(endpointTime);
   const realRuntime = createRealRuntime('prod');
-  const capsule = v1CapsuleFor(record);
+  const capsule = v3CapsuleFor(record);
   const capsuleStorage = capsuleBackedStorage(realRuntime.storage, realRuntime.paths.coral.generation.root, capsule, {
     discover: false,
     unlink: () => undefined,
@@ -747,7 +751,7 @@ async function discoveredCapsuleDeadlinePrecedenceCase(mode: 'disagreement' | 'd
   const scheduled = vi.spyOn(endpointTime, 'setTimeout');
   const deadline = controlledRecoveryDeadline(endpointTime);
   const runtime = { ...createRealRuntime('prod'), time: deadline.time } satisfies Runtime;
-  const capsule = v1CapsuleFor(record);
+  const capsule = v3CapsuleFor(record);
   const alternateOperation = { ...record.operation, jobId: randomUUID(), operationId: randomUUID() };
   const releaseFinalResponse = deferred<void>();
   const guardianOpen = vi.fn(async () => undefined);
@@ -831,7 +835,7 @@ async function capsuleRetirementStartupCase(mode: 'unlink-throws' | 'directory-s
   const capsuleStorage = capsuleBackedStorage(
     realRuntime.storage,
     realRuntime.paths.coral.generation.root,
-    v2CapsuleFor(record),
+    v3CapsuleFor(record),
     { discover: true, unlink, syncDirectoryDurableSync },
   );
   const runtime = { ...realRuntime, time, storage: capsuleStorage.storage } satisfies Runtime;
@@ -966,11 +970,11 @@ describe('provider proxy startup set recovery', () => {
     await expect(first).resolves.toMatchObject({ kind: 'absence-accepted' });
   });
 
-  it('retires an unmatched exact v2 capsule after independent absence proof', async () => {
+  it('retires an unmatched exact v3 capsule after independent absence proof', async () => {
     const record = providerOperationRecord('executing');
     const time = new VirtualTime();
     const scheduled = vi.spyOn(time, 'setTimeout');
-    const proof = vi.fn(async () => 'exact-v2-proof');
+    const proof = vi.fn(async () => 'exact-v3-proof');
     const retirementStarted = deferred<void>();
     const retirementOutcome = deferred<Readonly<{ kind: 'retired' }>>();
     const retirement = vi.fn(() => {
@@ -991,8 +995,8 @@ describe('provider proxy startup set recovery', () => {
       retireCapsule: retirement,
     });
 
-    const capsule = v2CapsuleFor(record);
-    lifecycle.installDiscoveredCapsules([{ path: '/capsules/startup-v2.handoff.json', capsule }]);
+    const capsule = v3CapsuleFor(record);
+    lifecycle.installDiscoveredCapsules([{ path: '/capsules/startup-v3.handoff.json', capsule }]);
     await retirementStarted.promise;
     retirementOutcome.resolve({ kind: 'retired' });
     await retirementOutcome.promise;
@@ -1101,7 +1105,7 @@ describe('provider proxy startup set recovery', () => {
         incident: { kind: 'capsule-directory-durability-unavailable' },
       }),
     });
-    lifecycle.installDiscoveredCapsules([{ path: '/capsules/set-a.handoff.json', capsule: v1CapsuleFor(setA) }]);
+    lifecycle.installDiscoveredCapsules([{ path: '/capsules/set-a.handoff.json', capsule: v3CapsuleFor(setA) }]);
     const identityA = providerProxySetIdentityFromRecord(setA);
     const setBVisits = vi.fn();
     const startupSetRecovery: StartupSetRecoveryPort = {
@@ -1352,13 +1356,13 @@ describe('production provider proxy startup classification', () => {
         fatalCalls: 1,
         openCalls: [1, 1, 1],
         retryTimers: 0,
-        states: ['capsule-opaque'],
+        states: ['capsule-recovering'],
       },
       deadlineOnly: {
         fatalCalls: 0,
         openCalls: [1, 1, 1],
         retryTimers: 1,
-        states: ['capsule-opaque'],
+        states: ['capsule-recovering'],
       },
     });
   });

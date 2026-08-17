@@ -8,6 +8,12 @@ import type { DetectedIncident } from './rescan/incidents/catalog.js';
 
 export type CorpusProjectionSeq = Pick<KbIndexState, 'contentSeq' | 'metadataSeq'>;
 
+export const CORPUS_PROJECTION_COMMIT_SCHEMA_GENERATIONS = {
+  retainedSupported: [0],
+  current: 1,
+} as const;
+export const CORPUS_PROJECTION_COMMIT_SCHEMA_VERSION = CORPUS_PROJECTION_COMMIT_SCHEMA_GENERATIONS.current;
+
 export type RescanCounts = Pick<
   ReindexResult,
   | 'notes'
@@ -84,7 +90,7 @@ export type CorpusProjectionCommitResult =
     };
 
 export type CorpusProjectionCommitRecord = {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: typeof CORPUS_PROJECTION_COMMIT_SCHEMA_VERSION;
   readonly commitId: string;
   readonly startSeq: CorpusProjectionSeq;
   readonly previousState: KbIndexState | null;

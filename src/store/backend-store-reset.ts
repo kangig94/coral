@@ -9,6 +9,7 @@ import { acquireDirectoryLockSync, isDirectoryLockTimeoutError } from '../infra/
 import type { StorageBigIntStat, StoragePort } from '../infra/port-types.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
 import type { Runtime } from '../runtime/ports.js';
+import { ACTIVE_STORE_TRANSITION_VERSION } from './active-store-selection.js';
 import { classifyStoreFile, openStoreDatabase, type Database } from './db.js';
 import {
   isStoreFormatFingerprint,
@@ -29,7 +30,9 @@ import {
   parseStoreResetIncidentManifest,
   serializeStoreResetIncidentManifest,
   STORE_RESET_EVIDENCE_FILE_NAMES,
+  STORE_RESET_INCIDENT_SCHEMA_VERSION,
   STORE_RESET_MANIFEST_FILE_NAME,
+  type STORE_RESET_RETAINED_INCIDENT_SCHEMA_VERSION,
   STORE_RESET_QUARANTINE_DIRECTORY,
   STORE_RESET_STAGING_DIRECTORY,
   type StoreResetEvidenceFileName,
@@ -42,7 +45,7 @@ import {
 
 const STORE_FORMAT_SIDECAR_SUFFIX = '.format';
 const RETAINED_TRANSITION_DIRECTORY = 'retained-active-store-transitions';
-const TRANSITION_EVIDENCE_SUFFIX = '.active-store-transition.v1.json';
+const TRANSITION_EVIDENCE_SUFFIX = `.active-store-transition.v${ACTIVE_STORE_TRANSITION_VERSION}.json`;
 const RETAINED_TRANSITION_STAGING_SUFFIX = '.tmp';
 export const STEADY_STATE_BUSY_TIMEOUT_MS = 5_000;
 
@@ -146,7 +149,9 @@ export type BackendStoreResetIncident = {
   readonly incidentId: string;
   readonly resetAt: string;
   readonly reason: 'missing' | 'mismatch';
-  readonly schemaVersion: 2 | 3;
+  readonly schemaVersion:
+    | typeof STORE_RESET_RETAINED_INCIDENT_SCHEMA_VERSION
+    | typeof STORE_RESET_INCIDENT_SCHEMA_VERSION;
   readonly resetPolicyCause: StoreResetPolicyCause | null;
   readonly fileCount: number;
 };
@@ -678,7 +683,8 @@ function resumeInterruptedIncident(
       resetAt: manifest.resetAt,
       reason: manifest.reason,
       schemaVersion: manifest.schemaVersion,
-      resetPolicyCause: manifest.schemaVersion === 3 ? manifest.resetPolicyCause : null,
+      resetPolicyCause:
+        manifest.schemaVersion === STORE_RESET_INCIDENT_SCHEMA_VERSION ? manifest.resetPolicyCause : null,
       fileCount: manifest.files.length,
     },
     manifest,
@@ -853,7 +859,7 @@ function createIncidentManifest(
     resetPolicyCause = classification.kind;
   }
   return {
-    schemaVersion: 3,
+    schemaVersion: STORE_RESET_INCIDENT_SCHEMA_VERSION,
     incidentId: common.incidentId,
     resetAt: common.resetAt,
     reason: common.reason,
@@ -880,7 +886,8 @@ function recordIncidentAudit(manifest: StoreResetIncidentManifest): void {
       resetAt: manifest.resetAt,
       reason: manifest.reason,
       incidentSchemaVersion: `v${manifest.schemaVersion}`,
-      resetPolicyCause: manifest.schemaVersion === 3 ? manifest.resetPolicyCause : null,
+      resetPolicyCause:
+        manifest.schemaVersion === STORE_RESET_INCIDENT_SCHEMA_VERSION ? manifest.resetPolicyCause : null,
       storedFingerprint: manifest.storedFingerprint,
       expectedFingerprint: manifest.expectedFingerprint,
       version: manifest.build.version,
@@ -967,7 +974,8 @@ function publishIncident(
       resetAt,
       reason: manifest.reason,
       schemaVersion: manifest.schemaVersion,
-      resetPolicyCause: manifest.schemaVersion === 3 ? manifest.resetPolicyCause : null,
+      resetPolicyCause:
+        manifest.schemaVersion === STORE_RESET_INCIDENT_SCHEMA_VERSION ? manifest.resetPolicyCause : null,
       fileCount: manifestFiles.length,
     };
   } catch (error: unknown) {
@@ -1098,7 +1106,7 @@ function authorizeAutomaticIncidentResume(
   authority: BackendStoreResetAuthority,
   manifest: StoreResetIncidentManifest,
 ): void {
-  if (manifest.schemaVersion !== 3) {
+  if (manifest.schemaVersion !== STORE_RESET_INCIDENT_SCHEMA_VERSION) {
     throw new InterruptedStoreResetRefusal('store_reset_interrupted_non_resettable');
   }
   if (

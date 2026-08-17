@@ -1,9 +1,15 @@
+import { processIncarnationSchema } from '../infra/node-process.js';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { isAbsolute, normalize } from 'node:path';
 
 import { z } from 'zod';
 
 import { readBoundedFileAtIdentity } from '../infra/bounded-file-read.js';
+import {
+  providerHandoffCapsulePath,
+  type ProviderBootstrapCapsulePathOptions,
+  type ProviderProxyEndpointIdentity,
+} from '../infra/path/index.js';
 import type { StorageBigIntStat, StoragePort } from '../infra/port-types.js';
 import {
   PERMISSION_BITS_MASK,
@@ -214,6 +220,23 @@ export const handoffCapsuleV1Schema = z
 
 const nonNegativeSafeIntegerSchema = z.number().int().nonnegative().safe();
 
+/**
+ * Shipped in v0.10.6 through v0.10.8, and read-only from here on: nothing writes a V2 again.
+ *
+ * Its three process fields are **seconds**, derived as `/proc/stat` btime plus the process's start ticks.
+ * That derivation was unsound — btime is recomputed on every read, so the value is an identity plus a
+ * probe-time noise sample — which is why V3 exists. The numbers are kept in the schema exactly as they
+ * shipped rather than renamed in place, because a build that renames a field while keeping its version
+ * number leaves two incompatible shapes claiming to be the same thing, and the reader that then rejects
+ * one of them cannot boot at all.
+ *
+ * A decoded V2 yields **address only**. Its seconds must never be carried into a `ProcessIncarnation`:
+ * `assertProcessIdentity` (`infra/process-containment.ts`) accepts any non-empty string, so `String(secs)`
+ * would pass, and `observeProcessIdentity` would then compare it against a real token, take the
+ * "read something, and it differs" branch, and report a **live** process as absent — minting a
+ * disappearance receipt for a running set. `providerProxySetIdentityFromCapsule` therefore accepts V3
+ * alone, and the compiler is what keeps that true.
+ */
 export const handoffCapsuleV2Schema = handoffCapsuleV1Schema
   .omit({ version: true })
   .extend({
@@ -229,11 +252,70 @@ export const handoffCapsuleV2Schema = handoffCapsuleV1Schema
   })
   .strict();
 
-export const handoffCapsuleSchema = z.discriminatedUnion('version', [handoffCapsuleV1Schema, handoffCapsuleV2Schema]);
+/** V2's field set with the process identity carried as opaque incarnation tokens. The only shape written now. */
+export const handoffCapsuleV3Schema = handoffCapsuleV1Schema
+  .omit({ version: true })
+  .extend({
+    version: z.literal(3),
+    guardianPid: nonNegativeSafeIntegerSchema,
+    guardianIncarnation: processIncarnationSchema,
+    proxyPid: nonNegativeSafeIntegerSchema,
+    reaperPid: nonNegativeSafeIntegerSchema,
+    reaperIncarnation: processIncarnationSchema,
+    containmentKind: z.string().min(1).max(64),
+    proxyIncarnation: processIncarnationSchema,
+    proxyProcessGroupId: nonNegativeSafeIntegerSchema,
+  })
+  .strict();
+
+export const handoffCapsuleSchema = z.discriminatedUnion('version', [
+  handoffCapsuleV1Schema,
+  handoffCapsuleV2Schema,
+  handoffCapsuleV3Schema,
+]);
+
+/**
+ * The generations this build can decode, and the one it writes — owned here, beside the union that defines
+ * them, because everything else about a capsule generation is derived from this fact.
+ *
+ * A generation is encoded in three places by nature: the schema union, the filename a capsule is written
+ * under, and the filenames discovery is willing to open. Adjacent-version rollback holds only while all three
+ * agree, so the other two read these rather than restating them. A V4 that updates the union and forgets the
+ * filename would write a capsule an older build opens and dies on — silently, and only in the field.
+ */
+export const SUPPORTED_HANDOFF_CAPSULE_VERSIONS = handoffCapsuleSchema.options.map(
+  (member) => member.shape.version.value,
+);
+
+/**
+ * Derived from the schema that defines it, and literal-typed on purpose. A hand-written `3` here would be a
+ * second copy: repointing it to 4 while leaving the writer producing V3 compiles cleanly, and the result is a
+ * `.v4.json` name holding V3 bytes — which discovery then re-derives as `.v3.json` and rejects as relocated,
+ * aborting startup. Taking the value from the schema makes that mismatch a compile error instead: the writer
+ * is typed on the same schema, so the two move together or neither moves.
+ */
+export const CURRENT_HANDOFF_CAPSULE_VERSION = handoffCapsuleV3Schema.shape.version.value;
+
+/**
+ * Where a capsule this build writes goes — and the only address a writer is offered.
+ *
+ * `providerHandoffCapsulePath` takes a generation because a *reader* has to name one: discovery opens a file
+ * at the version the capsule it decoded says it is. A writer has no such choice. It always writes the current
+ * generation, so a version parameter there is not a decision, it is a place to be wrong — and being wrong
+ * means V3 bytes under the name v0.10.8 opens, which is that build refusing to start. Passing the generation
+ * is simply not expressible here.
+ */
+export function currentHandoffCapsulePath(
+  identity: ProviderProxyEndpointIdentity,
+  options?: ProviderBootstrapCapsulePathOptions,
+): string {
+  return providerHandoffCapsulePath(identity, CURRENT_HANDOFF_CAPSULE_VERSION, options);
+}
 
 export type HandoffCapsuleV1 = z.output<typeof handoffCapsuleV1Schema>;
 export type HandoffCapsuleV2 = z.output<typeof handoffCapsuleV2Schema>;
-export type HandoffCapsule = HandoffCapsuleV1 | HandoffCapsuleV2;
+export type HandoffCapsuleV3 = z.output<typeof handoffCapsuleV3Schema>;
+export type HandoffCapsule = HandoffCapsuleV1 | HandoffCapsuleV2 | HandoffCapsuleV3;
 
 /**
  * What the three authorities retain. The secret itself is never stored beside the digest, and the identity
@@ -362,14 +444,19 @@ function assertPrivateHandoffCapsuleFile(path: string, env: HandoffCapsuleFileEn
  * primitive `kb/ops/promote-marker.ts` uses. A grant with no durable capsule is unredeemable no matter how
  * many authorities acknowledge it, so this is the one write in the install sequence that must survive a
  * `SIGKILL` landing the instant after it returns.
+ *
+ * V3 only, at the type and again at runtime. The union stays readable so older capsules can be recognised
+ * and refused, but "V2 is read-only" is a property of this boundary rather than of a comment — a writer that
+ * accepts the whole readable union is one edit away from emitting a shape it cannot itself verify. Legacy
+ * shapes belong in test fixtures written as literal bytes, never in what production can produce.
  */
 export function writeHandoffCapsuleFile(
   path: string,
-  capsule: HandoffCapsule,
+  capsule: HandoffCapsuleV3,
   env: HandoffCapsuleFileEnvironment,
 ): void {
   assertCanonicalHandoffCapsulePath(path);
-  const parsed = handoffCapsuleSchema.parse(capsule);
+  const parsed = handoffCapsuleV3Schema.parse(capsule);
   const encoded = JSON.stringify(parsed);
   const encodedBytes = Buffer.byteLength(encoded, 'utf8');
   if (encodedBytes > MAX_HANDOFF_CAPSULE_BYTES) {

@@ -5,7 +5,7 @@ import {
   ProviderOperationTerminalizationUnavailableError,
   type ProviderOperationTerminalizationResult,
 } from '../../jobs/provider-operation-terminalization.js';
-import type { HandoffCapsule, HandoffCapsuleV2 } from '../../provider-proxy/handoff-capsule.js';
+import type { HandoffCapsuleV3 } from '../../provider-proxy/handoff-capsule.js';
 import type { OperationIdentity } from '../../provider-proxy/protocol.js';
 import type { Database } from '../../store/db.js';
 import { ProviderOperationJournalError } from '../../store/provider-operation-journal.js';
@@ -23,7 +23,11 @@ import {
   type DisappearanceDeliveryAttemptOutcome,
 } from './provider-containment-disappearance.js';
 import type { ProviderHandoffCapsuleRetirementOutcome } from './provider-proxy-capsule-discovery.js';
-import { providerProxySetIdentitiesEqual, type ProviderProxySetIdentity } from './provider-proxy-set/identity.js';
+import {
+  providerProxySetCapsuleMatchesIdentity,
+  providerProxySetIdentitiesEqual,
+  type ProviderProxySetIdentity,
+} from './provider-proxy-set/identity.js';
 import type {
   ProviderProxySetAvailabilityIncident,
   ProviderProxySetInheritanceOutcome,
@@ -37,7 +41,6 @@ export const PROVIDER_PROXY_RECOVERY_PRODUCERS = [
   'set-inheritance',
   'capsule-redemption',
   'containment-proof',
-  'capsule-rewrite',
   'capsule-retirement',
   'disappearance-consumer',
 ] as const;
@@ -50,8 +53,6 @@ export const PROVIDER_PROXY_RECOVERY_CONSUMER_SEAMS = [
   'ordinary-set-inheritance',
   'containment-attempt',
   'exact-capsule-recovery',
-  'opaque-capsule-redemption',
-  'opaque-capsule-rewrite',
   'capsule-retirement',
 ] as const;
 
@@ -74,7 +75,7 @@ type SetInheritanceInput = Readonly<{
 }>;
 
 type CapsuleRedemptionInput = Readonly<{
-  capsule: HandoffCapsule;
+  capsule: HandoffCapsuleV3;
   capsulePath: string;
   signal: AbortSignal;
 }>;
@@ -84,7 +85,6 @@ type ContainmentProofInput = Readonly<{
   signal: AbortSignal;
 }>;
 
-type CapsuleRewriteInput = Readonly<{ path: string; capsule: HandoffCapsuleV2 }>;
 type CapsuleRetirementInput = Readonly<{ path: string }>;
 type DisappearanceConsumerInput = Readonly<{ notice: ContainmentDisappearanceNotice }>;
 
@@ -94,7 +94,6 @@ export type ProviderProxyRecoveryProducerInput = {
   'set-inheritance': SetInheritanceInput;
   'capsule-redemption': CapsuleRedemptionInput;
   'containment-proof': ContainmentProofInput;
-  'capsule-rewrite': CapsuleRewriteInput;
   'capsule-retirement': CapsuleRetirementInput;
   'disappearance-consumer': DisappearanceConsumerInput;
 };
@@ -107,7 +106,6 @@ export interface ProviderProxyRecoveryProducerPorts {
   'set-inheritance'(input: SetInheritanceInput): Promise<ProviderProxySetInheritanceOutcome>;
   'capsule-redemption'(input: CapsuleRedemptionInput): Promise<ProviderProxySetRedemptionOutcome>;
   'containment-proof'(input: ContainmentProofInput): Promise<string | null>;
-  'capsule-rewrite'(input: CapsuleRewriteInput): Promise<void> | void;
   'capsule-retirement'(
     input: CapsuleRetirementInput,
   ): Promise<ProviderHandoffCapsuleRetirementOutcome> | ProviderHandoffCapsuleRetirementOutcome;
@@ -187,7 +185,7 @@ export interface ProviderProxyRecoveryFatalSink {
 export type ProviderProxyRecoveryExactContext = Readonly<{
   operation?: OperationIdentity;
   setIdentity?: ProviderProxySetIdentity;
-  capsule?: HandoffCapsule;
+  capsule?: HandoffCapsuleV3;
 }>;
 
 export type ProviderProxyRecoverySource<ProducerId extends ProviderProxyRecoveryProducerId> = Readonly<{
@@ -261,40 +259,6 @@ function retrySafeTerminalizationUnknown(error: ProviderOperationAtomicTerminali
   };
 }
 
-function capsuleMatchesIdentity(capsule: HandoffCapsule, identity: ProviderProxySetIdentity): boolean {
-  if (capsule.version === 2) {
-    const expected = {
-      buildSetId: capsule.buildSetId,
-      hostFingerprint: capsule.hostFingerprint,
-      guardianInstanceId: capsule.guardianInstanceId,
-      guardianPid: capsule.guardianPid,
-      guardianProcessStartedAtSeconds: capsule.guardianProcessStartedAtSeconds,
-      guardianControlEndpoint: capsule.guardianControlEndpoint,
-      proxyInstanceId: capsule.proxyInstanceId,
-      proxyPid: capsule.proxyPid,
-      reaperInstanceId: capsule.reaperInstanceId,
-      reaperPid: capsule.reaperPid,
-      reaperProcessStartedAtSeconds: capsule.reaperProcessStartedAtSeconds,
-      reaperControlEndpoint: capsule.reaperControlEndpoint,
-      containmentKind: capsule.containmentKind,
-      proxyProcessStartedAtSeconds: capsule.proxyProcessStartedAtSeconds,
-      proxyProcessGroupId: capsule.proxyProcessGroupId,
-      canonicalEndpoint: capsule.proxyEndpoint,
-    };
-    return providerProxySetIdentitiesEqual(expected, identity);
-  }
-  return (
-    capsule.buildSetId === identity.buildSetId &&
-    capsule.hostFingerprint === identity.hostFingerprint &&
-    capsule.guardianInstanceId === identity.guardianInstanceId &&
-    capsule.reaperInstanceId === identity.reaperInstanceId &&
-    capsule.proxyInstanceId === identity.proxyInstanceId &&
-    capsule.guardianControlEndpoint === identity.guardianControlEndpoint &&
-    capsule.reaperControlEndpoint === identity.reaperControlEndpoint &&
-    capsule.proxyEndpoint === identity.canonicalEndpoint
-  );
-}
-
 function callerCancellation(input: { signal?: AbortSignal }, error: unknown): Observation | null {
   return input.signal?.aborted === true && input.signal.reason === error ? { kind: 'cancel', reason: error } : null;
 }
@@ -349,7 +313,10 @@ function classifyFulfillment(
     }
     const outcome = value as ProviderProxySetRedemptionOutcome;
     if (outcome.kind === 'temporarily-unavailable') return unavailable(producerId, outcome.incident);
-    if (context.capsule !== undefined && !capsuleMatchesIdentity(context.capsule, outcome.set.setIdentity)) {
+    if (
+      context.capsule !== undefined &&
+      !providerProxySetCapsuleMatchesIdentity(context.capsule, outcome.set.setIdentity)
+    ) {
       return corrupt(producerId, new Error('provider_proxy_capsule_redemption_identity_mismatch'));
     }
     if (
@@ -362,9 +329,6 @@ function classifyFulfillment(
   }
   if (producerId === 'containment-proof' && value !== null && typeof value !== 'string') {
     return unknown(producerId, new Error('provider_proxy_containment_proof_contract_violation'));
-  }
-  if (producerId === 'capsule-rewrite' && value !== undefined) {
-    return unknown(producerId, new Error('provider_proxy_capsule_rewrite_contract_violation'));
   }
   if (producerId === 'capsule-retirement') {
     if (
@@ -465,8 +429,6 @@ function invokeProducer(
       return producers['capsule-redemption'](source.input);
     case 'containment-proof':
       return producers['containment-proof'](source.input);
-    case 'capsule-rewrite':
-      return producers['capsule-rewrite'](source.input);
     case 'capsule-retirement':
       return producers['capsule-retirement'](source.input);
     case 'disappearance-consumer':

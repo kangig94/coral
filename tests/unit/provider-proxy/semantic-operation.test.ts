@@ -1,3 +1,5 @@
+import type { ProcessIncarnation } from '#src/infra/node-process.js';
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
@@ -27,12 +29,15 @@ vi.mock('#src/providers/app-server-transport.js', async (importOriginal) => {
   return { ...actual, spawnProviderServerTransport: vi.fn() };
 });
 
-// `openSession` reads the spawned process's own start time straight off `/proc` (or platform equivalent).
+// `openSession` reads the spawned process's own incarnation straight off `/proc` (or platform equivalent).
 // Faking a pid that exists in `/proc` is possible but fragile across CI sandboxes; stubbing the probe itself
 // is the same technique `provider-hosts/proxy-set-acquisition.test.ts` already uses for the identical call.
 vi.mock('#src/infra/node-process.js', async (importOriginal) => {
   const actual = await importOriginal<object>();
-  return { ...actual, probeProcessStartedAtSeconds: vi.fn(() => 1_700_000_000) };
+  return {
+    ...actual,
+    probeProcessIncarnation: vi.fn(() => 'linux:00000000-0000-4000-8000-000000000000:1700000000' as ProcessIncarnation),
+  };
 });
 
 import { spawnProviderServerTransport, type ProviderServerHandle } from '#src/providers/app-server-transport.js';
@@ -231,7 +236,7 @@ function fakeHostAuthority(): ProxyAppServerHostAuthority {
       openSession: unreachable('hostAuthority.openSession') as never,
       attachSession: async () => null,
     }),
-    rootIdentity: () => ({ pid: 4242, processStartedAtSeconds: 1_700_000_000 }),
+    rootIdentity: () => ({ pid: 4242, incarnation: testIncarnation(1_700_000_000) }),
     closed: () => new Promise<Error | void>(() => {}),
     forceClose: async () => {},
     evictHost: async () => false,
@@ -294,7 +299,7 @@ function prepareAndActivate(
 ): void {
   const reserved = ledger.prepare({ key, reservation: asReservation('res'), prepared, nowMs: 0 });
   if (reserved.kind !== 'reserved') throw new Error('expected a reservation');
-  ledger.recordPreparation(key, { pid: 1, processStartedAtSeconds: 1 }, asJointContainmentReceipt('contained'));
+  ledger.recordPreparation(key, { pid: 1, incarnation: testIncarnation(1) }, asJointContainmentReceipt('contained'));
   const fingerprint = 'f'.repeat(64);
   ledger.beginActivation(key, asReservation('res'), 0, fingerprint);
   ledger.completeActivation(key, fingerprint, {
@@ -617,7 +622,7 @@ describe('semantic-operation runtime: bounded cancellation', () => {
         openSession: unreachable('hostAuthority.openSession'),
         attachSession: async () => null,
       }),
-      rootIdentity: () => ({ pid: 4242, processStartedAtSeconds: 1_700_000_000 }),
+      rootIdentity: () => ({ pid: 4242, incarnation: testIncarnation(1_700_000_000) }),
       closed: () => transportClosed.promise,
       forceClose,
       evictHost: async () => false,
@@ -727,7 +732,7 @@ describe('semantic-operation runtime: capability-directed cancellation', () => {
           attachSession: async () => null,
         };
       },
-      rootIdentity: () => (rootAlive ? { pid: 4_242, processStartedAtSeconds: 1_700_000_000 } : null),
+      rootIdentity: () => (rootAlive ? { pid: 4_242, incarnation: testIncarnation(1_700_000_000) } : null),
       closed: () => transportClosed.promise,
       forceClose,
       evictHost: async () => false,
@@ -1263,7 +1268,7 @@ describe('semantic-operation runtime: replay admission', () => {
                 )
             : Promise.resolve({
                 state: 'staged' as const,
-                providerRoot: { pid: 4242, processStartedAtSeconds: 1_700_000_000 },
+                providerRoot: { pid: 4242, incarnation: testIncarnation(1_700_000_000) },
                 receipt: containmentReceipt,
               }),
         confirmActivation: async () => {},
@@ -2026,7 +2031,7 @@ describe('semantic-operation: createProxyAppServerHostAuthority (host pool)', ()
       sharedSpec(),
     );
 
-    expect(authority.rootIdentity(opened.hostRef)).toEqual({ pid: 4_242, processStartedAtSeconds: 1_700_000_000 });
+    expect(authority.rootIdentity(opened.hostRef)).toEqual({ pid: 4_242, incarnation: testIncarnation(1_700_000_000) });
 
     opened.close();
     expect(authority.rootIdentity(opened.hostRef)).toBeNull();
@@ -2100,7 +2105,7 @@ describe('semantic-operation: createProxyAppServerHostAuthority (host pool)', ()
       const opened = await scope.openSession(spec, { jobId: key.jobId });
       const root = authority.rootIdentity(opened.hostRef);
       if (root === null) throw new Error('new isolated root was not live');
-      roots.add(`${root.pid}@${root.processStartedAtSeconds}`);
+      roots.add(`${root.pid}@${root.incarnation}`);
       opened.close();
       await vi.waitFor(() => expect(closeMocks[index]).toHaveBeenCalledOnce());
       await new Promise<void>((resolve) => setImmediate(resolve));

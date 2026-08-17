@@ -1,3 +1,4 @@
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
 import { join } from 'node:path';
@@ -89,10 +90,10 @@ describe('coordinator discovery', () => {
     });
   });
 
-  it('probeCoordinator returns the record when pid and process start time match', async () => {
+  it('probeCoordinator returns the record when pid and process incarnation match', async () => {
     makeHome();
     const { probeCoordinator, writeDiscoveryRecord } = await importDiscovery();
-    const { probeProcessStartedAtSeconds } = await import('#src/infra/node-process.js');
+    const { probeProcessIncarnation } = await import('#src/infra/node-process.js');
     const runtime = makeDiscoveryRuntime('dev');
 
     writeDiscoveryRecord(
@@ -106,7 +107,7 @@ describe('coordinator discovery', () => {
         startedAt: Date.now(),
         token: 'token-b',
         bootToken: 'boot-token-b',
-        processStartedAt: probeProcessStartedAtSeconds(process.pid) ?? undefined,
+        incarnation: probeProcessIncarnation(process.pid) ?? undefined,
       },
       runtime,
     );
@@ -122,16 +123,15 @@ describe('coordinator discovery', () => {
     });
   });
 
-  // A record whose `processStartedAt` disagrees with a fresh probe of the same live pid must still be
+  // A record whose `incarnation` disagrees with a fresh probe of the same live pid must still be
   // returned. The value is `/proc/stat` btime plus start ticks, and btime is cached per process, so the
   // writer's value and this reader's disagree by roughly the age gap between their first probes — 168
   // seconds, measured on a WSL2 host, for a coordinator probing its own pid. Rejecting on that basis
   // discarded the `bootToken` beside it, leaving a newer build unable to ask the incumbent to stand
   // down; it died on every session start while the older daemon served on.
-  it('probeCoordinator returns a live record whose recorded start time disagrees with a fresh probe', async () => {
+  it('probeCoordinator returns a live record whose recorded incarnation disagrees with a fresh probe', async () => {
     makeHome();
     const { probeCoordinator, writeDiscoveryRecord } = await importDiscovery();
-    const { probeProcessStartedAtSeconds } = await import('#src/infra/node-process.js');
     const runtime = makeDiscoveryRuntime('prod');
 
     writeDiscoveryRecord(
@@ -145,7 +145,7 @@ describe('coordinator discovery', () => {
         startedAt: Date.now(),
         token: 'token-c',
         bootToken: 'boot-token-c',
-        processStartedAt: (probeProcessStartedAtSeconds(process.pid) ?? 0) + 168,
+        incarnation: testIncarnation('a-different-boot'),
       },
       runtime,
     );
@@ -154,6 +154,45 @@ describe('coordinator discovery', () => {
       probeCoordinator(runtime),
       'the credential beside a live pid must survive a clock base this reader does not share',
     ).toMatchObject({ pid: process.pid, bootToken: 'boot-token-c' });
+  });
+
+  // The upgrade that introduces the token. A coordinator from a build that predates it writes no
+  // incarnation at all, and its record must still yield the `bootToken` beside it — refusing it here
+  // would reinstate, for exactly that upgrade, the deadlock the token exists to end.
+  it('reads a record written before the incarnation existed', async () => {
+    makeHome();
+    const { probeCoordinator } = await importDiscovery();
+    const { writeFileSync, mkdirSync } = await import('node:fs');
+    const { dirname } = await import('node:path');
+    const runtime = makeDiscoveryRuntime('prod');
+    const paths = coordinatorPaths('prod');
+
+    // Written by hand rather than through `writeDiscoveryRecord`, which stamps the token every new
+    // writer produces. The point is the record a build that never had one left behind.
+    mkdirSync(dirname(paths.infoFile), { recursive: true });
+    writeFileSync(
+      paths.infoFile,
+      JSON.stringify({
+        pid: process.pid,
+        port: 9024,
+        socketPath: paths.socketPath,
+        bundleHash: 'bundle-legacy',
+        flavor: 'prod',
+        namespace: 'ns-legacy',
+        startedAt: Date.now(),
+        token: 'token-legacy',
+        bootToken: 'boot-token-legacy',
+        processStartedAt: 1_786_795_964,
+      }),
+      'utf-8',
+    );
+
+    const probed = probeCoordinator(runtime);
+    expect(probed, 'a pre-token record must still carry its credential').toMatchObject({
+      pid: process.pid,
+      bootToken: 'boot-token-legacy',
+    });
+    expect(probed?.incarnation, 'and it simply has no token').toBeUndefined();
   });
 
   it('probeCoordinator rejects a record whose pid names no process', async () => {

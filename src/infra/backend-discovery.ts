@@ -4,7 +4,8 @@ import { z } from 'zod';
 import type { BuildFlavor } from './build-flavor.js';
 import type { CoralPaths } from './path/index.js';
 import type { EnvPort, StoragePort } from './port-types.js';
-import { probeProcessStartedAtSeconds } from './node-process.js';
+import { processIncarnationSchema, probeProcessIncarnation, type ProcessIncarnation } from './node-process.js';
+import { backendLog } from './backend-log.js';
 import { isNoEntryError } from './fs-errors.js';
 
 /** Connection and authentication evidence only; executable identity comes from authenticated health. */
@@ -22,7 +23,7 @@ export interface CoordinatorDiscoveryRecord {
   host?: string;
   version?: string;
   instanceId?: string;
-  processStartedAt?: number;
+  incarnation?: ProcessIncarnation;
 }
 
 export interface BackendInfo extends CoordinatorDiscoveryRecord {
@@ -61,7 +62,7 @@ const coordinatorDiscoveryRecordSchema = z
     host: nonEmptyStringSchema.optional(),
     version: nonEmptyStringSchema.optional(),
     instanceId: nonEmptyStringSchema.optional(),
-    processStartedAt: positiveIntegerSchema.optional(),
+    incarnation: processIncarnationSchema.optional(),
   })
   // A build older than a future field must still read this record — `.strict()` would make that build's
   // `probeCoordinator` reject it outright the day a newer writer adds one, when every field it already
@@ -79,13 +80,16 @@ function discoveryFilePath(runtime: DiscoveryRuntime): string {
 
 export function writeDiscoveryRecord(record: CoordinatorDiscoveryRecord, runtime: DiscoveryRuntime): void {
   const infoPath = discoveryFilePath(runtime);
-  const payload = JSON.stringify({
-    ...record,
-    processStartedAt:
-      record.processStartedAt ??
-      probeProcessStartedAtSeconds(record.pid, runtime.env.platform() as NodeJS.Platform) ??
-      undefined,
-  });
+  const incarnation =
+    record.incarnation ?? probeProcessIncarnation(record.pid, runtime.env.platform() as NodeJS.Platform) ?? undefined;
+  if (incarnation === undefined) {
+    // Said out loud because the consequence arrives much later and looks like something else: a contender can
+    // only signal a pid whose incarnation the incumbent published, so a record written without one leaves this
+    // daemon replaceable over IPC but not evictable by force. Probing our own pid should not fail; if it did,
+    // an operator reading a later "cannot be proven to be it" refusal needs this line to connect the two.
+    backendLog.warn(`Coordinator discovery record for pid ${record.pid} was written without a process incarnation.`);
+  }
+  const payload = JSON.stringify({ ...record, incarnation });
 
   runtime.storage.mkdirSync(dirname(infoPath), { recursive: true });
   if (!runtime.storage.writeAtomicSync(infoPath, payload, { encoding: 'utf-8', mode: 0o600 })) {
@@ -113,17 +117,25 @@ export function readDiscoveryRecord(runtime: DiscoveryRuntime): CoordinatorDisco
 }
 
 /**
- * The record's `processStartedAt` is deliberately not re-derived and compared here.
+ * The record's `incarnation` is not compared here, and the reason is narrower than it once was.
  *
- * `probeProcessStartedAtSeconds` adds `/proc/stat` btime, which each process caches on first read
- * (`infra/node-process.ts`), so a value this process derives and one the coordinator wrote sit on
- * different clock bases and are not comparable. Rejecting the record on that basis discarded the
- * `bootToken` beside it, and a contender without that token cannot ask the incumbent to stand down.
+ * The old rationale — that the derived value carried a per-process clock term and so was not
+ * comparable across processes — died with the token: two processes now derive the same bytes for the
+ * same incarnation. What survives is the second half. Rejecting the record discards the `bootToken`
+ * beside it, and a contender without that token cannot ask the incumbent to stand down, so this
+ * function must keep returning a record whose pid it cannot vouch for.
  *
- * Nothing here acts on `pid`. This returns a token and a socket path; the handshake authenticates with
- * the token, and the sites that signal re-verify the pid against a baseline they observed themselves
- * (`coordinator/handoff.ts`). A record whose pid was recycled is therefore safe to return: the connect
- * fails, or the token proves the peer is ours.
+ * That makes this a read, not an authorization. Comparing the recorded token became possible with the
+ * token and belongs at the sites that act on the pid, where a mismatch can refuse a signal without
+ * also destroying the credential that makes a peaceful handoff possible.
+ *
+ * Nothing here acts on `pid`. This returns a token and a socket path, and a record whose pid was recycled is
+ * safe to return only because of what the *signalling* sites do with it: `verifySignalTarget`
+ * (`coordinator/handoff.ts`) requires a published incarnation that matches a live probe, and refuses
+ * otherwise. Health may fill that in when the record is silent, but only for the same pid
+ * (`verifiedIncumbentFromDiscovery`) — the pid agreement is what ties two statements to one process. The IPC
+ * side is not the guarantee: a connect can succeed and its shutdown still fail authentication, and ping is
+ * unauthenticated. Do not read this paragraph as licence to relax either check.
  *
  * The probe still runs, but only as a cheap filter. It yields `null` for an absent process *and* for a
  * read, parse, or unsupported-platform failure, so this is "could not observe a process", not proof of
@@ -135,7 +147,7 @@ export function probeCoordinator(runtime: DiscoveryRuntime): CoordinatorDiscover
     return null;
   }
 
-  const live = probeProcessStartedAtSeconds(record.pid, runtime.env.platform() as NodeJS.Platform);
+  const live = probeProcessIncarnation(record.pid, runtime.env.platform() as NodeJS.Platform);
   return live === null ? null : record;
 }
 

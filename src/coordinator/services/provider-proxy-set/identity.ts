@@ -1,3 +1,4 @@
+import { processIncarnationSchema } from '../../../infra/node-process.js';
 import { z } from 'zod';
 
 import {
@@ -5,7 +6,7 @@ import {
   canonicalUuidSchema,
   hostFingerprintSchema,
 } from '../../../provider-proxy/protocol.js';
-import type { HandoffCapsuleV2 } from '../../../provider-proxy/handoff-capsule.js';
+import type { HandoffCapsule, HandoffCapsuleV3 } from '../../../provider-proxy/handoff-capsule.js';
 import type { ProviderOperationRecord } from '../../../store/provider-operation-record.js';
 
 const nonNegativeSafeIntegerSchema = z.number().int().nonnegative().safe();
@@ -16,16 +17,16 @@ export const providerProxySetIdentitySchema = z
     hostFingerprint: hostFingerprintSchema,
     guardianInstanceId: canonicalUuidSchema,
     guardianPid: nonNegativeSafeIntegerSchema,
-    guardianProcessStartedAtSeconds: nonNegativeSafeIntegerSchema,
+    guardianIncarnation: processIncarnationSchema,
     guardianControlEndpoint: canonicalEndpointSchema,
     proxyInstanceId: canonicalUuidSchema,
     proxyPid: nonNegativeSafeIntegerSchema,
     reaperInstanceId: canonicalUuidSchema,
     reaperPid: nonNegativeSafeIntegerSchema,
-    reaperProcessStartedAtSeconds: nonNegativeSafeIntegerSchema,
+    reaperIncarnation: processIncarnationSchema,
     reaperControlEndpoint: canonicalEndpointSchema,
     containmentKind: z.string().min(1).max(64),
-    proxyProcessStartedAtSeconds: nonNegativeSafeIntegerSchema,
+    proxyIncarnation: processIncarnationSchema,
     proxyProcessGroupId: nonNegativeSafeIntegerSchema,
     canonicalEndpoint: canonicalEndpointSchema,
   })
@@ -50,16 +51,16 @@ const IDENTITY_FIELDS = [
   'hostFingerprint',
   'guardianInstanceId',
   'guardianPid',
-  'guardianProcessStartedAtSeconds',
+  'guardianIncarnation',
   'guardianControlEndpoint',
   'proxyInstanceId',
   'proxyPid',
   'reaperInstanceId',
   'reaperPid',
-  'reaperProcessStartedAtSeconds',
+  'reaperIncarnation',
   'reaperControlEndpoint',
   'containmentKind',
-  'proxyProcessStartedAtSeconds',
+  'proxyIncarnation',
   'proxyProcessGroupId',
   'canonicalEndpoint',
 ] as const satisfies readonly (keyof ProviderProxySetIdentity)[];
@@ -105,40 +106,70 @@ export function providerProxySetIdentityFromRecord(
     hostFingerprint: record.locator.hostFingerprint,
     guardianInstanceId: record.locator.guardian.instanceId,
     guardianPid: record.locator.guardian.pid,
-    guardianProcessStartedAtSeconds: record.locator.guardian.processStartedAtSeconds,
+    guardianIncarnation: record.locator.guardian.incarnation,
     guardianControlEndpoint: record.locator.guardian.controlEndpoint,
     proxyInstanceId: record.operation.proxyInstanceId,
     proxyPid: record.locator.proxy.pid,
     reaperInstanceId: record.locator.reaper.instanceId,
     reaperPid: record.locator.reaper.pid,
-    reaperProcessStartedAtSeconds: record.locator.reaper.processStartedAtSeconds,
+    reaperIncarnation: record.locator.reaper.incarnation,
     reaperControlEndpoint: record.locator.reaper.controlEndpoint,
     containmentKind: record.locator.containment.kind,
-    proxyProcessStartedAtSeconds: record.locator.proxy.processStartedAtSeconds,
+    proxyIncarnation: record.locator.proxy.incarnation,
     proxyProcessGroupId: record.locator.containment.processGroupId,
     canonicalEndpoint: record.locator.proxy.controlEndpoint,
   });
 }
 
-export function providerProxySetIdentityFromCapsule(capsule: HandoffCapsuleV2): ProviderProxySetIdentity {
+export function providerProxySetIdentityFromCapsule(capsule: HandoffCapsuleV3): ProviderProxySetIdentity {
   return providerProxySetIdentitySchema.parse({
     buildSetId: capsule.buildSetId,
     hostFingerprint: capsule.hostFingerprint,
     guardianInstanceId: capsule.guardianInstanceId,
     guardianPid: capsule.guardianPid,
-    guardianProcessStartedAtSeconds: capsule.guardianProcessStartedAtSeconds,
+    guardianIncarnation: capsule.guardianIncarnation,
     guardianControlEndpoint: capsule.guardianControlEndpoint,
     proxyInstanceId: capsule.proxyInstanceId,
     proxyPid: capsule.proxyPid,
     reaperInstanceId: capsule.reaperInstanceId,
     reaperPid: capsule.reaperPid,
-    reaperProcessStartedAtSeconds: capsule.reaperProcessStartedAtSeconds,
+    reaperIncarnation: capsule.reaperIncarnation,
     reaperControlEndpoint: capsule.reaperControlEndpoint,
     containmentKind: capsule.containmentKind,
-    proxyProcessStartedAtSeconds: capsule.proxyProcessStartedAtSeconds,
+    proxyIncarnation: capsule.proxyIncarnation,
     proxyProcessGroupId: capsule.proxyProcessGroupId,
     canonicalEndpoint: capsule.proxyEndpoint,
   });
+}
+
+/**
+ * Whether a discovered capsule names the set an identity describes.
+ *
+ * One home, because there were two and this file is where the other two halves already live — the
+ * capsule-to-identity projection above and `providerProxySetIdentitiesEqual`. The copies had to be edited
+ * identically when V3 arrived, which is the cost the rule against a second canonical home is about.
+ *
+ * V3 alone carries a comparable process identity, so only it is compared in full. V1 has none, and V2's is
+ * seconds from a retired derivation — comparing those against a token would manufacture a disagreement
+ * rather than find one, so both are held to the eight fields that mean the same thing in every version.
+ */
+export function providerProxySetCapsuleMatchesIdentity(
+  capsule: HandoffCapsule,
+  identity: ProviderProxySetIdentity,
+): boolean {
+  if (capsule.version === 3) {
+    return providerProxySetIdentitiesEqual(providerProxySetIdentityFromCapsule(capsule), identity);
+  }
+  return (
+    capsule.buildSetId === identity.buildSetId &&
+    capsule.hostFingerprint === identity.hostFingerprint &&
+    capsule.guardianInstanceId === identity.guardianInstanceId &&
+    capsule.reaperInstanceId === identity.reaperInstanceId &&
+    capsule.proxyInstanceId === identity.proxyInstanceId &&
+    capsule.guardianControlEndpoint === identity.guardianControlEndpoint &&
+    capsule.reaperControlEndpoint === identity.reaperControlEndpoint &&
+    capsule.proxyEndpoint === identity.canonicalEndpoint
+  );
 }
 
 export class ProviderProxySetIdentityIndex {

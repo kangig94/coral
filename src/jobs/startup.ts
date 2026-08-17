@@ -6,9 +6,7 @@ import type { Runtime } from '../runtime/ports.js';
 import type { InterruptedAppServerReason } from './reconcile/interrupted-reason.js';
 import type { CommitEventsFn } from '../store/append.js';
 
-export type ProviderOperationStartupOwnership = Readonly<{
-  jobIds: readonly string[];
-}>;
+export type ProviderOperationStartupOwnership = Readonly<{ jobIds: readonly string[] }>;
 
 export type JobsStartupContext = {
   namespace: string;

@@ -1,3 +1,5 @@
+import type { ProcessLiveness } from '#src/infra/node-process.js';
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -33,8 +35,13 @@ import { providerOperationRecord } from '#tests/unit/store/provider-operation-fi
 const NONCE = 'a'.repeat(64);
 const PAIR_SECRET = 'c'.repeat(64);
 const FINGERPRINT = 'b'.repeat(64);
-const CONTAINMENT = { pid: 5_100, processStartedAtSeconds: 900, processGroupId: 5_100, containmentKind: 'posix-group' };
-const ROOT = { pid: 6_001, processStartedAtSeconds: 800 };
+const CONTAINMENT = {
+  pid: 5_100,
+  incarnation: testIncarnation(900),
+  processGroupId: 5_100,
+  containmentKind: 'posix-group',
+};
+const ROOT = { pid: 6_001, incarnation: testIncarnation(800) };
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
@@ -72,7 +79,7 @@ async function startSet(options: { recordContainment?: boolean } = {}) {
   const proxyIdentity = {
     proxyInstanceId: shared.proxyInstanceId,
     pid: 6_000,
-    processStartedAtSeconds: 850,
+    incarnation: testIncarnation(850),
     processGroupId: CONTAINMENT.processGroupId,
     guardianInstanceId: shared.guardianInstanceId,
     reaperInstanceId: shared.reaperInstanceId,
@@ -85,7 +92,7 @@ async function startSet(options: { recordContainment?: boolean } = {}) {
   const coordinatorIdentity = {
     instanceId: randomUUID(),
     pid: 4_000,
-    processStartedAtSeconds: 700,
+    incarnation: testIncarnation(700),
     generation: shared.generation,
     flavor: shared.flavor,
     buildSetId: shared.buildSetId,
@@ -93,7 +100,7 @@ async function startSet(options: { recordContainment?: boolean } = {}) {
   const guardianIdentity = {
     guardianInstanceId: shared.guardianInstanceId,
     pid: 5_102,
-    processStartedAtSeconds: 902,
+    incarnation: testIncarnation(902),
     generation: shared.generation,
     flavor: shared.flavor,
     buildSetId: shared.buildSetId,
@@ -103,7 +110,7 @@ async function startSet(options: { recordContainment?: boolean } = {}) {
   const reaperIdentity = {
     reaperInstanceId: shared.reaperInstanceId,
     pid: 5_101,
-    processStartedAtSeconds: 901,
+    incarnation: testIncarnation(901),
     guardianInstanceId: shared.guardianInstanceId,
     generation: shared.generation,
     flavor: shared.flavor,
@@ -129,16 +136,13 @@ async function startSet(options: { recordContainment?: boolean } = {}) {
         for (const target of pid < 0 ? [...alive] : [pid]) alive.delete(target);
         return true;
       },
-      isAlive: (pid: number) => (pid < 0 ? alive.has(-pid) : alive.has(pid)),
+      observeLiveness: (pid: number) =>
+        ((pid < 0 ? alive.has(-pid) : alive.has(pid)) ? 'alive' : 'absent') as ProcessLiveness,
     },
     platform: 'linux' as const,
     maxRecordedRoots: 128,
-    readProcessStartedAtSeconds: (pid: number) =>
-      !alive.has(pid)
-        ? null
-        : pid === CONTAINMENT.pid
-          ? CONTAINMENT.processStartedAtSeconds
-          : ROOT.processStartedAtSeconds,
+    readProcessIncarnation: (pid: number) =>
+      !alive.has(pid) ? null : pid === CONTAINMENT.pid ? CONTAINMENT.incarnation : ROOT.incarnation,
   };
 
   const boundsOf = () => {
@@ -201,7 +205,7 @@ async function startSet(options: { recordContainment?: boolean } = {}) {
     scheduler: idleScheduler,
     timer,
     mintReceipt,
-    self: { pid: reaperIdentity.pid, processStartedAtSeconds: reaperIdentity.processStartedAtSeconds },
+    self: { pid: reaperIdentity.pid, incarnation: reaperIdentity.incarnation },
     onOutcome: (outcome) => reaperOutcomes.push(outcome),
     onProgressViolation: () => {},
   });
@@ -238,8 +242,8 @@ async function startSet(options: { recordContainment?: boolean } = {}) {
     timer,
     mintReceipt,
     reaperChannel,
-    self: { pid: guardianIdentity.pid, processStartedAtSeconds: guardianIdentity.processStartedAtSeconds },
-    reaperSelf: { pid: reaperIdentity.pid, processStartedAtSeconds: reaperIdentity.processStartedAtSeconds },
+    self: { pid: guardianIdentity.pid, incarnation: guardianIdentity.incarnation },
+    reaperSelf: { pid: reaperIdentity.pid, incarnation: reaperIdentity.incarnation },
     onOutcome: (outcome) => guardianOutcomes.push(outcome),
     onProgressViolation: () => {},
   });
@@ -393,7 +397,7 @@ async function stage(set: SetUnderTest): Promise<{
       operation,
       reservation,
       providerPid: ROOT.pid,
-      providerProcessStartedAtSeconds: ROOT.processStartedAtSeconds,
+      providerIncarnation: ROOT.incarnation,
     },
     5_000,
   )) as { state: string; jointContainmentReceipt: string };
@@ -433,7 +437,7 @@ function bareOpenRequest(directory: string, shared: BareSharedIdentity): Record<
     coordinator: {
       instanceId: randomUUID(),
       pid: 4_000,
-      processStartedAtSeconds: 700,
+      incarnation: testIncarnation(700),
       generation: shared.generation,
       flavor: shared.flavor,
       buildSetId: shared.buildSetId,
@@ -441,7 +445,7 @@ function bareOpenRequest(directory: string, shared: BareSharedIdentity): Record<
     guardian: {
       guardianInstanceId: shared.guardianInstanceId,
       pid: 5_102,
-      processStartedAtSeconds: 902,
+      incarnation: testIncarnation(902),
       generation: shared.generation,
       flavor: shared.flavor,
       buildSetId: shared.buildSetId,
@@ -451,7 +455,7 @@ function bareOpenRequest(directory: string, shared: BareSharedIdentity): Record<
     proxy: {
       proxyInstanceId: shared.proxyInstanceId,
       pid: 6_000,
-      processStartedAtSeconds: 850,
+      incarnation: testIncarnation(850),
       processGroupId: CONTAINMENT.processGroupId,
       guardianInstanceId: shared.guardianInstanceId,
       reaperInstanceId: shared.reaperInstanceId,
@@ -516,15 +520,15 @@ async function startBareReaper<Scope extends symbol>(
     deadlines,
     containmentEnvironment: {
       clock,
-      process: { kill: () => true, isAlive: () => true },
+      process: { kill: () => true, observeLiveness: () => 'alive' as const },
       platform: 'linux' as const,
       maxRecordedRoots: 128,
-      readProcessStartedAtSeconds: () => CONTAINMENT.processStartedAtSeconds,
+      readProcessIncarnation: () => CONTAINMENT.incarnation,
     },
     scheduler: idleScheduler,
     timer,
     mintReceipt: () => randomUUID(),
-    self: { pid: 5_101, processStartedAtSeconds: 901 },
+    self: { pid: 5_101, incarnation: testIncarnation(901) },
     onOutcome: () => {},
     onProgressViolation: () => {},
   });
@@ -554,7 +558,7 @@ describe('provider-proxy guardian and reaper', () => {
           operation: set.operationFor(),
           reservation: randomUUID(),
           providerPid: ROOT.pid,
-          providerProcessStartedAtSeconds: ROOT.processStartedAtSeconds,
+          providerIncarnation: ROOT.incarnation,
         },
         5_000,
       ),
@@ -574,7 +578,7 @@ describe('provider-proxy guardian and reaper', () => {
           operation: set.operationFor(),
           reservation: randomUUID(),
           providerPid: ROOT.pid,
-          providerProcessStartedAtSeconds: ROOT.processStartedAtSeconds,
+          providerIncarnation: ROOT.incarnation,
         },
         5_000,
       ),
@@ -634,7 +638,7 @@ describe('provider-proxy guardian and reaper', () => {
           operation: set.operationFor(),
           reservation: randomUUID(),
           providerPid: ROOT.pid,
-          providerProcessStartedAtSeconds: ROOT.processStartedAtSeconds,
+          providerIncarnation: ROOT.incarnation,
         },
         5_000,
       ),
@@ -685,10 +689,10 @@ describe('provider-proxy guardian and reaper', () => {
     const clock = createMonotonicClock(Symbol('arm-before-forward'), { readMilliseconds: () => 0n });
     const containmentEnvironment = {
       clock,
-      process: { kill: () => true, isAlive: () => true },
+      process: { kill: () => true, observeLiveness: () => 'alive' as const },
       platform: 'linux' as const,
       maxRecordedRoots: 128,
-      readProcessStartedAtSeconds: () => CONTAINMENT.processStartedAtSeconds,
+      readProcessIncarnation: () => CONTAINMENT.incarnation,
     };
     // The peer this guardian is the *origin* for, not a relay of: the forward below always fails, standing
     // in for a reaper that is unreachable (crashed, network partition, anything short of a normal reply).
@@ -717,8 +721,8 @@ describe('provider-proxy guardian and reaper', () => {
       timer,
       mintReceipt: () => 'receipt-arm-before-forward',
       reaperChannel: unreachableReaperChannel,
-      self: { pid: 5_102, processStartedAtSeconds: 902 },
-      reaperSelf: { pid: 5_101, processStartedAtSeconds: 901 },
+      self: { pid: 5_102, incarnation: testIncarnation(902) },
+      reaperSelf: { pid: 5_101, incarnation: testIncarnation(901) },
       onOutcome: () => {},
       onProgressViolation: () => {},
     });
@@ -812,7 +816,7 @@ describe('provider-proxy guardian and reaper', () => {
         {
           operation,
           reservation,
-          providerRoot: { pid: ROOT.pid + 1, processStartedAtSeconds: ROOT.processStartedAtSeconds },
+          providerRoot: { pid: ROOT.pid + 1, incarnation: ROOT.incarnation },
           jointContainmentReceipt,
         },
         5_000,
@@ -884,7 +888,7 @@ describe('provider-proxy guardian and reaper', () => {
     for (let index = 0; index < MAX_PROXY_RECORDED_PROVIDER_ROOTS; index += 1) {
       await pairing.call(
         'reaper.register-provider-root.v1',
-        { providerRoot: { pid: 20_000 + index, processStartedAtSeconds: 1 } },
+        { providerRoot: { pid: 20_000 + index, incarnation: testIncarnation(1) } },
         5_000,
       );
     }
@@ -892,7 +896,7 @@ describe('provider-proxy guardian and reaper', () => {
     await expect(
       pairing.call(
         'reaper.register-provider-root.v1',
-        { providerRoot: { pid: 999_999, processStartedAtSeconds: 1 } },
+        { providerRoot: { pid: 999_999, incarnation: testIncarnation(1) } },
         5_000,
       ),
       // The rejection is a `ControlClientError` carrying the server's own closed-set code in `protocolCode`;
@@ -913,7 +917,7 @@ describe('provider-proxy guardian and reaper', () => {
           operation: set.operationFor(),
           reservation: randomUUID(),
           providerPid: ROOT.pid,
-          providerProcessStartedAtSeconds: ROOT.processStartedAtSeconds,
+          providerIncarnation: ROOT.incarnation,
         },
         5_000,
       )) as { state: string };
@@ -928,7 +932,7 @@ describe('provider-proxy guardian and reaper', () => {
           operation: set.operationFor(),
           reservation: randomUUID(),
           providerPid: ROOT.pid,
-          providerProcessStartedAtSeconds: ROOT.processStartedAtSeconds,
+          providerIncarnation: ROOT.incarnation,
         },
         5_000,
       ),
@@ -951,7 +955,7 @@ describe('provider-proxy guardian and reaper', () => {
           operation,
           reservation,
           providerPid: 40_000 + index,
-          providerProcessStartedAtSeconds: 1,
+          providerIncarnation: testIncarnation(1),
         },
         5_000,
       )) as { state: string; jointContainmentReceipt: string };
@@ -972,7 +976,7 @@ describe('provider-proxy guardian and reaper', () => {
           operation: set.operationFor(),
           reservation: randomUUID(),
           providerPid: 999_999,
-          providerProcessStartedAtSeconds: 1,
+          providerIncarnation: testIncarnation(1),
         },
         5_000,
       ),
@@ -998,16 +1002,16 @@ describe('provider-proxy guardian and reaper', () => {
     const clock = createMonotonicClock(Symbol('bare-guardian'), { readMilliseconds: () => 0n });
     const containmentEnvironment = {
       clock,
-      process: { kill: () => true, isAlive: () => true },
+      process: { kill: () => true, observeLiveness: () => 'alive' as const },
       platform: 'linux' as const,
       maxRecordedRoots: 128,
-      readProcessStartedAtSeconds: () => CONTAINMENT.processStartedAtSeconds,
+      readProcessIncarnation: () => CONTAINMENT.incarnation,
     };
     const guardianEndpoint = join(directory, 'g.sock');
     const reaperIdentity = {
       reaperInstanceId: shared.reaperInstanceId,
       pid: 5_101,
-      processStartedAtSeconds: 901,
+      incarnation: testIncarnation(901),
       guardianInstanceId: shared.guardianInstanceId,
       generation: shared.generation,
       flavor: shared.flavor,
@@ -1041,8 +1045,8 @@ describe('provider-proxy guardian and reaper', () => {
         onFault: () => () => undefined,
         close: (): void => {},
       },
-      self: { pid: 5_102, processStartedAtSeconds: 902 },
-      reaperSelf: { pid: 5_101, processStartedAtSeconds: 901 },
+      self: { pid: 5_102, incarnation: testIncarnation(902) },
+      reaperSelf: { pid: 5_101, incarnation: testIncarnation(901) },
       onOutcome: () => {},
       onProgressViolation: () => {},
     });
@@ -1057,7 +1061,7 @@ describe('provider-proxy guardian and reaper', () => {
     const proxyIdentity = {
       proxyInstanceId: shared.proxyInstanceId,
       pid: 6_000,
-      processStartedAtSeconds: 850,
+      incarnation: testIncarnation(850),
       processGroupId: CONTAINMENT.processGroupId,
       guardianInstanceId: shared.guardianInstanceId,
       reaperInstanceId: shared.reaperInstanceId,
@@ -1075,7 +1079,7 @@ describe('provider-proxy guardian and reaper', () => {
     const coordinatorIdentity = {
       instanceId: randomUUID(),
       pid: 4_000,
-      processStartedAtSeconds: 700,
+      incarnation: testIncarnation(700),
       generation: shared.generation,
       flavor: shared.flavor,
       buildSetId: shared.buildSetId,
@@ -1114,7 +1118,7 @@ describe('provider-proxy guardian and reaper', () => {
           operation: bare.operationFor(),
           reservation: randomUUID(),
           providerPid: ROOT.pid,
-          providerProcessStartedAtSeconds: ROOT.processStartedAtSeconds,
+          providerIncarnation: ROOT.incarnation,
         },
         5_000,
       ),
@@ -1142,7 +1146,7 @@ describe('provider-proxy guardian and reaper', () => {
         operation,
         reservation,
         providerPid: ROOT.pid,
-        providerProcessStartedAtSeconds: ROOT.processStartedAtSeconds,
+        providerIncarnation: ROOT.incarnation,
       },
       5_000,
     )) as { jointContainmentReceipt: string };
@@ -1184,7 +1188,7 @@ describe('provider-proxy guardian and reaper', () => {
     )) as { disappearanceReceipt: string };
 
     // The root stays recorded, so teardown still names it rather than assuming release meant absence.
-    expect(reaped.disappearanceReceipt).toContain(`root:${ROOT.pid}@${ROOT.processStartedAtSeconds}`);
+    expect(reaped.disappearanceReceipt).toContain(`root:${ROOT.pid}@${ROOT.incarnation}`);
   });
 
   it('reaps the recorded set through the documented stop-and-reap request', async () => {
@@ -1218,7 +1222,7 @@ describe('provider-proxy guardian and reaper', () => {
           guardian: set.guardianIdentity,
           reaper: set.reaperIdentity,
           proxy: set.proxyIdentity,
-          providerRoots: [{ pid: 9_999, processStartedAtSeconds: 1 }],
+          providerRoots: [{ pid: 9_999, incarnation: testIncarnation(1) }],
         },
         5_000,
       ),
@@ -1271,7 +1275,7 @@ describe('provider-proxy guardian and reaper', () => {
         coordinator: {
           instanceId: randomUUID(),
           pid: 4_000,
-          processStartedAtSeconds: 700,
+          incarnation: testIncarnation(700),
           generation: 'gen2',
           flavor: 'prod',
           buildSetId: set.reaperIdentity.buildSetId,
@@ -1294,7 +1298,7 @@ describe('provider-proxy guardian and reaper', () => {
         {
           reaper: set.reaperIdentity,
           proxy: set.proxyIdentity,
-          providerRoots: [{ pid: 9_999, processStartedAtSeconds: 1 }],
+          providerRoots: [{ pid: 9_999, incarnation: testIncarnation(1) }],
         },
         5_000,
       ),
@@ -1314,7 +1318,7 @@ describe('provider-proxy guardian and reaper', () => {
         coordinator: {
           instanceId: randomUUID(),
           pid: 4_000,
-          processStartedAtSeconds: 700,
+          incarnation: testIncarnation(700),
           generation: 'gen2',
           flavor: 'prod',
           buildSetId: set.reaperIdentity.buildSetId,
@@ -1843,15 +1847,15 @@ describe('provider-proxy guardian and reaper', () => {
       },
       containmentEnvironment: {
         clock,
-        process: { kill: () => true, isAlive: () => false },
+        process: { kill: () => true, observeLiveness: () => 'absent' as const },
         platform: 'linux' as const,
         maxRecordedRoots: 128,
-        readProcessStartedAtSeconds: () => null,
+        readProcessIncarnation: () => null,
       },
       scheduler: idleScheduler,
       timer,
       mintReceipt: () => randomUUID(),
-      self: { pid: 5_101, processStartedAtSeconds: 901 },
+      self: { pid: 5_101, incarnation: testIncarnation(901) },
       onOutcome: () => {},
       onProgressViolation: () => {},
     });
@@ -1871,7 +1875,7 @@ describe('provider-proxy guardian and reaper', () => {
           coordinator: {
             instanceId: randomUUID(),
             pid: 4_000,
-            processStartedAtSeconds: 700,
+            incarnation: testIncarnation(700),
             generation: shared.generation,
             flavor: shared.flavor,
             buildSetId: shared.buildSetId,
@@ -1879,7 +1883,7 @@ describe('provider-proxy guardian and reaper', () => {
           guardian: {
             guardianInstanceId: shared.guardianInstanceId,
             pid: 5_102,
-            processStartedAtSeconds: 902,
+            incarnation: testIncarnation(902),
             generation: shared.generation,
             flavor: shared.flavor,
             buildSetId: shared.buildSetId,
@@ -1889,7 +1893,7 @@ describe('provider-proxy guardian and reaper', () => {
           proxy: {
             proxyInstanceId: shared.proxyInstanceId,
             pid: 6_000,
-            processStartedAtSeconds: 850,
+            incarnation: testIncarnation(850),
             processGroupId: 6_000,
             guardianInstanceId: shared.guardianInstanceId,
             reaperInstanceId: shared.reaperInstanceId,
@@ -1934,7 +1938,7 @@ describe('provider-proxy guardian and reaper', () => {
     cleanups.push(() => control.close());
 
     // `assertNamedGuardianCapsuleIdentity` checks the caller's claimed guardian against this reaper's own
-    // bootstrap capsule — pid/start time are deliberately excluded (see its doc), so the mismatch has to land
+    // bootstrap capsule — pid/incarnation are deliberately excluded (see its doc), so the mismatch has to land
     // on a capsule-stable field such as `guardianInstanceId`.
     await expect(
       control.call(
@@ -2011,16 +2015,17 @@ describe('provider-proxy guardian and reaper', () => {
           for (const target of pid < 0 ? [...alive] : [pid]) alive.delete(target);
           return true;
         },
-        isAlive: (pid: number) => (pid < 0 ? alive.has(-pid) : alive.has(pid)),
+        observeLiveness: (pid: number) =>
+          ((pid < 0 ? alive.has(-pid) : alive.has(pid)) ? 'alive' : 'absent') as ProcessLiveness,
       },
       platform: 'linux' as const,
       maxRecordedRoots: MAX_PROXY_RECORDED_PROVIDER_ROOTS,
-      readProcessStartedAtSeconds: (pid: number) => (alive.has(pid) ? CONTAINMENT.processStartedAtSeconds : null),
+      readProcessIncarnation: (pid: number) => (alive.has(pid) ? CONTAINMENT.incarnation : null),
     };
     const reaperIdentity = {
       reaperInstanceId: shared.reaperInstanceId,
       pid: 5_101,
-      processStartedAtSeconds: 901,
+      incarnation: testIncarnation(901),
       guardianInstanceId: shared.guardianInstanceId,
       generation: shared.generation,
       flavor: shared.flavor,
@@ -2054,8 +2059,8 @@ describe('provider-proxy guardian and reaper', () => {
         onFault: () => () => undefined,
         close: () => {},
       },
-      self: { pid: 5_102, processStartedAtSeconds: 902 },
-      reaperSelf: { pid: reaperIdentity.pid, processStartedAtSeconds: reaperIdentity.processStartedAtSeconds },
+      self: { pid: 5_102, incarnation: testIncarnation(902) },
+      reaperSelf: { pid: reaperIdentity.pid, incarnation: reaperIdentity.incarnation },
       onOutcome: () => {},
       onProgressViolation: () => {},
     });
@@ -2066,7 +2071,7 @@ describe('provider-proxy guardian and reaper', () => {
     const proxyIdentity = {
       proxyInstanceId: shared.proxyInstanceId,
       pid: 6_000,
-      processStartedAtSeconds: 850,
+      incarnation: testIncarnation(850),
       processGroupId: CONTAINMENT.processGroupId,
       guardianInstanceId: shared.guardianInstanceId,
       reaperInstanceId: shared.reaperInstanceId,
@@ -2079,7 +2084,7 @@ describe('provider-proxy guardian and reaper', () => {
     const coordinatorIdentity = {
       instanceId: randomUUID(),
       pid: 4_000,
-      processStartedAtSeconds: 700,
+      incarnation: testIncarnation(700),
       generation: shared.generation,
       flavor: shared.flavor,
       buildSetId: shared.buildSetId,
@@ -2327,7 +2332,7 @@ describe('provider-proxy/set-authority: stopAndReap against a real guardian', ()
     expect(result).toEqual({
       disappearanceReceipt: expect.stringMatching(
         new RegExp(
-          `guardian:.*root:${ROOT.pid}@${ROOT.processStartedAtSeconds}.*reaper:.*root:${ROOT.pid}@${ROOT.processStartedAtSeconds}`,
+          `guardian:.*root:${ROOT.pid}@${ROOT.incarnation}.*reaper:.*root:${ROOT.pid}@${ROOT.incarnation}`,
           'u',
         ),
       ),
@@ -2357,24 +2362,24 @@ describe('provider-proxy/set-authority: stopAndReap against a real guardian', ()
         guardian: {
           instanceId: set.guardianIdentity.guardianInstanceId,
           pid: set.guardianIdentity.pid,
-          processStartedAtSeconds: set.guardianIdentity.processStartedAtSeconds,
+          incarnation: set.guardianIdentity.incarnation,
           controlEndpoint: set.guardianIdentity.canonicalControlEndpoint,
         },
         proxy: {
           instanceId: set.proxyIdentity.proxyInstanceId,
           pid: set.proxyIdentity.pid,
-          processStartedAtSeconds: set.proxyIdentity.processStartedAtSeconds,
+          incarnation: set.proxyIdentity.incarnation,
           controlEndpoint: set.proxyIdentity.canonicalEndpoint,
         },
         reaper: {
           instanceId: set.reaperIdentity.reaperInstanceId,
           pid: set.reaperIdentity.pid,
-          processStartedAtSeconds: set.reaperIdentity.processStartedAtSeconds,
+          incarnation: set.reaperIdentity.incarnation,
           controlEndpoint: set.reaperIdentity.canonicalControlEndpoint,
         },
         containment: {
           pid: set.proxyIdentity.pid,
-          processStartedAtSeconds: set.proxyIdentity.processStartedAtSeconds,
+          incarnation: set.proxyIdentity.incarnation,
           processGroupId: set.proxyIdentity.processGroupId,
           kind: set.reaperIdentity.containmentKind,
         },
@@ -2414,7 +2419,7 @@ describe('provider-proxy/set-authority: stopAndReap against a real guardian', ()
     expect(result).toEqual({
       disappearanceReceipt: expect.stringMatching(
         new RegExp(
-          `guardian:.*root:${ROOT.pid}@${ROOT.processStartedAtSeconds}.*reaper:.*root:${ROOT.pid}@${ROOT.processStartedAtSeconds}`,
+          `guardian:.*root:${ROOT.pid}@${ROOT.incarnation}.*reaper:.*root:${ROOT.pid}@${ROOT.incarnation}`,
           'u',
         ),
       ),

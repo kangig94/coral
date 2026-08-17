@@ -7,6 +7,7 @@ import type { ForeignTargetValidator } from '../infra/handoff-target.js';
 import { socketPathForRunDir } from '../infra/path/index.js';
 import { CoralSetupError, documentedCoralSetupError } from '../runtime/errors.js';
 import type { Runtime } from '../runtime/ports.js';
+import { ACTIVE_STORE_SELECTION_VERSION } from './active-store-selection.js';
 import {
   coordinateActiveStoreSelection,
   type ActiveStoreSelectionRecoveryOutcome,
@@ -133,7 +134,7 @@ async function discardGeneratedStore(
     path: paths.storeDbPath,
     storeFormat: options.storeFormat,
     currentSelection: {
-      version: 1,
+      version: ACTIVE_STORE_SELECTION_VERSION,
       manifest: options.build,
       bundleDir: currentBundleDir,
       activeStoreFingerprint: options.build.storeFormatFingerprint,

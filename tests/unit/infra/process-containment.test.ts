@@ -1,3 +1,5 @@
+import type { ProcessLiveness } from '#src/infra/node-process.js';
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { describe, expect, it } from 'vitest';
 
 import { createMonotonicClock, type MonotonicInstant } from '#src/infra/monotonic-clock.js';
@@ -12,10 +14,10 @@ import { MAX_PROXY_OPERATION_LEDGERS } from '#src/provider-proxy/ledger.js';
 
 const containment: RecordedContainmentIdentity = {
   pid: 100,
-  processStartedAtSeconds: 1,
+  incarnation: testIncarnation(1),
   processGroupId: 100,
 };
-const providerRoot: RecordedProcessIdentity = { pid: 101, processStartedAtSeconds: 2 };
+const providerRoot: RecordedProcessIdentity = { pid: 101, incarnation: testIncarnation(2) };
 const containmentClockScope = Symbol('process-containment-test');
 
 type FakeState = {
@@ -26,7 +28,7 @@ type FakeState = {
 
 function createFakeEnvironment(
   state: FakeState,
-  options: { signalCostMs?: number; unreadablePids?: ReadonlySet<number> } = {},
+  options: { signalCostMs?: number; unreadablePids?: ReadonlySet<number>; groupLiveness?: ProcessLiveness } = {},
 ): {
   environment: ProcessContainmentEnvironment<typeof containmentClockScope>;
   now: () => number;
@@ -34,11 +36,13 @@ function createFakeEnvironment(
 } {
   let elapsedMs = 0;
   const signals: Array<{ pid: number; signal: NodeJS.Signals | 0; at: number }> = [];
-  const isAlive = (pid: number): boolean => {
-    if (pid === -containment.processGroupId) return state.groupAlive;
-    if (pid === containment.pid) return state.leaderAlive;
-    if (pid === providerRoot.pid) return state.providerRootAlive;
-    return false;
+  const observeLiveness = (pid: number): ProcessLiveness => {
+    if (pid === -containment.processGroupId) {
+      return options.groupLiveness ?? (state.groupAlive ? 'alive' : 'absent');
+    }
+    if (pid === containment.pid) return state.leaderAlive ? 'alive' : 'absent';
+    if (pid === providerRoot.pid) return state.providerRootAlive ? 'alive' : 'absent';
+    return 'absent';
   };
 
   const clock = createMonotonicClock(containmentClockScope, {
@@ -54,7 +58,7 @@ function createFakeEnvironment(
     environment: {
       clock,
       process: {
-        isAlive,
+        observeLiveness,
         kill: (pid, signal) => {
           signals.push({ pid, signal, at: elapsedMs });
           elapsedMs += options.signalCostMs ?? 0;
@@ -62,15 +66,15 @@ function createFakeEnvironment(
             if (pid === -containment.processGroupId) state.groupAlive = false;
             if (pid === providerRoot.pid) state.providerRootAlive = false;
           }
-          return isAlive(pid);
+          return observeLiveness(pid) !== 'absent';
         },
       },
       platform: 'linux',
       maxRecordedRoots: 128,
-      readProcessStartedAtSeconds: (pid) => {
+      readProcessIncarnation: (pid) => {
         if (options.unreadablePids?.has(pid)) return null;
-        if (pid === containment.pid && state.leaderAlive) return containment.processStartedAtSeconds;
-        if (pid === providerRoot.pid && state.providerRootAlive) return providerRoot.processStartedAtSeconds;
+        if (pid === containment.pid && state.leaderAlive) return containment.incarnation;
+        if (pid === providerRoot.pid && state.providerRootAlive) return providerRoot.incarnation;
         return null;
       },
     },
@@ -156,7 +160,7 @@ describe('recorded process containment', () => {
     expect(fake.signals).toEqual([{ pid: -100, signal: 'SIGTERM', at: 0 }]);
   });
 
-  it('fails closed before signalling when a live process start time cannot be read', async () => {
+  it('fails closed before signalling when a live process incarnation cannot be read', async () => {
     const fake = createFakeEnvironment(
       { groupAlive: true, leaderAlive: true, providerRootAlive: false },
       { unreadablePids: new Set([containment.pid]) },
@@ -174,19 +178,40 @@ describe('recorded process containment', () => {
     expect(fake.signals).toEqual([]);
   });
 
+  // The third answer at a signalling boundary. A group whose liveness cannot be observed is not a group that
+  // may be signalled: SIGTERM and then SIGKILL would land on a numeric group nobody saw, and the leader's id
+  // may have been reused since. This is the case `!== 'absent'` silently authorized.
+  it('refuses to signal a recorded group whose liveness cannot be observed', async () => {
+    const fake = createFakeEnvironment(
+      { groupAlive: true, leaderAlive: true, providerRootAlive: false },
+      { groupLiveness: 'unknown' },
+    );
+
+    const failure = await reapRecordedContainment(
+      containment,
+      [],
+      deadlineAfter(fake.environment, 10_000),
+      fake.environment,
+    ).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(ProcessContainmentError);
+    expect(failure).toMatchObject({ code: 'process_identity_unverified' });
+    expect(fake.signals, 'nothing may be signalled on an answer nobody has').toEqual([]);
+  });
+
   it('rejects provider root 129 before probing or signalling', async () => {
     let probed = false;
     const fake = createFakeEnvironment({ groupAlive: false, leaderAlive: false, providerRootAlive: false });
     const environment: ProcessContainmentEnvironment<typeof containmentClockScope> = {
       ...fake.environment,
-      readProcessStartedAtSeconds: () => {
+      readProcessIncarnation: () => {
         probed = true;
         return null;
       },
     };
     const roots = Array.from({ length: MAX_PROXY_OPERATION_LEDGERS + 1 }, (_, index) => ({
       pid: 1_000 + index,
-      processStartedAtSeconds: 1,
+      incarnation: testIncarnation(1),
     }));
 
     await expect(

@@ -48,7 +48,7 @@ export function hydrateCoordinatorRecoveryItem(
 
 export function buildRecoverySnapshot(
   items: readonly CoordinatorRecoveryItem[],
-  process: Pick<ProcessPort, 'isAlive'>,
+  process: Pick<ProcessPort, 'observeLiveness'>,
 ): RecoveryProjectionSnapshot {
   const jobIds = Object.freeze(items.flatMap(({ detail }) => (detail === null ? [] : [detail.status.jobId])));
   const factsByJob = new Map<string, RecoveryJobFacts>();
@@ -96,7 +96,10 @@ export function buildRecoverySnapshot(
       },
     listSessionRefs: (): Array<{ sessionId: string; provider: string }> => [...sessionRefs],
     readSession: (sessionId: string): RecoverySessionFacts | null => sessionsById.get(sessionId) ?? null,
-    isPidAlive: (pid: number): boolean => process.isAlive(pid),
+    // Planning needs a boolean and only one of the three answers may mean "gone": "could not tell" must never
+    // read as it, because that is the reading that destroys a live job's record. The per-item paths that follow
+    // observe again and handle unknown on their own terms.
+    isPidAlive: (pid: number): boolean => process.observeLiveness(pid) !== 'absent',
   };
 
   return Object.freeze(snapshot);

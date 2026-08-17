@@ -1,3 +1,5 @@
+import type { ProcessIncarnation } from '#src/infra/node-process.js';
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -75,7 +77,7 @@ const HOST_FINGERPRINT = 'a'.repeat(64);
 const coordinatorIdentity = {
   instanceId: UUID_A,
   pid: 99,
-  processStartedAtSeconds: 199,
+  incarnation: testIncarnation(199),
   generation: 'gen2' as const,
   flavor: 'prod' as const,
   buildSetId: UUID_D,
@@ -84,7 +86,7 @@ const coordinatorIdentity = {
 const guardianIdentity = {
   guardianInstanceId: UUID_B,
   pid: 101,
-  processStartedAtSeconds: 201,
+  incarnation: testIncarnation(201),
   generation: 'gen2' as const,
   flavor: 'prod' as const,
   buildSetId: UUID_D,
@@ -95,7 +97,7 @@ const guardianIdentity = {
 const reaperIdentity = {
   reaperInstanceId: UUID_C,
   pid: 102,
-  processStartedAtSeconds: 202,
+  incarnation: testIncarnation(202),
   guardianInstanceId: UUID_B,
   generation: 'gen2' as const,
   flavor: 'prod' as const,
@@ -108,7 +110,7 @@ const reaperIdentity = {
 const proxyIdentity = {
   proxyInstanceId: UUID_A,
   pid: 100,
-  processStartedAtSeconds: 200,
+  incarnation: testIncarnation(200),
   processGroupId: 100,
   guardianInstanceId: UUID_B,
   reaperInstanceId: UUID_C,
@@ -142,15 +144,17 @@ describe('provider proxy protocol vocabulary', () => {
     expect(operationIdentitySchema.parse(operationIdentity)).toEqual(operationIdentity);
   });
 
-  it('refuses a provider root pid or start time outside the safe-integer range', () => {
+  it('refuses an unsafe provider-root pid or a non-string incarnation', () => {
     // `providerRootSchema` is this domain's single canonical shape for a provider-root identity, shared by
-    // every request or response that names one. Every other pid/processStartedAtSeconds field in this file
+    // every request or response that names one. Every other pid/incarnation field in this file
     // (`coordinatorIdentitySchema`, `guardianIdentitySchema`, `reaperIdentitySchema`, `proxyIdentitySchema`)
     // rejects an integer outside `Number.isSafeInteger` range via `.safe()`; this schema must too, or a
     // caller that merely names a provider root is held to a laxer bar than one that names any other role.
-    expect(providerRootSchema.safeParse({ pid: 1e21, processStartedAtSeconds: 800 }).success).toBe(false);
-    expect(providerRootSchema.safeParse({ pid: 7_001, processStartedAtSeconds: 1e21 }).success).toBe(false);
-    expect(providerRootSchema.safeParse({ pid: 7_001, processStartedAtSeconds: 800 }).success).toBe(true);
+    expect(providerRootSchema.safeParse({ pid: 1e21, incarnation: testIncarnation(800) }).success).toBe(false);
+    expect(
+      providerRootSchema.safeParse({ pid: 7_001, incarnation: 1e21 as unknown as ProcessIncarnation }).success,
+    ).toBe(false);
+    expect(providerRootSchema.safeParse({ pid: 7_001, incarnation: testIncarnation(800) }).success).toBe(true);
   });
 
   it('rejects unknown identity fields', () => {
@@ -265,7 +269,7 @@ describe('provider proxy protocol vocabulary', () => {
 
 describe('shared heartbeat, pairing, and guardian-to-reaper schemas', () => {
   it('accepts each exact request and result while rejecting an unknown field', () => {
-    const providerRoot = { pid: 7_001, processStartedAtSeconds: 800 };
+    const providerRoot = { pid: 7_001, incarnation: testIncarnation(800) };
     const containment = { ...providerRoot, processGroupId: 7_001, containmentKind: 'posix-process-group' };
     const cases: ReadonlyArray<
       readonly [{ safeParse(value: unknown): { success: boolean } }, Record<string, unknown>]
@@ -426,7 +430,7 @@ describe('provider.event.v1 vocabulary', () => {
  */
 describe('guardian control-method request schemas, shared with their one coordinator or proxy sender', () => {
   const operation = { jobId: UUID_A, operationId: UUID_B, proxyInstanceId: UUID_C, buildSetId: UUID_D };
-  const providerRoot = { pid: 7_001, processStartedAtSeconds: 800 };
+  const providerRoot = { pid: 7_001, incarnation: testIncarnation(800) };
 
   it('guardian.operation-activate.v1: rejects a payload missing providerRoot, and one carrying an extra field', () => {
     const valid = {
@@ -481,7 +485,7 @@ describe('guardian control-method request schemas, shared with their one coordin
       operation,
       reservation: UUID_A,
       providerPid: providerRoot.pid,
-      providerProcessStartedAtSeconds: providerRoot.processStartedAtSeconds,
+      providerIncarnation: providerRoot.incarnation,
     };
     expect(guardianRegisterProviderRootParamsSchema.safeParse(valid).success).toBe(true);
 
@@ -668,8 +672,8 @@ describe('operation.status.v1 wire contract', () => {
 });
 
 describe('assertRecordedSetAgreement', () => {
-  const ROOT_A = { pid: 5_001, processStartedAtSeconds: 900 };
-  const ROOT_B = { pid: 5_002, processStartedAtSeconds: 901 };
+  const ROOT_A = { pid: 5_001, incarnation: testIncarnation(900) };
+  const ROOT_B = { pid: 5_002, incarnation: testIncarnation(901) };
 
   it('accepts an exact match between claimed and recorded roots', () => {
     expect(() => assertRecordedSetAgreement('guardian', [ROOT_A], [ROOT_A])).not.toThrow();

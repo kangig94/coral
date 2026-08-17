@@ -1,10 +1,10 @@
-import { providerHandoffCapsulePath } from '../../../infra/path/index.js';
-import { probeProcessStartedAtSeconds } from '../../../infra/node-process.js';
+import { probeProcessIncarnation, type ProcessIncarnation } from '../../../infra/node-process.js';
 import { createMonotonicClock } from '../../../infra/monotonic-clock.js';
 import { reapRecordedContainment } from '../../../infra/process-containment.js';
 import {
+  currentHandoffCapsulePath,
   readHandoffCapsuleFile,
-  type HandoffCapsule,
+  type HandoffCapsuleV3,
   guardianHandoffRedeemFieldsSchema,
   guardianHandoffRedeemParamsSchema,
   proxyHandoffRedeemFieldsSchema,
@@ -28,7 +28,10 @@ import {
 import { PROXY_TEARDOWN_RESERVE_MS } from '../../../provider-proxy/orphan-deadline.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { Database } from '../../../store/db.js';
-import { readProviderOperations } from '../../../store/provider-operation-journal.js';
+import {
+  attributeUnreadableProviderOperations,
+  readProviderOperations,
+} from '../../../store/provider-operation-journal.js';
 import type { ProviderOperationIdentity, ProviderOperationRecord } from '../../../store/provider-operation-record.js';
 import {
   ESTABLISH_CONTROL_CONNECT_TIMEOUT_MS,
@@ -69,7 +72,7 @@ import {
  * spawning a new one. Fresh acquisition installs the role digests and durable capsule before publishing the
  * set; this file is the read half.
  *
- * The capsule is addressable, never discovered: `providerHandoffCapsulePath` hashes `flavor`/`generation`
+ * The capsule is addressable, never discovered: `currentHandoffCapsulePath` hashes `flavor`/`generation`
  * (this successor's own — a grant is build-bound) and `buildSetId`/`hostFingerprint`/`proxyInstanceId` (the
  * locator's — the predecessor's), so there is exactly one path to check, never a scan. Absent, stale, or
  * wrong-identity capsules mean no credential exists for this exact address. Redemption and proof failures
@@ -112,7 +115,7 @@ export const proxyHandoffRedeemResultSchema = proxyHandoffRedeemFieldsSchema.ext
 export type ProviderProxySetInheritanceDeps = Readonly<{
   runtime: Runtime;
   baseDir?: string;
-  /** This successor's own wire identity — `pid`/`processStartedAtSeconds` read fresh, matching
+  /** This successor's own wire identity — `pid`/`incarnation` read fresh, matching
    *  `ensureProviderProxySet`'s own coordinator-identity construction. */
   coordinatorIdentity: CoordinatorIdentity;
   operationRegistry: ProviderProxyOperationSnapshot;
@@ -234,6 +237,49 @@ export function providerProxySetAvailabilityReason(incident: ProviderProxySetAva
 
 const NOTHING_TO_INHERIT_REASON = 'no capsule at this address';
 
+/** Why this build may not inherit a proxy set. */
+export type ProviderProxySetInheritanceRefusal = 'other-build' | 'unreadable-identity';
+
+/**
+ * Whether this build may inherit a set, and why not when it may not. One home because the rule is enforced at
+ * two entry points that cannot be merged — discovery classifying a capsule it found, and a claimed record
+ * deriving its capsule's address for itself — and the two disagreeing is how a foreign set gets dialed.
+ *
+ * Dialing one is not a failed attempt but a fatal one: `handoff.redeem` is gated on build identity at the role
+ * (`assertNamedCoordinatorBuild`), a foreign set answers `identity_mismatch`, and the recovery policy retires
+ * that fatally — taking this coordinator down over a set it never owned. `capsuleMatchesLocator` cannot catch
+ * it either, because it compares a capsule against the *record's* build, and for a foreign set those agree.
+ *
+ * The rule has no version exceptions, and that is the whole of it: **a capsule this build cannot derive a set
+ * identity from is represented, never dialed.** `providerProxySetIdentityFromCapsule` accepts V3 alone, so V1
+ * and V2 both fail it and both are refused here.
+ *
+ * V1 used to take a third path — redeemed opaquely by asking the roles, on the reasoning that carrying no
+ * process identity is better than carrying one in seconds this build can no longer verify. That reasoning is
+ * sound about the *numbers* and irrelevant to whether the roles may be *dialed*, which is what the path
+ * actually did. Its only reachable population was a source-mode run meeting another source tree's capsule
+ * under the shared fallback build id, where "same build" is forged rather than true; and it wrote its
+ * upgraded bytes at the V1 filename, which discovery re-derives and rejects, so it manufactured a file
+ * guaranteed to fail its own author's next boot. Removed rather than repaired.
+ */
+export type ProviderProxySetInheritanceVerdict<T> =
+  | Readonly<{ kind: 'inheritable'; candidate: T }>
+  | Readonly<{ kind: 'refused'; reason: ProviderProxySetInheritanceRefusal }>;
+
+export function classifyProviderProxySetInheritance<T extends Readonly<{ buildSetId: string; version?: number }>>(
+  candidate: T,
+  ownBuildSetId: string,
+): ProviderProxySetInheritanceVerdict<Exclude<T, { version: 1 | 2 }>> {
+  if (candidate.buildSetId !== ownBuildSetId) return { kind: 'refused', reason: 'other-build' };
+  if (candidate.version === 1 || candidate.version === 2) {
+    return { kind: 'refused', reason: 'unreadable-identity' };
+  }
+  // The verdict carries the narrowing so callers need no cast: refusing every generation whose identity this
+  // build cannot read is what leaves the shapes it can actually act on, and saying so in the return type is
+  // what keeps it true.
+  return { kind: 'inheritable', candidate: candidate as Exclude<T, { version: 1 | 2 }> };
+}
+
 function canonicalOperationSet(operations: readonly OperationIdentity[]): string[] {
   return [
     ...new Set(
@@ -260,7 +306,7 @@ function sameOperationSet(left: readonly OperationIdentity[], right: readonly Op
 /** Every field a capsule read back from disk must agree with the locator that named its address, plus this
  *  successor's own build, because bytes for any other set cannot establish authority over this one. */
 function capsuleMatchesLocator(
-  capsule: HandoffCapsule,
+  capsule: HandoffCapsuleV3,
   reference: ProviderProxySetLocator,
   successor: CoordinatorIdentity,
 ): boolean {
@@ -288,22 +334,44 @@ async function proveProviderProxySetContainmentAbsent(
   signal: AbortSignal,
 ): Promise<string | null> {
   const platform = runtime.env.platform() as NodeJS.Platform;
+  const operationScan = readProviderOperations(db);
+  // An unreadable row may name another provider root for *this* set, and acting on the decoded subset would
+  // let that root survive outside the process group while this function minted a disappearance receipt. So the
+  // proof stays unknown — but only for the sets the row could belong to, which is asked of both its key and
+  // its bytes. Those disagree exactly when the decode failed *because* they disagree, and a row attributable
+  // from neither side could belong to any set, so it fences all of them.
+  const hidesARootOfThisSet = attributeUnreadableProviderOperations(db, operationScan.unreadableKeys).some(
+    ({ sets }) =>
+      sets.kind === 'indeterminate' ||
+      sets.values.some(
+        (address) => address.proxyInstanceId === identity.proxyInstanceId && address.buildSetId === identity.buildSetId,
+      ),
+  );
+  if (hidesARootOfThisSet) return null;
   const enforcerIdentities = [
-    { pid: identity.guardianPid, processStartedAtSeconds: identity.guardianProcessStartedAtSeconds },
-    { pid: identity.reaperPid, processStartedAtSeconds: identity.reaperProcessStartedAtSeconds },
+    { pid: identity.guardianPid, incarnation: identity.guardianIncarnation },
+    { pid: identity.reaperPid, incarnation: identity.reaperIncarnation },
   ];
-  // Existence, not identity. These start times were recorded by the guardian and the reaper, not by this
-  // coordinator, and a value derived in another process sits on another clock base — requiring an exact
-  // match concluded that a live enforcer was gone, after which this function reaped a running set and
-  // minted a disappearance receipt for it.
+  // Identity, now that identity is comparable. These incarnations were recorded by the guardian and the
+  // reaper rather than by this coordinator, and while the value carried a per-process clock term that made
+  // it useless across processes this had to settle for existence — a readable pid meant "might be ours".
+  // The token removed the clock term: a recorded incarnation and a fresh probe of the same process produce
+  // the same bytes, so a *different* one is not ambiguity, it is proof the pid belongs to someone else.
   //
-  // A readable start time already proves the pid exists; whether it is still *our* enforcer is what this
-  // coordinator cannot tell, so it assumes it might be. That is strictly more conservative than the
-  // comparison it replaces, and this path exists to prove absence — it may only do so when absence is
-  // observable, never inferred from a disagreement.
-  const enforcerMayStillBeLive = enforcerIdentities.some((identity) => {
+  // Existence-only was safe in the direction that matters but not free. An unrelated process inheriting an
+  // enforcer's pid blocked this proof forever, and a set that can never be proven absent is a set whose
+  // operations never settle.
+  //
+  // The unreadable case is unchanged and stays conservative: nothing observed is not absence, so a pid that
+  // is alive but unreadable still counts as possibly ours. This mirrors `observeProcessIdentity`
+  // (`infra/process-containment.ts`) deliberately rather than sharing it — that one throws on ambiguity
+  // because it is about to signal, and this one must return, because it is only allowed to conclude.
+  const enforcerMayStillBeLive = enforcerIdentities.some((enforcer) => {
     try {
-      return probeProcessStartedAtSeconds(identity.pid, platform) !== null || runtime.process.isAlive(identity.pid);
+      const live = probeProcessIncarnation(enforcer.pid, platform);
+      // Unreadable identity falls back to liveness, where anything but an observed absence keeps this enforcer
+      // "may still be live" — the conservative direction, since the caller may only conclude absence.
+      return live === null ? runtime.process.observeLiveness(enforcer.pid) !== 'absent' : live === enforcer.incarnation;
     } catch {
       return true;
     }
@@ -313,20 +381,20 @@ async function proveProviderProxySetContainmentAbsent(
   }
   signal.throwIfAborted();
 
-  const roots = new Map<string, Readonly<{ pid: number; processStartedAtSeconds: number }>>();
-  for (const record of readProviderOperations(db)) {
+  const roots = new Map<string, Readonly<{ pid: number; incarnation: ProcessIncarnation }>>();
+  for (const record of operationScan.records) {
     if (
       !('providerRoot' in record) ||
       !providerProxySetIdentitiesEqual(providerProxySetIdentityFromRecord(record), identity)
     ) {
       continue;
     }
-    roots.set(`${record.providerRoot.pid}@${record.providerRoot.processStartedAtSeconds}`, record.providerRoot);
+    roots.set(`${record.providerRoot.pid}@${record.providerRoot.incarnation}`, record.providerRoot);
   }
   const recordedRoots = [...roots.values()];
   const containment = {
     pid: identity.proxyPid,
-    processStartedAtSeconds: identity.proxyProcessStartedAtSeconds,
+    incarnation: identity.proxyIncarnation,
     processGroupId: identity.proxyProcessGroupId,
   };
   const clock = createMonotonicClock(providerSetDisappearanceClockScope);
@@ -358,7 +426,7 @@ async function proveProviderProxySetContainmentAbsent(
  */
 async function redeemCapsule(
   capsulePath: string,
-  capsule: HandoffCapsule,
+  capsule: HandoffCapsuleV3,
   expectedIdentity: ProviderProxySetIdentity | null,
   deps: ProviderProxySetInheritanceDeps,
   signal: AbortSignal,
@@ -478,23 +546,23 @@ async function redeemCapsule(
       hostFingerprint: proxyIdentity.hostFingerprint,
       guardianInstanceId: guardianIdentity.guardianInstanceId,
       guardianPid: guardianIdentity.pid,
-      guardianProcessStartedAtSeconds: guardianIdentity.processStartedAtSeconds,
+      guardianIncarnation: guardianIdentity.incarnation,
       guardianControlEndpoint: guardianIdentity.canonicalControlEndpoint,
       proxyInstanceId: proxyIdentity.proxyInstanceId,
       proxyPid: proxyIdentity.pid,
       reaperInstanceId: reaperIdentity.reaperInstanceId,
       reaperPid: reaperIdentity.pid,
-      reaperProcessStartedAtSeconds: reaperIdentity.processStartedAtSeconds,
+      reaperIncarnation: reaperIdentity.incarnation,
       reaperControlEndpoint: reaperIdentity.canonicalControlEndpoint,
       containmentKind: reaperIdentity.containmentKind,
-      proxyProcessStartedAtSeconds: proxyIdentity.processStartedAtSeconds,
+      proxyIncarnation: proxyIdentity.incarnation,
       proxyProcessGroupId: proxyIdentity.processGroupId,
       canonicalEndpoint: proxyIdentity.canonicalEndpoint,
     });
     if (
       JSON.stringify(guardianReportedReaper) !== JSON.stringify(reaperIdentity) ||
       containment.pid !== proxyIdentity.pid ||
-      containment.processStartedAtSeconds !== proxyIdentity.processStartedAtSeconds ||
+      containment.incarnation !== proxyIdentity.incarnation ||
       containment.processGroupId !== proxyIdentity.processGroupId ||
       containment.containmentKind !== reaperIdentity.containmentKind ||
       capsule.buildSetId !== setIdentity.buildSetId ||
@@ -571,7 +639,13 @@ async function redeem(
   signal: AbortSignal,
 ): Promise<ProviderProxySetInheritanceOutcome> {
   const { operation, locator } = reference;
-  const capsulePath = providerHandoffCapsulePath(
+  // Refused before the capsule is even read, because reading it is one step from dialing it. Not-bequeathed is
+  // the honest outcome rather than an error: there is genuinely nothing here this build may inherit, and the
+  // caller already knows how to settle a set it could not take over.
+  if (classifyProviderProxySetInheritance(operation, deps.coordinatorIdentity.buildSetId).kind === 'refused') {
+    return { kind: 'not-bequeathed', reason: 'the recorded set belongs to another build' };
+  }
+  const capsulePath = currentHandoffCapsulePath(
     {
       generation: deps.coordinatorIdentity.generation,
       flavor: deps.coordinatorIdentity.flavor,
@@ -586,10 +660,21 @@ async function redeem(
     uid: process.getuid?.() ?? 0,
   });
   if (capsule === null) return { kind: 'not-bequeathed', reason: NOTHING_TO_INHERIT_REASON };
-  if (!capsuleMatchesLocator(capsule, reference, deps.coordinatorIdentity)) {
+  const verdict = classifyProviderProxySetInheritance(capsule, deps.coordinatorIdentity.buildSetId);
+  if (verdict.kind === 'refused') {
+    return { kind: 'not-bequeathed', reason: 'the capsule predates the process incarnation token' };
+  }
+  const inheritableCapsule = verdict.candidate;
+  if (!capsuleMatchesLocator(inheritableCapsule, reference, deps.coordinatorIdentity)) {
     return { kind: 'not-bequeathed', reason: 'capsule identity disagrees with the committed locator' };
   }
-  const set = await redeemCapsule(capsulePath, capsule, providerProxySetIdentityFromRecord(reference), deps, signal);
+  const set = await redeemCapsule(
+    capsulePath,
+    inheritableCapsule,
+    providerProxySetIdentityFromRecord(reference),
+    deps,
+    signal,
+  );
   return { kind: 'inherited', set };
 }
 
@@ -648,7 +733,7 @@ export interface ProviderProxySetInheritance {
     signal: AbortSignal,
   ): Promise<ProviderProxySetInheritanceOutcome>;
   redeemDiscoveredCapsule(
-    capsule: HandoffCapsule,
+    capsule: HandoffCapsuleV3,
     capsulePath: string,
     signal: AbortSignal,
   ): Promise<ProviderProxySetRedemptionOutcome>;
@@ -680,14 +765,14 @@ export function createProviderProxySetInheritance(
   ): ProviderProxySetInheritanceDeps | null => {
     const pid = options.runtime.env.pid();
     const platform = options.runtime.env.platform() as NodeJS.Platform;
-    const processStartedAtSeconds = probeProcessStartedAtSeconds(pid, platform);
-    if (processStartedAtSeconds === null) return null;
+    const incarnation = probeProcessIncarnation(pid, platform);
+    if (incarnation === null) return null;
     return {
       runtime: options.runtime,
       coordinatorIdentity: {
         instanceId: options.identity.instanceId,
         pid,
-        processStartedAtSeconds,
+        incarnation,
         generation: 'gen2',
         flavor: options.identity.flavor,
         buildSetId: options.identity.buildSetId,
@@ -710,7 +795,7 @@ export function createProviderProxySetInheritance(
           const inheritanceDeps = deps(options.registerInheritedSet);
           let outcome: ProviderProxySetInheritanceOutcome;
           if (inheritanceDeps === null) {
-            outcome = { kind: 'not-bequeathed', reason: 'could not read this coordinator process’s own start time' };
+            outcome = { kind: 'not-bequeathed', reason: 'could not read this coordinator process’s own incarnation' };
           } else {
             const deadline = await runProviderProxyRecoveryDeadline({
               time: options.runtime.time,
@@ -734,7 +819,7 @@ export function createProviderProxySetInheritance(
     async redeemDiscoveredCapsule(capsule, capsulePath, signal) {
       const inheritanceDeps = deps();
       if (inheritanceDeps === null) {
-        throw new Error('could not read this coordinator process’s own start time');
+        throw new Error('could not read this coordinator process’s own incarnation');
       }
       const deadline = await runProviderProxyRecoveryDeadline({
         time: options.runtime.time,

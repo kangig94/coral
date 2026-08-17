@@ -4,7 +4,12 @@ import { BUILD_FLAVOR_ENV_KEY, resolveBuildFlavor } from '../infra/build-flavor.
 import { backendLog } from '../infra/backend-log.js';
 import type { StrictBundleIdentityResult } from '../infra/bundle-manifest.js';
 import { createMonotonicClock, type MonotonicClock } from '../infra/monotonic-clock.js';
-import { probeProcessStartedAtSeconds } from '../infra/node-process.js';
+import {
+  incarnationMayAuthorizeSignal,
+  probeProcessIncarnation,
+  type ProcessIncarnation,
+  type ProcessLiveness,
+} from '../infra/node-process.js';
 import { providerProxyBootstrapCapsulePath, providerReaperBootstrapCapsulePath } from '../infra/path/index.js';
 import {
   CONTAINMENT_DISAPPEARANCE_CONFIRM_MS,
@@ -96,7 +101,7 @@ export type ProviderRoleMainPorts = Readonly<{
   /** Injected for tests; defaults to the real embedded-vs-adjacent-manifest strict identity check. */
   resolveStrictIdentity?(): StrictBundleIdentityResult;
   /** Injected for tests; defaults to the real per-platform `/proc` or `ps` probe. */
-  readProcessStartedAtSeconds?(pid: number, platform: NodeJS.Platform): number | null;
+  readProcessIncarnation?(pid: number, platform: NodeJS.Platform): ProcessIncarnation | null;
   /** Injected for tests; defaults to the real `process.exit`. Called once a guardian or reaper's enforcement
    *  outcome has settled and its own control has closed — its only reason to keep running was bounding one
    *  containment, and there is nothing left to bound once teardown is done. */
@@ -129,11 +134,9 @@ function buildContainmentEnvironment<Scope extends symbol>(
   return {
     maxRecordedRoots: MAX_PROXY_RECORDED_PROVIDER_ROOTS,
     clock,
-    process: { kill: ports.runtime.process.kill, isAlive: ports.runtime.process.isAlive },
+    process: { kill: ports.runtime.process.kill, observeLiveness: ports.runtime.process.observeLiveness },
     platform: ports.runtime.env.platform() as NodeJS.Platform,
-    ...(ports.readProcessStartedAtSeconds === undefined
-      ? {}
-      : { readProcessStartedAtSeconds: ports.readProcessStartedAtSeconds }),
+    ...(ports.readProcessIncarnation === undefined ? {} : { readProcessIncarnation: ports.readProcessIncarnation }),
   };
 }
 
@@ -151,9 +154,7 @@ function buildSpawnPorts(ports: ProviderRoleMainPorts): RoleSpawnPorts {
     process: ports.runtime.process,
     runtime: ports.runtime,
     platform: ports.runtime.env.platform() as NodeJS.Platform,
-    ...(ports.readProcessStartedAtSeconds === undefined
-      ? {}
-      : { readProcessStartedAtSeconds: ports.readProcessStartedAtSeconds }),
+    ...(ports.readProcessIncarnation === undefined ? {} : { readProcessIncarnation: ports.readProcessIncarnation }),
   };
 }
 
@@ -167,17 +168,17 @@ function realRoleOutcomeScheduler(ports: ProviderRoleMainPorts): RoleOutcomeSche
   };
 }
 
-/** This role's own pid and start time. A role that cannot read its own start time cannot construct an
+/** This role's own pid and incarnation. A role that cannot read its own incarnation cannot construct an
  *  identity anyone else could later verify against, so it fails rather than reporting a bare pid. */
-function readSelfIdentity(ports: ProviderRoleMainPorts): Readonly<{ pid: number; processStartedAtSeconds: number }> {
+function readSelfIdentity(ports: ProviderRoleMainPorts): Readonly<{ pid: number; incarnation: ProcessIncarnation }> {
   const pid = ports.runtime.env.pid();
   const platform = ports.runtime.env.platform() as NodeJS.Platform;
-  const read = ports.readProcessStartedAtSeconds ?? probeProcessStartedAtSeconds;
-  const processStartedAtSeconds = read(pid, platform);
-  if (processStartedAtSeconds === null) {
-    throw new Error(`Could not read this process's own start time (pid ${pid}).`);
+  const read = ports.readProcessIncarnation ?? probeProcessIncarnation;
+  const incarnation = read(pid, platform);
+  if (incarnation === null) {
+    throw new Error(`Could not read this process's own incarnation (pid ${pid}).`);
   }
-  return { pid, processStartedAtSeconds };
+  return { pid, incarnation };
 }
 
 function reaperCapsulePathFrom(capsule: GuardianBootstrapCapsule, baseDir: string | undefined): string {
@@ -246,9 +247,14 @@ function isStillTheRecordedProcess<Scope extends symbol>(
   identity: RecordedProcessIdentity,
   environment: ProcessContainmentEnvironment<Scope>,
 ): boolean {
-  const read = environment.readProcessStartedAtSeconds ?? probeProcessStartedAtSeconds;
+  // Where an incarnation cannot authorize a signal, a match is not evidence and this answers no. It is the
+  // conservative direction: the caller declines to reap, and the role it declined to reap is a role that
+  // never received control, so its own orphan deadline ends it. A few tens of seconds of an orphaned group
+  // is the whole cost; SIGKILL to whatever else now holds the pid is not recoverable at all.
+  if (!incarnationMayAuthorizeSignal(environment.platform)) return false;
+  const read = environment.readProcessIncarnation ?? probeProcessIncarnation;
   try {
-    return read(identity.pid, environment.platform) === identity.processStartedAtSeconds;
+    return read(identity.pid, environment.platform) === identity.incarnation;
   } catch {
     return false;
   }
@@ -268,21 +274,23 @@ async function signalAndConfirmAbsence<Scope extends symbol>(
   graceMs: number,
   clock: MonotonicClock<Scope>,
   environment: ProcessContainmentEnvironment<Scope>,
-): Promise<boolean> {
+): Promise<ProcessLiveness> {
   environment.process.kill(target, signal);
   const waitDeadline = clock.shiftMilliseconds(clock.now(), graceMs);
-  while (environment.process.isAlive(target) && clock.compare(clock.now(), waitDeadline) < 0) {
+  while (environment.process.observeLiveness(target) === 'alive' && clock.compare(clock.now(), waitDeadline) < 0) {
     await clock.sleep(ABSENCE_POLL_MS);
   }
-  if (environment.process.isAlive(target)) return false;
+  const afterGrace = environment.process.observeLiveness(target);
+  if (afterGrace !== 'absent') return afterGrace;
 
   const confirmDeadline = clock.shiftMilliseconds(clock.now(), CONTAINMENT_DISAPPEARANCE_CONFIRM_MS);
   while (clock.compare(clock.now(), confirmDeadline) < 0) {
-    if (environment.process.isAlive(target)) return false;
+    const observed = environment.process.observeLiveness(target);
+    if (observed !== 'absent') return observed;
     const remainingMs = clock.millisecondsBetween(clock.now(), confirmDeadline);
     await clock.sleep(Math.max(0, Math.min(ABSENCE_POLL_MS, remainingMs)));
   }
-  return !environment.process.isAlive(target);
+  return environment.process.observeLiveness(target);
 }
 
 /** Reaps one signal target — SIGTERM, escalating to SIGKILL after the standard grace period, absence
@@ -293,8 +301,19 @@ async function reapUnheldTarget<Scope extends symbol>(
   clock: MonotonicClock<Scope>,
   environment: ProcessContainmentEnvironment<Scope>,
 ): Promise<void> {
-  if (await signalAndConfirmAbsence(target, 'SIGTERM', SIGTERM_GRACE_MS, clock, environment)) return;
-  if (await signalAndConfirmAbsence(target, 'SIGKILL', SIGKILL_GRACE_MS, clock, environment)) return;
+  const afterTerm = await signalAndConfirmAbsence(target, 'SIGTERM', SIGTERM_GRACE_MS, clock, environment);
+  if (afterTerm === 'absent') return;
+  // Escalation needs observed life. `unknown` is not permission to send SIGKILL — the target may have exited
+  // during the grace and had its id reused, and this path signals a bare number.
+  //
+  // Unpinned, and worth saying so: guardian-construction unwind is private and reachable only by driving a
+  // real guardian to fail mid-construction, so mutating this branch away leaves the suite green. The identical
+  // rule at `spawn-undo.ts` and `process-containment.ts` is pinned; this one rides on their being the same
+  // rule, which is weaker than a test and stronger than nothing.
+  if (afterTerm === 'unknown') {
+    throw new Error(`Could not observe ${targetLabel} after SIGTERM; refusing to escalate to SIGKILL.`);
+  }
+  if ((await signalAndConfirmAbsence(target, 'SIGKILL', SIGKILL_GRACE_MS, clock, environment)) === 'absent') return;
   throw new Error(`Could not confirm ${targetLabel} exited after SIGTERM and SIGKILL.`);
 }
 
@@ -456,7 +475,7 @@ async function unwindGuardianConstruction(
       reapUnheldProcessGroup(
         {
           pid: proxySpawn.pid,
-          processStartedAtSeconds: proxySpawn.processStartedAtSeconds,
+          incarnation: proxySpawn.incarnation,
           processGroupId: proxySpawn.pid,
         },
         clock,
@@ -494,7 +513,7 @@ function raceReadinessAgainstSpawnFailure<T>(readiness: Promise<T>, spawnFailed:
  * starts listening, spawns the proxy as a new process-group leader, and records the containment it watched
  * being created. Each step is awaited in this exact order because the next one depends on it: the reaper
  * must exist before it can be paired with, the guardian must be listening before the proxy can connect to
- * it, and the proxy's pid and start time must be known before there is anything to record.
+ * it, and the proxy's pid and incarnation must be known before there is anything to record.
  *
  * The guardian owns the two cuts this function can fail at — the reaper spawn/pairing and the proxy spawn —
  * and therefore owns unwinding them: a half-built set is worse than none, because the enforcers arm on their
@@ -574,7 +593,7 @@ export async function startProviderGuardianRole(
       mintReceipt: () => ports.runtime.ids.uuid(),
       reaperChannel: pairedReaperChannel,
       self: readSelfIdentity(ports),
-      reaperSelf: { pid: reaperSpawn.pid, processStartedAtSeconds: reaperSpawn.processStartedAtSeconds },
+      reaperSelf: { pid: reaperSpawn.pid, incarnation: reaperSpawn.incarnation },
       onOutcome,
       onProgressViolation,
     });
@@ -591,7 +610,7 @@ export async function startProviderGuardianRole(
 
     const containmentRecorded = guardian.recordContainment({
       pid: proxySpawn.pid,
-      processStartedAtSeconds: proxySpawn.processStartedAtSeconds,
+      incarnation: proxySpawn.incarnation,
       processGroupId: proxySpawn.pid,
       containmentKind: DETACHED_CONTAINMENT_KIND,
     });
@@ -731,7 +750,7 @@ export function createProxyGuardianContainment(
           },
           reservation: reserved.reservation,
           providerPid: root.pid,
-          providerProcessStartedAtSeconds: root.processStartedAtSeconds,
+          providerIncarnation: root.incarnation,
         });
         guardianMayHoldMembership = true;
         const response = await deps.guardianChannel.call(
@@ -814,7 +833,7 @@ export async function startProviderProxyRole(
   const identity: ProxyIdentity = {
     proxyInstanceId: capsule.proxyInstanceId,
     pid: self.pid,
-    processStartedAtSeconds: self.processStartedAtSeconds,
+    incarnation: self.incarnation,
     processGroupId: self.pid,
     guardianInstanceId: capsule.guardianInstanceId,
     reaperInstanceId: capsule.reaperInstanceId,

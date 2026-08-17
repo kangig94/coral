@@ -1,4 +1,9 @@
-import { probeProcessStartedAtSeconds } from './node-process.js';
+import {
+  isProcessIncarnation,
+  probeProcessIncarnation,
+  type ProcessIncarnation,
+  type ProcessLiveness,
+} from './node-process.js';
 import type { MonotonicClock, MonotonicInstant } from './monotonic-clock.js';
 import {
   CONTAINMENT_DISAPPEARANCE_CONFIRM_MS,
@@ -15,7 +20,7 @@ export const ABSENCE_POLL_MS = 25;
 /** A recorded process identity that is safe to target only while both fields match. */
 export type RecordedProcessIdentity = Readonly<{
   pid: number;
-  processStartedAtSeconds: number;
+  incarnation: ProcessIncarnation;
 }>;
 
 /** A detached process leader and the process group it established. */
@@ -35,10 +40,10 @@ export type ProcessContainmentEnvironment<Scope extends symbol> = {
   readonly clock: MonotonicClock<Scope>;
   readonly process: {
     kill(pid: number, signal: NodeJS.Signals | 0): boolean;
-    isAlive(pid: number): boolean;
+    observeLiveness(pid: number): ProcessLiveness;
   };
   readonly platform: NodeJS.Platform;
-  readonly readProcessStartedAtSeconds?: (pid: number, platform: NodeJS.Platform) => number | null;
+  readonly readProcessIncarnation?: (pid: number, platform: NodeJS.Platform) => ProcessIncarnation | null;
   readonly signal?: AbortSignal;
 };
 
@@ -91,11 +96,11 @@ function assertPositiveSafeInteger(value: number, field: string): void {
 
 function assertProcessIdentity(identity: RecordedProcessIdentity, field: string): void {
   assertPositiveSafeInteger(identity.pid, `${field}.pid`);
-  if (!Number.isSafeInteger(identity.processStartedAtSeconds) || identity.processStartedAtSeconds < 0) {
+  if (!isProcessIncarnation(identity.incarnation)) {
     throw new ProcessContainmentError(
       'process_identity_unverified',
-      `${field}.processStartedAtSeconds must be a non-negative safe integer.`,
-      { field: `${field}.processStartedAtSeconds`, value: identity.processStartedAtSeconds },
+      `${field}.incarnation must be a non-empty incarnation token.`,
+      { field: `${field}.incarnation`, value: identity.incarnation },
     );
   }
 }
@@ -131,11 +136,11 @@ function assertRecordedSet(
   }
 }
 
-function readStartedAt<Scope extends symbol>(
+function readIncarnation<Scope extends symbol>(
   identity: RecordedProcessIdentity,
   environment: ProcessContainmentEnvironment<Scope>,
-): number | null {
-  const read = environment.readProcessStartedAtSeconds ?? probeProcessStartedAtSeconds;
+): ProcessIncarnation | null {
+  const read = environment.readProcessIncarnation ?? probeProcessIncarnation;
   try {
     return read(identity.pid, environment.platform);
   } catch {
@@ -147,19 +152,19 @@ function observeProcessIdentity<Scope extends symbol>(
   identity: RecordedProcessIdentity,
   environment: ProcessContainmentEnvironment<Scope>,
 ): TargetObservation {
-  const observedStartedAt = readStartedAt(identity, environment);
-  if (observedStartedAt === identity.processStartedAtSeconds) {
+  const observedIncarnation = readIncarnation(identity, environment);
+  if (observedIncarnation === identity.incarnation) {
     return 'present';
   }
-  if (observedStartedAt !== null) {
+  if (observedIncarnation !== null) {
     return 'absent';
   }
-  if (!environment.process.isAlive(identity.pid)) {
+  if (environment.process.observeLiveness(identity.pid) === 'absent') {
     return 'absent';
   }
   throw new ProcessContainmentError(
     'process_identity_unverified',
-    `Refusing to signal pid=${identity.pid} because its process start time is unavailable while it is alive.`,
+    `Refusing to signal pid=${identity.pid} because its process incarnation is unavailable while it is alive.`,
     { pid: identity.pid },
   );
 }
@@ -168,29 +173,40 @@ function observeContainment<Scope extends symbol>(
   containment: RecordedContainmentIdentity,
   environment: ProcessContainmentEnvironment<Scope>,
 ): TargetObservation {
-  const observedStartedAt = readStartedAt(containment, environment);
-  if (observedStartedAt !== null && observedStartedAt !== containment.processStartedAtSeconds) {
-    // A mismatched start time proves that pid no longer identifies the recorded leader, not that every member
+  const observedIncarnation = readIncarnation(containment, environment);
+  if (observedIncarnation !== null && observedIncarnation !== containment.incarnation) {
+    // A mismatched incarnation proves that pid no longer identifies the recorded leader, not that every member
     // of its old group is gone. Do not probe or signal -processGroupId after reuse because the numeric group can
     // no longer be proven ours. This can strand original members: the guarantee is never to signal the wrong
     // group, not always to reap ours.
     return 'absent';
   }
-  if (observedStartedAt === null && environment.process.isAlive(containment.pid)) {
+  if (observedIncarnation === null && environment.process.observeLiveness(containment.pid) !== 'absent') {
     throw new ProcessContainmentError(
       'process_identity_unverified',
-      `Refusing to signal process group ${containment.processGroupId} because its leader start time is unavailable while pid=${containment.pid} is alive.`,
+      `Refusing to signal process group ${containment.processGroupId} because its leader incarnation is unavailable while pid=${containment.pid} is alive.`,
       { pid: containment.pid, processGroupId: containment.processGroupId },
     );
   }
 
-  const groupIsAlive = environment.process.isAlive(-containment.processGroupId);
-  if (observedStartedAt === containment.processStartedAtSeconds && !groupIsAlive) {
+  // Three answers, and only two of them may decide. A group observed absent is absent; one observed alive is
+  // present and may be signalled. A group that could not be observed authorizes nothing — reading it as
+  // present would deliver SIGTERM and then SIGKILL to a numeric group nobody saw, which is what the boolean
+  // primitive threw to prevent and what `!== 'absent'` quietly reinstated.
+  const groupLiveness = environment.process.observeLiveness(-containment.processGroupId);
+  if (groupLiveness === 'unknown') {
+    throw new ProcessContainmentError(
+      'process_identity_unverified',
+      `Refusing to signal process group ${containment.processGroupId} because its liveness could not be observed.`,
+      { pid: containment.pid, processGroupId: containment.processGroupId },
+    );
+  }
+  if (observedIncarnation === containment.incarnation && groupLiveness === 'absent') {
     return 'absent';
   }
   // A detached group remains signalable after its verified leader exits; treating leader exit as group
   // absence would strand the containment's remaining members.
-  return groupIsAlive ? 'present' : 'absent';
+  return groupLiveness === 'alive' ? 'present' : 'absent';
 }
 
 function observeRecordedSet<Scope extends symbol>(

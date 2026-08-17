@@ -43,7 +43,6 @@ import {
   discoverProviderHandoffCapsules,
   retireProviderHandoffCapsule,
 } from '../services/provider-proxy-capsule-discovery.js';
-import { writeHandoffCapsuleFile } from '../../provider-proxy/handoff-capsule.js';
 import { proxyOperationStatusNonceSchema } from '../../provider-proxy/protocol.js';
 import { providerProxySetAvailabilityReason } from '../services/provider-proxy-set/inheritance.js';
 import {
@@ -118,11 +117,6 @@ export function createExecutionServices({
         providerProxyInheritance === undefined
           ? Promise.resolve(null)
           : providerProxyInheritance.proveContainmentAbsent(identity, getProgressStore().getDb(), signal),
-      'capsule-rewrite': ({ path, capsule }) =>
-        writeHandoffCapsuleFile(path, capsule, {
-          storage: runtime.storage,
-          uid: process.getuid?.() ?? 0,
-        }),
       'capsule-retirement': ({ path }) => retireProviderHandoffCapsule(runtime.storage, path),
       'disappearance-consumer': ({ notice }) => providerOperationReconciler.containmentDisappeared(notice),
     },
@@ -244,6 +238,7 @@ export function createExecutionServices({
     onError: (message) => backendLog.warn(message),
   });
   const providerProxyLifecycle: ProviderProxySetLifecycle = new ProviderProxySetLifecycle({
+    buildSetId: world.identity.buildSetId,
     claims: world.providerProxyClaims,
     controlEstablished: notifyProviderProxyControlEstablished,
     time: runtime.time,
@@ -267,7 +262,16 @@ export function createExecutionServices({
   const initializeProviderProxyClaims = (): void => {
     if (providerProxyClaimsInitialized) return;
     const db = getProgressStore().getDb();
-    world.providerProxyClaims.initialize(readProviderOperations(db));
+    const scan = readProviderOperations(db);
+    if (scan.unreadableKeys.length > 0) {
+      // The first scan on the boot path, so this is where an operator learns. Reported once and by key: the
+      // rows stay in the store, this build simply cannot act on them, and refusing to boot over them would
+      // trade a stalled operation for no daemon at all.
+      backendLog.warn(
+        `Skipped ${scan.unreadableKeys.length} provider operation record(s) this build cannot read: ${scan.unreadableKeys.join(', ')}`,
+      );
+    }
+    world.providerProxyClaims.initialize(scan.records);
     providerProxyClaimsInitialized = true;
     unsubscribeProviderOperationMutations = subscribeProviderOperationMutations(db, (mutation) => {
       world.providerProxyClaims.applyMutation(mutation);

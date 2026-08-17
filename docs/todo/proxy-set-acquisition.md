@@ -118,7 +118,22 @@ cross-frame mismatch as absence **without ever probing `-processGroupId`**, `con
 same mismatch and agrees, the reap returns cleanly, and a disappearance receipt is minted for a live
 group that nothing will ever signal.
 
-### The direction: fix the primitive, and the question dissolves
+### Shipped: the primitive is now an opaque token
+
+`processStartedAtSeconds` is gone. `ProcessIncarnation` is a branded string — `linux:<boot_id>:<startTicks>`
+on Linux, and the kernel-stored creation stamps macOS and Windows already expose — with no clock term, no
+`HZ` division and no `Math.floor`. Every comparison in the table above is now sound, because both sides
+name the same kernel fact instead of each adding its own reading of a moving clock.
+
+The brand is the enforcement, and it earned that on the first compile: `process-containment.ts` was
+found doing `identity.incarnation < 0`, an ordering on an identity, which a string simply cannot express.
+An invariant test (`tests/invariants/process-incarnation-opacity.test.ts`) is the backstop for the one
+thing the type cannot catch — a module rebuilding an absolute timestamp from `/proc/stat` btime.
+
+Deleted with it: btime parsing and its cache, `HZ` parsing and its cache, the `getconf` subprocess, and
+the `CORAL_DISCOVERY_PROBE_CLK_TCK` environment variable with its row in `docs/configuration.md`.
+
+### Why the primitive was the answer, and the question dissolved
 
 `observeContainment` (`infra/process-containment.ts`) reads a mismatch as absence, and **for its
 original caller that is correct**: the reaper recorded the value itself, so a disagreement really does

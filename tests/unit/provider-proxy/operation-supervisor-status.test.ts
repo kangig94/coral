@@ -1,3 +1,4 @@
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { randomUUID } from 'node:crypto';
 
 import { describe, expect, it } from 'vitest';
@@ -65,7 +66,7 @@ describe('OperationSupervisor.status', () => {
       stageProviderRoot: () => ({
         result: Promise.resolve({
           state: 'staged',
-          providerRoot: { pid: 4_242, processStartedAtSeconds: 1_700_000_000 },
+          providerRoot: { pid: 4_242, incarnation: testIncarnation(1_700_000_000) },
           receipt: jointContainmentReceiptSchema.parse('live-ledger-containment'),
         }),
         confirmActivation: async () => {},

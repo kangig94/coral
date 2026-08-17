@@ -1,3 +1,4 @@
+import type { ProcessLiveness } from '#src/infra/node-process.js';
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -18,6 +19,7 @@ import type { RecoveryCapableService, ProviderRecoveryAuthority } from '#src/job
 import type { JobLaunch } from '#src/jobs/records.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import { insertProviderOperation, readProviderOperation } from '#src/store/provider-operation-journal.js';
+import { encodeProviderOperationRecord } from '#src/store/provider-operation-record.js';
 import { providerOperationRecordSchema, type ProviderOperationRecord } from '#src/store/provider-operation-record.js';
 import { ProviderOperationReconciler } from '#src/coordinator/services/provider-operation-reconciler.js';
 import type { DurableProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
@@ -160,7 +162,6 @@ function createFakeService(overrides: Partial<RecoveryCapableService> = {}): Rec
         boundProvider: { name: launchRecord.provider },
       } as unknown as ProviderRecoveryAuthority,
     })),
-    finalizeProviderRecoveryBindingFailure: vi.fn(),
     finalizeInterruptedAppServerJob: vi.fn(async () => {}),
     finalizeInterruptedDurableJob: vi.fn(async () => {}),
     adoptRunningJob: vi.fn(async () => ({ adopted: true, cleanup: vi.fn() })),
@@ -343,6 +344,177 @@ describe('runStartupRecovery provider-operation ownership', () => {
     expect.soft(recoverTargetQueuedJob, 'recoverQueuedJob').toHaveBeenCalledTimes(1);
     expect.soft(recoveredLaunchCount).toBe(1);
     await recoveryCoordinator.teardown();
+  });
+
+  // The fence's other half. A row this build cannot read keeps its job away from generic recovery so the boot
+  // survives — but nothing decodes the row, so nothing settles the job either, and it stays live in `jobs` and
+  // unending under `wait` forever. Absence of every recorded process is provable without decoding anything,
+  // and once the row is gone the job reaches ordinary recovery like any other.
+  it('retires a superseded saga row whose processes are all absent, and keeps one that is not', async () => {
+    const baseRuntime = createRealRuntime('prod');
+    const liveProcessGroupId = 70_001;
+    const failedProbePid = 70_003;
+    const observeLiveness = vi.fn((target: number): ProcessLiveness => {
+      // The probe that cannot answer is now a value, not a throw — which is the whole point of the change.
+      if (target === failedProbePid) return 'unknown';
+      return target === process.pid || target === -liveProcessGroupId ? 'alive' : 'absent';
+    });
+    const kill = vi.fn(baseRuntime.process.kill);
+    const runtime = { ...baseRuntime, process: { ...baseRuntime.process, observeLiveness, kill } };
+    const progressStore = createProgressStore(runtime);
+    const goneJobId = randomUUID();
+    const liveJobId = randomUUID();
+    const groupJobId = randomUUID();
+    const zeroTargetJobId = randomUUID();
+    const failedProbeJobId = randomUUID();
+    seedQueuedProviderJob(progressStore, { jobId: goneJobId, sessionId: randomUUID(), enqueueSequence: 1 });
+    seedQueuedProviderJob(progressStore, { jobId: liveJobId, sessionId: randomUUID(), enqueueSequence: 2 });
+    seedQueuedProviderJob(progressStore, { jobId: groupJobId, sessionId: randomUUID(), enqueueSequence: 3 });
+    seedQueuedProviderJob(progressStore, { jobId: zeroTargetJobId, sessionId: randomUUID(), enqueueSequence: 4 });
+    seedQueuedProviderJob(progressStore, { jobId: failedProbeJobId, sessionId: randomUUID(), enqueueSequence: 5 });
+
+    const seedSuperseded = (jobId: string, pid: number, processGroupId = pid, keyOverride?: string): string => {
+      const fixture = providerOperationRecord('prepare-pending');
+      const shipped = JSON.parse(encodeProviderOperationRecord(fixture)) as {
+        locator: Record<string, Record<string, unknown>>;
+        providerRoot?: Record<string, unknown>;
+      };
+      for (const part of ['proxy', 'guardian', 'reaper', 'containment']) {
+        const entry = shipped.locator[part];
+        if (entry === undefined) continue;
+        delete entry.incarnation;
+        entry.processStartedAtSeconds = 1_700_000_000;
+        entry.pid = pid;
+      }
+      if (shipped.locator.containment !== undefined) shipped.locator.containment.processGroupId = processGroupId;
+      if (shipped.providerRoot !== undefined) shipped.providerRoot.pid = pid;
+      const key =
+        keyOverride ??
+        `provider_operation_saga.v1:record:${jobId}:${fixture.operation.operationId}:` +
+          `${fixture.operation.proxyInstanceId}:${fixture.operation.buildSetId}`;
+      progressStore
+        .getDb()
+        .prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)')
+        .run(key, JSON.stringify(shipped));
+      return key;
+    };
+    const goneKey = seedSuperseded(goneJobId, 0x7f_ff_ff_ff);
+    const liveKey = seedSuperseded(liveJobId, process.pid);
+    const groupKey = seedSuperseded(groupJobId, 70_002, liveProcessGroupId);
+    const zeroTargetKey = seedSuperseded(zeroTargetJobId, 0, 0);
+    const failedProbeKey = seedSuperseded(failedProbeJobId, failedProbePid);
+    const noncanonicalGoneKey = seedSuperseded(
+      goneJobId,
+      0x7f_ff_ff_fe,
+      0x7f_ff_ff_fe,
+      'provider_operation_saga.v1:record:noncanonical-with-absent-targets',
+    );
+
+    // The third case, and the one that must never be confused with absence: a row whose pids cannot be read at
+    // all. "No pids observed" is not "no processes alive" — retiring on it would settle a job whose processes
+    // were never looked at.
+    const unwalkableJobId = randomUUID();
+    seedQueuedProviderJob(progressStore, { jobId: unwalkableJobId, sessionId: randomUUID(), enqueueSequence: 6 });
+    const unwalkableKey = `provider_operation_saga.v1:record:${unwalkableJobId}:${randomUUID()}:${randomUUID()}:${randomUUID()}`;
+    progressStore
+      .getDb()
+      .prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)')
+      .run(unwalkableKey, 'not json at all');
+
+    const fakeService = createFakeService({ recoverQueuedJob: vi.fn(async () => goneJobId) });
+    const getRecoveryService = (): RecoveryCapableService => fakeService;
+    const createInvocationContext = (projectRoot: string): InvocationContext => ({
+      projectRoot: fixtureCanonicalWorkDir(projectRoot),
+      pluginRoot: '/tmp/plugin',
+      coralEnv: {},
+      principal: testProjectPrincipal(projectRoot),
+    });
+    const signal = new AbortController().signal;
+    const log = vi.fn();
+    const boundRecovery = await createBoundJobsRecoveryHarness({
+      identity: {
+        pluginRoot: '/tmp/plugin',
+        namespace: NAMESPACE,
+        version: 'test-version',
+        buildSetId: '00000000-0000-4000-8000-000000000000',
+        bundleHash: 'test-bundle',
+        cliBundleHash: 'test-cli-bundle',
+        claudeAppserverBundleHash: 'test-claude-bundle',
+        flavor: 'prod',
+        instanceId: 'superseded-retirement-test',
+        token: 'test-token',
+        bootToken: 'test-boot-token',
+        shutdownToken: 'test-shutdown-token',
+        now: () => runtime.time.now(),
+        log,
+      },
+      runtime,
+      progressStore,
+      providerRegistry: {} as never,
+      getRecoveryService,
+      createInvocationContext,
+      signal,
+      coordinatorCommit: (cb: Parameters<JobStore['commit']>[0]) => progressStore.commit(cb),
+    });
+    const recoveryCoordinator = createRecoveryCoordinator(
+      {
+        progressStore,
+        runtime,
+        runtimeState: { setLaunchFenceActive: vi.fn() },
+        eventBus: { emit: vi.fn() } as never,
+        getRecoveryService,
+        createInvocationContext,
+        log,
+      },
+      boundRecovery.bound,
+    );
+
+    const rowExists = (key: string): boolean =>
+      progressStore.getDb().prepare<[string], { key: string }>('SELECT key FROM meta WHERE key = ?').all(key).length >
+      0;
+
+    // An indeterminate current-generation row contributes no fenced job id, preserving the permissive
+    // behavior that predates startup admission holds.
+    const unattributableKey = 'provider_operation_saga.v2:record:not-canonical';
+    progressStore
+      .getDb()
+      .prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)')
+      .run(unattributableKey, JSON.stringify({ version: 1, locator: {} }));
+
+    const beforeRetirement = recoveryCoordinator.snapshotProviderOperationStartupOwnership();
+    const payloadJobId = providerOperationRecord('prepare-pending').operation.jobId;
+    expect([...beforeRetirement.jobIds].sort()).toEqual(
+      [goneJobId, liveJobId, groupJobId, zeroTargetJobId, failedProbeJobId, unwalkableJobId, payloadJobId].sort(),
+    );
+    expect([goneKey, liveKey, groupKey, zeroTargetKey, failedProbeKey, unwalkableKey].every(rowExists)).toBe(true);
+
+    recoveryCoordinator.retireAbsentSupersededProviderOperations();
+    const ownership = recoveryCoordinator.snapshotProviderOperationStartupOwnership();
+
+    expect({
+      fenced: [...ownership.jobIds].sort(),
+      goneRowSurvives: rowExists(goneKey),
+      noncanonicalGoneRowSurvives: rowExists(noncanonicalGoneKey),
+      liveRowSurvives: rowExists(liveKey),
+      groupRowSurvives: rowExists(groupKey),
+      zeroTargetRowSurvives: rowExists(zeroTargetKey),
+      failedProbeRowSurvives: rowExists(failedProbeKey),
+      unwalkableRowSurvives: rowExists(unwalkableKey),
+    }).toEqual({
+      // Only the row with a non-empty, completely absent target set is unfenced. A live leader, a live group,
+      // an empty usable target set, and an unwalkable row all remain unknown or present and keep their fence.
+      fenced: [liveJobId, groupJobId, zeroTargetJobId, failedProbeJobId, unwalkableJobId, payloadJobId].sort(),
+      goneRowSurvives: false,
+      noncanonicalGoneRowSurvives: false,
+      liveRowSurvives: true,
+      groupRowSurvives: true,
+      zeroTargetRowSurvives: true,
+      failedProbeRowSurvives: true,
+      unwalkableRowSurvives: true,
+    });
+    expect(observeLiveness).toHaveBeenCalledWith(-liveProcessGroupId);
+    expect(observeLiveness).not.toHaveBeenCalledWith(0);
+    expect(kill).not.toHaveBeenCalled();
   });
 
   it('deduplicates a startup local-recovery handoff until the saga confirms deletion', async () => {

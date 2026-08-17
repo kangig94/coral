@@ -1,3 +1,5 @@
+import type { ProcessIncarnation } from '#src/infra/node-process.js';
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -226,7 +228,7 @@ async function startProxy(
   const identity: ProxyIdentity = {
     proxyInstanceId: capsule.proxyInstanceId,
     pid: 6_000,
-    processStartedAtSeconds: 800,
+    incarnation: testIncarnation(800),
     processGroupId: 6_000,
     guardianInstanceId: capsule.guardianInstanceId,
     reaperInstanceId: capsule.reaperInstanceId,
@@ -258,7 +260,7 @@ async function startProxy(
           options.stageProviderRoot ??
           (async () => ({
             state: 'staged' as const,
-            providerRoot: { pid: 7_000, processStartedAtSeconds: 900 },
+            providerRoot: { pid: 7_000, incarnation: testIncarnation(900) },
             receipt: asJointContainmentReceipt('joint-1'),
           }))
         )(abortController.signal);
@@ -300,7 +302,7 @@ async function startProxy(
   const coordinatorIdentity = {
     instanceId: randomUUID(),
     pid: 1,
-    processStartedAtSeconds: 1,
+    incarnation: testIncarnation(1),
     generation: 'gen2' as const,
     flavor: 'prod' as const,
     buildSetId,
@@ -666,7 +668,7 @@ describe('provider-proxy truthful operation authority', () => {
     const controlled = controlledTimer();
     const staging = deferred<{
       state: 'staged';
-      providerRoot: { pid: number; processStartedAtSeconds: number };
+      providerRoot: { pid: number; incarnation: ProcessIncarnation };
       receipt: JointContainmentReceipt;
     }>();
     const stageAborted = vi.fn();
@@ -694,7 +696,7 @@ describe('provider-proxy truthful operation authority', () => {
 
     staging.resolve({
       state: 'staged',
-      providerRoot: { pid: 7_000, processStartedAtSeconds: 900 },
+      providerRoot: { pid: 7_000, incarnation: testIncarnation(900) },
       receipt: asJointContainmentReceipt('joint-late'),
     });
     await expect(preparing).rejects.toThrow(/lease expired/u);
@@ -704,7 +706,7 @@ describe('provider-proxy truthful operation authority', () => {
   it('turns a late staging completion into release instead of publishing prepared', async () => {
     const staging = deferred<{
       state: 'staged';
-      providerRoot: { pid: number; processStartedAtSeconds: number };
+      providerRoot: { pid: number; incarnation: ProcessIncarnation };
       receipt: JointContainmentReceipt;
     }>();
     const host = fakeHost();
@@ -724,7 +726,7 @@ describe('provider-proxy truthful operation authority', () => {
 
     staging.resolve({
       state: 'staged',
-      providerRoot: { pid: 7_000, processStartedAtSeconds: 900 },
+      providerRoot: { pid: 7_000, incarnation: testIncarnation(900) },
       receipt: asJointContainmentReceipt('joint-late'),
     });
 
@@ -932,7 +934,7 @@ describe('provider-proxy truthful operation authority', () => {
   it('joins cancellation to in-flight staging before certifying never-started', async () => {
     const staging = deferred<{
       state: 'staged';
-      providerRoot: { pid: number; processStartedAtSeconds: number };
+      providerRoot: { pid: number; incarnation: ProcessIncarnation };
       receipt: JointContainmentReceipt;
     }>();
     const membershipRelease = deferred();
@@ -961,7 +963,7 @@ describe('provider-proxy truthful operation authority', () => {
 
     staging.resolve({
       state: 'staged',
-      providerRoot: { pid: 7_000, processStartedAtSeconds: 900 },
+      providerRoot: { pid: 7_000, incarnation: testIncarnation(900) },
       receipt: asJointContainmentReceipt('joint-1'),
     });
 

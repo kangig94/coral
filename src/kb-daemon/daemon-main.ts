@@ -1,3 +1,4 @@
+import { observeProcessLiveness, type ProcessLiveness } from '../infra/node-process.js';
 import {
   KB_DAEMON_EVENT_MESSAGE,
   KB_DAEMON_PARENT_REQUEST_MESSAGE,
@@ -97,15 +98,6 @@ export function resolveKbDaemonParentPid(value: string | undefined, selfPid = pr
   return pid;
 }
 
-export function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error: unknown) {
-    return (error as { code?: unknown }).code === 'EPERM';
-  }
-}
-
 export async function handleKbDaemonExpansionRpcRequest(
   params: unknown,
   kbWriteHost: KbDaemonExpansionRpcPort,
@@ -178,7 +170,7 @@ export async function handleKbDaemonExpansionRpcRequest(
 export type KbDaemonParentWatchdogOptions = {
   parentPid: number | null | undefined;
   intervalMs?: number;
-  isAlive?: (pid: number) => boolean;
+  observeLiveness?: (pid: number) => ProcessLiveness;
   getCurrentParentPid?: () => number;
   setIntervalFn?: (fn: () => void, ms: number) => IntervalHandle;
   clearIntervalFn?: (handle: IntervalHandle) => void;
@@ -194,7 +186,7 @@ export function startKbDaemonParentWatchdog(options: KbDaemonParentWatchdogOptio
     options.intervalMs !== undefined && Number.isFinite(options.intervalMs) && options.intervalMs > 0
       ? options.intervalMs
       : DEFAULT_PARENT_WATCHDOG_INTERVAL_MS;
-  const isAlive = options.isAlive ?? isProcessAlive;
+  const observeLiveness = options.observeLiveness ?? observeProcessLiveness;
   const getCurrentParentPid = options.getCurrentParentPid ?? (() => process.ppid);
   const setIntervalFn = options.setIntervalFn ?? setInterval;
   const clearIntervalFn = options.clearIntervalFn ?? clearInterval;
@@ -212,9 +204,12 @@ export function startKbDaemonParentWatchdog(options: KbDaemonParentWatchdogOptio
     options.onParentExit();
   };
   handle = setIntervalFn(() => {
-    if (getCurrentParentPid() !== parentPid || !isAlive(parentPid)) {
+    if (getCurrentParentPid() !== parentPid) {
       stopForParentExit();
+      return;
     }
+    // Only an observed absence is a parent that exited. Unknown asks again on the next tick.
+    if (observeLiveness(parentPid) === 'absent') stopForParentExit();
   }, intervalMs);
   (handle as { unref?: () => void }).unref?.();
   return handle;

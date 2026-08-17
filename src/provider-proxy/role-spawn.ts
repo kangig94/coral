@@ -1,6 +1,6 @@
 import { basename, join } from 'node:path';
 
-import { probeProcessStartedAtSeconds } from '../infra/node-process.js';
+import { probeProcessIncarnation, type ProcessIncarnation } from '../infra/node-process.js';
 import type { ChildProcessLike } from '../infra/port-types.js';
 import { gracefulKill } from '../infra/process-supervision.js';
 import type { Runtime } from '../runtime/ports.js';
@@ -28,7 +28,7 @@ const ROLE_FLAG_BY_ROLE: Readonly<Record<ProviderRole, string>> = Object.freeze(
   >,
 );
 
-export type RoleSpawnErrorCode = 'role_spawn_no_pid' | 'role_spawn_start_time_unavailable';
+export type RoleSpawnErrorCode = 'role_spawn_no_pid' | 'role_spawn_incarnation_unavailable';
 
 export class RoleSpawnError extends Error {
   readonly code: RoleSpawnErrorCode;
@@ -47,13 +47,13 @@ export type RoleSpawnPorts = Readonly<{
   process: Pick<Runtime['process'], 'spawn'>;
   /** Passed whole, not narrowed to `time`, because `gracefulKill` (`infra/process-supervision.ts`) takes a
    *  full `Runtime` — used only to escalate a spawn that must be killed before it ever became a role this
-   *  module tracks (`role_spawn_no_pid` / `role_spawn_start_time_unavailable`) from SIGTERM to SIGKILL after
+   *  module tracks (`role_spawn_no_pid` / `role_spawn_incarnation_unavailable`) from SIGTERM to SIGKILL after
    *  a grace period. */
   runtime: Runtime;
   platform: NodeJS.Platform;
-  /** Injected so a test can fake a spawned pid's start time without a real process existing. Defaults to
+  /** Injected so a test can fake a spawned pid's incarnation without a real process existing. Defaults to
    *  the real cross-platform `/proc` or `ps` probe. */
-  readProcessStartedAtSeconds?(pid: number, platform: NodeJS.Platform): number | null;
+  readProcessIncarnation?(pid: number, platform: NodeJS.Platform): ProcessIncarnation | null;
 }>;
 
 export type RoleSpawnOptions = Readonly<{
@@ -71,7 +71,7 @@ export type RoleSpawnOptions = Readonly<{
 export type SpawnedRoleProcess = Readonly<{
   child: ChildProcessLike;
   pid: number;
-  processStartedAtSeconds: number;
+  incarnation: ProcessIncarnation;
   /**
    * Rejects if this child later emits an async spawn error (Node reports ENOENT/EACCES this way, after the
    * synchronous `spawn()` call above already returned a pid); never settles otherwise. A caller races this
@@ -94,7 +94,7 @@ function resolveBackendArtifact(pluginRoot: string, currentEntrypoint: string | 
 /**
  * Spawns one role process from the existing backend artifact and verifies its identity before returning it.
  *
- * A pid alone is not an identity — it is recycled — so a spawn whose start time cannot be read fails rather
+ * A pid alone is not an identity — it is recycled — so a spawn whose incarnation cannot be read fails rather
  * than handing back a bare pid nothing could later verify against. The failed child is killed rather than
  * left to run unaccounted for.
  */
@@ -144,18 +144,18 @@ export function spawnRoleProcess(
     throw new RoleSpawnError('role_spawn_no_pid', role, `Spawning the ${role} role did not return a pid.`);
   }
 
-  const readStartedAt = ports.readProcessStartedAtSeconds ?? probeProcessStartedAtSeconds;
-  const processStartedAtSeconds = readStartedAt(child.pid, ports.platform);
-  if (processStartedAtSeconds === null) {
+  const readIncarnation = ports.readProcessIncarnation ?? probeProcessIncarnation;
+  const incarnation = readIncarnation(child.pid, ports.platform);
+  if (incarnation === null) {
     killFailedSpawn();
     throw new RoleSpawnError(
-      'role_spawn_start_time_unavailable',
+      'role_spawn_incarnation_unavailable',
       role,
-      `Could not read the start time of the spawned ${role} process (pid ${child.pid}).`,
+      `Could not read the incarnation of the spawned ${role} process (pid ${child.pid}).`,
     );
   }
 
-  return { child, pid: child.pid, processStartedAtSeconds, spawnFailed };
+  return { child, pid: child.pid, incarnation, spawnFailed };
 }
 
 /** Adapts the `Runtime` time port to the shape every control endpoint and client in this domain expects.

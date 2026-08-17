@@ -1,3 +1,4 @@
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -18,16 +19,16 @@ const SET: ProviderProxyOperationAuthority = {
     hostFingerprint: 'f'.repeat(64),
     guardianInstanceId: 'g1',
     guardianPid: 1,
-    guardianProcessStartedAtSeconds: 1,
+    guardianIncarnation: testIncarnation(1),
     guardianControlEndpoint: '/tmp/guardian.sock',
     proxyInstanceId: 'p1',
     proxyPid: 2,
     reaperInstanceId: 'r1',
     reaperPid: 3,
-    reaperProcessStartedAtSeconds: 1,
+    reaperIncarnation: testIncarnation(1),
     reaperControlEndpoint: '/tmp/reaper.sock',
     containmentKind: 'detached',
-    proxyProcessStartedAtSeconds: 1,
+    proxyIncarnation: testIncarnation(1),
     proxyProcessGroupId: 2,
     canonicalEndpoint: '/tmp/proxy.sock',
   },

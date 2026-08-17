@@ -1,3 +1,4 @@
+import type { ProcessIncarnation } from '../../infra/node-process.js';
 import { backendLog } from '../../infra/backend-log.js';
 import { errorMessage } from '../../infra/error-format.js';
 import type { LocalOperationRegistryState } from '../../jobs/carrier-observation.js';
@@ -27,7 +28,7 @@ export interface OperationStopControl {
 
 interface RegistryEntry {
   readonly identity: ProviderOperationEventIdentity;
-  readonly providerRoot: Readonly<{ pid: number; processStartedAtSeconds: number }>;
+  readonly providerRoot: Readonly<{ pid: number; incarnation: ProcessIncarnation }>;
   readonly control: OperationStopControl;
   readonly cleanup: ProviderOperationCleanupIdentity;
   readonly state: LocalOperationRegistryState;
@@ -184,11 +185,11 @@ export class LocalOperationRegistry {
    * accepts exactly that undershoot. Deduped by process identity, mirroring `ArmedEnforcer.recordedRoots()`: a
    * shared host serving more than one activated operation is one teardown target, not one per operation.
    */
-  providerRootsFor(proxyInstanceId: string): readonly Readonly<{ pid: number; processStartedAtSeconds: number }>[] {
-    const seen = new Map<string, Readonly<{ pid: number; processStartedAtSeconds: number }>>();
+  providerRootsFor(proxyInstanceId: string): readonly Readonly<{ pid: number; incarnation: ProcessIncarnation }>[] {
+    const seen = new Map<string, Readonly<{ pid: number; incarnation: ProcessIncarnation }>>();
     for (const entry of this.entries.values()) {
       if (entry.identity.proxyInstanceId !== proxyInstanceId) continue;
-      const key = `${entry.providerRoot.pid}@${entry.providerRoot.processStartedAtSeconds}`;
+      const key = `${entry.providerRoot.pid}@${entry.providerRoot.incarnation}`;
       if (!seen.has(key)) seen.set(key, entry.providerRoot);
     }
     return [...seen.values()];

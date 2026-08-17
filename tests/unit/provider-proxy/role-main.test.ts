@@ -1,3 +1,4 @@
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -213,7 +214,7 @@ function roleSenderPorts(directory: string): ProviderRoleMainPorts {
     runtime: createRealRuntime('prod'),
     pluginRoot: directory,
     baseDir: directory,
-    readProcessStartedAtSeconds: (pid) => (pid === process.pid ? 1 : null),
+    readProcessIncarnation: (pid) => (pid === process.pid ? testIncarnation(1) : null),
   };
 }
 
@@ -221,7 +222,7 @@ function fakeSpawnedRole(): unknown {
   return {
     child: {},
     pid: 2_000_000_000,
-    processStartedAtSeconds: 1,
+    incarnation: testIncarnation(1),
     spawnFailed: new Promise<never>(() => {}),
   };
 }

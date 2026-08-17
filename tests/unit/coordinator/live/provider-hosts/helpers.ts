@@ -1,3 +1,4 @@
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { afterEach, vi } from 'vitest';
 import { createDeferred } from '#tools/testing/deferred.js';
 import { createRealRuntime } from '#src/runtime/real.js';
@@ -119,7 +120,7 @@ export function createFakeProviderServerHandle(options?: {
       generation: options?.generation ?? 1,
       containmentIdentity:
         options?.containmentIdentity ??
-        Object.freeze({ pid, processStartedAtSeconds: 1_700_000_000 + pid, processGroupId: pid }),
+        Object.freeze({ pid, incarnation: testIncarnation(`1700000000-${pid}`), processGroupId: pid }),
       finishCloseAfterReap: finishCloseAfterReapMock,
       rpc: {
         request: requestMock as unknown as ProviderServerHandle['rpc']['request'],

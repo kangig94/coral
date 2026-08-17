@@ -245,18 +245,18 @@ describe('simulation runtime', () => {
     expect(stderr).toBe('child-err\n');
     expect(runtime.storage.readFileSync(durable.stdoutPath, 'utf-8')).toBe('progress-one\n');
     expect(runtime.storage.readFileSync(durable.stderrPath, 'utf-8')).toBe('warn-one\n');
-    expect(runtime.process.isAlive(durable.pid)).toBe(true);
+    expect(runtime.process.observeLiveness(durable.pid)).toBe('alive');
 
     runtime.process.kill(durable.pid, 'SIGTERM');
     expect(runtime.spawner.killCalls).toContainEqual({ pid: 30_001, signal: 'SIGTERM' });
-    expect(runtime.process.isAlive(durable.pid)).toBe(true);
+    expect(runtime.process.observeLiveness(durable.pid)).toBe('alive');
 
     runtime.time.tick(1);
     await expect(durableExitPromise).resolves.toMatchObject({
       exitCode: null,
       signal: 'SIGTERM',
     });
-    expect(runtime.process.isAlive(durable.pid)).toBe(false);
+    expect(runtime.process.observeLiveness(durable.pid)).toBe('absent');
 
     const ids = new SequentialIds();
     expect(ids.uuid()).toBe('00000000-0000-0000-0000-000000000001');
@@ -545,6 +545,25 @@ describe('simulation runtime', () => {
     await worldA.backend.waitForShutdown();
     expect(worldA.runtime.storage.existsSync(worldA.runtime.paths.coral.coordinator.infoFile)).toBe(false);
     expect(worldA.hooks.removeBackendInfoCalls.length).toBeGreaterThan(0);
+  });
+
+  // Without advancing the clock, which is the whole point. A script can retire a pid and allocate the same
+  // number again inside one virtual instant, and while incarnations were minted from the clock both spawns
+  // got the same token — a false *match* on a reused pid, the one outcome containment must never produce.
+  // The counter that replaced the clock is only observable here, so the old algorithm could return with the
+  // rest of the suite green.
+  it('gives a reused pid a different incarnation within one virtual instant', () => {
+    const runtime = new SimulationRuntime();
+    runtime.spawner.enqueueSpawn({ pid: 4242 });
+    runtime.spawner.enqueueSpawn({ pid: 4242 });
+
+    runtime.process.spawn({ command: 'fake-child', args: ['--first'] });
+    const first = runtime.spawner.readProcessIncarnation(4242);
+    runtime.process.spawn({ command: 'fake-child', args: ['--second'] });
+    const second = runtime.spawner.readProcessIncarnation(4242);
+
+    expect(first).not.toBeNull();
+    expect(second, 'a reused pid must never carry the incarnation of the process that had it').not.toBe(first);
   });
 });
 import { initTestJob } from '#tests/helpers/session.js';

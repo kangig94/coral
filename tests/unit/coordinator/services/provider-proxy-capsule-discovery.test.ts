@@ -5,7 +5,6 @@ import { basename, join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import { providerHandoffCapsulePath } from '#src/infra/path/index.js';
-import { writeHandoffCapsuleFile, type HandoffCapsule } from '#src/provider-proxy/handoff-capsule.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { StoragePort } from '#src/infra/port-types.js';
 import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set/claim-mirror.js';
@@ -14,7 +13,15 @@ import {
   discoverProviderHandoffCapsules,
   retireProviderHandoffCapsule,
 } from '#src/coordinator/services/provider-proxy-capsule-discovery.js';
+import {
+  CURRENT_HANDOFF_CAPSULE_VERSION,
+  SUPPORTED_HANDOFF_CAPSULE_VERSIONS,
+  type HandoffCapsule,
+} from '#src/provider-proxy/handoff-capsule.js';
 import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
+
+/** The build this fixture lifecycle belongs to — the same one its capsule carries, so discovery treats it as inheritable rather than foreign. */
+const FIXTURE_BUILD_SET_ID = '22222222-2222-4222-8222-222222222222';
 
 function retirementStorage(unlinkSync: () => void, syncDirectoryDurableSync: () => boolean): StoragePort {
   return { unlinkSync, syncDirectoryDurableSync } as unknown as StoragePort;
@@ -68,7 +75,74 @@ describe('provider proxy capsule discovery', () => {
     expect(syncDirectoryDurableSync).not.toHaveBeenCalled();
   });
 
-  it('discovers a canonical real-storage capsule and blocks matching fresh admission', () => {
+  // Copied from `git show v0.10.8:src/coordinator/services/provider-proxy-capsule-discovery.ts`, deliberately
+  // as a literal. It is the gate a rolled-back build applies before it opens anything, and this project can
+  // no longer unrelease — a bad version is answered by a forward one, so the build being rolled back to is a
+  // build already in the field whose source cannot be changed. Correct this only against that source.
+  const V0_10_8_DISCOVERY_PATTERN = /^provider-1[0-9a-f]{23}\.handoff\.json$/u;
+
+  it('writes a capsule a v0.10.8 build will not open', () => {
+    const identity = {
+      generation: 'gen2' as const,
+      flavor: 'prod' as const,
+      buildSetId: '22222222-2222-4222-8222-222222222222',
+      hostFingerprint: 'd'.repeat(64),
+      proxyInstanceId: '55555555-5555-4555-8555-555555555555',
+    };
+    const baseDir = '/tmp/coral-capsule-generation';
+
+    const current = basename(providerHandoffCapsulePath(identity, CURRENT_HANDOFF_CAPSULE_VERSION, { baseDir }));
+    const legacy = basename(providerHandoffCapsulePath(identity, 2, { baseDir }));
+
+    expect(
+      V0_10_8_DISCOVERY_PATTERN.test(current),
+      'a capsule this build writes must be invisible to v0.10.8, not fatal to it',
+    ).toBe(false);
+    // And the older generations stay exactly where they were, or this build stops finding what it must refuse.
+    expect(V0_10_8_DISCOVERY_PATTERN.test(legacy)).toBe(true);
+    expect(current).not.toBe(legacy);
+
+    // Stated over the whole owned list rather than two hand-picked members, so adding a generation cannot pass
+    // by nobody remembering to extend this: v0.10.8 sees exactly the two it shipped able to read, and nothing
+    // after them. A V4 added to the schema and forgotten here fails without anyone editing this test.
+    expect(
+      SUPPORTED_HANDOFF_CAPSULE_VERSIONS.map((version) => [
+        version,
+        V0_10_8_DISCOVERY_PATTERN.test(basename(providerHandoffCapsulePath(identity, version, { baseDir }))),
+      ]),
+    ).toEqual(SUPPORTED_HANDOFF_CAPSULE_VERSIONS.map((version) => [version, version <= 2]));
+  });
+
+  // The other direction, and the one that matters from here on: a build must not open a capsule it cannot
+  // decode, because refusing one is fatal at startup. A future generation's file has to be invisible to this
+  // build exactly as this build's is to v0.10.8 — otherwise rolling back onto it kills the coordinator.
+  it('does not discover a capsule generation it cannot decode', () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'coral-capsule-future-'));
+    const runtime = createRealRuntime('prod', { baseDir });
+    const runDir = runtime.paths.coral.coordinator.runDir;
+    runtime.storage.mkdirSync(runDir, { recursive: true, mode: 0o700 });
+    const stat = runtime.storage.statSync(baseDir, { bigint: true });
+    if (stat.uid === undefined) throw new Error('real storage did not report the temporary directory owner');
+
+    // A well-formed name of a generation this build has never heard of, holding bytes it cannot parse.
+    const future = join(runDir, 'provider-1aaaaaaaaaaaaaaaaaaaaaaa.handoff.v4.json');
+    runtime.storage.writeAtomicDurableSync(future, JSON.stringify({ version: 4 }), {
+      encoding: 'utf-8',
+      mode: 0o600,
+    });
+
+    expect(
+      discoverProviderHandoffCapsules({
+        runDir,
+        generationRoot: runtime.paths.coral.generation.root,
+        storage: runtime.storage,
+        uid: Number(stat.uid),
+      }),
+      'a generation this build cannot decode must never reach the decoder',
+    ).toEqual([]);
+  });
+
+  it('represents a canonical real-storage capsule it cannot inherit without blocking fresh admission', () => {
     const baseDir = mkdtempSync(join(tmpdir(), 'coral-provider-capsule-discovery-'));
     const runtime = createRealRuntime('prod', { baseDir });
     const runDir = runtime.paths.coral.coordinator.runDir;
@@ -90,10 +164,13 @@ describe('provider proxy capsule discovery', () => {
       orphanTimeoutMs: 30_000,
       teardownReserveMs: 14_000,
     };
-    const path = providerHandoffCapsulePath(capsule, { baseDir });
+    const path = providerHandoffCapsulePath(capsule, capsule.version, { baseDir });
     const stat = runtime.storage.statSync(baseDir, { bigint: true });
     if (stat.uid === undefined) throw new Error('real storage did not report the temporary directory owner');
-    writeHandoffCapsuleFile(path, capsule, { storage: runtime.storage, uid: Number(stat.uid) });
+    // Placed as bytes rather than through `writeHandoffCapsuleFile`, which now accepts V3 alone. This case is
+    // discovery finding a capsule an *older* build left behind, so producing it with the current writer would
+    // be testing a file production can no longer create.
+    runtime.storage.writeAtomicDurableSync(path, JSON.stringify(capsule), { encoding: 'utf-8', mode: 0o600 });
 
     const discovered = discoverProviderHandoffCapsules({
       runDir,
@@ -104,6 +181,7 @@ describe('provider proxy capsule discovery', () => {
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([]);
     const lifecycle = new ProviderProxySetLifecycle({
+      buildSetId: FIXTURE_BUILD_SET_ID,
       claims,
       controlEstablished: () => undefined,
       time: runtime.time,
@@ -120,16 +198,20 @@ describe('provider proxy capsule discovery', () => {
       hostFingerprint: capsule.hostFingerprint,
     });
 
+    // Represented, and deliberately not blocking. A generation this build cannot name a set from is held only
+    // so its address cannot be aliased — it has no identity to compare an acquisition against, so denying one
+    // on its account would deny service over a capsule this build may not touch. The roles behind it are
+    // bounded by their own orphan deadline, which is what makes the overlap safe rather than merely tolerated.
     expect({
       canonicalBasename: /^provider-1[0-9a-f]{23}\.handoff\.json$/u.test(basename(path)),
       discovered,
       snapshotBeforeAdmission,
-      admission,
+      admitted: admission.kind,
     }).toEqual({
       canonicalBasename: true,
       discovered: [{ path, capsule }],
-      snapshotBeforeAdmission: expect.objectContaining({ represented: 1, states: ['capsule-opaque'] }),
-      admission: { kind: 'already-represented' },
+      snapshotBeforeAdmission: expect.objectContaining({ represented: 1, states: ['capsule-foreign'] }),
+      admitted: 'accepted',
     });
   });
 });

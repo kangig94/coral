@@ -1,5 +1,5 @@
 import type { Database } from '../../store/db.js';
-import { isProcessAlive, probeProcessStartedAtSeconds } from '../../infra/node-process.js';
+import { observeProcessLiveness, probeProcessIncarnation } from '../../infra/node-process.js';
 import {
   classifyCarrier,
   type CarrierEvidence,
@@ -59,7 +59,7 @@ export function admittedByThisCoordinator(
 
 /**
  * A durable CLI is the one class local evidence alone can resolve to `absent`: the recorded pid plus the
- * OS-probed start second either name the process this coordinator launched, or they don't.
+ * OS-probed incarnation either name the process this coordinator launched, or they don't.
  *
  * A pid mismatch between the journal's `job.runtime.started` record and the separately captured
  * `durable_cli_process.v1` meta is treated the same as no meta at all — both mean there is nothing trustworthy
@@ -76,16 +76,17 @@ function durableCliEvidence(
     return { carrierClass: 'durable-cli', process: { kind: 'uncaptured' } };
   }
 
-  const observedStartedAt = probeProcessStartedAtSeconds(meta.pid, platform);
-  if (observedStartedAt === null) {
-    if (isProcessAlive(meta.pid)) {
-      // Alive but its start time is unreadable: cannot tell a recycled pid from the same process, so this
+  const observedIncarnation = probeProcessIncarnation(meta.pid, platform);
+  if (observedIncarnation === null) {
+    // Alive OR unanswerable both mean 'not observed gone', which is what this branch needs.
+    if (observeProcessLiveness(meta.pid) !== 'absent') {
+      // Alive but its incarnation is unreadable: cannot tell a recycled pid from the same process, so this
       // stays "nothing to check against" rather than a guess in either direction.
       return { carrierClass: 'durable-cli', process: { kind: 'uncaptured' } };
     }
     return {
       carrierClass: 'durable-cli',
-      process: { kind: 'recorded', alive: false, matchesRecordedStart: false, transportEvidence: true },
+      process: { kind: 'recorded', alive: false, matchesRecordedIncarnation: false },
     };
   }
 
@@ -94,8 +95,7 @@ function durableCliEvidence(
     process: {
       kind: 'recorded',
       alive: true,
-      matchesRecordedStart: observedStartedAt === meta.processStartedAtSeconds,
-      transportEvidence: true,
+      matchesRecordedIncarnation: observedIncarnation === meta.incarnation,
     },
   };
 }

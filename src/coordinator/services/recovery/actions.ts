@@ -1,3 +1,4 @@
+import { backendLog } from '../../../infra/backend-log.js';
 import { formatError } from '../../../infra/error-format.js';
 import { isTerminalPhase } from '../../../jobs/phase.js';
 import { isAppServerRuntime, type JobRuntime } from '../../../jobs/records.js';
@@ -12,7 +13,11 @@ import type { ProviderRecoveryAuthority, RecoveryCapableService } from '../../..
 import type { RecoveryCommitFence } from '../../../jobs/reconcile/contracts.js';
 import { gracefulKillByPid } from '../../../infra/process-supervision.js';
 import type { JobLifecycleFault, JobProgressFault } from '../../../jobs/outcome.js';
-import type { RecoveryObligationId, RecoverySettlementFact } from '../../../recovery/containment.js';
+import type {
+  RecoveryDisposition,
+  RecoveryObligationId,
+  RecoverySettlementFact,
+} from '../../../recovery/containment.js';
 
 export const COORDINATOR_TERMINAL_OBLIGATION = 'coordinator-job-terminal' as RecoveryObligationId;
 export const COORDINATOR_CLAIM_RELEASE_OBLIGATION = 'coordinator-session-claim-release' as RecoveryObligationId;
@@ -47,7 +52,7 @@ type RecoveryActionContext = {
 export async function applyRecoveryAction(
   action: RecoveryAction,
   ctx: RecoveryActionContext,
-): Promise<readonly RecoverySettlementFact[]> {
+): Promise<RecoveryDisposition> {
   switch (action.type) {
     case 'discardIncompleteAdmission':
       return discardIncompleteAdmission(action, ctx);
@@ -65,17 +70,17 @@ export async function applyRecoveryAction(
 function discardIncompleteAdmission(
   action: Extract<RecoveryAction, { type: 'discardIncompleteAdmission' }>,
   ctx: RecoveryActionContext,
-): readonly RecoverySettlementFact[] {
+): RecoveryDisposition {
   const { runtime, progressStore, log } = ctx;
   runtime.storage.rmSync(progressStore.jobDir(action.jobId), { recursive: true, force: true });
   log(`Discarded incomplete admission: ${action.jobId}\n`);
-  return COORDINATOR_NOT_APPLICABLE_FACTS;
+  return completed(COORDINATOR_NOT_APPLICABLE_FACTS, 'incomplete admission discarded');
 }
 
 function markRecoveryError(
   action: Extract<RecoveryAction, { type: 'markError' }>,
   ctx: RecoveryActionContext,
-): readonly RecoverySettlementFact[] {
+): RecoveryDisposition {
   const { log, settleFault } = ctx;
   const facts = settleFault(action.fault);
   // Deliberately no export write. The settled fault is the durable answer, and
@@ -92,13 +97,13 @@ function markRecoveryError(
       log(`Marked recovery job as error: ${action.jobId}\n`);
       break;
   }
-  return facts;
+  return completed(facts, 'recovery fault settled');
 }
 
 async function registerQueuedRecovery(
   action: Extract<RecoveryAction, { type: 'registerQueued' }>,
   ctx: RecoveryActionContext,
-): Promise<readonly RecoverySettlementFact[]> {
+): Promise<RecoveryDisposition> {
   const {
     recoveryRegistry,
     queuedRecoverable,
@@ -127,18 +132,18 @@ async function registerQueuedRecovery(
       message,
     );
     log(`Rejected queued recovery with invalid provider authority: ${action.jobId}.\n`);
-    return facts;
+    return completed(facts, 'persisted-invalid queued provider binding settled');
   }
   const { authority } = captured;
   queuedRecoverable.push({ jobId: action.jobId, authority });
   clearProcessLocalCleanup();
-  return COORDINATOR_NOT_APPLICABLE_FACTS;
+  return completed(COORDINATOR_NOT_APPLICABLE_FACTS, 'queued recovery registered');
 }
 
 async function registerRunningRecovery(
   action: Extract<RecoveryAction, { type: 'registerRunning' }>,
   ctx: RecoveryActionContext,
-): Promise<readonly RecoverySettlementFact[]> {
+): Promise<RecoveryDisposition> {
   const {
     recoveryRegistry,
     runningRecoverable,
@@ -157,13 +162,36 @@ async function registerRunningRecovery(
   const captured = await service.captureProviderRecoveryAuthority(action.launchRecord);
   signal.throwIfAborted();
   if (!captured.ok) {
-    if (isDurableCliRuntime(action.runtimeRecord) && runtime.process.isAlive(action.runtimeRecord.pid)) {
-      const pid = action.runtimeRecord.pid;
+    // Settling here is a known gap, deliberately left in place rather than half-closed, and the argument that
+    // used to justify it was checked and found false: `profile-unavailable`, `identity-unavailable` and
+    // `subject-mismatch` are operator-repairable, so a retry after the operator restores the profile does find
+    // something new. The correct disposition is a durable quarantine — but a quarantine that hands the job back
+    // while its carrier is still running releases the only owner that can abort it, and the successor owner does
+    // not exist yet. Both halves are docs/todo/coordinator-process-disposition.md; until they ship together this
+    // path terminalizes as it always has, and this comment is the honest reason rather than a justification.
+    //
+    // What the three liveness answers do decide is the carrier:
+    // `alive`: install the pid-kill cleanup.
+    // `absent`: nothing to clean up.
+    // `unknown`: install nothing — signalling a pid nobody could observe is the one action this must not take —
+    //   but report the process that is being left behind rather than terminalizing over it in silence.
+    const durableRecord = isDurableCliRuntime(action.runtimeRecord) ? action.runtimeRecord : null;
+    const durableLiveness = durableRecord === null ? 'absent' : runtime.process.observeLiveness(durableRecord.pid);
+    if (durableRecord !== null && durableLiveness === 'alive') {
+      const pid = durableRecord.pid;
       const releaseRegistry = (): void => recoveryRegistry.remove(action.jobId);
       setProcessLocalCleanup(() => {
         gracefulKillByPid(runtime, pid);
         releaseRegistry();
       });
+    } else if (durableRecord !== null && durableLiveness === 'unknown') {
+      backendLog.warn(
+        `Terminalizing job ${action.jobId} for a provider binding failure while its durable process ` +
+          `(pid ${durableRecord.pid}) could not be observed; no signal was sent, so it may still be running ` +
+          'and nothing in Coral will reclaim it. That pid is not safe to act on by itself — the probe that ' +
+          'could not answer is also what would have proved the number still belongs to this job — so identify ' +
+          'the process independently before stopping it.',
+      );
     }
     const message = `Provider '${captured.failure.provider}' recovery binding failed: ${captured.failure.reason}.`;
     const facts = settleFault(
@@ -178,7 +206,7 @@ async function registerRunningRecovery(
     log(
       `Rejected running recovery with invalid provider authority: terminalized ${action.jobId}. Run coral-cli jobs detail ${action.jobId} for the recorded reason.\n`,
     );
-    return facts;
+    return completed(facts, 'persisted-invalid running provider binding settled');
   }
   const { authority } = captured;
   if (isAppServerRuntime(action.runtimeRecord)) {
@@ -197,13 +225,13 @@ async function registerRunningRecovery(
     runtimeRecord: action.runtimeRecord,
   });
   clearProcessLocalCleanup();
-  return COORDINATOR_NOT_APPLICABLE_FACTS;
+  return completed(COORDINATOR_NOT_APPLICABLE_FACTS, 'running recovery registered');
 }
 
 function releaseSessionClaim(
   action: Extract<RecoveryAction, { type: 'releaseSessionClaim' }>,
   ctx: RecoveryActionContext,
-): readonly RecoverySettlementFact[] {
+): RecoveryDisposition {
   const { progressStore, log, settleClaim } = ctx;
   const facts = settleClaim(action.jobId);
   const status = progressStore.readStatus(action.jobId);
@@ -212,7 +240,11 @@ function releaseSessionClaim(
   } else {
     log(`Orphaned session claim ${action.sessionId} settled.\n`);
   }
-  return facts;
+  return completed(facts, 'session claim released');
+}
+
+function completed(facts: readonly RecoverySettlementFact[], detail: string): RecoveryDisposition {
+  return { kind: 'advanced', outcome: 'settled', facts, detail };
 }
 
 export function logRecoveryActionFailure(action: RecoveryAction, error: unknown, log: (message: string) => void): void {

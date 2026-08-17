@@ -3,7 +3,12 @@ import { randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { TimerHandle } from '#src/infra/port-types.js';
-import type { HandoffCapsule, HandoffCapsuleV1, HandoffCapsuleV2 } from '#src/provider-proxy/handoff-capsule.js';
+import type {
+  HandoffCapsule,
+  HandoffCapsuleV1,
+  HandoffCapsuleV2,
+  HandoffCapsuleV3,
+} from '#src/provider-proxy/handoff-capsule.js';
 import { ControlClientError } from '#src/provider-proxy/control-client.js';
 import type { DurableProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
 import {
@@ -36,6 +41,9 @@ import { providerOperationRecord } from '#tests/unit/store/provider-operation-fi
 import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
 import { ProviderOperationTerminalMetadataError } from '#src/jobs/provider-operation-terminalization.js';
 import type { ProviderOperationTerminalDirective } from '#src/store/provider-operation-record.js';
+
+/** The build this fixture lifecycle belongs to — the same one `providerOperationRecord` stamps on its identities, so a discovered capsule is inheritable rather than foreign. */
+const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
 
 const noContainmentProof = async (): Promise<null> => null;
 const ignoreControlEstablished = (): void => undefined;
@@ -71,7 +79,7 @@ function terminalAuthorityFault(): ProviderProxyAuthorityFault {
 
 type ProviderProxySetLifecycleFixtureDeps = Omit<
   ProviderProxySetLifecycleDeps,
-  'recoveryDispatcher' | 'reportLifecycle'
+  'recoveryDispatcher' | 'reportLifecycle' | 'buildSetId'
 > &
   Readonly<{
     recoveryDispatcher?: ProviderProxyRecoveryDispatcher;
@@ -82,7 +90,6 @@ type ProviderProxySetLifecycleFixtureDeps = Omit<
       signal: AbortSignal,
     ): Promise<string | null>;
     retireCapsule?(path: string): Promise<CapsuleRetirementAttemptOutcome> | CapsuleRetirementAttemptOutcome;
-    rewriteCapsule?(path: string, capsule: HandoffCapsuleV2): Promise<void> | void;
     onFatal?(error: ProviderProxySetLifecycleFatalError): void;
     redeemCapsule?(
       capsule: HandoffCapsule,
@@ -93,7 +100,6 @@ type ProviderProxySetLifecycleFixtureDeps = Omit<
 
 function lifecycleFor(deps: ProviderProxySetLifecycleFixtureDeps): ProviderProxySetLifecycle {
   const retireCapsule = deps.retireCapsule ?? (() => ({ kind: 'retired' as const }));
-  const rewriteCapsule = deps.rewriteCapsule ?? (() => undefined);
   const onFatal = deps.onFatal ?? (() => undefined);
   const recoveryDispatcher = createTestProviderProxyRecoveryDispatcher(
     {
@@ -104,7 +110,6 @@ function lifecycleFor(deps: ProviderProxySetLifecycleFixtureDeps): ProviderProxy
               deps.redeemCapsule?.(capsule, capsulePath, signal) ?? Promise.reject(new Error('unconfigured')),
           }),
       'containment-proof': ({ identity, signal }) => deps.proveContainmentAbsent(identity, signal),
-      'capsule-rewrite': ({ path, capsule }) => rewriteCapsule(path, capsule),
       'capsule-retirement': ({ path }) => retireCapsule(path),
       'disappearance-consumer': ({ notice }) => deps.disappearanceConsumer.containmentDisappeared(notice),
     },
@@ -113,7 +118,6 @@ function lifecycleFor(deps: ProviderProxySetLifecycleFixtureDeps): ProviderProxy
   const {
     proveContainmentAbsent: _proveContainmentAbsent,
     retireCapsule: _retireCapsule,
-    rewriteCapsule: _rewriteCapsule,
     onFatal: _onFatal,
     redeemCapsule: _redeemCapsule,
     disappearanceConsumer: _disappearanceConsumer,
@@ -121,6 +125,7 @@ function lifecycleFor(deps: ProviderProxySetLifecycleFixtureDeps): ProviderProxy
     ...lifecycleDeps
   } = deps;
   return new ProviderProxySetLifecycle({
+    buildSetId: FIXTURE_BUILD_SET_ID,
     ...lifecycleDeps,
     recoveryDispatcher: suppliedDispatcher ?? recoveryDispatcher,
     reportLifecycle: lifecycleDeps.reportLifecycle ?? (() => undefined),
@@ -268,18 +273,18 @@ function capsuleFor(
   };
 }
 
-function capsuleV2For(authority: DurableProviderProxyOperationAuthority): HandoffCapsuleV2 {
+function capsuleV3For(authority: DurableProviderProxyOperationAuthority): HandoffCapsuleV3 {
   const identity = authority.setIdentity;
   return {
     ...capsuleFor(authority),
-    version: 2,
+    version: 3,
     guardianPid: identity.guardianPid,
-    guardianProcessStartedAtSeconds: identity.guardianProcessStartedAtSeconds,
+    guardianIncarnation: identity.guardianIncarnation,
     proxyPid: identity.proxyPid,
     reaperPid: identity.reaperPid,
-    reaperProcessStartedAtSeconds: identity.reaperProcessStartedAtSeconds,
+    reaperIncarnation: identity.reaperIncarnation,
     containmentKind: identity.containmentKind,
-    proxyProcessStartedAtSeconds: identity.proxyProcessStartedAtSeconds,
+    proxyIncarnation: identity.proxyIncarnation,
     proxyProcessGroupId: identity.proxyProcessGroupId,
   };
 }
@@ -721,7 +726,12 @@ describe('ProviderProxySetLifecycle', () => {
     },
   );
 
-  it('reconstructs a zero-claim capsule before admitting an overlapping fresh set', async () => {
+  // The rule with no version exceptions: a capsule this build cannot derive a set identity from is represented
+  // so its address cannot be aliased, and dialed by nothing. It also does not deny an overlapping acquisition,
+  // because there is no identity here to deny one against — a `capsule-foreign` slot holds an address, a path
+  // and a reason, and no authority. Before this, a V1 took a third path that redeemed it and rewrote the file
+  // in place at the V1 name, which discovery re-derives and rejects on the very next boot.
+  it('represents a capsule it cannot inherit without dialing it or denying an overlapping fresh set', async () => {
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([]);
     const authority = fakeAuthority();
@@ -743,14 +753,16 @@ describe('ProviderProxySetLifecycle', () => {
     await Promise.resolve();
 
     expect(lifecycle.snapshot()).toEqual(
-      expect.objectContaining({ startupDiscoveryCompleted: true, represented: 1, states: ['capsule-opaque'] }),
+      expect.objectContaining({ startupDiscoveryCompleted: true, represented: 1, states: ['capsule-foreign'] }),
     );
     expect(
       lifecycle.beginFreshAcquisition('same-host-route', {
         buildSetId: capsule.buildSetId,
         hostFingerprint: capsule.hostFingerprint,
-      }),
-    ).toEqual({ kind: 'already-represented' });
+      }).kind,
+    ).toBe('accepted');
+    // Nothing was asked of the roles behind it — no redemption, and no containment proof either. The
+    // `redeemCapsule` above throws precisely so that reaching it would fail this test rather than pass it.
     expect(proveContainmentAbsent).not.toHaveBeenCalled();
   });
 
@@ -760,13 +772,6 @@ describe('ProviderProxySetLifecycle', () => {
     const authority = fakeAuthority();
     const established = vi.fn();
     const reportLifecycle = vi.fn();
-    const rewriteCapsule = vi.fn(async (_path: string, capsule: HandoffCapsuleV2) => {
-      expect(capsule).toMatchObject({
-        version: 2,
-        guardianPid: authority.setIdentity.guardianPid,
-        proxyProcessGroupId: authority.setIdentity.proxyProcessGroupId,
-      });
-    });
     const lifecycle = lifecycleFor({
       claims,
       controlEstablished: established,
@@ -774,17 +779,17 @@ describe('ProviderProxySetLifecycle', () => {
       time: new ManualClock(),
       proveContainmentAbsent: noContainmentProof,
       redeemCapsule: async () => ({ kind: 'redeemed', set: authority }),
-      rewriteCapsule,
       reportLifecycle,
     });
     lifecycle.initializeClaimSlots();
 
-    lifecycle.installDiscoveredCapsules([{ path: '/capsules/unmatched.handoff.json', capsule: capsuleFor(authority) }]);
+    lifecycle.installDiscoveredCapsules([
+      { path: '/capsules/unmatched.handoff.v3.json', capsule: capsuleV3For(authority) },
+    ]);
     await vi.waitFor(() => expect(lifecycle.snapshot().states).toEqual(['containing']));
 
     expect(established).not.toHaveBeenCalled();
     expect(lifecycle.authorityFor(authority.setIdentity)).toBeNull();
-    expect(rewriteCapsule).toHaveBeenCalledOnce();
     expect(reportLifecycle.mock.calls).toEqual([
       [
         'info',
@@ -801,7 +806,6 @@ describe('ProviderProxySetLifecycle', () => {
     const authority = fakeAuthority({ record, stopAndReap });
     const redemption = deferred<ProviderProxySetRedemptionOutcome>();
     const established = vi.fn();
-    const rewriteCapsule = vi.fn(async () => undefined);
     const reportLifecycle = vi.fn();
     const lifecycle = lifecycleFor({
       claims,
@@ -810,17 +814,15 @@ describe('ProviderProxySetLifecycle', () => {
       time: new ManualClock(),
       proveContainmentAbsent: noContainmentProof,
       redeemCapsule: () => redemption.promise,
-      rewriteCapsule,
       reportLifecycle,
     });
     lifecycle.initializeClaimSlots();
 
     lifecycle.installDiscoveredCapsules([
-      { path: '/capsules/claim-race.handoff.json', capsule: capsuleFor(authority) },
+      { path: '/capsules/claim-race.handoff.v3.json', capsule: capsuleV3For(authority) },
     ]);
     claims.applyMutation({ kind: 'upserted', record });
     redemption.resolve({ kind: 'redeemed', set: authority });
-    await vi.waitFor(() => expect(rewriteCapsule).toHaveBeenCalledOnce());
     await vi.waitFor(() => expect(lifecycle.authorityFor(authority.setIdentity)).toBe(authority));
 
     expect(stopAndReap).not.toHaveBeenCalled();
@@ -829,11 +831,11 @@ describe('ProviderProxySetLifecycle', () => {
     expect(reportLifecycle).not.toHaveBeenCalled();
   });
 
-  it('retires an unmatched exact v2 capsule after independent absence proof', async () => {
+  it('retires an unmatched exact v3 capsule after independent absence proof', async () => {
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([]);
     const authority = fakeAuthority();
-    const proveContainmentAbsent = vi.fn(async () => 'exact-v2-absence');
+    const proveContainmentAbsent = vi.fn(async () => 'exact-v3-absence');
     const retireCapsule = vi.fn(async () => ({ kind: 'retired' as const }));
     const lifecycle = lifecycleFor({
       claims,
@@ -852,12 +854,12 @@ describe('ProviderProxySetLifecycle', () => {
     lifecycle.initializeClaimSlots();
 
     lifecycle.installDiscoveredCapsules([
-      { path: '/capsules/unmatched-v2.handoff.json', capsule: capsuleV2For(authority) },
+      { path: '/capsules/unmatched-v3.handoff.json', capsule: capsuleV3For(authority) },
     ]);
     await vi.waitFor(() => expect(lifecycle.snapshot().represented).toBe(0));
 
     expect(proveContainmentAbsent).toHaveBeenCalledOnce();
-    expect(retireCapsule).toHaveBeenCalledWith('/capsules/unmatched-v2.handoff.json');
+    expect(retireCapsule).toHaveBeenCalledWith('/capsules/unmatched-v3.handoff.json');
   });
 
   it('fails exact capsule recovery on redeemed identity corruption', async () => {
@@ -882,7 +884,7 @@ describe('ProviderProxySetLifecycle', () => {
     lifecycle.initializeClaimSlots();
 
     lifecycle.installDiscoveredCapsules([
-      { path: '/capsules/corrupt-v2.handoff.json', capsule: capsuleV2For(authority) },
+      { path: '/capsules/corrupt-v3.handoff.json', capsule: capsuleV3For(authority) },
     ]);
     await drainMicrotasks();
 
@@ -922,7 +924,7 @@ describe('ProviderProxySetLifecycle', () => {
     });
     lifecycle.initializeClaimSlots();
     lifecycle.installDiscoveredCapsules([
-      { path: '/capsules/arrival-fatal-v2.handoff.json', capsule: capsuleV2For(authority) },
+      { path: '/capsules/arrival-fatal-v3.handoff.json', capsule: capsuleV3For(authority) },
     ]);
     const corrupted = {
       ...authority,
@@ -949,13 +951,12 @@ describe('ProviderProxySetLifecycle', () => {
     });
   });
 
-  it('fails opaque capsule recovery on redeemed identity corruption', async () => {
+  it('fails capsule recovery on redeemed identity corruption', async () => {
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([]);
     const clock = new ManualClock();
     const authority = fakeAuthority();
     const redemption = deferred<ProviderProxySetRedemptionOutcome>();
-    const rewriteCapsule = vi.fn();
     const fatals = vi.fn();
     const lifecycle = lifecycleFor({
       claims,
@@ -964,12 +965,11 @@ describe('ProviderProxySetLifecycle', () => {
       time: clock,
       proveContainmentAbsent: noContainmentProof,
       redeemCapsule: () => redemption.promise,
-      rewriteCapsule,
       onFatal: fatals,
     });
     lifecycle.initializeClaimSlots();
     lifecycle.installDiscoveredCapsules([
-      { path: '/capsules/opaque-corrupt-v1.handoff.json', capsule: capsuleFor(authority) },
+      { path: '/capsules/corrupt.handoff.v3.json', capsule: capsuleV3For(authority) },
     ]);
     const corrupted = {
       ...authority,
@@ -982,9 +982,8 @@ describe('ProviderProxySetLifecycle', () => {
     expect({
       fatalCalls: fatals.mock.calls.length,
       states: lifecycle.snapshot().states,
-      rewriteCalls: rewriteCapsule.mock.calls.length,
       activeTimers: clock.timers.filter((timer) => timer.active).length,
-    }).toEqual({ fatalCalls: 1, states: ['capsule-opaque'], rewriteCalls: 0, activeTimers: 0 });
+    }).toEqual({ fatalCalls: 1, states: ['capsule-recovering'], activeTimers: 0 });
   });
 
   it('fail-stops duplicate capsule addresses, grants, and claim-binding aliases during discovery', () => {
@@ -1631,5 +1630,86 @@ describe('ProviderProxySetLifecycle', () => {
       },
     ]);
     expect(stopHeartbeats).toHaveBeenCalledOnce();
+  });
+
+  // The two capsules this build must represent but never dial. Reaching a role is what makes the difference
+  // fatal rather than merely useless: `handoff.redeem` is build-gated (`assertNamedCoordinatorBuild`), a
+  // foreign set answers `identity_mismatch`, and the recovery policy classifies that as `refused` — which
+  // retires fatally before any seam weighs the absence evidence, taking the coordinator down over a set it
+  // never owned. A shipped V2 is the same problem from the other side: reachable, but its process identity is
+  // seconds this build cannot verify. Revert either branch and `redeemCapsule` runs here.
+  it('represents a capsule it cannot inherit and never dials it', async () => {
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([]);
+    const authority = fakeAuthority();
+    const identity = authority.setIdentity;
+    const redeemCapsule = vi.fn(
+      async (): Promise<ProviderProxySetRedemptionOutcome> => ({ kind: 'redeemed', set: authority }),
+    );
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: () => undefined,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: new ManualClock(),
+      proveContainmentAbsent: noContainmentProof,
+      redeemCapsule,
+    });
+    lifecycle.initializeClaimSlots();
+
+    const shippedV2: HandoffCapsuleV2 = {
+      ...capsuleFor(authority),
+      version: 2,
+      guardianPid: identity.guardianPid,
+      guardianProcessStartedAtSeconds: 1_700_000_001,
+      proxyPid: identity.proxyPid,
+      reaperPid: identity.reaperPid,
+      reaperProcessStartedAtSeconds: 1_700_000_003,
+      containmentKind: identity.containmentKind,
+      proxyProcessStartedAtSeconds: 1_700_000_002,
+      proxyProcessGroupId: identity.proxyProcessGroupId,
+    };
+
+    lifecycle.installDiscoveredCapsules([
+      {
+        path: '/capsules/other-build-v1.handoff.json',
+        capsule: capsuleFor(authority, { buildSetId: '99999999-9999-4999-8999-999999999999' }),
+      },
+      {
+        // The case an upgrade actually produces: this build's own capsule shape, written by another build.
+        path: '/capsules/other-build-v3.handoff.json',
+        capsule: { ...capsuleV3For(authority), buildSetId: '88888888-8888-4888-8888-888888888888' },
+      },
+      { path: '/capsules/shipped-v2.handoff.json', capsule: shippedV2 },
+      {
+        // A fourth, so counting these again would exceed the four-slot limit outright. With three, a single
+        // acquisition still fits inside the limit and the assertion below passes whether they are counted or
+        // not — which is exactly how it passed while counting them.
+        path: '/capsules/other-build-v1-b.handoff.json',
+        capsule: capsuleFor(authority, {
+          buildSetId: '66666666-6666-4666-8666-666666666666',
+          grantId: randomUUID(),
+        }),
+      },
+    ]);
+
+    expect(lifecycle.snapshot().states).toEqual([
+      'capsule-foreign',
+      'capsule-foreign',
+      'capsule-foreign',
+      'capsule-foreign',
+    ]);
+    for (let i = 0; i < 20; i += 1) await Promise.resolve();
+    expect(redeemCapsule, 'a capsule this build cannot redeem must never be dialed').not.toHaveBeenCalled();
+
+    // Capacity exists for sets this coordinator runs. A foreign slot holds no authority, route or claim, so
+    // counting it would let capsules left by another build deny this one its own sets — four permanently, and
+    // one for the matching host. The V2 above carries exactly this build's buildSetId and hostFingerprint.
+    expect(
+      lifecycle.beginFreshAcquisition('route-a', {
+        buildSetId: FIXTURE_BUILD_SET_ID,
+        hostFingerprint: identity.hostFingerprint,
+      }),
+      'an un-inheritable capsule must not deny acquisition for its own build and host',
+    ).toMatchObject({ kind: 'accepted' });
   });
 });

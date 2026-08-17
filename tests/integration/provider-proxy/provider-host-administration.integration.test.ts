@@ -1,3 +1,5 @@
+import type { ProcessIncarnation } from '#src/infra/node-process.js';
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -11,7 +13,10 @@ vi.mock('#src/providers/app-server-transport.js', async (importOriginal) => {
 
 vi.mock('#src/infra/node-process.js', async (importOriginal) => {
   const actual = await importOriginal<object>();
-  return { ...actual, probeProcessStartedAtSeconds: vi.fn(() => 1_700_000_000) };
+  return {
+    ...actual,
+    probeProcessIncarnation: vi.fn(() => 'linux:00000000-0000-4000-8000-000000000000:1700000000' as ProcessIncarnation),
+  };
 });
 
 import { createProviderProxySetAuthority } from '#src/coordinator/live/provider-proxy/set-authority.js';
@@ -85,7 +90,7 @@ beforeEach(async () => {
   const proxyIdentity: ProxyIdentity = {
     proxyInstanceId,
     pid: 102,
-    processStartedAtSeconds: 1_000,
+    incarnation: testIncarnation(1_000),
     processGroupId: 102,
     guardianInstanceId: capsule.guardianInstanceId,
     reaperInstanceId: capsule.reaperInstanceId,
@@ -141,7 +146,7 @@ beforeEach(async () => {
   const coordinatorIdentity: CoordinatorIdentity = {
     instanceId: '55555555-5555-4555-8555-555555555555',
     pid: 1,
-    processStartedAtSeconds: 900,
+    incarnation: testIncarnation(900),
     generation: 'gen2',
     flavor: 'prod',
     buildSetId,
@@ -330,7 +335,7 @@ function guardianIdentity(): GuardianIdentity {
   return {
     guardianInstanceId: '11111111-1111-4111-8111-111111111111',
     pid: 100,
-    processStartedAtSeconds: 1_000,
+    incarnation: testIncarnation(1_000),
     generation: 'gen2',
     flavor: 'prod',
     buildSetId,
@@ -343,7 +348,7 @@ function reaperIdentity(): ReaperIdentity {
   return {
     reaperInstanceId: '22222222-2222-4222-8222-222222222222',
     pid: 101,
-    processStartedAtSeconds: 1_000,
+    incarnation: testIncarnation(1_000),
     guardianInstanceId: guardianIdentity().guardianInstanceId,
     generation: 'gen2',
     flavor: 'prod',

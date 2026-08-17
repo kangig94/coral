@@ -1,3 +1,4 @@
+import type { ProcessIncarnation, ProcessLiveness } from '../../../src/infra/node-process.js';
 import { EventEmitter } from 'node:events';
 import { join, normalize } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -38,7 +39,7 @@ type ProcessExitOutcome = {
 
 type RegisteredProcess = {
   pid: number;
-  processStartedAtSeconds: number;
+  incarnation: ProcessIncarnation;
   processGroupId: number | null;
   alive: boolean;
   closed: boolean;
@@ -61,6 +62,21 @@ function asChunks(value: string | ChildOutputChunk[] | undefined): ChildOutputCh
     return [{ delayMs: 0, data: value }];
   }
   return value.map((chunk) => ({ delayMs: chunk.delayMs ?? 0, data: chunk.data }));
+}
+
+/**
+ * The simulation mints its own incarnations rather than borrowing the test helper: `tools/simulation`
+ * is sealed against `tests/`, and a simulated process's identity is the simulation's own concern. The
+ * value is opaque to every consumer — only equality is ever asked of it.
+ *
+ * A sequence, not the clock. A script can retire a pid and allocate the same number again within one
+ * virtual instant (`MockScriptedPid`), and a clock-derived value would hand both incarnations the same
+ * token — a false *match* on a reused pid, which is the single outcome the containment doctrine
+ * forbids. The counter lives on the spawner, which a preserved-world restart carries over
+ * (`createSimulationBackend` reuses `inherited.runtime`), so it stays monotonic across that restart.
+ */
+function simulatedIncarnation(sequence: number): ProcessIncarnation {
+  return `simulation:${sequence}` as ProcessIncarnation;
 }
 
 export class MockStdin extends EventEmitter implements ChildStdinLike {
@@ -172,6 +188,7 @@ export class MockProcessSpawner {
   private readonly execSyncScripts: MockExecSyncScript[] = [];
   private readonly durableScripts: MockDurableScript[] = [];
   private nextPid = 20_000;
+  private nextIncarnationSequence = 1;
 
   private readonly time: VirtualTime;
   private readonly storage: InMemoryStorage;
@@ -321,13 +338,18 @@ export class MockProcessSpawner {
     return true;
   }
 
-  isAlive(pid: number): boolean {
-    return this.resolveKillTargets(pid).some((record) => record.alive);
+  /**
+   * The simulator can always answer, so it never returns `unknown` — but it returns the union, not a boolean.
+   * A fake that answers a different type from the port it stands in for is how a conversion bug reaches
+   * production untested, and every one of the union's values is truthy.
+   */
+  observeLiveness(pid: number): ProcessLiveness {
+    return this.resolveKillTargets(pid).some((record) => record.alive) ? 'alive' : 'absent';
   }
 
-  readProcessStartedAtSeconds(pid: number): number | null {
+  readProcessIncarnation(pid: number): ProcessIncarnation | null {
     const record = this.processes.get(pid);
-    return record && !record.closed ? record.processStartedAtSeconds : null;
+    return record && !record.closed ? record.incarnation : null;
   }
 
   setAlive(pid: number, alive: boolean): void {
@@ -456,7 +478,7 @@ export class MockProcessSpawner {
   ): RegisteredProcess {
     const record: RegisteredProcess = {
       pid,
-      processStartedAtSeconds: Math.floor(this.time.now() / 1_000),
+      incarnation: simulatedIncarnation(this.nextIncarnationSequence++),
       processGroupId,
       alive: true,
       closed: false,

@@ -1,3 +1,4 @@
+import { processIncarnationSchema } from '../infra/node-process.js';
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { isAbsolute, join, resolve } from 'node:path';
 import { z } from 'zod';
@@ -66,7 +67,7 @@ const liveIncumbentHealthSchema = z
     namespace: z.string().min(1),
     instanceId: z.string().min(1),
     pid: z.number().int().positive(),
-    processStartedAt: z.number().int().positive().optional(),
+    incarnation: processIncarnationSchema.optional(),
     manifest: strictBundleManifestSchema.optional(),
     bundleDir: z
       .string()
@@ -190,7 +191,7 @@ function discoveryMatchesHealth(
     discovery.namespace === health.namespace &&
     (discovery.version === undefined || discovery.version === health.version) &&
     (discovery.instanceId === undefined || discovery.instanceId === health.instanceId) &&
-    (discovery.processStartedAt === undefined || discovery.processStartedAt === health.processStartedAt)
+    (discovery.incarnation === undefined || discovery.incarnation === health.incarnation)
   );
 }
 

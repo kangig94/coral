@@ -1,3 +1,4 @@
+import { processIncarnationSchema } from '../infra/node-process.js';
 import { isAbsolute, normalize } from 'node:path';
 
 import { z } from 'zod';
@@ -66,7 +67,7 @@ const processLocatorSchema = z
   .object({
     instanceId: canonicalUuidSchema,
     pid: nonNegativeSafeIntegerSchema,
-    processStartedAtSeconds: nonNegativeSafeIntegerSchema,
+    incarnation: processIncarnationSchema,
     controlEndpoint: canonicalEndpointSchema,
   })
   .strict();
@@ -80,7 +81,7 @@ export const providerOperationSetLocatorSchema = z
     containment: z
       .object({
         pid: nonNegativeSafeIntegerSchema,
-        processStartedAtSeconds: nonNegativeSafeIntegerSchema,
+        incarnation: processIncarnationSchema,
         processGroupId: nonNegativeSafeIntegerSchema,
         kind: z.string().min(1).max(64),
       })
@@ -90,7 +91,7 @@ export const providerOperationSetLocatorSchema = z
   .superRefine((locator, context) => {
     if (
       locator.containment.pid !== locator.proxy.pid ||
-      locator.containment.processStartedAtSeconds !== locator.proxy.processStartedAtSeconds
+      locator.containment.incarnation !== locator.proxy.incarnation
     ) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
@@ -99,12 +100,12 @@ export const providerOperationSetLocatorSchema = z
       });
     }
   })
-  .describe('containment pid and start time equal the proxy process identity');
+  .describe('containment pid and incarnation equal the proxy process identity');
 
 const providerRootSchema = z
   .object({
     pid: nonNegativeSafeIntegerSchema,
-    processStartedAtSeconds: nonNegativeSafeIntegerSchema,
+    incarnation: processIncarnationSchema,
   })
   .strict();
 
@@ -202,8 +203,34 @@ const lastErrorSchema = z
   .strict()
   .nullable();
 
+/**
+ * The generation of this record, and the only place it is written down.
+ *
+ * It is not only the payload's `version` field — `provider-operation-journal.ts` derives the meta-key namespace
+ * from it, so moving this number moves the address the rows live at. That coupling is the point. A shipped
+ * reader selects rows by key prefix and then parses them strictly; a payload field it never reaches cannot warn
+ * it. v0.10.8 renamed nothing and moved nothing, so its `provider_operation_saga.v1:` selector would have
+ * matched the incarnation-bearing rows this build writes, and its bare strict decode on the startup claim scan
+ * would have thrown — the older daemon simply would not boot. The rows have to be somewhere it does not look.
+ *
+ * Bump this whenever the durable shape stops satisfying the previous generation's schema, moving the old
+ * current generation into `retainedSuperseded` so its jobs keep their fence.
+ *
+ * Two fields rather than a derived pair because TypeScript loses the literal through a slice, and the literal
+ * is what makes `z.literal` and every downstream narrowing work. What keeps them honest is
+ * `tests/invariants/provider-operation-generation-registry.test.ts`, which asserts they are contiguous and
+ * disjoint — so raising `current` while forgetting `retainedSuperseded` fails there rather than leaving a
+ * generation neither decoded nor fenced.
+ */
+export const PROVIDER_OPERATION_RECORD_GENERATIONS = {
+  retainedSuperseded: [1],
+  current: 2,
+} as const;
+
+export const PROVIDER_OPERATION_RECORD_VERSION = PROVIDER_OPERATION_RECORD_GENERATIONS.current;
+
 const commonFields = {
-  version: z.literal(1),
+  version: z.literal(PROVIDER_OPERATION_RECORD_VERSION),
   operation: providerOperationIdentitySchema,
   locator: providerOperationSetLocatorSchema,
   prepareAttemptNumber: z.number().int().positive().safe(),

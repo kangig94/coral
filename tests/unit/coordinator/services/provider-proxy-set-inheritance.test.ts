@@ -1,3 +1,5 @@
+import type { ProcessLiveness } from '#src/infra/node-process.js';
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -13,15 +15,20 @@ vi.mock('#src/provider-proxy/role-spawn.js', async (importOriginal) => {
 
 vi.mock('#src/infra/node-process.js', async (importOriginal) => {
   const original = await importOriginal<object>();
-  return { ...original, probeProcessStartedAtSeconds: vi.fn(() => 1_700_000_000) };
+  return {
+    ...original,
+    probeProcessIncarnation: vi.fn(() => 'linux:00000000-0000-4000-8000-000000000000:1700000000' as ProcessIncarnation),
+  };
 });
 
 import {
   readHandoffCapsuleFile,
+  CURRENT_HANDOFF_CAPSULE_VERSION,
   type HandoffCapsule,
-  type HandoffCapsuleV1,
+  type HandoffCapsuleV2,
+  type HandoffCapsuleV3,
 } from '#src/provider-proxy/handoff-capsule.js';
-import { probeProcessStartedAtSeconds } from '#src/infra/node-process.js';
+import { probeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
 import { connectControlClient, ControlClientError } from '#src/provider-proxy/control-client.js';
 import { createControlEndpoint, type ControlChallengeAuthority } from '#src/provider-proxy/control-endpoint.js';
@@ -54,9 +61,12 @@ import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
 
+/** The build this fixture lifecycle belongs to — the same one `providerOperationRecord` stamps on its identities, so a discovered capsule is inheritable rather than foreign. */
+const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
+
 const mockedReadCapsule = vi.mocked(readHandoffCapsuleFile);
 const mockedConnect = vi.mocked(connectRoleControlWithRetry);
-const mockedProbe = vi.mocked(probeProcessStartedAtSeconds);
+const mockedProbe = vi.mocked(probeProcessIncarnation);
 
 // Call history, not implementations, so `mockedProbe`'s default `1_700_000_000` (set in the `vi.mock` factory
 // above) survives — only each test's own explicit `.mockReturnValueOnce`/`.mockResolvedValueOnce` setup and
@@ -93,22 +103,22 @@ function locator(operationOverrides: Partial<ProviderOperationRecord['operation'
       guardian: {
         instanceId: GUARDIAN_INSTANCE_ID,
         pid: 100,
-        processStartedAtSeconds: 1,
+        incarnation: testIncarnation(1),
         controlEndpoint: '/tmp/guardian.sock',
       },
       proxy: {
         instanceId: proxyInstanceId,
         pid: 200,
-        processStartedAtSeconds: 3,
+        incarnation: testIncarnation(3),
         controlEndpoint: '/tmp/proxy.sock',
       },
       reaper: {
         instanceId: REAPER_INSTANCE_ID,
         pid: 300,
-        processStartedAtSeconds: 2,
+        incarnation: testIncarnation(2),
         controlEndpoint: '/tmp/reaper.sock',
       },
-      containment: { pid: 200, processStartedAtSeconds: 3, processGroupId: 200, kind: 'posix-group' },
+      containment: { pid: 200, incarnation: testIncarnation(3), processGroupId: 200, kind: 'posix-group' },
     },
   };
 }
@@ -125,29 +135,29 @@ function alternateLocator(reference: ProviderProxySetLocator): ProviderProxySetL
       guardian: {
         instanceId: randomUUID(),
         pid: 400,
-        processStartedAtSeconds: 4,
+        incarnation: testIncarnation(4),
         controlEndpoint: '/tmp/guardian-b.sock',
       },
       proxy: {
         instanceId: reference.operation.proxyInstanceId,
         pid: 500,
-        processStartedAtSeconds: 5,
+        incarnation: testIncarnation(5),
         controlEndpoint: '/tmp/proxy-b.sock',
       },
       reaper: {
         instanceId: randomUUID(),
         pid: 600,
-        processStartedAtSeconds: 6,
+        incarnation: testIncarnation(6),
         controlEndpoint: '/tmp/reaper-b.sock',
       },
-      containment: { pid: 500, processStartedAtSeconds: 5, processGroupId: 500, kind: 'posix-group' },
+      containment: { pid: 500, incarnation: testIncarnation(5), processGroupId: 500, kind: 'posix-group' },
     },
   };
 }
 
 function proofRecord(
   reference: ProviderProxySetLocator,
-  providerRoot: Readonly<{ pid: number; processStartedAtSeconds: number }>,
+  providerRoot: Readonly<{ pid: number; incarnation: ProcessIncarnation }>,
 ): ProviderOperationRecord {
   return providerOperationRecordSchema.parse({
     ...providerOperationRecord('guardian-activation-pending', {
@@ -169,7 +179,7 @@ function proofDatabase(records: readonly ProviderOperationRecord[]): Database {
   return db;
 }
 
-function proofRuntime(liveProcesses: ReadonlyMap<number, number>) {
+function proofRuntime(liveProcesses: ReadonlyMap<number, ProcessIncarnation>) {
   const live = new Map(liveProcesses);
   const signals: Array<{ pid: number; signal: NodeJS.Signals | 0 }> = [];
   const base = createRealRuntime('prod');
@@ -177,7 +187,7 @@ function proofRuntime(liveProcesses: ReadonlyMap<number, number>) {
     ...base,
     process: {
       ...base.process,
-      isAlive: (pid: number) => live.has(pid),
+      observeLiveness: (pid: number) => (live.has(pid) ? 'alive' : 'absent') as ProcessLiveness,
       kill: (pid: number, signal: NodeJS.Signals | 0) => {
         signals.push({ pid, signal });
         live.delete(pid);
@@ -192,13 +202,23 @@ function proofRuntime(liveProcesses: ReadonlyMap<number, number>) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockedProbe.mockImplementation(() => 1_700_000_000);
+  mockedProbe.mockImplementation(() => testIncarnation(1_700_000_000));
 });
 
-function capsuleFor(reference: ProviderProxySetLocator, overrides: Partial<HandoffCapsuleV1> = {}): HandoffCapsule {
+// The current generation, because that is the only one this build may inherit: a capsule whose identity it
+// cannot read is represented and never dialed, whatever the number on it.
+function capsuleFor(reference: ProviderProxySetLocator, overrides: Partial<HandoffCapsuleV3> = {}): HandoffCapsule {
   const { operation, locator: set } = reference;
   return {
-    version: 1,
+    version: CURRENT_HANDOFF_CAPSULE_VERSION,
+    guardianPid: set.guardian.pid,
+    guardianIncarnation: set.guardian.incarnation,
+    reaperPid: set.reaper.pid,
+    reaperIncarnation: set.reaper.incarnation,
+    proxyPid: set.proxy.pid,
+    proxyIncarnation: set.proxy.incarnation,
+    proxyProcessGroupId: set.containment.processGroupId,
+    containmentKind: set.containment.kind,
     grantId: randomUUID(),
     secret: 'f'.repeat(64),
     generation: 'gen2',
@@ -220,7 +240,7 @@ function capsuleFor(reference: ProviderProxySetLocator, overrides: Partial<Hando
 const COORDINATOR_IDENTITY = {
   instanceId: randomUUID(),
   pid: 1,
-  processStartedAtSeconds: 900,
+  incarnation: testIncarnation(900),
   generation: 'gen2' as const,
   flavor: 'prod' as const,
   buildSetId: BUILD_SET_ID,
@@ -414,7 +434,7 @@ function proxyIdentityFieldsFor(reference: ProviderProxySetLocator) {
   return {
     proxyInstanceId: operation.proxyInstanceId,
     pid: set.proxy.pid,
-    processStartedAtSeconds: set.proxy.processStartedAtSeconds,
+    incarnation: set.proxy.incarnation,
     processGroupId: set.containment.processGroupId,
     guardianInstanceId: set.guardian.instanceId,
     reaperInstanceId: set.reaper.instanceId,
@@ -431,7 +451,7 @@ function guardianIdentityFor(reference: ProviderProxySetLocator) {
   return {
     guardianInstanceId: set.guardian.instanceId,
     pid: set.guardian.pid,
-    processStartedAtSeconds: set.guardian.processStartedAtSeconds,
+    incarnation: set.guardian.incarnation,
     generation: 'gen2' as const,
     flavor: 'prod' as const,
     buildSetId: operation.buildSetId,
@@ -445,7 +465,7 @@ function reaperIdentityFor(reference: ProviderProxySetLocator) {
   return {
     reaperInstanceId: set.reaper.instanceId,
     pid: set.reaper.pid,
-    processStartedAtSeconds: set.reaper.processStartedAtSeconds,
+    incarnation: set.reaper.incarnation,
     guardianInstanceId: set.guardian.instanceId,
     generation: 'gen2' as const,
     flavor: 'prod' as const,
@@ -459,7 +479,7 @@ function reaperIdentityFor(reference: ProviderProxySetLocator) {
 function containmentFor(reference: ProviderProxySetLocator) {
   return {
     pid: reference.locator.containment.pid,
-    processStartedAtSeconds: reference.locator.containment.processStartedAtSeconds,
+    incarnation: reference.locator.containment.incarnation,
     processGroupId: reference.locator.containment.processGroupId,
     containmentKind: reference.locator.containment.kind,
   };
@@ -628,10 +648,72 @@ describe('attemptProviderProxySetInheritance', () => {
     expect(mockedConnect).not.toHaveBeenCalled();
   });
 
+  // The upgrade path, and the one a discovery-side build gate cannot cover: this entry derives the capsule's
+  // address from the record itself rather than from anything discovery classified. Dialing a set from another
+  // build returns `identity_mismatch`, which the recovery policy retires fatally — the coordinator dies over a
+  // set it never owned. `capsuleMatchesLocator` cannot catch it either, because it compares the capsule
+  // against the *record's* build, and for a foreign set those two agree.
+  it('reports not-bequeathed without reading a foreign build’s capsule at all', async () => {
+    const loc = locator({ buildSetId: '77777777-7777-4777-8777-777777777777' });
+
+    const outcome = await attemptProviderProxySetInheritance(
+      loc,
+      unusedDb,
+      {
+        runtime,
+        coordinatorIdentity: COORDINATOR_IDENTITY,
+        operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
+      },
+      neverAborts,
+    );
+
+    expect(outcome).toEqual({ kind: 'not-bequeathed', reason: 'the recorded set belongs to another build' });
+    expect(mockedReadCapsule, 'a foreign capsule is refused before it is even read').not.toHaveBeenCalled();
+    expect(mockedConnect).not.toHaveBeenCalled();
+  });
+
+  // Same build, shipped-V2 capsule. Its process fields are seconds this build cannot verify, so there is no
+  // identity to redeem against — and inventing one from them reports a live process as absent.
+  it('reports not-bequeathed for a capsule that predates the incarnation token', async () => {
+    const loc = locator();
+    const shippedV2: HandoffCapsuleV2 = {
+      ...(capsuleFor(loc) as HandoffCapsuleV3),
+      version: 2,
+      guardianPid: loc.locator.guardian.pid,
+      guardianProcessStartedAtSeconds: 1_700_000_001,
+      proxyPid: loc.locator.proxy.pid,
+      reaperPid: loc.locator.reaper.pid,
+      reaperProcessStartedAtSeconds: 1_700_000_003,
+      containmentKind: 'detached-process-group',
+      proxyProcessStartedAtSeconds: 1_700_000_002,
+      proxyProcessGroupId: loc.locator.proxy.pid,
+    };
+    mockedReadCapsule.mockReturnValueOnce(shippedV2);
+
+    const outcome = await attemptProviderProxySetInheritance(
+      loc,
+      unusedDb,
+      {
+        runtime,
+        coordinatorIdentity: COORDINATOR_IDENTITY,
+        operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
+      },
+      neverAborts,
+    );
+
+    expect(outcome).toEqual({
+      kind: 'not-bequeathed',
+      reason: 'the capsule predates the process incarnation token',
+    });
+    expect(mockedConnect).not.toHaveBeenCalled();
+  });
+
   it('returns exact disappearance proof instead of treating a missing credential as authority to proceed', async () => {
     mockedReadCapsule.mockReturnValueOnce(null);
     const loc = locator();
-    const proveContainmentAbsent = vi.fn(async () => 'group:200,leader:200@3');
+    const proveContainmentAbsent = vi.fn(
+      async () => 'group:200,leader:200@linux:00000000-0000-4000-8000-000000000000:3',
+    );
 
     const outcome = await attemptProviderProxySetInheritance(
       loc,
@@ -647,7 +729,7 @@ describe('attemptProviderProxySetInheritance', () => {
 
     expect(outcome).toEqual({
       kind: 'containment-disappeared',
-      disappearanceReceipt: 'group:200,leader:200@3',
+      disappearanceReceipt: 'group:200,leader:200@linux:00000000-0000-4000-8000-000000000000:3',
     });
     expect(proveContainmentAbsent).toHaveBeenCalledWith(providerProxySetIdentityFromRecord(loc), unusedDb, neverAborts);
     expect(mockedConnect).not.toHaveBeenCalled();
@@ -974,14 +1056,14 @@ describe('createProviderProxySetInheritance', () => {
 
   it('stops reclamation after TERM when the bounded recovery signal aborts', async () => {
     const reference = locator();
-    const record = proofRecord(reference, { pid: 104, processStartedAtSeconds: 1_003 });
+    const record = proofRecord(reference, { pid: 104, incarnation: testIncarnation(1_003) });
     if (!('providerRoot' in record)) throw new Error('proof record did not retain its provider root');
     const db = proofDatabase([record]);
     const controller = new AbortController();
-    const live = new Map<number, number>([
-      [-reference.locator.containment.processGroupId, reference.locator.containment.processStartedAtSeconds],
-      [reference.locator.containment.pid, reference.locator.containment.processStartedAtSeconds],
-      [record.providerRoot.pid, record.providerRoot.processStartedAtSeconds],
+    const live = new Map<number, ProcessIncarnation>([
+      [-reference.locator.containment.processGroupId, reference.locator.containment.incarnation],
+      [reference.locator.containment.pid, reference.locator.containment.incarnation],
+      [record.providerRoot.pid, record.providerRoot.incarnation],
     ]);
     const signals: Array<{ pid: number; signal: NodeJS.Signals | 0 }> = [];
     const base = createRealRuntime('prod');
@@ -989,7 +1071,7 @@ describe('createProviderProxySetInheritance', () => {
       ...base,
       process: {
         ...base.process,
-        isAlive: (pid: number) => live.has(pid),
+        observeLiveness: (pid: number) => (live.has(pid) ? 'alive' : 'absent') as ProcessLiveness,
         kill: (pid: number, signal: NodeJS.Signals | 0) => {
           signals.push({ pid, signal });
           if (signal === 'SIGKILL') live.clear();
@@ -1025,13 +1107,15 @@ describe('createProviderProxySetInheritance', () => {
     expect(signals.some(({ signal }) => signal === 'SIGKILL')).toBe(false);
   });
 
-  // The guardian and the reaper recorded their own start times; this coordinator did not. Requiring an
-  // exact match against a fresh probe made a live enforcer look gone, after which this path reaped a
-  // running set and minted a disappearance receipt for it. A readable start time already proves the pid
-  // exists, and whether it is still ours is precisely what a successor cannot tell.
-  it('will not prove absence while an enforcer pid exists under a start time it did not record', async () => {
+  // Unreadable is the only ambiguity left. While the recorded value carried a per-process clock term a
+  // disagreement meant nothing, so this path settled for existence — any readable pid counted as possibly
+  // ours. The token removed that term, and a pid that reads back as *someone else* is now proof, not doubt;
+  // treating it as doubt let an unrelated process inherit an enforcer's pid and block this proof forever,
+  // which leaves the set's operations unsettled for good. What stays conservative is a pid that is alive but
+  // cannot be read: nothing observed is still not absence.
+  it('will not prove absence while an enforcer pid is alive but unreadable', async () => {
     const reference = locator();
-    const record = proofRecord(reference, { pid: 104, processStartedAtSeconds: 1_003 });
+    const record = proofRecord(reference, { pid: 104, incarnation: testIncarnation(1_003) });
     const db = proofDatabase([record]);
     const controller = new AbortController();
     const signals: Array<{ pid: number; signal: NodeJS.Signals | 0 }> = [];
@@ -1040,15 +1124,15 @@ describe('createProviderProxySetInheritance', () => {
       ...base,
       process: {
         ...base.process,
-        isAlive: () => true,
+        observeLiveness: () => 'alive' as const,
         kill: (pid: number, signal: NodeJS.Signals | 0) => {
           signals.push({ pid, signal });
           return true;
         },
       },
     };
-    // Every pid reads back on a clock base this coordinator does not share — readable, and disagreeing.
-    mockedProbe.mockImplementation(() => 9_999_999);
+    // No pid can be read at all, while every one of them is alive.
+    mockedProbe.mockImplementation(() => null);
 
     const inheritance = createProviderProxySetInheritance({
       runtime: boundedRuntime,
@@ -1059,24 +1143,145 @@ describe('createProviderProxySetInheritance', () => {
 
     await expect(
       inheritance.proveContainmentAbsent(providerProxySetIdentityFromRecord(reference), db, controller.signal),
-      'a disagreement is not evidence that the enforcer is gone',
+      'an unreadable but living pid is not evidence that the enforcer is gone',
     ).resolves.toBeNull();
-    expect(signals, 'nothing may be signalled on the strength of a disagreement').toEqual([]);
+    expect(signals, 'nothing may be signalled while a target cannot be observed').toEqual([]);
+  });
+
+  // The other half of the same rule, and the reason the one above had to narrow. A pid that reads back as a
+  // different process is not our enforcer, so it cannot keep this set alive — otherwise an unrelated process
+  // inheriting that pid blocks the proof forever and the set's operations never settle.
+  it('proves absence when an enforcer pid now belongs to a different process', async () => {
+    const reference = locator();
+    const record = proofRecord(reference, { pid: 104, incarnation: testIncarnation(1_003) });
+    const db = proofDatabase([record]);
+    const controller = new AbortController();
+    const base = createRealRuntime('prod');
+    const boundedRuntime = {
+      ...base,
+      process: { ...base.process, observeLiveness: () => 'alive' as const, kill: () => true },
+    };
+    // Every pid is readable, and every one of them reads back as someone else.
+    mockedProbe.mockImplementation(() => testIncarnation(9_999_999));
+
+    const inheritance = createProviderProxySetInheritance({
+      runtime: boundedRuntime,
+      identity,
+      operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
+      registerInheritedSet: () => undefined,
+    });
+
+    await expect(
+      inheritance.proveContainmentAbsent(providerProxySetIdentityFromRecord(reference), db, controller.signal),
+      'a pid that is provably someone else does not keep this set alive',
+    ).resolves.not.toBeNull();
+  });
+
+  // The row may name a provider root that never enters the decoded inventory, so the proof cannot conclude
+  // absence — but only for the set the row belongs to. Its key says which set that is without the row being
+  // decodable, and fencing every set on any unreadable row anywhere blocks recovery for sets it has nothing to
+  // do with. The key here therefore carries *this* set's proxy instance and build set.
+  it('keeps containment proof unknown when an unreadable operation row may hide a root of this set', async () => {
+    const reference = locator();
+    const db = proofDatabase([proofRecord(reference, { pid: 104, incarnation: testIncarnation(1_003) })]);
+    const unreadableKey =
+      `provider_operation_saga.v1:record:${randomUUID()}:${randomUUID()}:` +
+      `${reference.operation.proxyInstanceId}:${reference.operation.buildSetId}`;
+    db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)').run(unreadableKey, 'not json');
+    const process = proofRuntime(new Map());
+    mockedProbe.mockImplementation(() => testIncarnation('replacement'));
+    const inheritance = createProviderProxySetInheritance({
+      runtime: process.runtime,
+      identity,
+      operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
+      registerInheritedSet: () => undefined,
+    });
+
+    await expect(
+      inheritance.proveContainmentAbsent(providerProxySetIdentityFromRecord(reference), db, neverAborts),
+    ).resolves.toBeNull();
+    expect(process.signals).toEqual([]);
+  });
+
+  // Two rows the key alone cannot attribute correctly. The first names nothing — a key that cannot say which
+  // set it belongs to could belong to any of them. The second's key names a foreign set while its bytes claim
+  // this one, which is precisely why its decode failed, so consulting only the key would wave it through.
+  it.each([
+    ['a key that names no set', () => 'provider_operation_saga.v1:record:not-canonical', () => 'not json'],
+    [
+      'a foreign key whose bytes claim this set',
+      () => `provider_operation_saga.v1:record:${randomUUID()}:${randomUUID()}:${randomUUID()}:${randomUUID()}`,
+      // Envelope fields do not decide whether these bytes claim a set identity. The complete operation tuple
+      // does, even under an envelope this build cannot decode.
+      (reference: ProviderProxySetLocator) =>
+        JSON.stringify({
+          version: 'broken',
+          locator: null,
+          operation: {
+            proxyInstanceId: reference.operation.proxyInstanceId,
+            buildSetId: reference.operation.buildSetId,
+          },
+        }),
+    ],
+    [
+      'a foreign key whose bytes make a partial set claim',
+      () => `provider_operation_saga.v1:record:${randomUUID()}:${randomUUID()}:${randomUUID()}:${randomUUID()}`,
+      () => JSON.stringify({ version: 2, locator: {}, operation: { proxyInstanceId: 'only-half' } }),
+    ],
+  ])('keeps containment proof unknown for %s', async (_label, keyFor, valueFor) => {
+    const reference = locator();
+    const db = proofDatabase([proofRecord(reference, { pid: 104, incarnation: testIncarnation(1_003) })]);
+    db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)').run(keyFor(), valueFor(reference));
+    const process = proofRuntime(new Map());
+    const inheritance = createProviderProxySetInheritance({
+      runtime: process.runtime,
+      identity,
+      operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
+      registerInheritedSet: () => undefined,
+    });
+
+    await expect(
+      inheritance.proveContainmentAbsent(providerProxySetIdentityFromRecord(reference), db, neverAborts),
+    ).resolves.toBeNull();
+    expect(process.signals).toEqual([]);
+  });
+
+  it('proves absence despite an unreadable row belonging to some other set', async () => {
+    const reference = locator();
+    const db = proofDatabase([proofRecord(reference, { pid: 104, incarnation: testIncarnation(1_003) })]);
+    // Same shape, different set. Before this was scoped, one such row anywhere in the store blocked the proof
+    // for every set in it, indefinitely and invisibly.
+    const foreignKey = `provider_operation_saga.v1:record:${randomUUID()}:${randomUUID()}:${randomUUID()}:${randomUUID()}`;
+    db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)').run(
+      foreignKey,
+      JSON.stringify({ version: 'broken', locator: null, operation: {} }),
+    );
+    const process = proofRuntime(new Map());
+    const inheritance = createProviderProxySetInheritance({
+      runtime: process.runtime,
+      identity,
+      operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
+      registerInheritedSet: () => undefined,
+    });
+
+    await expect(
+      inheritance.proveContainmentAbsent(providerProxySetIdentityFromRecord(reference), db, neverAborts),
+    ).resolves.not.toBeNull();
   });
 
   it('proves containment through the public factory without selecting an address-distinct root', async () => {
     const referenceA = locator();
     const referenceB = alternateLocator(referenceA);
     const db = proofDatabase([
-      proofRecord(referenceA, { pid: 104, processStartedAtSeconds: 1_003 }),
-      proofRecord(referenceB, { pid: 204, processStartedAtSeconds: 2_003 }),
+      proofRecord(referenceA, { pid: 104, incarnation: testIncarnation(1_003) }),
+      proofRecord(referenceB, { pid: 204, incarnation: testIncarnation(2_003) }),
     ]);
     const process = proofRuntime(
-      new Map([
-        [-referenceA.locator.containment.processGroupId, referenceA.locator.containment.processStartedAtSeconds],
-        [referenceA.locator.containment.pid, referenceA.locator.containment.processStartedAtSeconds],
-        [104, 1_003],
-        [204, 2_003],
+      new Map<number, ProcessIncarnation>([
+        [-referenceA.locator.containment.processGroupId, referenceA.locator.containment.incarnation],
+        [referenceA.locator.containment.pid, referenceA.locator.containment.incarnation],
+        [104, testIncarnation(1_003)],
+        [204, testIncarnation(2_003)],
       ]),
     );
     const inheritance = createProviderProxySetInheritance({
@@ -1097,7 +1302,8 @@ describe('createProviderProxySetInheritance', () => {
       signals: process.signals,
       addressDistinctRootAlive: process.live.has(204),
     }).toEqual({
-      receipt: 'group:200,leader:200@3,root:104@1003',
+      receipt:
+        'group:200,leader:200@linux:00000000-0000-4000-8000-000000000000:3,root:104@linux:00000000-0000-4000-8000-000000000000:1003',
       signals: [
         { pid: -200, signal: 'SIGTERM' },
         { pid: 104, signal: 'SIGTERM' },
@@ -1110,10 +1316,10 @@ describe('createProviderProxySetInheritance', () => {
     const referenceA = locator();
     const referenceB = alternateLocator(referenceA);
     const exactRecords = Array.from({ length: 65 }, (_, index) =>
-      proofRecord(referenceA, { pid: 1_000 + index, processStartedAtSeconds: 10_000 + index }),
+      proofRecord(referenceA, { pid: 1_000 + index, incarnation: testIncarnation(`10000-${index}`) }),
     );
     const distinctRecords = Array.from({ length: 64 }, (_, index) =>
-      proofRecord(referenceB, { pid: 2_000 + index, processStartedAtSeconds: 20_000 + index }),
+      proofRecord(referenceB, { pid: 2_000 + index, incarnation: testIncarnation(`20000-${index}`) }),
     );
     const db = proofDatabase([...exactRecords, ...distinctRecords]);
     const process = proofRuntime(new Map());
@@ -1131,11 +1337,11 @@ describe('createProviderProxySetInheritance', () => {
     );
 
     expect(receipt?.match(/root:/gu)).toHaveLength(65);
-    expect(receipt).not.toContain('root:2000@20000');
+    expect(receipt).not.toContain('root:2000@linux:00000000-0000-4000-8000-000000000000:20000');
     expect(process.signals).toEqual([]);
   });
 
-  it('reports not-bequeathed without attempting redemption when this process’s own start time is unreadable', async () => {
+  it('reports not-bequeathed without attempting redemption when this process’s own incarnation is unreadable', async () => {
     mockedProbe.mockReturnValueOnce(null);
     const registerInheritedSet = vi.fn();
 
@@ -1147,14 +1353,14 @@ describe('createProviderProxySetInheritance', () => {
     });
     const outcome = await inheritance.inheritProviderProxySet(locator(), unusedDb, neverAborts);
 
-    expect(outcome).toEqual({ kind: 'not-bequeathed', reason: expect.stringContaining('start time') });
+    expect(outcome).toEqual({ kind: 'not-bequeathed', reason: expect.stringContaining('incarnation') });
     expect(mockedReadCapsule).not.toHaveBeenCalled();
     expect(registerInheritedSet).not.toHaveBeenCalled();
   });
 
   it('registers a successfully inherited set and leaves it unregistered when not bequeathed', async () => {
     mockedReadCapsule.mockReturnValueOnce(null);
-    mockedProbe.mockImplementation((pid) => (pid === 100 ? 1 : 1_700_000_000));
+    mockedProbe.mockImplementation((pid) => (pid === 100 ? testIncarnation(1) : testIncarnation(1_700_000_000)));
     const registerInheritedSet = vi.fn();
 
     const inheritance = createProviderProxySetInheritance({
@@ -1163,7 +1369,8 @@ describe('createProviderProxySetInheritance', () => {
       operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
       registerInheritedSet,
     });
-    const outcome = await inheritance.inheritProviderProxySet(locator(), unusedDb, neverAborts);
+    const db = proofDatabase([]);
+    const outcome = await inheritance.inheritProviderProxySet(locator(), db, neverAborts).finally(() => db.close());
 
     expect(outcome.kind).toBe('not-bequeathed');
     expect(registerInheritedSet).not.toHaveBeenCalled();
@@ -1180,6 +1387,7 @@ describe('createProviderProxySetInheritance', () => {
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([providerOperationRecord('executing', { operation: loc.operation, locator: loc.locator })]);
     const lifecycle = new ProviderProxySetLifecycle({
+      buildSetId: FIXTURE_BUILD_SET_ID,
       claims,
       controlEstablished: notifyProviderProxyControlEstablished,
       time: runtime.time,
@@ -1242,6 +1450,7 @@ describe('createProviderProxySetInheritance', () => {
     claims.initialize([]);
     const established = vi.fn();
     const lifecycle = new ProviderProxySetLifecycle({
+      buildSetId: FIXTURE_BUILD_SET_ID,
       claims,
       controlEstablished: established,
       time,
@@ -1304,6 +1513,7 @@ describe('createProviderProxySetInheritance', () => {
     claims.initialize([]);
     const established = vi.fn();
     const lifecycle = new ProviderProxySetLifecycle({
+      buildSetId: FIXTURE_BUILD_SET_ID,
       claims,
       controlEstablished: established,
       time: {
@@ -1370,6 +1580,7 @@ describe('createProviderProxySetInheritance', () => {
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([]);
     const lifecycle = new ProviderProxySetLifecycle({
+      buildSetId: FIXTURE_BUILD_SET_ID,
       claims,
       controlEstablished: () => undefined,
       time,

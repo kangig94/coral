@@ -1,3 +1,4 @@
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 // AC2/AC3 happy-path handoff integration coverage. Drives the full bind-first
 // flow against a scripted incumbent that releases its socket within budget.
 // No real daemon spawn — uses VirtualTime + node:net listener fakes.
@@ -85,7 +86,7 @@ describe('handoff integration (AC2 + AC3 happy path)', () => {
             namespace: 'ns',
             status: 'ok',
             pid: 12345,
-            processStartedAt: 999_999,
+            incarnation: testIncarnation(999_999),
           } satisfies IncumbentHealth,
         };
       }
@@ -113,7 +114,7 @@ describe('handoff integration (AC2 + AC3 happy path)', () => {
         time,
         process: {
           kill: () => undefined,
-          isAlive: () => true,
+          observeLiveness: () => 'alive' as const,
         } as unknown as Runtime['process'],
         env: { platform: () => 'linux' } as unknown as Runtime['env'],
       };
@@ -127,7 +128,7 @@ describe('handoff integration (AC2 + AC3 happy path)', () => {
         runtime,
         readVerifiedIncumbentFromDiscovery: () => ({
           pid: 12345,
-          processStartedAt: 999_999,
+          incarnation: testIncarnation(999_999),
           source: 'discovery',
           instanceId: 'incumbent',
           token: 'token',

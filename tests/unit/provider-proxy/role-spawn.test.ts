@@ -1,3 +1,5 @@
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
+import type { ProcessIncarnation } from '#src/infra/node-process.js';
 import { EventEmitter } from 'node:events';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -15,7 +17,7 @@ import type { RuntimeSpawnOptions } from '#src/runtime/ports.js';
 /**
  * `spawnRoleProcess` has no dedicated coverage anywhere else: `process-topology.integration.test.ts` drives
  * it only through the full role-main topology, which never exercises the failure branches (`role_spawn_no_pid`,
- * an unreadable start time), the two `resolveBackendArtifact` branches, or the exact shape of the spawn call
+ * an unreadable incarnation), the two `resolveBackendArtifact` branches, or the exact shape of the spawn call
  * itself. A regression dropping `envAdditions` — the flavor env a spawned peer needs to find the right
  * capsule — would pass every existing test.
  */
@@ -45,7 +47,7 @@ function createFakeChild(pid: number | undefined): {
 
 type FakePortsOptions = Readonly<{
   spawn(options: RuntimeSpawnOptions): ChildProcessLike;
-  readProcessStartedAtSeconds?(pid: number, platform: NodeJS.Platform): number | null;
+  readProcessIncarnation?(pid: number, platform: NodeJS.Platform): ProcessIncarnation | null;
 }>;
 
 // A real runtime, not a fake: `gracefulKill`'s own escalation timer needs a genuine `Runtime`, and its
@@ -57,9 +59,7 @@ function fakePorts(options: FakePortsOptions): RoleSpawnPorts {
     process: { spawn: options.spawn },
     runtime: realRuntime,
     platform: 'linux',
-    ...(options.readProcessStartedAtSeconds === undefined
-      ? {}
-      : { readProcessStartedAtSeconds: options.readProcessStartedAtSeconds }),
+    ...(options.readProcessIncarnation === undefined ? {} : { readProcessIncarnation: options.readProcessIncarnation }),
   };
 }
 
@@ -81,15 +81,15 @@ describe('spawnRoleProcess', () => {
     expect(killSignals).toContain('SIGTERM');
   });
 
-  it('kills the child and throws role_spawn_start_time_unavailable when the start time cannot be read', () => {
+  it('kills the child and throws role_spawn_incarnation_unavailable when the incarnation cannot be read', () => {
     const { child, killSignals } = createFakeChild(6_000);
-    const ports = fakePorts({ spawn: () => child, readProcessStartedAtSeconds: () => null });
+    const ports = fakePorts({ spawn: () => child, readProcessIncarnation: () => null });
 
     expect(() => spawnRoleProcess('reaper', '/capsule.json', ports, baseOptions())).toThrow(RoleSpawnError);
     try {
       spawnRoleProcess('reaper', '/capsule.json', ports, baseOptions());
     } catch (error: unknown) {
-      expect(error).toMatchObject({ code: 'role_spawn_start_time_unavailable', role: 'reaper' });
+      expect(error).toMatchObject({ code: 'role_spawn_incarnation_unavailable', role: 'reaper' });
     }
     expect(killSignals).toContain('SIGTERM');
   });
@@ -101,7 +101,7 @@ describe('spawnRoleProcess', () => {
         captured.push(options);
         return createFakeChild(7_000).child;
       },
-      readProcessStartedAtSeconds: () => 1_000,
+      readProcessIncarnation: () => testIncarnation(1_000),
     });
 
     spawnRoleProcess(
@@ -122,7 +122,7 @@ describe('spawnRoleProcess', () => {
         captured.push(options);
         return createFakeChild(7_001).child;
       },
-      readProcessStartedAtSeconds: () => 1_000,
+      readProcessIncarnation: () => testIncarnation(1_000),
     });
 
     spawnRoleProcess('guardian', '/capsule.json', ports, baseOptions({ currentEntrypoint: '/some/other/entry.js' }));
@@ -138,7 +138,7 @@ describe('spawnRoleProcess', () => {
         captured.push(options);
         return createFakeChild(7_002).child;
       },
-      readProcessStartedAtSeconds: () => 1_000,
+      readProcessIncarnation: () => testIncarnation(1_000),
     });
     // The exact env a spawned peer needs to find the capsule identity meant for it — dropping this silently
     // would still pass a test that only checks the spawn was called at all.
@@ -159,7 +159,7 @@ describe('spawnRoleProcess', () => {
 
   it('reports an async spawn error as a rejected spawnFailed promise, not an uncaught exception', async () => {
     const { child, emitError } = createFakeChild(7_003);
-    const ports = fakePorts({ spawn: () => child, readProcessStartedAtSeconds: () => 1_000 });
+    const ports = fakePorts({ spawn: () => child, readProcessIncarnation: () => testIncarnation(1_000) });
 
     const spawned = spawnRoleProcess('reaper', '/capsule.json', ports, baseOptions());
     const failure = new Error('ENOENT: spawn failed');

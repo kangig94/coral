@@ -11,7 +11,7 @@ import { coordinatorPaths } from '#src/infra/path/coordinator.js';
 import { readBuildFlavor } from '#src/infra/bundle-manifest.js';
 import { jobsDir } from '#src/jobs/paths.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
-import { isProcessAlive } from '#src/infra/node-process.js';
+import { observeProcessLiveness } from '#src/infra/node-process.js';
 import type { JobStatus } from '#src/jobs/records.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { openStoreDatabase } from '#src/store/db.js';
@@ -266,7 +266,7 @@ async function fetchJson<T>(info: BackendInfo, path: string, expectedStatus = 20
 
 async function stopBackend(pluginRoot: string, home: string): Promise<void> {
   const info = readBackendInfo(backendDiscoveryRuntime(pluginRoot, home));
-  if (!info || !isProcessAlive(info.pid)) {
+  if (!info || observeProcessLiveness(info.pid) === 'absent') {
     return;
   }
 
@@ -280,7 +280,7 @@ async function stopBackend(pluginRoot: string, home: string): Promise<void> {
   }
 
   try {
-    await waitForCondition(() => !isProcessAlive(info.pid), 10_000);
+    await waitForCondition(() => observeProcessLiveness(info.pid) === 'absent', 10_000);
   } catch {
     try {
       process.kill(info.pid, 'SIGKILL');
@@ -289,7 +289,7 @@ async function stopBackend(pluginRoot: string, home: string): Promise<void> {
         throw error;
       }
     }
-    await waitForCondition(() => !isProcessAlive(info.pid), 2_000).catch(() => {});
+    await waitForCondition(() => observeProcessLiveness(info.pid) === 'absent', 2_000).catch(() => {});
   }
 }
 

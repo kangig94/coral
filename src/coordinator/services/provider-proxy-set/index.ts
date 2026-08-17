@@ -1,10 +1,10 @@
 import type { TimePort, TimerHandle } from '../../../infra/port-types.js';
 import { errorMessage } from '../../../infra/error-format.js';
 import type { OperationIdentity } from '../../../provider-proxy/protocol.js';
-import type { HandoffCapsule, HandoffCapsuleV1, HandoffCapsuleV2 } from '../../../provider-proxy/handoff-capsule.js';
+import { type HandoffCapsule, type HandoffCapsuleV3 } from '../../../provider-proxy/handoff-capsule.js';
 import type { DurableProviderProxyOperationAuthority } from '../../live/provider-proxy/operation-route.js';
 import type { ProviderHandoffCapsuleRetirementOutcome } from '../provider-proxy-capsule-discovery.js';
-import type { ProviderProxySetRedemptionOutcome } from './inheritance.js';
+import { classifyProviderProxySetInheritance, type ProviderProxySetRedemptionOutcome } from './inheritance.js';
 import type {
   ContainmentDisappearanceNotice,
   DisappearanceDeliveryAttemptOutcome,
@@ -31,6 +31,7 @@ import {
   ProviderProxySetIdentityIndex,
   providerProxySetAddress,
   providerProxySetAddressKey,
+  providerProxySetCapsuleMatchesIdentity,
   providerProxySetIdentitiesEqual,
   providerProxySetIdentityFromCapsule,
   providerProxySetKey,
@@ -81,7 +82,7 @@ type ProviderProxySetSlot =
       key: ProviderProxySetKey;
       identity: ProviderProxySetIdentity;
       capsulePath: string;
-      capsuleBinding: HandoffCapsuleV2;
+      capsuleBinding: HandoffCapsuleV3;
       address: ProviderProxySetAddress;
       capacityClass: CapacityClass;
       completedAttempts: number;
@@ -89,17 +90,17 @@ type ProviderProxySetSlot =
       attemptToken: number;
       attemptAbort: AbortController | null;
     }
+  /**
+   * A capsule this build must not dial. It holds an address and nothing else — no timer, no attempt, no
+   * authority — because every action available here is one this build is not entitled to take.
+   */
   | {
-      kind: 'capsule-opaque';
+      kind: 'capsule-foreign';
       slotId: string;
       capsulePath: string;
-      capsuleBinding: HandoffCapsuleV1;
       address: ProviderProxySetAddress;
       capacityClass: CapacityClass;
-      completedAttempts: number;
-      retryTimer: TimerHandle | null;
-      attemptToken: number;
-      attemptAbort: AbortController | null;
+      reason: 'other-build' | 'unreadable-identity';
     }
   | {
       kind: 'recovering';
@@ -128,6 +129,15 @@ type ProviderProxySetSlot =
     };
 
 type AbsenceDeliveryPendingSlot = Extract<ProviderProxySetSlot, { kind: 'absence-delivery-pending' }>;
+
+/**
+ * Whether a discovered capsule is one this build may act on. Returned as a variant rather than a boolean so
+ * the inheritable branch carries the narrowed capsule: every path that reads a process identity out of one is
+ * then unreachable for any generation this build cannot name a set from, by type rather than by discipline.
+ */
+type CapsuleInheritance =
+  | Readonly<{ kind: 'inheritable'; capsule: HandoffCapsuleV3 }>
+  | Readonly<{ kind: 'uninheritable'; reason: 'other-build' | 'unreadable-identity' }>;
 
 type ContainmentAbsenceCommit =
   | Readonly<{ kind: 'unchanged'; pending: AbsenceDeliveryPendingSlot }>
@@ -189,6 +199,12 @@ type AbsenceDeliveryState =
   | Readonly<{ kind: 'fatal'; error: ProviderProxySetLifecycleFatalError }>;
 
 export type ProviderProxySetLifecycleDeps = Readonly<{
+  /**
+   * This coordinator's own build set. Discovery needs it to tell a capsule it may redeem from one it may
+   * only represent: redemption is build-bound at the role (`assertNamedCoordinatorBuild`), so dialing a
+   * foreign set is not a failed attempt but a fatal one.
+   */
+  buildSetId: string;
   claims: ProviderProxySetClaimMirror;
   controlEstablished(authority: DurableProviderProxyOperationAuthority): void;
   time: Pick<TimePort, 'now' | 'setTimeout' | 'clearTimeout'>;
@@ -315,7 +331,6 @@ export class ProviderProxySetLifecycle {
     this.#startupDiscoveryCompleted = true;
     for (const slot of this.#slots.values()) {
       if (slot.kind === 'capsule-recovering') this.#recoverExactCapsule(slot);
-      if (slot.kind === 'capsule-opaque') void this.#redeemOpaqueCapsule(slot);
     }
   }
 
@@ -345,13 +360,14 @@ export class ProviderProxySetLifecycle {
       [...this.#slots.values()].some(
         (slot) =>
           slot.kind !== 'acquiring' &&
+          slot.kind !== 'capsule-foreign' &&
           slot.address.buildSetId === binding.buildSetId &&
           slot.address.hostFingerprint === binding.hostFingerprint,
       )
     ) {
       return { kind: 'already-represented' };
     }
-    if (this.#slots.size + 1 > MAX_COORDINATOR_PROXY_SET_SLOTS) {
+    if (this.#occupiedSlotCount() + 1 > MAX_COORDINATOR_PROXY_SET_SLOTS) {
       return { kind: 'capacity', code: 'provider_proxy_set_capacity' };
     }
     const slotId = `acquiring-${this.#nextSlotId++}`;
@@ -392,7 +408,7 @@ export class ProviderProxySetLifecycle {
       slot === undefined ||
       slot.kind === 'acquiring' ||
       slot.kind === 'capsule-recovering' ||
-      slot.kind === 'capsule-opaque' ||
+      slot.kind === 'capsule-foreign' ||
       slot.kind === 'recovering' ||
       slot.kind === 'containing' ||
       slot.kind === 'containment-wait' ||
@@ -438,7 +454,7 @@ export class ProviderProxySetLifecycle {
       slot === undefined ||
       slot.kind === 'acquiring' ||
       slot.kind === 'capsule-recovering' ||
-      slot.kind === 'capsule-opaque' ||
+      slot.kind === 'capsule-foreign' ||
       slot.kind === 'recovering' ||
       slot.kind === 'absence-delivery-pending' ||
       slot.kind === 'containing' ||
@@ -467,7 +483,7 @@ export class ProviderProxySetLifecycle {
       slot === undefined ||
       slot.kind === 'acquiring' ||
       slot.kind === 'capsule-recovering' ||
-      slot.kind === 'capsule-opaque' ||
+      slot.kind === 'capsule-foreign' ||
       slot.kind === 'recovering'
     ) {
       return;
@@ -524,7 +540,7 @@ export class ProviderProxySetLifecycle {
     if (slot === undefined) throw new Error('provider_proxy_containment_absence_slot_missing');
     if (
       slot.kind === 'acquiring' ||
-      slot.kind === 'capsule-opaque' ||
+      slot.kind === 'capsule-foreign' ||
       !providerProxySetIdentitiesEqual(slot.identity, identity)
     ) {
       throw new Error('provider_proxy_containment_absence_identity_mismatch');
@@ -605,37 +621,64 @@ export class ProviderProxySetLifecycle {
     this.#capsuleAddresses.set(addressKey, path);
     this.#capsuleGrants.set(capsule.grantId, path);
 
+    // Decided before anything is attached to a claim, because a capsule that names a durable operation is
+    // exactly the capsule an upgrade finds, and attaching it is what makes it get dialed.
+    //
+    // Reaching a role is what makes an un-inheritable capsule fatal rather than merely useless.
+    // `handoff.redeem` is gated on build identity (`assertNamedCoordinatorBuild`), so a foreign set answers
+    // `identity_mismatch`; the recovery policy reads that as `refused`, and `refused` retires fatally
+    // *before* any seam can weigh the absence evidence gathered beside it — taking this whole coordinator
+    // down over a set it never owned.
+    //
+    // A V2 capsule is the same problem from the other side: this build can reach it, but its process
+    // identity is in seconds it can no longer verify, and carrying those numbers into a token would make a
+    // live process read as absent.
+    const classified = this.#classifyCapsule(capsule);
+    const uninheritable = classified.kind === 'uninheritable' ? classified.reason : null;
+
     const claimKey = this.#identityIndex.keyForAddress(address);
     if (claimKey !== null) {
       const claimSlot = this.#slots.get(claimKey);
-      if (claimSlot?.kind !== 'recovering' || !this.#capsuleMatchesIdentity(capsule, claimSlot.identity)) {
+      if (claimSlot?.kind !== 'recovering' || !providerProxySetCapsuleMatchesIdentity(capsule, claimSlot.identity)) {
         throw new Error('provider_proxy_capsule_claim_identity_mismatch');
       }
       if (claimSlot.capsulePath !== null && claimSlot.capsulePath !== path) {
         throw new Error('provider_proxy_capsule_claim_path_alias');
       }
+      if (uninheritable !== null) {
+        // Leave `capsulePath` null — the same state a claim reaches when no capsule was found at all, which
+        // resolves through containment proof rather than redemption. Naming the path here is precisely what
+        // hands this credential to a redemption that must be refused.
+        this.#deps.reportLifecycle(
+          'warn',
+          `Provider proxy capsule at ${path} names a claimed set but is not inheritable (${uninheritable}); the claim will resolve without it.`,
+        );
+        return;
+      }
       claimSlot.capsulePath = path;
       return;
     }
 
-    if (capsule.version === 1) {
+    // Unclaimed and un-inheritable: the slot exists so the address stays represented and cannot be aliased.
+    if (classified.kind === 'uninheritable') {
       const slotId = `capsule-${this.#nextSlotId++}`;
       this.#slots.set(slotId, {
-        kind: 'capsule-opaque',
+        kind: 'capsule-foreign',
         slotId,
         capsulePath: path,
-        capsuleBinding: capsule,
         address,
         capacityClass: 'retained',
-        completedAttempts: 0,
-        retryTimer: null,
-        attemptToken: 0,
-        attemptAbort: null,
+        reason: classified.reason,
       });
+      this.#deps.reportLifecycle(
+        'warn',
+        `Provider proxy capsule at ${path} is represented but not inheritable (${classified.reason}).`,
+      );
       return;
     }
+    const inheritable = classified.capsule;
 
-    const identity = providerProxySetIdentityFromCapsule(capsule);
+    const identity = providerProxySetIdentityFromCapsule(inheritable);
     const key = this.#identityIndex.add(identity);
     if (this.#slots.has(key)) throw new Error('provider_proxy_capsule_exact_identity_alias');
     this.#slots.set(key, {
@@ -643,7 +686,7 @@ export class ProviderProxySetLifecycle {
       key,
       identity,
       capsulePath: path,
-      capsuleBinding: capsule,
+      capsuleBinding: inheritable,
       address,
       capacityClass: 'retained',
       completedAttempts: 0,
@@ -653,20 +696,11 @@ export class ProviderProxySetLifecycle {
     });
   }
 
-  #capsuleMatchesIdentity(capsule: HandoffCapsule, identity: ProviderProxySetIdentity): boolean {
-    if (capsule.version === 2) {
-      return providerProxySetIdentitiesEqual(providerProxySetIdentityFromCapsule(capsule), identity);
-    }
-    return (
-      capsule.buildSetId === identity.buildSetId &&
-      capsule.hostFingerprint === identity.hostFingerprint &&
-      capsule.guardianInstanceId === identity.guardianInstanceId &&
-      capsule.reaperInstanceId === identity.reaperInstanceId &&
-      capsule.proxyInstanceId === identity.proxyInstanceId &&
-      capsule.guardianControlEndpoint === identity.guardianControlEndpoint &&
-      capsule.reaperControlEndpoint === identity.reaperControlEndpoint &&
-      capsule.proxyEndpoint === identity.canonicalEndpoint
-    );
+  #classifyCapsule(capsule: HandoffCapsule): CapsuleInheritance {
+    const verdict = classifyProviderProxySetInheritance(capsule, this.#deps.buildSetId);
+    return verdict.kind === 'refused'
+      ? { kind: 'uninheritable', reason: verdict.reason }
+      : { kind: 'inheritable', capsule: verdict.candidate };
   }
 
   #recoverExactCapsule(slot: Extract<ProviderProxySetSlot, { kind: 'capsule-recovering' }>): void {
@@ -729,90 +763,6 @@ export class ProviderProxySetLifecycle {
     });
   }
 
-  #redeemOpaqueCapsule(slot: Extract<ProviderProxySetSlot, { kind: 'capsule-opaque' }>): void {
-    if (this.#slots.get(slot.slotId) !== slot) return;
-    const dispatcher = this.#deps.recoveryDispatcher;
-    slot.attemptToken += 1;
-    const token = slot.attemptToken;
-    const abort = new AbortController();
-    slot.attemptAbort = abort;
-    const turn = dispatcher.begin(
-      'opaque-capsule-redemption',
-      { capsule: slot.capsuleBinding },
-      {
-        evidence: (value) => {
-          if (this.#slots.get(slot.slotId) !== slot || slot.attemptToken !== token) return;
-          slot.attemptAbort = null;
-          const outcome = value as Extract<ProviderProxySetRedemptionOutcome, { kind: 'redeemed' }>;
-          const identity = outcome.set.setIdentity;
-          const upgraded: HandoffCapsuleV2 = {
-            ...slot.capsuleBinding,
-            version: 2,
-            guardianPid: identity.guardianPid,
-            guardianProcessStartedAtSeconds: identity.guardianProcessStartedAtSeconds,
-            proxyPid: identity.proxyPid,
-            reaperPid: identity.reaperPid,
-            reaperProcessStartedAtSeconds: identity.reaperProcessStartedAtSeconds,
-            containmentKind: identity.containmentKind,
-            proxyProcessStartedAtSeconds: identity.proxyProcessStartedAtSeconds,
-            proxyProcessGroupId: identity.proxyProcessGroupId,
-          };
-          this.#rewriteOpaqueCapsule(slot, outcome.set, upgraded);
-        },
-        retry: () => {
-          if (this.#slots.get(slot.slotId) !== slot || slot.attemptToken !== token) return;
-          slot.attemptAbort = null;
-          slot.completedAttempts += 1;
-          const delayMs = retryDelayMs(slot.completedAttempts);
-          const requestedWakeMs = this.#deps.time.now() + delayMs;
-          slot.retryTimer = this.#deps.time.setTimeout(() => {
-            slot.retryTimer = null;
-            this.#recordLateness('containment-retry', requestedWakeMs);
-            this.#redeemOpaqueCapsule(slot);
-          }, delayMs);
-          slot.retryTimer.unref?.();
-        },
-        fatal: () => {
-          if (this.#slots.get(slot.slotId) === slot && slot.attemptToken === token) slot.attemptAbort = null;
-        },
-      },
-    );
-    turn.start({
-      sourceId: 'redemption',
-      producerId: 'capsule-redemption',
-      input: { capsule: slot.capsuleBinding, capsulePath: slot.capsulePath, signal: abort.signal },
-      abort: (reason) => abort.abort(reason),
-    });
-  }
-
-  #rewriteOpaqueCapsule(
-    slot: Extract<ProviderProxySetSlot, { kind: 'capsule-opaque' }>,
-    authority: DurableProviderProxyOperationAuthority,
-    upgraded: HandoffCapsuleV2,
-  ): void {
-    const dispatcher = this.#deps.recoveryDispatcher;
-    const turn = dispatcher.begin(
-      'opaque-capsule-rewrite',
-      { setIdentity: authority.setIdentity, capsule: upgraded },
-      {
-        evidence: () => {
-          if (this.#slots.get(slot.slotId) !== slot) return;
-          this.#slots.delete(slot.slotId);
-          this.#establish(authority, null, slot.capsulePath, 'contain-unclaimed-discovery');
-        },
-        retry: () => {
-          throw new Error('provider_proxy_capsule_rewrite_retry_is_not_permitted');
-        },
-        fatal: () => undefined,
-      },
-    );
-    turn.start({
-      sourceId: 'rewrite',
-      producerId: 'capsule-rewrite',
-      input: { path: slot.capsulePath, capsule: upgraded },
-    });
-  }
-
   #establish(
     authority: DurableProviderProxyOperationAuthority,
     routeKey: string | null,
@@ -867,9 +817,22 @@ export class ProviderProxySetLifecycle {
     }
   }
 
+  /**
+   * Slots this coordinator is actually running a set in. A `capsule-foreign` slot is deliberately excluded:
+   * it holds no authority, no route and no claim, and the coordinator can take no action on it, so counting
+   * it against the acquisition limit lets capsules left behind by another build deny this one its own sets —
+   * four of them permanently, and one of them for the matching host.
+   */
+  #occupiedSlotCount(): number {
+    return [...this.#slots.values()].filter((slot) => slot.kind !== 'capsule-foreign').length;
+  }
+
   #classifyCapacity(): void {
     const addressed = [...this.#slots.values()]
-      .filter((slot): slot is Exclude<ProviderProxySetSlot, { kind: 'acquiring' }> => slot.kind !== 'acquiring')
+      .filter(
+        (slot): slot is Exclude<ProviderProxySetSlot, { kind: 'acquiring' | 'capsule-foreign' }> =>
+          slot.kind !== 'acquiring' && slot.kind !== 'capsule-foreign',
+      )
       .sort((left, right) =>
         providerProxySetAddressKey(left.address).localeCompare(providerProxySetAddressKey(right.address)),
       );

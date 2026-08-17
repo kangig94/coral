@@ -1,3 +1,4 @@
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { createDeferred } from '#tools/testing/deferred.js';
@@ -36,6 +37,9 @@ import {
 } from '#tests/unit/coordinator/live/provider-hosts/helpers.js';
 import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
 
+/** The build this fixture lifecycle belongs to — the same one `providerOperationRecord` stamps on its identities, so a discovered capsule is inheritable rather than foreign. */
+const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
+
 const mockedEnsureProxySet = ensureProviderProxySet as unknown as ReturnType<typeof vi.fn>;
 
 function fakeProxySet(proxyInstanceId: string): ProviderProxySetAuthority {
@@ -59,16 +63,16 @@ function fakeInheritedProxySet(proxyInstanceId: string): ProviderProxyOperationA
       hostFingerprint: 'a'.repeat(64),
       guardianInstanceId: randomUUID(),
       guardianPid: 100,
-      guardianProcessStartedAtSeconds: 1,
+      guardianIncarnation: testIncarnation(1),
       guardianControlEndpoint: '/tmp/guardian.sock',
       proxyInstanceId: base.proxyInstanceId,
       proxyPid: 200,
       reaperInstanceId: randomUUID(),
       reaperPid: 300,
-      reaperProcessStartedAtSeconds: 2,
+      reaperIncarnation: testIncarnation(2),
       reaperControlEndpoint: '/tmp/reaper.sock',
       containmentKind: 'posix-group',
-      proxyProcessStartedAtSeconds: 3,
+      proxyIncarnation: testIncarnation(3),
       proxyProcessGroupId: 200,
       canonicalEndpoint: '/tmp/proxy.sock',
     },
@@ -132,6 +136,7 @@ function createProxySetLifecycleRef(onSlotReleased?: (routeKey: string) => void)
   const claims = new ProviderProxySetClaimMirror();
   claims.initialize([]);
   const lifecycle = new ProviderProxySetLifecycle({
+    buildSetId: FIXTURE_BUILD_SET_ID,
     claims,
     controlEstablished: () => undefined,
     time: runtime.time,

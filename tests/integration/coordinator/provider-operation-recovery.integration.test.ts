@@ -20,7 +20,6 @@ import { createStoreServicesRef } from '#src/coordinator/composition/store-servi
 import { createLifecycle, createRuntimeState } from '#src/coordinator/lifecycle.js';
 import { KB_COMPONENT_ID } from '#src/coordinator/runtime-components/contract.js';
 import { ProviderOperationReconciler } from '#src/coordinator/services/provider-operation-reconciler.js';
-import type { RecoveryCoordinator } from '#src/coordinator/services/recovery/index.js';
 import type { DurableProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
 import { insertProviderOperation, readProviderOperation } from '#src/store/provider-operation-journal.js';
 import { providerOperationRecordSchema } from '#src/store/provider-operation-record.js';
@@ -70,7 +69,7 @@ function seedQueuedProviderJob(progressStore: JobStore, jobId: string, sessionId
 }
 
 describe('provider-operation startup recovery ownership', () => {
-  it('captures saga ownership before reconciliation and attempts recovery exactly once', async () => {
+  it('computes ownership after provider reconciliation and then runs generic recovery exactly once', async () => {
     const runtime = createRealRuntime('prod');
     const db = newRawDatabase(':memory:');
     applyBundledStoreSchema(db, currentCoralStoreFormat());
@@ -106,7 +105,6 @@ describe('provider-operation startup recovery ownership', () => {
           boundProvider: { name: launchRecord.provider },
         } as unknown as ProviderRecoveryAuthority,
       })),
-      finalizeProviderRecoveryBindingFailure: vi.fn(),
       finalizeInterruptedAppServerJob: vi.fn(async () => {}),
       finalizeInterruptedDurableJob: vi.fn(async () => {}),
       adoptRunningJob: vi.fn(async () => ({ adopted: true, cleanup: vi.fn() })),
@@ -114,7 +112,6 @@ describe('provider-operation startup recovery ownership', () => {
       interruptAppServerJob: vi.fn(async () => {}),
       completeRecoveredJob: vi.fn(),
     } as RecoveryCapableService;
-    let recoveryCoordinator: RecoveryCoordinator | null = null;
     const cancelOperation: DurableProviderProxyOperationAuthority['cancelOperation'] = async (
       operation,
       prepareAttemptNumber,
@@ -141,12 +138,12 @@ describe('provider-operation startup recovery ownership', () => {
       materializePrepare: () => {
         throw new Error('startup ownership test unexpectedly materialized a prepare');
       },
-      recoverLocalJob: (record, signal) => {
-        if (recoveryCoordinator === null) throw new Error('recovery coordinator is not connected');
-        return recoveryCoordinator.recoverProviderOperationJob(record, signal);
-      },
-      completeLocalRecovery: (recoveredJobId) =>
-        recoveryCoordinator?.completeProviderOperationJobRecovery(recoveredJobId),
+      recoverLocalJob: async (record) => ({
+        state: 'accepted',
+        jobId: record.operation.jobId,
+        owner: 'recovery-coordinator',
+      }),
+      completeLocalRecovery: vi.fn(),
       terminalization: {
         terminalize: () => {
           throw new Error('startup ownership test unexpectedly terminalized the saga');
@@ -214,9 +211,7 @@ describe('provider-operation startup recovery ownership', () => {
         getExecutionService: vi.fn() as never,
         getRecoveryService: () => recoveryService,
         listExecutionServices: () => [],
-        connectProviderOperationRecovery: (connected) => {
-          recoveryCoordinator = connected;
-        },
+        connectProviderOperationRecovery: vi.fn(),
         reconcileProviderOperationsAtStartup: (signal) => reconciler.reconcileAtStartup(signal),
         startProviderOperationReconciler: vi.fn(),
         stopProviderOperationReconciler: vi.fn(),

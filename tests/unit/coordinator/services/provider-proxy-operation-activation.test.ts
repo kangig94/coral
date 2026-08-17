@@ -1,3 +1,4 @@
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { randomUUID } from 'node:crypto';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { createProviderOperationRetryHarness } from '#tests/helpers/provider-operation-retry-harness.js';
@@ -36,16 +37,16 @@ const SET_IDENTITY: ProviderProxySetIdentity = {
   hostFingerprint: 'a'.repeat(64),
   guardianInstanceId: randomUUID(),
   guardianPid: 100,
-  guardianProcessStartedAtSeconds: 1,
+  guardianIncarnation: testIncarnation(1),
   guardianControlEndpoint: '/tmp/guardian.sock',
   proxyInstanceId: randomUUID(),
   proxyPid: 200,
   reaperInstanceId: randomUUID(),
   reaperPid: 300,
-  reaperProcessStartedAtSeconds: 2,
+  reaperIncarnation: testIncarnation(2),
   reaperControlEndpoint: '/tmp/reaper.sock',
   containmentKind: 'detached-group',
-  proxyProcessStartedAtSeconds: 3,
+  proxyIncarnation: testIncarnation(3),
   proxyProcessGroupId: 200,
   canonicalEndpoint: '/tmp/proxy.sock',
 };
@@ -180,7 +181,7 @@ const POLICY_FAILURE_CASES = [
     invoke: (activationDeps) =>
       authorizeProviderOperation(activationDeps, OPERATION, {
         reservation: randomUUID(),
-        providerRoot: { pid: 701, processStartedAtSeconds: 800 },
+        providerRoot: { pid: 701, incarnation: testIncarnation(800) },
         jointContainmentReceipt: 'joint-1',
       }),
   },
@@ -247,7 +248,7 @@ describe('provider proxy operation mutations', () => {
       () =>
         authorizeProviderOperation(activationDeps, OPERATION, {
           reservation: randomUUID(),
-          providerRoot: { pid: 701, processStartedAtSeconds: 800 },
+          providerRoot: { pid: 701, incarnation: testIncarnation(800) },
           jointContainmentReceipt: 'joint-1',
         }),
       () =>
@@ -320,7 +321,7 @@ describe('provider proxy operation mutations', () => {
       state: 'pending-activation',
       reservation: randomUUID(),
       leaseExpiresInMs: 15_000,
-      providerRoot: { pid: 701, processStartedAtSeconds: 800 },
+      providerRoot: { pid: 701, incarnation: testIncarnation(800) },
       jointContainmentReceipt: 'joint-1',
     } as const;
     const proxy = scriptedClient({ 'operation.prepare.v1': pending });
@@ -367,7 +368,7 @@ describe('provider proxy operation mutations', () => {
     const activationDeps = deps(proxy.client, guardian.client);
     const preparation = {
       reservation,
-      providerRoot: { pid: 701, processStartedAtSeconds: 800 },
+      providerRoot: { pid: 701, incarnation: testIncarnation(800) },
       jointContainmentReceipt: 'joint-1',
     };
 

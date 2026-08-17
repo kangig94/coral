@@ -202,15 +202,37 @@ export function providerReaperBootstrapCapsulePath(
   return providerBootstrapCapsulePath('reaper', identity, identity.reaperInstanceId, options);
 }
 
+/** The filename half of one capsule generation, exposed so discovery can build its own pattern from the same
+ *  rule rather than a hand-kept copy of it. */
+export function providerHandoffCapsuleFileSuffix(capsuleVersion: number): string {
+  return capsuleVersion <= 2 ? 'handoff.json' : `handoff.v${capsuleVersion}.json`;
+}
+
 /**
- * One capsule per exact proxy set keeps the recovery secret independent of operation count. A distinct
- * `.handoff.json` suffix prevents the standing credential from colliding with the proxy's one-use bootstrap
- * secret, which has a different authority and lifetime.
+ * The filename a capsule of one generation lives under.
+ *
+ * **The generation is in the filename**, and that is the only thing standing between a rollback and a dead
+ * coordinator. A build reads a capsule strictly and refuses to start on one it cannot parse, so a newer
+ * format under a name an older build opens is boot-fatal for it. v0.10.8's discovery matches
+ * `provider-1<hash>.handoff.json` *exactly*, so anything from generation 3 onward is invisible to it rather
+ * than fatal — and the change asks nothing of the build being rolled back to, which is what makes it the only
+ * version of this fix that can work at all.
+ *
+ * Versions 1 and 2 keep the unsuffixed name they shipped under; nothing writes them any more, and renaming
+ * them would hide capsules this build still has to find and refuse.
+ *
+ * The generation is a required argument and there is no default. `infra/` may not reach into
+ * `provider-proxy/`, so a "current version" constant here would be a second copy of a fact the schema union
+ * owns — and the two drifting apart is precisely how a capsule ends up written under a name that contradicts
+ * its contents. Callers pass `CURRENT_HANDOFF_CAPSULE_VERSION` to write, or the capsule's own version to
+ * address one that already exists.
  */
 export function providerHandoffCapsulePath(
   identity: ProviderProxyEndpointIdentity,
+  capsuleVersion: number,
   options?: ProviderBootstrapCapsulePathOptions,
 ): string {
   const identityHash = providerPathIdentityHash('proxy', identity, identity.proxyInstanceId);
-  return join(generationRunDir(identity.flavor, options), `provider-${identityHash}.handoff.json`);
+  const suffix = providerHandoffCapsuleFileSuffix(capsuleVersion);
+  return join(generationRunDir(identity.flavor, options), `provider-${identityHash}.${suffix}`);
 }

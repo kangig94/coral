@@ -3,9 +3,15 @@ import { ZodError } from 'zod';
 import { errorMessage, formatError } from '../../../infra/error-format.js';
 import { StoreDecodeError } from '../../../store/body-codec.js';
 import { ProcessContainmentError } from '../../../infra/process-containment.js';
+import { backendLog } from '../../../infra/backend-log.js';
 import { isTerminalPhase } from '../../../jobs/phase.js';
 import { isAppServerRuntime, type JobTerminalInput } from '../../../jobs/records.js';
-import { readProviderOperations } from '../../../store/provider-operation-journal.js';
+import {
+  attributeUnreadableProviderOperations,
+  readProviderOperations,
+  readSupersededProviderOperations,
+  retireSupersededProviderOperation,
+} from '../../../store/provider-operation-journal.js';
 import type { ProviderOperationRecord } from '../../../store/provider-operation-record.js';
 import { isDurableCliRuntime } from '../../../runtime/durable-runtime.js';
 import type { InvocationContext } from '../../../runtime/invocation-context.js';
@@ -62,6 +68,8 @@ type RecoveryCoordinatorState = {
   recoveryRegistry: RecoveryRegistry | null;
   cancelledRecoveryJobIds: Set<string>;
   adoptedRunningPids: Map<string, { pid: number; pool: string }>;
+  /** Consecutive ticks whose liveness probe could not answer, per adopted job. Reset by any answer. */
+  unansweredAdoptionProbes: Map<string, number>;
   recoveryPollIntervals: Map<string, TimerHandle>;
   adoptedRunningJobCleanups: Map<string, () => void>;
   inflightFinalizations: Map<
@@ -83,6 +91,7 @@ export type ProviderOperationRecoveryAcceptance = Readonly<{
 }>;
 
 export interface RecoveryCoordinator {
+  retireAbsentSupersededProviderOperations(): void;
   snapshotProviderOperationStartupOwnership(): ProviderOperationStartupOwnership;
   recoverProviderOperationJob(
     record: Extract<ProviderOperationRecord, { phase: 'local-recovery-pending' }>,
@@ -343,6 +352,9 @@ function settleCoordinatorRecoveryItem(
   ]);
 }
 
+/** How many consecutive unanswerable probes before an adopted job's stuck liveness is reported once. */
+const UNANSWERED_ADOPTION_PROBE_REPORT_THRESHOLD = 10;
+
 export function createRecoveryCoordinator(
   {
     progressStore,
@@ -359,6 +371,7 @@ export function createRecoveryCoordinator(
     recoveryRegistry: null,
     cancelledRecoveryJobIds: new Set<string>(),
     adoptedRunningPids: new Map<string, { pid: number; pool: string }>(),
+    unansweredAdoptionProbes: new Map<string, number>(),
     recoveryPollIntervals: new Map<string, TimerHandle>(),
     adoptedRunningJobCleanups: new Map<string, () => void>(),
     inflightFinalizations: new Map(),
@@ -637,13 +650,55 @@ export function createRecoveryCoordinator(
     return { kind: 'advanced', outcome: 'settled', facts, detail: summary };
   };
 
-  const acceptQueuedRecovery = async (
+  const recoverQueuedItem = async (
+    item: CoordinatorRecoveryItem,
     { jobId, authority }: QueuedRecoverableJob,
+    signal: AbortSignal,
+    coordinatorCommit: CommitEventsFn,
+    controls: CoordinatorRecoveryControls,
+  ): Promise<RecoveryDisposition> => {
+    const { launchRecord } = authority;
+    controls.setProcessLocalCleanup(() => {
+      state.recoveryRegistry?.remove(jobId);
+      state.recoveryRegistry?.clearCancelled(jobId);
+    });
+    const service = getRecoveryService(createInvocationContext(launchRecord.projectRoot));
+    signal.throwIfAborted();
+    if (state.cancelledRecoveryJobIds.has(jobId)) {
+      const facts = settleCoordinatorRecoveryItem(item, {
+        jobId,
+        terminal: {
+          kind: 'terminal',
+          terminal: {
+            content: '',
+            durationMs: elapsedDurationMs(launchRecord.createdAt, runtime.time.now(), `job ${jobId}`),
+            outcome: { kind: 'aborted', reason: 'user_abort' },
+          },
+        },
+        coordinatorCommit,
+        nowMs: runtime.time.now(),
+        emitSessionReleased: (payload) => eventBus.emit('session:released', payload),
+      });
+      controls.report(`Aborted queued recovery job: ${jobId}\n`);
+      return { kind: 'advanced', outcome: 'settled', facts, detail: 'queued recovery aborted' };
+    }
+    await service.recoverQueuedJob(authority);
+    controls.report(`Recovered queued job: ${jobId}\n`);
+    return {
+      kind: 'advanced',
+      outcome: 'settled',
+      facts: COORDINATOR_NOT_APPLICABLE_FACTS,
+      detail: 'queued job recovered',
+    };
+  };
+
+  const acceptQueuedRecovery = async (
+    job: QueuedRecoverableJob,
     signal: AbortSignal,
     coordinatorCommit: CommitEventsFn,
     failureMode: 'settle' | 'retry',
   ): Promise<void> => {
-    const { launchRecord } = authority;
+    const { jobId } = job;
     let acceptanceError: Error | null = null;
     await runCoordinatorWalk({
       subjectKey: jobId,
@@ -652,38 +707,7 @@ export function createRecoveryCoordinator(
       summary: `Queued recovery adoption for ${jobId}`,
       settle: async (item, controls) => {
         try {
-          controls.setProcessLocalCleanup(() => {
-            state.recoveryRegistry?.remove(jobId);
-            state.recoveryRegistry?.clearCancelled(jobId);
-          });
-          const service = getRecoveryService(createInvocationContext(launchRecord.projectRoot));
-          signal.throwIfAborted();
-          if (state.cancelledRecoveryJobIds.has(jobId)) {
-            const facts = settleCoordinatorRecoveryItem(item, {
-              jobId,
-              terminal: {
-                kind: 'terminal',
-                terminal: {
-                  content: '',
-                  durationMs: elapsedDurationMs(launchRecord.createdAt, runtime.time.now(), `job ${jobId}`),
-                  outcome: { kind: 'aborted', reason: 'user_abort' },
-                },
-              },
-              coordinatorCommit,
-              nowMs: runtime.time.now(),
-              emitSessionReleased: (payload) => eventBus.emit('session:released', payload),
-            });
-            controls.report(`Aborted queued recovery job: ${jobId}\n`);
-            return { kind: 'advanced', outcome: 'settled', facts, detail: 'queued recovery aborted' };
-          }
-          await service.recoverQueuedJob(authority);
-          controls.report(`Recovered queued job: ${jobId}\n`);
-          return {
-            kind: 'advanced',
-            outcome: 'settled',
-            facts: COORDINATOR_NOT_APPLICABLE_FACTS,
-            detail: 'queued job recovered',
-          };
+          return await recoverQueuedItem(item, job, signal, coordinatorCommit, controls);
         } catch (error: unknown) {
           acceptanceError = error instanceof Error ? error : new Error(errorMessage(error));
           throw acceptanceError;
@@ -708,13 +732,10 @@ export function createRecoveryCoordinator(
     }
   };
 
-  async function runRecoveryAdoption({
-    queuedJobs,
-    runningJobs,
-    signal,
-    coordinatorCommit,
-    interruptedAppServerReason,
-  }: RecoveryAdoptionContext): Promise<void> {
+  async function runRecoveryAdoption(
+    { queuedJobs, runningJobs, signal, coordinatorCommit, interruptedAppServerReason }: RecoveryAdoptionContext,
+    direct?: Readonly<{ item: CoordinatorRecoveryItem; controls: CoordinatorRecoveryControls }>,
+  ): Promise<RecoveryDisposition | void> {
     queuedJobs.sort((a, b) => a.authority.launchRecord.enqueueSequence - b.authority.launchRecord.enqueueSequence);
 
     let maxRecoverableSeq: number | null = null;
@@ -736,226 +757,256 @@ export function createRecoveryCoordinator(
 
     for (const { jobId, authority, runtimeRecord } of runningJobs) {
       const { launchRecord, boundProvider } = authority;
+      const settleRunningRecovery = async (
+        item: CoordinatorRecoveryItem,
+        controls: CoordinatorRecoveryControls,
+      ): Promise<RecoveryDisposition> => {
+        controls.setProcessLocalCleanup(() => state.recoveryRegistry?.remove(jobId));
+        const service = getRecoveryService(createInvocationContext(launchRecord.projectRoot));
+        if (isAppServerRuntime(runtimeRecord)) {
+          signal.throwIfAborted();
+          try {
+            await startTrackedFinalization(jobId, signal, (fence) =>
+              service.finalizeInterruptedAppServerJob(authority, runtimeRecord, {
+                reason: interruptedAppServerReason,
+                ...fence,
+              }),
+            );
+          } catch (error: unknown) {
+            // Carrier-detached recovery could not confirm its committed provider proxy set is gone within
+            // budget. That is honestly fatal for this job alone: finalizing anyway risks a second local
+            // kernel racing a carrier that may still be live, so this job is quarantined nonterminal rather
+            // than settled — unaffected jobs continue, and a later boot retries once the recorded
+            // saga row changes (see `coordinatorJobRecoverySubject`'s revision).
+            if (error instanceof ProcessContainmentError) {
+              controls.report(
+                `Carrier reap unconfirmed for interrupted app-server job: ${jobId}: ${errorMessage(error)}\n`,
+              );
+              return { kind: 'quarantine', detail: error.message };
+            }
+            throw error;
+          }
+          signal.throwIfAborted();
+          controls.report(`Recovered interrupted app-server job: ${jobId}\n`);
+          return {
+            kind: 'advanced',
+            outcome: 'settled',
+            facts: [
+              { obligation: COORDINATOR_TERMINAL_OBLIGATION, outcome: 'done', authorityRef: `job:${jobId}:terminal` },
+              {
+                obligation: COORDINATOR_CLAIM_RELEASE_OBLIGATION,
+                outcome: item.claimedSession?.activeJobId === jobId ? 'done' : 'not-applicable',
+                ...(item.claimedSession?.activeJobId === jobId
+                  ? { authorityRef: `session:${item.claimedSession.sessionId}:claim:${jobId}` }
+                  : {}),
+              },
+            ],
+            detail: 'interrupted app-server job finalized',
+          };
+        }
+        if (!isDurableCliRuntime(runtimeRecord)) {
+          const facts = settleFault(item, jobId, { kind: 'wrapper_lost' }, coordinatorCommit);
+          controls.report(`Skipped adopting unsupported runtime for job: ${jobId}\n`);
+          return { kind: 'advanced', outcome: 'settled', facts, detail: 'unsupported runtime finalized' };
+        }
+
+        const recovery = boundProvider.recovery;
+        let adoptedRuntimeRecord = runtimeRecord;
+        const drainRecoveredProgress = (): void => {
+          if (!recovery?.extractProgress) return;
+          try {
+            const { messages, newOffset } = recovery.extractProgress({
+              stdoutPath: adoptedRuntimeRecord.stdoutPath,
+              fromOffset: adoptedRuntimeRecord.tailWatermark ?? 0,
+            });
+            if (newOffset !== (adoptedRuntimeRecord.tailWatermark ?? 0)) {
+              adoptedRuntimeRecord = { ...adoptedRuntimeRecord, tailWatermark: newOffset };
+              progressStore.appendRuntimeStarted(jobId, adoptedRuntimeRecord);
+            }
+            for (const message of messages) {
+              progressStore.appendProgress(jobId, launchRecord.sessionId, message);
+            }
+          } catch (error: unknown) {
+            controls.report(`Failed to tail recovered progress for job ${jobId}: ${formatError(error)}\n`);
+          }
+        };
+
+        // Only an observed absence finalizes. An unanswerable probe used to throw here and reach the walk's
+        // generic catch, which recorded `recovery_parse_failed` — "could not ask" terminalized as "job
+        // failed". It now adopts instead, and the poller below re-asks.
+        if (runtime.process.observeLiveness(runtimeRecord.pid) === 'absent') {
+          drainRecoveredProgress();
+          await startTrackedFinalization(jobId, signal, (fence) =>
+            finalizeDeadAdoptedJob({
+              jobId,
+              runtimeRecord: adoptedRuntimeRecord,
+              service,
+              authority,
+              progressStore,
+              cancelledJobIds: state.cancelledRecoveryJobIds,
+              fence,
+            }),
+          );
+          controls.setProcessLocalCleanup(() => {
+            state.recoveryRegistry?.remove(jobId);
+            state.recoveryRegistry?.clearCancelled(jobId);
+          });
+          controls.report(`Finalized dead durable recovery job: ${jobId}\n`);
+          return {
+            kind: 'advanced',
+            outcome: 'settled',
+            facts: [
+              { obligation: COORDINATOR_TERMINAL_OBLIGATION, outcome: 'done', authorityRef: `job:${jobId}:terminal` },
+              {
+                obligation: COORDINATOR_CLAIM_RELEASE_OBLIGATION,
+                outcome: item.claimedSession?.activeJobId === jobId ? 'done' : 'not-applicable',
+                ...(item.claimedSession?.activeJobId === jobId
+                  ? { authorityRef: `session:${item.claimedSession.sessionId}:claim:${jobId}` }
+                  : {}),
+              },
+            ],
+            detail: 'dead durable job finalized',
+          };
+        }
+
+        signal.throwIfAborted();
+        const adoption = await service.adoptRunningJob(authority, runtimeRecord);
+        if (!adoption.adopted) {
+          controls.report(`Rejected running recovery before adoption: ${jobId}\n`);
+          return {
+            kind: 'advanced',
+            outcome: 'settled',
+            facts: COORDINATOR_NOT_APPLICABLE_FACTS,
+            detail: 'running adoption rejected',
+          };
+        }
+        if (signal.aborted) {
+          adoption.cleanup();
+          throw signal.reason;
+        }
+
+        let cleaned = false;
+        const cleanupOnce = (): void => {
+          if (cleaned) return;
+          cleaned = true;
+          adoption.cleanup();
+        };
+        state.adoptedRunningPids.set(jobId, { pid: runtimeRecord.pid, pool: launchRecord.pool });
+        state.adoptedRunningJobCleanups.set(jobId, cleanupOnce);
+
+        const pollInterval = runtime.time.setInterval(() => {
+          drainRecoveredProgress();
+          // Only an observed absence finalizes. Unknown re-asks — but silently re-asking forever is how an
+          // adoption never settles, so a run of them is reported once and the job stays visibly adopted
+          // rather than quietly stuck.
+          const liveness = runtime.process.observeLiveness(runtimeRecord.pid);
+          if (liveness === 'unknown') {
+            const unanswered = (state.unansweredAdoptionProbes.get(jobId) ?? 0) + 1;
+            state.unansweredAdoptionProbes.set(jobId, unanswered);
+            if (unanswered === UNANSWERED_ADOPTION_PROBE_REPORT_THRESHOLD) {
+              // Not `controls.report`: that appends to the recovery walk's own message array, which is
+              // flushed once at the end of startup — long before ten poll ticks. The report would never have
+              // been seen, which is exactly the silence this counter exists to break.
+              backendLog.warn(
+                `Liveness of adopted job ${jobId} (pid ${runtimeRecord.pid}) has been unobservable for ` +
+                  `${unanswered} checks; it stays adopted until a probe answers.`,
+              );
+            }
+            return;
+          }
+          state.unansweredAdoptionProbes.delete(jobId);
+          if (liveness === 'alive') return;
+
+          clearRecoveryPoller(jobId);
+          state.adoptedRunningPids.delete(jobId);
+          state.unansweredAdoptionProbes.delete(jobId);
+          const retainedCleanup = takeAdoptedJobCleanup(jobId);
+          if (state.teardownRequested) {
+            retainedCleanup?.();
+            return;
+          }
+
+          drainRecoveredProgress();
+          const finalization = startTrackedFinalization(jobId, signal, async (fence) => {
+            await runCoordinatorWalk({
+              subjectKey: jobId,
+              signal,
+              coordinatorCommit,
+              summary: `Adopted durable recovery finalization for ${jobId}`,
+              settle: async (finalItem, finalControls) => {
+                finalControls.setProcessLocalCleanup(() => {
+                  state.recoveryRegistry?.clearCancelled(jobId);
+                  retainedCleanup?.();
+                  maybeReleaseRecoveryRegistry();
+                });
+                await finalizeDeadAdoptedJob({
+                  jobId,
+                  runtimeRecord: adoptedRuntimeRecord,
+                  service,
+                  authority,
+                  progressStore,
+                  cancelledJobIds: state.cancelledRecoveryJobIds,
+                  fence,
+                });
+                return {
+                  kind: 'advanced',
+                  outcome: 'settled',
+                  facts: [
+                    {
+                      obligation: COORDINATOR_TERMINAL_OBLIGATION,
+                      outcome: 'done',
+                      authorityRef: `job:${jobId}:terminal`,
+                    },
+                    {
+                      obligation: COORDINATOR_CLAIM_RELEASE_OBLIGATION,
+                      outcome: finalItem.claimedSession?.activeJobId === jobId ? 'done' : 'not-applicable',
+                      ...(finalItem.claimedSession?.activeJobId === jobId
+                        ? { authorityRef: `session:${finalItem.claimedSession.sessionId}:claim:${jobId}` }
+                        : {}),
+                    },
+                  ],
+                  detail: 'adopted durable job finalized',
+                };
+              },
+              settleFailure: (item, error, controls) =>
+                settleUnexpectedRecoveryFailure(
+                  item,
+                  jobId,
+                  'Adopted durable recovery finalization failed',
+                  error,
+                  coordinatorCommit,
+                  controls.report,
+                ),
+            });
+          });
+          void finalization.catch((error: unknown) => {
+            try {
+              log(`Durable finalization cleanup failed for ${jobId}: ${formatError(error)}\n`);
+            } catch {
+              // Reporting remains best-effort after the async cleanup frame.
+            }
+            throw error;
+          });
+        }, RECOVERY_POLL_MS);
+        pollInterval.unref?.();
+        state.recoveryPollIntervals.set(jobId, pollInterval);
+        controls.report(`Adopted running job: ${jobId} (pid=${runtimeRecord.pid})\n`);
+        return {
+          kind: 'advanced',
+          outcome: 'settled',
+          facts: COORDINATOR_NOT_APPLICABLE_FACTS,
+          detail: 'running job adopted',
+        };
+      };
+      if (direct?.item.jobId === jobId) {
+        return settleRunningRecovery(direct.item, direct.controls);
+      }
       await runCoordinatorWalk({
         subjectKey: jobId,
         signal,
         coordinatorCommit,
         summary: `Running recovery adoption for ${jobId}`,
-        settle: async (item, controls) => {
-          controls.setProcessLocalCleanup(() => state.recoveryRegistry?.remove(jobId));
-          const service = getRecoveryService(createInvocationContext(launchRecord.projectRoot));
-          if (isAppServerRuntime(runtimeRecord)) {
-            signal.throwIfAborted();
-            try {
-              await startTrackedFinalization(jobId, signal, (fence) =>
-                service.finalizeInterruptedAppServerJob(authority, runtimeRecord, {
-                  reason: interruptedAppServerReason,
-                  ...fence,
-                }),
-              );
-            } catch (error: unknown) {
-              // Carrier-detached recovery could not confirm its committed provider proxy set is gone within
-              // budget. That is honestly fatal for this job alone: finalizing anyway risks a second local
-              // kernel racing a carrier that may still be live, so this job is quarantined nonterminal rather
-              // than settled — unaffected jobs continue, and a later boot retries once the recorded
-              // saga row changes (see `coordinatorJobRecoverySubject`'s revision).
-              if (error instanceof ProcessContainmentError) {
-                controls.report(
-                  `Carrier reap unconfirmed for interrupted app-server job: ${jobId}: ${errorMessage(error)}\n`,
-                );
-                return { kind: 'quarantine', detail: error.message };
-              }
-              throw error;
-            }
-            signal.throwIfAborted();
-            controls.report(`Recovered interrupted app-server job: ${jobId}\n`);
-            return {
-              kind: 'advanced',
-              outcome: 'settled',
-              facts: [
-                { obligation: COORDINATOR_TERMINAL_OBLIGATION, outcome: 'done', authorityRef: `job:${jobId}:terminal` },
-                {
-                  obligation: COORDINATOR_CLAIM_RELEASE_OBLIGATION,
-                  outcome: item.claimedSession?.activeJobId === jobId ? 'done' : 'not-applicable',
-                  ...(item.claimedSession?.activeJobId === jobId
-                    ? { authorityRef: `session:${item.claimedSession.sessionId}:claim:${jobId}` }
-                    : {}),
-                },
-              ],
-              detail: 'interrupted app-server job finalized',
-            };
-          }
-          if (!isDurableCliRuntime(runtimeRecord)) {
-            const facts = settleFault(item, jobId, { kind: 'wrapper_lost' }, coordinatorCommit);
-            controls.report(`Skipped adopting unsupported runtime for job: ${jobId}\n`);
-            return { kind: 'advanced', outcome: 'settled', facts, detail: 'unsupported runtime finalized' };
-          }
-
-          const recovery = boundProvider.recovery;
-          let adoptedRuntimeRecord = runtimeRecord;
-          const drainRecoveredProgress = (): void => {
-            if (!recovery?.extractProgress) return;
-            try {
-              const { messages, newOffset } = recovery.extractProgress({
-                stdoutPath: adoptedRuntimeRecord.stdoutPath,
-                fromOffset: adoptedRuntimeRecord.tailWatermark ?? 0,
-              });
-              if (newOffset !== (adoptedRuntimeRecord.tailWatermark ?? 0)) {
-                adoptedRuntimeRecord = { ...adoptedRuntimeRecord, tailWatermark: newOffset };
-                progressStore.appendRuntimeStarted(jobId, adoptedRuntimeRecord);
-              }
-              for (const message of messages) {
-                progressStore.appendProgress(jobId, launchRecord.sessionId, message);
-              }
-            } catch (error: unknown) {
-              controls.report(`Failed to tail recovered progress for job ${jobId}: ${formatError(error)}\n`);
-            }
-          };
-
-          if (!runtime.process.isAlive(runtimeRecord.pid)) {
-            drainRecoveredProgress();
-            await startTrackedFinalization(jobId, signal, (fence) =>
-              finalizeDeadAdoptedJob({
-                jobId,
-                runtimeRecord: adoptedRuntimeRecord,
-                service,
-                authority,
-                progressStore,
-                cancelledJobIds: state.cancelledRecoveryJobIds,
-                fence,
-              }),
-            );
-            controls.setProcessLocalCleanup(() => {
-              state.recoveryRegistry?.remove(jobId);
-              state.recoveryRegistry?.clearCancelled(jobId);
-            });
-            controls.report(`Finalized dead durable recovery job: ${jobId}\n`);
-            return {
-              kind: 'advanced',
-              outcome: 'settled',
-              facts: [
-                { obligation: COORDINATOR_TERMINAL_OBLIGATION, outcome: 'done', authorityRef: `job:${jobId}:terminal` },
-                {
-                  obligation: COORDINATOR_CLAIM_RELEASE_OBLIGATION,
-                  outcome: item.claimedSession?.activeJobId === jobId ? 'done' : 'not-applicable',
-                  ...(item.claimedSession?.activeJobId === jobId
-                    ? { authorityRef: `session:${item.claimedSession.sessionId}:claim:${jobId}` }
-                    : {}),
-                },
-              ],
-              detail: 'dead durable job finalized',
-            };
-          }
-
-          signal.throwIfAborted();
-          const adoption = await service.adoptRunningJob(authority, runtimeRecord);
-          if (!adoption.adopted) {
-            controls.report(`Rejected running recovery before adoption: ${jobId}\n`);
-            return {
-              kind: 'advanced',
-              outcome: 'settled',
-              facts: COORDINATOR_NOT_APPLICABLE_FACTS,
-              detail: 'running adoption rejected',
-            };
-          }
-          if (signal.aborted) {
-            adoption.cleanup();
-            throw signal.reason;
-          }
-
-          let cleaned = false;
-          const cleanupOnce = (): void => {
-            if (cleaned) return;
-            cleaned = true;
-            adoption.cleanup();
-          };
-          state.adoptedRunningPids.set(jobId, { pid: runtimeRecord.pid, pool: launchRecord.pool });
-          state.adoptedRunningJobCleanups.set(jobId, cleanupOnce);
-
-          const pollInterval = runtime.time.setInterval(() => {
-            drainRecoveredProgress();
-            if (runtime.process.isAlive(runtimeRecord.pid)) return;
-
-            clearRecoveryPoller(jobId);
-            state.adoptedRunningPids.delete(jobId);
-            const retainedCleanup = takeAdoptedJobCleanup(jobId);
-            if (state.teardownRequested) {
-              retainedCleanup?.();
-              return;
-            }
-
-            drainRecoveredProgress();
-            const finalization = startTrackedFinalization(jobId, signal, async (fence) => {
-              await runCoordinatorWalk({
-                subjectKey: jobId,
-                signal,
-                coordinatorCommit,
-                summary: `Adopted durable recovery finalization for ${jobId}`,
-                settle: async (finalItem, finalControls) => {
-                  finalControls.setProcessLocalCleanup(() => {
-                    state.recoveryRegistry?.clearCancelled(jobId);
-                    retainedCleanup?.();
-                    maybeReleaseRecoveryRegistry();
-                  });
-                  await finalizeDeadAdoptedJob({
-                    jobId,
-                    runtimeRecord: adoptedRuntimeRecord,
-                    service,
-                    authority,
-                    progressStore,
-                    cancelledJobIds: state.cancelledRecoveryJobIds,
-                    fence,
-                  });
-                  return {
-                    kind: 'advanced',
-                    outcome: 'settled',
-                    facts: [
-                      {
-                        obligation: COORDINATOR_TERMINAL_OBLIGATION,
-                        outcome: 'done',
-                        authorityRef: `job:${jobId}:terminal`,
-                      },
-                      {
-                        obligation: COORDINATOR_CLAIM_RELEASE_OBLIGATION,
-                        outcome: finalItem.claimedSession?.activeJobId === jobId ? 'done' : 'not-applicable',
-                        ...(finalItem.claimedSession?.activeJobId === jobId
-                          ? { authorityRef: `session:${finalItem.claimedSession.sessionId}:claim:${jobId}` }
-                          : {}),
-                      },
-                    ],
-                    detail: 'adopted durable job finalized',
-                  };
-                },
-                settleFailure: (item, error, controls) =>
-                  settleUnexpectedRecoveryFailure(
-                    item,
-                    jobId,
-                    'Adopted durable recovery finalization failed',
-                    error,
-                    coordinatorCommit,
-                    controls.report,
-                  ),
-              });
-            });
-            void finalization.catch((error: unknown) => {
-              try {
-                log(`Durable finalization cleanup failed for ${jobId}: ${formatError(error)}\n`);
-              } catch {
-                // Reporting remains best-effort after the async cleanup frame.
-              }
-              throw error;
-            });
-          }, RECOVERY_POLL_MS);
-          pollInterval.unref?.();
-          state.recoveryPollIntervals.set(jobId, pollInterval);
-          controls.report(`Adopted running job: ${jobId} (pid=${runtimeRecord.pid})\n`);
-          return {
-            kind: 'advanced',
-            outcome: 'settled',
-            facts: COORDINATOR_NOT_APPLICABLE_FACTS,
-            detail: 'running job adopted',
-          };
-        },
+        settle: settleRunningRecovery,
         settleFailure: (item, error, controls) =>
           settleUnexpectedRecoveryFailure(
             item,
@@ -975,17 +1026,47 @@ export function createRecoveryCoordinator(
     signal.throwIfAborted();
   }
 
+  type PlanActionOptions = Readonly<{
+    itemsByJobId: ReadonlyMap<string, CoordinatorRecoveryItem>;
+    itemsBySessionId: ReadonlyMap<string, CoordinatorRecoveryItem>;
+    recoveryRegistry: RecoveryRegistry;
+    queuedRecoverable: QueuedRecoverableJob[];
+    runningRecoverable: RunningRecoverableJob[];
+    signal: AbortSignal;
+    coordinatorCommit: CommitEventsFn;
+  }>;
+
+  const applyActionToItem = async (
+    action: Parameters<typeof applyRecoveryAction>[0],
+    item: CoordinatorRecoveryItem,
+    controls: CoordinatorRecoveryControls,
+    options: PlanActionOptions,
+  ): Promise<RecoveryDisposition> => {
+    try {
+      return await applyRecoveryAction(action, {
+        progressStore,
+        recoveryRegistry: options.recoveryRegistry,
+        queuedRecoverable: options.queuedRecoverable,
+        runningRecoverable: options.runningRecoverable,
+        log: controls.report,
+        runtime,
+        createInvocationContext,
+        getRecoveryService,
+        signal: options.signal,
+        settleFault: (fault, content) => settleFault(item, action.jobId, fault, options.coordinatorCommit, content),
+        settleClaim: (jobId) => settleClaim(item, jobId, options.coordinatorCommit),
+        setProcessLocalCleanup: controls.setProcessLocalCleanup,
+        clearProcessLocalCleanup: controls.clearProcessLocalCleanup,
+      });
+    } catch (error: unknown) {
+      logRecoveryActionFailure(action, error, controls.report);
+      throw error;
+    }
+  };
+
   const applyPlanAction = async (
     action: Parameters<typeof applyRecoveryAction>[0],
-    options: Readonly<{
-      itemsByJobId: ReadonlyMap<string, CoordinatorRecoveryItem>;
-      itemsBySessionId: ReadonlyMap<string, CoordinatorRecoveryItem>;
-      recoveryRegistry: RecoveryRegistry;
-      queuedRecoverable: QueuedRecoverableJob[];
-      runningRecoverable: RunningRecoverableJob[];
-      signal: AbortSignal;
-      coordinatorCommit: CommitEventsFn;
-    }>,
+    options: PlanActionOptions,
   ): Promise<void> => {
     const item =
       options.itemsByJobId.get(action.jobId) ??
@@ -998,36 +1079,7 @@ export function createRecoveryCoordinator(
       signal: options.signal,
       coordinatorCommit: options.coordinatorCommit,
       summary: `Coordinator recovery action ${action.type} for ${action.jobId}`,
-      settle: async (freshItem, controls) => {
-        let facts: readonly RecoverySettlementFact[];
-        try {
-          facts = await applyRecoveryAction(action, {
-            progressStore,
-            recoveryRegistry: options.recoveryRegistry,
-            queuedRecoverable: options.queuedRecoverable,
-            runningRecoverable: options.runningRecoverable,
-            log: controls.report,
-            runtime,
-            createInvocationContext,
-            getRecoveryService,
-            signal: options.signal,
-            settleFault: (fault, content) =>
-              settleFault(freshItem, action.jobId, fault, options.coordinatorCommit, content),
-            settleClaim: (jobId) => settleClaim(freshItem, jobId, options.coordinatorCommit),
-            setProcessLocalCleanup: controls.setProcessLocalCleanup,
-            clearProcessLocalCleanup: controls.clearProcessLocalCleanup,
-          });
-        } catch (error: unknown) {
-          logRecoveryActionFailure(action, error, controls.report);
-          throw error;
-        }
-        return {
-          kind: 'advanced',
-          outcome: 'settled',
-          facts,
-          detail: `coordinator recovery action ${action.type} completed`,
-        };
-      },
+      settle: (freshItem, controls) => applyActionToItem(action, freshItem, controls, options),
       ...(action.type === 'registerQueued' || action.type === 'registerRunning'
         ? {
             settleFailure: (
@@ -1139,29 +1191,63 @@ export function createRecoveryCoordinator(
     state.providerOperationRecoveries.delete(jobId);
   };
 
-  const snapshotProviderOperationStartupOwnership = (): ProviderOperationStartupOwnership =>
-    Object.freeze({
+  /**
+   * Retires the superseded rows whose processes are all gone, before the fence is computed from what is left.
+   *
+   * The fence keeps a job this build cannot read away from generic recovery, which is what stops an
+   * undecodable row from turning a stalled operation into a failed startup. But a fence with nothing behind it
+   * is a job that never settles: nothing decodes the row, so nothing terminalizes it, and it stays live in
+   * `jobs` and unending under `wait` for as long as the store exists. That is the cost of the fence, and this
+   * is what pays it.
+   *
+   * A dead process target is dead regardless of which generation recorded it, and that is the one observation
+   * available here. Every retained generation carries the same three process locators and containment group,
+   * so the signalable targets are readable without trusting anything whose meaning changed. If **none** of
+   * them is alive the set is gone, the row is removed, and the job reaches ordinary recovery and is interrupted
+   * like any other — this build never has to interpret a shape it cannot read, only to stop claiming a set that
+   * no longer exists.
+   *
+   * **Never signal.** These processes belong to a build this one has no authority over; their pids may only be
+   * observed. Anything short of "all absent" — one target alive, a row that cannot be walked, or a row naming
+   * no signalable target — keeps the fence, because absence is the sole conclusion this path may draw.
+   */
+  const retireAbsentSupersededProviderOperations = (): void => {
+    for (const row of readSupersededProviderOperations(progressStore.getDb())) {
+      if (row.processTargets === null || row.processTargets.length === 0) continue;
+      // Every target observed absent, and nothing short of it: an unanswerable probe did not observe absence,
+      // so the row keeps its fence and the next boot asks again.
+      if (!row.processTargets.every((target) => runtime.process.observeLiveness(target) === 'absent')) continue;
+      retireSupersededProviderOperation(progressStore.getDb(), row.key);
+      backendLog.warn(
+        `Retired a provider operation record this build cannot read whose processes are all absent: ${row.key}`,
+      );
+    }
+  };
+
+  const snapshotProviderOperationStartupOwnership = (): ProviderOperationStartupOwnership => {
+    const scan = readProviderOperations(progressStore.getDb());
+    // A row this build cannot read still names a job the provider saga owns. Fencing only the decoded ones
+    // hands that job to generic recovery, which then does a keyed strict read of the same row and throws —
+    // turning a stalled operation back into a failed startup.
+    //
+    // Both names, not just the key's. `decodeCanonicalValue` rejects a row whose payload identity disagrees
+    // with its key, so those are exactly the rows where the two differ — fencing the key's job alone would
+    // hand the payload's job to generic recovery, which can terminalize it while its operation is live. This
+    // is the sibling of the proxy-set fence in `provider-proxy-set/inheritance.ts` and was left key-only when
+    // that one was fixed.
+    const attributions = attributeUnreadableProviderOperations(progressStore.getDb(), scan.unreadableKeys);
+    const unreadableJobIds = attributions.flatMap((attribution) =>
+      attribution.jobs.kind === 'known' ? attribution.jobs.values : [],
+    );
+    return Object.freeze({
       jobIds: Object.freeze([
-        ...new Set(readProviderOperations(progressStore.getDb()).map((record) => record.operation.jobId)),
+        ...new Set([...scan.records.map((record) => record.operation.jobId), ...unreadableJobIds]),
       ]),
     });
+  };
 
   async function runStartupRecovery(ctx: StartupRecoveryContext): Promise<JobStore> {
     const { runtime, progressStore, signal } = ctx;
-    coordinatorJobRetryPolicies.set(progressStore.getDb(), (retrySignal) =>
-      createCoordinatorJobRecoveryPolicy(
-        {
-          signal: retrySignal,
-          coordinatorCommit: ctx.coordinatorCommit,
-          summary: 'Coordinator job operator retry',
-          settle: () => ({
-            kind: 'quarantine',
-            detail: 'coordinator job requires a fresh recovery reconciliation',
-          }),
-        },
-        [],
-      ),
-    );
     const interruptedAppServerReason: InterruptedAppServerReason = ctx.interruptedAppServerReason ?? 'restart';
     state.teardownRequested = false;
     runtimeState.setLaunchFenceActive(true);
@@ -1169,6 +1255,60 @@ export function createRecoveryCoordinator(
     state.recoveryRegistry = recoveryRegistry;
     const queuedRecoverable: QueuedRecoverableJob[] = [];
     const runningRecoverable: RunningRecoverableJob[] = [];
+    coordinatorJobRetryPolicies.set(progressStore.getDb(), (retrySignal) =>
+      createCoordinatorJobRecoveryPolicy(
+        {
+          signal: retrySignal,
+          coordinatorCommit: ctx.coordinatorCommit,
+          summary: 'Coordinator job operator retry',
+          settle: async (item, controls) => {
+            const retryQueued: QueuedRecoverableJob[] = [];
+            const retryRunning: RunningRecoverableJob[] = [];
+            const retryOptions: PlanActionOptions = {
+              itemsByJobId: new Map([[item.jobId, item]]),
+              itemsBySessionId: new Map(
+                item.claimedSession === null ? [] : ([[item.claimedSession.sessionId, item]] as const),
+              ),
+              recoveryRegistry,
+              queuedRecoverable: retryQueued,
+              runningRecoverable: retryRunning,
+              signal: retrySignal,
+              coordinatorCommit: ctx.coordinatorCommit,
+            };
+            const retryPlan = planRecovery(buildRecoverySnapshot([item], runtime.process));
+            let facts: readonly RecoverySettlementFact[] = [];
+            for (const action of [...retryPlan.register, ...retryPlan.cleanup]) {
+              if (action.jobId !== item.jobId) continue;
+              const disposition = await applyActionToItem(action, item, controls, retryOptions);
+              if (disposition.kind !== 'advanced') return disposition;
+              facts = [...facts, ...disposition.facts];
+            }
+            const runningDisposition = await runRecoveryAdoption(
+              {
+                queuedJobs: [],
+                runningJobs: retryRunning,
+                signal: retrySignal,
+                coordinatorCommit: ctx.coordinatorCommit,
+                interruptedAppServerReason,
+              },
+              { item, controls },
+            );
+            if (runningDisposition !== undefined) return runningDisposition;
+            const queued = retryQueued[0];
+            if (queued !== undefined) {
+              return recoverQueuedItem(item, queued, retrySignal, ctx.coordinatorCommit, controls);
+            }
+            return {
+              kind: 'advanced',
+              outcome: 'settled',
+              facts,
+              detail: 'coordinator job retry reconciled',
+            };
+          },
+        },
+        [],
+      ),
+    );
     const sagaOwnedJobIds = new Set(ctx.providerOperationStartupOwnership.jobIds);
 
     const recoveryItems: CoordinatorRecoveryItem[] = [];
@@ -1221,7 +1361,7 @@ export function createRecoveryCoordinator(
         interruptedAppServerReason,
       });
     }
-    const localRecoveryRecords = readProviderOperations(progressStore.getDb()).filter(
+    const localRecoveryRecords = readProviderOperations(progressStore.getDb()).records.filter(
       (record): record is Extract<ProviderOperationRecord, { phase: 'local-recovery-pending' }> =>
         record.phase === 'local-recovery-pending',
     );
@@ -1242,6 +1382,7 @@ export function createRecoveryCoordinator(
     registerCoordinatorStartupRecovery(bound, runStartupRecovery);
   }
   return {
+    retireAbsentSupersededProviderOperations,
     snapshotProviderOperationStartupOwnership,
     recoverProviderOperationJob,
     completeProviderOperationJobRecovery,

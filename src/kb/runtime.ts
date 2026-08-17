@@ -86,13 +86,15 @@ import { CorpusPublicationService } from './corpus/publication-service.js';
 import { buildCurrentCorpusSurface } from './corpus/surface.js';
 import { readDeclaredKbAnalyzersFromEnv, type KbDeclaredAnalyzer } from './extra-langs.js';
 import { GeneratedCommunityProjectionStore } from './curate/community/generated-projection-store.js';
-import type {
-  CorpusProjectionCandidate,
-  CorpusProjectionCommitFaultPhase,
-  CorpusProjectionCommitRecord,
-  CorpusProjectionCommitResult,
-  CorpusProjectionFaultInjection,
-  StagedCorpusProjection,
+import {
+  CORPUS_PROJECTION_COMMIT_SCHEMA_GENERATIONS,
+  CORPUS_PROJECTION_COMMIT_SCHEMA_VERSION,
+  type CorpusProjectionCandidate,
+  type CorpusProjectionCommitFaultPhase,
+  type CorpusProjectionCommitRecord,
+  type CorpusProjectionCommitResult,
+  type CorpusProjectionFaultInjection,
+  type StagedCorpusProjection,
 } from './corpus/projection-lifecycle.js';
 
 export interface CreateKbRuntimeOptions {
@@ -128,9 +130,11 @@ const KB_MUTATION_DIRECTORY_LOCK_STALE_PADDING_MS = 60_000;
 const CORPUS_PROJECTION_DIR = KB_RUNTIME_AUTHORITY.corpusProjection;
 const CORPUS_PROJECTION_COMMITS_DIR = 'commits';
 const CORPUS_PROJECTION_COMMIT_FILE = 'commit.json';
-const CORPUS_PROJECTION_COMMIT_SCHEMA_VERSION = 1;
-const SUPPORTED_OLDER_CORPUS_PROJECTION_COMMIT_SCHEMA_VERSIONS = new Set<number>([0]);
-type SupportedOlderCorpusProjectionCommitSchemaVersion = 0;
+const SUPPORTED_OLDER_CORPUS_PROJECTION_COMMIT_SCHEMA_VERSIONS = new Set<number>(
+  CORPUS_PROJECTION_COMMIT_SCHEMA_GENERATIONS.retainedSupported,
+);
+type SupportedOlderCorpusProjectionCommitSchemaVersion =
+  (typeof CORPUS_PROJECTION_COMMIT_SCHEMA_GENERATIONS.retainedSupported)[number];
 
 type CorpusProjectionCommitParseResult =
   | { readonly kind: 'missing' }
@@ -1036,7 +1040,7 @@ function decodeCorpusProjectionCommitRecord(value: unknown): CorpusProjectionCom
 }
 
 const SUPPORTED_OLDER_CORPUS_PROJECTION_COMMIT_DECODERS = {
-  0: decodeCorpusProjectionCommitRecord,
+  [CORPUS_PROJECTION_COMMIT_SCHEMA_GENERATIONS.retainedSupported[0]]: decodeCorpusProjectionCommitRecord,
 } satisfies Record<
   SupportedOlderCorpusProjectionCommitSchemaVersion,
   (value: unknown) => CorpusProjectionCommitRecord | null

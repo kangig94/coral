@@ -1,6 +1,6 @@
 import { readBackendInfo } from '../../../infra/backend-discovery.js';
 import { readBuildFlavor } from '../../../infra/bundle-manifest.js';
-import { isProcessAlive } from '../../../infra/node-process.js';
+import { observeProcessLiveness } from '../../../infra/node-process.js';
 import { createRealRuntime } from '../../../runtime/real.js';
 import { HEALTH_TIMEOUT_MS, parseJsonResponse } from '../sse.js';
 import { isRecord } from '../../../infra/json.js';
@@ -30,7 +30,8 @@ export async function shutdownBackend(pluginRoot: string): Promise<ShutdownResul
     env: runtime.env,
     paths: runtime.paths,
   });
-  if (!info || !isProcessAlive(info.pid)) {
+  // Only an observed absence skips the shutdown request. Unknown still tries, which is the safe direction.
+  if (!info || observeProcessLiveness(info.pid) === 'absent') {
     return { ok: false, reason: 'not_running' };
   }
 

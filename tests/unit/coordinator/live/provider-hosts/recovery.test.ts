@@ -1,3 +1,4 @@
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { describe, expect, it, vi } from 'vitest';
 import type { ProviderHostEntry } from '#src/coordinator/live/provider-hosts/index.js';
 import { ensureProviderServerHandle } from '#src/coordinator/live/provider-hosts/recovery.js';
@@ -38,7 +39,7 @@ describe('provider host recovery', () => {
   it('records the verified containment identity on the host entry before admitting it', async () => {
     const containmentIdentity = Object.freeze({
       pid: 71,
-      processStartedAtSeconds: 1_700_000_071,
+      incarnation: testIncarnation(1_700_000_071),
       processGroupId: 71,
     });
     const server = createFakeProviderServerHandle({ generation: 71, containmentIdentity });

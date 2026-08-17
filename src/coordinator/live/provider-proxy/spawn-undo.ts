@@ -1,3 +1,4 @@
+import { incarnationMayAuthorizeSignal, type ProcessIncarnation } from '../../../infra/node-process.js';
 import { ABSENCE_POLL_MS } from '../../../infra/process-containment.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import { PROXY_TEARDOWN_RESERVE_MS } from '../../../provider-proxy/orphan-deadline.js';
@@ -26,7 +27,7 @@ import type { SpawnedRoleProcess } from '../../../provider-proxy/role-spawn.js';
  * plain child with nothing of its own left to do) would force-kill the guardian mid-reap and strand the very
  * containment it was just asked to hold.
  *
- * And a pid is not an identity on its own: the OS recycles it. This re-reads the pid's start time
+ * And a pid is not an identity on its own: the OS recycles it. This re-reads the pid's incarnation
  * immediately before signalling and refuses if it no longer matches what this acquisition recorded at spawn
  * time — signalling a mismatched pid would kill whatever unrelated process now holds it, which is the
  * project's BLOCKING process rule.
@@ -35,17 +36,24 @@ export function buildGuardianSpawnUndo(
   runtime: Runtime,
   spawned: SpawnedRoleProcess,
   platform: NodeJS.Platform,
-  readProcessStartedAtSeconds: (pid: number, platform: NodeJS.Platform) => number | null,
+  readProcessIncarnation: (pid: number, platform: NodeJS.Platform) => ProcessIncarnation | null,
 ): () => Promise<void> {
   return async () => {
-    if (readProcessStartedAtSeconds(spawned.pid, platform) !== spawned.processStartedAtSeconds) return;
+    // The same rule the reap paths apply: where an incarnation cannot authorize a signal, a match proves
+    // nothing and this declines rather than guessing. Declining is affordable here and only here because the
+    // guardian this undo would signal never received control, so its own orphan deadline ends it and the
+    // reaper it holds along with it. Signalling a recycled pid is not affordable anywhere.
+    if (!incarnationMayAuthorizeSignal(platform)) return;
+    if (readProcessIncarnation(spawned.pid, platform) !== spawned.incarnation) return;
     const group = -spawned.pid;
     runtime.process.kill(group, 'SIGTERM');
     const graceDeadline = runtime.time.now() + PROXY_TEARDOWN_RESERVE_MS;
-    while (runtime.process.isAlive(group) && runtime.time.now() < graceDeadline) {
+    while (runtime.process.observeLiveness(group) !== 'absent' && runtime.time.now() < graceDeadline) {
       await runtime.time.sleep(ABSENCE_POLL_MS);
     }
-    if (runtime.process.isAlive(group)) {
+    // Escalation needs observed life, not merely "not observed gone". The group may have exited during the
+    // grace and had its id reused; SIGKILL on an unanswerable probe would land on whoever holds it now.
+    if (runtime.process.observeLiveness(group) === 'alive') {
       runtime.process.kill(group, 'SIGKILL');
     }
   };

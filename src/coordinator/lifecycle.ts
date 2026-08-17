@@ -46,8 +46,13 @@ import {
   HandoffEscalationError,
   type BoundCoordinator,
 } from './handoff.js';
-import { IncumbentMatchesError } from '../transport/ipc/handoff.js';
-import { probeCoordinator } from '../infra/backend-discovery.js';
+import {
+  IncumbentMatchesError,
+  type DesiredIncumbentIdentity,
+  type IncumbentHealth,
+  type IncumbentIdentity,
+} from '../transport/ipc/handoff.js';
+import { probeCoordinator, type CoordinatorDiscoveryRecord } from '../infra/backend-discovery.js';
 import type { RecoveryCapableService } from '../jobs/reconcile/contracts.js';
 import type { ProjectRequestPort } from './contracts.js';
 import type { TypedEventBus } from './event-bus.js';
@@ -57,6 +62,7 @@ import { resolveRunningBundleDir } from '../infra/bundle-manifest.js';
 import type { ValidatedHandoffTarget } from '../infra/handoff-target.js';
 import type { Database } from '../store/db.js';
 import { routeOrOpenBackendStoreAtStartup } from '../store/startup-store-routing.js';
+import { ACTIVE_STORE_SELECTION_VERSION } from '../store/active-store-selection.js';
 import { validateForeignHandoffTarget } from './handoff-runner.js';
 import type { CoordinatorStoreServices, StoreServicesRef } from './composition/store-services-ref.js';
 import type { KbDaemonSupervisor } from './live/kb-daemon-supervisor.js';
@@ -191,6 +197,65 @@ export interface LifecycleHooks {
   onShutdown(mode: ShutdownMode, signal: AbortSignal): Promise<void>;
   onIdleCheck(): boolean;
   onRecoveryComplete(resumes: RecoveredDiscussResume[]): Promise<void>;
+}
+
+/**
+ * Which discovery record counts as the incumbent this contender is contending with.
+ *
+ * A named function rather than a closure because one line of it is load-bearing and was already reverted
+ * once: **an incarnation is deliberately not required here**. A coordinator from a build that predates the
+ * token writes no such field, and refusing its record would discard the `bootToken` beside it — leaving the
+ * contender with no way to ask anyone to stand down, which is the exact deadlock the token exists to end,
+ * reinstated for the one upgrade that introduces it. Whether the incumbent's identity is *sufficient to
+ * signal* is a separate question, answered separately, in `verifySignalTarget`.
+ *
+ * Everything else here is agreement: the record must name the socket being contended, the same flavor and
+ * namespace, and must not contradict health evidence already collected from that same socket.
+ */
+export function verifiedIncumbentFromDiscovery(
+  info: CoordinatorDiscoveryRecord | null,
+  evidence: Readonly<{ socketPath: string; desired: DesiredIncumbentIdentity; lastHealth: IncumbentHealth | null }>,
+): IncumbentIdentity | null {
+  const { socketPath, desired, lastHealth } = evidence;
+  if (!info) {
+    return null;
+  }
+  if (info.socketPath !== socketPath || info.flavor !== desired.flavor || info.namespace !== desired.namespace) {
+    return null;
+  }
+  if (
+    lastHealth &&
+    (lastHealth.flavor !== info.flavor ||
+      lastHealth.namespace !== info.namespace ||
+      (lastHealth.version !== undefined && lastHealth.version !== info.version) ||
+      lastHealth.bundleHash !== info.bundleHash ||
+      (lastHealth.pid !== undefined && lastHealth.pid !== info.pid) ||
+      // A contradiction needs two statements. The record omitting an incarnation is not one: the write probes
+      // once and serializes nothing if that probe fails, so a perfectly ordinary current build can publish a
+      // record without it. Reading that as disagreement discards the incumbent entirely.
+      (lastHealth.incarnation !== undefined &&
+        info.incarnation !== undefined &&
+        lastHealth.incarnation !== info.incarnation))
+  ) {
+    return null;
+  }
+  return {
+    pid: info.pid,
+    // Health may only supply what the record omits when health also *named the same pid*. Without that the
+    // fallback is a way to borrow identity: a stale record naming a recycled pid, plus any live peer on that
+    // socket answering with its own incarnation and no pid, yields `{ victimPid, peerIncarnation }` — and the
+    // pid is what everything downstream signals. Ping is unauthenticated, so the peer is not required to be
+    // the incumbent; the pid agreement is the only thing tying the two statements to one process.
+    //
+    // Fail closed when health omits its pid, rather than fall back to the record's silence: an incumbent that
+    // cannot prove which process it is stays replaceable over IPC and un-signallable, which is the safe half.
+    incarnation: info.incarnation ?? (lastHealth?.pid === info.pid ? lastHealth.incarnation : undefined),
+    source: 'discovery',
+    instanceId: info.instanceId,
+    token: info.token,
+    bootToken: info.bootToken,
+    shutdownToken: info.shutdownToken,
+  };
 }
 
 export function closeServer(server: Server): Promise<void> {
@@ -814,43 +879,11 @@ async function runLifecycleStartup({
         },
         runStartupRecovery,
         runtime,
-        readVerifiedIncumbentFromDiscovery: ({ socketPath: probeSocket, desired, lastHealth }) => {
-          const info = probeCoordinator({
-            storage: runtime.storage,
-            env: runtime.env,
-            paths: runtime.paths,
-          });
-          if (!info || info.processStartedAt === undefined) {
-            return null;
-          }
-          if (
-            info.socketPath !== probeSocket ||
-            info.flavor !== desired.flavor ||
-            info.namespace !== desired.namespace
-          ) {
-            return null;
-          }
-          if (
-            lastHealth &&
-            (lastHealth.flavor !== info.flavor ||
-              lastHealth.namespace !== info.namespace ||
-              (lastHealth.version !== undefined && lastHealth.version !== info.version) ||
-              lastHealth.bundleHash !== info.bundleHash ||
-              (lastHealth.pid !== undefined && lastHealth.pid !== info.pid) ||
-              (lastHealth.processStartedAt !== undefined && lastHealth.processStartedAt !== info.processStartedAt))
-          ) {
-            return null;
-          }
-          return {
-            pid: info.pid,
-            processStartedAt: info.processStartedAt,
-            source: 'discovery',
-            instanceId: info.instanceId,
-            token: info.token,
-            bootToken: info.bootToken,
-            shutdownToken: info.shutdownToken,
-          };
-        },
+        readVerifiedIncumbentFromDiscovery: (evidence) =>
+          verifiedIncumbentFromDiscovery(
+            probeCoordinator({ storage: runtime.storage, env: runtime.env, paths: runtime.paths }),
+            evidence,
+          ),
         signalLedger: createFileHandoffSignalLedger({
           storage: runtime.storage,
           runDir: runtime.paths.coral.coordinator.runDir,
@@ -921,7 +954,7 @@ async function runLifecycleStartup({
           storeFormat: deps.storeFormat,
           startupBusyTimeoutMs: STARTUP_STORE_BUSY_TIMEOUT_MS,
           currentSelection: {
-            version: 1,
+            version: ACTIVE_STORE_SELECTION_VERSION,
             manifest: currentBuild,
             bundleDir: currentBundleDir,
             activeStoreFingerprint: currentBuild.storeFormatFingerprint,
@@ -966,7 +999,7 @@ async function runLifecycleStartup({
     );
     state.recoveryCoordinator = recoveryCoordinator;
     connectProviderOperationRecovery?.(recoveryCoordinator);
-    const providerOperationStartupOwnership = recoveryCoordinator.snapshotProviderOperationStartupOwnership();
+    recoveryCoordinator.retireAbsentSupersededProviderOperations();
     signal.throwIfAborted();
 
     // Bind the HTTP listener and signal kernel-ready BEFORE Era II's
@@ -995,12 +1028,27 @@ async function runLifecycleStartup({
     });
     runtimeState.setLifecycle('kernel-ready');
     runtimeState.setLaunchFenceActive(true);
+    const serverInfo = {
+      port,
+      host,
+      socketPath,
+      token: identity.token,
+      bootToken: identity.bootToken,
+      shutdownToken: identity.shutdownToken,
+      version,
+      bundleHash,
+      flavor,
+      namespace,
+      instanceId,
+      startedAt,
+    };
 
     // ===== Era II (recovery) =====
     // This order is load-bearing: a pending publication contains remote facts that the generic job walk
     // cannot see, so allowing that walk to classify the job first could authorize a contradictory execution.
     await reconcileProviderOperationsAtStartup?.(signal);
     signal.throwIfAborted();
+    const providerOperationStartupOwnership = recoveryCoordinator.snapshotProviderOperationStartupOwnership();
     // Per-job isolation: corrupt sessions should not abort recovery.
     // `bound.runStartupRecovery` registers journal cursors then awaits
     // `waitFreshUntil` against `currentMaxSeq`; that wait runs here in Era II
@@ -1093,20 +1141,7 @@ async function runLifecycleStartup({
       backendLog.error('Runtime component initialization dispatch failed — KB will be offline until restart', error);
     }
 
-    return {
-      port,
-      host,
-      socketPath,
-      token: identity.token,
-      bootToken: identity.bootToken,
-      shutdownToken: identity.shutdownToken,
-      version,
-      bundleHash,
-      flavor,
-      namespace,
-      instanceId,
-      startedAt,
-    };
+    return serverInfo;
   } catch (error: unknown) {
     if (error instanceof IncumbentMatchesError) {
       // Translate to the existing bootstrap-recognized "redundant contender"

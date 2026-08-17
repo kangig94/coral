@@ -1,3 +1,5 @@
+import type { ProcessIncarnation } from '#src/infra/node-process.js';
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
@@ -26,7 +28,10 @@ vi.mock('#src/providers/app-server-transport.js', async (importOriginal) => {
 
 vi.mock('#src/infra/node-process.js', async (importOriginal) => {
   const actual = await importOriginal<object>();
-  return { ...actual, probeProcessStartedAtSeconds: vi.fn(() => 1_700_000_000) };
+  return {
+    ...actual,
+    probeProcessIncarnation: vi.fn(() => 'linux:00000000-0000-4000-8000-000000000000:1700000000' as ProcessIncarnation),
+  };
 });
 
 import { createRealRuntime } from '#src/runtime/real.js';
@@ -115,7 +120,7 @@ function fakeHostAuthority(): ProxyAppServerHostAuthority {
       openSession: unreachable('hostAuthority.openSession') as never,
       attachSession: async () => null,
     }),
-    rootIdentity: () => ({ pid: 4_242, processStartedAtSeconds: 1_700_000_000 }),
+    rootIdentity: () => ({ pid: 4_242, incarnation: testIncarnation(1_700_000_000) }),
     closed: () => new Promise<Error | void>(() => {}),
     forceClose: async () => {},
     evictHost: async () => false,
@@ -150,7 +155,7 @@ function prepareAndActivate(
 ): void {
   const reserved = ledger.prepare({ key, reservation: asReservation('res'), prepared, nowMs: 0 });
   if (reserved.kind !== 'reserved') throw new Error('expected a reservation');
-  ledger.recordPreparation(key, { pid: 1, processStartedAtSeconds: 1 }, asJointContainmentReceipt('contained'));
+  ledger.recordPreparation(key, { pid: 1, incarnation: testIncarnation(1) }, asJointContainmentReceipt('contained'));
   const fingerprint = 'f'.repeat(64);
   ledger.beginActivation(key, asReservation('res'), 0, fingerprint);
   ledger.completeActivation(key, fingerprint, {
@@ -303,7 +308,7 @@ describe('semantic-operation runtime: shutdown (BLOCKING B6)', () => {
         openSession: unreachable('hostAuthority.openSession'),
         attachSession: async () => null,
       }),
-      rootIdentity: () => ({ pid: 4_242, processStartedAtSeconds: 1_700_000_000 }),
+      rootIdentity: () => ({ pid: 4_242, incarnation: testIncarnation(1_700_000_000) }),
       closed: () => new Promise<Error | void>(() => {}),
       forceClose: () => new Promise<void>(() => {}),
       evictHost: async () => false,

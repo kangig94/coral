@@ -1,3 +1,4 @@
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -53,7 +54,7 @@ function wireLedger(): OperationLedger {
 function reserved(ledger: OperationLedger, key = KEY, nowMs = 0): void {
   const result = ledger.prepare({ key, reservation: asReservation('res-1'), prepared: {}, nowMs });
   if (result.kind !== 'reserved') throw new Error('expected a reservation');
-  ledger.recordPreparation(key, { pid: 1, processStartedAtSeconds: 1 }, asJointContainmentReceipt('contained'));
+  ledger.recordPreparation(key, { pid: 1, incarnation: testIncarnation(1) }, asJointContainmentReceipt('contained'));
 }
 
 function executing(ledger: OperationLedger, key = KEY, nowMs = 0): void {

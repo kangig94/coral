@@ -8,6 +8,8 @@ import { documentedCoralSetupError } from '../runtime/errors.js';
 import type { Runtime } from '../runtime/ports.js';
 import {
   ActiveStoreCoordinationWriteError,
+  ACTIVE_STORE_SELECTION_VERSION,
+  ACTIVE_STORE_TRANSITION_VERSION,
   classifyActiveStoreSelection,
   clearActiveStoreTransition,
   encodeActiveStoreSelection,
@@ -96,7 +98,7 @@ function createActiveStoreTransition(
   evidence: ActiveStoreTransitionEvidence,
 ): ActiveStoreTransition {
   return {
-    version: 1,
+    version: ACTIVE_STORE_TRANSITION_VERSION,
     transitionId: runtime.ids.uuid(),
     kind: 'selection-recovery',
     evidence,
@@ -107,7 +109,7 @@ function createActiveStoreTransition(
 
 function transitionMatchesCurrent(transition: ActiveStoreTransition, currentSelection: ActiveStoreSelection): boolean {
   const transitionSelection: ActiveStoreSelection = {
-    version: 1,
+    version: ACTIVE_STORE_SELECTION_VERSION,
     manifest: transition.currentManifest,
     bundleDir: transition.currentBundleDir,
     activeStoreFingerprint: transition.currentManifest.storeFormatFingerprint,

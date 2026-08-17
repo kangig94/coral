@@ -1,7 +1,7 @@
 import { readBackendInfo } from '../../../infra/backend-discovery.js';
 import { readBuildFlavor } from '../../../infra/bundle-manifest.js';
 import { isRecord } from '../../../infra/json.js';
-import { isProcessAlive } from '../../../infra/node-process.js';
+import { observeProcessLiveness } from '../../../infra/node-process.js';
 import type { StoragePort } from '../../../infra/port-types.js';
 import { parseIsoTimestamp } from '../../../infra/time.js';
 import { isSerializedCoralSetupError } from '../../../runtime/errors.js';
@@ -135,7 +135,8 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
     env: runtime.env,
     paths: runtime.paths,
   });
-  if (!info || !isProcessAlive(info.pid)) {
+  // Only an observed absence reports not-running; an unanswerable probe is not that observation.
+  if (!info || observeProcessLiveness(info.pid) === 'absent') {
     return noDaemonStatus(
       runtime.storage,
       runtime.paths.coral.coordinator.startupDiagnosticFile,

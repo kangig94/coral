@@ -1,3 +1,4 @@
+import type { ProcessIncarnation } from '../infra/node-process.js';
 import { backendLog } from '../infra/backend-log.js';
 import { errorMessage } from '../infra/error-format.js';
 import { buildJsonRpcError } from '../infra/json-rpc.js';
@@ -279,20 +280,17 @@ function establishDetachedProviderServerIdentity(
   entry: ProviderServerEntry,
   runtime: Runtime,
 ): RecordedContainmentIdentity {
-  let processStartedAtSeconds: number | null;
+  let incarnation: ProcessIncarnation | null;
   try {
-    processStartedAtSeconds = runtime.process.readProcessStartedAtSeconds(
-      entry.pid,
-      runtime.env.platform() as NodeJS.Platform,
-    );
+    incarnation = runtime.process.readProcessIncarnation(entry.pid, runtime.env.platform() as NodeJS.Platform);
   } catch {
-    processStartedAtSeconds = null;
+    incarnation = null;
   }
-  if (processStartedAtSeconds === null) {
+  if (incarnation === null) {
     gracefulKill(entry.child, runtime);
     throw new ProcessContainmentError(
       'process_identity_unverified',
-      `Could not read the start time of the spawned ${entry.provider} provider server (pid ${entry.pid}).`,
+      `Could not read the incarnation of the spawned ${entry.provider} provider server (pid ${entry.pid}).`,
       { provider: entry.provider, pid: entry.pid },
     );
   }
@@ -316,7 +314,7 @@ function establishDetachedProviderServerIdentity(
 
   const containmentIdentity = Object.freeze({
     pid: entry.pid,
-    processStartedAtSeconds,
+    incarnation,
     processGroupId: entry.pid,
   });
   try {

@@ -1,3 +1,4 @@
+import type { ProcessIncarnation } from '../infra/node-process.js';
 import { createHash } from 'node:crypto';
 
 import { z } from 'zod';
@@ -54,7 +55,7 @@ const ALLOWED_TRANSITIONS: Readonly<Record<ProviderOperationState, readonly (Pro
   });
 
 export type ProviderOperationKey = Readonly<{ jobId: string; operationId: string }>;
-export type ProviderRootIdentity = Readonly<{ pid: number; processStartedAtSeconds: number }>;
+export type ProviderRootIdentity = Readonly<{ pid: number; incarnation: ProcessIncarnation }>;
 
 export const operationPrepareAttemptKeySchema = z.string().regex(/^[0-9a-f]{64}$/u);
 export const operationPrepareAttemptNumberSchema = z.number().int().positive().safe();

@@ -1,3 +1,4 @@
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { randomUUID } from 'node:crypto';
 
 import { describe, expect, it, vi } from 'vitest';
@@ -139,7 +140,7 @@ async function executingSupervisor(
   const stage: OperationStageHandle = {
     result: Promise.resolve({
       state: 'staged',
-      providerRoot: { pid: 4_242, processStartedAtSeconds: 1_700_000_000 },
+      providerRoot: { pid: 4_242, incarnation: testIncarnation(1_700_000_000) },
       receipt,
     }),
     confirmActivation: async () => {},
@@ -246,7 +247,7 @@ async function beginBlockedPreparation(
 function completeStaging(fixture: ReturnType<typeof preExecutionReleaseFixture>): void {
   fixture.staging.resolve({
     state: 'staged',
-    providerRoot: { pid: 4_242, processStartedAtSeconds: 1_700_000_000 },
+    providerRoot: { pid: 4_242, incarnation: testIncarnation(1_700_000_000) },
     receipt: asJointContainmentReceipt('late-containment'),
   });
 }
