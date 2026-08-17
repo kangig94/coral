@@ -74,7 +74,6 @@ import {
 } from '#tests/helpers/provider-credentials.js';
 import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
 import { CORAL_CHILD_PRINCIPAL_HANDLE } from '#src/security/child-principal-env.js';
-import { providerBindingFailureDisposition } from '#src/providers/contracts/binding.js';
 
 type ProviderTurnContinuity = {
   conversationRef: string | null;
@@ -1874,15 +1873,13 @@ describe('ExecutionService', () => {
             failure: { reason: 'invalid-persisted-binding' },
           });
           if (captured.ok) throw new Error('Expected invalid recovery binding.');
-          expect(providerBindingFailureDisposition(captured.failure)).toBe('persisted-invalid');
-          expect(captured.remediation).toContain('binding');
           expect(queueDepth()).toBe(priorQueueDepth);
           expect(progressStore.readStatus(jobId)?.phase).toBe(priorPhase);
           expect(progressStore.readStatus(jobId)?.result).toBeUndefined();
         },
       );
 
-      it('preserves repairable readiness failure and remediation without changing queue admission', async () => {
+      it('preserves the readiness failure without changing queue admission', async () => {
         const { provider } = makeProvider();
         mockState.getNewProvider.mockReturnValue(provider);
         const service = createService(ctx, { providerBindingReady: false });
@@ -1913,8 +1910,6 @@ describe('ExecutionService', () => {
         const captured = await service.captureProviderRecoveryAuthority(launchRecord);
         expect(captured).toMatchObject({ ok: false, failure: { reason: 'profile-unavailable' } });
         if (captured.ok) throw new Error('Expected unavailable recovery binding.');
-        expect(providerBindingFailureDisposition(captured.failure)).toBe('operator-repairable');
-        expect(captured.remediation).toContain('profile');
         expect(queueDepth()).toBe(priorQueueDepth);
         expect(progressStore.readStatus(jobId)?.phase).toBe(priorPhase);
         expect(progressStore.readStatus(jobId)?.result).toBeUndefined();
@@ -1961,8 +1956,6 @@ describe('ExecutionService', () => {
           const captured = await service.captureProviderRecoveryAuthority(launchRecord);
           expect(captured).toMatchObject({ ok: false, failure: { reason: 'subject-mismatch' } });
           if (captured.ok) throw new Error('Expected mismatched recovery subject.');
-          expect(providerBindingFailureDisposition(captured.failure)).toBe('operator-repairable');
-          expect(captured.remediation).toContain('subject-mismatch');
 
           expect(queueDepth()).toBe(priorQueueDepth);
           expect(execute).not.toHaveBeenCalled();
@@ -2291,7 +2284,7 @@ describe('ExecutionService', () => {
         },
       );
 
-      it('does not attempt a terminal commit when recovery binding capture is repairable', async () => {
+      it('does not attempt a terminal commit during recovery binding capture', async () => {
         vi.spyOn(runtime.process, 'kill').mockReturnValue(false);
         const service = createService(ctx, { providerBindingReady: false });
         const { progressStore, sessionManager } =
@@ -2322,8 +2315,6 @@ describe('ExecutionService', () => {
 
         const captured = await service.captureProviderRecoveryAuthority(launchRecord);
         if (captured.ok) throw new Error('Expected unavailable recovery binding.');
-        expect(providerBindingFailureDisposition(captured.failure)).toBe('operator-repairable');
-        expect(captured.remediation).toContain('profile');
         expect(commit).not.toHaveBeenCalled();
         expect(getActiveJobIds()).toEqual(priorActiveJobIds);
         expect(progressStore.readStatus(jobId)?.phase).toBe('running');

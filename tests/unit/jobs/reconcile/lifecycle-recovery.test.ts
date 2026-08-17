@@ -839,7 +839,7 @@ function createLifecycleHarness(
         providerRegistry,
         getRecoveryService,
         createInvocationContext,
-        providerOperationStartupAdmission,
+        providerOperationStartupOwnership,
         signal,
         recoverPersistedDiscussFn,
         knownDiscussSources,
@@ -857,7 +857,7 @@ function createLifecycleHarness(
         signal,
         log: identity.log,
         coordinatorCommit: createTestJobJournalDeps(options.progressStore, runtime).coordinatorCommit,
-        providerOperationStartupAdmission,
+        providerOperationStartupOwnership,
         interruptedAppServerReason: options.interruptedAppServerReason,
       });
       return recoverPersistedDiscussFn({
@@ -973,9 +973,9 @@ describe('lifecycle recovery', () => {
     mockState.tmpRoot = '';
   });
 
-  it('refuses generic recovery after kernel readiness while unreadable provider evidence is unattributable', async () => {
+  it('continues ordinary recovery when current provider evidence cannot be attributed', async () => {
     const modules = await loadModules();
-    const pluginRoot = createPluginRoot('plugin-provider-operation-refusal');
+    const pluginRoot = createPluginRoot('plugin-provider-operation-permissive');
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const eventBus = new modules.eventBusModule.TypedEventBus();
     const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createEventBodyCodec(), {
@@ -983,20 +983,20 @@ describe('lifecycle recovery', () => {
       eventBus,
       providers: permissiveProviderLookupPort,
     });
-    const blockerKey = 'provider_operation_saga.v1:record:unattributable';
     progressStore
       .getDb()
       .prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)')
-      .run(blockerKey, JSON.stringify({ version: 'unknown', locator: null }));
+      .run('provider_operation_saga.v2:record:unattributable', JSON.stringify({ version: 'unknown', locator: null }));
 
-    const runStartupRecoveryFn = vi.fn(async () => []);
+    const runStartupRecoveryFn = vi.fn(async (inputs: StartupRecoveryInputs) => {
+      expect(inputs.providerOperationStartupOwnership).toEqual({ jobIds: [] });
+      return [];
+    });
     const reconcileProviderOperationsAtStartup = vi.fn(async () => ({ examined: 0 }));
     const startProviderOperationReconciler = vi.fn();
     const publish = vi.fn();
-    const writeBackendInfoFn = vi.fn();
     const cleanupStaleJobsFn = vi.fn();
     const onRecoveryComplete = vi.fn(async () => {});
-    const log = vi.fn();
     const { controller, runtimeState } = createLifecycleHarness(modules, {
       pluginRoot,
       progressStore,
@@ -1005,9 +1005,7 @@ describe('lifecycle recovery', () => {
       reconcileProviderOperationsAtStartup,
       startProviderOperationReconciler,
       startupRecoveryBarrierPublisher: { publish },
-      writeBackendInfoFn,
       cleanupStaleJobsFn,
-      log,
       discussion: {
         getDiscussStoreForSource: vi.fn(),
         knownDiscussSources: () => new Set(),
@@ -1022,18 +1020,15 @@ describe('lifecycle recovery', () => {
     });
 
     try {
-      await expect(controller.start()).resolves.toMatchObject({ port: 4100, host: '127.0.0.1' });
+      await controller.start();
       expect(reconcileProviderOperationsAtStartup).toHaveBeenCalledTimes(1);
-      expect(writeBackendInfoFn).toHaveBeenCalledTimes(1);
-      expect(runtimeState.getLifecycle()).toBe('kernel-ready');
-      expect(runtimeState.getLaunchFenceActive()).toBe(true);
-      expect(runStartupRecoveryFn).not.toHaveBeenCalled();
-      expect(publish).not.toHaveBeenCalled();
-      expect(startProviderOperationReconciler).not.toHaveBeenCalled();
-      expect(cleanupStaleJobsFn).not.toHaveBeenCalled();
-      expect(onRecoveryComplete).not.toHaveBeenCalled();
-      expect(log).not.toHaveBeenCalled();
-      expect(runtimeState.setLifecycle).not.toHaveBeenCalledWith('running');
+      expect(runStartupRecoveryFn).toHaveBeenCalledTimes(1);
+      expect(publish).toHaveBeenCalledTimes(1);
+      expect(startProviderOperationReconciler).toHaveBeenCalledTimes(1);
+      expect(cleanupStaleJobsFn).toHaveBeenCalledTimes(1);
+      expect(onRecoveryComplete).toHaveBeenCalledTimes(1);
+      expect(runtimeState.getLifecycle()).toBe('running');
+      expect(runtimeState.getLaunchFenceActive()).toBe(false);
     } finally {
       await stopLifecycleController(controller);
     }
@@ -2217,7 +2212,7 @@ describe('lifecycle recovery', () => {
           getRecoveryService,
           createInvocationContext,
           recoveryCoordinator,
-          providerOperationStartupAdmission,
+          providerOperationStartupOwnership,
           signal,
         },
         runJobsStartup,
@@ -2242,7 +2237,7 @@ describe('lifecycle recovery', () => {
           signal,
           log: identity.log,
           coordinatorCommit: createTestJobJournalDeps(progressStore, runtime).coordinatorCommit,
-          providerOperationStartupAdmission,
+          providerOperationStartupOwnership,
         });
         return [];
       },
@@ -3903,7 +3898,7 @@ describe('lifecycle recovery', () => {
         (carrier) => ({ failure, carrier }),
       ),
     ),
-  )('14d-f. quarantines $failure.reason with $carrier without changing job or carrier ownership', async (fixture) => {
+  )('14d-f. settles $failure.reason with $carrier through ordinary binding-failure recovery', async (fixture) => {
     const modules = await loadModules();
     const suffix = `${fixture.failure.reason}-${fixture.carrier}`;
     const pluginRoot = createPluginRoot(`plugin-repairable-binding-${suffix}`);
@@ -3918,7 +3913,6 @@ describe('lifecycle recovery', () => {
     const jobId = `repairable-binding-${suffix}`;
     const sessionId = `${jobId}-session`;
     const pid = 73_700;
-    const remediation = `Restore the original ${fixture.failure.reason} binding and authenticate it.`;
     const observeLiveness = vi
       .spyOn(runtime.process, 'observeLiveness')
       .mockReturnValue(
@@ -3929,7 +3923,6 @@ describe('lifecycle recovery', () => {
       captureProviderRecoveryAuthority: vi.fn(async () => ({
         ok: false,
         failure: fixture.failure,
-        remediation,
       })),
     });
 
@@ -3979,7 +3972,10 @@ describe('lifecycle recovery', () => {
       await controller.start();
       expect(runtimeState.getLifecycle()).toBe('running');
       expect(runtimeState.getLaunchFenceActive()).toBe(false);
-      expect(progressStore.readStatus(jobId)?.phase).toBe('running');
+      expect(progressStore.readStatus(jobId)).toMatchObject({
+        phase: 'error',
+        result: { outcome: { kind: 'job_fault', fault: { kind: 'provider_binding', reason: fixture.failure.reason } } },
+      });
       expect(progressStore.readRuntimeProjection(jobId)).toEqual(runtimeProjection);
       expect(
         new modules.sessionManagerModule.SessionManager(
@@ -3990,23 +3986,30 @@ describe('lifecycle recovery', () => {
           progressStore.getDb(),
           permissiveProviderLookupPort,
         ).get('codex', sessionId)?.activeJobId,
-      ).toBe(jobId);
+      ).toBeUndefined();
       expect(
         progressStore
           .getDb()
           .prepare("SELECT COUNT(*) AS count FROM events WHERE stream_id = ? AND type = 'job.terminal.recorded'")
           .get(jobId),
-      ).toEqual({ count: 0 });
+      ).toEqual({ count: 1 });
       expect(
         progressStore
           .getDb()
           .prepare("SELECT COUNT(*) AS count FROM events WHERE stream_id = ? AND type = 'session.claim.released'")
           .get(sessionId),
-      ).toEqual({ count: 0 });
-      expect(observeLiveness).not.toHaveBeenCalledWith(pid);
-      expect(kill).not.toHaveBeenCalled();
+      ).toEqual({ count: 1 });
+      if (fixture.carrier === 'app-server-not-addressable') {
+        expect(observeLiveness).not.toHaveBeenCalledWith(pid);
+      } else {
+        expect(observeLiveness).toHaveBeenCalledWith(pid);
+      }
+      if (fixture.carrier === 'durable-alive') {
+        expect(kill).toHaveBeenCalledWith(pid, 'SIGTERM');
+      } else {
+        expect(kill).not.toHaveBeenCalled();
+      }
       expect(interruptAppServerJob).not.toHaveBeenCalled();
-      expect(controller.getRecoveryRegistry()?.has(jobId) ?? false).toBe(false);
       const quarantineRows = progressStore
         .getDb()
         .prepare(
@@ -4016,11 +4019,7 @@ describe('lifecycle recovery', () => {
               AND subject_key = ?`,
         )
         .all(jobId) as Array<{ error_message: string; disposition_detail: string }>;
-      expect(quarantineRows).toHaveLength(1);
-      expect(quarantineRows[0]).toMatchObject({
-        error_message: expect.stringContaining(fixture.failure.reason),
-        disposition_detail: expect.stringContaining(remediation),
-      });
+      expect(quarantineRows).toHaveLength(0);
       if (healthyJobId !== null && healthyService !== null) {
         expect(healthyService.recoverQueuedJob).toHaveBeenCalledTimes(1);
         expect(progressStore.readStatus(healthyJobId)?.phase).not.toBe('error');

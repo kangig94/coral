@@ -1,3 +1,4 @@
+import { backendLog } from '../../../infra/backend-log.js';
 import { formatError } from '../../../infra/error-format.js';
 import { isTerminalPhase } from '../../../jobs/phase.js';
 import { isAppServerRuntime, type JobRuntime } from '../../../jobs/records.js';
@@ -10,11 +11,8 @@ import type { RecoveryRegistry } from '../../../jobs/reconcile/registry.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { ProviderRecoveryAuthority, RecoveryCapableService } from '../../../jobs/reconcile/contracts.js';
 import type { RecoveryCommitFence } from '../../../jobs/reconcile/contracts.js';
+import { gracefulKillByPid } from '../../../infra/process-supervision.js';
 import type { JobLifecycleFault, JobProgressFault } from '../../../jobs/outcome.js';
-import {
-  providerBindingFailureDisposition,
-  type ProviderBindingFailure,
-} from '../../../providers/contracts/binding.js';
 import type {
   RecoveryDisposition,
   RecoveryObligationId,
@@ -123,9 +121,6 @@ async function registerQueuedRecovery(
   const captured = await service.captureProviderRecoveryAuthority(action.launchRecord);
   signal.throwIfAborted();
   if (!captured.ok) {
-    if (providerBindingFailureDisposition(captured.failure) === 'operator-repairable') {
-      return providerBindingQuarantine(action.jobId, captured.failure, captured.remediation);
-    }
     const message = `Provider '${captured.failure.provider}' recovery binding failed: ${captured.failure.reason}.`;
     const facts = settleFault(
       {
@@ -167,25 +162,36 @@ async function registerRunningRecovery(
   const captured = await service.captureProviderRecoveryAuthority(action.launchRecord);
   signal.throwIfAborted();
   if (!captured.ok) {
-    if (providerBindingFailureDisposition(captured.failure) === 'operator-repairable') {
-      return providerBindingQuarantine(action.jobId, captured.failure, captured.remediation);
-    }
+    // Settling here is a known gap, deliberately left in place rather than half-closed, and the argument that
+    // used to justify it was checked and found false: `profile-unavailable`, `identity-unavailable` and
+    // `subject-mismatch` are operator-repairable, so a retry after the operator restores the profile does find
+    // something new. The correct disposition is a durable quarantine — but a quarantine that hands the job back
+    // while its carrier is still running releases the only owner that can abort it, and the successor owner does
+    // not exist yet. Both halves are docs/todo/coordinator-process-disposition.md; until they ship together this
+    // path terminalizes as it always has, and this comment is the honest reason rather than a justification.
+    //
+    // What the three liveness answers do decide is the carrier:
+    // `alive`: install the pid-kill cleanup.
+    // `absent`: nothing to clean up.
+    // `unknown`: install nothing — signalling a pid nobody could observe is the one action this must not take —
+    //   but report the process that is being left behind rather than terminalizing over it in silence.
     const durableRecord = isDurableCliRuntime(action.runtimeRecord) ? action.runtimeRecord : null;
-    if (durableRecord === null) {
-      return providerBindingCarrierQuarantine(
-        action.jobId,
-        captured.failure,
-        captured.remediation,
-        'the runtime carrier is not directly PID-addressable',
+    const durableLiveness = durableRecord === null ? 'absent' : runtime.process.observeLiveness(durableRecord.pid);
+    if (durableRecord !== null && durableLiveness === 'alive') {
+      const pid = durableRecord.pid;
+      const releaseRegistry = (): void => recoveryRegistry.remove(action.jobId);
+      setProcessLocalCleanup(() => {
+        gracefulKillByPid(runtime, pid);
+        releaseRegistry();
+      });
+    } else if (durableRecord !== null && durableLiveness === 'unknown') {
+      backendLog.warn(
+        `Terminalizing job ${action.jobId} for a provider binding failure while its durable process ` +
+          `(pid ${durableRecord.pid}) could not be observed; no signal was sent, so it may still be running ` +
+          'and nothing in Coral will reclaim it. That pid is not safe to act on by itself — the probe that ' +
+          'could not answer is also what would have proved the number still belongs to this job — so identify ' +
+          'the process independently before stopping it.',
       );
-    }
-    const durableLiveness = runtime.process.observeLiveness(durableRecord.pid);
-    if (durableLiveness !== 'absent') {
-      const carrierState =
-        durableLiveness === 'alive'
-          ? `durable process ${durableRecord.pid} is alive`
-          : `durable process ${durableRecord.pid} has unknown liveness`;
-      return providerBindingCarrierQuarantine(action.jobId, captured.failure, captured.remediation, carrierState);
     }
     const message = `Provider '${captured.failure.provider}' recovery binding failed: ${captured.failure.reason}.`;
     const facts = settleFault(
@@ -239,35 +245,6 @@ function releaseSessionClaim(
 
 function completed(facts: readonly RecoverySettlementFact[], detail: string): RecoveryDisposition {
   return { kind: 'advanced', outcome: 'settled', facts, detail };
-}
-
-function providerBindingQuarantine(
-  jobId: string,
-  failure: ProviderBindingFailure,
-  remediation: string,
-): RecoveryDisposition {
-  return {
-    kind: 'quarantine',
-    detail:
-      `Provider '${failure.provider}' recovery binding failed: ${failure.reason}. ${remediation} ` +
-      `After repairing the binding, run 'coral-cli backend recovery-quarantine list', then clear the exact ` +
-      `coordinator-job-recovery entry for job '${jobId}'.`,
-  };
-}
-
-function providerBindingCarrierQuarantine(
-  jobId: string,
-  failure: ProviderBindingFailure,
-  remediation: string,
-  carrierState: string,
-): RecoveryDisposition {
-  return {
-    kind: 'quarantine',
-    detail:
-      `Provider '${failure.provider}' recovery binding is persisted-invalid (${failure.reason}), but ` +
-      `${carrierState}; terminalization requires observed process absence. ${remediation} ` +
-      `After the carrier is absent, clear the exact coordinator-job-recovery entry for job '${jobId}'.`,
-  };
 }
 
 export function logRecoveryActionFailure(action: RecoveryAction, error: unknown, log: (message: string) => void): void {

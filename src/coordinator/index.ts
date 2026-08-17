@@ -503,7 +503,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
         getDiscussContext,
         createInvocationContext,
         recoveryCoordinator,
-        providerOperationStartupAdmission,
+        providerOperationStartupOwnership,
         signal,
         recoverPersistedDiscussFn,
       },
@@ -559,7 +559,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
         signal,
         log: identity.log,
         coordinatorCommit,
-        providerOperationStartupAdmission,
+        providerOperationStartupOwnership,
       });
       signal.throwIfAborted();
 

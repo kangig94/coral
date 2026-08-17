@@ -60,7 +60,7 @@ import type { CoralEventInput } from '../../../store/envelope.js';
 import { normalizeProviderSession } from '../../../sessions/entry-normalization.js';
 import { InterruptedRecoveryCommitError, RecoveryOwnershipReleaseError } from './interrupted-finalizer.js';
 import { registerCoordinatorStartupRecovery, type BoundCoordinator } from '../../handoff.js';
-import type { AdmittedProviderOperationStartup, ProviderOperationStartupAdmission } from '../../../jobs/startup.js';
+import type { ProviderOperationStartupOwnership } from '../../../jobs/startup.js';
 
 const RECOVERY_POLL_MS = 500;
 
@@ -92,7 +92,7 @@ export type ProviderOperationRecoveryAcceptance = Readonly<{
 
 export interface RecoveryCoordinator {
   retireAbsentSupersededProviderOperations(): void;
-  snapshotProviderOperationStartupAdmission(): ProviderOperationStartupAdmission;
+  snapshotProviderOperationStartupOwnership(): ProviderOperationStartupOwnership;
   recoverProviderOperationJob(
     record: Extract<ProviderOperationRecord, { phase: 'local-recovery-pending' }>,
     signal: AbortSignal,
@@ -122,7 +122,7 @@ export type StartupRecoveryContext = {
   signal: AbortSignal;
   log: (message: string) => void;
   coordinatorCommit: CommitEventsFn;
-  providerOperationStartupAdmission: AdmittedProviderOperationStartup;
+  providerOperationStartupOwnership: ProviderOperationStartupOwnership;
   interruptedAppServerReason?: InterruptedAppServerReason;
 };
 
@@ -1224,7 +1224,7 @@ export function createRecoveryCoordinator(
     }
   };
 
-  const snapshotProviderOperationStartupAdmission = (): ProviderOperationStartupAdmission => {
+  const snapshotProviderOperationStartupOwnership = (): ProviderOperationStartupOwnership => {
     const scan = readProviderOperations(progressStore.getDb());
     // A row this build cannot read still names a job the provider saga owns. Fencing only the decoded ones
     // hands that job to generic recovery, which then does a keyed strict read of the same row and throws —
@@ -1239,18 +1239,8 @@ export function createRecoveryCoordinator(
     const unreadableJobIds = attributions.flatMap((attribution) =>
       attribution.jobs.kind === 'known' ? attribution.jobs.values : [],
     );
-    // A row that could name any job cannot be fenced by listing job ids, and listing none would hand every job
-    // to generic recovery while that row may own one of them. The keys travel with the fence so the caller
-    // fails closed on them rather than silently proceeding.
-    const blockers = attributions
-      .filter((attribution) => attribution.jobs.kind === 'indeterminate')
-      .map(({ key, revision }) => Object.freeze({ key, revision }));
-    if (blockers.length > 0) {
-      return Object.freeze({ kind: 'refused', blockers: Object.freeze(blockers) });
-    }
     return Object.freeze({
-      kind: 'admitted',
-      ownedJobIds: Object.freeze([
+      jobIds: Object.freeze([
         ...new Set([...scan.records.map((record) => record.operation.jobId), ...unreadableJobIds]),
       ]),
     });
@@ -1319,7 +1309,7 @@ export function createRecoveryCoordinator(
         [],
       ),
     );
-    const sagaOwnedJobIds = new Set(ctx.providerOperationStartupAdmission.ownedJobIds);
+    const sagaOwnedJobIds = new Set(ctx.providerOperationStartupOwnership.jobIds);
 
     const recoveryItems: CoordinatorRecoveryItem[] = [];
     await runCoordinatorWalk({
@@ -1393,7 +1383,7 @@ export function createRecoveryCoordinator(
   }
   return {
     retireAbsentSupersededProviderOperations,
-    snapshotProviderOperationStartupAdmission,
+    snapshotProviderOperationStartupOwnership,
     recoverProviderOperationJob,
     completeProviderOperationJobRecovery,
     releaseAdoptedJob,

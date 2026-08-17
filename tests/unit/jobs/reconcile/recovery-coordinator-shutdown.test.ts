@@ -485,7 +485,7 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
         providerRegistry,
         getRecoveryService,
         createInvocationContext,
-        providerOperationStartupAdmission,
+        providerOperationStartupOwnership,
         signal,
       },
       runJobsStartup,
@@ -501,7 +501,7 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
         signal,
         log: identity.log,
         coordinatorCommit: createTestJobJournalDeps(progressStore, runtime).coordinatorCommit,
-        providerOperationStartupAdmission,
+        providerOperationStartupOwnership,
       });
       signal.throwIfAborted();
       const recoveredDiscussResumes = await recoverPersistedDiscussFn();
@@ -611,15 +611,10 @@ describe('recovery coordinator shutdown', () => {
     const runtime = createRealRuntime('prod');
     const pluginRoot = createPluginRoot('plugin-late-authority');
     const projectRoot = createProjectRoot('project-late-authority');
-    let releaseCapture!: (value: {
-      ok: false;
-      failure: { reason: 'subject-mismatch'; provider: string };
-      remediation: string;
-    }) => void;
+    let releaseCapture!: (value: { ok: false; failure: { reason: 'subject-mismatch'; provider: string } }) => void;
     const captureBlocked = new Promise<{
       ok: false;
       failure: { reason: 'subject-mismatch'; provider: string };
-      remediation: string;
     }>((resolve) => {
       releaseCapture = resolve;
     });
@@ -643,11 +638,7 @@ describe('recovery coordinator shutdown', () => {
     await vi.waitFor(() => expect(harness.fakeService.captureProviderRecoveryAuthority).toHaveBeenCalledTimes(1));
 
     await harness.controller.shutdown('handoff');
-    releaseCapture({
-      ok: false,
-      failure: { reason: 'subject-mismatch', provider: 'codex' },
-      remediation: 'Restore the original profile.',
-    });
+    releaseCapture({ ok: false, failure: { reason: 'subject-mismatch', provider: 'codex' } });
 
     expect(((await startup) as Error).name).toBe('AbortError');
     expect(harness.progressStore.readStatus('running-adoption-job')?.phase).toBe('running');

@@ -42,7 +42,7 @@ export type RecoveryCommitFence = Readonly<{
 
 export type ProviderRecoveryAuthorityCapture =
   | Readonly<{ ok: true; authority: ProviderRecoveryAuthority }>
-  | Readonly<{ ok: false; failure: ProviderBindingFailure; remediation: string }>;
+  | Readonly<{ ok: false; failure: ProviderBindingFailure }>;
 
 export interface RecoveryCapableService {
   captureProviderRecoveryAuthority(launchRecord: JobLaunch): Promise<ProviderRecoveryAuthorityCapture>;

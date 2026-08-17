@@ -69,7 +69,7 @@ function seedQueuedProviderJob(progressStore: JobStore, jobId: string, sessionId
 }
 
 describe('provider-operation startup recovery ownership', () => {
-  it('computes admission after provider reconciliation and then runs generic recovery exactly once', async () => {
+  it('computes ownership after provider reconciliation and then runs generic recovery exactly once', async () => {
     const runtime = createRealRuntime('prod');
     const db = newRawDatabase(':memory:');
     applyBundledStoreSchema(db, currentCoralStoreFormat());
@@ -256,7 +256,7 @@ describe('provider-operation startup recovery ownership', () => {
           signal: inputs.signal,
           log: inputs.identity.log,
           coordinatorCommit: (callback) => inputs.progressStore.commit(callback),
-          providerOperationStartupAdmission: inputs.providerOperationStartupAdmission,
+          providerOperationStartupOwnership: inputs.providerOperationStartupOwnership,
         });
         return [];
       },

@@ -156,11 +156,7 @@ export class RecoveryService {
         authority: snapshotProviderRecoveryAuthority(launchRecord, result.session, result.bound, result.continuity),
       };
     }
-    return {
-      ok: false,
-      failure: result.failure,
-      remediation: this.deps.providerRegistry.renderBindingFailure(result.failure),
-    };
+    return result;
   }
 
   async interruptAppServerJob(authority: ProviderRecoveryAuthority, runtimeRecord: AppServerRuntime): Promise<void> {

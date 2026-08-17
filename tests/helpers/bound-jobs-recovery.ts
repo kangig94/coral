@@ -49,7 +49,7 @@ export async function createBoundJobsRecoveryHarness(
         signal: inputs.signal,
         log: inputs.identity.log,
         coordinatorCommit: options.coordinatorCommit,
-        providerOperationStartupAdmission: inputs.providerOperationStartupAdmission,
+        providerOperationStartupOwnership: inputs.providerOperationStartupOwnership,
         interruptedAppServerReason: inputs.interruptedAppServerReason,
       });
       return [];
@@ -63,10 +63,6 @@ export async function createBoundJobsRecoveryHarness(
     bound,
     run: async (recoveryCoordinator) => {
       recoveryCoordinator.retireAbsentSupersededProviderOperations();
-      const providerOperationStartupAdmission = recoveryCoordinator.snapshotProviderOperationStartupAdmission();
-      if (providerOperationStartupAdmission.kind === 'refused') {
-        throw new Error('Bound jobs recovery harness cannot run while provider-operation admission is refused.');
-      }
       await bound.runStartupRecovery({
         identity: options.identity,
         runtime: options.runtime,
@@ -83,7 +79,7 @@ export async function createBoundJobsRecoveryHarness(
         },
         createInvocationContext: options.createInvocationContext,
         recoveryCoordinator,
-        providerOperationStartupAdmission,
+        providerOperationStartupOwnership: recoveryCoordinator.snapshotProviderOperationStartupOwnership(),
         signal: options.signal,
         recoverPersistedDiscussFn: async () => [],
       });

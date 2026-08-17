@@ -54,22 +54,6 @@ export type ProviderBindingFailure =
   | { readonly reason: 'unsupported-selection'; readonly provider: string; readonly selector: string }
   | { readonly reason: 'invalid-persisted-binding'; readonly provider: string };
 
-export type ProviderBindingFailureDisposition = 'operator-repairable' | 'persisted-invalid';
-
-export function providerBindingFailureDisposition(failure: ProviderBindingFailure): ProviderBindingFailureDisposition {
-  switch (failure.reason) {
-    case 'profile-unavailable':
-    case 'identity-unavailable':
-    case 'subject-mismatch':
-      return 'operator-repairable';
-    case 'missing-profile':
-    case 'profile-mismatch':
-    case 'unsupported-selection':
-    case 'invalid-persisted-binding':
-      return 'persisted-invalid';
-  }
-}
-
 export type ProviderBindingResult<Value> =
   | { readonly ok: true; readonly value: Value }
   | { readonly ok: false; readonly failure: ProviderBindingFailure };

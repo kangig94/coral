@@ -6,14 +6,7 @@ import type { Runtime } from '../runtime/ports.js';
 import type { InterruptedAppServerReason } from './reconcile/interrupted-reason.js';
 import type { CommitEventsFn } from '../store/append.js';
 
-export type ProviderOperationStartupAdmission =
-  | Readonly<{ kind: 'admitted'; ownedJobIds: readonly string[] }>
-  | Readonly<{
-      kind: 'refused';
-      blockers: readonly Readonly<{ key: string; revision: string }>[];
-    }>;
-
-export type AdmittedProviderOperationStartup = Extract<ProviderOperationStartupAdmission, { kind: 'admitted' }>;
+export type ProviderOperationStartupOwnership = Readonly<{ jobIds: readonly string[] }>;
 
 export type JobsStartupContext = {
   namespace: string;
@@ -26,7 +19,7 @@ export type JobsStartupContext = {
   signal: AbortSignal;
   log: (message: string) => void;
   coordinatorCommit: CommitEventsFn;
-  providerOperationStartupAdmission: AdmittedProviderOperationStartup;
+  providerOperationStartupOwnership: ProviderOperationStartupOwnership;
   /**
    * Why the recovery is finalizing app-server jobs:
    * - `'restart'` (default): ordinary process restart recovery.

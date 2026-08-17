@@ -88,7 +88,7 @@ import {
 import { staleJobCleanupSource, type RawStaleJobCleanupRow } from '../jobs/stale-job-cleanup-recovery-source.js';
 import { runShutdownCrashTerminalization } from './shutdown-recovery.js';
 import { runStartupStaleArtifactPrune } from './startup-recovery.js';
-import type { AdmittedProviderOperationStartup, RunJobsStartupFn } from '../jobs/startup.js';
+import type { ProviderOperationStartupOwnership, RunJobsStartupFn } from '../jobs/startup.js';
 
 export type LifecycleState = 'starting' | 'kernel-ready' | 'running' | 'draining' | 'stopped';
 
@@ -693,7 +693,7 @@ export type StartupRecoveryInputs = {
   readonly getDiscussContext: (ctx: InvocationContext) => DiscussContext;
   readonly createInvocationContext: (projectRoot: string) => InvocationContext;
   readonly recoveryCoordinator: RecoveryCoordinator;
-  readonly providerOperationStartupAdmission: AdmittedProviderOperationStartup;
+  readonly providerOperationStartupOwnership: ProviderOperationStartupOwnership;
   readonly signal: AbortSignal;
   readonly recoverPersistedDiscussFn: RecoverPersistedDiscussFn;
   /**
@@ -1048,20 +1048,7 @@ async function runLifecycleStartup({
     // cannot see, so allowing that walk to classify the job first could authorize a contradictory execution.
     await reconcileProviderOperationsAtStartup?.(signal);
     signal.throwIfAborted();
-    const providerOperationStartupAdmission =
-      bound === null ? null : recoveryCoordinator.snapshotProviderOperationStartupAdmission();
-    if (providerOperationStartupAdmission?.kind === 'refused') {
-      const blockers = providerOperationStartupAdmission.blockers
-        .map(({ key, revision }) => `${key}@${revision}`)
-        .join(', ');
-      backendLog.warn(
-        `Startup recovery refused because provider operation evidence cannot be attributed: ${blockers}. ` +
-          'Keep this coordinator at kernel-ready while restoring the build that owns the row, or inspect and ' +
-          'evict an identifiable provider host. No current command can abandon an unattributable row.',
-      );
-      state.started = true;
-      return serverInfo;
-    }
+    const providerOperationStartupOwnership = recoveryCoordinator.snapshotProviderOperationStartupOwnership();
     // Per-job isolation: corrupt sessions should not abort recovery.
     // `bound.runStartupRecovery` registers journal cursors then awaits
     // `waitFreshUntil` against `currentMaxSeq`; that wait runs here in Era II
@@ -1072,7 +1059,7 @@ async function runLifecycleStartup({
     // authority and there is no incumbent's work to recover — it was never the canonical coordinator.
     // This is the absence of a recovery obligation, not a skipped one.
     const recoveredDiscussResumes =
-      bound === null || providerOperationStartupAdmission === null
+      bound === null
         ? []
         : await bound.runStartupRecovery({
             identity,
@@ -1086,7 +1073,7 @@ async function runLifecycleStartup({
             getDiscussContext,
             createInvocationContext,
             recoveryCoordinator,
-            providerOperationStartupAdmission,
+            providerOperationStartupOwnership,
             signal,
             recoverPersistedDiscussFn,
             interruptedAppServerReason: bound.acquiredViaHandoff ? 'handoff' : 'restart',
