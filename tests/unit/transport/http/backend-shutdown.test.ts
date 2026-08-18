@@ -3,6 +3,7 @@ import type { Socket } from 'node:net';
 import type { BackendInfo } from '#src/infra/backend-discovery.js';
 import { observeCoordinator } from '#src/transport/http/backend/coordinator-observation.js';
 import type { CoordinatorObservation } from '#src/transport/http/backend/coordinator-observation.js';
+import { reserveRefusedPort } from '../../../fixtures/refused-port.js';
 
 const mockState = vi.hoisted(() => ({
   observed: { kind: 'no-record' } as CoordinatorObservation,
@@ -381,19 +382,8 @@ describe('shutdownBackend', () => {
   // `fetch` never does — see the measurement note on `thrownErrnoCode` in `src/infra/error-format.ts`). These two drive the real
   // global `fetch` against a real socket instead of a fixture, so the assertion cannot agree with the bug.
   it('reports socket_refused against a real closed port, not a hand-built error', async () => {
-    const { createServer } = await import('node:net');
-    const probe = createServer();
-    await new Promise<void>((resolve) => probe.listen(0, '127.0.0.1', () => resolve()));
-    const address = probe.address();
-    if (address === null || typeof address === 'string') throw new Error('expected a TCP address');
-    const port = address.port;
-    await new Promise<void>((resolve) => probe.close(() => resolve()));
-    // `close()`'s callback fires once the JS handle is released, which measurably races ahead of this host's
-    // own kernel-level socket teardown: connecting immediately after intermittently still reaches the old
-    // listener (or gets `ECONNRESET` off a not-yet-torn-down socket) instead of the `ECONNREFUSED` a port with
-    // nothing on it produces. One macrotask turn is enough for the teardown to land before the real dial below.
-    await new Promise<void>((resolve) => setTimeout(resolve, 50));
-    // Nothing listens on `port` from here on.
+    // Confirmed refusing, not merely closed — see `reserveRefusedPort` for why the two differ.
+    const port = await reserveRefusedPort();
 
     vi.unstubAllGlobals();
     mockState.observed = {

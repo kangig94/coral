@@ -56,6 +56,24 @@ const PROJECT_IGNORE_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), 'pro
  * of those tests fails and the number here has to be re-derived rather than guessed.
  */
 const PROJECT_IGNORE_SPAWN_TIMEOUT_MS = 5000;
+/**
+ * What each non-`ok` maintenance outcome is told to the session as, keyed by the outcome itself.
+ *
+ * Splitting the outcomes apart only moves the defect if nobody reads the split: a child SIGTERMed on a slow
+ * mount and a child that never launched both leave `.claude/.gitignore` and the coral symlink exactly as they
+ * were, and silence is what made that read as "there was nothing to do". Every outcome
+ * `runProjectIgnoreMaintenance` can return other than `ok` has an entry here, and
+ * `tests/unit/hooks/project-ignore-symlink.test.ts` fails if a new one is added without one.
+ *
+ * `no-project-dir` is absent deliberately — no project directory means there was no maintenance to attempt,
+ * which is not a refusal to report.
+ */
+const PROJECT_IGNORE_OUTCOME_NOTICES = {
+  killed: 'ran out of its time budget and was terminated',
+  'not-spawned': 'could not be started',
+  'no-output': 'exited without reporting a result',
+  'unparseable-output': 'reported a result Coral could not read',
+};
 // Long enough to still catch the failure when a session starts minutes after the
 // user's last attempt, short enough that a cured problem stops being reported.
 const STARTUP_FAILURE_NOTICE_WINDOW_MS = 10 * 60 * 1000;
@@ -188,8 +206,12 @@ try {
   const migrationNotice = ignoreOutcome.maintenance?.migrated
     ? '\n\nCoral migration: moved the generated coral ignore rule from the Git-root .gitignore into .claude/.gitignore.'
     : '';
+  const ignoreFailure = PROJECT_IGNORE_OUTCOME_NOTICES[ignoreOutcome.outcome];
+  const ignoreNotice = ignoreFailure
+    ? `\n\nCoral project-ignore maintenance ${ignoreFailure}; .claude/.gitignore and the coral symlink were left as they are. It is attempted again at the next session start.`
+    : '';
   const startupFailureNotice = readRecentStartupFailureNotice(coordinatorRunDir());
-  const head = `SessionStart:session_id=${sessionId}\nCurrent host: ${host}\nClaude config dir: ${claudeConfigDir()}\n\n${injectContent}${migrationNotice}`;
+  const head = `SessionStart:session_id=${sessionId}\nCurrent host: ${host}\nClaude config dir: ${claudeConfigDir()}\n\n${injectContent}${migrationNotice}${ignoreNotice}`;
   const body = wakeUpPayload === null ? head : `${head}\n\n${wakeUpPayload}`;
   const additionalContext = startupFailureNotice === null ? body : `${startupFailureNotice}\n\n${body}`;
 

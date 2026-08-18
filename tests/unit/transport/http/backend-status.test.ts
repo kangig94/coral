@@ -10,6 +10,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BackendInfo } from '#src/infra/backend-discovery.js';
 import type { CoordinatorObservation } from '#src/transport/http/backend/coordinator-observation.js';
+import { reserveRefusedPort } from '../../../fixtures/refused-port.js';
 
 const NOW = 1_700_000_000_000;
 
@@ -481,16 +482,7 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
   // drives the real global `fetch` against a real closed socket instead of a fixture, so the assertion cannot
   // agree with a regression in the `.cause` unwrap.
   it('reports unreachable as refused against a real closed port, not a hand-built error', async () => {
-    const { createServer } = await import('node:net');
-    const probe = createServer();
-    await new Promise<void>((resolve) => probe.listen(0, '127.0.0.1', () => resolve()));
-    const address = probe.address();
-    if (address === null || typeof address === 'string') throw new Error('expected a TCP address');
-    const port = address.port;
-    await new Promise<void>((resolve) => probe.close(() => resolve()));
-    // One macrotask turn for this host's kernel-level socket teardown to land before the real dial below —
-    // see `backend-shutdown.test.ts`'s identical wait for why an immediate connect is flaky without it.
-    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+    const port = await reserveRefusedPort();
 
     vi.unstubAllGlobals();
     mockState.observed = {
