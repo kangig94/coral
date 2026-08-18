@@ -1,5 +1,6 @@
 import type { EnvPort } from '../infra/port-types.js';
-import { classifyExecOutcome, type ProcessPort } from '../runtime/ports.js';
+import { classifyExecOutcome } from '../infra/port-types.js';
+import type { ProcessPort } from '../runtime/ports.js';
 
 /**
  * Three answers about the binary, not two. `not-found` is a probe that ran and settled the question; the CLI

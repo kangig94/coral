@@ -53,8 +53,10 @@ Two consequences, in increasing order of how hard they are to notice:
 - `discuss/shell/recovery.ts` writes it into a persisted continuation as `sourceId` (:252) and then
   **re-derives it on read and rejects the row when the two disagree** (:235,
   `continuation.sourceId !== sourceId`). That is the sharpest form of this: a continuation written while git
-  could not answer is not merely filed oddly, it is discarded by the next recovery run as belonging to another
-  source. Durable, outlives the process, and reads as an ordinary "no continuation to resume".
+  could not answer is not merely filed oddly — the mismatch **throws**, inside `hydrate`, which
+  `recovery/containment.ts` turns into a recovery fault routed to `policy.onFault`. So it becomes a quarantine
+  subject an operator has to clear, not the silent "no continuation to resume" an earlier revision of this
+  line claimed. Durable, outlives the process, and louder than it was described as being.
 
   A second call at :820 is _not_ part of that path, though an earlier revision of this entry folded it in. It
   builds a `DiscussionSourceCoordinate` whose `sourceId` becomes a recovery-fact detail string, recomputed on

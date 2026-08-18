@@ -82,8 +82,7 @@ describe('shutdownBackend', () => {
 
     await expect(shutdownBackend('/plugin-root')).resolves.toEqual({
       ok: false,
-      reason:
-        "this nested Coral process cannot shut down its parent coordinator; return to the top-level Coral session and run 'coral-cli backend shutdown' there",
+      reason: 'nested_child',
     });
 
     expect(readBackendInfo).not.toHaveBeenCalled();

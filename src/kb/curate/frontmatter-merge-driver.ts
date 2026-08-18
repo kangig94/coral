@@ -165,7 +165,11 @@ function mergeBodiesWithGit(
         { stdio: 'ignore', timeout: GIT_MERGE_FILE_TIMEOUT_MS },
       );
     } catch (error: unknown) {
-      status = classifyMergeFileFailure(error);
+      const outcome = classifyMergeFileFailure(error);
+      // Raised rather than returned, because there is no exit status that means "do not write the file" — every
+      // number this function can produce is a merge result the caller acts on.
+      if (outcome.kind === 'no-answer') throw new FrontmatterMergeUnavailableError(outcome.detail);
+      status = outcome.status;
     }
 
     return {
@@ -193,7 +197,8 @@ export class FrontmatterMergeUnavailableError extends Error {
  * `git merge-file` answers by exiting: `0` merged cleanly, a positive count is that many conflicts, and it is
  * the caller's job to write the result. So a numeric `status` is an answer whatever its value.
  *
- * A throw carrying no numeric status is not. `execFileSync` reports its own timeout with `code: 'ETIMEDOUT'`
+ * A throw carrying no numeric status is not, and it comes back as its own variant rather than as a number a
+ * caller might act on. `execFileSync` reports its own timeout with `code: 'ETIMEDOUT'`
  * and `status: null`, and a launch failure the same way with an errno — and this used to fall through to
  * `return 1`, which for this command means "one conflict". That mattered more here than anywhere else on this
  * branch: `oursPath` is git's `%A`, the real working-tree file, and `runFrontmatterMergeDriver` writes it
@@ -204,15 +209,17 @@ export class FrontmatterMergeUnavailableError extends Error {
  * The bound that makes this reachable on a healthy install is deliberate and stays (an unbounded synchronous
  * subprocess cannot be interrupted). What changes is that a non-answer now refuses instead of guessing.
  */
-function classifyMergeFileFailure(error: unknown): number {
+type MergeFileOutcome = Readonly<{ kind: 'exited'; status: number }> | Readonly<{ kind: 'no-answer'; detail: string }>;
+
+function classifyMergeFileFailure(error: unknown): MergeFileOutcome {
   if (typeof error === 'object' && error !== null && 'status' in error) {
     const status = (error as { status?: unknown }).status;
     if (typeof status === 'number' && status > 0) {
-      return status;
+      return { kind: 'exited', status };
     }
   }
   const code = (error as NodeJS.ErrnoException | null)?.code;
-  throw new FrontmatterMergeUnavailableError(code ?? (error as Error | null)?.message ?? 'unknown error');
+  return { kind: 'no-answer', detail: code ?? (error as Error | null)?.message ?? 'unknown error' };
 }
 
 function mergeFrontmatter(ours: MarkdownDocument, theirs: MarkdownDocument, mergedBody: string, path: string): string {

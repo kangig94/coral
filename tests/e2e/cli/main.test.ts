@@ -269,7 +269,10 @@ describe('cli main — backend shutdown routing', () => {
 
     expect(status).toBe(1);
     expect(stdout).toBe('');
-    expect(stderr).toContain('Shutdown failed: not_running');
+    // `not_running` is no longer a reason any branch produces: an empty HOME reaches `missing` -> `no_record`.
+    // The previous assertion passed only because this suite runs the pre-built bundle and CI does not run it,
+    // so it would have gone red the first time someone ran `npm run test:e2e:build`.
+    expect(stderr).toContain('no coordinator has recorded itself');
   });
 });
 

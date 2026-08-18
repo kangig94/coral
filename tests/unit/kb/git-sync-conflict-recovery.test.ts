@@ -14,7 +14,8 @@ import { curateDb } from '#src/kb/curate/db-access.js';
 import { noteCursor, readCurateState, writeCurateState } from '#src/kb/curate/state/index.js';
 import { noteEntryId, type KbIndex } from '#src/kb/entry-types.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import type { ExecResult, RuntimeExecOptions } from '#src/runtime/ports.js';
+import type { RuntimeExecOptions } from '#src/runtime/ports.js';
+import type { ExecResult } from '#src/infra/port-types.js';
 import { createKbTestDb } from './runtime-test-helpers.js';
 import { createTestKbRuntime } from '../../fixtures/test-runtime.js';
 

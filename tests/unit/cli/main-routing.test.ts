@@ -445,20 +445,36 @@ describe('cli main routing', () => {
   it('surfaces child lifecycle denial from backend shutdown without reporting success', async () => {
     const { buildProgram } = await loadMainModule();
     const program = buildProgram();
-    mockState.shutdownBackend.mockResolvedValueOnce({
-      ok: false,
-      reason:
-        "this nested Coral process cannot shut down its parent coordinator; return to the top-level Coral session and run 'coral-cli backend shutdown' there",
-    });
+    mockState.shutdownBackend.mockResolvedValueOnce({ ok: false, reason: 'nested_child' });
 
     await program.parseAsync(['node', 'coral-cli', 'backend', 'shutdown']);
 
     expect(mockState.shutdownBackend).toHaveBeenCalledTimes(1);
     expect(stdout).toBe('');
-    expect(stderr).toContain(
-      "Shutdown failed: this nested Coral process cannot shut down its parent coordinator; return to the top-level Coral session and run 'coral-cli backend shutdown' there",
-    );
+    expect(stderr).toMatch(/cannot shut down its parent coordinator/u);
+    expect(stderr, 'the remedy is the point of this refusal').toMatch(/top-level Coral session/u);
+    // 1, not 2: this run established the refusal. The undetermined reasons are the ones that exit 2.
     expect(process.exitCode).toBe(1);
+  });
+
+  // The exit code is the only machine-readable channel this command has, and `docs/configuration.md` tells
+  // operators to run it before `store-reset discard`. Every failure exited 1 alike, so a script could not tell
+  // "it is stopped, proceed" from "I could not tell" — the disposition the type had just gained, discarded at
+  // the boundary that carries it out of the process.
+  it.each([
+    ['no_record', 1],
+    ['recorded_process_absent', 1],
+    ['socket_refused', 1],
+    ['unreadable_record', 2],
+    ['unreachable', 2],
+  ] as const)('exits %s with %s', async (reason, expected) => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+    mockState.shutdownBackend.mockResolvedValueOnce({ ok: false, reason });
+
+    await program.parseAsync(['node', 'coral-cli', 'backend', 'shutdown']);
+
+    expect(process.exitCode, 'observed refusals exit 1; unobserved state exits 2').toBe(expected);
   });
 
   it('preserves top-level help output via snapshot', async () => {

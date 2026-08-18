@@ -2,7 +2,8 @@ import { execFileSync } from 'node:child_process';
 import { basename } from 'node:path';
 
 import { backendLog } from './backend-log.js';
-import { INDECISIVE_PROBE_REPROBE_INTERVAL_MS, STANDING_PROBE_ERRNOS } from './process-constants.js';
+import { INDECISIVE_PROBE_REPROBE_INTERVAL_MS } from './process-constants.js';
+import { classifyThrownExecOutcome } from './port-types.js';
 
 export const PROJECT_SOURCE_CACHE_MAX_ENTRIES = 256;
 
@@ -89,22 +90,10 @@ function rememberProjectSource(projectRoot: string, source: string): void {
   }
 }
 
-/**
- * Whether the probe produced an answer. Two shapes count: git ran and exited with a status — including the
- * ordinary "not a repository" and "no such remote" exits — or it could not be run for a reason that will not
- * change (`STANDING_PROBE_ERRNOS`). Anything else is the system declining to answer right now.
- */
 /** What the probe reported, for the operator-facing line — the errno when there is one, the message otherwise. */
 function probeDetail(error: unknown): string {
   const errno = error as NodeJS.ErrnoException | null;
   return errno?.code ?? errno?.message ?? 'unknown error';
-}
-
-function probeWasDecisive(error: unknown): boolean {
-  if (typeof error !== 'object' || error === null) return false;
-  const errno = error as NodeJS.ErrnoException & { status?: unknown };
-  if (typeof errno.status === 'number') return true;
-  return typeof errno.code === 'string' && STANDING_PROBE_ERRNOS.has(errno.code);
 }
 
 /**
@@ -120,8 +109,11 @@ function probeWasDecisive(error: unknown): boolean {
  * stalled mount becomes one blocking probe *per row* on the loops that call this. It is therefore cached with
  * an expiry, which is neither.
  *
- * `probeWasDecisive` draws the line, and it enumerates the *standing* failures rather than the transient ones
- * on purpose: an errno nobody listed then costs a re-probe instead of a wrong answer nobody can see.
+ * `classifyThrownExecOutcome` (`runtime/ports.ts`) draws the line — the same owner `git-sync.ts` and both
+ * provider preflights use. This file reads a thrown error rather than an `ExecResult` only because it sits
+ * below the runtime composition (`runtime/real.ts` imports it to build `paths.projectSource`) and so has no
+ * port to read a result from; that is why the owner has two entry points rather than this file having its own
+ * predicate, which is what it had until the rule was given one home.
  *
  * Two things this does not do. It does not make the two meanings distinguishable to a caller — the return is
  * one `string`, and a caller inside the window still gets the local name. And because the fallback now expires,
@@ -155,7 +147,7 @@ export function resolveProjectSource(projectRoot: string): string {
       timeout: GIT_REMOTE_PROBE_TIMEOUT_MS,
     }).trim();
   } catch (error: unknown) {
-    if (probeWasDecisive(error)) {
+    if (classifyThrownExecOutcome(error).kind !== 'no-answer') {
       indecisiveProbeAt.delete(projectRoot);
       rememberProjectSource(projectRoot, local);
     } else {

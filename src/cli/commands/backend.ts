@@ -19,7 +19,14 @@ import { currentCoralStoreFormat } from '../../store-format.js';
 import { classifyStoreFile, type Database } from '../../store/db.js';
 import { openReadOnlyStoreDatabase } from '../../store/read-port.js';
 import { getBackendStatusFull, type BackendStatusFull } from '../../transport/http/backend/status.js';
-import { shutdownBackend } from '../../transport/http/backend/shutdown.js';
+import { shutdownBackend, type ShutdownReason } from '../../transport/http/backend/shutdown.js';
+
+/**
+ * The `backend shutdown` failures where the coordinator's state was *not* established, so a caller must not
+ * treat the command as having stopped anything. Exit 1 keeps its meaning — a refusal this run observed — and
+ * exit 2 says the run could not observe.
+ */
+const SHUTDOWN_UNDETERMINED_REASONS: ReadonlySet<ShutdownReason> = new Set(['unreadable_record', 'unreachable']);
 import { TOOL_TIMEOUT_MS } from '../../transport/http/sse.js';
 import { childPrincipalAuthFromEnv, childPrincipalAuthOptions } from '../../transport/ipc/child-principal-auth.js';
 import { IpcRpcError } from '../../transport/ipc/client.js';
@@ -221,7 +228,11 @@ export function registerBackendCommands(program: Command, operations: BackendCom
       }
 
       process.stderr.write(text + '\n');
-      process.exitCode = 1;
+      // The exit code is the only machine-readable channel this command has, and `docs/configuration.md` tells
+      // operators to run `backend shutdown` before `store-reset discard` and `kb-commit quarantine`. A script
+      // following that needs to tell "it is stopped, proceed" from "I could not tell, do not proceed" — and
+      // every failure exited 1 alike, discarding at the boundary the disposition the type had just gained.
+      process.exitCode = SHUTDOWN_UNDETERMINED_REASONS.has(result.reason) ? 2 : 1;
     } catch (error) {
       emitError(error);
     }

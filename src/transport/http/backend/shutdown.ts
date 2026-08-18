@@ -8,13 +8,29 @@ import { isRecord } from '../../../infra/json.js';
 import { isCoralChildEnvironment } from '../../../security/child-principal-env.js';
 
 /**
- * `reason` is a stable token the CLI renders; `detail` is the observed cause behind it, when there is one.
+ * `reason` is a closed set the CLI renders; `detail` carries whatever was observed behind it.
  *
- * They are separate because the two `ok: false` cases an operator most needs told apart used to share a
- * spelling: `not_running` was returned both for a socket that refused the connection and for a request that
- * never finished, and the disposition split above was flattened into a raw enum name at the render layer.
+ * Two `ok: false` cases an operator most needs told apart used to share one spelling — `not_running` was
+ * returned both for a socket that refused a connection and for a request that never finished — and the split
+ * was then flattened again into a raw token at the render layer.
+ *
+ * The set is closed so that cannot come back. While `reason` was `string`, `formatShutdown` could not use the
+ * `assertNever` that keeps `formatBackendStatus` exhaustive, so a seventh token would have compiled, fallen
+ * through to a raw-token render, and broken no test. Two producers were also using this field as prose, which
+ * is what made it look like it had to stay open; their sentences live in `detail` now.
  */
-export type ShutdownResult = { ok: true; alreadyDraining?: true } | { ok: false; reason: string; detail?: string };
+export type ShutdownReason =
+  | 'nested_child'
+  | 'unreadable_record'
+  | 'no_record'
+  | 'recorded_process_absent'
+  | 'socket_refused'
+  | 'unreachable'
+  | 'capability_rejected';
+
+export type ShutdownResult =
+  | { ok: true; alreadyDraining?: true }
+  | { ok: false; reason: ShutdownReason; detail?: string };
 
 function isShuttingDownError(value: unknown): value is { code: 'backend_shutting_down' } {
   return isRecord(value) && value.code === 'backend_shutting_down';
@@ -29,8 +45,7 @@ export async function shutdownBackend(pluginRoot: string): Promise<ShutdownResul
   if (isCoralChildEnvironment(runtime.env.fullSnapshot())) {
     return {
       ok: false,
-      reason:
-        "this nested Coral process cannot shut down its parent coordinator; return to the top-level Coral session and run 'coral-cli backend shutdown' there",
+      reason: 'nested_child',
     };
   }
   const discoveryRuntime = { storage: runtime.storage, env: runtime.env, paths: runtime.paths };
@@ -74,9 +89,12 @@ export async function shutdownBackend(pluginRoot: string): Promise<ShutdownResul
       return { ok: true, alreadyDraining: true };
     }
     if (response.status === 401) {
-      return { ok: false, reason: 'manual shutdown required: shutdown capability was rejected' };
+      return { ok: false, reason: 'capability_rejected' };
     }
-    return { ok: false, reason: `${response.status} ${response.statusText}` };
+    // Something answered at the address our own record names and did not accept the shutdown. That is the same
+    // observation `getBackendStatusFull` reports as `unreachable`; this used to render as a bare
+    // `Shutdown failed: 500 Internal Server Error`, so one fact carried opposite implications in two commands.
+    return { ok: false, reason: 'unreachable', detail: `${response.status} ${response.statusText}` };
   } catch (error: unknown) {
     // The request not completing is not the coordinator not being there. A refused connection says nothing was
     // listening on that socket, which is the closest thing here to an observed absence; a timeout, a DNS

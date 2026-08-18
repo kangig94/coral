@@ -1,6 +1,7 @@
 import { EXEC_MAXBUFFER_CODE, EXEC_TIMEOUT_CODE, SIGTERM_GRACE_MS } from '../infra/process-constants.js';
 import type { ChildProcessLike, TimerHandle } from '../infra/port-types.js';
-import type { ExecResult, RuntimeSpawnOptions } from './ports.js';
+import type { RuntimeSpawnOptions } from './ports.js';
+import type { ExecResult } from '../infra/port-types.js';
 
 export interface BuildExecPromiseOptions {
   command: string;

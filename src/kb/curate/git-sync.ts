@@ -5,7 +5,7 @@ import { INDECISIVE_PROBE_REPROBE_INTERVAL_MS } from '../../infra/process-consta
 import { nowIsoString } from '../../infra/time.js';
 import type { KbRuntime } from '../contract.js';
 import { communityEntryId, noteEntryId, sourceEntryId, wikiEntryId, type KbEntryId } from '../entry-types.js';
-import { classifyExecOutcome } from '../../runtime/ports.js';
+import { classifyExecOutcome } from '../../infra/port-types.js';
 import type { GitSyncRuntimePicks } from './pipeline-types.js';
 import type { CurateAssistantPort } from './assistant.js';
 import { curateDb } from './db-access.js';

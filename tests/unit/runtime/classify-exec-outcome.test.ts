@@ -10,7 +10,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { classifyExecOutcome } from '#src/runtime/ports.js';
+import { classifyExecOutcome } from '#src/infra/port-types.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 
 const runtime = createRealRuntime('prod');

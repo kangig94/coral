@@ -42,6 +42,10 @@ const BG_CLEANUP_TTL_MS = 60 * 60_000; // prune terminal/dead bg entries older t
 // to interrupt a synchronous child with, so an unbounded one here stalls the hook — and a stalled hook is a
 // stalled Claude Code turn.
 const LOCK_PROBE_TIMEOUT_MS = 1_000;
+// The per-probe bound does not bound the sweep: this loop visits every locked task, so N wedged tasks cost
+// N × LOCK_PROBE_TIMEOUT_MS against the Stop hook's own 5s budget. Once this much has been spent, the rest are
+// left unprobed — and therefore left alone, since not knowing is not grounds for pruning.
+const LOCK_PROBE_SWEEP_BUDGET_MS = 2_000;
 
 function sessionRoot(projectDir, sessionId) {
   return join(sandboxTmpDir(), WORK_DIR, projectPathKey(projectDir), sessionId);
@@ -230,8 +234,15 @@ function hasLiveBg(projectDir, sessionId) {
   }
 
   const now = Date.now();
+  const probeDeadline = now + LOCK_PROBE_SWEEP_BUDGET_MS;
   let live = false;
   for (const [id, task] of tasks) {
+    if (Date.now() >= probeDeadline) {
+      // Out of budget. Every remaining task is treated as live and none is pruned: they were not looked at,
+      // and a hook that runs out of time has observed nothing about them.
+      live = true;
+      break;
+    }
     if (isBgTaskLive(dir, id, task, now)) {
       live = true;
     } else if (now - task.newestMs > BG_CLEANUP_TTL_MS) {

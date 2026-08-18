@@ -37,9 +37,12 @@ and may be a consumer of that policy rather than its driver. Deciding it is not 
 `durable-cli-signal-authority` are two limbs of one rule and one invariant; the second exists because
 the first's scan found it. `source-mode-build-identity-sentinel` is the gate
 `foreign-capsule-retirement` stands on, so it goes first or the gate cannot be trusted while it is used.
-`preflight-cannot-defer` waits on `provider-operation-admission-hold`: both need a name for "this could not
-be established, ask again", at two boundaries a job passes through in the same launch. Settling it twice is how
-Coral would end up with two vocabularies for one disposition, so read that entry before starting this one.
+`preflight-cannot-defer` should be read after `provider-operation-admission-hold`, not blocked on it. Both need
+a name for "this could not be established, ask again", and settling that twice is how Coral would end up with
+two vocabularies for one disposition — but the two gates are not in series: admission-hold is a startup-wide
+gate that returns `backend_admission_held` before a launch reaches preflight at all, so a single job meets at
+most one of them. The entry's own start condition also allows an independent unblock ("or a launch-level retry
+is chosen"), which an earlier version of this paragraph dropped.
 `provider-operation-admission-hold` and `coordinator-process-disposition` name each other as explicitly
 out of scope — adjacent, not joint. And `darwin-signal-authority` states it does **not** close with
 `kb-daemon-independent-containment` or `wedged-coordinator-self-drain`: it is about the authority to

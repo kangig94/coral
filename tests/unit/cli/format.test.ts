@@ -904,9 +904,14 @@ describe('cli format', () => {
       expect(formatShutdown(result)).toBe('Backend shutdown initiated');
     });
 
-    it('formats a failed shutdown result', () => {
-      const result = { ok: false, reason: 'unauthorized' } satisfies ShutdownResult;
-      expect(formatShutdown(result)).toBe('Shutdown failed: unauthorized');
+    // Was `reason: 'unauthorized'` — a token no producer emits, pinning the raw-token render that the closed
+    // union and the exhaustive switch now make impossible to reach.
+    it('formats a rejected shutdown capability as a refusal, not a token', () => {
+      const result = { ok: false, reason: 'capability_rejected' } satisfies ShutdownResult;
+      expect(formatShutdown(result)).toMatch(/rejected this shutdown capability/u);
+      expect(formatShutdown(result), 'the coordinator is up; this is not a report that it stopped').toMatch(
+        /did not accept the request/u,
+      );
     });
   });
 

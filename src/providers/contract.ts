@@ -2,7 +2,8 @@ import { z } from 'zod';
 
 import { nonEmptyStringSchema } from '../infra/identifiers.js';
 import type { StoragePort } from '../infra/port-types.js';
-import type { ExecResult, IdPort, Runtime } from '../runtime/ports.js';
+import type { IdPort, Runtime } from '../runtime/ports.js';
+import type { ExecResult } from '../infra/port-types.js';
 import { canonicalWorkDirWireSchema, type CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 import type { JsonValue } from '../infra/json-value.js';
 import type { ProviderExecutionPlan } from './execution-plan.js';

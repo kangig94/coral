@@ -6,7 +6,10 @@ instead of an inaccurate one. Closing it is a change to a contract every provide
 
 ## What exists
 
-`ProviderDefinition.preflight` returns `Promise<void>` (`src/providers/contract.ts:724`). It has exactly two
+`BoundProvider.preflight` returns `Promise<void>` (`src/providers/bound-provider-contract.ts:155`, declared on
+the implementation-input side as `ProviderImplementationCommon.preflight`, `src/providers/contract.ts:724`).
+`ProviderDefinition` itself is an opaque branded type with no such field — an earlier revision cited it, which
+named a shape that does not carry the method the entry is about. It has exactly two
 outcomes a caller can see: it resolves, or it rejects. Downstream:
 
 - `runProviderPreflight` (`src/coordinator/services/execution-policies.ts:244-254`) catches any rejection and
@@ -69,7 +72,7 @@ question this becomes two.
 ## Explicitly out of scope
 
 - The provider-side classification. It is done and correct.
-- `PROVIDER_PREFLIGHT_TIMEOUT_MS` (`execution-policies.ts:217`). A preflight that overruns its own bound is a
+- `PROVIDER_PREFLIGHT_TIMEOUT_MS` (declared at `execution-policies.ts:204`). A preflight that overruns its own bound is a
   different question from one that completed and could not conclude, and folding them together is how this
   entry would get the wrong fix.
 

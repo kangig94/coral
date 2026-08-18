@@ -90,8 +90,20 @@ export function formatShutdown(result: ShutdownResult): string {
       return `Backend not running: the recorded coordinator process (pid ${result.detail ?? 'unknown'}) is gone.`;
     case 'socket_refused':
       return 'Backend not running: the coordinator socket refused the connection.';
+    case 'nested_child':
+      return [
+        'Shutdown refused: this nested Coral process cannot shut down its parent coordinator.',
+        "Next step: return to the top-level Coral session and run 'coral-cli backend shutdown' there.",
+      ].join('\n');
+    case 'capability_rejected':
+      return [
+        'Shutdown refused: the coordinator rejected this shutdown capability.',
+        'It is running and did not accept the request, so stopping it needs manual intervention.',
+      ].join('\n');
     default:
-      return `Shutdown failed: ${result.reason}`;
+      // The mechanism `formatBackendStatus` has and this function could not have while `reason` was `string`.
+      // A new token now fails to compile here instead of falling through to a raw-token render.
+      return assertNever(result.reason);
   }
 }
 

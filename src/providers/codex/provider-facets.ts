@@ -31,7 +31,7 @@ import {
   type CodexExecutionPlan,
 } from './execution-plan.js';
 import { isNoEntryError } from '../../infra/fs-errors.js';
-import { classifyExecOutcome } from '../../runtime/ports.js';
+import { classifyExecOutcome } from '../../infra/port-types.js';
 import { windowsCommandName } from '../../infra/windows-shell.js';
 
 const CODEX_APP_SERVER_UPGRADE_MESSAGE =
