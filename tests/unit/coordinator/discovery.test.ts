@@ -52,7 +52,7 @@ function makeDiscoveryRuntime(flavor: 'prod' | 'dev'): DiscoveryRuntime {
 describe('coordinator discovery', () => {
   it('round-trips a discovery record through read/write', async () => {
     makeHome();
-    const { readDiscoveryRecord, writeDiscoveryRecord } = await importDiscovery();
+    const { readDiscoveryRecordDisposition, writeDiscoveryRecord } = await importDiscovery();
     const runtime = makeDiscoveryRuntime('prod');
 
     writeDiscoveryRecord(
@@ -74,19 +74,22 @@ describe('coordinator discovery', () => {
       runtime,
     );
 
-    expect(readDiscoveryRecord(runtime)).toMatchObject({
-      pid: process.pid,
-      port: 4312,
-      host: '127.0.0.1',
-      bundleHash: 'bundle-a',
-      flavor: 'prod',
-      namespace: 'ns-a',
-      startedAt: 1_713_456_789_000,
-      token: 'token-a',
-      bootToken: 'boot-token-a',
-      shutdownToken: 'shutdown-token-a',
-      version: '1.2.3',
-      instanceId: 'instance-a',
+    expect(readDiscoveryRecordDisposition(runtime)).toMatchObject({
+      kind: 'record',
+      record: {
+        pid: process.pid,
+        port: 4312,
+        host: '127.0.0.1',
+        bundleHash: 'bundle-a',
+        flavor: 'prod',
+        namespace: 'ns-a',
+        startedAt: 1_713_456_789_000,
+        token: 'token-a',
+        bootToken: 'boot-token-a',
+        shutdownToken: 'shutdown-token-a',
+        version: '1.2.3',
+        instanceId: 'instance-a',
+      },
     });
   });
 
@@ -286,7 +289,7 @@ describe('coordinator discovery', () => {
 
   it('reads a discovery record that carries a field this build predates', async () => {
     makeHome();
-    const { readDiscoveryRecord, writeDiscoveryRecord } = await importDiscovery();
+    const { readDiscoveryRecordDisposition, writeDiscoveryRecord } = await importDiscovery();
     const runtime = makeDiscoveryRuntime('prod');
 
     writeDiscoveryRecord(
@@ -310,6 +313,9 @@ describe('coordinator discovery', () => {
     const written = JSON.parse(readFileSync(infoPath, 'utf-8')) as Record<string, unknown>;
     writeFileSync(infoPath, JSON.stringify({ ...written, futureField: 'added-by-a-newer-coordinator' }), 'utf-8');
 
-    expect(readDiscoveryRecord(runtime)).toMatchObject({ namespace: 'ns-d', token: 'token-d' });
+    expect(readDiscoveryRecordDisposition(runtime)).toMatchObject({
+      kind: 'record',
+      record: { namespace: 'ns-d', token: 'token-d' },
+    });
   });
 });

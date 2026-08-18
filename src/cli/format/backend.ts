@@ -21,7 +21,7 @@ export function formatBackendStatus(result: BackendStatusFull): string {
       return [
         `Backend state is unknown: the coordinator discovery record could not be read (${result.reason}).`,
         'A coordinator may still be running; this is not a report that none is.',
-        'Next step: stop any running coordinator, delete the discovery record under the Coral run directory, then run a coral-cli mutating command to relaunch.',
+        `Next step: stop any running coordinator, delete ${result.path}, then run a coral-cli mutating command to relaunch.`,
       ].join('\n');
     case 'unreachable':
       // Deliberately not "not running": something answered at the recorded address, or the request to it did
@@ -73,7 +73,7 @@ export function formatShutdown(result: ShutdownResult): string {
       return [
         `Shutdown not attempted: the coordinator discovery record could not be read (${result.detail ?? 'unknown'}).`,
         'A coordinator may still be running; this is not confirmation that one stopped.',
-        'Next step: run coral-cli backend status, which reports the record path and how to clear it.',
+        'Next step: run coral-cli backend status, which names the record file and how to clear it.',
       ].join('\n');
     case 'unreachable':
       return [

@@ -158,10 +158,15 @@ export function readDiscoveryRecordDisposition(runtime: DiscoveryRuntime): Disco
 }
 
 /**
- * The record, or `null` for every reason there might not be one. Kept for callers that genuinely cannot act on
- * the difference; anything deciding whether an incumbent exists wants `readDiscoveryRecordDisposition`.
+ * The record, or `null` for every reason there might not be one — deliberately not exported.
+ *
+ * Every caller that reached for it outside this file turned out to be deciding whether an incumbent exists,
+ * and the flattening is exactly what made three of them report a confident absence from evidence they could
+ * not read. The two remaining uses are below and neither decides that: `readBackendInfo` narrows a record it
+ * already has, and `removeBackendInfoIfOwner` refuses on anything it cannot attribute. Anything else wants
+ * `readDiscoveryRecordDisposition`, and keeping this private is what makes that the only door.
  */
-export function readDiscoveryRecord(runtime: DiscoveryRuntime): CoordinatorDiscoveryRecord | null {
+function readDiscoveryRecord(runtime: DiscoveryRuntime): CoordinatorDiscoveryRecord | null {
   const read = readDiscoveryRecordDisposition(runtime);
   return read.kind === 'record' ? read.record : null;
 }
@@ -192,41 +197,23 @@ export type CoordinatorProbe =
  * `transport/http/backend/status.ts`, `.../shutdown.ts` and `cli/expansion/index.ts`. Each keeps its own
  * shape for a reason of its own: `status.ts` reports the not-running case with the dead record's `pid` and
  * `startedAt`, which `absent` does not carry, and `cli/expansion` answers about expansions rather than about
- * a coordinator. All three consult `readDiscoveryRecordDisposition` and none of them collapses an unreadable
- * record into an absence.
+ * a coordinator. All three consult `readDiscoveryRecordDisposition` and none collapses an unreadable record
+ * into an absence.
  *
- * Do not read that list as closed — an earlier version said "two other sites" while a third was live,
- * answering "no such expansion" for a name it could not check. `trace_path` over `readDiscoveryRecord` and
- * `readDiscoveryRecordDisposition` re-derives it; counting from memory is how it was wrong.
+ * **Re-derive that list rather than trusting it.** `trace_path` over `readDiscoveryRecordDisposition` is the
+ * check; this paragraph has undercounted twice, and each time the site it missed was answering a confident
+ * absence from a file it could not read.
  *
  * `readBackendInfo`'s remaining callers ask something else, which is the distinction rather than an omission.
  * `coordinator/ownership-checker.ts` asks whether someone *replaced* it, and is the shape this type argues
  * for: it acts only on a positive observation (a record naming a different `instanceId`) and says out loud
  * that an absent record is a deleted file, not a takeover. `tools/simulation` is a harness.
  *
- * An earlier version of this note went further and said there was nothing to fix at those sites, because they
- * already test `observeProcessLiveness(info.pid) === 'absent'` on the process axis. That was one axis of two.
- * Both obtain their record through `readBackendInfo` → `readDiscoveryRecord`, whose `null` covers a missing
- * file, an undecodable one, *and* a record that decodes but omits `version` or `instanceId` — so both reported
- * a confident `not_running` from evidence they could not read, which is the same collapse this type exists to
- * end. They now consult `readDiscoveryRecordDisposition` first.
- *
- * That closes two of those three, and the third is closed too, later and by a different route than this note
- * once claimed. A record that decodes and omits `version` or `instanceId` makes `readBackendInfo` answer
- * `null`; nothing this build writes produces one — `writeBackendInfo` takes a `BackendInfo`, where both are
- * required — so the case is a coordinator from a build that predates them, the cross-version scenario
- * `.passthrough()` exists for.
- *
- * Neither site reads either field. Between them they use `startedAt`, `pid`, `host`, `port`, `namespace`,
- * `flavor` and `bootToken`, every one of which the record itself carries, and the version an operator sees
- * comes from the health response. Both take the decoded record now. A previous revision scoped `status.ts`
- * out as "a decision about what the command shows where the version would be" — it shows no version from the
- * record, so that argument was false, and it survived two rereads because it sounded like a reason.
- *
- * `readBackendInfo` is left to the callers whose question those fields *are*:
- * `coordinator/ownership-checker.ts` asks whether a record names a different `instanceId`, so a record without
- * one genuinely cannot answer it and `null` is right. `tools/simulation` is a harness. Requiring fields a
- * caller does not read is what turned a live incumbent into an absent one.
+ * The rule those three follow, stated once because it is what the sites have in common rather than their
+ * shape: the record axis and the process axis fail independently, and neither one failing is the other one
+ * answering. `readBackendInfo`'s `null` covers a missing file, an undecodable one, *and* a record omitting
+ * `version`/`instanceId`, so anything gating on it reports a confident `not_running` from evidence it could
+ * not read — which is why none of the three uses it, and why it is no longer exported.
  *
  * What binds all three is the rule rather than the shape: only an observed `'absent'` is an absence. There is
  * no invariant test behind that sentence and one was tried — see the rejection recorded in
@@ -306,18 +293,28 @@ export function readBackendInfo(runtime: DiscoveryRuntime): BackendInfo | null {
   };
 }
 
+/**
+ * Delete the discovery record, but only when this caller is provably the one that wrote it.
+ *
+ * Every early return here is a refusal to delete, not a completed removal, and the distinction matters because
+ * the file is how a contender finds an incumbent: removing one this process does not own retires somebody
+ * else's coordinator from discovery while it is still serving. So the bar is attribution — a record that
+ * cannot be read, or that names another `instanceId` (or, for a record predating that field, another token),
+ * is left exactly where it is. `void` is honest here only because no caller can act on the difference: this
+ * runs on the owner's own shutdown path, and a record it cannot claim is one it must not touch either way.
+ */
 export function removeBackendInfoIfOwner(owner: string, runtime: DiscoveryRuntime): void {
   const record = readDiscoveryRecord(runtime);
   if (!record) {
-    return;
+    return; // unreadable or absent — not ours to remove
   }
 
   if (record.instanceId !== undefined) {
     if (record.instanceId !== owner) {
-      return;
+      return; // names another instance
     }
   } else if (record.token !== owner) {
-    return;
+    return; // predates `instanceId`, and its token names another writer
   }
 
   try {

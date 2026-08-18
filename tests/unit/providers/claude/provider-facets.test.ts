@@ -80,9 +80,12 @@ describe('claudePreflight', () => {
   // Preflight refuses either way, and the two refusals must not read alike. Telling an operator whose machine
   // ran out of process slots to install the Claude CLI sends them to fix something that was never broken.
   it('does not report an unanswerable version probe as a missing CLI', async () => {
+    // The two refusals must not read alike, and the "unknown" one must not repeat the inner sentence's own
+    // opening — it composed to "could not be determined: could not run ...".
     await expect(claudePreflight(unanswerableVersionProbeRuntime('EAGAIN'))).rejects.toThrow(
-      /could not be determined/iu,
+      /availability is unknown/iu,
     );
+    await expect(claudePreflight(unanswerableVersionProbeRuntime('EAGAIN'))).rejects.toThrow(/retry the command/iu);
   });
 
   it('still reports a genuinely missing CLI as missing', async () => {

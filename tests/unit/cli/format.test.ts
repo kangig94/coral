@@ -612,10 +612,13 @@ describe('cli format', () => {
     it.each([['corrupt-json'], ['shape-rejected']] as const)(
       'reports a %s discovery record as unknown state, not as not-running',
       (reason) => {
-        const text = formatBackendStatus({ status: 'undecodable_record', reason });
+        const text = formatBackendStatus({ status: 'undecodable_record', reason, path: '/run/coral/coordinator.json' });
 
         expect(text).toContain('could not be read');
         expect(text, 'the caveat is the whole point of the variant').toContain('may still be running');
+        expect(text, 'the remedy is "delete this file", so it must name the file').toContain(
+          '/run/coral/coordinator.json',
+        );
         expect(text).not.toMatch(/Backend not running/u);
       },
     );

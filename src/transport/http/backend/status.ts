@@ -65,7 +65,7 @@ export type BackendStatusFull =
    * distinct from `not_running` because that is a claim, and this reader has not earned it: a truncated write
    * or a record shaped by a build this one rejects both produce it while a coordinator may be serving.
    */
-  | { status: 'undecodable_record'; reason: 'corrupt-json' | 'shape-rejected' }
+  | { status: 'undecodable_record'; reason: 'corrupt-json' | 'shape-rejected'; path: string }
   /**
    * Something answers at the recorded address and did not give a usable answer — a non-2xx that is not a
    * drain, or a request that never completed. Distinct from `not_running`, which is reserved for an observed
@@ -141,6 +141,64 @@ function noDaemonStatus(
   }
 }
 
+/**
+ * The unauthenticated `/health` ping. Returns a terminal status, or `null` to mean "this said nothing that
+ * ends the question — go on to the detailed probe".
+ *
+ * Split out because the two probes are structurally the same shape (fetch, parse, check identity, check drain)
+ * and reading them inline meant holding both in view at once to see that only one of them can return `ok`.
+ */
+async function probeUnauthenticatedPing(
+  info: Readonly<{ host: string; port: number; namespace: string; flavor: string }>,
+  notOurCoordinator: () => BackendStatusFull,
+  unreachable: (detail: string) => BackendStatusFull,
+): Promise<BackendStatusFull | null> {
+  const response = await fetch(`http://${info.host}:${info.port}/health`, {
+    method: 'GET',
+    signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
+  });
+  const body = await parseJsonResponse(response);
+  if (response.status === 200) {
+    if (!isBackendPing(body) || body.namespace !== info.namespace || body.flavor !== info.flavor) {
+      return notOurCoordinator();
+    }
+    return body.status === 'draining' ? { status: 'shutting_down' } : null;
+  }
+  if (response.status === 503 || TransientHttpError.isTransientStatus(response.status)) {
+    return { status: 'shutting_down' };
+  }
+  return unreachable(`health responded ${response.status}`);
+}
+
+/** The authenticated `/health?detailed=1` probe. Always terminal: it is the last thing asked. */
+async function probeDetailedHealth(
+  info: Readonly<{ host: string; port: number; namespace: string; flavor: string; bootToken: string }>,
+  notOurCoordinator: () => BackendStatusFull,
+  unreachable: (detail: string) => BackendStatusFull,
+): Promise<BackendStatusFull> {
+  const response = await fetch(`http://${info.host}:${info.port}/health?detailed=1`, {
+    method: 'GET',
+    headers: { 'X-Coral-Boot-Token': info.bootToken },
+    signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
+  });
+  const body = await parseJsonResponse(response);
+  if (response.status === 200) {
+    if (!isBackendHealth(body) || body.namespace !== info.namespace || body.flavor !== info.flavor) {
+      return notOurCoordinator();
+    }
+    if (body.status === 'draining') {
+      return { status: 'shutting_down' };
+    }
+    const { namespace: _namespace, status: _status, ...rest } = body;
+    return { status: 'ok', health: { ...rest, status: 'ok' as const } };
+  }
+  if (response.status === 503 || TransientHttpError.isTransientStatus(response.status)) {
+    return { status: 'shutting_down' };
+  }
+  if (response.status === 401) return { status: 'unauthorized' };
+  return unreachable(`detailed health responded ${response.status}`);
+}
+
 export async function getBackendStatusFull(pluginRoot: string): Promise<BackendStatusFull> {
   const runtime = createRealRuntime(readBuildFlavor(pluginRoot));
   const discoveryRuntime = { storage: runtime.storage, env: runtime.env, paths: runtime.paths };
@@ -151,7 +209,9 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
   // was serving. `.passthrough()` on the record schema makes the cross-version case realistic, not theoretical.
   const read = readDiscoveryRecordDisposition(discoveryRuntime);
   if (read.kind === 'undecodable') {
-    return { status: 'undecodable_record', reason: read.reason };
+    // The path travels with the status because the remedy is "delete this file" and an operator should not
+    // have to derive where it lives. Nothing else in Coral rewrites it while a coordinator is up.
+    return { status: 'undecodable_record', reason: read.reason, path: runtime.paths.coral.coordinator.infoFile };
   }
 
   // The decoded record, not `readBackendInfo`. That helper also answers `null` when `version` or `instanceId`
@@ -189,45 +249,9 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
   const unreachable = (detail: string): BackendStatusFull => ({ status: 'unreachable', detail });
 
   try {
-    const pingResponse = await fetch(`http://${info.host}:${info.port}/health`, {
-      method: 'GET',
-      signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
-    });
-    const pingBody = await parseJsonResponse(pingResponse);
-    if (pingResponse.status === 200) {
-      if (!isBackendPing(pingBody) || pingBody.namespace !== info.namespace || pingBody.flavor !== info.flavor) {
-        return notOurCoordinator();
-      }
-      if (pingBody.status === 'draining') {
-        return { status: 'shutting_down' };
-      }
-    } else if (pingResponse.status === 503 || TransientHttpError.isTransientStatus(pingResponse.status)) {
-      return { status: 'shutting_down' };
-    } else {
-      return unreachable(`health responded ${pingResponse.status}`);
-    }
-
-    const healthResponse = await fetch(`http://${info.host}:${info.port}/health?detailed=1`, {
-      method: 'GET',
-      headers: { 'X-Coral-Boot-Token': info.bootToken },
-      signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
-    });
-    const body = await parseJsonResponse(healthResponse);
-    if (healthResponse.status === 200) {
-      if (!isBackendHealth(body) || body.namespace !== info.namespace || body.flavor !== info.flavor) {
-        return notOurCoordinator();
-      }
-      if (body.status === 'draining') {
-        return { status: 'shutting_down' };
-      }
-      const { namespace: _namespace, status: _status, ...rest } = body;
-      return { status: 'ok', health: { ...rest, status: 'ok' as const } };
-    }
-    if (healthResponse.status === 503 || TransientHttpError.isTransientStatus(healthResponse.status)) {
-      return { status: 'shutting_down' };
-    }
-    if (healthResponse.status === 401) return { status: 'unauthorized' };
-    return unreachable(`detailed health responded ${healthResponse.status}`);
+    const ping = await probeUnauthenticatedPing(info, notOurCoordinator, unreachable);
+    if (ping !== null) return ping;
+    return await probeDetailedHealth(info, notOurCoordinator, unreachable);
   } catch (error: unknown) {
     return unreachable(errorMessage(error));
   }

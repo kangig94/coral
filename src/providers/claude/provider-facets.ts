@@ -109,7 +109,7 @@ export async function claudePreflight(runtime: ProviderPreflightRuntime<ClaudePr
     // to install a CLI, the other tells them the check itself did not complete.
     throw new Error(
       cli.reason === 'undetermined'
-        ? `Claude CLI availability could not be determined: ${cli.error}`
+        ? `Claude CLI availability is unknown — ${cli.error}`
         : `Claude CLI not available: ${cli.error}`,
     );
   }

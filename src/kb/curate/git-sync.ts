@@ -261,11 +261,20 @@ export function createGitSyncController({
     if (envPort.get('CORAL_KB_GIT_SYNC') !== '1') {
       return false;
     }
-    try {
-      return git(['remote'], 5000).trim().length > 0;
-    } catch {
+    const result = gitRaw(processPort, root, ['remote'], 5000);
+    const outcome = classifyExecOutcome(result);
+    if (outcome.kind === 'no-answer') {
+      // Said out loud because the operator asked for this: with `CORAL_KB_GIT_SYNC=1`, a cycle that skips
+      // sync is a cycle that did not do the thing they enabled, and it used to be indistinguishable from a
+      // repository with no remote configured. Nothing is remembered — the scheduler asks again next cycle,
+      // which is why this needs no interval where `isGitRepo` does.
+      backendLog.warn(`[KB] git sync could not list remotes for ${root} (${outcome.detail}); skipping this cycle.`);
       return false;
     }
+    if (outcome.kind !== 'answered' || outcome.status !== 0) {
+      return false;
+    }
+    return result.stdout.trim().length > 0;
   }
 
   function getDefaultBranch(): string {
