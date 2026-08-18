@@ -209,7 +209,10 @@ const _projectSourceUnanswered = new Map();
 // "kept in step" was the previous claim, and this branch found two other places where a sentence like that was
 // the only thing keeping two spellings together. It is the hook lane's one home for the set.
 export const STANDING_PROBE_ERRNOS = new Set(['ENOENT', 'EACCES', 'EPERM', 'ENOTDIR']);
-const UNANSWERED_REPROBE_INTERVAL_MS = 60_000;
+// Same value as `INDECISIVE_PROBE_REPROBE_INTERVAL_MS` (`src/infra/process-constants.ts`), spelled again for
+// the reason `STANDING_PROBE_ERRNOS` above is, and asserted equal by the same test,
+// `tests/unit/hooks/hook-project-source.test.ts`.
+export const UNANSWERED_REPROBE_INTERVAL_MS = 60_000;
 
 /**
  * The project's `<owner>/<repo>`, or `local/<basename>` when there is no remote to read.

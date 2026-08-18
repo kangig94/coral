@@ -8,6 +8,10 @@ import type { RecoveryQuarantineClearResult } from '../../recovery/source-regist
 export const RECOVERY_REVISION_UNTIL_CLEARED = 'until-cleared';
 export const RECOVERY_REVISION_FINGERPRINT_PREFIX = 'fingerprint:';
 
+// Shared by every shutdown disposition this run could not resolve either way: none of them may tell an
+// operator to do anything but ask again.
+const SHUTDOWN_RETRY_NEXT_STEP = 'Next step: run coral-cli backend status, then retry the shutdown.';
+
 export function formatBackendStatus(result: BackendStatusFull): string {
   switch (result.status) {
     case 'ok':
@@ -18,6 +22,8 @@ export function formatBackendStatus(result: BackendStatusFull): string {
       return formatUndecodableRecordStatus(result);
     case 'unreachable':
       return formatUnreachableStatus(result);
+    case 'no_record_socket_present':
+      return formatNoRecordSocketPresentStatus(result);
     case 'recent_failure':
       return formatRecentFailureStatus(result);
     case 'shutting_down':
@@ -44,17 +50,42 @@ function formatUndecodableRecordStatus(result: Extract<BackendStatusFull, { stat
   ].join('\n');
 }
 
-// Deliberately not "not running": something answered at the recorded address, or the request to it did not
-// complete. Five call sites used to route here and to the not-running report alike, so an operator whose
-// coordinator returned a 500 was told it was stopped.
-//
-// `responded` distinguishes those two causes: only a received response proves anything is listening.
+// Deliberately not "not running": something answered at the recorded address, the address refused a
+// connection, or the request to it did not complete. `cause` distinguishes those three, since only a received
+// response proves anything is listening and only a refusal proves nothing is.
 function formatUnreachableStatus(result: Extract<BackendStatusFull, { status: 'unreachable' }>): string {
   return [
     `Backend state is unknown: the coordinator did not give a usable answer (${result.detail}).`,
-    result.responded
-      ? 'Something is listening at the recorded address; this is not a report that the backend stopped.'
-      : 'The request to the recorded address never completed; this is not a report that the backend stopped, and nothing observed here says whether anything is listening.',
+    formatUnreachableCauseLine(result),
+    'Next step: retry, and check the coordinator logs if it persists.',
+  ].join('\n');
+}
+
+function formatUnreachableCauseLine(result: Extract<BackendStatusFull, { status: 'unreachable' }>): string {
+  switch (result.cause) {
+    case 'responded':
+      return 'Something is listening at the recorded address; this is not a report that the backend stopped.';
+    case 'refused':
+      return result.pidLiveness === 'alive'
+        ? 'Nothing is listening at the recorded address, though the recorded process was confirmed running moments before this request — its HTTP listener can close before that process finishes shutting down, so this alone does not mean the backend stopped.'
+        : 'Nothing is listening at the recorded address, and the recorded process could not be independently confirmed alive or gone before this request was sent.';
+    case 'no_response':
+      return 'The request to the recorded address never completed; this is not a report that the backend stopped, and nothing observed here says whether anything is listening.';
+    default:
+      return assertNever(result);
+  }
+}
+
+// Not "not running": the coordinator's own IPC socket file exists, which a coordinator mid-boot and a stale
+// socket a killed one left behind both produce, indistinguishably — see `CoordinatorObservation`'s
+// `no-record-socket-present` for the mechanism.
+function formatNoRecordSocketPresentStatus(
+  result: Extract<BackendStatusFull, { status: 'no_record_socket_present' }>,
+): string {
+  return [
+    'Backend state is unknown: the coordinator IPC socket exists, but no discovery record has been written yet.',
+    `Socket: ${result.socketPath}`,
+    'A coordinator may still be starting, or this may be a stale socket left by one that did not exit cleanly; this is not a report that the backend is running or that it has stopped.',
     'Next step: retry, and check the coordinator logs if it persists.',
   ].join('\n');
 }
@@ -109,6 +140,8 @@ export function formatShutdown(result: ShutdownResult): string {
       ].join('\n');
     case 'capability_rejected':
       return formatCapabilityRejected(result);
+    case 'no_record_socket_present':
+      return formatNoRecordSocketPresentShutdown();
     default:
       // The mechanism `formatBackendStatus` has and this function could not have while `reason` was `string`.
       // A new token now fails to compile here instead of falling through to a raw-token render.
@@ -127,23 +160,33 @@ function formatUnreadableRecordShutdown(detail: string): string {
   ].join('\n');
 }
 
-// A response arrived — the mirror of `formatUnreachableStatus`'s `responded: true` case, and the same
+// A response arrived — the mirror of `formatUnreachableStatus`'s `'responded'` cause, and the same
 // observation `getBackendStatusFull` makes of the identical HTTP exchange: something is listening.
 function formatRefusedByResponse(detail: string): string {
   return [
     `Shutdown not confirmed: the coordinator responded but did not accept the request (${detail}).`,
     'Something is listening at the recorded address; this is not a report that it stopped.',
-    'Next step: run coral-cli backend status, then retry the shutdown.',
+    SHUTDOWN_RETRY_NEXT_STEP,
   ].join('\n');
 }
 
-// No response ever arrived — the mirror of `formatUnreachableStatus`'s `responded: false` case: nothing here
+// No response ever arrived — the mirror of `formatUnreachableStatus`'s `'no_response'` cause: nothing here
 // proves anything is listening, but nothing proves the opposite either.
 function formatNoResponse(detail: string): string {
   return [
     `Shutdown not confirmed: the request to the coordinator did not complete (${detail}).`,
     'The coordinator may still be running and may still be serving; this is not a report that it stopped.',
-    'Next step: run coral-cli backend status, then retry the shutdown.',
+    SHUTDOWN_RETRY_NEXT_STEP,
+  ].join('\n');
+}
+
+// Mirrors `formatBackendStatus`'s `no_record_socket_present` case: the coordinator's own IPC socket exists
+// with no record written yet, so a boot in progress and a stale leftover socket are equally possible.
+function formatNoRecordSocketPresentShutdown(): string {
+  return [
+    'Shutdown not attempted: the coordinator IPC socket exists, but no discovery record has been written yet.',
+    'A coordinator may still be starting, or this may be a stale socket left by one that did not exit cleanly; this is not a report that it stopped.',
+    SHUTDOWN_RETRY_NEXT_STEP,
   ].join('\n');
 }
 
@@ -159,7 +202,7 @@ function formatSocketRefused(pidLiveness: 'alive' | 'unknown'): string {
   return [
     `Shutdown not confirmed: ${whatRefusalMeans}`,
     'The coordinator may still be running; this is not a report that it stopped.',
-    'Next step: run coral-cli backend status, then retry the shutdown.',
+    SHUTDOWN_RETRY_NEXT_STEP,
   ].join('\n');
 }
 

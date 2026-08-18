@@ -382,4 +382,29 @@ describe('Kiwi composite artifact', () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  // `runtime/download.ts` rethrows a `fetch` rejection unchanged, and `fetch` puts the errno on `.cause` while
+  // its own message is the constant `'fetch failed'`. So the code is the only part of this that names what went
+  // wrong, and reading `.code` off the top level dropped exactly that — an unreachable host arrived as a
+  // detail of `'fetch failed'` with no `causeCode` at all.
+  it('keeps the errno a fetch rejection hides on its cause', async () => {
+    const { root, runtime } = createTestRuntime();
+    try {
+      const result = await ensureKiwiArtifact(runtime, {
+        ensureModelArtifact: async () => {
+          throw Object.assign(new TypeError('fetch failed'), {
+            cause: Object.assign(new Error('getaddrinfo ENOTFOUND example.invalid'), { code: 'ENOTFOUND' }),
+          });
+        },
+      });
+
+      expect(result).toMatchObject({
+        status: 'error',
+        code: 'expansion_install_artifact_failed',
+        context: { name: 'kiwi', detail: 'fetch failed', causeName: 'TypeError', causeCode: 'ENOTFOUND' },
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

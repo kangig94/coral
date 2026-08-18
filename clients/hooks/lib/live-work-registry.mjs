@@ -141,18 +141,42 @@ function shSingleQuote(value) {
 
 // === Combined read: is any work of this session still live? ===
 
-// True iff at least one subagent OR backgrounded Bash/Monitor task of this
-// session is still live. Prunes dead entries as a side effect. `transcriptPath`
-// is the Stop hook's own (parent) transcript; the subagents dir is derived from
-// it, with a slug-based fallback when it is absent.
+/**
+ * `{ live, notice }` — whether any subagent OR backgrounded Bash/Monitor task of this session is still live,
+ * and text for the caller to surface through its own rendered channel (`writeHookOutput({ systemMessage })`)
+ * when a registry directory could not be read at all. `notice` is non-null only in that case: ordinary "no
+ * work recorded" and "work is genuinely running" both carry `notice: null`, because neither is a hold anyone
+ * needs telling about — only "the answer could not be determined, so it defaults to live" is.
+ *
+ * Prunes dead entries as a side effect on the ordinary path. `transcriptPath` is the Stop hook's own (parent)
+ * transcript; the subagents dir is derived from it, with a slug-based fallback when it is absent.
+ *
+ * The session root is read once, before either subdirectory, because both `subagents/` and `bg/` sit under it:
+ * a permissions change on the root fails both child reads identically, and reading each separately would
+ * describe one cause as two near-identical warnings. A root failure is reported once, naming both, without
+ * touching either child directory — there is nothing a child-level read could learn that the root read has not
+ * already refused to say.
+ */
 export function hasLiveWork(projectDir, sessionId, transcriptPath) {
-  if (!isValidSessionId(sessionId)) return false;
+  if (!isValidSessionId(sessionId)) return { live: false, notice: null };
+
+  const root = sessionRoot(projectDir, sessionId);
+  try {
+    readdirSync(root);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return { live: false, notice: null };
+    return { live: true, notice: unreadableRegistryNotice(root, error, [SUBAGENTS_DIR, BG_DIR]) };
+  }
+
   // Evaluate both so each kind prunes its own dead markers even when the other
   // is already live.
-  const subagentLive = hasLiveSubagent(projectDir, sessionId, transcriptPath);
-  const bgLive = hasLiveBg(projectDir, sessionId);
-  if (!subagentLive && !bgLive) pruneEmptyDirs(projectDir, sessionId);
-  return subagentLive || bgLive;
+  const subagent = hasLiveSubagent(projectDir, sessionId, transcriptPath);
+  const bg = hasLiveBg(projectDir, sessionId);
+  if (!subagent.live && !bg.live) pruneEmptyDirs(projectDir, sessionId);
+  return {
+    live: subagent.live || bg.live,
+    notice: [subagent.notice, bg.notice].filter(Boolean).join(' ') || null,
+  };
 }
 
 // A missing registry directory is decisive: this kind of work has never been recorded for the session, so
@@ -171,26 +195,21 @@ function tryReaddir(dir) {
 }
 
 /**
- * What a registry directory we cannot read means for "is any work still live".
+ * Text for a registry directory this process could not read at all, naming the subdirectory name(s) it covers.
  *
- * `true` is the conservative answer and stays — un-gating ralph and kb on an unobserved state is what this
- * pair was just fixed to stop doing. But `true` alone is a hold with nothing that ends it, and the errno says
- * which kind of hold it is. A transient failure clears on the next hook invocation, because each one is a
- * fresh process that re-reads. A standing one — the work root not traversable, not permitted, not a directory
- * — never clears, so the same answer silently gates every later turn with no event that could release it.
- *
- * So the standing case is said out loud. That is deliberately noisy: it repeats per invocation because the
- * condition repeats per invocation, and the alternative is ralph and kb quietly never running again with
- * nothing anywhere saying why. `lockHeld` below draws the same line for the same reason; this pair did not,
- * which is how the two halves of one rule ended up a hundred lines apart.
+ * `true` is the conservative liveness answer and stays — un-gating ralph and kb on an unobserved state is what
+ * this pair was just fixed to stop doing. Every `readdirSync` failure reaching this function is already
+ * abnormal (its `ENOENT` case is handled by the caller before this is reached), so there is no errno worth
+ * filtering on: whatever the code, the same two facts are true and this says both — the gate holds for now,
+ * and if the same code keeps appearing across sessions, nothing here will clear it on its own.
  */
-function unreadableRegistryIsLive(dir, error) {
-  if (STANDING_PROBE_ERRNOS.has(error?.code)) {
-    process.stderr.write(
-      `[coral] cannot read the live-work registry at ${dir} (${error.code}); treating work as live, so ralph and kb stay gated until this is fixed.\n`,
-    );
-  }
-  return true;
+function unreadableRegistryNotice(dir, error, dirNames) {
+  const code = error?.code ?? 'an unknown error';
+  const scope = dirNames.length > 1 ? `${dirNames.join('/')} under ` : '';
+  return (
+    `Coral live-work registry: cannot read ${scope}${dir} (${code}); treating this session's work as live, so ` +
+    `ralph and kb stay gated. If ${code} keeps happening across sessions, the gate will not clear on its own.`
+  );
 }
 
 // === Subagent liveness ===
@@ -201,7 +220,7 @@ function hasLiveSubagent(projectDir, sessionId, transcriptPath) {
   try {
     markers = tryReaddir(dir);
   } catch (error) {
-    return unreadableRegistryIsLive(dir, error);
+    return { live: true, notice: unreadableRegistryNotice(dir, error, [SUBAGENTS_DIR]) };
   }
 
   const transcriptsDir = resolveSubagentsDir(projectDir, sessionId, transcriptPath);
@@ -219,7 +238,7 @@ function hasLiveSubagent(projectDir, sessionId, transcriptPath) {
     }
   }
 
-  return live;
+  return { live, notice: null };
 }
 
 // Most-recent activity for a subagent: its transcript mtime, falling back to the
@@ -256,7 +275,7 @@ function hasLiveBg(projectDir, sessionId) {
   try {
     entries = tryReaddir(dir);
   } catch (error) {
-    return unreadableRegistryIsLive(dir, error);
+    return { live: true, notice: unreadableRegistryNotice(dir, error, [BG_DIR]) };
   }
 
   const tasks = new Map(); // id -> { lock, exited, newestMs }
@@ -295,7 +314,7 @@ function hasLiveBg(projectDir, sessionId) {
       pruneBgTask(dir, id);
     }
   }
-  return live;
+  return { live, notice: null };
 }
 
 function isBgTaskLive(dir, id, task, now) {
@@ -327,17 +346,23 @@ function parseBgMarker(name) {
 //
 // `null` is reserved for a launch that never asked the question: no `flock` binary, not executable, no such
 // directory for the binary itself (`STANDING_PROBE_ERRNOS`, the same set the project-source probe uses), or
-// `flock` running but unable to even open `lockPath` (`EROFS`, or the path replaced by a directory it cannot
-// read) — util-linux `flock(1)` exits 66 (`EX_NOINPUT`) for the latter, distinct from the plain nonzero exit a
+// `flock` running but unable to even open `lockPath` — measured against a real util-linux `flock(1)` 2.39.3: it
+// opens the path `O_RDONLY|O_CREAT`, so the only way this branch is reached is a lock file this probe's own
+// caller already found by `readdirSync` (`isBgTaskLive` only calls here when `task.lock` is set) failing to
+// open anyway, because its permission bits were changed since that listing (`EACCES`) or it was removed in the
+// same window (`ENOENT`) — either way `flock(1)` exits 66 (`EX_NOINPUT`), distinct from the plain nonzero exit a
 // held lock produces, and it is a standing fact about `lockPath` for the same reason a missing binary is one:
-// neither clears while this session runs. The mtime window is the designed fallback for both, because the
-// heartbeat (`while kill -0 $$; do touch …; sleep 10; done` in `bgWrapperPreamble`) runs `touch` and `sleep` as
-// external commands, so whatever stopped this probe from asking stops the heartbeat too, and the window still
-// reads a live, current timestamp. An earlier revision routed every failure with a numeric exit status to
-// `true` regardless of which of these it was, reasoning that the catch-all `true` below has no expiry — but
-// that lack of expiry is exactly why a failure that will not clear on its own, busy or not, must not land
-// there: `true` would not be the bounded hold it is for everything else, but a permanent one gating ralph and
-// kb with no event that could end it.
+// neither clears while this session runs.
+//
+// The mtime window is the designed fallback here not because the same cause also stops the heartbeat — measured
+// against the same binary, `touch` on a lock file stripped of its permission bits still succeeds, because
+// updating a file's own mtime is a POSIX owner privilege that bypasses the file's own mode, while `flock`'s
+// `open()` is not. So the heartbeat (`while kill -0 $$; do touch …; sleep 10; done` in `bgWrapperPreamble`) keeps
+// writing a live, current timestamp in exactly the case this probe cannot read the file, and the window is safe
+// for that reason, not because whatever blocks one blocks the other. A standing failure must not fall through
+// to the catch-all `true` below just because it arrived with a numeric exit status: that `true` has no expiry,
+// so for a failure that will not clear on its own it is not the bounded hold it is for everything else, but a
+// permanent one gating ralph and kb with no event that could end it.
 //
 // Every other failure — transient, not a standing fact about the machine or about `lockPath` — returns `true`,
 // and that hold really is bounded: un-gating live work and pruning a live task are both finalizations an

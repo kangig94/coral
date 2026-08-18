@@ -52,9 +52,11 @@ function flockUnavailable(): void {
   });
 }
 function flockCannotOpenLockPath(): void {
-  // flock launches fine but cannot open lockPath itself (EROFS, or the path replaced by something it cannot
-  // read) — measured against a real util-linux flock(1): this exits 66 (EX_NOINPUT), not the plain nonzero
-  // exit a busy lock produces, and `execFileSync` reports it the same way as a busy lock (`status`, no `code`).
+  // flock launches fine but cannot open lockPath itself — measured against a real util-linux flock(1) 2.39.3:
+  // an existing lockPath whose permission bits were changed after this task's own readdir listing found it
+  // (`EACCES`), or one removed in that same window (`ENOENT`), both exit 66 (EX_NOINPUT), not the plain
+  // nonzero exit a busy lock produces, and `execFileSync` reports it the same way as a busy lock (`status`, no
+  // `code`).
   execFileSyncMock.mockImplementation(() => {
     const err = new Error('flock: cannot open lock file') as NodeJS.ErrnoException & { status?: number };
     err.status = 66;
@@ -113,7 +115,7 @@ describe('live-work-registry: bg lock liveness (flock mocked)', () => {
     writeBgMarker('taskA.started', BG_STALE_MS); // stale — the lock signal must win
     writeBgMarker('taskA.lock', BG_STALE_MS);
 
-    expect(hasLiveWork(projectDir, SESSION, undefined)).toBe(true);
+    expect(hasLiveWork(projectDir, SESSION, undefined).live).toBe(true);
     expect(execFileSyncMock).toHaveBeenCalled();
   });
 
@@ -122,7 +124,7 @@ describe('live-work-registry: bg lock liveness (flock mocked)', () => {
     writeBgMarker('taskA.started'); // fresh — the lock signal must win
     writeBgMarker('taskA.lock');
 
-    expect(hasLiveWork(projectDir, SESSION, undefined)).toBe(false);
+    expect(hasLiveWork(projectDir, SESSION, undefined).live).toBe(false);
   });
 
   it('falls back to the mtime window (fresh ⇒ live) when flock(1) is unavailable', () => {
@@ -130,7 +132,7 @@ describe('live-work-registry: bg lock liveness (flock mocked)', () => {
     writeBgMarker('taskA.started'); // fresh
     writeBgMarker('taskA.lock');
 
-    expect(hasLiveWork(projectDir, SESSION, undefined)).toBe(true);
+    expect(hasLiveWork(projectDir, SESSION, undefined).live).toBe(true);
   });
 
   it('falls back to the mtime window (stale ⇒ dead) when flock(1) is unavailable', () => {
@@ -138,7 +140,7 @@ describe('live-work-registry: bg lock liveness (flock mocked)', () => {
     writeBgMarker('taskA.started', BG_STALE_MS);
     writeBgMarker('taskA.lock', BG_STALE_MS);
 
-    expect(hasLiveWork(projectDir, SESSION, undefined)).toBe(false);
+    expect(hasLiveWork(projectDir, SESSION, undefined).live).toBe(false);
   });
 
   // The mtime window is not independent of these failures. The heartbeat that refreshes the mtime is
@@ -153,7 +155,7 @@ describe('live-work-registry: bg lock liveness (flock mocked)', () => {
       writeBgMarker('task-unanswered.lock', BG_STALE_MS);
 
       expect(
-        hasLiveWork(projectDir, SESSION),
+        hasLiveWork(projectDir, SESSION).live,
         'the stale mtime is not evidence: the heartbeat needs the same forks this probe just failed to get',
       ).toBe(true);
     },
@@ -163,11 +165,11 @@ describe('live-work-registry: bg lock liveness (flock mocked)', () => {
     // The bound is what ends this hold — not a window. One unanswered probe latches nothing.
     flockUnanswered('EAGAIN');
     writeBgMarker('task-recovers.lock', BG_STALE_MS);
-    expect(hasLiveWork(projectDir, SESSION)).toBe(true);
+    expect(hasLiveWork(projectDir, SESSION).live).toBe(true);
 
     flockFree();
 
-    expect(hasLiveWork(projectDir, SESSION), 'a recovered machine answers, and the answer decides').toBe(false);
+    expect(hasLiveWork(projectDir, SESSION).live, 'a recovered machine answers, and the answer decides').toBe(false);
   });
 
   // The other half of the same question, and it took the opposite answer. `EACCES` on `flock` — present but
@@ -183,16 +185,17 @@ describe('live-work-registry: bg lock liveness (flock mocked)', () => {
       writeBgMarker('task-standing.started');
       writeBgMarker('task-standing.lock');
 
-      expect(hasLiveWork(projectDir, SESSION), 'a fresh heartbeat still reads as live').toBe(true);
+      expect(hasLiveWork(projectDir, SESSION).live, 'a fresh heartbeat still reads as live').toBe(true);
 
       flockUnanswered(code);
       writeBgMarker('task-standing-stale.started', BG_STALE_MS);
       writeBgMarker('task-standing-stale.lock', BG_STALE_MS);
       pruneOtherTasks('task-standing-stale');
 
-      expect(hasLiveWork(projectDir, SESSION), 'and a stopped one reads as dead, which `true` could never do').toBe(
-        false,
-      );
+      expect(
+        hasLiveWork(projectDir, SESSION).live,
+        'and a stopped one reads as dead, which `true` could never do',
+      ).toBe(false);
     },
   );
 
@@ -209,7 +212,7 @@ describe('live-work-registry: bg lock liveness (flock mocked)', () => {
       writeBgMarker('task-open-failure.started', ageMs);
       writeBgMarker('task-open-failure.lock', ageMs);
 
-      expect(hasLiveWork(projectDir, SESSION)).toBe(expectedLive);
+      expect(hasLiveWork(projectDir, SESSION).live).toBe(expectedLive);
     },
   );
 
@@ -225,7 +228,7 @@ describe('live-work-registry: bg lock liveness (flock mocked)', () => {
 
     // Baseline: every probe is cheap, so all three are asked and all three answer "free" ⇒ nothing is live.
     flockFree();
-    expect(hasLiveWork(projectDir, SESSION)).toBe(false);
+    expect(hasLiveWork(projectDir, SESSION).live).toBe(false);
     expect(execFileSyncMock, 'the sweep visits every locked task when it can afford to').toHaveBeenCalledTimes(3);
 
     // Same registry, one wedged probe. It spends the whole 2s budget on its own, and the deadline is checked
@@ -238,7 +241,7 @@ describe('live-work-registry: bg lock liveness (flock mocked)', () => {
       return Buffer.from('');
     });
 
-    const live = hasLiveWork(projectDir, SESSION);
+    const live = hasLiveWork(projectDir, SESSION).live;
 
     expect(execFileSyncMock, 'the budget bounds the sweep, not just each probe').toHaveBeenCalledTimes(1);
     expect(live, 'the two tasks nobody looked at were not observed to be gone').toBe(true);
@@ -267,7 +270,7 @@ describe('live-work-registry: bg lock liveness (flock mocked)', () => {
       return Buffer.from('');
     });
 
-    const live = hasLiveWork(projectDir, SESSION);
+    const live = hasLiveWork(projectDir, SESSION).live;
 
     expect(
       execFileSyncMock,

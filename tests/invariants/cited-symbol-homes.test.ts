@@ -8,20 +8,21 @@
 //
 // The rule is narrow on purpose, and the wider forms below were measured and rejected rather than imagined:
 //
-//   - **Every backticked path must exist.** 82 hits repo-wide, and the overwhelming majority are correct
-//     writing: deliberate placeholders (`src/xxx.ts` in an agent brief), and — the important ones —
-//     historical citations, where a rationale entry names the path something *used* to have precisely to
-//     record that it moved (`docs/design-rationale.md` §9 lists `cli/command-client.ts → dispatch.ts` as a
+//   - **Every backticked path must exist.** Measured repo-wide, and the overwhelming majority of the hits
+//     are correct writing: deliberate placeholders (`src/xxx.ts` in an agent brief), and — the important
+//     ones — historical citations, where a rationale entry names the path something *used* to have precisely
+//     to record that it moved (`docs/design-rationale.md` §9 lists `cli/command-client.ts → dispatch.ts` as a
 //     fix). A rule banning those would delete the record of the renames it exists to enforce.
-//   - **Every backticked identifier must exist somewhere.** 22 hits, and again mostly legitimate: a TODO
-//     entry naming a schema it *proposes creating*, `.claude/rules/conventions.md` giving `codexOpSchema` as
-//     a naming example, and a fixed-defect writeup naming the primitive that was deleted. Distinguishing
-//     those from a stale reference needs the tense of the sentence, which a scanner cannot read.
+//   - **Every backticked identifier must exist somewhere.** Also measured, and again mostly legitimate: a
+//     TODO entry naming a schema it *proposes creating*, `.claude/rules/conventions.md` giving
+//     `codexOpSchema` as a naming example, and a fixed-defect writeup naming the primitive that was deleted.
+//     Distinguishing those from a stale reference needs the tense of the sentence, which a scanner cannot
+//     read.
 //   - **A `symbol` (`file.ts:LINE`) citation names the symbol's own line.** Measured across the same
-//     `docs/todo/*.md` corpus that supplies most citations below: 20 hits of the form
+//     `docs/todo/*.md` corpus that supplies most citations below, on citations of the form
 //     `` `Symbol` (`path/with/a/separator.ts:LINE[-LINE]`) `` or the `in` spelling, checked for whether
-//     `Symbol` appears, word-bounded, on the cited line (or within the cited range). 5 of 20 are false
-//     positives on writing nobody would call wrong — `` `routeLiveIncumbent` (`…backend-routing.ts:40`) ``
+//     `Symbol` appears, word-bounded, on the cited line (or within the cited range). A substantial share of
+//     the hits are false positives on writing nobody would call wrong — `` `routeLiveIncumbent` (`…backend-routing.ts:40`) ``
 //     cites the specific branch inside that function that does what the sentence describes, not the
 //     function's own `export function` line four lines above; `` `WaitStreamEvent` (`…wait.ts:68-77`) ``
 //     cites that type's terminal union arm, which by construction never repeats the type's own name; a

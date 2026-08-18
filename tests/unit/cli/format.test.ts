@@ -631,7 +631,7 @@ describe('cli format', () => {
     // Every row used to also assert `.not.toMatch(/Shutdown failed: <reason>$/)` — a raw-token render that no
     // path in `src/` produces any more (the string exists only in comments), so that assertion was vacuous
     // before this rewrite: it could never fail regardless of what `formatShutdown` actually returned.
-    const SHUTDOWN_REFUSAL_SENTENCES: ReadonlyArray<readonly [ShutdownResult, RegExp]> = [
+    const SHUTDOWN_REFUSAL_SENTENCES: ReadonlyArray<readonly [Extract<ShutdownResult, { ok: false }>, RegExp]> = [
       [{ ok: false, reason: 'unreadable_record', detail: 'corrupt-json' }, /may still be running/u],
       [
         { ok: false, reason: 'refused_by_response', detail: '500 Internal Server Error' },
@@ -639,16 +639,30 @@ describe('cli format', () => {
       ],
       [{ ok: false, reason: 'no_response', detail: 'ETIMEDOUT' }, /did not complete/u],
       [{ ok: false, reason: 'no_record' }, /no coordinator has recorded itself/u],
+      [{ ok: false, reason: 'no_record_socket_present' }, /no discovery record has been written yet/u],
       [{ ok: false, reason: 'recorded_process_absent', detail: '4242' }, /recorded coordinator process/u],
       [{ ok: false, reason: 'socket_refused', pidLiveness: 'alive' }, /socket refused the connection/u],
+      [{ ok: false, reason: 'nested_child' }, /cannot shut down its parent coordinator/u],
     ];
 
     it.each(SHUTDOWN_REFUSAL_SENTENCES)(
-      'renders a shutdown refusal as a sentence, not as a token',
+      'renders a shutdown refusal as a sentence, not as a token (%j)',
       (result, expected) => {
         expect(formatShutdown(result)).toMatch(expected);
       },
     );
+
+    // `capability_rejected` is deliberately not a row above — its own tests further down assert the pid-hedging
+    // language directly — so this drives completeness off the production exit-code table rather than off
+    // `SHUTDOWN_REFUSAL_SENTENCES` alone, the way `errorCodeToExit`'s own completeness test does.
+    it('renders a sentence for every ShutdownReason the production table knows about', async () => {
+      const { SHUTDOWN_REFUSAL_EXIT_CODES } = await import('#src/cli/commands/backend.js');
+
+      const testedElsewhere = ['capability_rejected'];
+      const coveredReasons = [...SHUTDOWN_REFUSAL_SENTENCES.map(([result]) => result.reason), ...testedElsewhere];
+
+      expect(coveredReasons.sort()).toEqual(Object.keys(SHUTDOWN_REFUSAL_EXIT_CODES).sort());
+    });
 
     // `refused_by_response` proves something is listening (a response arrived); `no_response` proves neither
     // way. Neither may claim the backend stopped — that split is what F2 fixed, replacing a single `unreachable`
@@ -671,6 +685,18 @@ describe('cli format', () => {
         expect(text).not.toMatch(/^Backend not running/mu);
       },
     );
+
+    // Pins both arms of the ternary: inverting it (always rendering the `'alive'` text) leaves every existing
+    // assertion in this file green, since both arms match `/socket refused the connection/u` and neither
+    // matches `/^Backend not running/mu`. Only a direct check that `'unknown'` does NOT claim a prior
+    // confirmation catches that inversion.
+    it('claims the process was confirmed running only when pidLiveness is alive, not unknown', () => {
+      const aliveText = formatShutdown({ ok: false, reason: 'socket_refused', pidLiveness: 'alive' });
+      const unknownText = formatShutdown({ ok: false, reason: 'socket_refused', pidLiveness: 'unknown' });
+
+      expect(aliveText, 'alive was actually confirmed').toMatch(/was confirmed running/u);
+      expect(unknownText, 'unknown was never confirmed either way').not.toMatch(/was confirmed running/u);
+    });
 
     // Three separate observations used to share one sentence, and that sentence named a socket dial only the
     // third of them performs. Each must say what was actually looked at.
@@ -893,9 +919,13 @@ describe('cli format', () => {
 
     // `formatBackendStatus`'s `unreachable` case had no test anywhere. The load-bearing part is that the
     // "something is listening" claim is conditional: it is true only when an HTTP response was actually
-    // received (`responded: true`), and must not be printed for a request that never completed at all.
+    // received (`cause: 'responded'`), and must not be printed for a refusal or a request that never completed.
     it('claims something is listening only when a response was actually received', () => {
-      const text = formatBackendStatus({ status: 'unreachable', detail: '500 Internal Server Error', responded: true });
+      const text = formatBackendStatus({
+        status: 'unreachable',
+        detail: '500 Internal Server Error',
+        cause: 'responded',
+      });
 
       expect(text).toContain('did not give a usable answer (500 Internal Server Error)');
       expect(text, 'a response proves something is listening').toMatch(/is listening at the recorded address/u);
@@ -903,7 +933,7 @@ describe('cli format', () => {
     });
 
     it('does not claim anything is listening when the request never completed', () => {
-      const text = formatBackendStatus({ status: 'unreachable', detail: 'ECONNRESET', responded: false });
+      const text = formatBackendStatus({ status: 'unreachable', detail: 'ECONNRESET', cause: 'no_response' });
 
       expect(text).toContain('did not give a usable answer (ECONNRESET)');
       // The false claim this guards against: nothing here proves a socket is open, let alone that anything
@@ -911,6 +941,42 @@ describe('cli format', () => {
       expect(text, 'no response was received, so nothing here proves anything is listening').not.toMatch(
         /is listening at the recorded address/u,
       );
+      expect(text).not.toMatch(/Backend not running/u);
+    });
+
+    // A refusal proves the opposite of `responded`: nothing was listening on that exact socket at that moment.
+    // But that is not the same as a confirmed-absent backend, since a coordinator's HTTP listener can close
+    // mid-drain while its process, already confirmed alive, keeps running — hence the `pidLiveness` hedge.
+    it.each([
+      ['alive', /was confirmed running/u],
+      ['unknown', /could not be independently confirmed alive or gone/u],
+    ] as const)('claims nothing is listening on a refusal, hedged by pidLiveness %s', (pidLiveness, expected) => {
+      const text = formatBackendStatus({
+        status: 'unreachable',
+        detail: 'ECONNREFUSED',
+        cause: 'refused',
+        pidLiveness,
+      });
+
+      expect(text).toContain('did not give a usable answer (ECONNREFUSED)');
+      expect(text, 'a refusal proves nothing is listening at that moment').toMatch(
+        /Nothing is listening at the recorded address/u,
+      );
+      expect(text).toMatch(expected);
+      expect(text).not.toMatch(/is listening at the recorded address; this is not a report/u);
+      expect(text).not.toMatch(/Backend not running/u);
+    });
+
+    // Not "not running": the coordinator's own IPC socket exists with no record written yet, so a boot in
+    // progress and a stale leftover socket read the same and neither may claim the backend is running or gone.
+    it('formats a no_record_socket_present status without claiming the backend is running or stopped', () => {
+      const text = formatBackendStatus({
+        status: 'no_record_socket_present',
+        socketPath: '/run/coral/coordinator.sock',
+      });
+
+      expect(text).toContain('/run/coral/coordinator.sock');
+      expect(text).toMatch(/no discovery record has been written yet/u);
       expect(text).not.toMatch(/Backend not running/u);
     });
 

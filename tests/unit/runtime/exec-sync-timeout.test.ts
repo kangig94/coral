@@ -96,7 +96,10 @@ describe('ProcessPort.execSync bound', () => {
     spawnSyncMock.mockReset().mockImplementation(actualSpawnSync);
     const runtime = createRealRuntime('prod');
 
-    const result = runtime.process.execSync('sh', ['-c', 'printf %0100000d 1'], { maxBuffer: 16, timeout: 5_000 });
+    // The bound is a stuck-child backstop, not part of the scenario: `printf` emits 100KB at once, so the
+    // 16-byte overflow is what must win. At 5s it did not always — under a loaded machine the timer landed
+    // first and the assertion read `ETIMEDOUT`, testing the timeout twice and the overflow never.
+    const result = runtime.process.execSync('sh', ['-c', 'printf %0100000d 1'], { maxBuffer: 16, timeout: 60_000 });
 
     expect(result.status, 'a truncated read is not an exit status worth reporting').toBeNull();
     expect((result.error as NodeJS.ErrnoException | undefined)?.code).toBe(EXEC_MAXBUFFER_CODE);

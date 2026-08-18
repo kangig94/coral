@@ -92,6 +92,7 @@ describe('frontmatter merge driver', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
     rmSync(root, { recursive: true, force: true });
     if (originalClaudeConfigDir === undefined) {
       delete process.env.CLAUDE_CONFIG_DIR;
@@ -335,6 +336,11 @@ describe('frontmatter merge driver', () => {
 
   it('registers the frontmatter merge driver alongside the entity-graph driver', () => {
     const pluginRoot = join(root, 'plugin root');
+    // `resolvePluginRoot()` checks the esbuild-injected `__PLUGIN_ROOT__` global first, and `vitest/setup.ts`
+    // pins that to this repo's own `clients/` for every test — unstubbed, the driver command below would be
+    // built from the real bundle path regardless of what `envPort` returns, and the assertion further down
+    // would pass either way.
+    vi.stubGlobal('__PLUGIN_ROOT__', undefined);
     const runtime = createRealRuntime('prod');
     const gitCalls: string[][] = [];
     const execSync = vi.fn((command: string, args: string[]) => {
@@ -373,6 +379,9 @@ describe('frontmatter merge driver', () => {
       (args) => args[0] === 'config' && args[1] === 'merge.coral-frontmatter.driver',
     );
     expect(frontmatterDriverCall?.[2]).toContain('kb merge-frontmatter "%O" "%A" "%B" "%P"');
+    // Asserts `pluginRoot` itself, not just the `bridge/coral-cli.cjs` suffix every plugin root shares — that
+    // weaker check would pass even if `resolvePluginRoot()` ignored `envPort` and used the real bundle path.
+    expect(frontmatterDriverCall?.[2]).toContain(pluginRoot);
     expect(frontmatterDriverCall?.[2]).toContain(join('bridge', 'coral-cli.cjs'));
   });
 

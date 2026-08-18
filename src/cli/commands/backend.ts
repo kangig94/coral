@@ -84,14 +84,17 @@ export const SHUTDOWN_REFUSAL_EXIT_CODES: Readonly<Record<ShutdownReason, 1 | 75
   // Not observed: a refused connection proves nothing was listening on that exact socket at that moment, but
   // the recorded pid was never established absent before this request was sent (an absent pid short-circuits
   // to `recorded_process_absent` first) — so this is not the same "observed absence" as the two rows above.
-  // Exit `1` here previously claimed it was, inverting the one deterministic window where a coordinator's HTTP
-  // listener closes at the top of its drain while its process, confirmed alive, keeps running.
+  // The deterministic window it must not claim: a coordinator's HTTP listener closes at the top of its drain
+  // while its process, confirmed alive, keeps running.
   socket_refused: 75,
   // Not observed: the record could not be read, the request never completed, or a response arrived but did not
   // resolve the question either way. A coordinator may be serving.
   unreadable_record: 75,
   refused_by_response: 75,
   no_response: 75,
+  // Not observed: the coordinator's own IPC socket file exists with no record written yet, which a coordinator
+  // mid-boot and a stale socket a killed one left behind both produce, indistinguishably.
+  no_record_socket_present: 75,
 };
 
 /**
@@ -116,6 +119,7 @@ export const BACKEND_STATUS_EXIT_CODES: Readonly<Record<BackendStatusFull['statu
   recent_failure: 0,
   undecodable_record: 75,
   unreachable: 75,
+  no_record_socket_present: 75,
 };
 import { renderHandoffNotice } from '../handoff-notice.js';
 import { quarantineKbCommitLocal } from '../kb-commit-quarantine.js';

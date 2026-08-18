@@ -248,10 +248,14 @@ This does not change the local-authorized fallback, the control protocol, the co
 
 The reproduction this section used to ask for is no longer obtainable, and that is a resolution, not a
 gap: the disagreement quoted at the top of this entry was two values derived from the same moving clock
-at different moments, and #324 removed the moving clock from both sides of the comparison, repo-wide,
-including at this acquisition's own `expectedIdentity` site. Neither side reads a clock anymore, so there
-is no clock-base divergence left to produce. Sending an engineer to reproduce "two live processes reading
-different clock bases" against current code is chasing a symptom the fix already closed.
+at different moments, and #324 removed that moving-clock primitive from both sides of the comparison,
+repo-wide, including at this acquisition's own `expectedIdentity` site. On Linux — the platform the
+quoted disagreement was observed on — neither side reads a clock at all anymore, so there is no
+clock-base divergence left to produce there. Darwin's token is still a clock reading taken at probe time
+(see "Shipped" above), which is the DST/NTP collision window `docs/todo/darwin-signal-authority.md`
+tracks separately, not the bug this entry is about. Sending an engineer to reproduce "two live processes
+reading different clock bases" against current code is chasing a symptom the fix already closed on the
+platform it was observed on.
 
 What is left to decide is item 1 above, and its entry price is reading `assertIdentityFieldsAgree` and
 the two probes that feed it (`acquisition-steps.ts:354`, `role-main.ts:173`), not reproducing a failure.

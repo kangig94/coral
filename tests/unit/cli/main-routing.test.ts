@@ -31,6 +31,8 @@ import { ProviderHostUnserviceableError } from '#src/providers/host-admission.js
 import { encodeHostRef } from '#src/providers/host-ref-codec.js';
 import type { HostRef } from '#src/providers/contract.js';
 import { registerBackendCommands, type BackendStatusCommandOperations } from '#src/cli/commands/backend.js';
+import { assertNever } from '#src/infra/error-format.js';
+import type { ShutdownReason, ShutdownResult } from '#src/transport/http/backend/shutdown.js';
 
 const genericInstallMethod = 'shell' satisfies InstallMethod;
 
@@ -42,7 +44,7 @@ const mockState = vi.hoisted(() => ({
   abortJobs: vi.fn(),
   launchAndFollow: vi.fn(),
   getBackendStatusFull: vi.fn(),
-  shutdownBackend: vi.fn(),
+  shutdownBackend: vi.fn<(pluginRoot: string) => Promise<ShutdownResult>>(),
   streamWait: vi.fn(),
   discussSeed: vi.fn(),
   discussStart: vi.fn(),
@@ -477,12 +479,40 @@ describe('cli main routing', () => {
     ['socket_refused', 75],
     ['refused_by_response', 75],
     ['no_response', 75],
+    ['no_record_socket_present', 75],
   ] as const;
+
+  // A full `ShutdownResult` per reason, not a bare `{ ok: false, reason }` — that shape is a value the
+  // discriminated union makes impossible for every reason that carries `detail`/`pidLiveness`, and it passed
+  // here only because the mock was untyped. Typing `mockState.shutdownBackend` (above) now makes an incomplete
+  // fixture a compile error; this is what supplies the fields it demands.
+  function shutdownRefusal(reason: ShutdownReason): ShutdownResult {
+    switch (reason) {
+      case 'nested_child':
+      case 'no_record':
+      case 'no_record_socket_present':
+        return { ok: false, reason };
+      case 'recorded_process_absent':
+        return { ok: false, reason, detail: '4242' };
+      case 'unreadable_record':
+        return { ok: false, reason, detail: 'corrupt-json' };
+      case 'refused_by_response':
+        return { ok: false, reason, detail: '500 Internal Server Error' };
+      case 'no_response':
+        return { ok: false, reason, detail: 'ETIMEDOUT' };
+      case 'socket_refused':
+        return { ok: false, reason, pidLiveness: 'alive' };
+      case 'capability_rejected':
+        return { ok: false, reason, detail: '4242', pidLiveness: 'alive' };
+      default:
+        return assertNever(reason);
+    }
+  }
 
   it.each(SHUTDOWN_EXIT_EXPECTATIONS)('exits %s with %s', async (reason, expected) => {
     const { buildProgram } = await loadMainModule();
     const program = buildProgram();
-    mockState.shutdownBackend.mockResolvedValueOnce({ ok: false, reason });
+    mockState.shutdownBackend.mockResolvedValueOnce(shutdownRefusal(reason));
 
     await program.parseAsync(['node', 'coral-cli', 'backend', 'shutdown']);
 
@@ -523,7 +553,7 @@ describe('cli main routing', () => {
     // exit-75 status is what the completeness test below cannot itself prove.
     it.each([
       [{ status: 'not_running' }, 0],
-      [{ status: 'unreachable', detail: 'ECONNRESET', responded: false }, 75],
+      [{ status: 'unreachable', detail: 'ECONNRESET', cause: 'no_response' }, 75],
     ] as const)('exits %j with %s', async (status, expected) => {
       const program = statusProgram(async () => status);
 
@@ -544,6 +574,7 @@ describe('cli main routing', () => {
       ['recent_failure', 0],
       ['undecodable_record', 75],
       ['unreachable', 75],
+      ['no_record_socket_present', 75],
     ] as const;
 
     it('has a row for every status the command can produce', async () => {

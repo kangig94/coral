@@ -26,9 +26,14 @@ const READ_FLAGS = constants.O_RDONLY | constants.O_NONBLOCK | NO_FOLLOW;
 const TEMP_WRITE_FLAGS = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NO_FOLLOW;
 const CORAL_IGNORE_ENTRY = 'coral';
 // `ensureCoralSymlink` swaps the link in via `renameSync` over a temp name so a kill between the write and the
-// swap never leaves `.claude/coral` missing — but a kill before the swap leaves the temp name itself behind,
-// and its `.coral-<pid>-<ts>.tmp` suffix means the exact-match `coral` line above does not cover it.
-const CORAL_IGNORE_TEMP_ENTRY = 'coral.coral-*.tmp';
+// swap never leaves `.claude/coral` missing — but a kill before the swap leaves the temp name itself behind. A
+// kill at the same point in `atomicTransform`'s own write of `.claude/.gitignore` (this file's other caller of
+// that helper, in `ensureScopedIgnore`) leaves a second, differently-prefixed temp name behind for the same
+// reason. Both live directly under `.claude/`, so one glob covers both rather than naming each. `atomicTransform`
+// also runs on the git-root `.gitignore` during migration; a temp file left there would need an entry back in
+// the root `.gitignore` — the file this whole migration exists to stop adding generated entries to — so that
+// leak is left uncovered rather than reopening what the migration empties.
+const CORAL_IGNORE_TEMP_ENTRY = '*.coral-*.tmp';
 const LEGACY_CORAL_IGNORE_ENTRY = '.claude/coral';
 
 function isMissing(error) {
@@ -227,9 +232,9 @@ function ensureRealDirectory(path) {
 // This fork is paid by every call to `resolveProjectContext` below, no-op or not — finding the ignore-scoped
 // git root is not something the symlink logic can skip past. On the common path where `.claude/coral` already
 // exists, `ensureCoralSymlink` pays a second fork of its own (`coralProjectDir`'s 2000ms bound in
-// `hook-utils.mjs`, to confirm the link is not outgrown), so the worst case here is 1500 + 2000 = 3500ms —
-// exactly `session-start.mjs`'s `spawnSync` timeout for this whole script, with no margin left for this
-// process's own Node startup on top. Both totals are measured, not assumed.
+// `hook-utils.mjs`, to confirm the link is not outgrown), so this script's own worst case is 1500 + 2000 =
+// 3500ms of child work, before this process's own Node startup. `session-start.mjs` owns the budget it spawns
+// this script with as a whole child process; that budget is not this file's number to restate.
 function findGitRoot(projectDir) {
   try {
     const root = execFileSync('git', ['rev-parse', '--show-toplevel'], {

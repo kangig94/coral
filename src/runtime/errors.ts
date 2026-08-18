@@ -369,18 +369,11 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
       'Retry the command. If this persists, report the code because the installer response failed internal validation.',
   },
   /**
-   * Documented rather than left to `unknown_error`, whose remediation is "retry once" — the one thing that
-   * cannot help here. Every expansion status is a statement about the coordinator, and this build could not
-   * read the record that names it: the same read fails the same way next time, so the exit is looking at the
-   * record, not repeating the command. That is why this is exit 1 ("observed, durable"), not 75 — retry
-   * cannot clear a local read failure, and the remediation names the record path directly rather than
-   * deferring to `coral-cli backend status`, which does not give this exact condition a clean answer either
-   * (it renders only the corrupt-JSON/shape-rejected half, and lets a raw filesystem read failure such as
-   * `EACCES`/`EIO` propagate to a generic internal error).
-   *
-   * `coordinator_unreachable` is the sibling for a record that *did* decode: unlike this code it stays "not
-   * observed" (exit 75), because a decoded record's owner can genuinely still be busy. Do not fold the two
-   * back together; that is the collapse this split exists to end.
+   * Documented rather than left to `unknown_error`, whose remediation is "retry once" — advice this code's own
+   * remediation replaces with the record path and its actual clearing step. Exit 75, not 1: a coordinator can
+   * be running fine behind a discovery record this build simply cannot read (wrong permissions, a truncated
+   * write), so this run has not observed whether one exists — the same axis `coordinator_unreachable` sits on,
+   * and the reason both belong in `NOT_OBSERVED_CORAL_SETUP_ERROR_CODES` together.
    */
   coordinator_record_unreadable: {
     userMessage: (context) =>
@@ -653,20 +646,21 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
  * Codes that mean "this run could not observe the answer", not "the answer is no" — the same distinction
  * `SHUTDOWN_REFUSAL_EXIT_CODES` (`cli/commands/backend.ts`) draws for `ShutdownReason`. `errorCodeToExit`
  * (`cli/errors.ts`) and `expansionExitCode` (`cli/commands/expansion.ts`) each map a code to a CLI exit status
- * independently; a code added to one list and not the other is exactly how `coordinator_record_unreadable`
- * used to exit the "observed/decided" 1 in one of them by accident rather than by decision. Listed here, once,
- * so both read the same membership rather than repeating it. `Set<string>` rather than
+ * independently; a code added to one list and not the other exits "observed/decided" 1 in the list that
+ * missed it, by accident rather than by decision. Listed here, once, so both read the same membership rather
+ * than repeating it. `Set<string>` rather than
  * `Set<DocumentedCoralSetupErrorCode>` at the export boundary: both consumers hold a plain `string` by the
  * time they check membership — `CoralSetupError.code` is `string`, not this union, because domains outside
  * this registry (`jobs/events.ts`, `sessions/events.ts`, and others) construct `CoralSetupError` with codes of
  * their own that never enter `DocumentedCoralSetupErrorCode`.
  *
- * `coordinator_record_unreadable` is deliberately *not* a member: unlike `coordinator_unreachable`, retrying
- * it cannot ever resolve it on its own (see that code's doc comment above), so it is exit 1 — observed and
- * durable — with a remediation that names its own clearing step instead of "retry".
+ * `coordinator_record_unreadable` is a member alongside `coordinator_unreachable`: an unreadable record says
+ * nothing about whether the coordinator it would have named is running, so this run has not observed the
+ * answer either way — the same axis, not "will retrying help" (see that code's doc comment above).
  */
 export const NOT_OBSERVED_CORAL_SETUP_ERROR_CODES: ReadonlySet<string> = new Set<DocumentedCoralSetupErrorCode>([
   'coordinator_unreachable',
+  'coordinator_record_unreadable',
 ]);
 
 function renderDocumentedSpec(

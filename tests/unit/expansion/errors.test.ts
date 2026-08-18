@@ -184,27 +184,43 @@ describe('expansionExitCode', () => {
     ['invalid_usage', 2],
     ['missing_capability', 77],
     ['child_credentials_incomplete', 77],
-    // `coordinator_record_unreadable` is observed and durable — retrying reads the same unreadable file — so
-    // it is exit 1, not a NOT_OBSERVED_CORAL_SETUP_ERROR_CODES member. See its doc comment in
-    // `runtime/errors.ts`.
-    ['coordinator_record_unreadable', 1],
     ['unknown_expansion', 1],
     ['unmapped_code', 1],
   ] as const)('maps error code %s to exit %i', (code, exitCode) => {
     expect(expansionExitCode({ status: 'error', code, userMessage: 'unused', remediation: 'unused' })).toBe(exitCode);
   });
 
-  // `coordinator_unreachable` is this file's one live example of a `NOT_OBSERVED_CORAL_SETUP_ERROR_CODES`
-  // member reaching `expansionExitCode` — the errors.test.ts suite in tests/unit/cli asserts the general case
-  // by iterating the real exported set against both consumers.
-  it('exits 75 for coordinator_unreachable', () => {
+  // `coordinator_unreachable` and `coordinator_record_unreadable` are this file's live examples of
+  // `NOT_OBSERVED_CORAL_SETUP_ERROR_CODES` members reaching `expansionExitCode` — the errors.test.ts suite in
+  // tests/unit/cli asserts the general case by iterating the real exported set against both consumers.
+  it.each(['coordinator_unreachable', 'coordinator_record_unreadable'] as const)('exits 75 for %s', (code) => {
     expect(
       expansionExitCode({
         status: 'error',
-        code: 'coordinator_unreachable',
+        code,
         userMessage: 'unused',
         remediation: 'unused',
       }),
     ).toBe(75);
+  });
+
+  // The artifact this file was missing: every test above pins what one function *says* about one code, never
+  // that two commands say compatible things about one machine state. An unreadable discovery record is
+  // observed identically by `expansion`, `backend status`, and `backend shutdown` — a script picking among the
+  // three must see the same exit either way.
+  it('gives the same exit code from expansion, backend status, and backend shutdown for one unreadable discovery record', async () => {
+    const { BACKEND_STATUS_EXIT_CODES, SHUTDOWN_REFUSAL_EXIT_CODES } = await import('#src/cli/commands/backend.js');
+
+    const expansionExit = expansionExitCode({
+      status: 'error',
+      code: 'coordinator_record_unreadable',
+      userMessage: 'unused',
+      remediation: 'unused',
+    });
+    const statusExit = BACKEND_STATUS_EXIT_CODES.undecodable_record;
+    const shutdownExit = SHUTDOWN_REFUSAL_EXIT_CODES.unreadable_record;
+
+    expect(expansionExit).toBe(statusExit);
+    expect(shutdownExit).toBe(statusExit);
   });
 });

@@ -9,19 +9,18 @@ import { isCoralChildEnvironment } from '../../../security/child-principal-env.j
 /**
  * `reason` is a closed set the CLI renders; `detail` carries whatever was observed behind it.
  *
- * Two `ok: false` cases an operator most needs told apart used to share one spelling — `not_running` was
- * returned both for a socket that refused a connection and for a request that never finished — and the split
- * was then flattened again into a raw token at the render layer.
- *
- * The set is closed so that cannot come back: `formatShutdown` switches on `reason` and its `default` arm calls
- * `assertNever(result)`, so a new member fails to compile there until a sentence is written for it. Two
- * producers were also using this field as prose, which is what made it look like it had to stay open; their
- * sentences live in `detail` now.
+ * Adding a literal here alone fails to compile in `SHUTDOWN_REFUSAL_EXIT_CODES` (`cli/commands/backend.ts`), a
+ * `Record` keyed on every `ShutdownReason` — `ShutdownResult`'s variants each name their own reason
+ * independently of this type, so `formatShutdown`'s exhaustiveness switch only reacts once a matching
+ * `ShutdownResult` variant is added too. `_shutdownReasonsStaySynced` below is what keeps this union and
+ * `ShutdownResult`'s reasons from drifting apart silently in the meantime. A producer with something to say
+ * puts it in `detail`; `reason` is never prose.
  */
 export type ShutdownReason =
   | 'nested_child'
   | 'unreadable_record'
   | 'no_record'
+  | 'no_record_socket_present'
   | 'recorded_process_absent'
   | 'socket_refused'
   | 'refused_by_response'
@@ -41,9 +40,8 @@ type PidLiveness = 'alive' | 'unknown';
  * - `socket_refused`: the opposite observation — nothing answered at all — and the pid was already known not
  *   to be `'absent'` (see above), so a refused connection is never grounds for "not running" on its own: the
  *   deterministic window is a coordinator's HTTP listener closing at the top of its drain while its process,
- *   already confirmed alive, keeps running through IPC close and the store finalizers. An earlier revision
- *   reported this case as "not running" and exited `1`, inverting the one case `pidLiveness` exists to keep
- *   honest — see `src/coordinator/shutdown.ts` for the drain ordering that opens this window.
+ *   already confirmed alive, keeps running through IPC close and the store finalizers — see
+ *   `src/coordinator/shutdown.ts` for the drain ordering that opens this window.
  *
  * A member split on a *subset* of `reason`'s literals does not defeat exhaustiveness narrowing: `formatShutdown`
  * calls `assertNever(result)` — the whole, already-narrowed result, as `formatBackendStatus` already does five
@@ -58,11 +56,21 @@ export type ShutdownResult =
   | { ok: false; reason: 'nested_child' }
   | { ok: false; reason: 'unreadable_record'; detail: string }
   | { ok: false; reason: 'no_record' }
+  | { ok: false; reason: 'no_record_socket_present' }
   | { ok: false; reason: 'recorded_process_absent'; detail: string }
   | { ok: false; reason: 'socket_refused'; pidLiveness: PidLiveness }
   | { ok: false; reason: 'refused_by_response'; detail: string }
   | { ok: false; reason: 'no_response'; detail: string }
   | { ok: false; reason: 'capability_rejected'; detail: string; pidLiveness: PidLiveness };
+
+/**
+ * `formatShutdown`'s `assertNever(result)` (`cli/format/backend.ts`) catches a `ShutdownReason` missing its
+ * sentence; nothing catches these two literal unions themselves drifting apart, since each is declared by
+ * hand. `_shutdownReasonsStaySynced` fails to compile the moment either one names a reason the other does not.
+ */
+type ShutdownResultReason = Exclude<ShutdownResult, { ok: true }>['reason'];
+type ReasonSetsMatch<A extends string, B extends string> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+const _shutdownReasonsStaySynced: ReasonSetsMatch<ShutdownReason, ShutdownResultReason> = true;
 
 function isShuttingDownError(value: unknown): value is { code: 'backend_shutting_down' } {
   return isRecord(value) && value.code === 'backend_shutting_down';
@@ -97,9 +105,7 @@ function classifyShutdownResponse(
     return { ok: false, reason: 'capability_rejected', detail: String(info.pid), pidLiveness };
   }
   // Something answered at the address our own record names and did not accept the shutdown. That is the same
-  // observation `getBackendStatusFull` reports as `unreachable`, distinguished there by `responded: true`; this
-  // used to render as a bare `Shutdown failed: 500 Internal Server Error`, so one fact carried opposite
-  // implications in two commands.
+  // observation `getBackendStatusFull` reports as `unreachable` for a resolved response.
   return { ok: false, reason: 'refused_by_response', detail: `${response.status} ${response.statusText}` };
 }
 
@@ -118,6 +124,10 @@ export async function shutdownBackend(pluginRoot: string): Promise<ShutdownResul
       return { ok: false, reason: 'unreadable_record', detail: observed.reason };
     case 'no-record':
       return { ok: false, reason: 'no_record' };
+    case 'no-record-socket-present':
+      // Refuses rather than guesses: there is no host/port/bootToken to dial without a decoded record, and the
+      // evidence does not distinguish a coordinator mid-boot from a stale socket a killed one left behind.
+      return { ok: false, reason: 'no_record_socket_present' };
     case 'process-absent':
       return { ok: false, reason: 'recorded_process_absent', detail: String(observed.pid) };
     case 'addressed':

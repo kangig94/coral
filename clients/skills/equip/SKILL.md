@@ -59,7 +59,7 @@ Bundled engines auto-equip at coordinator boot via the bundled fallback pass. Th
 | `catching_up`                | Registered and replaying the corpus                             |
 | `installed-not-active`       | If `activation` is `remove-catalog`, this is residue from a retired expansion: recommend its exact `cleanupCommand` only when that field is present; when absent, show `lastError` and do not construct or run a cleanup command. Otherwise boot recovery failed, so check the last error and satisfy missing dependencies before retrying `/equip <name>` |
 | `inactive`                   | Installed but not registered. Run `/equip <name>` to reactivate |
-| `unavailable`                | Required local artifact missing. Run `/equip <name>` to repair or reactivate |
+| `unavailable`                | Not currently produced by any engine in this build. If it appears, report it as unexpected rather than assuming `not_equipped`'s remediation applies |
 | `disabled_pending_reinstall` | Load failed. Run `/equip <name>` to reinstall                   |
 | `installing`                 | Another `/equip` is currently holding `install.lock`            |
 | `not_equipped`               | Installed-tier engine is not installed/equipped locally         |

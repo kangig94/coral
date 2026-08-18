@@ -241,6 +241,21 @@ describe('shutdownBackend', () => {
     await expect(shutdownBackend('/plugin-root')).resolves.toEqual({ ok: false, reason: 'no_record' });
   });
 
+  // A missing record alone used to refuse as `no_record` (exit 1, a confirmed absence) unconditionally —
+  // including for a coordinator caught between binding its IPC socket and publishing this discovery record
+  // (`observeCoordinator`'s `no-record-socket-present`). That window must refuse as not-observed instead.
+  it('refuses as no_record_socket_present rather than a confirmed absence when the coordinator socket exists', async () => {
+    mockState.observed = { kind: 'no-record-socket-present', socketPath: '/tmp/coral.sock' };
+
+    const { shutdownBackend } = await import('#src/transport/http/backend/shutdown.js');
+
+    await expect(shutdownBackend('/plugin-root')).resolves.toEqual({
+      ok: false,
+      reason: 'no_record_socket_present',
+    });
+    expect(fetch, 'no host/port/bootToken exist to dial without a decoded record').not.toHaveBeenCalled();
+  });
+
   it('names a decisively gone recorded process as such', async () => {
     mockState.observed = { kind: 'process-absent', pid: 12345, startedAt: 1 };
 

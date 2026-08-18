@@ -10,10 +10,20 @@
 // left alone: recognising our own artifact is not licence to overwrite someone else's.
 
 import type * as NodeFs from 'node:fs';
-import { existsSync, mkdirSync, mkdtempSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readlinkSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import type * as NodeOs from 'node:os';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // `coralStateRoot` has no cached module-level state (it reads `homedir()` fresh on every call), so a static
@@ -271,6 +281,36 @@ describe('ensureCoralSymlink keeps its own link pointing at the current flavor',
       (findGitRootTimeout ?? 0) + (coralProjectDirTimeout ?? 0),
       "session-start.mjs must give this child more than the work the child itself bounds; these two forks alone are the whole of it, before this process's own Node startup",
     ).toBe(3500);
+  });
+
+  // The test above pins the child's own bound; this one pins the other half of the same guarantee — that the
+  // caller's budget actually exceeds it. Reverting `session-start.mjs`'s spawnSync timeout back to exactly this
+  // sum reproduces the SIGTERM-before-its-own-bound defect with every other test here still green, so the
+  // margin has to be checked directly rather than left to be noticed only against a slow mount in production.
+  it("gives the child a budget strictly greater than the child's own two-fork sum", async () => {
+    await maintain('prod');
+    execFileSyncMock.mockClear();
+    execSyncMock.mockClear();
+
+    await maintain('prod');
+
+    const findGitRootTimeout =
+      ((execFileSyncMock.mock.calls as unknown[][])[0]?.[2] as { timeout?: number } | undefined)?.timeout ?? 0;
+    const coralProjectDirTimeout =
+      ((execSyncMock.mock.calls as unknown[][])[0]?.[1] as { timeout?: number } | undefined)?.timeout ?? 0;
+    const childBoundSum = findGitRootTimeout + coralProjectDirTimeout;
+
+    const sessionStartSource = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'clients', 'hooks', 'session-start.mjs'),
+      'utf-8',
+    );
+    const parentBudget = Number(sessionStartSource.match(/PROJECT_IGNORE_SPAWN_TIMEOUT_MS\s*=\s*(\d+)/)?.[1]);
+
+    expect(parentBudget, 'session-start.mjs must define this constant as a plain number literal').toBeGreaterThan(0);
+    expect(
+      parentBudget,
+      "the parent's spawnSync timeout must leave margin beyond the child's own two forks",
+    ).toBeGreaterThan(childBoundSum);
   });
 
   it('leaves the working link in place when writing its replacement fails', async () => {

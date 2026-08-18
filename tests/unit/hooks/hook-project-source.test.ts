@@ -15,7 +15,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { parseRemoteSource as parseRemoteSourceInDaemon } from '#src/infra/project-source.js';
-import { STANDING_PROBE_ERRNOS as STANDING_PROBE_ERRNOS_IN_DAEMON } from '#src/infra/process-constants.js';
+import {
+  INDECISIVE_PROBE_REPROBE_INTERVAL_MS as INDECISIVE_PROBE_REPROBE_INTERVAL_MS_IN_DAEMON,
+  STANDING_PROBE_ERRNOS as STANDING_PROBE_ERRNOS_IN_DAEMON,
+} from '#src/infra/process-constants.js';
 
 const { execSyncMock } = vi.hoisted(() => ({ execSyncMock: vi.fn() }));
 vi.mock('node:child_process', () => ({ execSync: execSyncMock }));
@@ -24,6 +27,7 @@ import {
   parseRemoteSource as parseRemoteSourceInHook,
   resolveProjectSource,
   STANDING_PROBE_ERRNOS as STANDING_PROBE_ERRNOS_IN_HOOK,
+  UNANSWERED_REPROBE_INTERVAL_MS as UNANSWERED_REPROBE_INTERVAL_MS_IN_HOOK,
   // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
 } from '../../../clients/hooks/lib/hook-utils.mjs';
 
@@ -163,5 +167,13 @@ describe('both lanes enumerate the same standing errnos', () => {
     expect([...(STANDING_PROBE_ERRNOS_IN_HOOK as Set<string>)].sort()).toEqual(
       [...STANDING_PROBE_ERRNOS_IN_DAEMON].sort(),
     );
+  });
+});
+
+describe('both lanes hold a non-answer for the same interval', () => {
+  // Same reasoning as the errno set above, applied to the other number a non-answer is cached against: the
+  // claim that the two copies match was a comment, not a check.
+  it('matches, so a new interval cannot be set on one lane alone', () => {
+    expect(UNANSWERED_REPROBE_INTERVAL_MS_IN_HOOK).toBe(INDECISIVE_PROBE_REPROBE_INTERVAL_MS_IN_DAEMON);
   });
 });

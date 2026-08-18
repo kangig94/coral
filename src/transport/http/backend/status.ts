@@ -71,12 +71,22 @@ export type BackendStatusFull =
    * Distinct from `not_running`, which is reserved for an observed absence and for a peer whose *decoded*
    * namespace or flavor says it is somebody else's coordinator, not ours — a shape rejection proves neither.
    *
-   * `responded` is `true` only when an HTTP response was actually received (any status, any body) — that is
-   * the one thing that proves something is listening at the address. It is `false` for a request that never
-   * completed at all (a refused connection, a timeout, a DNS failure, ...), where nothing here proves anything
-   * is listening; the render layer must not make that claim on `responded: false`.
+   * `cause` is the one thing that decides what may be claimed about the address: `'responded'` is an actual
+   * HTTP response (any status, any body) — the one thing that proves something is listening. `'refused'` is a
+   * TCP-level refusal at the moment of the attempt — it proves nothing was listening on that exact socket at
+   * that moment, but not that the coordinator process itself is gone, so it carries `pidLiveness`, the prior
+   * observation of that specific question. `'no_response'` is everything else that keeps a request from
+   * completing (timeout, DNS failure, ...), which proves neither way.
    */
-  | { status: 'unreachable'; detail: string; responded: boolean }
+  | { status: 'unreachable'; detail: string; cause: 'responded' }
+  | { status: 'unreachable'; detail: string; cause: 'refused'; pidLiveness: 'alive' | 'unknown' }
+  | { status: 'unreachable'; detail: string; cause: 'no_response' }
+  /**
+   * The coordinator's own IPC socket file exists but no discovery record has been written — see
+   * `CoordinatorObservation`'s `no-record-socket-present` (`coordinator-observation.ts`) for what produces it.
+   * Neither a boot in progress nor a stale leftover socket may fold into `not_running`.
+   */
+  | { status: 'no_record_socket_present'; socketPath: string }
   | { status: 'recent_failure'; phase: PublicDiagnosticPhase; setupError?: PublicSetupErrorSummary };
 
 type RecentFailureStatus = Extract<BackendStatusFull, { status: 'recent_failure' }>;
@@ -226,6 +236,8 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
       return { status: 'undecodable_record', reason: observed.reason, path: observed.path };
     case 'no-record':
       return noDaemonStatus(runtime.storage, runtime.paths.coral.coordinator.startupDiagnosticFile, runtime.time.now());
+    case 'no-record-socket-present':
+      return { status: 'no_record_socket_present', socketPath: observed.socketPath };
     case 'process-absent':
       // Absence is established, so the startup diagnostic may explain it — scoped to both halves of the dead
       // coordinator's identity, because either alone admits a diagnostic that is not this run's. A pid is
@@ -260,9 +272,10 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
       info.startedAt,
       info.pid,
     );
-  // Both probes only ever call this after `fetch` resolved a response, so `responded` is unconditionally true
-  // here; the `catch` below is the one place a request never completed, and builds its own `responded: false`.
-  const unreachable = (detail: string): BackendStatusFull => ({ status: 'unreachable', detail, responded: true });
+  // Both probes only ever call this after `fetch` resolved a response, so `cause` is unconditionally
+  // `'responded'` here; the `catch` below is the one place a request never completed, and builds its own
+  // `'refused'`/`'no_response'` cause instead.
+  const unreachable = (detail: string): BackendStatusFull => ({ status: 'unreachable', detail, cause: 'responded' });
 
   try {
     const ping = await probeUnauthenticatedPing(info, notOurCoordinator, unreachable);
@@ -272,8 +285,13 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
     // Same measurement as `shutdownBackend`'s catch (`shutdown.ts`): Node's `fetch` rejects a refused
     // connection with a `TypeError` whose own `.message` is the generic "fetch failed", while the errno travels
     // on `.cause`. Reporting the bare message here told an operator "fetch failed" for the same `ECONNREFUSED`
-    // that `backend shutdown` already reports by its actual errno.
+    // that `backend shutdown` already reports by its actual errno — and, like that catch, a refusal proves
+    // nothing was listening on the exact socket at that moment without proving the coordinator process is gone,
+    // so it carries the prior `pidLiveness` observation rather than a fresh claim.
     const code = thrownErrnoCode(error);
-    return { status: 'unreachable', detail: code ?? errorMessage(error), responded: false };
+    if (code === 'ECONNREFUSED') {
+      return { status: 'unreachable', detail: code, cause: 'refused', pidLiveness: observed.pidLiveness };
+    }
+    return { status: 'unreachable', detail: code ?? errorMessage(error), cause: 'no_response' };
   }
 }

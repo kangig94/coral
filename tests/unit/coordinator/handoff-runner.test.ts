@@ -483,6 +483,81 @@ describe('handoff-runner', () => {
     ).not.toHaveBeenCalled();
   });
 
+  // `draining` and `identity-mismatch` are positive observations — something answered and decoded — not the
+  // same disposition as an unresolved probe or a decisive absence, so each gets its own warning wording.
+  // Reusing another reason's wording, or dropping the warning, keeps `run-current` unchanged and is only
+  // caught by the assertion on the message text itself.
+  it('should return run-current and warn with draining-specific wording when the live incumbent reports draining', async () => {
+    mockState.probeCoordinator.mockReturnValue({
+      kind: 'live',
+      record: {
+        socketPath,
+        pid: 4242,
+        bundleHash: manifest.bundleHash,
+        flavor: manifest.flavor,
+        namespace: 'handoff-runner',
+        bootToken: 'boot-token',
+      },
+    });
+    mockState.health.mockResolvedValue({
+      status: 'draining',
+      version: manifest.version,
+      bundleHash: manifest.bundleHash,
+      flavor: manifest.flavor,
+      namespace: 'handoff-runner',
+      instanceId: 'incumbent-1',
+      pid: 4242,
+    });
+    const warnSpy = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
+
+    await expect(runHandoff(cliOperation('run'), { pluginRoot: '/plugin/root' })).resolves.toEqual({
+      kind: 'run-current',
+    });
+
+    expect(mockState.spawn, 'a draining incumbent answered but is not a usable handoff target').not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('draining'));
+    expect(warnSpy, 'must not reuse the unresolved-probe wording for a reply that did decode').not.toHaveBeenCalledWith(
+      expect.stringContaining('did not resolve'),
+    );
+  });
+
+  it('should return run-current and warn with identity-specific wording when the live incumbent answers as a different coordinator', async () => {
+    mockState.probeCoordinator.mockReturnValue({
+      kind: 'live',
+      record: {
+        socketPath,
+        pid: 4242,
+        bundleHash: manifest.bundleHash,
+        flavor: manifest.flavor,
+        namespace: 'handoff-runner',
+        bootToken: 'boot-token',
+      },
+    });
+    mockState.health.mockResolvedValue({
+      status: 'ok',
+      version: manifest.version,
+      bundleHash: manifest.bundleHash,
+      flavor: manifest.flavor,
+      namespace: 'handoff-runner',
+      instanceId: 'incumbent-1',
+      pid: 9999,
+    });
+    const warnSpy = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
+
+    await expect(runHandoff(cliOperation('run'), { pluginRoot: '/plugin/root' })).resolves.toEqual({
+      kind: 'run-current',
+    });
+
+    expect(
+      mockState.spawn,
+      'a foreign coordinator answered but is not the incumbent the discovery record named',
+    ).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('different coordinator identity'));
+    expect(warnSpy, 'must not reuse the draining wording for a mismatched-identity reply').not.toHaveBeenCalledWith(
+      expect.stringContaining('draining'),
+    );
+  });
+
   it.each([0, 23])(
     'should report an immediate backend startup exit with code %s when no coordinator is live',
     async (code) => {

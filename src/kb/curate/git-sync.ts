@@ -46,6 +46,13 @@ export type GitConflictState = {
   paths: string[];
   markerPaths: string[];
   unmergedPaths: string[];
+  /**
+   * The subset of `unmergedPaths` where the index carries both stage 2 ("ours") and stage 3 ("theirs")
+   * content. That pair is what a content-level 3-way merge — the default text merge, or a configured merge
+   * driver — requires to run at all; a delete/modify conflict is missing one of the two by construction (the
+   * side that deleted has no blob to stage), so it can never appear here even though it is unmerged.
+   */
+  contentConflictPaths: string[];
 };
 
 export type GitSyncPathChange =
@@ -95,8 +102,14 @@ function gitRaw(processPort: GitProcessPort, root: string, args: string[], timeo
   });
 }
 
-function parseUnmergedPaths(raw: string): string[] {
-  const paths = new Set<string>();
+/**
+ * `git ls-files -u <path>` prints one line per (stage, path) pair — `<mode> <object> <stage>\t<path>` — with
+ * stage 1/2/3 meaning base/ours/theirs. Reading the stage column, not just the path, is what lets a caller
+ * tell a content conflict (stage 2 and 3 both present) apart from a delete/modify one (exactly one of the two,
+ * since the side that deleted has no blob to stage) from this single command's output.
+ */
+function parseUnmergedIndex(raw: string): { paths: string[]; contentConflictPaths: string[] } {
+  const stagesByPath = new Map<string, Set<number>>();
   for (const line of raw.split('\n')) {
     if (line.trim() === '') {
       continue;
@@ -106,11 +119,23 @@ function parseUnmergedPaths(raw: string): string[] {
       continue;
     }
     const path = line.slice(tabIndex + 1).trim();
-    if (path.length > 0) {
-      paths.add(path);
+    if (path.length === 0) {
+      continue;
     }
+    const stage = Number.parseInt(line.slice(0, tabIndex).trim().split(/\s+/u)[2] ?? '', 10);
+    const stages = stagesByPath.get(path) ?? new Set<number>();
+    if (Number.isFinite(stage)) {
+      stages.add(stage);
+    }
+    stagesByPath.set(path, stages);
   }
-  return [...paths].sort();
+
+  const paths = [...stagesByPath.keys()].sort();
+  const contentConflictPaths = paths.filter((path) => {
+    const stages = stagesByPath.get(path);
+    return stages !== undefined && stages.has(2) && stages.has(3);
+  });
+  return { paths, contentConflictPaths };
 }
 
 function parseDiffCheckMarkerPaths(raw: string): string[] {
@@ -142,10 +167,10 @@ export function detectGitConflictState({
 }): GitConflictState {
   const unmergedResult = gitRaw(processPort, root, ['ls-files', '-u', '--', ...paths], 5000);
   const unmergedOutput = `${unmergedResult.stdout}\n${unmergedResult.stderr}`;
-  const unmergedPaths =
+  const { paths: unmergedPaths, contentConflictPaths } =
     unmergedResult.error !== undefined || unmergedResult.status === null || unmergedResult.status > 1
-      ? []
-      : parseUnmergedPaths(unmergedOutput);
+      ? { paths: [], contentConflictPaths: [] }
+      : parseUnmergedIndex(unmergedOutput);
 
   const diffCheckResult = gitRaw(processPort, root, ['diff', '--check', 'HEAD', '--', ...paths], 5000);
   const diffCheckOutput = `${diffCheckResult.stdout}\n${diffCheckResult.stderr}`;
@@ -157,6 +182,7 @@ export function detectGitConflictState({
     paths: [...pathSet].sort(),
     markerPaths,
     unmergedPaths,
+    contentConflictPaths,
   };
 }
 
@@ -302,7 +328,7 @@ export function createGitSyncController({
     const outcome = classifyExecOutcome(result);
     if (outcome.kind === 'no-answer' || outcome.kind === 'launch-refused') {
       // Said out loud because the operator asked for this: with `CORAL_KB_GIT_SYNC=1`, a cycle that skips
-      // sync is a cycle that did not do the thing they enabled, and it used to be indistinguishable from a
+      // sync is a cycle that did not do the thing they enabled, and it is otherwise indistinguishable from a
       // repository with no remote configured. Nothing is remembered — the scheduler asks again next cycle,
       // which is why this needs no interval where `isGitRepo` does. `launch-refused` (git itself could not be
       // launched) folds in here rather than returning `'no'` silently: it says exactly as little about whether
@@ -316,6 +342,11 @@ export function createGitSyncController({
       // stdout, and every failure — outside a repository, a corrupted `.git`, anything fatal — exits 128 with
       // nothing on stdout. There is no outcome where a non-zero exit means "no remote"; it means git refused
       // to answer the question, same as a timeout, so it must not be read as the settled "no" below.
+      //
+      // Nothing is cached here, by the same reasoning as the branch above, so a repository that starts
+      // answering `git remote` cleanly again ends this on its very next scheduled `gitSync`/`gitPush` call —
+      // the exit is "the next cycle's own probe", not a separate latch to clear. A repository whose `.git`
+      // stays broken for good has no other exit than that fix, and repeats this warn every cycle until then.
       backendLog.warn(
         `[KB] git sync could not list remotes for ${root} (git remote exited ${outcome.status}); skipping this cycle.`,
       );
@@ -564,8 +595,8 @@ export function createGitSyncController({
 
   /**
    * `.gitattributes` names the merge drivers by name; the `git config` calls below are what make those names
-   * resolve to anything. Writing the attributes file first — as this used to — let `.gitattributes` claim a
-   * driver before `git config` had ever registered it: if `isGitRepo()` was momentarily false, or any one
+   * resolve to anything. Writing the attributes file first would let `.gitattributes` claim a driver before
+   * `git config` had ever registered it: if `isGitRepo()` was momentarily false, or any one
    * `git config` call threw (both best-effort, both plausible under fork pressure), the attributes stayed
    * written while the drivers stayed unconfigured for the rest of this process's life, since this function
    * runs once at daemon start and — for an installation that never sets `CORAL_KB_GIT_SYNC=1` — never again.
@@ -627,20 +658,18 @@ export function createGitSyncController({
   }
 
   /**
-   * `ls-files -u` marks a path unmerged whenever git could not resolve it on its own — including a path a
-   * merge driver refused to answer for. `FrontmatterMergeUnavailableError`'s docstring is the reason why: a
-   * refused path reaches git as a non-zero driver exit, so git marks it conflicted, but nothing was written to
-   * `%A`, so it carries no `<<<<<<<` markers. `diff --check` finds only paths that do. A path present in the
-   * first set and absent from the second is therefore a path the assistant's prompt — "resolve the remaining
-   * <<<<<<< / ======= / >>>>>>> conflicts ... stage all resolved files with git add" — has nothing to act on:
-   * it looks already resolved, and a blanket `git add -A` (the assistant's own, or the fallback below) stages
-   * whatever content is sitting there as the resolution. That content is not the user's edit (verified against
-   * git 2.43: it is git's pre-driver "ours" seed, the upstream side under Coral's rebase). Recovery, not the
-   * assistant, is what may touch a path like this.
+   * Narrowed to `contentConflictPaths` rather than every unmerged path: a delete/modify conflict is unmerged
+   * with no markers too, but for a reason this function must not act on — the working-tree file there is a
+   * plain resolvable side (verified against git 2.43: the surviving version, staged by `git add` the ordinary
+   * way), not an unreviewed merge seed. Restricting to paths where both "ours" and "theirs" content exist is
+   * what tells the two apart: only that shape is one where a content merge — the default text merge, or a
+   * configured driver — was even attempted, so only there does "no markers" mean the merge produced nothing
+   * reviewable. `FrontmatterMergeUnavailableError` documents what a refused driver leaves at a path in that
+   * shape.
    */
   function markerlessUnmergedPaths(state: GitConflictState): string[] {
     const markerPathSet = new Set(state.markerPaths);
-    return state.unmergedPaths.filter((path) => !markerPathSet.has(path));
+    return state.contentConflictPaths.filter((path) => !markerPathSet.has(path));
   }
 
   function sanitizeRefComponent(value: string): string {
@@ -735,16 +764,28 @@ export function createGitSyncController({
     return null;
   }
 
+  /**
+   * `entryForConflictPath` only recognizes `notes/`, `sources/`, `communities/`, and `wiki/` `.md` paths —
+   * every KB entry has one of those four kinds. `principles/*.md`, `.gitattributes`, and `.entity-graph.json`
+   * are real paths in `KB_GIT_DIFF_PATHS` with no entry kind to key a quarantine row on, so they come back here
+   * as `unrecordable` rather than being silently dropped: `recoverRebaseConflict` below reads this list to
+   * decide whether it may report full success.
+   */
   function quarantineConflictPaths(
     paths: readonly string[],
     recoveryRef: string,
-  ): Array<{ entryId: KbEntryId; slug: string; path: string }> {
+  ): { quarantined: Array<{ entryId: KbEntryId; slug: string; path: string }>; unrecordable: string[] } {
     const detectedAt = nowIsoString(kb.time);
     const quarantined: Array<{ entryId: KbEntryId; slug: string; path: string }> = [];
+    const unrecordable: string[] = [];
     const seen = new Set<KbEntryId>();
     for (const path of paths) {
       const entry = entryForConflictPath(path);
-      if (entry === null || seen.has(entry.entryId)) {
+      if (entry === null) {
+        unrecordable.push(path);
+        continue;
+      }
+      if (seen.has(entry.entryId)) {
         continue;
       }
       seen.add(entry.entryId);
@@ -758,15 +799,23 @@ export function createGitSyncController({
       });
       quarantined.push({ entryId: entry.entryId, slug: entry.slug, path });
     }
-    return quarantined;
+    return { quarantined, unrecordable };
   }
 
-  function logRecoveryOutcome(recoveryRef: string, branch: string, quarantined: readonly { slug: string }[]): void {
+  function logRecoveryOutcome(
+    recoveryRef: string,
+    branch: string,
+    quarantined: readonly { slug: string }[],
+    unrecordable: readonly string[],
+  ): void {
     const quarantinedSlugs = quarantined.map((entry) => entry.slug).join(', ');
     backendLog.warn(
       [
         `[KB] git rebase body conflict recovered on ${branch}; local commits preserved at ${recoveryRef}; worktree reset to origin/${branch}.`,
         quarantinedSlugs.length === 0 ? undefined : `Quarantined entries: ${quarantinedSlugs}.`,
+        unrecordable.length === 0
+          ? undefined
+          : `Not tracked by 'kb diagnose' (no KB entry keys these paths): ${unrecordable.join(', ')}. Recover them from ${recoveryRef} directly.`,
         `List recovery refs with 'git for-each-ref ${RECOVERY_REF_NAMESPACE}'.`,
         `After landing or discarding recovered work, cleanup with 'git update-ref -d ${recoveryRef}'.`,
         `Coral keeps the newest ${RECOVERY_REF_KEEP_PER_BRANCH} recovery refs per branch automatically.`,
@@ -776,7 +825,18 @@ export function createGitSyncController({
     );
   }
 
-  function recoverRebaseConflict(branch: string, conflictState: GitConflictState): boolean {
+  /**
+   * `'recovered'` and `'recovered-unaccounted'` both mean the rebase was aborted and local commits are safe on
+   * `recoveryRef` — they differ only in whether every conflicted path also got a queryable quarantine row.
+   * Keeping that a type-level distinction, rather than collapsing both to one boolean, is what stops a caller
+   * from reporting full success over a path `quarantineConflictPaths` could not key a row for.
+   */
+  type RebaseRecoveryOutcome =
+    | { status: 'recovered' }
+    | { status: 'recovered-unaccounted'; unrecordablePaths: readonly string[] }
+    | { status: 'failed' };
+
+  function recoverRebaseConflict(branch: string, conflictState: GitConflictState): RebaseRecoveryOutcome {
     try {
       git(['rebase', '--abort'], 10000);
     } catch (error: unknown) {
@@ -784,7 +844,7 @@ export function createGitSyncController({
         '[KB] git rebase conflict recovery could not abort the rebase; leaving worktree untouched',
         error,
       );
-      return false;
+      return { status: 'failed' };
     }
 
     let recoveryRef: string | null;
@@ -795,22 +855,25 @@ export function createGitSyncController({
         '[KB] git rebase conflict recovery could not preserve local commits; leaving worktree untouched',
         error,
       );
-      return false;
+      return { status: 'failed' };
     }
     if (recoveryRef === null) {
       backendLog.error('[KB] git rebase conflict recovery could not read HEAD; leaving worktree untouched');
-      return false;
+      return { status: 'failed' };
     }
 
-    let quarantined: Array<{ entryId: KbEntryId; slug: string; path: string }>;
+    let quarantineOutcome: {
+      quarantined: Array<{ entryId: KbEntryId; slug: string; path: string }>;
+      unrecordable: string[];
+    };
     try {
-      quarantined = quarantineConflictPaths(conflictState.paths, recoveryRef);
+      quarantineOutcome = quarantineConflictPaths(conflictState.paths, recoveryRef);
     } catch (error: unknown) {
       backendLog.error(
         `[KB] git rebase conflict recovery preserved local commits at ${recoveryRef} but could not write conflict quarantine; leaving worktree untouched`,
         error,
       );
-      return false;
+      return { status: 'failed' };
     }
     try {
       pruneRecoveryRefs(branch);
@@ -825,11 +888,13 @@ export function createGitSyncController({
         `[KB] git rebase conflict recovery preserved local commits at ${recoveryRef} but could not reset to origin/${branch}`,
         error,
       );
-      return false;
+      return { status: 'failed' };
     }
 
-    logRecoveryOutcome(recoveryRef, branch, quarantined);
-    return true;
+    logRecoveryOutcome(recoveryRef, branch, quarantineOutcome.quarantined, quarantineOutcome.unrecordable);
+    return quarantineOutcome.unrecordable.length === 0
+      ? { status: 'recovered' }
+      : { status: 'recovered-unaccounted', unrecordablePaths: quarantineOutcome.unrecordable };
   }
 
   async function resolveConflictsWithClaude(signal?: AbortSignal): Promise<boolean> {
@@ -882,10 +947,27 @@ export function createGitSyncController({
     }
   }
 
+  /**
+   * `hasConflictMarkers()` above already treats a throw from this same probe as "assume the worst, let
+   * recovery decide" rather than propagating it — every call site here needs that same fallback, since an
+   * unguarded throw would escape this loop, be swallowed by `gitSync`'s outer catch as "offline or no remote",
+   * and leave the rebase in progress for the next cycle's `git add -A` to run against. The empty path lists on
+   * the fallback are honest about what happened: the state genuinely could not be read, so nothing is claimed
+   * to have been individually inspected, only that recovery — abort, preserve, reset — still runs.
+   */
+  function detectConflictStateOrFallback(): GitConflictState {
+    try {
+      return detectConflictState();
+    } catch (error: unknown) {
+      backendLog.error('[KB] git rebase conflict recovery could not read the conflict state; recovering blind', error);
+      return { hasMarkers: true, paths: [], markerPaths: [], unmergedPaths: [], contentConflictPaths: [] };
+    }
+  }
+
   async function continueOrRecoverRebase(
     branch: string,
     signal?: AbortSignal,
-  ): Promise<'continued' | 'llm-resolved' | 'recovered' | 'failed'> {
+  ): Promise<'continued' | 'llm-resolved' | 'recovered' | 'recovered-unaccounted' | 'failed'> {
     let usedLlmConflictResolution = false;
 
     for (let attempt = 0; attempt < 64; attempt += 1) {
@@ -895,17 +977,13 @@ export function createGitSyncController({
       }
 
       if (hasConflictMarkers()) {
-        const conflictState = detectConflictState();
+        const conflictState = detectConflictStateOrFallback();
         const unresolvable = markerlessUnmergedPaths(conflictState);
         if (unresolvable.length > 0) {
-          // §11: a refusal must be visible as durable status, not swallowed and re-tried as if it were a
-          // normal conflict. `recoverRebaseConflict` below is that durable status — it quarantines each path
-          // in `conflictState.paths` (which includes these) in the curate DB, keyed by entry — not just this
-          // log line.
           backendLog.warn(
             `[KB] git rebase conflict on ${branch} leaves ${unresolvable.join(', ')} unmerged with no conflict markers for the assistant to act on (a merge driver may have refused to answer, or the conflict has no text form); recovering instead of asking it to resolve markers that are not there.`,
           );
-          return recoverRebaseConflict(branch, conflictState) ? 'recovered' : 'failed';
+          return recoverRebaseConflict(branch, conflictState).status;
         }
 
         if (await resolveConflictsWithClaude(signal)) {
@@ -919,7 +997,7 @@ export function createGitSyncController({
           abortInProgressRebase();
           return 'failed';
         }
-        return recoverRebaseConflict(branch, detectConflictState()) ? 'recovered' : 'failed';
+        return recoverRebaseConflict(branch, detectConflictStateOrFallback()).status;
       }
 
       try {
@@ -933,9 +1011,9 @@ export function createGitSyncController({
       }
     }
 
-    const conflictState = detectConflictState();
+    const conflictState = detectConflictStateOrFallback();
     if (conflictState.hasMarkers || isRebaseInProgress()) {
-      return recoverRebaseConflict(branch, conflictState) ? 'recovered' : 'failed';
+      return recoverRebaseConflict(branch, conflictState).status;
     }
 
     return 'failed';
@@ -983,7 +1061,7 @@ export function createGitSyncController({
         await gitAsync(['rebase', `origin/${branch}`]);
       } catch {
         const rebaseResult = await continueOrRecoverRebase(branch, signal);
-        if (rebaseResult === 'recovered') {
+        if (rebaseResult === 'recovered' || rebaseResult === 'recovered-unaccounted') {
           usedConflictRecovery = true;
         }
         if (rebaseResult === 'llm-resolved') {
@@ -999,6 +1077,11 @@ export function createGitSyncController({
     // rev-parse HEAD` could not be answered, and `null === null` is true. A guard placed after the equality
     // check never runs for the both-unreadable case — the common one, since whatever made the first read fail
     // is still in effect for the second — so that guard was dead code for exactly the case it names.
+    //
+    // `readHead()` also returns `null` for a repository with no commits yet, not only for a read that could
+    // not be answered — both read the same to this guard, and both share the same exit: the next cycle whose
+    // `git rev-parse HEAD` resolves (the KB's first commit lands, or the interruption clears) reports its real
+    // diff instead of `ambiguous`. A KB that never commits anything stays on this branch until it does.
     if (headBeforeSync === null || headAfterSync === null) {
       return { kind: 'ambiguous' };
     }

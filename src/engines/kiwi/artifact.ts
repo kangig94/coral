@@ -1,4 +1,4 @@
-import { errorMessage } from '../../infra/error-format.js';
+import { errorMessage, thrownErrnoCode } from '../../infra/error-format.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { KIWI_INSTALL_ONLY_ID, KIWI_NLP_VERSION } from './constants.js';
 import { isInstallPathUnwritableError, kiwiInstallError, type KiwiInstallError } from './install-error.js';
@@ -134,8 +134,9 @@ function installResult(
 function artifactInstallError(error: unknown): KiwiInstallError {
   const causeName = error instanceof Error ? error.name : typeof error;
   const detail = errorMessage(error);
-  const causeCode =
-    error instanceof Error && 'code' in error && typeof error.code === 'string' ? error.code : undefined;
+  // `runtime/download.ts` rethrows a `fetch` rejection unchanged, and `fetch` hangs the errno off `.cause`, so
+  // reading only the top level reported an unreachable host as `detail: "fetch failed"` with no code at all.
+  const causeCode = thrownErrnoCode(error);
 
   return kiwiInstallError('expansion_install_artifact_failed', {
     name: KIWI_INSTALL_ONLY_ID,

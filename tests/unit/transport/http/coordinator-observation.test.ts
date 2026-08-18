@@ -30,12 +30,13 @@ vi.mock('#src/infra/node-process.js', async (importOriginal) => {
 import { observeCoordinator } from '#src/transport/http/backend/coordinator-observation.js';
 
 const INFO_FILE = '/run/coral/coordinator.json';
+const SOCKET_PATH = '/run/coral/coordinator.sock';
 
-function runtime() {
+function runtime(socketExists = false) {
   return {
-    storage: {},
+    storage: { existsSync: (path: string) => socketExists && path === SOCKET_PATH },
     env: {},
-    paths: { coral: { coordinator: { infoFile: INFO_FILE } } },
+    paths: { coral: { coordinator: { infoFile: INFO_FILE, socketPath: SOCKET_PATH } } },
   } as unknown as Parameters<typeof observeCoordinator>[0];
 }
 
@@ -73,10 +74,22 @@ describe('observeCoordinator', () => {
     },
   );
 
-  it('reports a missing record as an absence', () => {
+  it('reports a missing record with no socket as an absence', () => {
     mockState.read = { kind: 'missing' };
 
     expect(observeCoordinator(runtime())).toEqual({ kind: 'no-record' });
+  });
+
+  // A coordinator binds its socket before it writes its record, so a missing record alone does not place one
+  // absent. The socket is the earlier evidence, and holding it is what the two absences below do not need: it
+  // is the only thing separating "nothing started" from "something started and has not recorded itself yet".
+  it('refuses to call a missing record an absence while the socket is still there', () => {
+    mockState.read = { kind: 'missing' };
+
+    expect(observeCoordinator(runtime(true))).toEqual({
+      kind: 'no-record-socket-present',
+      socketPath: SOCKET_PATH,
+    });
   });
 
   // Both halves of the dead coordinator's identity, because `status` scopes a startup diagnostic by both: a

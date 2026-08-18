@@ -237,17 +237,16 @@ const MAX_MERGE_FILE_CONFLICT_COUNT = 127;
  * So a numeric status is read as an answer only inside the range where it is a count. Outside it, and when the
  * throw carries no numeric status at all, the result comes back as its own variant rather than as a number a
  * caller might act on. `execFileSync` reports its own timeout with `code: 'ETIMEDOUT'` and `status: null`, and
- * a launch failure the same way with an errno — and this used to fall through to `return 1`, which for this
- * command means "one conflict". That mattered more here than anywhere else on this branch: `oursPath` is git's
+ * a launch failure the same way with an errno; read as a number, either becomes `1`, which for this command
+ * means "one conflict". That matters more here than anywhere else: `oursPath` is git's
  * `%A`, the real working-tree file, and `runFrontmatterMergeDriver` writes it unconditionally. So a probe that
  * never ran wrote the *unmerged* body — with no conflict markers — over the user's file while telling git the
  * merge conflicted, and the next `git add` or conflict-resolution pass made the loss permanent. Nothing
  * observed the merge; something finalized it.
  *
  * A KB note holding a NUL byte reaches that same end through a different door, on an install with no timeout
- * and nothing wedged, which is why the bound on the count belongs to this fix rather than beside it: the first
- * version of this comment argued a numeric status was "an answer whatever its value", and the two values that
- * disprove it are the two most likely to be seen.
+ * and nothing wedged, which is why the range check and the timeout belong together: `129` and `255` are the
+ * two numeric statuses most likely to be seen, and neither is a conflict count.
  *
  * The bound that makes the timeout reachable on a healthy install is deliberate and stays (an unbounded
  * synchronous subprocess cannot be interrupted). What changes is that a non-answer now refuses instead of
@@ -255,8 +254,8 @@ const MAX_MERGE_FILE_CONFLICT_COUNT = 127;
  *
  * `classifyMergeFileFailure` composes `classifyThrownExecOutcome` (`infra/port-types.ts`) rather than
  * re-deriving "read a thrown subprocess error" locally — that classifier already draws the launch-refused /
- * no-answer / answered split for exactly this thrown shape, and a fourth local spelling of it is what this
- * type used to be. It still returns this narrower type instead of `ExecOutcome` directly, because
+ * no-answer / answered split for exactly this thrown shape. It still returns this narrower type instead of
+ * `ExecOutcome` directly, because
  * `classifyThrownExecOutcome`'s `answered` means only "a numeric status was thrown": full delegation would
  * read `129` (a usage error) and `255` (git refusing the inputs) as 129 and 255 conflicts. So only its
  * `answered` case gets refined further, against the command-specific 1..127 range below — `launch-refused` and

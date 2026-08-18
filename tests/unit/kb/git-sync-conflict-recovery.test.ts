@@ -98,6 +98,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.unstubAllGlobals();
   if (originalClaudeConfigDir === undefined) {
     delete process.env.CLAUDE_CONFIG_DIR;
   } else {
@@ -277,6 +278,10 @@ describe('git sync conflict recovery', () => {
     const peer = join(root, 'peer');
     const pluginRoot = join(root, 'plugin');
     writeFakeMergeDriver(pluginRoot);
+    // `resolvePluginRoot()` checks the esbuild-injected `__PLUGIN_ROOT__` global first, and `vitest/setup.ts`
+    // pins that to this repo's own `clients/` for every test — unstubbed, the merge driver invoked below would
+    // be the real bundled `coral-cli.cjs`, not the fake one just written above.
+    vi.stubGlobal('__PLUGIN_ROOT__', undefined);
 
     git(root, ['init', '--bare', '--initial-branch=main', remote]);
     mkdirSync(seed, { recursive: true });
@@ -381,6 +386,13 @@ describe('git sync conflict recovery', () => {
 
     const ok = (stdout = ''): ExecResult => ({ stdout, stderr: '', status: 0 });
     const fail = (stderr: string): ExecResult => ({ stdout: '', stderr, status: 1 });
+    // Measured against real git 2.43: `git diff --check` writes findings to stdout and exits 2, not stderr/1.
+    const diffCheckMarkers = (message: string): ExecResult => ({ stdout: message, stderr: '', status: 2 });
+    // A real text conflict carries content on both "ours" (stage 2) and "theirs" (stage 3) — the shape
+    // `git-sync.ts`'s `contentConflictPaths` requires before treating an unmerged, markerless path as one a
+    // driver refused rather than a delete/modify conflict, which never has both.
+    const unmergedContentConflict = (path: string): string =>
+      [1, 2, 3].map((stage) => `100644 deadbeef ${stage}\t${path}`).join('\n') + '\n';
 
     const processPort = {
       exec: vi.fn(async (command: string, args: string[], _options?: RuntimeExecOptions): Promise<ExecResult> => {
@@ -417,10 +429,10 @@ describe('git sync conflict recovery', () => {
           return ok();
         }
         if (args[0] === 'ls-files' && args[1] === '-u') {
-          return ok(conflictMarkers ? '100644 deadbeef 1\tnotes/conflict.md\n' : '');
+          return ok(conflictMarkers ? unmergedContentConflict('notes/conflict.md') : '');
         }
         if (args[0] === 'diff' && args[1] === '--check') {
-          return conflictMarkers ? fail('notes/conflict.md:9: leftover conflict marker') : ok();
+          return conflictMarkers ? diffCheckMarkers('notes/conflict.md:9: leftover conflict marker') : ok();
         }
         if (args[0] === 'add' && args[1] === '-A') {
           return ok();
@@ -569,9 +581,14 @@ describe('git sync conflict recovery', () => {
         }
         // The refused path stays unmerged in the index through the whole recovery flow: the driver never
         // resolved it, and — this is the property under test — neither the fallback `git add -A` nor the
-        // assistant may either.
+        // assistant may either. Stages 1/2/3 all present is the shape a driver-eligible content conflict
+        // leaves (base, ours, and theirs all exist), distinguishing it from a delete/modify conflict.
         if (args[0] === 'ls-files' && args[1] === '-u') {
-          return ok(rebaseInProgress ? '100644 deadbeef 1\tnotes/conflict.md\n' : '');
+          return ok(
+            rebaseInProgress
+              ? [1, 2, 3].map((stage) => `100644 deadbeef ${stage}\tnotes/conflict.md`).join('\n') + '\n'
+              : '',
+          );
         }
         // No markers to find, by construction: a refused driver writes nothing to `%A`.
         if (args[0] === 'diff' && args[1] === '--check') {
@@ -649,6 +666,404 @@ describe('git sync conflict recovery', () => {
     ]);
   });
 
+  // B1: `.entity-graph.json` is in `KB_GIT_DIFF_PATHS` and carries the entity-graph merge driver, but
+  // `entryForConflictPath` recognizes only `notes|sources|communities|wiki` `.md` paths — it has no KB entry to
+  // key a quarantine row on. Recovery must still preserve the work and never crash, but `kb diagnose` has
+  // nothing to show for this path, and this pins that the quarantine table stays honestly empty rather than
+  // claiming a row that does not exist.
+  it('recovers a refused .entity-graph.json conflict without quarantining a path no KB entry maps to', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'coral-rebase-markerless-entity-graph-'));
+    roots.push(root);
+    process.env.CLAUDE_CONFIG_DIR = join(root, '.claude');
+
+    const runtime = createRealRuntime('prod');
+    const db = createKbTestDb(root);
+    const kb = createTestKbRuntime({
+      markdownRoot: root,
+      runtimeDir: root,
+      db,
+      runtime,
+    });
+
+    let rebaseInProgress = false;
+    let head = 'local-before';
+
+    const ok = (stdout = ''): ExecResult => ({ stdout, stderr: '', status: 0 });
+    const fail = (stderr: string): ExecResult => ({ stdout: '', stderr, status: 1 });
+    const complete = vi.fn(async () => '');
+
+    const processPort = {
+      exec: vi.fn(async (command: string, args: string[], _options?: RuntimeExecOptions): Promise<ExecResult> => {
+        expect(command).toBe('git');
+        if (args[0] === 'fetch' && args[1] === 'origin') {
+          return ok();
+        }
+        if (args[0] === 'rebase' && args[1] === 'origin/main') {
+          rebaseInProgress = true;
+          return fail('CONFLICT (content): Merge conflict in .entity-graph.json');
+        }
+        throw new Error(`unexpected async git ${args.join(' ')}`);
+      }),
+      execSync: vi.fn((command: string, args: string[], _options?: RuntimeExecOptions): ExecResult => {
+        expect(command).toBe('git');
+
+        if (args[0] === 'rev-parse' && args[1] === '--is-inside-work-tree') {
+          return ok('true\n');
+        }
+        if (args[0] === 'remote') {
+          return ok('origin\n');
+        }
+        if (args[0] === 'config') {
+          return ok();
+        }
+        if (args[0] === 'symbolic-ref') {
+          return ok('origin/main\n');
+        }
+        if (args[0] === 'rev-parse' && args[1] === 'HEAD') {
+          return ok(`${head}\n`);
+        }
+        if (args[0] === 'status' && args[1] === '--porcelain') {
+          return ok();
+        }
+        if (args[0] === 'ls-files' && args[1] === '-u') {
+          return ok(
+            rebaseInProgress
+              ? [1, 2, 3].map((stage) => `100644 deadbeef ${stage}\t.entity-graph.json`).join('\n') + '\n'
+              : '',
+          );
+        }
+        if (args[0] === 'diff' && args[1] === '--check') {
+          return ok();
+        }
+        if (args[0] === 'rev-parse' && args[1] === '--git-path' && args[2] === 'rebase-merge') {
+          return ok('.git/rebase-merge\n');
+        }
+        if (args[0] === 'rev-parse' && args[1] === '--git-path' && args[2] === 'rebase-apply') {
+          return ok('.git/rebase-apply\n');
+        }
+        if (args[0] === 'rebase' && args[1] === '--abort') {
+          rebaseInProgress = false;
+          return ok();
+        }
+        if (args[0] === 'update-ref') {
+          return ok();
+        }
+        if (args[0] === 'for-each-ref') {
+          return ok();
+        }
+        if (args[0] === 'reset' && args[1] === '--hard') {
+          head = 'origin-main';
+          return ok();
+        }
+
+        throw new Error(`unexpected sync git ${args.join(' ')}`);
+      }),
+    };
+
+    const storagePort = {
+      readFileSync: vi.fn(() => {
+        throw new Error('missing');
+      }),
+      writeAtomicSync: vi.fn(() => true),
+      existsSync: vi.fn((path: string) => {
+        if (path === join(root, '.git', 'rebase-merge')) {
+          return rebaseInProgress;
+        }
+        if (path === join(root, '.git', 'rebase-apply')) {
+          return false;
+        }
+        return false;
+      }),
+      statSync: vi.fn(() => ({ size: 0, mtimeMs: 0, isDirectory: () => false, isFile: () => true })) as never,
+      rmSync: vi.fn(),
+    };
+
+    const controller = createGitSyncController({
+      kb,
+      curateAssistant: { complete },
+      processPort,
+      storagePort,
+      envPort: {
+        get: (key: string) => (key === 'CORAL_KB_GIT_SYNC' ? '1' : undefined),
+      },
+    });
+
+    const syncResult = await controller.gitSync();
+
+    expect(syncResult).toEqual({ kind: 'ambiguous' });
+    expect(complete, 'a markerless-unmerged path must never reach the assistant').not.toHaveBeenCalled();
+    expect(
+      processPort.execSync.mock.calls.some(([, args]) => args[0] === 'rebase' && args[1] === '--abort'),
+      'the conflict still recovers — abort, preserve, reset — with no entry to quarantine',
+    ).toBe(true);
+    expect(
+      readCurateConflictQuarantine(curateDb(kb)),
+      'no KB entry maps to .entity-graph.json, so the table stays empty rather than claiming a row',
+    ).toEqual([]);
+  });
+
+  // S1: a delete/modify conflict is unmerged with no markers too, but for a reason the recovery diversion must
+  // not act on — `git ls-files -u` shows only one of stage 2/3 (the side that deleted has no blob), so
+  // `contentConflictPaths` excludes it. This pins that such a path still reaches the assistant instead of
+  // being swept into recovery, as it did before the diversion existed.
+  it('lets the assistant resolve a delete/modify conflict instead of diverting it to recovery', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'coral-rebase-delete-modify-'));
+    roots.push(root);
+    process.env.CLAUDE_CONFIG_DIR = join(root, '.claude');
+
+    const runtime = createRealRuntime('prod');
+    const db = createKbTestDb(root);
+    const kb = createTestKbRuntime({
+      markdownRoot: root,
+      runtimeDir: root,
+      db,
+      runtime,
+    });
+
+    let unresolved = false;
+    let head = 'local-before';
+
+    const ok = (stdout = ''): ExecResult => ({ stdout, stderr: '', status: 0 });
+    const fail = (stderr: string): ExecResult => ({ stdout: '', stderr, status: 1 });
+    const complete = vi.fn(async () => {
+      // The assistant resolves a delete/modify conflict by staging the surviving side, same as an operator
+      // running `git add` on it — there are no markers for it to review either way.
+      unresolved = false;
+      return 'kept the modified side';
+    });
+
+    const processPort = {
+      exec: vi.fn(async (command: string, args: string[], _options?: RuntimeExecOptions): Promise<ExecResult> => {
+        expect(command).toBe('git');
+        if (args[0] === 'fetch' && args[1] === 'origin') {
+          return ok();
+        }
+        if (args[0] === 'rebase' && args[1] === 'origin/main') {
+          unresolved = true;
+          return fail('CONFLICT (modify/delete): notes/gone.md deleted in HEAD and modified in origin/main');
+        }
+        throw new Error(`unexpected async git ${args.join(' ')}`);
+      }),
+      execSync: vi.fn((command: string, args: string[], _options?: RuntimeExecOptions): ExecResult => {
+        expect(command).toBe('git');
+
+        if (args[0] === 'rev-parse' && args[1] === '--is-inside-work-tree') {
+          return ok('true\n');
+        }
+        if (args[0] === 'remote') {
+          return ok('origin\n');
+        }
+        if (args[0] === 'config') {
+          return ok();
+        }
+        if (args[0] === 'symbolic-ref') {
+          return ok('origin/main\n');
+        }
+        if (args[0] === 'rev-parse' && args[1] === 'HEAD') {
+          return ok(`${head}\n`);
+        }
+        if (args[0] === 'status' && args[1] === '--porcelain') {
+          return ok();
+        }
+        // Stage 1 (base) and stage 3 (theirs) only — the side that deleted (ours) has no blob to stage.
+        if (args[0] === 'ls-files' && args[1] === '-u') {
+          return ok(unresolved ? '100644 deadbeef 1\tnotes/gone.md\n100644 deadbeef 3\tnotes/gone.md\n' : '');
+        }
+        // A delete/modify conflict never carries conflict markers.
+        if (args[0] === 'diff' && args[1] === '--check') {
+          return ok();
+        }
+        if (args[0] === 'rev-parse' && args[1] === '--git-path' && args[2] === 'rebase-merge') {
+          return ok('.git/rebase-merge\n');
+        }
+        if (args[0] === 'rev-parse' && args[1] === '--git-path' && args[2] === 'rebase-apply') {
+          return ok('.git/rebase-apply\n');
+        }
+        if (args[0] === 'add' && args[1] === '-A') {
+          return ok();
+        }
+        if (args.at(-2) === 'rebase' && args.at(-1) === '--continue') {
+          unresolved = false;
+          head = 'local-after';
+          return ok('successfully rebased and updated refs/heads/main\n');
+        }
+
+        throw new Error(`unexpected sync git ${args.join(' ')}`);
+      }),
+    };
+
+    const storagePort = {
+      readFileSync: vi.fn(() => {
+        throw new Error('missing');
+      }),
+      writeAtomicSync: vi.fn(() => true),
+      existsSync: vi.fn((path: string) => path === join(root, '.git', 'rebase-merge') && unresolved),
+      statSync: vi.fn(() => ({ size: 0, mtimeMs: 0, isDirectory: () => false, isFile: () => true })) as never,
+      rmSync: vi.fn(),
+    };
+
+    const controller = createGitSyncController({
+      kb,
+      curateAssistant: { complete },
+      processPort,
+      storagePort,
+      envPort: {
+        get: (key: string) => (key === 'CORAL_KB_GIT_SYNC' ? '1' : undefined),
+      },
+    });
+
+    const syncResult = await controller.gitSync();
+
+    expect(
+      complete,
+      'a delete/modify conflict still reaches the assistant, not the recovery diversion',
+    ).toHaveBeenCalledTimes(1);
+    expect(
+      processPort.execSync.mock.calls.some(([, args]) => args[0] === 'rebase' && args[1] === '--abort'),
+      'no recovery should have run for a path recognised as resolvable',
+    ).toBe(false);
+    expect(syncResult).toEqual({ kind: 'ambiguous' });
+  });
+
+  // S1: one markerless content conflict anywhere in the set still recovers the whole rebase rather than
+  // resolving the sibling that does carry markers — the assistant's own `git add -A` cannot distinguish a
+  // reviewed resolution from the unrecorded seed left at the markerless path, so partial resolution is not
+  // attempted. This pins that behavior for a mixed set and confirms it is not silent: the recordable path
+  // still gets a quarantine row even though the whole rebase, including its own conflict, gets reset.
+  it('recovers a mixed conflict set instead of resolving only the marker-bearing path', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'coral-rebase-mixed-conflict-'));
+    roots.push(root);
+    process.env.CLAUDE_CONFIG_DIR = join(root, '.claude');
+
+    const runtime = createRealRuntime('prod');
+    const db = createKbTestDb(root);
+    const kb = createTestKbRuntime({
+      markdownRoot: root,
+      runtimeDir: root,
+      db,
+      runtime,
+    });
+
+    let rebaseInProgress = false;
+    let head = 'local-before';
+
+    const ok = (stdout = ''): ExecResult => ({ stdout, stderr: '', status: 0 });
+    const fail = (stderr: string): ExecResult => ({ stdout: '', stderr, status: 1 });
+    const diffCheckMarkers = (message: string): ExecResult => ({ stdout: message, stderr: '', status: 2 });
+    const complete = vi.fn(async () => '');
+
+    const processPort = {
+      exec: vi.fn(async (command: string, args: string[], _options?: RuntimeExecOptions): Promise<ExecResult> => {
+        expect(command).toBe('git');
+        if (args[0] === 'fetch' && args[1] === 'origin') {
+          return ok();
+        }
+        if (args[0] === 'rebase' && args[1] === 'origin/main') {
+          rebaseInProgress = true;
+          return fail(
+            'CONFLICT (content): Merge conflict in notes/conflict.md\nCONFLICT (content): Merge conflict in .entity-graph.json',
+          );
+        }
+        throw new Error(`unexpected async git ${args.join(' ')}`);
+      }),
+      execSync: vi.fn((command: string, args: string[], _options?: RuntimeExecOptions): ExecResult => {
+        expect(command).toBe('git');
+
+        if (args[0] === 'rev-parse' && args[1] === '--is-inside-work-tree') {
+          return ok('true\n');
+        }
+        if (args[0] === 'remote') {
+          return ok('origin\n');
+        }
+        if (args[0] === 'config') {
+          return ok();
+        }
+        if (args[0] === 'symbolic-ref') {
+          return ok('origin/main\n');
+        }
+        if (args[0] === 'rev-parse' && args[1] === 'HEAD') {
+          return ok(`${head}\n`);
+        }
+        if (args[0] === 'status' && args[1] === '--porcelain') {
+          return ok();
+        }
+        if (args[0] === 'ls-files' && args[1] === '-u') {
+          if (!rebaseInProgress) {
+            return ok();
+          }
+          const stageLines = (path: string) => [1, 2, 3].map((stage) => `100644 deadbeef ${stage}\t${path}`);
+          return ok([...stageLines('notes/conflict.md'), ...stageLines('.entity-graph.json')].join('\n') + '\n');
+        }
+        if (args[0] === 'diff' && args[1] === '--check') {
+          // Only notes/conflict.md carries markers — .entity-graph.json's driver refused and left none.
+          return rebaseInProgress ? diffCheckMarkers('notes/conflict.md:9: leftover conflict marker') : ok();
+        }
+        if (args[0] === 'rev-parse' && args[1] === '--git-path' && args[2] === 'rebase-merge') {
+          return ok('.git/rebase-merge\n');
+        }
+        if (args[0] === 'rev-parse' && args[1] === '--git-path' && args[2] === 'rebase-apply') {
+          return ok('.git/rebase-apply\n');
+        }
+        if (args[0] === 'rebase' && args[1] === '--abort') {
+          rebaseInProgress = false;
+          return ok();
+        }
+        if (args[0] === 'update-ref') {
+          return ok();
+        }
+        if (args[0] === 'for-each-ref') {
+          return ok();
+        }
+        if (args[0] === 'reset' && args[1] === '--hard') {
+          head = 'origin-main';
+          return ok();
+        }
+
+        throw new Error(`unexpected sync git ${args.join(' ')}`);
+      }),
+    };
+
+    const storagePort = {
+      readFileSync: vi.fn(() => {
+        throw new Error('missing');
+      }),
+      writeAtomicSync: vi.fn(() => true),
+      existsSync: vi.fn((path: string) => {
+        if (path === join(root, '.git', 'rebase-merge')) {
+          return rebaseInProgress;
+        }
+        return false;
+      }),
+      statSync: vi.fn(() => ({ size: 0, mtimeMs: 0, isDirectory: () => false, isFile: () => true })) as never,
+      rmSync: vi.fn(),
+    };
+
+    const controller = createGitSyncController({
+      kb,
+      curateAssistant: { complete },
+      processPort,
+      storagePort,
+      envPort: {
+        get: (key: string) => (key === 'CORAL_KB_GIT_SYNC' ? '1' : undefined),
+      },
+    });
+
+    const syncResult = await controller.gitSync();
+
+    expect(syncResult).toEqual({ kind: 'ambiguous' });
+    expect(
+      complete,
+      'the markerless sibling diverts the whole set before the assistant gets a turn on the resolvable one',
+    ).not.toHaveBeenCalled();
+    expect(processPort.execSync.mock.calls.some(([, args]) => args[0] === 'rebase' && args[1] === '--abort')).toBe(
+      true,
+    );
+    expect(
+      readCurateConflictQuarantine(curateDb(kb)),
+      'the recordable sibling still gets a quarantine row even though the whole set recovered',
+    ).toMatchObject([{ entryId: noteEntryId('conflict'), slug: 'conflict', path: 'notes/conflict.md' }]);
+  });
+
   it('preserves conflicting local commits on a recovery ref, unwedges push, and quarantines the entry', async () => {
     const root = mkdtempSync(join(tmpdir(), 'coral-rebase-recovery-'));
     roots.push(root);
@@ -659,6 +1074,9 @@ describe('git sync conflict recovery', () => {
     const peer = join(root, 'peer');
     const pluginRoot = join(root, 'plugin');
     writeFakeMergeDriver(pluginRoot);
+    // See the equivalent stub in the LLM-resolve test above: without it, `resolvePluginRoot()` resolves the
+    // real bundled `clients/` (fixed by `vitest/setup.ts`) instead of the fake driver just written.
+    vi.stubGlobal('__PLUGIN_ROOT__', undefined);
 
     git(root, ['init', '--bare', '--initial-branch=main', remote]);
     mkdirSync(seed, { recursive: true });

@@ -39,17 +39,21 @@ const PROJECT_IGNORE_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), 'pro
  *
  * `project-ignore.mjs` pays two bounded git forks on its ordinary path: `git rev-parse --show-toplevel`
  * (1500ms, to find the ignore root) and `git remote get-url origin` (2000ms, to derive the project directory
- * the symlink must point at). That is 3500ms of child work before its own Node startup, and this bound used to
- * be exactly 3500 — so a child doing nothing wrong, on a slow mount, was SIGTERMed while its own bounds were
- * still running, and `runProjectIgnoreMaintenance` returned `null`, which reads as "never ran".
+ * the symlink must point at). That is 3500ms of child work before its own Node startup. A budget equal to the
+ * work it bounds is not a budget: a child doing nothing wrong, on a slow mount, would be SIGTERMed while its
+ * own bounds were still running.
  *
- * A budget equal to the work it bounds is not a budget. The margin goes here rather than into shrinking either
- * probe, because shortening those trades a correct answer for headroom that belongs to the caller: a probe cut
- * short reports "could not tell" for a machine that was merely slow. This hook is registered with a 10s
- * timeout, so 5000ms still leaves half of it for everything else this file does.
+ * The margin goes here rather than into shrinking either probe, because shortening those trades a correct
+ * answer for headroom that belongs to the caller: a probe cut short reports "could not tell" for a machine
+ * that was merely slow. This hook is registered with a 10s timeout, and 5000ms is not the only cost charged
+ * against it: `renderInject` pays a further 2000ms `git remote get-url origin` of its own, in this same process
+ * rather than the child (`resolveProjectSource`, `hook-utils.mjs`) — so the two hard-bounded subprocess costs
+ * alone already sum to 7000ms, leaving well under half of the registered budget for this process's own Node
+ * startup and everything else this file does, not half of it.
  *
  * `tests/unit/hooks/project-ignore-symlink.test.ts` pins the child's 3500ms sum by reading both mocks' actual
- * options; if either bound moves, that test fails and this number has to be re-derived rather than guessed.
+ * options, and separately asserts this constant is strictly greater than that sum; if either bound moves, one
+ * of those tests fails and the number here has to be re-derived rather than guessed.
  */
 const PROJECT_IGNORE_SPAWN_TIMEOUT_MS = 5000;
 // Long enough to still catch the failure when a session starts minutes after the
@@ -163,9 +167,9 @@ try {
 
   const projectDir = process.env.CLAUDE_PROJECT_DIR;
   ensureCliPermission();
-  const ignoreMaintenance = projectDir
+  const ignoreOutcome = projectDir
     ? runProjectIgnoreMaintenance(projectDir, process.env.CORAL_AUTO_SYMLINK === '1')
-    : null;
+    : { outcome: 'no-project-dir', maintenance: null };
 
   const kbEnabled = isKbEnabled();
   const injectContent = renderInject({
@@ -181,7 +185,7 @@ try {
 
   const projectSlug = projectDir ? resolveProjectSource(projectDir).replace(/\//g, '-') : undefined;
   const wakeUpPayload = kbEnabled && projectSlug ? readProjectScopedWakeUp(resolveKbRoot(), projectSlug) : null;
-  const migrationNotice = ignoreMaintenance?.migrated
+  const migrationNotice = ignoreOutcome.maintenance?.migrated
     ? '\n\nCoral migration: moved the generated coral ignore rule from the Git-root .gitignore into .claude/.gitignore.'
     : '';
   const startupFailureNotice = readRecentStartupFailureNotice(coordinatorRunDir());
@@ -199,7 +203,9 @@ try {
   process.exit(0);
 }
 
-
+// `result.error` alone would still conflate a timeout kill with a launch that never started: Node sets
+// `result.signal` to the kill signal only in the former case, leaving it `null` in the latter, so the two are
+// told apart here rather than left for the caller to guess from a shared `null`.
 function runProjectIgnoreMaintenance(projectDir, createSymlink) {
   try {
     const args = [PROJECT_IGNORE_SCRIPT, '--project-dir', projectDir];
@@ -210,11 +216,12 @@ function runProjectIgnoreMaintenance(projectDir, createSymlink) {
       timeout: PROJECT_IGNORE_SPAWN_TIMEOUT_MS,
       maxBuffer: 16 * 1024,
     });
-    if (result.error || !result.stdout) return null;
+    if (result.error) return { outcome: result.signal ? 'killed' : 'not-spawned', maintenance: null };
+    if (!result.stdout) return { outcome: 'no-output', maintenance: null };
     const parsed = JSON.parse(result.stdout);
-    return parsed && typeof parsed === 'object' ? parsed : null;
+    return { outcome: 'ok', maintenance: parsed && typeof parsed === 'object' ? parsed : null };
   } catch {
-    return null;
+    return { outcome: 'unparseable-output', maintenance: null };
   }
 }
 

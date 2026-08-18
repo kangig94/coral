@@ -6,6 +6,7 @@ import {
 } from '../../../infra/backend-discovery.js';
 import { observeProcessLiveness } from '../../../infra/node-process.js';
 import type { CoralPaths } from '../../../infra/path/index.js';
+import type { StoragePort } from '../../../infra/port-types.js';
 
 /** A record whose `host` has been defaulted, so callers stop re-deriving it. */
 export type AddressedCoordinator = CoordinatorDiscoveryRecord & { host: string };
@@ -13,8 +14,9 @@ export type AddressedCoordinator = CoordinatorDiscoveryRecord & { host: string }
 /**
  * What `backend status` and `backend shutdown` both learn about the local coordinator before they diverge.
  *
- * The two commands ask the same three questions in the same order — can the record be read, was one written,
- * is the recorded process still there — and used to answer them separately. That produced two vocabularies for
+ * The two commands ask the same questions in the same order — can the record be read, was one written (and if
+ * not, is a coordinator mid-boot), is the recorded process still there — and used to answer them separately.
+ * That produced two vocabularies for
  * one subject: `undecodable_record` here and `unreadable_record` there for the same two lines reading the same
  * file, with `reason` typed on one side and a free-form `detail` on the other, rendered by the same `coral-cli
  * backend` surface. Two spellings of one observation is how they drifted apart twice on this branch — one
@@ -36,8 +38,16 @@ export type CoordinatorObservation =
   | Readonly<{ kind: 'addressed'; coordinator: AddressedCoordinator; pidLiveness: 'alive' | 'unknown' }>
   /** The file exists and could not be read as a record. Not an absence, and the path is the remedy. */
   | Readonly<{ kind: 'unreadable-record'; reason: 'corrupt-json' | 'shape-rejected'; path: string }>
-  /** No coordinator recorded itself. A real absence. */
+  /** No coordinator recorded itself, and its IPC socket file does not exist either. A real absence. */
   | Readonly<{ kind: 'no-record' }>
+  /**
+   * No record decoded, but the coordinator's own IPC socket file exists. `src/coordinator/lifecycle.ts` binds
+   * that socket well before it publishes the discovery record, so a coordinator caught in that exact window
+   * produces this; a socket file a coordinator left behind without unlinking it (a SIGKILL, an OOM kill)
+   * produces the same evidence and cannot be told apart from a boot in progress. Neither reading may be folded
+   * into `no-record`'s decisive absence.
+   */
+  | Readonly<{ kind: 'no-record-socket-present'; socketPath: string }>
   /**
    * A record names a pid that decisively no longer exists. Also a real absence.
    *
@@ -50,14 +60,20 @@ export type CoordinatorObservation =
   | Readonly<{ kind: 'process-absent'; pid: number; startedAt: number }>;
 
 export function observeCoordinator(
-  runtime: DiscoveryRuntime & { paths: { readonly coral: CoralPaths } },
+  runtime: DiscoveryRuntime & {
+    paths: { readonly coral: CoralPaths };
+    storage: Pick<StoragePort, 'existsSync'>;
+  },
 ): CoordinatorObservation {
   const read = readDiscoveryRecordDisposition(runtime);
   if (read.kind === 'undecodable') {
     return { kind: 'unreadable-record', reason: read.reason, path: runtime.paths.coral.coordinator.infoFile };
   }
   if (read.kind === 'missing') {
-    return { kind: 'no-record' };
+    const socketPath = runtime.paths.coral.coordinator.socketPath;
+    return runtime.storage.existsSync(socketPath)
+      ? { kind: 'no-record-socket-present', socketPath }
+      : { kind: 'no-record' };
   }
 
   // The decoded record rather than `readBackendInfo`: that helper also answers `null` when `version` or

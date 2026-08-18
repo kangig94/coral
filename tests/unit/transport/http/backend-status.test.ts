@@ -48,7 +48,7 @@ vi.mock('#src/runtime/real.js', () => ({
   })),
 }));
 
-function backendInfo(): BackendInfo {
+function backendInfo(overrides: Partial<BackendInfo> = {}): BackendInfo {
   return {
     pid: 12345,
     port: 4321,
@@ -62,6 +62,7 @@ function backendInfo(): BackendInfo {
     namespace: 'test-namespace',
     instanceId: 'test-instance',
     startedAt: 1,
+    ...overrides,
   };
 }
 
@@ -83,6 +84,20 @@ describe('getBackendStatusFull record disposition', () => {
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'not_running' });
+  });
+
+  // A missing record alone used to report `not_running` unconditionally — including for a coordinator caught
+  // between binding its IPC socket and publishing this discovery record (`observeCoordinator`'s
+  // `no-record-socket-present`). That window must not read as a confident absence.
+  it('reports no_record_socket_present, not not_running, when the coordinator socket exists without a record', async () => {
+    mockState.observed = { kind: 'no-record-socket-present', socketPath: '/tmp/coral.sock' };
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
+      status: 'no_record_socket_present',
+      socketPath: '/tmp/coral.sock',
+    });
   });
 
   // Same fields, same omission, same wrong answer as the shutdown path: `readBackendInfo` returns `null` when
@@ -170,7 +185,7 @@ describe('getBackendStatusFull record disposition', () => {
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
       status: 'unreachable',
-      responded: true,
+      cause: 'responded',
     });
   });
 
@@ -411,14 +426,15 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
       status: 'unreachable',
-      responded: true,
+      cause: 'responded',
     });
   });
 
   // The `catch` in `getBackendStatusFull` had no test that ever made `fetch` itself reject — every existing
-  // case resolved a `Response`, good or bad. `responded: false` is the one thing that branch alone produces:
-  // no response was received at all, so `formatBackendStatus` must not claim anything is listening.
-  it('reports unreachable with responded: false when the probe request never completes', async () => {
+  // case resolved a `Response`, good or bad. `cause: 'no_response'` is the one thing this branch alone
+  // produces for a plain failure: no response was received at all, so `formatBackendStatus` must not claim
+  // anything is listening.
+  it('reports unreachable with cause no_response when the probe request never completes', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => {
@@ -431,15 +447,15 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
       status: 'unreachable',
       detail: 'getaddrinfo ENOTFOUND coordinator.example',
-      responded: false,
+      cause: 'no_response',
     });
   });
 
   // Node's `fetch` rejects a refused connection with a `TypeError` whose own `.message` is the generic "fetch
   // failed" and whose `.code` is `undefined`; the errno travels on `.cause` instead (same measurement as
-  // `thrownErrnoCode` in `src/infra/error-format.ts`, and `backend-shutdown.test.ts`). Without unwrapping `.cause`, this branch
-  // reported the generic message here while `backend shutdown` already reported the real errno for the
-  // identical failure — one fact, two different words in two commands asking the same question.
+  // `thrownErrnoCode` in `src/infra/error-format.ts`, and `backend-shutdown.test.ts`). Without unwrapping
+  // `.cause`, this branch reported the generic message here while `backend shutdown` already reported the real
+  // errno for the identical failure — one fact, two different words in two commands asking the same question.
   it('reports the errno from .cause rather than the generic fetch-failed message', async () => {
     vi.stubGlobal(
       'fetch',
@@ -455,7 +471,41 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
       status: 'unreachable',
       detail: 'ECONNREFUSED',
-      responded: false,
+      cause: 'refused',
+      pidLiveness: 'alive',
+    });
+  });
+
+  // Method requirement: a hand-built `Error` that happens to carry the shape the reader expects is exactly how
+  // `socket_refused` went dead in `backend shutdown` (see `backend-shutdown.test.ts`'s own note on this). This
+  // drives the real global `fetch` against a real closed socket instead of a fixture, so the assertion cannot
+  // agree with a regression in the `.cause` unwrap.
+  it('reports unreachable as refused against a real closed port, not a hand-built error', async () => {
+    const { createServer } = await import('node:net');
+    const probe = createServer();
+    await new Promise<void>((resolve) => probe.listen(0, '127.0.0.1', () => resolve()));
+    const address = probe.address();
+    if (address === null || typeof address === 'string') throw new Error('expected a TCP address');
+    const port = address.port;
+    await new Promise<void>((resolve) => probe.close(() => resolve()));
+    // One macrotask turn for this host's kernel-level socket teardown to land before the real dial below —
+    // see `backend-shutdown.test.ts`'s identical wait for why an immediate connect is flaky without it.
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+
+    vi.unstubAllGlobals();
+    mockState.observed = {
+      kind: 'addressed',
+      coordinator: backendInfo({ host: '127.0.0.1', port }),
+      pidLiveness: 'alive',
+    };
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
+      status: 'unreachable',
+      detail: 'ECONNREFUSED',
+      cause: 'refused',
+      pidLiveness: 'alive',
     });
   });
 });

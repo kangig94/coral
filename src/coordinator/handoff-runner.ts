@@ -96,17 +96,22 @@ const liveIncumbentHealthSchema = z
 type LiveIncumbentHealth = z.infer<typeof liveIncumbentHealthSchema>;
 
 /**
- * What this preflight learned about a live incumbent, kept apart because the two `not-observed` reasons are
- * not the same statement. `'absent'` is decisive: `probeCoordinator` itself directly observed no incumbent.
- * `'unresolved'` is everything this file could not turn into a decision — a connect failure, a timed-out
+ * What this preflight learned about a live incumbent, kept apart because `'not-observed'` and
+ * `'observed-unusable'` are not the same statement. `'not-observed'` means this probe never got a usable
+ * answer at all: `'absent'` is decisive (`probeCoordinator` itself directly observed no incumbent),
+ * `'unresolved'` is everything else that kept this file from deciding — a connect failure, a timed-out
  * round-trip, or a reply that failed `liveIncumbentHealthSchema` all land here alike, because none of the
  * three is evidence that nobody answered; they are evidence that this probe did not get a usable answer.
- * Folding `'unresolved'` into `'absent'` is exactly the collapse this type exists to stop: both currently
- * route to the same `use-current` outcome (see `resolveHandoffRouting`), but only one of them is licensed to.
+ *
+ * `'observed-unusable'` is the opposite: a live incumbent answered and decoded, and is disqualified for a
+ * stated reason rather than absent — `'draining'` (it reported its own shutdown) or `'identity-mismatch'`
+ * (the reply names a different pid, bundle, or namespace than the discovery record this probe asked). Filing
+ * either of those under `'not-observed'` would claim nobody answered when someone did.
  */
 type LiveIncumbentReading =
   | Readonly<{ kind: 'observed'; health: LiveIncumbentHealth }>
-  | Readonly<{ kind: 'not-observed'; reason: 'absent' | 'draining' | 'identity-mismatch' | 'unresolved' }>;
+  | Readonly<{ kind: 'observed-unusable'; reason: 'draining' | 'identity-mismatch'; health: LiveIncumbentHealth }>
+  | Readonly<{ kind: 'not-observed'; reason: 'absent' | 'unresolved' }>;
 
 export type HandoffOperation =
   | Readonly<{ kind: 'cli-invocation'; argv: readonly string[] }>
@@ -260,8 +265,9 @@ async function readLiveCoordinatorHealth(
   switch (probe.kind) {
     case 'absent':
       // The only decisive short-circuit: `probeCoordinator` itself directly observed no incumbent (no record,
-      // or a pid it confirmed gone). Every other `not-observed` reason below also reaches `use-current`
-      // (`resolveHandoffRouting`), but none of them is this one — see `LiveIncumbentReading`.
+      // or a pid it confirmed gone). Every other reading below — observed-unusable or not-observed alike —
+      // also reaches `use-current` (`resolveHandoffRouting`), but none of them is this one — see
+      // `LiveIncumbentReading`.
       return { kind: 'not-observed', reason: 'absent' };
     case 'unobservable':
       if (probe.reason === 'unreadable-record') {
@@ -294,10 +300,19 @@ async function readLiveCoordinatorHealth(
     return reading;
   }
   if (reading.health.status === 'draining') {
-    return { kind: 'not-observed', reason: 'draining' };
+    // A positive observation, not an absence: something answered, decoded, and named its own shutdown. Its
+    // own wording, so a caller cannot mistake this for the unresolved probe above or the identity mismatch
+    // below.
+    backendLog.warn(`Live incumbent at ${discovery.socketPath} reported status draining; treating it as unusable.`);
+    return { kind: 'observed-unusable', reason: 'draining', health: reading.health };
   }
   if (!discoveryMatchesHealth(discovery, runtime.paths.coral.coordinator.socketPath, reading.health)) {
-    return { kind: 'not-observed', reason: 'identity-mismatch' };
+    // Also a positive observation: something answered and decoded, naming an identity the discovery record
+    // did not.
+    backendLog.warn(
+      `Authenticated health from ${discovery.socketPath} named a different coordinator identity than the discovery record; treating it as unusable.`,
+    );
+    return { kind: 'observed-unusable', reason: 'identity-mismatch', health: reading.health };
   }
   return reading;
 }
@@ -307,11 +322,11 @@ async function resolveHandoffRouting(pluginRoot?: string, timePort?: TimePort): 
   const runtime = createRealRuntime(flavor);
   const time = timePort ?? runtime.time;
   const reading = await readLiveCoordinatorHealth(runtime, time);
-  // `readLiveCoordinatorHealth` is where `'absent'` and `'unresolved'` are kept apart; this is where that
-  // distinction would be spent, and today it is not — every `not-observed` reason (decisive or not) still
-  // reaches `use-current`, for the reason recorded at each site that produces one. Collapsing them into a
-  // boolean before this point is exactly the earlier defect, so the branch below reads `reading.kind`, not a
-  // `=== null` folded out of it.
+  // `readLiveCoordinatorHealth` distinguishes a decisive absence, an unresolved probe, and a live-but-unusable
+  // incumbent (draining, or a foreign identity) from a usable `'observed'` reply, and logs each one under its
+  // own wording as it is produced. Only the usable reply carries anything to route against here; every other
+  // reading reaches `use-current` regardless of which of the three it is, which is why the branch below reads
+  // `reading.kind`, not a boolean folded out of it.
   return reading.kind === 'observed'
     ? { routing: routeAuthenticatedHealth(reading.health), runtime, time }
     : { routing: createUseCurrentBackendRouting(), runtime, time };
@@ -512,9 +527,10 @@ export async function runHandoff(
         const earlyOutcome = await observeBackendStartupLiveness(childObservation, time);
         if (earlyOutcome !== null) {
           const liveCoordinator = await readLiveCoordinatorHealth(runtime, time);
-          // Reporting success here is a finalization, so it requires the decisive case: `'observed'`.
-          // `'unresolved'` must not read as confirmation any more than `'absent'` does — an early exit-shaped
-          // outcome plus a health probe that merely could not confirm life is not evidence the backend is up.
+          // Reporting success here is a finalization, so it requires the decisive case: `'observed'`. None of
+          // the others — a decisive absence, an unresolved probe, or a live-but-unusable incumbent — may read
+          // as confirmation: an early exit-shaped outcome plus a health probe that did not confirm a usable
+          // incumbent is not evidence the backend is up.
           return liveCoordinator.kind === 'observed'
             ? {
                 kind: 'delegated',
