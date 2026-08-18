@@ -269,15 +269,24 @@ function parseBgMarker(name) {
 // probe would not. Returns true (held/alive), false (free/dead), or null when the
 // probe could not answer, so the caller falls back to the mtime window.
 //
-// The three answers are the point, and only two of them used to be real: every failure that was not ENOENT
-// returned true. `flock` exiting non-zero is an answer — the lock is busy — but the fork losing to EAGAIN, or
-// the probe being killed, is not, and `true` is the one value here with no expiry behind it. `false` prunes,
-// `null` defers to a 30s window that ends on its own, and `true` says "this work is alive" for as long as the
-// condition lasts, which for a wedged machine is a background task that never stops gating ralph and kb.
+// Three answers, and which one an unanswerable probe gets is the whole question here.
 //
-// `err.status` is a number only when the child actually ran and exited; a launch failure or a timeout carries
-// a string `err.code` and `status: null`. That is the same split `src/infra/project-source.ts` makes, spelled
-// again rather than shared, because hook scripts may not import from `src/`.
+// `null` means "flock(1) is not installed", and the mtime window exists for exactly that: a machine with no
+// flock still has a heartbeat to read. It is *not* a general "could not tell", and an earlier revision made it
+// one — routing every non-ENOENT failure there on the reasoning that `true` had no expiry while the window
+// does. The reasoning missed that the window is not independent of the failure. The heartbeat is
+// `while kill -0 $$; do touch …; sleep 10; done` (see `bgWrapperPreamble` below) — `touch` and `sleep` are
+// external commands, so the conditions that stop this probe forking (EAGAIN, EMFILE, ENOMEM) are the same
+// conditions that stop the heartbeat refreshing the mtime. Deferring to it then reads a stale timestamp,
+// concludes the task is dead, un-gates ralph and kb while it is still running, and after the cleanup TTL
+// unlinks a live task's lock file so it is invisible forever.
+//
+// Un-gating live work and pruning a live task are both finalizations, so an unanswered probe may authorize
+// neither. It reports `true` — the conservative direction — and that is not the unbounded hold it looks like:
+// the probe is bounded, so the next hook invocation asks again, and a machine that recovers answers `false` on
+// its own. What the old code lacked was the bound, not this direction.
+//
+// `err.status` is a number only when flock actually ran and exited.
 function lockHeld(lockPath) {
   try {
     execFileSync('flock', ['-n', lockPath, '-c', 'true'], {
@@ -287,7 +296,8 @@ function lockHeld(lockPath) {
     return false; // acquired ⇒ not held
   } catch (err) {
     if (typeof err?.status === 'number') return true; // flock ran and refused ⇒ busy ⇒ held
-    return null; // never ran, or was killed ⇒ no answer ⇒ let the mtime window decide
+    if (err?.code === 'ENOENT') return null; // flock(1) absent ⇒ the mtime window is the designed fallback
+    return true; // could not ask ⇒ do not conclude the work is gone
   }
 }
 

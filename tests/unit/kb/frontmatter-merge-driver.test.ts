@@ -12,7 +12,9 @@ import { extractBody, parseFrontmatter, serializeFrontmatter } from '#src/kb/cor
 import { computeBodySurfaceHash } from '#src/kb/corpus/snapshot.js';
 import {
   FRONTMATTER_SCALAR_TIEBREAK_RULE,
+  FrontmatterMergeUnavailableError,
   mergeMarkdownRevisions,
+  runFrontmatterMergeDriver,
   type FrontmatterMergeDriverHost,
 } from '#src/kb/curate/frontmatter-merge-driver.js';
 import { createGitSyncController } from '#src/kb/curate/git-sync.js';
@@ -343,5 +345,78 @@ describe('frontmatter merge driver', () => {
     expect(observed.options?.timeout, 'zero is what "no bound" looks like while still being a number').toBeGreaterThan(
       0,
     );
+  });
+
+  // `oursPath` is git's `%A` — the user's working-tree file, not a temp copy — and the driver writes it at the
+  // end of every successful run. So the only thing standing between a `git merge-file` that never answered and
+  // a silently truncated file is that this path refuses to reach the write at all.
+  //
+  // The previous test on this bound asserted only that the timeout was a positive number. That is the check
+  // that passes while the failure it exists for is unhandled.
+  it.each([
+    ['a timeout', { code: 'ETIMEDOUT', status: null }],
+    ['a launch failure', { code: 'ENOENT', status: null }],
+    ['an error carrying nothing recognisable', {}],
+  ])('refuses to touch the working-tree file when git merge-file answers with %s', (_label, props) => {
+    const meta = {
+      tags: ['seed'],
+      principles: [],
+      source: ['kangig94/coral'],
+      createdAt: '2026-06-15T00:00:00.000Z',
+      updatedAt: '2026-06-15T00:00:00.000Z',
+    };
+    const oursPath = join(root, 'note.md');
+    const basePath = join(root, 'base.md');
+    const theirsPath = join(root, 'theirs.md');
+    const original = renderNote(meta, 'the body the user still has');
+    writeFileSync(oursPath, original, 'utf-8');
+    writeFileSync(basePath, renderNote(meta, 'base body'), 'utf-8');
+    writeFileSync(theirsPath, renderNote(meta, 'incoming body'), 'utf-8');
+
+    const written: string[] = [];
+    const host: FrontmatterMergeDriverHost = {
+      readFileSync,
+      writeFileSync: (path, data, encoding) => {
+        written.push(path);
+        writeFileSync(path, data, encoding);
+      },
+      createTempDir: (prefix) => mkdtempSync(join(root, prefix)),
+      rmSync,
+      execFileSync: () => {
+        throw Object.assign(new Error('no answer'), props);
+      },
+    };
+
+    expect(() =>
+      runFrontmatterMergeDriver({ basePath, oursPath, theirsPath, filePath: 'notes/note.md' }, host),
+    ).toThrow(FrontmatterMergeUnavailableError);
+
+    expect(written, 'the working-tree file must not be among the writes').not.toContain(oursPath);
+    expect(readFileSync(oursPath, 'utf-8'), 'and it must be byte-identical to what the user had').toBe(original);
+  });
+
+  it('still writes the working-tree file when git merge-file reports conflicts', () => {
+    const meta = {
+      tags: ['seed'],
+      principles: [],
+      source: ['kangig94/coral'],
+      createdAt: '2026-06-15T00:00:00.000Z',
+      updatedAt: '2026-06-15T00:00:00.000Z',
+    };
+    const oursPath = join(root, 'note.md');
+    const basePath = join(root, 'base.md');
+    const theirsPath = join(root, 'theirs.md');
+    writeFileSync(oursPath, renderNote(meta, 'our body'), 'utf-8');
+    writeFileSync(basePath, renderNote(meta, 'base body'), 'utf-8');
+    writeFileSync(theirsPath, renderNote(meta, 'their body'), 'utf-8');
+
+    // A non-zero *exit* is an answer — that many conflicts — and the driver owns writing the result.
+    const result = runFrontmatterMergeDriver(
+      { basePath, oursPath, theirsPath, filePath: 'notes/note.md' },
+      createFrontmatterMergeHost(root),
+    );
+
+    expect(result.status).toBeGreaterThan(0);
+    expect(readFileSync(oursPath, 'utf-8'), 'a real conflict still produces markers in the file').toContain('<<<<<<<');
   });
 });

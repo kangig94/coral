@@ -114,24 +114,35 @@ function unknownExpansionResponse(name: string) {
 }
 
 /**
- * What the daemon said about one expansion, or that it could not be asked.
+ * Refuse to render a catalog from a daemon view we could not read.
  *
- * A plain `entry | null` was not enough: `null` meant both "the daemon is not there, so nothing is equipped"
- * — true, and `localCatalogStatus` derives the right answer from local files — and "we could not read the
- * record", where the same derivation asserts `not_equipped` about state nobody checked. `list` did the second
- * for every package on the branch that introduced the `unreadable` disposition, because only `info` was fixed.
+ * Every rendered status is a claim about the daemon: `not_equipped` and `inactive` say it does not hold this
+ * expansion, and `unavailable` says it is unreachable — which `clients/skills/equip/SKILL.md` pairs with "run
+ * `/equip <name>` to repair or reactivate". So there is no value in the enum that means "we did not check",
+ * and borrowing `unavailable` for it sent an agent to re-equip a whole, possibly-healthy catalog over one
+ * unreadable file. The refusal lives here, once, because both `list` and `info` render from the same view and
+ * an earlier fix caught only one of the three places that do.
+ *
+ * `unavailable` as a *disposition* still renders: no coordinator recorded itself, or the socket refused, is an
+ * answer — nothing is equipped, and `localCatalogStatus` derives the rest from local files.
  */
-type DaemonExpansionView =
-  | Readonly<{ kind: 'read'; entry: (ExpansionView & { slot?: string }) | null }>
-  | Readonly<{ kind: 'unreadable' }>;
+function assertDaemonViewReadable(passive: ExpansionStatus, subject: string): void {
+  if (passive.status === 'unreadable') {
+    throw new Error(
+      `Cannot report ${subject}: the coordinator discovery record could not be read (${passive.detail}). ` +
+        'Every status here is a statement about the coordinator, and it was not asked. Run coral-cli backend status.',
+    );
+  }
+}
 
-function toCatalogEntry(entry: EngineManifest, runtime: Runtime, view: DaemonExpansionView): CatalogEntry {
-  const passive = view.kind === 'read' ? view.entry : null;
+function toCatalogEntry(
+  entry: EngineManifest,
+  runtime: Runtime,
+  passive: (ExpansionView & { slot?: string }) | null,
+): CatalogEntry {
   const local = inspectExpansionInstallState(runtime, entry.id);
   const provides = passive?.provides ?? entry.provides;
-  // `unavailable` is already the enum's word for "coordinator unreachable" and is documented as such in
-  // `clients/skills/equip/SKILL.md`, so this needs no new status and no wire change.
-  const status = view.kind === 'unreadable' ? 'unavailable' : (passive?.status ?? localCatalogStatus(entry, local));
+  const status = passive?.status ?? localCatalogStatus(entry, local);
   return catalogEntrySchema.parse({
     id: entry.id,
     name: entry.id,
@@ -326,20 +337,13 @@ export function createCliExpansionActivation(): CliExpansionActivation {
         const runtime = resolveRuntime();
         const catalog = readExpansionCatalog(runtime);
         const passive = await lowLevel.readExpansionStatus();
-        // `unreadable` is not `unavailable`: one is a daemon that is not there, the other is a daemon we could
-        // not ask. Both leave `expansionByName` empty; only the second must stop the entries claiming a state.
-        const daemonViewUnreadable = passive.status === 'unreadable';
+        assertDaemonViewReadable(passive, 'the expansion catalog');
         const expansionByName =
           passive.status === 'available' ? new Map(passive.expansions.map((entry) => [entry.name, entry])) : new Map();
         const currentIds = new Set([
           ...catalog.map((entry) => entry.id),
           ...INSTALL_ONLY_PACKAGES.map((entry) => entry.id),
         ]);
-        // Retired residue is by definition what only the daemon knows, so an unreadable record yields an empty
-        // list. Recorded as a known omission rather than left to be read as "there is none": every
-        // equip-activated entry above already says `unavailable` on that path, which is the signal an operator
-        // has that this listing is partial. Saying it in the payload would need a field the schema does not
-        // have, and that is a wire change this does not make.
         const retiredResidue =
           passive.status === 'available'
             ? passive.expansions
@@ -350,15 +354,7 @@ export function createCliExpansionActivation(): CliExpansionActivation {
         return catalogResultSchema.parse({
           status: 'catalog',
           packages: [
-            ...catalog.map((entry) =>
-              toCatalogEntry(
-                entry,
-                runtime,
-                daemonViewUnreadable
-                  ? { kind: 'unreadable' }
-                  : { kind: 'read', entry: expansionByName.get(entry.id) ?? null },
-              ),
-            ),
+            ...catalog.map((entry) => toCatalogEntry(entry, runtime, expansionByName.get(entry.id) ?? null)),
             ...INSTALL_ONLY_PACKAGES.map((manifest) => toInstallOnlyCatalogEntry(manifest, runtime)),
             ...retiredResidue,
           ],
@@ -380,6 +376,7 @@ export function createCliExpansionActivation(): CliExpansionActivation {
         const entry = resolveCatalogManifest(catalog, name);
         if (!entry) {
           const passive = await lowLevel.readExpansionStatus(name);
+          assertDaemonViewReadable(passive, `"${name}"`);
           const retired =
             passive.status === 'available' ? passive.expansions.find((view) => view.name === name) : undefined;
           if (retired !== undefined) {
@@ -388,26 +385,17 @@ export function createCliExpansionActivation(): CliExpansionActivation {
               package: toRetiredResidueCatalogEntry(retired),
             });
           }
-          if (passive.status === 'unreadable') {
-            // Not in the catalog, and the daemon's own list could not be read — so whether this name exists is
-            // exactly what was not established. Saying "no such expansion" here is the claim this variant
-            // exists to prevent.
-            throw new Error(
-              `Cannot tell whether "${name}" is installed: the coordinator discovery record could not be read (${passive.detail}). Run coral-cli backend status.`,
-            );
-          }
           return unknownExpansionResponse(name);
         }
 
         const passive = await lowLevel.readExpansionStatus(name);
+        assertDaemonViewReadable(passive, `"${name}"`);
         return infoResultSchema.parse({
           status: 'info',
           package: toCatalogEntry(
             entry,
             runtime,
-            passive.status === 'unreadable'
-              ? { kind: 'unreadable' }
-              : { kind: 'read', entry: passive.status === 'available' ? (passive.expansions[0] ?? null) : null },
+            passive.status === 'available' ? (passive.expansions[0] ?? null) : null,
           ),
         });
       } catch (error: unknown) {

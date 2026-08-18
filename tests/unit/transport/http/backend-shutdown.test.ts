@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BackendInfo, DiscoveryRead } from '#src/infra/backend-discovery.js';
 import { readBackendInfo } from '#src/infra/backend-discovery.js';
 
@@ -61,6 +61,14 @@ describe('shutdownBackend', () => {
         async () => new Response(JSON.stringify({ status: 'draining', instanceId: 'test-instance' }), { status: 200 }),
       ),
     );
+  });
+
+  // `vi.stubGlobal` replaces a process-wide binding, so cleanup cannot live at the tail of each test: an
+  // assertion that throws skips it, and a test that stubs without a tail call leaks its `fetch` into whatever
+  // runs next. Three of the stubs here did exactly that until a reviewer reproduced the resulting flake. This
+  // is the pattern `tests/unit/infra/http-retry.test.ts` already uses.
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it('rejects child lifecycle mutation before reading discovery or issuing HTTP', async () => {
@@ -176,7 +184,6 @@ describe('shutdownBackend', () => {
       reason: 'unreachable',
       detail: 'ETIMEDOUT',
     });
-    vi.unstubAllGlobals();
   });
 
   it('reports not_running when the socket refused the connection', async () => {
@@ -192,7 +199,6 @@ describe('shutdownBackend', () => {
     const { shutdownBackend } = await import('#src/transport/http/backend/shutdown.js');
 
     await expect(shutdownBackend('/plugin-root')).resolves.toEqual({ ok: false, reason: 'socket_refused' });
-    vi.unstubAllGlobals();
   });
 
   // Each of these used to answer `not_running`, and the sentence rendered for that named a dial only the last
@@ -238,6 +244,5 @@ describe('shutdownBackend', () => {
       fetchMock,
       'the request needs host, port and bootToken, all of which that record carries',
     ).toHaveBeenCalled();
-    vi.unstubAllGlobals();
   });
 });

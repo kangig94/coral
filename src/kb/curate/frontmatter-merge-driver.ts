@@ -165,7 +165,7 @@ function mergeBodiesWithGit(
         { stdio: 'ignore', timeout: GIT_MERGE_FILE_TIMEOUT_MS },
       );
     } catch (error: unknown) {
-      status = extractExitStatus(error);
+      status = classifyMergeFileFailure(error);
     }
 
     return {
@@ -177,14 +177,42 @@ function mergeBodiesWithGit(
   }
 }
 
-function extractExitStatus(error: unknown): number {
+/** Raised when `git merge-file` did not answer, so nothing may be written to git's `%A`. */
+export class FrontmatterMergeUnavailableError extends Error {
+  constructor(detail: string) {
+    super(
+      `Coral could not merge this file: \`git merge-file\` did not answer (${detail}). The working-tree file was left untouched.`,
+    );
+    this.name = 'FrontmatterMergeUnavailableError';
+  }
+}
+
+/**
+ * What a thrown `git merge-file` means — and the one case that is not a merge result at all.
+ *
+ * `git merge-file` answers by exiting: `0` merged cleanly, a positive count is that many conflicts, and it is
+ * the caller's job to write the result. So a numeric `status` is an answer whatever its value.
+ *
+ * A throw carrying no numeric status is not. `execFileSync` reports its own timeout with `code: 'ETIMEDOUT'`
+ * and `status: null`, and a launch failure the same way with an errno — and this used to fall through to
+ * `return 1`, which for this command means "one conflict". That mattered more here than anywhere else on this
+ * branch: `oursPath` is git's `%A`, the real working-tree file, and `runFrontmatterMergeDriver` writes it
+ * unconditionally. So a probe that never ran wrote the *unmerged* body — with no conflict markers — over the
+ * user's file while telling git the merge conflicted, and the next `git add` or conflict-resolution pass made
+ * the loss permanent. Nothing observed the merge; something finalized it.
+ *
+ * The bound that makes this reachable on a healthy install is deliberate and stays (an unbounded synchronous
+ * subprocess cannot be interrupted). What changes is that a non-answer now refuses instead of guessing.
+ */
+function classifyMergeFileFailure(error: unknown): number {
   if (typeof error === 'object' && error !== null && 'status' in error) {
     const status = (error as { status?: unknown }).status;
     if (typeof status === 'number' && status > 0) {
       return status;
     }
   }
-  return 1;
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  throw new FrontmatterMergeUnavailableError(code ?? (error as Error | null)?.message ?? 'unknown error');
 }
 
 function mergeFrontmatter(ours: MarkdownDocument, theirs: MarkdownDocument, mergedBody: string, path: string): string {

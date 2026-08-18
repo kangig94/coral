@@ -184,18 +184,57 @@ function hookOutputForHost(value) {
 // times (inject rendering, wake-up slug, project dir), and each miss costs a
 // git subprocess with a 2s timeout — repeated timeouts would eat the hook budget.
 const _projectSourceCache = new Map();
+/** When a root last failed to produce an answer, so a wedge is re-probed per interval rather than per call. */
+const _projectSourceUnanswered = new Map();
+// Errnos that are a standing fact about this machine rather than about this moment: git not installed, not
+// executable, no such directory. None changes while a hook session runs, so a probe that fails with one has
+// answered. The list is the standing side on purpose — a missed entry costs a re-probe, where listing the
+// transient side instead makes every unlisted errno a wrong identity nobody can see. Kept in step with
+// `STANDING_PROBE_ERRNOS` in `src/infra/process-constants.ts`, spelled again because hooks may not import from
+// `src/`.
+const STANDING_PROBE_ERRNOS = new Set(['ENOENT', 'EACCES', 'EPERM', 'ENOTDIR']);
+const UNANSWERED_REPROBE_INTERVAL_MS = 60_000;
 
+/**
+ * The project's `<owner>/<repo>`, or `local/<basename>` when there is no remote to read.
+ *
+ * This string is an identity, not a label: `coralProjectDir` below turns it into `~/.coral/projects/<slug>`
+ * with the same rule the daemon uses (`sourceToSlug` in `src/infra/path/index.ts`), and that directory holds
+ * memos and is exported to every skill as `CORAL_PROJECT`. So the two lanes must agree, and only an answered
+ * probe may be remembered.
+ *
+ * Every failure used to be cached under `local/<basename>` permanently and silently, which meant one timeout
+ * or one lost fork at hook time pinned a whole session's `CORAL_PROJECT` to a directory later reads do not
+ * look in. A non-answer is now held only until `UNANSWERED_REPROBE_INTERVAL_MS`, so a recovered machine heals
+ * without restarting the session and a wedged one still costs one probe per interval rather than one per call.
+ */
 export function resolveProjectSource(projectDir) {
   const cached = _projectSourceCache.get(projectDir);
   if (cached !== undefined) return cached;
-  const resolved = computeProjectSource(projectDir);
-  _projectSourceCache.set(projectDir, resolved);
-  return resolved;
+
+  const local = `local/${basename(projectDir)}`;
+  const unansweredAt = _projectSourceUnanswered.get(projectDir);
+  if (unansweredAt !== undefined && Date.now() - unansweredAt < UNANSWERED_REPROBE_INTERVAL_MS) return local;
+
+  const probe = computeProjectSource(projectDir, local);
+  if (!probe.answered) {
+    _projectSourceUnanswered.set(projectDir, Date.now());
+    return local;
+  }
+  _projectSourceUnanswered.delete(projectDir);
+  _projectSourceCache.set(projectDir, probe.source);
+  return probe.source;
 }
 
-function computeProjectSource(projectDir) {
+/**
+ * `{ answered: true, source }` when git ran and reported — including the ordinary "not a repository" and "no
+ * such remote" exits — and `{ answered: false }` when it could not be asked. `execSync` throws with a numeric
+ * `status` only in the first case; a timeout or a failed launch carries a string `code` and `status: null`.
+ */
+function computeProjectSource(projectDir, local) {
+  let remote;
   try {
-    const remote = execSync('git remote get-url origin', {
+    remote = execSync('git remote get-url origin', {
       cwd: projectDir,
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -203,19 +242,20 @@ function computeProjectSource(projectDir) {
     })
       .trim()
       .replace(/\.git$/, '');
-    const sshPath = remote.match(/^[^@]+@[^:]+:(.+)$/)?.[1];
-    const rawPath =
-      sshPath ??
-      remote
-        .replace(/^[^:]+:\/\//, '')
-        .replace(/^[^@/]+@/, '')
-        .replace(/^[^/]+\/+/, '');
-    const segments = rawPath.split('/').filter(Boolean);
-    if (segments.length >= 2) return `${segments.at(-2)}/${segments.at(-1)}`;
-  } catch {
-    // fall through
+  } catch (err) {
+    const answered = typeof err?.status === 'number' || STANDING_PROBE_ERRNOS.has(err?.code);
+    return answered ? { answered: true, source: local } : { answered: false };
   }
-  return `local/${basename(projectDir)}`;
+
+  const sshPath = remote.match(/^[^@]+@[^:]+:(.+)$/)?.[1];
+  const rawPath =
+    sshPath ??
+    remote
+      .replace(/^[^:]+:\/\//, '')
+      .replace(/^[^@/]+@/, '')
+      .replace(/^[^/]+\/+/, '');
+  const segments = rawPath.split('/').filter(Boolean);
+  return { answered: true, source: segments.length >= 2 ? `${segments.at(-2)}/${segments.at(-1)}` : local };
 }
 
 export function coralProjectDir(projectDir) {

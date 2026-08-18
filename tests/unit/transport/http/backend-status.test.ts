@@ -7,7 +7,7 @@
 // or written by a build whose shape this one rejects, reported a confident absence while a coordinator was
 // serving on the socket.
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BackendInfo, DiscoveryRead } from '#src/infra/backend-discovery.js';
 
 const mockState = vi.hoisted(() => ({
@@ -65,6 +65,14 @@ describe('getBackendStatusFull record disposition', () => {
     mockState.read = { kind: 'missing' };
   });
 
+  // `vi.stubGlobal` replaces a process-wide binding, so cleanup cannot live at the tail of each test: an
+  // assertion that throws skips it, and a test that stubs without a tail call leaks its `fetch` into whatever
+  // runs next. Three of the stubs here did exactly that until a reviewer reproduced the resulting flake. This
+  // is the pattern `tests/unit/infra/http-retry.test.ts` already uses.
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it('reports not_running when the record is genuinely missing', async () => {
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
@@ -92,7 +100,6 @@ describe('getBackendStatusFull record disposition', () => {
     // the recorded address. An earlier revision of this test pinned `not_running` here and called the
     // difference out of scope; the sweep that enumerated the class reached it, so it is in scope after all.
     expect(result.status).toBe('unreachable');
-    vi.unstubAllGlobals();
     livenessMock.mockReturnValue('absent');
   });
 
@@ -109,7 +116,6 @@ describe('getBackendStatusFull record disposition', () => {
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({ status: 'unreachable' });
-    vi.unstubAllGlobals();
     livenessMock.mockReturnValue('absent');
   });
 
@@ -127,7 +133,6 @@ describe('getBackendStatusFull record disposition', () => {
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'not_running' });
-    vi.unstubAllGlobals();
     livenessMock.mockReturnValue('absent');
   });
 

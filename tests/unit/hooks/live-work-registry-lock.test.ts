@@ -114,26 +114,33 @@ describe('live-work-registry: bg lock liveness (flock mocked)', () => {
     expect(hasLiveWork(projectDir, SESSION, undefined)).toBe(false);
   });
 
-  // `true` was the answer for every failure that was not ENOENT, and it is the one value here with no expiry:
-  // a probe that could not run made the task live for as long as the condition lasted, gating ralph and kb
-  // with nothing able to end it. The mtime window is the exit, so a non-answer has to reach it.
+  // The mtime window is not independent of these failures. The heartbeat that refreshes the mtime is
+  // `touch`/`sleep` in a subshell, so a machine that cannot fork this probe cannot fork the heartbeat either —
+  // deferring to the window then reads a timestamp that stopped for the same reason and concludes the task is
+  // dead. Un-gating live work, and later unlinking a live task's lock, are both finalizations, so a probe that
+  // could not answer authorizes neither.
   it.each([['ETIMEDOUT'], ['EAGAIN'], ['EMFILE']])(
-    'falls back to the mtime window when the lock probe fails with %s',
+    'keeps a task gated when the lock probe fails with %s, even against a stale mtime',
     (code) => {
       flockUnanswered(code);
       writeBgMarker('task-unanswered.lock', BG_STALE_MS);
 
-      expect(hasLiveWork(projectDir, SESSION), 'a probe that could not answer must not assert the task is alive').toBe(
-        false,
-      );
+      expect(
+        hasLiveWork(projectDir, SESSION),
+        'the stale mtime is not evidence: the heartbeat needs the same forks this probe just failed to get',
+      ).toBe(true);
     },
   );
 
-  it('still treats a stale-mtime task as live when the probe could not answer but activity is fresh', () => {
+  it('lets flock decide again on the next call rather than holding forever', () => {
+    // The bound is what ends this hold — not a window. One unanswered probe latches nothing.
     flockUnanswered('EAGAIN');
-    writeBgMarker('task-fresh.lock');
+    writeBgMarker('task-recovers.lock', BG_STALE_MS);
+    expect(hasLiveWork(projectDir, SESSION)).toBe(true);
 
-    expect(hasLiveWork(projectDir, SESSION), 'the window decides, not the failed probe').toBe(true);
+    flockFree();
+
+    expect(hasLiveWork(projectDir, SESSION), 'a recovered machine answers, and the answer decides').toBe(false);
   });
 
   it('bounds the lock probe, because a hook has no event loop to interrupt a synchronous child with', () => {
