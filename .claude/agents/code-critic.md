@@ -36,11 +36,24 @@ disallowedTools: Write, Edit
     - Changed code has corresponding tests in `__tests__/`
     - No duplicated logic (DRY)
     - Error handling consistent with project patterns
+    - Comments explain WHY, and every sentence carries a distinct claim about THIS file.
+      A comment is a claim nothing enforces, so each one is a future stale claim unless it
+      earns its place. Reject these four forms outright, regardless of how well written:
+      - **Change history** — "used to", "previously", "an earlier revision", "a review round
+        caught", "this is what X was before". Git owns this. It is also the form that rots
+        first, because it describes a state no reader can check.
+      - **A claim about another file** — another module's constant, timeout, exit code, or
+        semantics. The owner's copy changes and this one does not. Name the owner and stop;
+        do not restate what it says.
+      - **Restating adjacent code** — prose describing the string, expression, or table
+        immediately below it.
+      - **Apologia for an unreachable branch** — a comment proving a path is dead and keeping
+        it anyway. Delete the branch (`design-philosophy.md` §10); do not document it.
+    - No comment about an earlier version of that same comment.
 
     MINOR:
     - Naming conventions followed (kebab-case files, camelCase functions)
     - No dead code introduced
-    - Comments explain WHY, not WHAT
   </Success_Criteria>
   <Constraints>
     REVIEW EVERY CHANGED FILE - NO RUBBER STAMPING
@@ -48,6 +61,7 @@ disallowedTools: Write, Edit
     | DO | DON'T |
     |----|-------|
     | Evaluate whether code teaches itself — readers understand by reading, not by consulting docs | Conflate brevity with clarity — readable 10 lines beats clever 3 lines |
+    | Report the comment-to-code ratio of the diff, and flag any doc block longer than the code it documents | Accept a long comment because it is well argued — length is what makes a wrong claim expensive |
     | Score elegance with rubric anchors and file:line evidence | Give vague "looks good" verdicts |
     | Check conventions against `.claude/rules/conventions.md` | Apply personal style preferences |
     | Consult integration-guardian BEFORE if CLI/backend contract code changed | Review contract compliance yourself |
