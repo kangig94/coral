@@ -55,6 +55,62 @@ describe('resolveProjectSource', () => {
     expect(execFileSyncMock, 'a standing fact is asked once').toHaveBeenCalledOnce();
   });
 
+  // Asking once is not what separates the two dispositions: an indecisive probe is also asked once, because
+  // the hold suppresses the re-probe for the interval. Only the clock tells them apart, and without this the
+  // `launch-refused` branch of `classifyThrownExecOutcome` could be deleted with the whole suite green —
+  // measured, not supposed. A standing errno demoted to `no-answer` re-forks git once a minute forever on a
+  // machine that will never have it, which is the shape of the defect the row above pins for the first call.
+  it.each([
+    ['a missing git binary', 'ENOENT'],
+    ['a git binary that may not be executed', 'EACCES'],
+  ])('never re-asks after %s, however long the daemon runs', async (_label, code) => {
+    const { resolveProjectSource } = await loadProjectSourceModule();
+    execFileSyncMock.mockImplementation(() => {
+      throw failure({ status: null, code });
+    });
+
+    expect(resolveProjectSource('/tmp/standing')).toBe('local/standing');
+
+    vi.setSystemTime(Date.now() + 61_000);
+    expect(resolveProjectSource('/tmp/standing')).toBe('local/standing');
+    vi.setSystemTime(Date.now() + 6 * 60 * 60_000);
+    expect(resolveProjectSource('/tmp/standing')).toBe('local/standing');
+
+    expect(
+      execFileSyncMock,
+      'the answer does not expire: git will not appear under a running daemon',
+    ).toHaveBeenCalledOnce();
+  });
+
+  // `classifyThrownExecOutcome` guards `typeof error !== 'object' || error === null` before reading `.code`.
+  // `null` is the case that needs it: without the guard, reading `.status` off it throws a TypeError from
+  // inside the `catch`, so it escapes `resolveProjectSource` entirely — a probe whose whole contract is to
+  // fall back quietly instead crashes its caller. A thrown string reaches the same answer either way, which is
+  // why asserting only that one asserted nothing about the guard.
+  it.each([
+    ['null', null],
+    ['a bare string', 'git exploded'],
+  ])('treats %s thrown from the probe as a non-answer rather than crashing on it', async (label, thrown) => {
+    const { resolveProjectSource } = await loadProjectSourceModule();
+    const root = `/tmp/thrown-${label.replace(/\s+/g, '-')}`;
+    execFileSyncMock.mockImplementation(() => {
+      // Deliberately not an Error: that is the input under test. `classifyThrownExecOutcome` guards against it
+      // because a throw is not required to carry one, and the guard is what keeps a probe that must fall back
+      // quietly from crashing its caller instead.
+      // eslint-disable-next-line @typescript-eslint/only-throw-error
+      throw thrown;
+    });
+
+    expect(resolveProjectSource(root)).toBe(`local/${root.slice('/tmp/'.length)}`);
+
+    vi.setSystemTime(Date.now() + 61_000);
+    execFileSyncMock.mockImplementation(() => remoteForProjectRoot(root));
+
+    expect(resolveProjectSource(root), 'and it is a non-answer, so it expires').toBe(
+      `owner/${root.slice('/tmp/'.length)}`,
+    );
+  });
+
   // The enumeration is on the standing side so that an errno nobody thought of is NOT cached as a fact. The
   // first three were each missed by one of the earlier transient-side revisions. The list is not trying to be
   // exhaustive and should not grow toward it — `EWOULDBLOCKX` is the case that matters, because an errno this

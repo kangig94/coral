@@ -18,7 +18,7 @@ vi.mock('node:child_process', async (importActual) => {
   return { ...actual, spawnSync: spawnSyncMock };
 });
 
-import { DEFAULT_SYNC_EXEC_TIMEOUT_MS, EXEC_TIMEOUT_CODE } from '#src/infra/process-constants.js';
+import { DEFAULT_SYNC_EXEC_TIMEOUT_MS, EXEC_MAXBUFFER_CODE, EXEC_TIMEOUT_CODE } from '#src/infra/process-constants.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 
 function spawnResult() {
@@ -79,6 +79,30 @@ describe('ProcessPort.execSync bound', () => {
 
     expect(result.status, 'a killed child has no exit status').toBeNull();
     expect((result.error as NodeJS.ErrnoException | undefined)?.code).toBe(EXEC_TIMEOUT_CODE);
+  });
+
+  // The other substituted error, driven the same way and for the same reason. `spawnSync` reports an overflow
+  // as `status: 0`, `signal: null` and `error.code: 'ENOBUFS'` — measured, and the shape is why the port reads
+  // "an error with output and no signal" rather than the code: `ERR_CHILD_PROCESS_STDIO_MAXBUFFER` is what
+  // the *async* path synthesises, and never what this one receives.
+  //
+  // Without that branch the result still reaches a caller as a non-answer, so nothing crashes — the loss is
+  // that it arrives as `ENOBUFS`, and callers sorting on the maxBuffer code stop recognising it. `import.ts`
+  // is one: it tells an operator to bring a smaller source for an overflow and to retry for anything else,
+  // and a retry is the one thing that cannot help here. The whole suite stayed green without this.
+  it('marks a real maxBuffer overflow with a code a caller can sort on', () => {
+    const actualSpawnSync = realSpawnSync.current;
+    if (actualSpawnSync === null) throw new Error('the module mock did not capture the real spawnSync');
+    spawnSyncMock.mockReset().mockImplementation(actualSpawnSync);
+    const runtime = createRealRuntime('prod');
+
+    const result = runtime.process.execSync('sh', ['-c', 'printf %0100000d 1'], { maxBuffer: 16, timeout: 5_000 });
+
+    expect(result.status, 'a truncated read is not an exit status worth reporting').toBeNull();
+    expect((result.error as NodeJS.ErrnoException | undefined)?.code).toBe(EXEC_MAXBUFFER_CODE);
+    expect(result.stdout.length, 'and what did arrive is kept, because it is evidence of the overflow').toBeGreaterThan(
+      0,
+    );
   });
 
   // The async twin. `exec` kills on its own timer and never sees `spawnSync`, so it synthesises its own error

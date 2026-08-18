@@ -381,6 +381,10 @@ async function resolveCommandPath(command: string, ctx: SourceImportContext): Pr
     case 'answered':
       break;
   }
+  // The exit code decides, not the output. GNU `which` prints nothing when it fails, so on this machine
+  // reading stdout regardless would reach the same answer — but that is a property of one implementation.
+  // BusyBox and several shell builtins print `<name> not found` on stdout and still exit non-zero, and the
+  // loop below would take that line as a path and hand it to `runCommand` as the binary to execute.
   if (outcome.status !== 0) return { kind: 'absent' };
 
   for (const rawLine of result.stdout.split(/\r?\n/)) {

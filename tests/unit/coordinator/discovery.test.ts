@@ -319,6 +319,25 @@ describe('coordinator discovery', () => {
     });
   });
 
+  // The most common state of all, and it had no test: nothing had ever read a discovery file that simply is
+  // not there. Every `missing` in this suite came from a mocked disposition, so the `ENOENT` guard could be
+  // deleted — turning "no coordinator has recorded itself" into a throw — with the suite green.
+  it('reads an absent discovery file as missing, not as a failure', async () => {
+    makeHome();
+    const { readDiscoveryRecordDisposition } = await importDiscovery();
+
+    expect(readDiscoveryRecordDisposition(makeDiscoveryRuntime('prod'))).toEqual({ kind: 'missing' });
+  });
+
+  it('probes an unwritten record as a real absence', async () => {
+    makeHome();
+    const { probeCoordinator } = await importDiscovery();
+
+    // The one place a `missing` record legitimately becomes `absent`: nobody claimed the socket, so a
+    // contender may start. Collapsing any *other* read into this is what the rest of this file guards.
+    expect(probeCoordinator(makeDiscoveryRuntime('prod'))).toEqual({ kind: 'absent' });
+  });
+
   // The fourth outcome, and the only one that is not a variant: a file that exists and cannot be *opened* is
   // this process failing to read its own run directory, not a statement about the incumbent. `DiscoveryRead`
   // says so in prose and nothing checked it — deleting the `ENOENT` guard turns every unreadable file into

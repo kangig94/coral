@@ -208,3 +208,120 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'not_running' });
   });
 });
+
+/** A `/health` ping body this build accepts, so only the field under test decides the outcome. */
+function ping(status: 'starting' | 'ok' | 'draining'): string {
+  return JSON.stringify({
+    status,
+    version: '0.0.0',
+    bundleHash: 'bundle-hash',
+    flavor: 'prod',
+    instanceId: 'test-instance',
+    namespace: 'test-namespace',
+    pid: 12345,
+  });
+}
+
+/** The authenticated `/health?detailed=1` body, likewise minimal-but-accepted. */
+function detailed(status: 'starting' | 'ok' | 'draining'): string {
+  return JSON.stringify({
+    status,
+    kernel: { phase: 'running', readyAt: 1_699_999_000_000 },
+    version: '0.0.0',
+    bundleHash: 'bundle-hash',
+    flavor: 'prod',
+    instanceId: 'test-instance',
+    namespace: 'test-namespace',
+    uptimeMs: 1_000,
+    active: 0,
+    activeJobs: 0,
+    inflightRequests: 0,
+    queueDepth: 0,
+    textProjectionState: 'idle',
+    components: [],
+  });
+}
+
+/** Answers the two probes in order: the unauthenticated ping, then the detailed one. */
+function stubProbes(...responses: readonly Response[]): ReturnType<typeof vi.fn> {
+  const queue = [...responses];
+  const mock = vi.fn(async () => queue.shift() ?? new Response('{}', { status: 500 }));
+  vi.stubGlobal('fetch', mock);
+  return mock;
+}
+
+// Everything past the first 200-OK ping was unasserted. Six guards in this file — the ping's drain/transient
+// branch, all four of the detailed probe's status branches, and the handoff that returns the ping's terminal
+// answer — could each be disabled with the whole 6291-test suite still green.
+//
+// That matters here more than it would elsewhere: `backend status` is the operator's primary diagnostic, and
+// this branch exists to stop it collapsing "stopped", "draining", "not ours" and "could not reach" into one
+// another. The vocabulary was reworked; which response produces which word was not pinned.
+describe('getBackendStatusFull maps each answer to the word that describes it', () => {
+  beforeEach(() => {
+    mockState.observed = { kind: 'addressed', coordinator: backendInfo() };
+  });
+
+  it('reports a draining ping as shutting_down without asking the detailed probe', async () => {
+    const fetchMock = stubProbes(new Response(ping('draining'), { status: 200 }));
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'shutting_down' });
+    expect(fetchMock, 'the ping settled it; asking again could only disagree').toHaveBeenCalledTimes(1);
+  });
+
+  // 502/503/504 only: `TransientHttpError.isTransientStatus` is deliberately narrow, and 429 is *not* in it —
+  // measured rather than assumed, after this table first guessed otherwise.
+  it.each([[503], [502], [504]])('reports a %s ping as shutting_down, not as unreachable', async (status) => {
+    stubProbes(new Response('{}', { status }));
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'shutting_down' });
+  });
+
+  it('reports a healthy detailed answer as ok, carrying the payload the operator reads', async () => {
+    stubProbes(new Response(ping('ok'), { status: 200 }), new Response(detailed('ok'), { status: 200 }));
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const result = await getBackendStatusFull('/plugin-root');
+
+    expect(result.status).toBe('ok');
+    expect(result, 'the version an operator sees comes from the daemon, not the record').toMatchObject({
+      health: { status: 'ok', version: '0.0.0', instanceId: 'test-instance', uptimeMs: 1_000 },
+    });
+  });
+
+  it('reports a detailed answer that says draining as shutting_down', async () => {
+    stubProbes(new Response(ping('ok'), { status: 200 }), new Response(detailed('draining'), { status: 200 }));
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'shutting_down' });
+  });
+
+  it.each([[503], [502], [504]])('reports a %s detailed answer as shutting_down', async (status) => {
+    stubProbes(new Response(ping('ok'), { status: 200 }), new Response('{}', { status }));
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'shutting_down' });
+  });
+
+  it('reports a 429 as unreachable, because the transient set is 502/503/504 and nothing else', async () => {
+    stubProbes(new Response(ping('ok'), { status: 200 }), new Response('{}', { status: 429 }));
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({ status: 'unreachable' });
+  });
+
+  it('reports a rejected boot token as unauthorized, which is neither stopped nor unreachable', async () => {
+    stubProbes(new Response(ping('ok'), { status: 200 }), new Response('{}', { status: 401 }));
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'unauthorized' });
+  });
+});

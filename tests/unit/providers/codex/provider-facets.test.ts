@@ -462,6 +462,48 @@ describe('codexPreflight', () => {
     expect(runtime.runExact, 'the CLI answered; asking again inside the minute repeats it').toHaveBeenCalledTimes(1);
   });
 
+  /** Like `preflightRuntime`, but the auth read is countable — that is the observable for its own cache. */
+  function countingAuthRuntime(authFile: string | Error, home: string) {
+    let reads = 0;
+    const runtime = preflightRuntime({ home });
+    return {
+      runtime: {
+        ...runtime,
+        storage: {
+          readFileSync: () => {
+            reads += 1;
+            if (authFile instanceof Error) throw authFile;
+            return authFile;
+          },
+        },
+      } as unknown as typeof runtime,
+      reads: () => reads,
+    };
+  }
+
+  // The twin of the app-server rule two tests up, and it was fixed without being asserted: disabling this
+  // guard let an unreadable `auth.json` be cached, so one EACCES answered for every later job on that home,
+  // and the whole suite stayed green. Keyed by home, so the blast radius is narrower than the app-server
+  // cache's — narrower is not absent.
+  it('never caches an undetermined auth verdict, so every preflight re-reads', async () => {
+    const { runtime, reads } = countingAuthRuntime(errno('EACCES'), `/home/user/.codex-uncached-${clock}`);
+
+    await expect(codexPreflight(runtime)).rejects.toThrow(/could not read/iu);
+    await expect(codexPreflight(runtime)).rejects.toThrow(/could not read/iu);
+    await expect(codexPreflight(runtime)).rejects.toThrow(/could not read/iu);
+
+    expect(reads(), 'one unreadable file must not answer for two later jobs').toBe(3);
+  });
+
+  it('still caches an answered auth verdict for the TTL', async () => {
+    const { runtime, reads } = countingAuthRuntime(JSON.stringify({ tokens: {} }), `/home/user/.codex-cached-${clock}`);
+
+    await expect(codexPreflight(runtime)).rejects.toThrow(LOGIN);
+    await expect(codexPreflight(runtime)).rejects.toThrow(LOGIN);
+
+    expect(reads(), 'the file answered; asking again inside the minute repeats it').toBe(1);
+  });
+
   it('reports an absent auth.json as an unauthenticated account', async () => {
     const runtime = preflightRuntime({ authFile: errno('ENOENT'), home: `/home/user/.codex-a-${clock}` });
 
