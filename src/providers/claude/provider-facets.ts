@@ -103,9 +103,16 @@ export async function claudePreflight(runtime: ProviderPreflightRuntime<ClaudePr
   const cli = await detectClaudeCli(
     { exec: (command, args, options) => runtime.runExact(command, args, options) },
     { get: (key) => routingEnv[key] },
+    runtime.time,
   );
   if (!cli.available) {
-    throw new Error(`Claude CLI not available: ${cli.error}`);
+    // Both refuse the operation, and they must not say the same thing while doing it: one tells the operator
+    // to install a CLI, the other tells them the check itself did not complete.
+    throw new Error(
+      cli.reason === 'undetermined'
+        ? `Claude CLI availability could not be determined: ${cli.error}`
+        : `Claude CLI not available: ${cli.error}`,
+    );
   }
   if (cli.authState === 'unauthenticated') {
     throw new Error(cli.authError);

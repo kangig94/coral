@@ -4,6 +4,7 @@ import {
   type CliDetectorConfig,
   type CliDetectorEnvPort,
   type CliDetectorProcessPort,
+  type CliDetectorTimePort,
   type CliInfo,
 } from '../cli-detection.js';
 
@@ -75,12 +76,23 @@ const CONFIG: CliDetectorConfig = Object.freeze({
   parseAuthOutput: parseAuthStatus,
 });
 
+/**
+ * Detectors are memoised per (process port, env port) pair, and `claudePreflight` builds both as fresh object
+ * literals on every call — so this `WeakMap` never hits from there and each preflight gets an empty detector.
+ * Everything `createCliDetector` remembers, including a decisive `not-found`, is therefore per-call at that
+ * site rather than per-daemon. Recorded because the detector's own caching reads as process-wide and is not,
+ * and because holding these two ports steady is all it would take to change that.
+ */
 const detectorsByProcess = new WeakMap<
   CliDetectorProcessPort,
   WeakMap<CliDetectorEnvPort, ReturnType<typeof createCliDetector>>
 >();
 
-export function detectClaudeCli(processPort: CliDetectorProcessPort, envPort: CliDetectorEnvPort): Promise<CliInfo> {
+export function detectClaudeCli(
+  processPort: CliDetectorProcessPort,
+  envPort: CliDetectorEnvPort,
+  timePort: CliDetectorTimePort,
+): Promise<CliInfo> {
   let detectorsByEnv = detectorsByProcess.get(processPort);
   if (detectorsByEnv === undefined) {
     detectorsByEnv = new WeakMap();
@@ -88,7 +100,7 @@ export function detectClaudeCli(processPort: CliDetectorProcessPort, envPort: Cl
   }
   let detector = detectorsByEnv.get(envPort);
   if (detector === undefined) {
-    detector = createCliDetector(processPort, envPort, CONFIG);
+    detector = createCliDetector(processPort, envPort, CONFIG, timePort);
     detectorsByEnv.set(envPort, detector);
   }
   return detector.detect();

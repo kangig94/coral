@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { detectClaudeCli } from '#src/providers/claude/cli-detection.js';
 
+const TIME = { now: () => 1_700_000_000_000 };
+
 const AUTH_ERROR_MESSAGE =
   'Claude CLI is not authenticated. Run "claude auth login" with the same CLAUDE_CONFIG_DIR, then retry.';
 
@@ -12,7 +14,7 @@ function probe(authOutput: string) {
     .mockResolvedValueOnce({ stdout: authOutput, stderr: '', status: 0 });
   return {
     exec,
-    detect: () => detectClaudeCli({ exec } as never, { get: () => undefined }),
+    detect: () => detectClaudeCli({ exec } as never, { get: () => undefined }, TIME),
   };
 }
 
@@ -86,10 +88,10 @@ describe('Claude CLI detection', () => {
       .mockResolvedValueOnce({ stdout: 'claude 2.0', stderr: '', status: 0 })
       .mockResolvedValueOnce({ stdout: JSON.stringify({ loggedIn: true }), stderr: '', status: 0 });
 
-    await expect(detectClaudeCli({ exec: missingExec } as never, envPort)).resolves.toMatchObject({
+    await expect(detectClaudeCli({ exec: missingExec } as never, envPort, TIME)).resolves.toMatchObject({
       available: false,
     });
-    await expect(detectClaudeCli({ exec: availableExec } as never, envPort)).resolves.toMatchObject({
+    await expect(detectClaudeCli({ exec: availableExec } as never, envPort, TIME)).resolves.toMatchObject({
       available: true,
       authState: 'authenticated',
     });
@@ -105,11 +107,11 @@ describe('Claude CLI detection', () => {
       .mockResolvedValueOnce({ stdout: JSON.stringify({ loggedIn: true }), stderr: '', status: 0 });
     const processPort = { exec } as never;
 
-    await expect(detectClaudeCli(processPort, { get: () => undefined })).resolves.toMatchObject({
+    await expect(detectClaudeCli(processPort, { get: () => undefined }, TIME)).resolves.toMatchObject({
       version: 'claude profile-a',
       authState: 'unauthenticated',
     });
-    await expect(detectClaudeCli(processPort, { get: () => undefined })).resolves.toMatchObject({
+    await expect(detectClaudeCli(processPort, { get: () => undefined }, TIME)).resolves.toMatchObject({
       version: 'claude profile-b',
       authState: 'authenticated',
     });

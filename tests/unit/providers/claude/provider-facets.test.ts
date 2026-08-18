@@ -36,7 +36,28 @@ function claudePreflightRuntime(
       existsSync: (path: string) => Object.hasOwn(files, path),
       readFileSync: (path: string) => files[path] ?? '',
     },
+    // Present because production reads it. The cast below hides an omission, and the CLI detector only reaches
+    // `time` on the path where a probe could not be answered — so leaving it out passed every happy-path case
+    // and would have thrown on the one that matters.
+    time: { now: () => 1_700_000_000_000 },
     runExact,
+  } as unknown as ProviderPreflightRuntime<ClaudeProviderAccess>;
+}
+
+/** A preflight runtime whose `claude --version` never produces an answer. */
+function unanswerableVersionProbeRuntime(code: string): ProviderPreflightRuntime<ClaudeProviderAccess> {
+  return {
+    access: TEST_CLAUDE_ACCESS,
+    cwd: '/workspace/project',
+    storage: { existsSync: () => false, readFileSync: () => '' },
+    time: { now: () => 1_700_000_000_000 },
+    runExact: vi.fn(async () => ({
+      stdout: '',
+      stderr: '',
+      status: null,
+      signal: null,
+      error: Object.assign(new Error(code), { code }),
+    })),
   } as unknown as ProviderPreflightRuntime<ClaudeProviderAccess>;
 }
 
@@ -56,6 +77,20 @@ function storageForTree(tree: Record<string, DirentLike[]>): Pick<StoragePort, '
 }
 
 describe('claudePreflight', () => {
+  // Preflight refuses either way, and the two refusals must not read alike. Telling an operator whose machine
+  // ran out of process slots to install the Claude CLI sends them to fix something that was never broken.
+  it('does not report an unanswerable version probe as a missing CLI', async () => {
+    await expect(claudePreflight(unanswerableVersionProbeRuntime('EAGAIN'))).rejects.toThrow(
+      /could not be determined/iu,
+    );
+  });
+
+  it('still reports a genuinely missing CLI as missing', async () => {
+    await expect(claudePreflight(unanswerableVersionProbeRuntime('ENOENT'))).rejects.toThrow(
+      /Claude CLI not available/iu,
+    );
+  });
+
   it.each([
     {
       layer: 'selected-profile',
