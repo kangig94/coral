@@ -83,7 +83,7 @@ reviewers falsified that independently and the correction is the useful part**, 
   looked" does not establish that the group is still ours at the moment the signal lands.
 
 The real predicate is therefore _"has this child exited yet"_, evaluated at the moment of the signal — and
-`ChildProcessLike` (`src/infra/port-types.ts:117`) cannot answer it: it exposes `pid`, `kill`, and a `'close'`
+`ChildProcessLike` (`src/infra/port-types.ts:119`) cannot answer it: it exposes `pid`, `kill`, and a `'close'`
 event, with no synchronous exit state. Adding one touches every fake in the suite, which is why this is a
 change rather than a guard.
 

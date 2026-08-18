@@ -65,6 +65,15 @@ type PreflightCacheEntry = {
 let codexAppServerAvailabilityCache: PreflightCacheEntry | null = null;
 const codexAuthTokensCache = new Map<string, PreflightCacheEntry>();
 
+/** Clears both module-level preflight caches. A test isolates itself from a sibling's cached verdict today by
+ *  advancing a shared fake clock past `CODEX_PREFLIGHT_CACHE_TTL_MS` in `beforeEach` — this is the explicit
+ *  escape hatch `createCliDetector`'s `resetCache` offers its own instance-scoped cache, for the one case that
+ *  clock gap does not reach: a test that does not preserve it. */
+export function resetCodexPreflightCachesForTest(): void {
+  codexAppServerAvailabilityCache = null;
+  codexAuthTokensCache.clear();
+}
+
 function throwUnlessSatisfied(verdict: PreflightVerdict): void {
   if (verdict.kind !== 'satisfied') {
     throw new Error(verdict.message);
@@ -164,10 +173,12 @@ async function assertCodexAppServerAvailable(runtime: ProviderPreflightRuntime<C
  * or corrupt. The third is not an answer at all, and the remedy does not apply to it — a login that cannot
  * read `auth.json` afterwards has fixed nothing.
  *
- * `ENOENT` sits on the decisive side here, which is the reverse of what it means to
- * `STANDING_PROBE_ERRNOS` above. There it describes a binary that could not be launched; here it describes a
- * file that is simply absent, and absence is exactly the thing being asked about. Same errno, different
- * question — do not unify the two lists.
+ * `ENOENT` sits on the decisive side here, same as it does for `STANDING_PROBE_ERRNOS`
+ * (`infra/process-constants.ts`, consulted by `classifyExecOutcome`'s launch probe): there it describes a
+ * binary that could not be launched, here a file that is simply absent, and both are answers rather than
+ * absences of one. What actually reverses is `EACCES`/`EPERM`: decisive there — a binary this process may not
+ * execute is refused outright — but `undetermined` here, because a file this process cannot read might still
+ * hold valid tokens it simply could not see. Same errno, different question — do not unify the two lists.
  */
 function probeCodexAuthTokens(runtime: ProviderPreflightRuntime<CodexProviderAccess>): PreflightVerdict {
   const authPath = join(runtime.access.home, 'auth.json');

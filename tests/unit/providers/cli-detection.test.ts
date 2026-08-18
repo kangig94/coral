@@ -121,9 +121,11 @@ describe('provider-neutral CLI detection', () => {
     },
   );
 
-  // The default direction, which is the reverse of the one `git-sync.ts` takes on its own probe. Asserted
-  // because it is a choice, not a consequence: nothing about a codeless error says the binary ran, and the
-  // cost of guessing wrong here is a false instruction to an operator rather than a wasted fork.
+  // The default direction. Asserted because it is a choice, not a consequence: nothing about a codeless error
+  // says the binary ran, and the cost of guessing wrong here is a false instruction to an operator rather
+  // than a wasted fork. `git-sync.ts`'s own probe used to default the other way — an unrecognised shape read
+  // as a confident answer — until it moved onto this same `classifyExecOutcome`; both lanes now share one
+  // owner for the question, so there is no second default left to diverge from.
   it('reports a launch error carrying no recognisable code as undetermined', async () => {
     const exec = vi.fn().mockResolvedValue({ stdout: '', stderr: '', status: null, error: new Error('boom') });
 

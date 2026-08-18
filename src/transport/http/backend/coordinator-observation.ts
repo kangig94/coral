@@ -24,8 +24,16 @@ export type AddressedCoordinator = CoordinatorDiscoveryRecord & { host: string }
  * read, `shutdown` refuses before it ever dials. This type is the shared evidence, not the shared decision.
  */
 export type CoordinatorObservation =
-  /** The record decoded and its pid was not observed absent. Everything either command needs is here. */
-  | Readonly<{ kind: 'addressed'; coordinator: AddressedCoordinator }>
+  /**
+   * The record decoded and its pid was not observed absent. Everything either command needs is here.
+   *
+   * `pidLiveness` is the liveness this observation actually made, not a promise that `coordinator.pid` is the
+   * process answering at the address: `'alive'` means that pid was directly confirmed; `'unknown'` means it
+   * could not be observed either way, and the record was kept only because `unknown` is not `absent`. A caller
+   * that later learns *something* answers at the address (a health probe, a 401) may not fold that back into
+   * "so pid N is alive" — the two are independent observations, and only this field carries the second one.
+   */
+  | Readonly<{ kind: 'addressed'; coordinator: AddressedCoordinator; pidLiveness: 'alive' | 'unknown' }>
   /** The file exists and could not be read as a record. Not an absence, and the path is the remedy. */
   | Readonly<{ kind: 'unreadable-record'; reason: 'corrupt-json' | 'shape-rejected'; path: string }>
   /** No coordinator recorded itself. A real absence. */
@@ -59,8 +67,13 @@ export function observeCoordinator(
   const record = read.record;
   // Only an observed absence is an absence. `unknown` keeps the record and lets the caller try, which is the
   // safe direction for both of them: status goes on to ask health, shutdown goes on to send the request.
-  if (observeProcessLiveness(record.pid) === 'absent') {
+  const liveness = observeProcessLiveness(record.pid);
+  if (liveness === 'absent') {
     return { kind: 'process-absent', pid: record.pid, startedAt: record.startedAt };
   }
-  return { kind: 'addressed', coordinator: { ...record, host: record.host ?? DEFAULT_DISCOVERY_HOST } };
+  return {
+    kind: 'addressed',
+    coordinator: { ...record, host: record.host ?? DEFAULT_DISCOVERY_HOST },
+    pidLiveness: liveness,
+  };
 }

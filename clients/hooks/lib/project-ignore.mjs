@@ -296,38 +296,59 @@ function isOutgrownCoralLink(link, target) {
     return false;
   }
   if (current === target) return false;
-  const projectsRoot = join(coralStateRoot(), 'projects');
-  return current.startsWith(projectsRoot);
+  // Both legitimate roots are checked on purpose — a link left behind by the other flavor is still ours to
+  // repoint. Each match needs its own separator boundary: `startsWith('…/projects')` alone also matches
+  // `…/projects-mine`, `…/projects-old`, `…/projectsBackup` — an operator's own directory that merely shares
+  // the prefix, not a link Coral placed.
+  return ['projects', 'projects-dev'].some((name) => {
+    const root = join(coralStateRoot(), name);
+    return current === root || current.startsWith(root + sep);
+  });
 }
 
-function ensureCoralSymlink(projectDir) {
+function ensureCoralSymlink(projectDir, token) {
   const link = join(projectDir, '.claude', 'coral');
-  const target = coralProjectDir(projectDir);
+  let target;
+  let repointed = false;
   try {
     const stat = lstatSync(link);
-    if (!stat.isSymbolicLink()) return { ok: false, created: false };
-    if (!isOutgrownCoralLink(link, target)) return { ok: true, created: false };
-    safeUnlink(link);
+    if (!stat.isSymbolicLink()) return { ok: false, created: false, repointed: false };
+    // Computed here, not before the lstat: the common case is a link that already exists and is fine, and the
+    // two branches that don't reach this point (not a symlink, or an lstat error below) have no need to know
+    // the target at all — so they stay fork-free instead of paying `coralProjectDir`'s git probe up front.
+    target = coralProjectDir(projectDir);
+    if (!isOutgrownCoralLink(link, target)) return { ok: true, created: false, repointed: false };
+    repointed = true;
   } catch (error) {
-    if (!isMissing(error)) return { ok: false, created: false };
+    if (!isMissing(error)) return { ok: false, created: false, repointed: false };
   }
 
+  target ??= coralProjectDir(projectDir);
+  // symlinkSync into a fresh temp name, then rename over `link` — never unlink-then-symlink. This hook runs
+  // under a hard kill budget (session-start.mjs's spawnSync timeout); an unlink with no symlink to follow it
+  // yet is a window where a SIGTERM leaves `.claude/coral` gone rather than merely stale.
+  const tempLink = `${link}.coral-${token}.tmp`;
   try {
     mkdirSync(target, { recursive: true });
-    symlinkSync(target, link);
-    return { ok: true, created: true };
+    symlinkSync(target, tempLink);
+    renameSync(tempLink, link);
+    return { ok: true, created: !repointed, repointed };
   } catch {
-    return { ok: false, created: false };
+    return { ok: false, created: false, repointed: false };
+  } finally {
+    safeUnlink(tempLink);
   }
 }
 
 export function maintainProjectIgnore({ projectDir, createSymlink = false, token = `${process.pid}-${Date.now()}` }) {
   const context = resolveProjectContext(projectDir);
-  if (!context) return { ok: false, migrated: false, scopedIgnoreUpdated: false, symlinkCreated: false };
+  if (!context) {
+    return { ok: false, migrated: false, scopedIgnoreUpdated: false, symlinkCreated: false, symlinkRepointed: false };
+  }
 
   const rootSnapshot = readRegularSnapshot(context.rootGitignore, { allowMissing: true });
   if (!rootSnapshot.ok) {
-    return { ok: false, migrated: false, scopedIgnoreUpdated: false, symlinkCreated: false };
+    return { ok: false, migrated: false, scopedIgnoreUpdated: false, symlinkCreated: false, symlinkRepointed: false };
   }
   const hasLegacyEntry = rootSnapshot.exists && hasExactLine(rootSnapshot.content, context.legacyEntry);
   let scopedIgnoreUpdated = false;
@@ -335,7 +356,7 @@ export function maintainProjectIgnore({ projectDir, createSymlink = false, token
   if (hasLegacyEntry || createSymlink) {
     const scoped = ensureScopedIgnore(context.projectDir, token);
     if (!scoped.ok) {
-      return { ok: false, migrated: false, scopedIgnoreUpdated: false, symlinkCreated: false };
+      return { ok: false, migrated: false, scopedIgnoreUpdated: false, symlinkCreated: false, symlinkRepointed: false };
     }
     scopedIgnoreUpdated = scoped.changed;
   }
@@ -348,17 +369,21 @@ export function maintainProjectIgnore({ projectDir, createSymlink = false, token
       token,
     );
     if (!migration.ok) {
-      return { ok: false, migrated: false, scopedIgnoreUpdated, symlinkCreated: false };
+      return { ok: false, migrated: false, scopedIgnoreUpdated, symlinkCreated: false, symlinkRepointed: false };
     }
     migrated = migration.changed;
   }
 
   let symlinkCreated = false;
+  let symlinkRepointed = false;
   if (createSymlink) {
-    const symlink = ensureCoralSymlink(context.projectDir);
-    if (!symlink.ok) return { ok: false, migrated, scopedIgnoreUpdated, symlinkCreated: false };
+    const symlink = ensureCoralSymlink(context.projectDir, token);
+    if (!symlink.ok) {
+      return { ok: false, migrated, scopedIgnoreUpdated, symlinkCreated: false, symlinkRepointed: false };
+    }
     symlinkCreated = symlink.created;
+    symlinkRepointed = symlink.repointed;
   }
 
-  return { ok: true, migrated, scopedIgnoreUpdated, symlinkCreated };
+  return { ok: true, migrated, scopedIgnoreUpdated, symlinkCreated, symlinkRepointed };
 }

@@ -233,9 +233,13 @@ describe('coordinator discovery', () => {
   it.each([
     ['truncated mid-write', '{"pid": 4242, "socketPath"', 'corrupt-json'],
     ['a shape this build rejects', '{"pid": "not-a-number"}', 'shape-rejected'],
-  ])('probeCoordinator reports unobservable, not absent, for a record %s', async (_label, raw) => {
+  ])('probeCoordinator reports unobservable, not absent, for a record %s', async (_label, raw, reason) => {
     const home = makeHome();
     const { probeCoordinator } = await importDiscovery();
+    // Loaded after `importDiscovery()`'s `vi.resetModules()`, so this is the same `backendLog` module
+    // instance the subject under test captured — a spy attached to an earlier instance never fires.
+    const { backendLog } = await import('#src/infra/backend-log.js');
+    const warn = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
     const runtime = makeDiscoveryRuntime('prod');
 
     const infoFile = runtime.paths.coral.coordinator.infoFile;
@@ -247,6 +251,12 @@ describe('coordinator discovery', () => {
       kind: 'unobservable',
       reason: 'unreadable-record',
     });
+
+    // §11: "Tolerance is not silence" — the comment beside this call says the warning exists because the
+    // decision is otherwise invisible; this is what makes that true rather than aspirational.
+    expect(warn, 'an undecodable record is otherwise invisible to an operator').toHaveBeenCalledTimes(1);
+    const [line] = warn.mock.calls[0] as [string];
+    expect(line, 'the reason distinguishes corrupt JSON from a rejected shape').toContain(reason);
   });
 
   // The third answer, and the reason this reader returns three. A pid it cannot observe is not a pid it has

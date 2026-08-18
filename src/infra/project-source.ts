@@ -5,7 +5,8 @@ import { backendLog } from './backend-log.js';
 import { INDECISIVE_PROBE_REPROBE_INTERVAL_MS } from './process-constants.js';
 import { classifyThrownExecOutcome } from './port-types.js';
 
-export const PROJECT_SOURCE_CACHE_MAX_ENTRIES = 256;
+/** Bounds both per-root maps below — the resolved-source cache and the indecisive-probe timestamps alike. */
+export const PROJECT_SOURCE_MAP_MAX_ENTRIES = 256;
 
 /**
  * `git remote get-url` is a config read, but it stats up the directory tree and honours `include.path`, so a
@@ -83,7 +84,7 @@ function rememberIndecisiveProbe(projectRoot: string, detail: string): void {
   indecisiveProbeAt.delete(projectRoot);
   indecisiveProbeAt.set(projectRoot, Date.now());
 
-  while (indecisiveProbeAt.size > PROJECT_SOURCE_CACHE_MAX_ENTRIES) {
+  while (indecisiveProbeAt.size > PROJECT_SOURCE_MAP_MAX_ENTRIES) {
     const oldest = indecisiveProbeAt.keys().next().value;
     if (oldest === undefined) return;
     indecisiveProbeAt.delete(oldest);
@@ -94,19 +95,13 @@ function rememberProjectSource(projectRoot: string, source: string): void {
   projectSourceCache.delete(projectRoot);
   projectSourceCache.set(projectRoot, source);
 
-  while (projectSourceCache.size > PROJECT_SOURCE_CACHE_MAX_ENTRIES) {
+  while (projectSourceCache.size > PROJECT_SOURCE_MAP_MAX_ENTRIES) {
     const oldestProjectRoot = projectSourceCache.keys().next().value;
     if (oldestProjectRoot === undefined) {
       return;
     }
     projectSourceCache.delete(oldestProjectRoot);
   }
-}
-
-/** What the probe reported, for the operator-facing line — the errno when there is one, the message otherwise. */
-function probeDetail(error: unknown): string {
-  const errno = error as NodeJS.ErrnoException | null;
-  return errno?.code ?? errno?.message ?? 'unknown error';
 }
 
 /**
@@ -143,9 +138,9 @@ export function resolveProjectSource(projectRoot: string): string {
 
   const local = localProjectSource(projectRoot);
   // What the shared interval buys here specifically: this is called once per row inside `snapshotsForSource`
-  // (`discuss/read-queries.ts`) and twice per candidate during discuss recovery, so without the hold one
-  // stalled mount is `GIT_REMOTE_PROBE_TIMEOUT_MS` × rows of synchronous, uninterruptible blocking — past the
-  // coordinator's startup deadline at eight rows.
+  // (`discuss/read-queries.ts`), so without the hold one stalled mount is `GIT_REMOTE_PROBE_TIMEOUT_MS` × rows
+  // of synchronous, uninterruptible blocking — past the coordinator's startup deadline at eight rows. Discuss
+  // recovery calls this twice per candidate, so the same deadline is crossed at four candidates instead.
   const lastIndecisiveAt = indecisiveProbeAt.get(projectRoot);
   if (lastIndecisiveAt !== undefined && Date.now() - lastIndecisiveAt < INDECISIVE_PROBE_REPROBE_INTERVAL_MS) {
     return local;
@@ -160,11 +155,12 @@ export function resolveProjectSource(projectRoot: string): string {
       timeout: GIT_REMOTE_PROBE_TIMEOUT_MS,
     }).trim();
   } catch (error: unknown) {
-    if (classifyThrownExecOutcome(error).kind !== 'no-answer') {
+    const outcome = classifyThrownExecOutcome(error);
+    if (outcome.kind !== 'no-answer') {
       indecisiveProbeAt.delete(projectRoot);
       rememberProjectSource(projectRoot, local);
     } else {
-      rememberIndecisiveProbe(projectRoot, probeDetail(error));
+      rememberIndecisiveProbe(projectRoot, outcome.detail);
     }
     return local;
   }

@@ -854,6 +854,29 @@ describe('cli format', () => {
       );
     });
 
+    // `formatBackendStatus`'s `unreachable` case had no test anywhere. The load-bearing part is that the
+    // "something is listening" claim is conditional: it is true only when an HTTP response was actually
+    // received (`responded: true`), and must not be printed for a request that never completed at all.
+    it('claims something is listening only when a response was actually received', () => {
+      const text = formatBackendStatus({ status: 'unreachable', detail: '500 Internal Server Error', responded: true });
+
+      expect(text).toContain('did not give a usable answer (500 Internal Server Error)');
+      expect(text, 'a response proves something is listening').toMatch(/is listening at the recorded address/u);
+      expect(text).not.toMatch(/Backend not running/u);
+    });
+
+    it('does not claim anything is listening when the request never completed', () => {
+      const text = formatBackendStatus({ status: 'unreachable', detail: 'ECONNRESET', responded: false });
+
+      expect(text).toContain('did not give a usable answer (ECONNRESET)');
+      // The false claim this guards against: nothing here proves a socket is open, let alone that anything
+      // answers on it.
+      expect(text, 'no response was received, so nothing here proves anything is listening').not.toMatch(
+        /is listening at the recorded address/u,
+      );
+      expect(text).not.toMatch(/Backend not running/u);
+    });
+
     it('formats a recent coordinator failure with its phase and log guidance', () => {
       expect(
         formatBackendStatus({
@@ -910,7 +933,12 @@ describe('cli format', () => {
     // Was `reason: 'unauthorized'` — a token no producer emits, pinning the raw-token render that the closed
     // union and the exhaustive switch now make impossible to reach.
     it('formats a rejected shutdown capability as a refusal that names an exit', () => {
-      const result = { ok: false, reason: 'capability_rejected', detail: '4242' } satisfies ShutdownResult;
+      const result = {
+        ok: false,
+        reason: 'capability_rejected',
+        detail: '4242',
+        pidLiveness: 'alive',
+      } satisfies ShutdownResult;
       expect(formatShutdown(result)).toMatch(/rejected the boot token/u);
       expect(formatShutdown(result), 'the coordinator is up; this is not a report that it stopped').toMatch(
         /did not accept the request/u,
@@ -921,6 +949,43 @@ describe('cli format', () => {
       expect(formatShutdown(result), 'the live coordinator is identified').toMatch(/pid 4242/u);
       expect(formatShutdown(result), 'and the next step is a command that exists').toMatch(/coral-cli backend status/u);
       expect(formatShutdown(result), 'retrying is the one thing that cannot work here').toMatch(/no retry/u);
+    });
+
+    // The 401 proves a coordinator answers at the address; it does not itself prove the recorded pid is that
+    // coordinator. `pidLiveness: 'unknown'` is what `observeCoordinator` had already found before this request
+    // was ever sent, and the sentence must not promise more certainty about the pid than that.
+    it('hedges the pid claim when its liveness was never independently confirmed', () => {
+      const result = {
+        ok: false,
+        reason: 'capability_rejected',
+        detail: '4242',
+        pidLiveness: 'unknown',
+      } satisfies ShutdownResult;
+      const text = formatShutdown(result);
+
+      expect(text).toMatch(/rejected the boot token/u);
+      expect(text, 'the pid is still named').toMatch(/4242/u);
+      expect(text, 'but confirmed liveness is not claimed for it').not.toMatch(/^It is running \(pid/mu);
+      expect(text, 'the hedge itself is present').toMatch(/not independently confirmed alive/u);
+      expect(text, 'and the next step is a command that exists').toMatch(/coral-cli backend status/u);
+    });
+
+    // Neither remedy is reachable through a coral-cli command: `shutdownBackend` refuses on an unreadable
+    // record before it ever dials, since host/port/bootToken all live in the record it could not read.
+    it('does not tell the operator to run a coral-cli command that cannot reach an unreadable record', () => {
+      const statusText = formatBackendStatus({
+        status: 'undecodable_record',
+        reason: 'corrupt-json',
+        path: '/run/coral/coordinator.json',
+      });
+      const shutdownText = formatShutdown({ ok: false, reason: 'unreadable_record', detail: 'corrupt-json' });
+
+      for (const text of [statusText, shutdownText]) {
+        expect(text, 'no invented command is offered').not.toMatch(/stop any running coordinator/u);
+        expect(text, 'the only reachable exit is stopping the process by hand').toMatch(
+          /find and stop that process yourself|stop a coordinator whose own record/u,
+        );
+      }
     });
   });
 

@@ -942,10 +942,53 @@ describe('a converter command that overran its buffer is not told to retry', () 
   });
 });
 
+// `runCommand`'s `launch-refused` arm was exercised only through the `which` locator's own launch failure
+// (`resolveCommandPath`'s "could not be launched at all" case above) — never for the command `which` had just
+// resolved. That gap is reachable: a binary can be removed, or lose its execute bit, between `which` finding
+// it and this module spawning it.
+describe('a converter command that cannot be launched, after `which` found it', () => {
+  it('reports the launch failure rather than a claim that the command ran and failed', async () => {
+    const root = tempRoot('coral-source-import-launch-refused-');
+    const input = join(root, 'paper.pdf');
+    mkdirSync(root, { recursive: true });
+    writeFileSync(input, '%PDF test fixture\n', 'utf8');
+
+    const runtime = fakeRuntime({
+      process: {
+        exec: async (command) =>
+          command === 'which'
+            ? { stdout: '/usr/bin/marker_single\n', stderr: '', status: 0 }
+            : {
+                stdout: '',
+                stderr: '',
+                status: null,
+                // The shape `runtime/exec-builder.ts` produces when `spawn`'s own `error` event fires — the
+                // resolved path was removed or lost its execute bit between the lookup and this spawn.
+                error: Object.assign(new Error('EACCES'), { code: 'EACCES' }),
+              },
+      },
+    });
+
+    const failure = await new PdfMarkerConverter()
+      .convert(input, { runtime, runtimeRoot: join(root, 'runtime'), fileSizeLimitBytes: USER_SOURCE_IMPORT_MAX_BYTES })
+      .then(
+        () => null,
+        (error: unknown) => (error as Error).message,
+      );
+
+    expect(failure, 'the child never ran, so this is not a report that it failed').toMatch(
+      /could not be run \(EACCES\)/u,
+    );
+    expect(failure, 'a standing errno is a launch failure, not a transient one, so the exit is not a retry').toMatch(
+      /could not be launched at all/u,
+    );
+  });
+});
+
 // `install()` and `convert()` decide between "not there" and "could not tell" at four more points, and only
 // the `undetermined` ones were pinned. The `absent` branches are what make the failure legible — "uv was not
-// found after installation" is a different problem from a machine that cannot answer — and disabling any of
-// them left the suite green.
+// found on PATH after its installer ran" is a different problem from a machine that cannot answer — and
+// disabling any of them left the suite green.
 describe('the marker install and convert paths report which of the two they observed', () => {
   const ctx = (runtime: SourceImportRuntime, root: string) => ({
     runtime,
@@ -965,24 +1008,36 @@ describe('the marker install and convert paths report which of the two they obse
     });
   }
 
-  it('installs uv when the lookup says it is absent, and says so if it is still absent afterwards', async () => {
+  it('installs uv when the lookup says it is absent, and names PATH as the likely cause if it is still absent afterwards', async () => {
     const root = tempRoot('coral-source-import-uv-absent-');
     const runtime = locator({});
     const logged: string[] = [];
 
-    await expect(new PdfMarkerConverter().install((m) => logged.push(m), ctx(runtime, root))).rejects.toThrow(
-      'uv was not found after installation',
-    );
+    const failure = await new PdfMarkerConverter()
+      .install((m) => logged.push(m), ctx(runtime, root))
+      .then(
+        () => null,
+        (error: unknown) => (error as Error).message,
+      );
+
+    expect(failure).toMatch(/uv was not found on PATH after its installer ran/u);
+    expect(failure, 'a dead-end refusal names no action; this one does').toMatch(/add that directory to PATH/u);
     expect(logged, 'an absent tool is installed; an unknown one is not').toContain('Installing uv...');
   });
 
-  it('says marker_single is missing after its own install rather than blaming the check', async () => {
+  it('says marker_single is missing after its own install, and names PATH as the likely cause', async () => {
     const root = tempRoot('coral-source-import-marker-absent-');
     const runtime = locator({ uv: { stdout: '/usr/bin/uv\n', status: 0 } });
 
-    await expect(new PdfMarkerConverter().install(() => {}, ctx(runtime, root))).rejects.toThrow(
-      'marker_single was not found after installing marker-pdf',
-    );
+    const failure = await new PdfMarkerConverter()
+      .install(() => {}, ctx(runtime, root))
+      .then(
+        () => null,
+        (error: unknown) => (error as Error).message,
+      );
+
+    expect(failure).toMatch(/marker_single was not found on PATH after installing marker-pdf/u);
+    expect(failure, 'a dead-end refusal names no action; this one does').toMatch(/uv tool update-shell/u);
   });
 
   // The second lookup, after the install ran. It is a different question from the first — the tool was just
@@ -1018,18 +1073,37 @@ describe('the marker install and convert paths report which of the two they obse
       },
     });
 
-    await expect(new PdfMarkerConverter().install(() => {}, ctx(runtime, root))).rejects.toThrow(expected);
+    const failure = await new PdfMarkerConverter()
+      .install(() => {}, ctx(runtime, root))
+      .then(
+        () => null,
+        (error: unknown) => (error as Error).message,
+      );
+
+    expect(failure).toMatch(expected);
+    // ETIMEDOUT is neither a standing errno nor the maxBuffer code, so `nonAnswerExit` falls to its default —
+    // the one branch this suite otherwise only ever asserted the *absence* of, on the overflow case above.
+    expect(failure, 'ETIMEDOUT is transient, so the exit nonAnswerExit names for it is a retry').toMatch(
+      /Retry the import\.$/u,
+    );
   });
 
-  it('refuses to convert when the lookup answers that marker_single is absent', async () => {
+  it('refuses to convert when the lookup answers that marker_single is absent, naming the race rather than stopping cold', async () => {
     const root = tempRoot('coral-source-import-convert-absent-');
     const input = join(root, 'paper.pdf');
     mkdirSync(root, { recursive: true });
     writeFileSync(input, '%PDF test fixture\n', 'utf8');
 
-    await expect(new PdfMarkerConverter().convert(input, ctx(locator({}), root))).rejects.toThrow(
-      'marker_single is not available',
+    const failure = await new PdfMarkerConverter().convert(input, ctx(locator({}), root)).then(
+      () => null,
+      (error: unknown) => (error as Error).message,
     );
+
+    expect(failure).toMatch(/marker_single is not available/u);
+    expect(failure, 'this is a TOCTOU race with an earlier check, not a fresh report of absence').toMatch(
+      /found moments ago/u,
+    );
+    expect(failure, 'a dead-end refusal names no action; this one does').toMatch(/Retry the import/u);
   });
 });
 
@@ -1053,6 +1127,6 @@ describe('prepareSourceImport installs only for an observed absence', () => {
 
     await expect(
       prepareSourceImport(sourceFile, undefined, policy.maxBytes, () => {}, runtimeRoot, runtime, {}),
-    ).rejects.toThrow('uv was not found after installation');
+    ).rejects.toThrow('uv was not found on PATH after its installer ran');
   });
 });

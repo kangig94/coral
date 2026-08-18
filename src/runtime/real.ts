@@ -442,8 +442,13 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
     // cover — the command did not answer — so a mislabel costs a caller a retry, never a wrong answer kept.
     if (result.error) {
       const hasOutput = stdout.length > 0 || stderr.length > 0;
-      const errorCode = (result.error as NodeJS.ErrnoException).code;
-      if (errorCode === EXEC_MAXBUFFER_CODE || (hasOutput && result.signal === null)) {
+      // `EXEC_MAXBUFFER_CODE` is the async path's synthesised code (`exec-builder.ts` sets it on its own
+      // wrapper-killed timer, which `spawnSync` never runs through), so it can never arrive here — measured
+      // directly: a real `spawnSync` maxBuffer overflow always carries `error.code: 'ENOBUFS'`, whether or not
+      // the child also had to be signalled. This path recognises overflow by shape instead: output arrived and
+      // no signal killed the child, which is what happens when the child's own write already exceeded
+      // `maxBuffer` and it exited before Node needed to intervene.
+      if (hasOutput && result.signal === null) {
         return {
           stdout,
           stderr,

@@ -1,17 +1,21 @@
 // Synchronous-subprocess timeout invariant — every direct `execFileSync` / `execSync` / `spawnSync` under
-// `src/` must pass a `timeout`.
+// `src/` or the hook lane (`clients/hooks/**/*.mjs`) must pass a `timeout`.
 //
 // The rule exists because a synchronous subprocess is the one thing in this process that no deadline here can
 // interrupt. Every timeout mechanism the codebase owns is asynchronous — `AbortSignal`, monotonic-clock
 // polling, budgeted shutdown steps — and none of them preempt a call that blocks the event loop outright. A
 // wedged child is therefore not "slow"; it is a process that never continues, on paths that include coordinator
-// startup.
+// startup. The hook lane has the harder deadline of the two: a 5-second budget with no event loop to poll a
+// clock against while a synchronous call blocks it.
 //
-// It is enforced here rather than left to review because the three sites disagreed for a long time and
+// It is enforced here rather than left to review because the three `src/` sites disagreed for a long time and
 // nothing said so. `env-sanitize.ts` bounded its `getconf` from the start; `node-process.ts` shipped three
 // unbounded probes; `project-source.ts` shipped an unbounded `git remote get-url` in the v0.6.0 rewrite
-// (`618c95d1`) that was still unbounded ten minor versions later, on the coordinator startup path the whole
-// time. Nothing failed, because a bounded site does not argue with an unbounded one. A scan does.
+// (`618c95d1`) that was still unbounded four minor versions later, on the coordinator startup path the whole
+// time. Nothing failed, because a bounded site does not argue with an unbounded one. A scan does. The hook
+// lane's own sync-subprocess sites were bounded from the start but were never in this scan's reach — this
+// file scanned `src/` only, exactly the blind spot `clients/hooks/lib/hook-utils.mjs` diagnoses for its
+// sibling invariant, `flavor-path-separation.test.ts`.
 //
 // What this does NOT assert: that the timeout is honoured. Node implements a synchronous timeout by signalling
 // the child and continuing to wait, so a child that blocks or ignores the signal still overruns. The bound is
@@ -28,13 +32,15 @@
 // defaults it the way it has always defaulted `maxBuffer`.
 
 import { readFileSync, readdirSync } from 'node:fs';
-import type { FrontmatterMergeDriverHost } from '#src/kb/curate/frontmatter-merge-driver.js';
 import { join, relative } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import ts from 'typescript';
 
 const REPO_ROOT = join(__dirname, '..', '..');
-const SRC_ROOT = 'src';
+/** `tests/invariants/cited-symbol-homes.test.ts` names the same two lanes for the same reason: `src/` is not
+ *  the whole tree that can block an event loop on a subprocess, and the hook lane has the harder deadline. */
+const SCANNED_ROOTS = ['src', 'clients/hooks'] as const;
+const SCANNED_EXTENSIONS = ['.ts', '.mjs'] as const;
 
 const SYNC_SUBPROCESS_PRIMITIVES = new Set(['execFileSync', 'execSync', 'spawnSync']);
 
@@ -48,8 +54,8 @@ const SYNC_SUBPROCESS_PRIMITIVES = new Set(['execFileSync', 'execSync', 'spawnSy
  * whose `execFileSync` typed its options as `{ stdio: 'ignore' }` — a closed type that could not carry a
  * timeout — so the caller credited with owning the bound was statically forbidden from supplying one, and
  * `git merge-file` ran unbounded while this test reported the file compliant. It is true now because that
- * host type requires `timeout`, and `pins the type that makes the one allowlist entry true` fails if it stops
- * requiring it. Check the forwarding caller's *type*, not its prose.
+ * host type requires `timeout`, and `tests/types/sync-subprocess-forwarding-allowlist-shape.test-d.ts` fails
+ * to compile if it stops requiring it. Check the forwarding caller's *type*, not its prose.
  */
 const FORWARDING_ALLOWLIST = new Map<string, string>([
   [
@@ -71,7 +77,7 @@ function listSourceFiles(root: string): string[] {
         stack.push(absolute);
         continue;
       }
-      if (entry.isFile() && entry.name.endsWith('.ts')) {
+      if (entry.isFile() && SCANNED_EXTENSIONS.some((extension) => entry.name.endsWith(extension))) {
         collected.push(absolute);
       }
     }
@@ -79,8 +85,17 @@ function listSourceFiles(root: string): string[] {
   return collected;
 }
 
+const allScannedFiles = (): string[] => SCANNED_ROOTS.flatMap(listSourceFiles);
+
 function canonicalSrcPath(filePath: string): string {
   return relative(REPO_ROOT, filePath).replace(/\\/g, '/');
+}
+
+/** The hook lane's `.mjs` files are plain ESM, not TypeScript — `ScriptKind.TS` would still parse their
+ *  syntax (a superset), but naming the kind correctly is what makes `ts.isAsExpression`'s absence in `.mjs`
+ *  unsurprising rather than accidental. */
+function scriptKindFor(file: string): ts.ScriptKind {
+  return file.endsWith('.mjs') ? ts.ScriptKind.JS : ts.ScriptKind.TS;
 }
 
 type ChildProcessBindings = Readonly<{
@@ -197,7 +212,7 @@ function unboundedCalls(filePath: string): Unbounded[] {
 function unboundedCallsInSource(file: string, source: string): Unbounded[] {
   if (![...SYNC_SUBPROCESS_PRIMITIVES].some((name) => source.includes(name))) return [];
 
-  const sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, scriptKindFor(file));
   const bindings = childProcessImports(sourceFile);
   if (bindings.direct.size === 0 && bindings.namespaces.size === 0) return [];
 
@@ -243,8 +258,8 @@ function unboundedCallsInSource(file: string, source: string): Unbounded[] {
 }
 
 describe('synchronous subprocess timeout invariant', () => {
-  it('bounds every direct sync subprocess call under src/', () => {
-    const violations = listSourceFiles(SRC_ROOT).flatMap(unboundedCalls);
+  it('bounds every direct sync subprocess call under src/ and clients/hooks/', () => {
+    const violations = allScannedFiles().flatMap(unboundedCalls);
 
     expect(
       violations.map((violation) => `${violation.file}:${violation.line} ${violation.callee}() — ${violation.reason}`),
@@ -260,7 +275,7 @@ describe('synchronous subprocess timeout invariant', () => {
     // Both halves are needed. The module specifier alone over-matches — `transport/ipc/ensure.ts` imports the
     // asynchronous `spawn`, which this invariant has no claim on — and a primitive name alone would match
     // prose. Together they are still pure text, which is what keeps the oracle independent of the detector.
-    const importers = listSourceFiles(SRC_ROOT)
+    const importers = allScannedFiles()
       .filter((filePath) => {
         const source = readFileSync(filePath, 'utf-8');
         return (
@@ -271,6 +286,10 @@ describe('synchronous subprocess timeout invariant', () => {
       .sort();
 
     expect(importers, 'every file importing the primitives must be one the detector can see').toEqual([
+      'clients/hooks/lib/hook-utils.mjs',
+      'clients/hooks/lib/live-work-registry.mjs',
+      'clients/hooks/lib/project-ignore.mjs',
+      'clients/hooks/session-start.mjs',
       'src/cli/commands/kb.ts',
       'src/infra/env-sanitize.ts',
       'src/infra/node-process.ts',
@@ -281,7 +300,7 @@ describe('synchronous subprocess timeout invariant', () => {
     // And the detector must actually recognise each of them, which is the half the text oracle cannot prove.
     for (const file of importers) {
       const source = readFileSync(join(REPO_ROOT, file), 'utf-8');
-      const sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+      const sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, scriptKindFor(file));
       const { direct, namespaces } = childProcessImports(sourceFile);
       expect(
         direct.size + namespaces.size,
@@ -330,19 +349,14 @@ describe('synchronous subprocess timeout invariant', () => {
     expect(fixture(body)).toEqual([]);
   });
 
-  it('pins the type that makes the one allowlist entry true', () => {
-    // The allowlist credits `cli/commands/kb.ts` with forwarding a bound its caller must supply. That is only
-    // true while the host type *requires* `timeout`. When it did not — it was `{ stdio: 'ignore' }`, a closed
-    // type that could not carry one — the entry was false and this invariant certified an unbounded
-    // `git merge-file` as compliant. Loosening it back must fail here, not silently re-open the exemption.
-    type Options = Parameters<FrontmatterMergeDriverHost['execFileSync']>[2];
-    const bounded: Options = { stdio: 'ignore', timeout: 2_000 };
-    expect(bounded.timeout).toBeTypeOf('number');
-
-    // @ts-expect-error `timeout` is required; if this stops erroring, the allowlist entry has become false.
-    const unbounded: Options = { stdio: 'ignore' };
-    expect(unbounded).toBeDefined();
-  });
+  // The allowlist credits `cli/commands/kb.ts` with forwarding a bound its caller must supply. That is only
+  // true while the host type *requires* `timeout`. When it did not — it was `{ stdio: 'ignore' }`, a closed
+  // type that could not carry one — the entry was false and this invariant certified an unbounded
+  // `git merge-file` as compliant. That fact holds at the type level only: vitest does not typecheck, so a
+  // `@ts-expect-error` assertion here would pass at runtime whether or not `timeout` is actually required —
+  // asserting it inside an `it()` would fake the protection rather than provide it. The real pin lives in
+  // `tests/types/sync-subprocess-forwarding-allowlist-shape.test-d.ts`, checked by `tsc` via
+  // `npm run typecheck:tests`, which fails to compile if `timeout` stops being required.
 
   it('sees a namespace import, which a named-import-only detector missed entirely', () => {
     expect(

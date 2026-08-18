@@ -67,10 +67,16 @@ export type BackendStatusFull =
   | { status: 'undecodable_record'; reason: 'corrupt-json' | 'shape-rejected'; path: string }
   /**
    * Something answers at the recorded address and did not give a usable answer — a non-2xx that is not a
-   * drain, or a request that never completed. Distinct from `not_running`, which is reserved for an observed
-   * absence and for a peer whose namespace or flavor says it is somebody else's coordinator, not ours.
+   * drain, a request that never completed, or a 200 whose body this build cannot decode (shape rejection).
+   * Distinct from `not_running`, which is reserved for an observed absence and for a peer whose *decoded*
+   * namespace or flavor says it is somebody else's coordinator, not ours — a shape rejection proves neither.
+   *
+   * `responded` is `true` only when an HTTP response was actually received (any status, any body) — that is
+   * the one thing that proves something is listening at the address. It is `false` for a request that never
+   * completed at all (a refused connection, a timeout, a DNS failure, ...), where nothing here proves anything
+   * is listening; the render layer must not make that claim on `responded: false`.
    */
-  | { status: 'unreachable'; detail: string }
+  | { status: 'unreachable'; detail: string; responded: boolean }
   | { status: 'recent_failure'; phase: PublicDiagnosticPhase; setupError?: PublicSetupErrorSummary };
 
 type RecentFailureStatus = Extract<BackendStatusFull, { status: 'recent_failure' }>;
@@ -158,7 +164,12 @@ async function probeUnauthenticatedPing(
   });
   const body = await parseJsonResponse(response);
   if (response.status === 200) {
-    if (!isBackendPing(body) || body.namespace !== info.namespace || body.flavor !== info.flavor) {
+    // A body this build cannot decode is a shape rejection, not a namespace/flavor mismatch — it proves
+    // nothing about whose coordinator answered, so it must not fall into `notOurCoordinator`'s `not_running`.
+    if (!isBackendPing(body)) {
+      return unreachable('health responded 200 with a body this build could not decode');
+    }
+    if (body.namespace !== info.namespace || body.flavor !== info.flavor) {
       return notOurCoordinator();
     }
     return body.status === 'draining' ? { status: 'shutting_down' } : null;
@@ -182,7 +193,11 @@ async function probeDetailedHealth(
   });
   const body = await parseJsonResponse(response);
   if (response.status === 200) {
-    if (!isBackendHealth(body) || body.namespace !== info.namespace || body.flavor !== info.flavor) {
+    // Same split as the unauthenticated ping: a shape rejection says nothing about whose coordinator this is.
+    if (!isBackendHealth(body)) {
+      return unreachable('detailed health responded 200 with a body this build could not decode');
+    }
+    if (body.namespace !== info.namespace || body.flavor !== info.flavor) {
       return notOurCoordinator();
     }
     if (body.status === 'draining') {
@@ -236,13 +251,15 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
       info.startedAt,
       info.pid,
     );
-  const unreachable = (detail: string): BackendStatusFull => ({ status: 'unreachable', detail });
+  // Both probes only ever call this after `fetch` resolved a response, so `responded` is unconditionally true
+  // here; the `catch` below is the one place a request never completed, and builds its own `responded: false`.
+  const unreachable = (detail: string): BackendStatusFull => ({ status: 'unreachable', detail, responded: true });
 
   try {
     const ping = await probeUnauthenticatedPing(info, notOurCoordinator, unreachable);
     if (ping !== null) return ping;
     return await probeDetailedHealth(info, notOurCoordinator, unreachable);
   } catch (error: unknown) {
-    return unreachable(errorMessage(error));
+    return { status: 'unreachable', detail: errorMessage(error), responded: false };
   }
 }

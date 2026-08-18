@@ -10,12 +10,30 @@
 // It lived as an inline closure and had no test of its own: reverting the guard broke nothing. It is a named
 // function now so this file can hold it.
 
-import { describe, expect, it } from 'vitest';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import type * as NodeOs from 'node:os';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { verifiedIncumbentFromDiscovery, verifiedIncumbentFromProbe } from '#src/coordinator/lifecycle.js';
-import type { CoordinatorDiscoveryRecord, CoordinatorProbe } from '#src/infra/backend-discovery.js';
+import {
+  verifiedIncumbentFromDiscovery,
+  verifiedIncumbentFromProbe,
+  verifiedIncumbentFromRuntimeProbe,
+} from '#src/coordinator/lifecycle.js';
+import type { CoordinatorDiscoveryRecord, CoordinatorProbe, DiscoveryRuntime } from '#src/infra/backend-discovery.js';
+import { createRealRuntime } from '#src/runtime/real.js';
 import type { DesiredIncumbentIdentity, IncumbentHealth } from '#src/transport/ipc/handoff.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
+
+// Only `verifiedIncumbentFromRuntimeProbe`'s tests below touch the filesystem or `node:os`; every other test in
+// this file passes hand-built values and never reaches either mock.
+const mockState = vi.hoisted(() => ({ home: '' }));
+
+vi.mock('node:os', async () => {
+  const actual = await vi.importActual<typeof NodeOs>('node:os');
+  return { ...actual, homedir: () => mockState.home };
+});
 
 const SOCKET = '/tmp/coral-verified-incumbent.sock';
 
@@ -174,5 +192,70 @@ describe('verifiedIncumbentFromProbe', () => {
     };
 
     expect(verifiedIncumbentFromProbe(mismatched, evidence())).toBeNull();
+  });
+});
+
+// The composition above is tested only against a `CoordinatorProbe` someone hand-built — never against a real
+// `probeCoordinator` read, which is exactly the gap that let the incarnation guard revert with nothing failing
+// (see the file header). This drives a real discovery directory through the same call `lifecycle.ts` wires
+// into `bindWithHandoff` as `readVerifiedIncumbentFromDiscovery`.
+describe('verifiedIncumbentFromRuntimeProbe', () => {
+  const tempRoots: string[] = [];
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    for (const root of tempRoots.splice(0)) {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  function makeRuntime(): DiscoveryRuntime {
+    const home = mkdtempSync(join(tmpdir(), 'coral-runtime-probe-home-'));
+    tempRoots.push(home);
+    mockState.home = home;
+    const runtime = createRealRuntime('prod');
+    return { storage: runtime.storage, env: runtime.env, paths: runtime.paths };
+  }
+
+  it('has no incumbent to contend with when no discovery record was ever written', () => {
+    const runtime = makeRuntime();
+
+    expect(verifiedIncumbentFromRuntimeProbe(runtime, evidence())).toBeNull();
+  });
+
+  it('has no incumbent to contend with when the discovery record cannot be decoded', () => {
+    const runtime = makeRuntime();
+    const infoFile = runtime.paths.coral.coordinator.infoFile;
+    mkdirSync(dirname(infoFile), { recursive: true });
+    writeFileSync(infoFile, '{"pid": 4242, "socketPath"', 'utf-8');
+
+    expect(verifiedIncumbentFromRuntimeProbe(runtime, evidence())).toBeNull();
+  });
+
+  // The positive case, so this suite cannot pass by always returning `null`: a live, matching record probed
+  // for real must still reach the incumbent, the same as `verifiedIncumbentFromProbe`'s own `'live'` case.
+  it('contends with a live incumbent a real probe actually observed', async () => {
+    const runtime = makeRuntime();
+    const { writeDiscoveryRecord } = await import('#src/infra/backend-discovery.js');
+
+    writeDiscoveryRecord(
+      {
+        pid: process.pid, // guaranteed observable: this is the test process's own pid
+        port: 9024, // must be positive: unlike `preTokenRecord()`, this round-trips through the real schema
+        socketPath: SOCKET,
+        bundleHash: 'incumbent-bundle',
+        flavor: 'prod',
+        namespace: 'ns',
+        startedAt: Date.now(),
+        token: 'incumbent-token',
+        bootToken: 'incumbent-boot-token',
+      },
+      runtime,
+    );
+
+    const incumbent = verifiedIncumbentFromRuntimeProbe(runtime, evidence());
+
+    expect(incumbent, 'a live, matching record is an incumbent to contend with').not.toBeNull();
+    expect(incumbent?.bootToken).toBe('incumbent-boot-token');
   });
 });

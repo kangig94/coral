@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type * as BackendDiscoveryModule from '#src/infra/backend-discovery.js';
+import type * as NodeProcessModule from '#src/infra/node-process.js';
 import type * as IpcClientModule from '#src/transport/ipc/client.js';
 import type { CoordinatorDiscoveryRecord, DiscoveryRead } from '#src/infra/backend-discovery.js';
 import { createRealRuntime } from '#src/runtime/real.js';
@@ -14,6 +15,9 @@ const mockState = vi.hoisted(() => ({
   ensure: vi.fn(),
   readDiscoveryRecordDisposition: vi.fn<(runtime: unknown) => DiscoveryRead>(),
   createIpcClient: vi.fn(),
+  // Only consulted once a decoded record's socket dial fails — see the `ipc_connect_failed` tests below.
+  // Defaults `alive` so any test that never sets it exercises the common case rather than an unset mock.
+  processLiveness: 'alive' as 'alive' | 'absent' | 'unknown',
 }));
 
 vi.mock('#src/transport/ipc/ensure.js', () => ({
@@ -25,6 +29,14 @@ vi.mock('#src/infra/backend-discovery.js', async () => {
   return {
     ...actual,
     readDiscoveryRecordDisposition: mockState.readDiscoveryRecordDisposition,
+  };
+});
+
+vi.mock('#src/infra/node-process.js', async () => {
+  const actual = await vi.importActual<typeof NodeProcessModule>('#src/infra/node-process.js');
+  return {
+    ...actual,
+    observeProcessLiveness: vi.fn(() => mockState.processLiveness),
   };
 });
 
@@ -75,6 +87,7 @@ describe('expansion activation', () => {
     mockState.ensure.mockReset();
     mockState.readDiscoveryRecordDisposition.mockReset();
     mockState.createIpcClient.mockReset();
+    mockState.processLiveness = 'alive';
     testHome = mkdtempSync(join(tmpdir(), 'coral-activate-home-'));
     process.env.HOME = testHome;
     process.env.USERPROFILE = testHome;
@@ -347,6 +360,24 @@ describe('expansion activation', () => {
     expect(mockState.createIpcClient).not.toHaveBeenCalled();
   });
 
+  // `readDiscoveryRecordDisposition` throwing (`EACCES`, `EIO`) used to be swallowed by a blanket `catch` to
+  // `null`, which is also why `backend-discovery.ts` could claim every CLI path renders these throws — this
+  // path silently absorbed them instead. Every mock elsewhere in this file sets a *return* value; none throws,
+  // so deleting the `try`/`catch` this test covers fails nothing else here.
+  it('reports a thrown read failure (EACCES) as unreadable, not an uncaught rejection', async () => {
+    const activation = createCliExpansionActivation();
+    process.env.CORAL_FLAVOR = 'dev';
+    mockState.readDiscoveryRecordDisposition.mockImplementation(() => {
+      throw Object.assign(new Error("EACCES: permission denied, open '/coordinator.json'"), { code: 'EACCES' });
+    });
+
+    await expect(activation.readExpansionStatus('vector')).resolves.toEqual({
+      status: 'unreadable',
+      detail: "EACCES: permission denied, open '/coordinator.json'",
+    });
+    expect(mockState.createIpcClient).not.toHaveBeenCalled();
+  });
+
   // A record that exists and cannot be decoded is not an absent coordinator. This path used to answer
   // `unavailable` for it, and `info` then reported "no such expansion" for a name the daemon may well hold.
   it.each([['corrupt-json'], ['shape-rejected']] as const)(
@@ -364,24 +395,29 @@ describe('expansion activation', () => {
     },
   );
 
-  // The same false absence one failure mode later: a record that decodes says a coordinator claimed the
-  // socket, so failing to reach it is not evidence that none is there. `setupError` folds a refused socket, a
-  // timeout and a permission error into one code, so this path cannot tell them apart either.
-  it('does not report a coordinator absent when the record exists and the dial failed', async () => {
-    const activation = createCliExpansionActivation();
-    process.env.CORAL_FLAVOR = 'dev';
-    mockState.readDiscoveryRecordDisposition.mockReturnValue({ kind: 'record', record: makeDiscoveryRecord() });
-    mockState.createIpcClient.mockReturnValue({
-      request: vi.fn(async () => {
-        throw Object.assign(new Error('nope'), { code: 'ipc_connect_failed' });
-      }),
-    });
+  // A record that decodes says a coordinator claimed the socket at some point, so failing to dial it is not by
+  // itself evidence that none is there — that is what `observeProcessLiveness` is for. An alive or
+  // unobservable pid is not an absence, and it must not collapse into `unreadable` either: the record read
+  // fine, so "the record could not be read" would be false. It gets its own disposition, `unreachable`.
+  it.each([['alive'], ['unknown']] as const)(
+    'reports unreachable, not unreadable or unavailable, when the recorded pid is %s and the dial fails',
+    async (liveness) => {
+      const activation = createCliExpansionActivation();
+      process.env.CORAL_FLAVOR = 'dev';
+      mockState.readDiscoveryRecordDisposition.mockReturnValue({ kind: 'record', record: makeDiscoveryRecord() });
+      mockState.processLiveness = liveness;
+      mockState.createIpcClient.mockReturnValue({
+        request: vi.fn(async () => {
+          throw Object.assign(new Error('nope'), { code: 'ipc_connect_failed' });
+        }),
+      });
 
-    await expect(activation.readExpansionStatus('vector')).resolves.toEqual({
-      status: 'unreadable',
-      detail: 'ipc_connect_failed',
-    });
-  });
+      await expect(activation.readExpansionStatus('vector')).resolves.toEqual({
+        status: 'unreachable',
+        detail: 'ipc_connect_failed',
+      });
+    },
+  );
 
   it('does not report an unknown expansion from a record it could not read', async () => {
     const activation = createCliExpansionActivation();
@@ -408,6 +444,22 @@ describe('expansion activation', () => {
       (response as { remediation?: string }).remediation,
       'the one action that cannot help must not be the advice',
     ).not.toMatch(/^Retry once/u);
+  });
+
+  // The third `assertDaemonViewReadable` call site: unlike the two above, `info()` already found `name` in the
+  // local catalog here, so rendering would only need `toCatalogEntry(entry, runtime, null)` — a real-looking
+  // package entry built from local install state alone, silently omitting whatever the daemon actually holds
+  // (equipped status, provides, capability status). That is stale data wearing a valid shape, not a refusal.
+  it('refuses to render a found catalog entry from a record it could not read', async () => {
+    const activation = createCliExpansionActivation();
+    process.env.CORAL_FLAVOR = 'dev';
+    mockState.readDiscoveryRecordDisposition.mockReturnValue({ kind: 'undecodable', reason: 'corrupt-json' });
+
+    const response = await activation.info('onnx');
+
+    expect(response).toMatchObject({ status: 'error', code: 'coordinator_record_unreadable' });
+    expect((response as { userMessage?: string }).userMessage).toMatch(/could not be read/u);
+    expect(response).not.toHaveProperty('package');
   });
 
   it('uses the settled build flavor for passive discovery when CORAL_FLAVOR is unset', async () => {
@@ -457,9 +509,12 @@ describe('expansion activation', () => {
     }
   });
 
-  // Was `unavailable` — this test pinned the collapse rather than a behaviour. A dial that did not get through
-  // to a socket a record says is claimed establishes nothing about whether a coordinator is there.
-  it('reports unreadable, not unavailable, when the passive IPC dial fails after discovery succeeds', async () => {
+  // Was `unreadable` here — that value pinned the collapse this branch fixes, not a behaviour worth protecting:
+  // it told an operator whose daemon crashed uncleanly that Coral could not read a file it had, in fact, just
+  // read. With the recorded pid observed decisively absent, the coordinator that claimed this socket is
+  // confirmed gone, so `unavailable` — the same real absence a missing record renders — is correct, and is
+  // what this test asserted before the regression it pinned.
+  it('reports unavailable, not unreadable, when the recorded pid is absent and the passive IPC dial fails', async () => {
     const activation = createCliExpansionActivation();
     const request = vi
       .fn()
@@ -468,12 +523,10 @@ describe('expansion activation', () => {
       kind: 'record',
       record: makeDiscoveryRecord({ socketPath: '/tmp/coral-passive.sock' }),
     });
+    mockState.processLiveness = 'absent';
     mockState.createIpcClient.mockReturnValue({ request });
 
-    await expect(activation.readExpansionStatus()).resolves.toEqual({
-      status: 'unreadable',
-      detail: 'ipc_connect_failed',
-    });
+    await expect(activation.readExpansionStatus()).resolves.toEqual({ status: 'unavailable' });
     expect(mockState.createIpcClient).toHaveBeenCalledWith('/tmp/coral-passive.sock', expect.any(Object), {
       kind: 'boot',
       token: 'boot-token-a',
@@ -493,7 +546,9 @@ describe('expansion activation', () => {
 
     expect(response.status, 'a catalog whose statuses cannot be vouched for is not a catalog').toBe('error');
     expect(response.userMessage).toMatch(/could not be read/u);
-    expect(response.userMessage, 'and it must not be mistaken for an absent coordinator').toMatch(/not asked/u);
+    expect(response.userMessage, 'and it must not be mistaken for an absent coordinator').toMatch(
+      /does not mean no coordinator is running/u,
+    );
   });
 
   it('still derives per-package state locally when no coordinator is there at all', async () => {

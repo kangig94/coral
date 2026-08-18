@@ -18,18 +18,26 @@ export function formatBackendStatus(result: BackendStatusFull): string {
       // Deliberately not "not running": the record exists and could not be read, which says nothing about
       // whether a coordinator is serving. The remedy names the file because nothing in Coral rewrites it while
       // a coordinator is up — it is written once at startup — so an operator is the only party who can clear it.
+      //
+      // "Stop any running coordinator" cannot mean a coral-cli command here: `backend shutdown` itself refuses
+      // on this exact condition, before it ever dials, because host/port/bootToken all live in the record it
+      // could not read — so the only reachable exit is the operator finding and stopping the process directly.
       return [
         `Backend state is unknown: the coordinator discovery record could not be read (${result.reason}).`,
         'A coordinator may still be running; this is not a report that none is.',
-        `Next step: stop any running coordinator, delete ${result.path}, then run a coral-cli mutating command to relaunch.`,
+        `Next step: no coral-cli command can stop a coordinator whose own record it cannot read. If one is running, find and stop that process yourself (ps, or your process manager), then delete ${result.path} and run a coral-cli mutating command to relaunch.`,
       ].join('\n');
     case 'unreachable':
       // Deliberately not "not running": something answered at the recorded address, or the request to it did
-      // not complete. Six call sites used to route here and to the not-running report alike, so an operator
+      // not complete. Five call sites used to route here and to the not-running report alike, so an operator
       // whose coordinator returned a 500 was told it was stopped.
+      //
+      // `responded` distinguishes those two causes: only a received response proves anything is listening.
       return [
         `Backend state is unknown: the coordinator did not give a usable answer (${result.detail}).`,
-        'Something is listening at the recorded address; this is not a report that the backend stopped.',
+        result.responded
+          ? 'Something is listening at the recorded address; this is not a report that the backend stopped.'
+          : 'The request to the recorded address never completed; this is not a report that the backend stopped, and nothing observed here says whether anything is listening.',
         'Next step: retry, and check the coordinator logs if it persists.',
       ].join('\n');
     case 'recent_failure': {
@@ -73,7 +81,10 @@ export function formatShutdown(result: ShutdownResult): string {
       return [
         `Shutdown not attempted: the coordinator discovery record could not be read (${result.detail ?? 'unknown'}).`,
         'A coordinator may still be running; this is not confirmation that one stopped.',
-        'Next step: run coral-cli backend status, which names the record file and how to clear it.',
+        // No coral-cli command reaches this: shutdown needs host/port/bootToken from the very record it just
+        // failed to read, so the manual path is the only one that exists. `backend status` is named only for
+        // the file's path, not as a command that can stop anything here.
+        'Next step: no coral-cli command can dial a coordinator whose own record it cannot read. If one is running, find and stop that process yourself (ps, or your process manager), then delete the record file (run coral-cli backend status to see its path) and run a coral-cli mutating command to relaunch.',
       ].join('\n');
     case 'unreachable':
       return [
@@ -95,12 +106,25 @@ export function formatShutdown(result: ShutdownResult): string {
         'Shutdown refused: this nested Coral process cannot shut down its parent coordinator.',
         "Next step: return to the top-level Coral session and run 'coral-cli backend shutdown' there.",
       ].join('\n');
-    case 'capability_rejected':
+    case 'capability_rejected': {
+      const pid = result.detail ?? 'unknown';
+      // The 401 proves a coordinator answers at the recorded address and rejected our token; it proves nothing
+      // about the pid beyond what was already known before this request was sent. `pidLiveness` carries that
+      // prior observation, so the sentence claims only what was actually confirmed, not what the 401 implies.
+      const whatRespondedMeans =
+        result.pidLiveness === 'alive'
+          ? `It is running (pid ${pid}) and did not accept the request, so no retry of this command will get in.`
+          : `A coordinator is running at the recorded address and did not accept the request, so no retry of this command will get in — but the recorded pid (${pid}) was not independently confirmed alive, so do not act on the pid alone.`;
+      const stopHint =
+        result.pidLiveness === 'alive'
+          ? 'or stop that pid directly'
+          : 'or confirm with your process manager that the recorded pid is still the process serving that address before stopping it directly';
       return [
         "Shutdown refused: the coordinator rejected the boot token in this build's discovery record.",
-        `It is running (pid ${result.detail ?? 'unknown'}) and did not accept the request, so no retry of this command will get in.`,
-        'Next step: run coral-cli backend status to see which build is answering; if it is not this one, shut it down from its own install, or stop that pid directly.',
+        whatRespondedMeans,
+        `Next step: run coral-cli backend status to see which build is answering; if it is not this one, shut it down from its own install, ${stopHint}.`,
       ].join('\n');
+    }
     default:
       // The mechanism `formatBackendStatus` has and this function could not have while `reason` was `string`.
       // A new token now fails to compile here instead of falling through to a raw-token render.

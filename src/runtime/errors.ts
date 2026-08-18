@@ -54,6 +54,7 @@ export type DocumentedCoralSetupErrorCode =
   | 'expansion_binary_corrupt'
   | 'installer_payload_invalid'
   | 'coordinator_record_unreadable'
+  | 'coordinator_unreachable'
   | 'unknown_expansion'
   | 'expansion_bundled_immutable'
   | 'expansion_runtime_unavailable'
@@ -372,12 +373,28 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
    * cannot help here. Every expansion status is a statement about the coordinator, and this build could not
    * read the record that names it: the same read fails the same way next time, so the exit is looking at the
    * record, not repeating the command.
+   *
+   * `coordinator_unreachable` is the sibling for a record that *did* decode: that one names a different exit
+   * because `backend status` answers the two differently — this one's record file, that one's live-or-unknown
+   * coordinator. Do not fold the two back together; that is the collapse this split exists to end.
    */
   coordinator_record_unreadable: {
     userMessage: (context) =>
-      `Coral cannot report ${stringContextValue(context, 'subject', 'expansion status')}: the coordinator discovery record could not be read (${stringContextValue(context, 'detail', 'unknown')}). Every status here is a statement about the coordinator, and it was not asked.`,
+      `Coral cannot report ${stringContextValue(context, 'subject', 'expansion status')}: the coordinator discovery record could not be read (${stringContextValue(context, 'detail', 'unknown')}). This does not mean no coordinator is running.`,
     remediation:
       "Run 'coral-cli backend status', which names the record file and how to clear it. Retrying this command reads the same file.",
+  },
+  /**
+   * Reached only once a record decoded — a coordinator claimed this socket at some point — and its recorded
+   * pid was not observed absent. `backend status` answers this exact condition `unreachable` too, with no
+   * record file to point at, so `coordinator_record_unreadable`'s remedy ("names the record file") does not
+   * apply here; that is the whole reason this is its own code rather than a reused `detail`.
+   */
+  coordinator_unreachable: {
+    userMessage: (context) =>
+      `Coral cannot report ${stringContextValue(context, 'subject', 'expansion status')}: the coordinator recorded itself but did not answer (${stringContextValue(context, 'detail', 'unknown')}).`,
+    remediation:
+      "Run 'coral-cli backend status' to see whether the coordinator is starting, busy, or gone, then retry.",
   },
   unknown_expansion: {
     userMessage: (context) =>
@@ -624,6 +641,22 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
     },
   },
 } satisfies Record<DocumentedCoralSetupErrorCode, DocumentedCoralSetupErrorSpec>;
+
+/**
+ * Codes that mean "this run could not observe the answer", not "the answer is no" — the same distinction
+ * `SHUTDOWN_REFUSAL_EXIT_CODES` (`cli/commands/backend.ts`) draws for `ShutdownReason`. `errorCodeToExit`
+ * (`cli/errors.ts`) and `expansionExitCode` (`cli/commands/expansion.ts`) each map a code to a CLI exit status
+ * independently; a code added to one list and not the other is exactly how `coordinator_record_unreadable`
+ * exited the "observed/decided" 1 in one of them. Listed here, once, so both read the same membership rather
+ * than repeating it. `Set<string>` rather than `Set<DocumentedCoralSetupErrorCode>` at the export boundary:
+ * both consumers hold a plain `string` by the time they check membership — `CoralSetupError.code` is `string`,
+ * not this union, because domains outside this registry (`jobs/events.ts`, `sessions/events.ts`, and others)
+ * construct `CoralSetupError` with codes of their own that never enter `DocumentedCoralSetupErrorCode`.
+ */
+export const NOT_OBSERVED_CORAL_SETUP_ERROR_CODES: ReadonlySet<string> = new Set<DocumentedCoralSetupErrorCode>([
+  'coordinator_record_unreadable',
+  'coordinator_unreachable',
+]);
 
 function renderDocumentedSpec(
   value: string | ((context?: CoralSetupErrorContext) => string),

@@ -1,5 +1,6 @@
 import { basename, join } from 'node:path';
 
+import { classifyThrownExecOutcome } from '../../infra/port-types.js';
 import {
   extractBody,
   parseCommunityFrontmatter,
@@ -168,7 +169,7 @@ function mergeBodiesWithGit(
       const outcome = classifyMergeFileFailure(error);
       // Raised rather than returned, because there is no exit status that means "do not write the file" — every
       // number this function can produce is a merge result the caller acts on.
-      if (outcome.kind === 'no-answer') throw new FrontmatterMergeUnavailableError(outcome.detail);
+      if (outcome.kind === 'no-answer') throw new FrontmatterMergeUnavailableError(label, outcome.detail);
       status = outcome.status;
     }
 
@@ -189,11 +190,16 @@ function mergeBodiesWithGit(
  * file that looks clean in a conflicted path is the thing an operator stages without reading, which turns a
  * refusal that protected their edit into the loss it was protecting them from. Saying only "left untouched"
  * describes the state and names no action, which is half a refusal.
+ *
+ * It also names *which* file. This driver runs once per conflicted path — a `git rebase`/`git merge` touching
+ * several `.md` files invokes it separately for each — and git does not prefix a merge driver's stderr with
+ * the path it ran on. Without `label` (git's `%P`), a refusal mid-multi-file-conflict is ambiguous about which
+ * of several unresolved files it describes, and the recovery command it prescribes has no target to name.
  */
 export class FrontmatterMergeUnavailableError extends Error {
-  constructor(detail: string) {
+  constructor(label: string, detail: string) {
     super(
-      `Coral could not merge this file: \`git merge-file\` did not answer (${detail}). Your version is intact and git has left the path conflicted — resolve it yourself (\`git checkout --ours\`/\`--theirs\`, or an editor) rather than staging it as-is, because it carries no conflict markers to review.`,
+      `Coral could not merge ${label}: \`git merge-file\` did not answer (${detail}). Your version is intact and git has left the path conflicted — resolve it yourself (\`git checkout --ours -- ${label}\`/\`--theirs\`, or an editor) rather than staging it as-is, because it carries no conflict markers to review.`,
     );
     this.name = 'FrontmatterMergeUnavailableError';
   }
@@ -234,26 +240,31 @@ const MAX_MERGE_FILE_CONFLICT_COUNT = 127;
  * synchronous subprocess cannot be interrupted). What changes is that a non-answer now refuses instead of
  * guessing.
  *
- * `answered` rather than `exited`: this is the same distinction `classifyExecOutcome` (`infra/port-types.ts`)
- * draws for every other subprocess here, and it does not get a second spelling for being local to one file.
- * It stays a separate type because the input differs — that classifier reads an `ExecResult` from a port and
- * this one reads a thrown `execFileSync` error against a command-specific exit range.
+ * `classifyMergeFileFailure` composes `classifyThrownExecOutcome` (`infra/port-types.ts`) rather than
+ * re-deriving "read a thrown subprocess error" locally — that classifier already draws the launch-refused /
+ * no-answer / answered split for exactly this thrown shape, and a fourth local spelling of it is what this
+ * type used to be. It still returns this narrower type instead of `ExecOutcome` directly, because
+ * `classifyThrownExecOutcome`'s `answered` means only "a numeric status was thrown": full delegation would
+ * read `129` (a usage error) and `255` (git refusing the inputs) as 129 and 255 conflicts. So only its
+ * `answered` case gets refined further, against the command-specific 1..127 range below — `launch-refused` and
+ * `no-answer` both fold into this type's own `no-answer`, because neither is a merge result the caller can act
+ * on.
  */
 type MergeFileOutcome =
   | Readonly<{ kind: 'answered'; status: number }>
   | Readonly<{ kind: 'no-answer'; detail: string }>;
 
 function classifyMergeFileFailure(error: unknown): MergeFileOutcome {
-  if (typeof error === 'object' && error !== null && 'status' in error) {
-    const status = (error as { status?: unknown }).status;
-    if (typeof status === 'number') {
-      return status > 0 && status <= MAX_MERGE_FILE_CONFLICT_COUNT
-        ? { kind: 'answered', status }
-        : { kind: 'no-answer', detail: `git merge-file exited ${status}` };
-    }
+  const outcome = classifyThrownExecOutcome(error);
+  if (outcome.kind === 'launch-refused') {
+    return { kind: 'no-answer', detail: outcome.code };
   }
-  const code = (error as NodeJS.ErrnoException | null)?.code;
-  return { kind: 'no-answer', detail: code ?? (error as Error | null)?.message ?? 'unknown error' };
+  if (outcome.kind === 'no-answer') {
+    return outcome;
+  }
+  return outcome.status > 0 && outcome.status <= MAX_MERGE_FILE_CONFLICT_COUNT
+    ? outcome
+    : { kind: 'no-answer', detail: `git merge-file exited ${outcome.status}` };
 }
 
 function mergeFrontmatter(ours: MarkdownDocument, theirs: MarkdownDocument, mergedBody: string, path: string): string {

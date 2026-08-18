@@ -21,12 +21,11 @@ function claudePreflightRuntime(
 ): ProviderPreflightRuntime<ClaudeProviderAccess> {
   const runExact = vi.fn(async (_command: string, args: string[]) =>
     args[0] === '--version'
-      ? { stdout: 'claude 1.0.0', stderr: '', status: 0, signal: null }
+      ? { stdout: 'claude 1.0.0', stderr: '', status: 0 }
       : {
           stdout: JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', subscriptionType: 'team' }),
           stderr: '',
           status: 0,
-          signal: null,
         },
   );
   return {
@@ -36,10 +35,6 @@ function claudePreflightRuntime(
       existsSync: (path: string) => Object.hasOwn(files, path),
       readFileSync: (path: string) => files[path] ?? '',
     },
-    // Present because production reads it. The cast below hides an omission, and the CLI detector only reaches
-    // `time` on the path where a probe could not be answered — so leaving it out passed every happy-path case
-    // and would have thrown on the one that matters.
-    time: { now: () => 1_700_000_000_000 },
     runExact,
   } as unknown as ProviderPreflightRuntime<ClaudeProviderAccess>;
 }
@@ -50,12 +45,10 @@ function unanswerableVersionProbeRuntime(code: string): ProviderPreflightRuntime
     access: TEST_CLAUDE_ACCESS,
     cwd: '/workspace/project',
     storage: { existsSync: () => false, readFileSync: () => '' },
-    time: { now: () => 1_700_000_000_000 },
     runExact: vi.fn(async () => ({
       stdout: '',
       stderr: '',
       status: null,
-      signal: null,
       error: Object.assign(new Error(code), { code }),
     })),
   } as unknown as ProviderPreflightRuntime<ClaudeProviderAccess>;
@@ -176,12 +169,11 @@ describe('claudePreflight', () => {
     const runtime = claudePreflightRuntime({});
     runtime.runExact = vi
       .fn()
-      .mockResolvedValueOnce({ stdout: 'claude 1.0.0', stderr: '', status: 0, signal: null })
+      .mockResolvedValueOnce({ stdout: 'claude 1.0.0', stderr: '', status: 0 })
       .mockResolvedValueOnce({
         stdout: JSON.stringify({ loggedIn: false }),
         stderr: '',
         status: 0,
-        signal: null,
       });
 
     await expect(claudePreflight(runtime)).rejects.toThrow(
@@ -196,12 +188,11 @@ describe('claudePreflight', () => {
     const runtime = claudePreflightRuntime({});
     runtime.runExact = vi
       .fn()
-      .mockResolvedValueOnce({ stdout: 'claude 1.0.0', stderr: '', status: 0, signal: null })
+      .mockResolvedValueOnce({ stdout: 'claude 1.0.0', stderr: '', status: 0 })
       .mockResolvedValueOnce({
         stdout: JSON.stringify(authOutput),
         stderr: '',
         status: 0,
-        signal: null,
       });
 
     await expect(claudePreflight(runtime)).resolves.toBeUndefined();

@@ -91,7 +91,7 @@ paths, not to the shipped build-selection pointer.
 The claim "no build ever meets an incompatible store" is false in four ways:
 
 1. **`classifyStoreFormat` tests `precedence > 0` before fingerprint equality**
-   (`store/db.ts:155`). Same fingerprint plus a newer stored product version still yields
+   (`store/db.ts:209`). Same fingerprint plus a newer stored product version still yields
    `newer-incompatible`. This is the same ordering that made every newer release lock out
    the previous one.
 2. **A directory name does not authenticate its contents.** Corruption, a partial migration,
@@ -142,8 +142,8 @@ installation provenance, not storage compatibility.
 
 Durable recovery for coordinator-local provider hosts is not shipped. When it is added, it must run after
 coordinator authority is established but before store routing can discard the only evidence naming an orphaned
-group. `routeOrOpenBackendStoreAtStartup` (`src/coordinator/lifecycle.ts:924`) currently runs before
-`runStartupRecovery` (`:1013`) and may quarantine or reset the store, so a containment record inside that store
+group. `routeOrOpenBackendStoreAtStartup` (`src/coordinator/lifecycle.ts:1008`) currently runs before
+`runStartupRecovery` (`:1123`) and may quarantine or reset the store, so a containment record inside that store
 could disappear while the detached app-server and its MCP children remain alive.
 
 The design therefore needs a format-neutral record and a pre-routing recovery window. Multiple
@@ -173,7 +173,7 @@ ignore it, and this remains a pre-existing defect rather than a new one.
 Recorded so the next attempt starts from the end of the argument, not the beginning.
 
 - **A filesystem capsule, never SQLite.** Store routing may quarantine or reset the store _before_ recovery
-  runs (`lifecycle.ts:924` vs `:1013`), so a record inside the store can be destroyed while the group it names
+  runs (`lifecycle.ts:1008` vs `:1123`), so a record inside the store can be destroyed while the group it names
   keeps running. Not the host inventory either — `captureInventory`
   (`coordinator/services/provider-host-administration.ts:104`) assembles rows on demand from live owners.
 - **Per-owner records, shared primitive.** A proxy set is _inheritable_ — a successor adopts it by redeeming a
@@ -190,11 +190,16 @@ Recorded so the next attempt starts from the end of the argument, not the beginn
 
 ### Blocking findings — verified, do not re-derive
 
-1. **`probeCoordinator()` conflates "no evidence" with "absent."** It returns `null` when the identity cannot
-   be read (`infra/backend-discovery.ts:115-124`), and a caller that reads `null` as _dead_ will reap a live
-   host. Owner liveness must be `present | absent | unknown`, and `unknown` must never authorize a reap — the
-   same three-valued discipline PR #300 established for serviceability. Sources of `unknown` include EPERM, a
-   missing `/proc` entry, a container PID namespace where the owner is invisible, and a probe returning null.
+1. **~~`probeCoordinator()` conflates "no evidence" with "absent."~~ Closed 2026-08-18.** It returned `null`
+   when the identity could not be read, and a caller reading `null` as _dead_ would reap a live host. It now
+   answers `CoordinatorProbe` — `live | absent | unobservable` with the record carried on the unobservable-pid
+   variant (`src/infra/backend-discovery.ts`) — and `observeProcessLiveness` answers `alive | absent |
+   unknown`, with only `absent` treated as an absence. The requirement this item stated is met; what it does
+   *not* settle is anything about routing, so the rest of this entry stands on its own.
+
+   Left here rather than deleted because the reasoning is the reusable part: `unknown` must never authorize a
+   reap, and its sources — EPERM, a missing `/proc` entry, a container PID namespace where the owner is
+   invisible — are the same wherever this shape recurs.
 2. **Node has no `flock`.** A round proposed a fixed-path kernel lease as the authority primitive; the `fs`
    API exposes no such operation, verified by runtime inspection. Any future authority argument must use a
    primitive that actually exists.
@@ -206,7 +211,7 @@ Recorded so the next attempt starts from the end of the argument, not the beginn
    relative root, so a different `HOME` means a different journal, store, and run directory. Authority is one
    canonical absolute state root plus flavor; relative or unresolvable roots should fail closed.
 5. **Second-resolution process birth time is the portable floor.** Darwin's source is `ps -o lstart=`
-   (`infra/node-process.ts:103-118`), which has no sub-second component; sub-second there needs `sysctl
+   (`infra/node-process.ts:209-224`), which has no sub-second component; sub-second there needs `sysctl
 KERN_PROC_PID` via native code. This repository ships no native addon and must not do different things on
    different operating systems, so seconds is the identity contract everywhere. The compensating controls are
    that the recorded identity also requires `processGroupId === pid` (an aliasing process must additionally be
@@ -237,9 +242,9 @@ continuity.
   the format directory therefore does **not** satisfy version-specific evidence; that needs
   immutable reset incidents or explicit snapshots. This is why the containment preplan's
   cross-build-readability criterion was withdrawn rather than moved here unchanged.
-- **Write-blocked-but-operating is rejected.** The static command map is 31 `mutate` vs 14
-  `directRead`, 2 `servedRead`, 1 `subscribe`, and provider-family commands default to
-  `mutate` (`cli/classify.ts:165`). A write-blocked daemon cannot launch providers,
+- **Write-blocked-but-operating is rejected.** The static command map is 32 `mutate` vs 14
+  `directRead`, 4 `servedRead`, 1 `subscribe`, and provider-family commands default to
+  `mutate` (`cli/classify.ts:194`). A write-blocked daemon cannot launch providers,
   workflows, discussions, imports, session claims, or recovery settlements — it would look
   alive while being useless, which is the failure shape fixed on 2026-08-02. A typed refusal
   is cleaner; a deliberately diagnostic-only lifecycle that never reports `running` would be

@@ -138,6 +138,28 @@ type CommandLocation =
   | Readonly<{ kind: 'absent' }>
   | Readonly<{ kind: 'undetermined'; detail: string }>;
 
+/**
+ * `.path` from a `CommandLocation`, or the refusal for whichever of the other two it is not.
+ *
+ * `absentMessage` and `undeterminedMessage` are per call, not shared, because "absent" is a different fact at
+ * each of this module's checkpoints — a converter never installed, a re-check right after installing it, and a
+ * race between an earlier check and this use — and a shared sentence for all three is exactly the collapse
+ * this helper replaces.
+ */
+function requireCommandPath(
+  location: CommandLocation,
+  absentMessage: string,
+  undeterminedMessage: (detail: string) => string,
+): string {
+  if (location.kind === 'absent') {
+    throw new Error(absentMessage);
+  }
+  if (location.kind === 'undetermined') {
+    throw new Error(undeterminedMessage(location.detail));
+  }
+  return location.path;
+}
+
 type MarkerDevice = 'auto' | 'cpu' | 'cuda' | 'mps';
 type MarkerTimeoutProfile = 'cpu' | 'cuda' | 'mps';
 
@@ -919,14 +941,17 @@ export class PdfMarkerConverter implements Converter {
   }
 
   async install(log: (msg: string) => void, ctx: SourceImportContext): Promise<void> {
-    let uv = await resolveCommandPath('uv', ctx);
+    const uv = await resolveCommandPath('uv', ctx);
     if (uv.kind === 'undetermined') {
       throw new Error(
         `Could not check whether uv is installed (${uv.detail}); Coral will not install over an unknown state. ${nonAnswerExit(uv.detail)}`,
       );
     }
 
-    if (uv.kind === 'absent') {
+    let uvCommand: string;
+    if (uv.kind === 'found') {
+      uvCommand = uv.path;
+    } else {
       log('Installing uv...');
       if (ctx.runtime.env.platform() === 'win32') {
         await runCommand('powershell', ['-c', 'irm https://astral.sh/uv/install.ps1 | iex'], 'uv installer', ctx);
@@ -934,17 +959,12 @@ export class PdfMarkerConverter implements Converter {
         await runCommand('sh', ['-c', 'curl -LsSf https://astral.sh/uv/install.sh | sh'], 'uv installer', ctx);
       }
 
-      uv = await resolveCommandPath('uv', ctx);
-      if (uv.kind === 'absent') {
-        throw new Error('uv was not found after installation');
-      }
-      if (uv.kind === 'undetermined') {
-        throw new Error(
-          `uv was installed, but checking for it did not answer (${uv.detail}). ${nonAnswerExit(uv.detail)}`,
-        );
-      }
+      uvCommand = requireCommandPath(
+        await resolveCommandPath('uv', ctx),
+        'uv was not found on PATH after its installer ran. That usually means the installer wrote it to a directory this process does not have on PATH — check where it placed `uv`, add that directory to PATH, and retry the import.',
+        (detail) => `uv was installed, but checking for it did not answer (${detail}). ${nonAnswerExit(detail)}`,
+      );
     }
-    const uvCommand = uv.path;
 
     log('Installing Python 3.12 + Marker...');
     const installEnv = ctx.runtime.env.fullSnapshot();
@@ -963,15 +983,12 @@ export class PdfMarkerConverter implements Converter {
       },
     );
 
-    const marker = await resolveCommandPath('marker_single', ctx);
-    if (marker.kind === 'absent') {
-      throw new Error('marker_single was not found after installing marker-pdf');
-    }
-    if (marker.kind === 'undetermined') {
-      throw new Error(
-        `marker-pdf was installed, but checking for marker_single did not answer (${marker.detail}). ${nonAnswerExit(marker.detail)}`,
-      );
-    }
+    requireCommandPath(
+      await resolveCommandPath('marker_single', ctx),
+      "marker_single was not found on PATH after installing marker-pdf. Add uv's tool bin directory to PATH (run `uv tool update-shell`, or add the directory `uv tool dir --bin` reports) and retry the import.",
+      (detail) =>
+        `marker-pdf was installed, but checking for marker_single did not answer (${detail}). ${nonAnswerExit(detail)}`,
+    );
   }
 
   async convert(filePath: string, ctx: SourceImportContext): Promise<ConversionResult> {
@@ -981,16 +998,14 @@ export class PdfMarkerConverter implements Converter {
       ctx.fileSizeLimitBytes,
       'KB source import PDF file',
     );
-    const marker = await resolveCommandPath('marker_single', ctx);
-    if (marker.kind === 'absent') {
-      throw new Error('marker_single is not available');
-    }
-    if (marker.kind === 'undetermined') {
-      throw new Error(
-        `Could not check for marker_single (${marker.detail}); this is not a report that it is missing. ${nonAnswerExit(marker.detail)}`,
-      );
-    }
-    const markerCommand = marker.path;
+    // Something found marker_single moments ago — the availability check or the install step this run just
+    // completed — so its absence here is a race with this conversion, not evidence it was never installed.
+    const markerCommand = requireCommandPath(
+      await resolveCommandPath('marker_single', ctx),
+      'marker_single is not available; it was found moments ago before this conversion started. Retry the import.',
+      (detail) =>
+        `Could not check for marker_single (${detail}); this is not a report that it is missing. ${nonAnswerExit(detail)}`,
+    );
 
     const outputDir = createPdfOutputDir(ctx);
 

@@ -64,6 +64,15 @@ export type GitSyncResult =
   | { kind: 'paths'; changes: GitSyncPathChange[] }
   | { kind: 'ambiguous' };
 
+/**
+ * The third answer a repo/remote probe inside `createGitSyncController` can give: not yes, not no, but unable
+ * to tell. `isGitRepo`/`isGitSyncEnabled` below collapse this into `false` for their boolean call sites — a KB
+ * that is not a git repository and a KB this probe could not ask look identical to those callers, and always
+ * have. `gitSync` is the one caller that must not collapse it: returning `{ kind: 'no-change' }` for a cycle
+ * that could not ask git anything tells the Corpus authority git answered when it did not.
+ */
+type GitProbeAnswer = 'yes' | 'no' | 'unanswered';
+
 export type GitSyncController = {
   ensureKbGitignore(): void;
   ensureKbMergeDrivers(): void;
@@ -217,15 +226,15 @@ export function createGitSyncController({
    * without a restart. Within the window the operations are skipped, which is the same conservative direction
    * as before; the difference is that it ends.
    */
-  function isGitRepo(): boolean {
+  function probeIsGitRepo(): GitProbeAnswer {
     if (cachedIsGitRepo !== null) {
-      return cachedIsGitRepo;
+      return cachedIsGitRepo ? 'yes' : 'no';
     }
     if (
       lastUnansweredGitRepoProbeAt !== null &&
       kb.time.now() - lastUnansweredGitRepoProbeAt < INDECISIVE_PROBE_REPROBE_INTERVAL_MS
     ) {
-      return false;
+      return 'unanswered';
     }
 
     // Classified from the raw result rather than from a caught error. `git()` rethrows, and by the time an
@@ -242,12 +251,31 @@ export function createGitSyncController({
         `[KB] git sync could not determine whether ${root} is a git work tree (${outcome.detail}); skipping git operations for now.`,
       );
       lastUnansweredGitRepoProbeAt = kb.time.now();
-      return false;
+      return 'unanswered';
     }
 
     lastUnansweredGitRepoProbeAt = null;
     cachedIsGitRepo = outcome.kind === 'answered' && outcome.status === 0;
-    return cachedIsGitRepo;
+    return cachedIsGitRepo ? 'yes' : 'no';
+  }
+
+  /**
+   * Every git-sync operation gates on this, so a wrong `false` is not a degraded mode — it is the KB silently
+   * ceasing to be version-controlled, with no commit, no push, and nothing said. That is what caching every
+   * failure produced: one `EAGAIN` under fork pressure, or one 5s timeout on a busy disk, and the answer was
+   * `false` for the lifetime of the daemon.
+   *
+   * So only an answer is cached. A non-answer is remembered with an expiry instead — long enough that a wedged
+   * environment is not re-probed on each of the seven call sites, short enough that a recovered one heals
+   * without a restart. Within the window the operations are skipped, which is the same conservative direction
+   * as before; the difference is that it ends.
+   *
+   * This is `probeIsGitRepo` collapsed to the boolean its six other call sites need — `'no'` and `'unanswered'`
+   * are the same "skip this operation" to them. `gitSync` below is the one caller that needs the third answer
+   * kept apart, so it reads `probeIsGitRepo` directly instead of this wrapper.
+   */
+  function isGitRepo(): boolean {
+    return probeIsGitRepo() === 'yes';
   }
 
   /**
@@ -257,24 +285,31 @@ export function createGitSyncController({
    * until the daemon restarted. Splitting the disposition here would buy a re-probe that the next call already
    * makes.
    */
-  function isGitSyncEnabled(): boolean {
+  function probeIsGitSyncEnabled(): GitProbeAnswer {
     if (envPort.get('CORAL_KB_GIT_SYNC') !== '1') {
-      return false;
+      return 'no';
     }
     const result = gitRaw(processPort, root, ['remote'], 5000);
     const outcome = classifyExecOutcome(result);
-    if (outcome.kind === 'no-answer') {
+    if (outcome.kind === 'no-answer' || outcome.kind === 'launch-refused') {
       // Said out loud because the operator asked for this: with `CORAL_KB_GIT_SYNC=1`, a cycle that skips
       // sync is a cycle that did not do the thing they enabled, and it used to be indistinguishable from a
       // repository with no remote configured. Nothing is remembered — the scheduler asks again next cycle,
-      // which is why this needs no interval where `isGitRepo` does.
-      backendLog.warn(`[KB] git sync could not list remotes for ${root} (${outcome.detail}); skipping this cycle.`);
-      return false;
+      // which is why this needs no interval where `isGitRepo` does. `launch-refused` (git itself could not be
+      // launched) folds in here rather than returning `'no'` silently: it says exactly as little about whether
+      // a remote exists as a timeout does.
+      const detail = outcome.kind === 'no-answer' ? outcome.detail : outcome.code;
+      backendLog.warn(`[KB] git sync could not list remotes for ${root} (${detail}); skipping this cycle.`);
+      return 'unanswered';
     }
-    if (outcome.kind !== 'answered' || outcome.status !== 0) {
-      return false;
+    if (outcome.status !== 0) {
+      return 'no';
     }
-    return result.stdout.trim().length > 0;
+    return result.stdout.trim().length > 0 ? 'yes' : 'no';
+  }
+
+  function isGitSyncEnabled(): boolean {
+    return probeIsGitSyncEnabled() === 'yes';
   }
 
   function getDefaultBranch(): string {
@@ -850,7 +885,21 @@ export function createGitSyncController({
   }
 
   async function gitSync(signal?: AbortSignal): Promise<GitSyncResult> {
-    if (!isGitRepo() || !isGitSyncEnabled()) {
+    // `isGitRepo`/`isGitSyncEnabled` collapse "no" and "could not tell" to the same `false` — fine for a
+    // gate that only skips this operation, wrong here: `{ kind: 'no-change' }` tells the Corpus authority
+    // nothing changed, and a probe that could not be answered observed nothing about that at all.
+    const repoProbe = probeIsGitRepo();
+    if (repoProbe === 'unanswered') {
+      return { kind: 'ambiguous' };
+    }
+    if (repoProbe === 'no') {
+      return { kind: 'no-change' };
+    }
+    const syncEnabledProbe = probeIsGitSyncEnabled();
+    if (syncEnabledProbe === 'unanswered') {
+      return { kind: 'ambiguous' };
+    }
+    if (syncEnabledProbe === 'no') {
       return { kind: 'no-change' };
     }
 

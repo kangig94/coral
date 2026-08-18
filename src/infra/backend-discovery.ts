@@ -176,23 +176,7 @@ function readDiscoveryRecord(runtime: DiscoveryRuntime): CoordinatorDiscoveryRec
  * and because there are two independent ways to fail to reach one. The pid can be unobservable; so can the
  * record itself. An earlier version split only the pid, and an undecodable file still reported a confident
  * absence.
- */
-export type CoordinatorProbe =
-  /** A record exists and its pid names a live process. */
-  | Readonly<{ kind: 'live'; record: CoordinatorDiscoveryRecord }>
-  /** No record was written, or the recorded pid decisively names no process. Either is a real absence. */
-  | Readonly<{ kind: 'absent' }>
-  /**
-   * Nothing here is proof of absence, from either input. `unreadable-record` is a file that exists and could
-   * not be decoded; `unreadable-process` is a record whose pid could not be observed — that one carries its
-   * record deliberately, because the record holds the `bootToken` a contender needs to ask an incumbent to
-   * stand down, and discarding it over an unanswered probe is what makes "could not observe" read as "nobody
-   * is there".
-   */
-  | Readonly<{ kind: 'unobservable'; reason: 'unreadable-record' }>
-  | Readonly<{ kind: 'unobservable'; reason: 'unreadable-process'; record: CoordinatorDiscoveryRecord }>;
-
-/**
+ *
  * Two other sites ask *this* question — whether an incumbent exists — without this type:
  * `transport/http/backend/coordinator-observation.ts`, which answers it once for `backend status` and
  * `backend shutdown` both, and `cli/expansion/index.ts`. Each keeps its own shape for a reason of its own:
@@ -215,13 +199,29 @@ export type CoordinatorProbe =
  * shape: the record axis and the process axis fail independently, and neither one failing is the other one
  * answering. `readBackendInfo`'s `null` covers a missing file, an undecodable one, *and* a record omitting
  * `version`/`instanceId`, so anything gating on it reports a confident `not_running` from evidence it could
- * not read — which is why none of the three uses it, and why it is no longer exported.
+ * not read — which is why none of the three uses it. It stays exported regardless: `ownership-checker.ts`'s
+ * replacement check and the `tools/simulation` harness named above both call it directly, and
+ * `coordinator/lifecycle.ts` imports it only to hand it to the ownership checker.
  *
  * What binds all three is the rule rather than the shape: only an observed `'absent'` is an absence. There is
  * no invariant test behind that sentence and one was tried — see the rejection recorded in
  * `tests/invariants/liveness-is-never-a-boolean.test.ts`. The rule is held by these return types and by the
  * tests that assert what each variant does, so a fourth site adding itself is caught by review, not by a scan.
  */
+export type CoordinatorProbe =
+  /** A record exists and its pid names a live process. */
+  | Readonly<{ kind: 'live'; record: CoordinatorDiscoveryRecord }>
+  /** No record was written, or the recorded pid decisively names no process. Either is a real absence. */
+  | Readonly<{ kind: 'absent' }>
+  /**
+   * Nothing here is proof of absence, from either input. `unreadable-record` is a file that exists and could
+   * not be decoded; `unreadable-process` is a record whose pid could not be observed — that one carries its
+   * record deliberately, because the record holds the `bootToken` a contender needs to ask an incumbent to
+   * stand down, and discarding it over an unanswered probe is what makes "could not observe" read as "nobody
+   * is there".
+   */
+  | Readonly<{ kind: 'unobservable'; reason: 'unreadable-record' }>
+  | Readonly<{ kind: 'unobservable'; reason: 'unreadable-process'; record: CoordinatorDiscoveryRecord }>;
 
 /**
  * The record's `incarnation` is not compared here, and the reason is narrower than it once was.

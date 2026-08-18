@@ -29,7 +29,23 @@ export type ShutdownReason =
 
 export type ShutdownResult =
   | { ok: true; alreadyDraining?: true }
-  | { ok: false; reason: ShutdownReason; detail?: string };
+  | {
+      ok: false;
+      reason: ShutdownReason;
+      detail?: string;
+      /**
+       * Set only alongside `reason: 'capability_rejected'` — the pid liveness `observeCoordinator` had
+       * already found *before* the 401 was ever sent. The 401 proves a coordinator answers at the recorded
+       * host:port and rejected our token; it proves nothing about `detail` (the record's pid) beyond that
+       * prior observation, so the render layer must not promise more certainty about the pid than this.
+       *
+       * Modeled as optional-on-the-shared-shape rather than as a fourth split member of this union: a member
+       * split on a *subset* of `reason`'s literals (one case value vs. the other six) defeats TypeScript's
+       * switch-exhaustiveness narrowing in `formatShutdown` — measured directly, `assertNever(result.reason)`
+       * stops typechecking in the `default` arm once one variant's `reason` is multi-valued.
+       */
+      pidLiveness?: 'alive' | 'unknown';
+    };
 
 function isShuttingDownError(value: unknown): value is { code: 'backend_shutting_down' } {
   return isRecord(value) && value.code === 'backend_shutting_down';
@@ -76,10 +92,11 @@ export async function shutdownBackend(pluginRoot: string): Promise<ShutdownResul
       return { ok: true, alreadyDraining: true };
     }
     if (response.status === 401) {
-      // The pid travels with the refusal because it is the only thing an operator can act on here. The
-      // coordinator is alive and rejected the token from our own discovery record, so nothing this command
-      // offers will get in — and a refusal that names no exit is the shape §11 forbids.
-      return { ok: false, reason: 'capability_rejected', detail: String(info.pid) };
+      // The pid travels with the refusal because it is the only thing an operator can act on here. A
+      // coordinator answered and rejected the token from our own discovery record, so nothing this command
+      // offers will get in — and a refusal that names no exit is the shape §11 forbids. `pidLiveness` is
+      // `observeCoordinator`'s own prior finding: the 401 confirms the address, not that pid specifically.
+      return { ok: false, reason: 'capability_rejected', detail: String(info.pid), pidLiveness: observed.pidLiveness };
     }
     // Something answered at the address our own record names and did not accept the shutdown. That is the same
     // observation `getBackendStatusFull` reports as `unreachable`; this used to render as a bare
@@ -90,10 +107,19 @@ export async function shutdownBackend(pluginRoot: string): Promise<ShutdownResul
     // listening on that socket, which is the closest thing here to an observed absence; a timeout, a DNS
     // failure or an aborted request says only that this attempt did not finish, and reporting `not_running`
     // for those tells an operator their daemon is stopped at the moment it is least likely to be.
-    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    //
+    // Node's `fetch` rejects a refused connection with a `TypeError` whose own `.code` is `undefined`; the
+    // errno travels on `.cause` instead (measured: `error.cause.code === 'ECONNREFUSED'`). A timeout rejects
+    // with a `DOMException` whose `.code` is the *number* `23` — not an errno, and not safe to print as one.
+    const code = nodeErrnoCode(error instanceof Error ? error.cause : undefined) ?? nodeErrnoCode(error);
     if (code === 'ECONNREFUSED') {
       return { ok: false, reason: 'socket_refused' };
     }
     return { ok: false, reason: 'unreachable', detail: code ?? errorMessage(error) };
   }
+}
+
+/** A Node system errno, if `value` carries one as a string. A `DOMException` timeout carries a numeric `.code`. */
+function nodeErrnoCode(value: unknown): string | undefined {
+  return isRecord(value) && typeof value.code === 'string' ? value.code : undefined;
 }

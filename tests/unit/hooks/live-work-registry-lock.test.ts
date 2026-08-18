@@ -219,6 +219,38 @@ describe('live-work-registry: bg lock liveness (flock mocked)', () => {
     vi.useRealTimers();
   });
 
+  // A single wedged probe (above) overshoots the budget in one jump, which a deadline checked only before
+  // starting a probe would still catch by accident. This drives the case that actually distinguishes the two:
+  // several probes each individually under LOCK_PROBE_TIMEOUT_MS (1s), whose cumulative cost still crosses
+  // LOCK_PROBE_SWEEP_BUDGET_MS (2s) — the deadline must reserve a probe's worth of headroom, or a probe that
+  // starts just under it is allowed to run and carries the sweep past the budget anyway.
+  it('accumulates past the sweep budget across several probes that are each individually under the timeout', () => {
+    for (const id of ['task-1', 'task-2', 'task-3', 'task-4']) {
+      writeBgMarker(`${id}.started`, BG_STALE_MS);
+      writeBgMarker(`${id}.lock`, BG_STALE_MS);
+    }
+    expect(remainingLockIds()).toHaveLength(4);
+
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date());
+    // 700ms per probe: comfortably under the 1s per-probe timeout on its own, but two of them (1400ms) already
+    // exceed the 1000ms of headroom the fix reserves before the 2000ms budget line.
+    execFileSyncMock.mockImplementation(() => {
+      vi.advanceTimersByTime(700);
+      return Buffer.from('');
+    });
+
+    const live = hasLiveWork(projectDir, SESSION);
+
+    expect(
+      execFileSyncMock,
+      'a third probe would start at 1400ms — inside the raw 2000ms budget, but past the reserved deadline',
+    ).toHaveBeenCalledTimes(2);
+    expect(live, 'the tasks never probed are treated as live, not pruned').toBe(true);
+
+    vi.useRealTimers();
+  });
+
   it('bounds the lock probe, because a hook has no event loop to interrupt a synchronous child with', () => {
     flockFree();
     writeBgMarker('task-bounded.lock');

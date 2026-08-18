@@ -184,7 +184,13 @@ function hookOutputForHost(value) {
 // times (inject rendering, wake-up slug, project dir), and each miss costs a
 // git subprocess with a 2s timeout — repeated timeouts would eat the hook budget.
 const _projectSourceCache = new Map();
-/** When a root last failed to produce an answer, so a wedge is re-probed per interval rather than per call. */
+/**
+ * When a root last failed to produce an answer, so a second call site within the same hook process is held
+ * off from re-forking git rather than paying the timeout again. No size cap, unlike
+ * `PROJECT_SOURCE_MAP_MAX_ENTRIES` on the `src/` twin: that Map lives in a long-running daemon that resolves
+ * many project roots over its lifetime, where an eviction policy matters. This one lives inside a single hook
+ * process that resolves one `projectDir` and exits with the process — it holds at most one entry, ever.
+ */
 const _projectSourceUnanswered = new Map();
 // Errnos from a failed subprocess *launch* that are a standing fact about this machine rather than about this
 // moment: the binary is not installed, not executable, or the working directory is not one. None changes while
@@ -212,8 +218,17 @@ const UNANSWERED_REPROBE_INTERVAL_MS = 60_000;
  *
  * Every failure used to be cached under `local/<basename>` permanently and silently, which meant one timeout
  * or one lost fork at hook time pinned a whole session's `CORAL_PROJECT` to a directory later reads do not
- * look in. A non-answer is now held only until `UNANSWERED_REPROBE_INTERVAL_MS`, so a recovered machine heals
- * without restarting the session and a wedged one still costs one probe per interval rather than one per call.
+ * look in. A non-answer is now held for `UNANSWERED_REPROBE_INTERVAL_MS`.
+ *
+ * That hold's value is scoped to a single hook invocation, not to a session: `_projectSourceUnanswered` is a
+ * plain module-level Map, and every hook event is a fresh `node` process with its own empty one — nothing here
+ * persists, or needs to, across separate hook calls. What it buys is real within one process, though: this
+ * file alone reaches `resolveProjectSource`/`coralProjectDir` from three call sites (`coralProjectDir` here,
+ * `session-start.mjs`, `inject-render.mjs`), all of which can fire during a single `SessionStart` invocation for
+ * the same `projectDir`. Without the hold, a wedge on the first call site pays its 2s timeout again at the
+ * second and third; with it, the first failure is remembered and the rest return the local fallback
+ * immediately. The interval only has to outlast one hook's own timeout budget to do this — which it does by a
+ * wide margin (60s against a process that lives a few seconds at most), not the other way around.
  */
 export function resolveProjectSource(projectDir) {
   const cached = _projectSourceCache.get(projectDir);

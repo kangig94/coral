@@ -109,6 +109,34 @@ describe('observeCoordinator', () => {
     });
   });
 
+  // Only the default side of `record.host ?? DEFAULT_DISCOVERY_HOST` had a test; a record that actually
+  // carries a host would fall back to the default just the same if the `??` were ever flipped to `||` or the
+  // branches swapped, and nothing here would have caught it.
+  it('keeps a recorded host instead of defaulting it', () => {
+    mockState.read = { kind: 'record', record: record({ host: '10.0.0.5' }) };
+
+    expect(observeCoordinator(runtime())).toMatchObject({
+      kind: 'addressed',
+      coordinator: { host: '10.0.0.5' },
+    });
+  });
+
+  // `pidLiveness` is the one fact `shutdown`'s `capability_rejected` refusal needs to avoid promising a 401
+  // confirmed a pid it never observed — carried straight through from the liveness check just above it.
+  it('carries alive liveness through into the addressed observation', () => {
+    mockState.read = { kind: 'record', record: record() };
+    mockState.liveness = 'alive';
+
+    expect(observeCoordinator(runtime())).toMatchObject({ kind: 'addressed', pidLiveness: 'alive' });
+  });
+
+  it('carries unknown liveness through into the addressed observation, rather than upgrading it', () => {
+    mockState.read = { kind: 'record', record: record() };
+    mockState.liveness = 'unknown';
+
+    expect(observeCoordinator(runtime())).toMatchObject({ kind: 'addressed', pidLiveness: 'unknown' });
+  });
+
   it('addresses a record that omits version and instanceId, which neither command reads', () => {
     // `readBackendInfo` answers `null` for exactly this record, and routing through it is what reported a
     // serving cross-version coordinator as not running in both commands.

@@ -6,6 +6,7 @@ import {
   codexAppServerLifecycle,
   codexPreflight,
   codexRecoveryLifecycle,
+  resetCodexPreflightCachesForTest,
 } from '#src/providers/codex/provider-facets.js';
 import { buildCodexContinuity } from '#src/providers/codex/request-mapping.js';
 import { jsonValueSchema } from '#src/infra/json-value.js';
@@ -369,10 +370,13 @@ describe('codexPreflight', () => {
   const LOGIN = /Run "codex login"/u;
   const TOKENS = JSON.stringify({ tokens: { access_token: 'live-token' } });
 
-  // The module-level caches outlive each test, so every case starts a full TTL past the previous one.
+  // The module-level caches outlive each test. Isolation is the explicit reset below, not the clock advance:
+  // a test that forgot to preserve a 120s gap here used to fail on a sibling's cached verdict instead of its
+  // own assertion, for a reason nothing in its own body explained.
   let clock = 1_700_000_000_000;
   beforeEach(() => {
     clock += 120_000;
+    resetCodexPreflightCachesForTest();
   });
 
   function errno(code: string): Error {
@@ -399,7 +403,6 @@ describe('codexPreflight', () => {
       runExact: vi.fn(async () => ({
         stdout: '',
         stderr: '',
-        signal: null,
         status: appServer.status ?? null,
         ...(appServer.error === undefined ? {} : { error: appServer.error }),
       })),
@@ -533,11 +536,22 @@ describe('codexPreflight', () => {
   // so until then the retry is the operator's and has to be said.
   it.each([
     ['EACCES', /readable by the user running the Coral daemon/u],
+    ['EPERM', /readable by the user running the Coral daemon/u],
     ['EIO', /Retry the command/u],
   ])('names an action for an auth.json it could not read (%s)', async (code, remedy) => {
     const runtime = preflightRuntime({ authFile: errno(code), home: `/home/user/.codex-remedy-${code}-${clock}` });
 
     await expect(codexPreflight(runtime)).rejects.toThrow(remedy);
+  });
+
+  it('names the error as unknown when an auth.json read failure carries no code', async () => {
+    const runtime = preflightRuntime({
+      authFile: new Error('boom'),
+      home: `/home/user/.codex-remedy-codeless-${clock}`,
+    });
+
+    await expect(codexPreflight(runtime)).rejects.toThrow(/\(unknown error\)/u);
+    await expect(codexPreflight(runtime)).rejects.toThrow(/Retry the command/u);
   });
 
   it('reports a readable auth.json without tokens as unauthenticated', async () => {

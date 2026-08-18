@@ -56,6 +56,7 @@ import {
   probeCoordinator,
   type CoordinatorDiscoveryRecord,
   type CoordinatorProbe,
+  type DiscoveryRuntime,
 } from '../infra/backend-discovery.js';
 import type { RecoveryCapableService } from '../jobs/reconcile/contracts.js';
 import type { ProjectRequestPort } from './contracts.js';
@@ -299,6 +300,21 @@ export function verifiedIncumbentFromProbe(
       break;
   }
   return verifiedIncumbentFromDiscovery(record, evidence);
+}
+
+/**
+ * The exact composition the bind path below runs: probe the runtime's own discovery record, then apply
+ * `verifiedIncumbentFromProbe` to what it found. It existed only as the inline closure passed to
+ * `bindWithHandoff` as `readVerifiedIncumbentFromDiscovery` until now — the same gap the two functions above
+ * were pulled out of an inline closure to close, one call further out: `probeCoordinator` and
+ * `verifiedIncumbentFromProbe` each have their own tests against hand-built inputs, but nothing drove a real
+ * discovery read through both together the way the bind path actually does.
+ */
+export function verifiedIncumbentFromRuntimeProbe(
+  runtime: DiscoveryRuntime,
+  evidence: Readonly<{ socketPath: string; desired: DesiredIncumbentIdentity; lastHealth: IncumbentHealth | null }>,
+): IncumbentIdentity | null {
+  return verifiedIncumbentFromProbe(probeCoordinator(runtime), evidence);
 }
 
 export function closeServer(server: Server): Promise<void> {
@@ -923,8 +939,8 @@ async function runLifecycleStartup({
         runStartupRecovery,
         runtime,
         readVerifiedIncumbentFromDiscovery: (evidence) =>
-          verifiedIncumbentFromProbe(
-            probeCoordinator({ storage: runtime.storage, env: runtime.env, paths: runtime.paths }),
+          verifiedIncumbentFromRuntimeProbe(
+            { storage: runtime.storage, env: runtime.env, paths: runtime.paths },
             evidence,
           ),
         signalLedger: createFileHandoffSignalLedger({

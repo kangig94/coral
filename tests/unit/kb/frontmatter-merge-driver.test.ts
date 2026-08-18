@@ -21,6 +21,15 @@ import { createGitSyncController } from '#src/kb/curate/git-sync.js';
 import type { KbNoteFrontmatter } from '#src/kb/entry-types.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 
+/** The seed frontmatter shared by every git-facing test below that does not care about its own values. */
+const SEED_META: KbNoteFrontmatter = {
+  tags: ['seed'],
+  principles: [],
+  source: ['kangig94/coral'],
+  createdAt: '2026-06-15T00:00:00.000Z',
+  updatedAt: '2026-06-15T00:00:00.000Z',
+};
+
 function renderNote(meta: KbNoteFrontmatter, body: string): string {
   return `${serializeFrontmatter(meta)}# Merge Note\n\n${body.trim()}\n`;
 }
@@ -281,13 +290,7 @@ describe('frontmatter merge driver', () => {
   // 0, which is a property of the error registry rather than a decision made here — so it is asserted here,
   // where breaking it costs a user their edit.
   it('exits non-zero when the driver refuses, because git reads zero as merged', async () => {
-    const meta = {
-      tags: ['seed'],
-      principles: [],
-      source: ['kangig94/coral'],
-      createdAt: '2026-06-15T00:00:00.000Z',
-      updatedAt: '2026-06-15T00:00:00.000Z',
-    };
+    const meta = SEED_META;
     const basePath = join(root, 'cli-refusal-base.md');
     const oursPath = join(root, 'cli-refusal-ours.md');
     const theirsPath = join(root, 'cli-refusal-theirs.md');
@@ -315,6 +318,10 @@ describe('frontmatter merge driver', () => {
       /resolve it yourself/u,
     );
     expect(result.stderr, 'including why it must not simply be staged').toMatch(/no conflict markers/u);
+    // A rebase touching several `.md` files invokes this driver once per file, and git does not prefix a
+    // driver's stderr with the path it ran on — so a refusal that does not name the file is ambiguous about
+    // which of several unresolved files it describes, and the recovery command has no target without it.
+    expect(result.stderr, 'the refusal names which file failed to merge').toContain('notes/cli-refusal.md');
     expect(readFileSync(oursPath, 'utf-8'), 'the working-tree file is untouched').toBe(original);
   });
 
@@ -371,13 +378,7 @@ describe('frontmatter merge driver', () => {
   // type check and the AST scan both pass on that; only an assertion on the value does not.
   it('bounds git merge-file with a positive timeout', () => {
     const body = 'Body that both sides keep.';
-    const meta = {
-      tags: ['seed'],
-      principles: [],
-      source: ['kangig94/coral'],
-      createdAt: '2026-06-15T00:00:00.000Z',
-      updatedAt: '2026-06-15T00:00:00.000Z',
-    };
+    const meta = SEED_META;
     const observed: { options: { stdio: 'ignore'; timeout: number } | null } = { options: null };
 
     mergeMarkdownRevisions(
@@ -409,13 +410,7 @@ describe('frontmatter merge driver', () => {
     ['git refusing the inputs (255)', { status: 255 }],
     ['a usage error (129)', { status: 129 }],
   ])('refuses to touch the working-tree file when git merge-file answers with %s', (_label, props) => {
-    const meta = {
-      tags: ['seed'],
-      principles: [],
-      source: ['kangig94/coral'],
-      createdAt: '2026-06-15T00:00:00.000Z',
-      updatedAt: '2026-06-15T00:00:00.000Z',
-    };
+    const meta = SEED_META;
     const oursPath = join(root, 'note.md');
     const basePath = join(root, 'base.md');
     const theirsPath = join(root, 'theirs.md');
@@ -452,13 +447,7 @@ describe('frontmatter merge driver', () => {
   // user's file and told git the merge conflicted; the next `git add` made it permanent. This is why the
   // upper bound belongs to the same fix as the timeout refusal rather than beside it.
   it('refuses when real git rejects a binary input, rather than reading 255 as a conflict count', () => {
-    const meta = {
-      tags: ['seed'],
-      principles: [],
-      source: ['kangig94/coral'],
-      createdAt: '2026-06-15T00:00:00.000Z',
-      updatedAt: '2026-06-15T00:00:00.000Z',
-    };
+    const meta = SEED_META;
     const oursPath = join(root, 'binary-note.md');
     const basePath = join(root, 'binary-base.md');
     const theirsPath = join(root, 'binary-theirs.md');
@@ -480,13 +469,7 @@ describe('frontmatter merge driver', () => {
   it('still treats the top of the conflict range as a count, not an error', () => {
     // git clamps its own conflict count at 127 so the error range stays distinguishable, so 127 is a real
     // answer and must still reach the write. A bound set one too low silently discards merges.
-    const meta = {
-      tags: ['seed'],
-      principles: [],
-      source: ['kangig94/coral'],
-      createdAt: '2026-06-15T00:00:00.000Z',
-      updatedAt: '2026-06-15T00:00:00.000Z',
-    };
+    const meta = SEED_META;
     const oursPath = join(root, 'clamped-note.md');
     const basePath = join(root, 'clamped-base.md');
     const theirsPath = join(root, 'clamped-theirs.md');
@@ -508,13 +491,7 @@ describe('frontmatter merge driver', () => {
   });
 
   it('still writes the working-tree file when git merge-file reports conflicts', () => {
-    const meta = {
-      tags: ['seed'],
-      principles: [],
-      source: ['kangig94/coral'],
-      createdAt: '2026-06-15T00:00:00.000Z',
-      updatedAt: '2026-06-15T00:00:00.000Z',
-    };
+    const meta = SEED_META;
     const oursPath = join(root, 'note.md');
     const basePath = join(root, 'base.md');
     const theirsPath = join(root, 'theirs.md');

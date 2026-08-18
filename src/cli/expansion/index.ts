@@ -3,6 +3,7 @@ declare const __PLUGIN_ROOT__: string | undefined;
 import type { EngineManifest, InstallOnlyManifest, LocalExpansionInstallState } from '../../expansion/contract.js';
 import { readDiscoveryRecordDisposition } from '../../infra/backend-discovery.js';
 import { errorMessage } from '../../infra/error-format.js';
+import { observeProcessLiveness } from '../../infra/node-process.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { documentedCoralSetupError } from '../../runtime/errors.js';
 import { createIpcClient } from '../../transport/ipc/client.js';
@@ -50,18 +51,26 @@ function isIpcConnectFailed(error: unknown): boolean {
 }
 
 /**
- * `unavailable` is an observed absence — no coordinator claimed the socket, or the socket refused the
- * connection. `unreadable` is this build failing to read the evidence, which says nothing about whether a
- * coordinator is serving or what it holds.
+ * `unavailable` is an observed absence — no coordinator recorded itself, or a recorded coordinator's pid was
+ * observed decisively gone. `unreachable` is a decoded record whose pid was not observed absent, but this
+ * build could not reach the coordinator it names — alive, or a probe this process could not run. `unreadable`
+ * is this build failing to read or decode the evidence itself, which says nothing about whether a coordinator
+ * is serving or what it holds.
  *
- * The split exists because collapsing them produced a claim about someone else's data from a file we could
- * not open: `readDiscoveryRecord` returns `null` for a `coordinator.json` that is truncated or written in a
- * shape this build rejects, that reached `unavailable`, and `info` then answered "no such expansion" for an
- * expansion the daemon may well be holding.
+ * The three-way split exists because collapsing any two produced a claim about someone else's data from
+ * evidence that did not support it. Collapsing `unreadable` into `unavailable` is the regression this file
+ * already guards against: `readDiscoveryRecord` returns `null` for a `coordinator.json` that is truncated or
+ * written in a shape this build rejects, that reached `unavailable`, and `info` then answered "no such
+ * expansion" for an expansion the daemon may well be holding. Collapsing `unreachable` into `unreadable` is
+ * the same mistake one failure mode later: `removeBackendInfoIfOwner` only runs on a clean shutdown, so a
+ * crash/SIGKILL/OOM leaves a decoded record behind, and a record that decoded is a coordinator saying it
+ * claimed this socket at some point — reporting "the record could not be read" for it is false, and it sent an
+ * operator to `backend status`'s `undecodable_record` remedy for a condition that command answers differently.
  */
 type ExpansionStatus =
   | { status: 'available'; expansions: Array<ExpansionView & { slot?: string }> }
   | { status: 'unavailable' }
+  | { status: 'unreachable'; detail: string }
   | { status: 'unreadable'; detail: string };
 
 export interface CliExpansionActivation {
@@ -114,17 +123,22 @@ function unknownExpansionResponse(name: string) {
 }
 
 /**
- * Refuse to render a catalog from a daemon view we could not read.
+ * Refuse to render a catalog from a daemon view we could not read or reach.
  *
  * Every rendered status is a claim about the daemon: `not_equipped` and `inactive` say it does not hold this
- * expansion, and `unavailable` says it is unreachable — which `clients/skills/equip/SKILL.md` pairs with "run
+ * expansion, and `unavailable` says none was found — which `clients/skills/equip/SKILL.md` pairs with "run
  * `/equip <name>` to repair or reactivate". So there is no value in the enum that means "we did not check",
- * and borrowing `unavailable` for it sent an agent to re-equip a whole, possibly-healthy catalog over one
- * unreadable file. The refusal lives here, once, because both `list` and `info` render from the same view and
- * an earlier fix caught only one of the three places that do.
+ * and borrowing `unavailable` for either "the record was corrupt" or "the record decoded but nothing answered"
+ * sent an agent to re-equip a whole, possibly-healthy catalog over evidence that proved neither. The refusal
+ * lives here, once, because `list` and `info` both render from the same view and an earlier fix caught only
+ * one of the three call sites that do.
  *
- * `unavailable` as a *disposition* still renders: no coordinator recorded itself, or the socket refused, is an
- * answer — nothing is equipped, and `localCatalogStatus` derives the rest from local files.
+ * `unavailable` as a *disposition* still renders: no coordinator recorded itself, or a recorded coordinator's
+ * pid was observed decisively gone, is an answer — nothing is equipped, and `localCatalogStatus` derives the
+ * rest from local files. `unreadable` and `unreachable` get their own documented codes, not a shared one,
+ * because `backend status` answers them differently: `undecodable_record` names the record file,
+ * `unreachable` does not, and a shared remediation would send an operator looking for a file that in the
+ * second case was never in question.
  */
 function assertDaemonViewReadable(passive: ExpansionStatus, subject: string): void {
   if (passive.status === 'unreadable') {
@@ -135,6 +149,15 @@ function assertDaemonViewReadable(passive: ExpansionStatus, subject: string): vo
     // `userMessage` while the `remediation` field contradicted it.
     throw documentedCoralSetupError({
       code: 'coordinator_record_unreadable',
+      subject,
+      detail: passive.detail,
+    });
+  }
+  if (passive.status === 'unreachable') {
+    // The record decoded — a coordinator claimed this socket at some point — and its pid was not observed
+    // absent, so this is not the same claim as `unreadable` and must not share its code or its remedy.
+    throw documentedCoralSetupError({
+      code: 'coordinator_unreachable',
       subject,
       detail: passive.detail,
     });
@@ -314,12 +337,17 @@ export function createCliExpansionActivation(): CliExpansionActivation {
         };
       } catch (error: unknown) {
         if (isIpcConnectFailed(error)) {
-          // Reached only with a decoded record in hand, which is a coordinator saying it claimed this socket.
-          // `setupError` wraps every connect failure into one code — a refused socket, a timeout, a permission
-          // error — so this cannot tell "nothing is there" from "we did not get through", and the record
-          // present is evidence against the first. `unavailable` would be the same false absence the
-          // `unreadable` variant above exists to prevent, one failure mode later.
-          return { status: 'unreadable', detail: 'ipc_connect_failed' };
+          // Reached only with a decoded record in hand, which is a coordinator saying it claimed this socket
+          // at some point — `removeBackendInfoIfOwner` only runs on a clean shutdown, so a crash/SIGKILL/OOM
+          // leaves it behind. `observeProcessLiveness` is the one further question this evidence supports: an
+          // observed-absent pid is the same real absence `unavailable` already renders for a missing record,
+          // so it renders the same way here. Alive or unknown is not an absence — reporting it as one would be
+          // the false absence the `unreadable` variant above exists to prevent, one failure mode later — so it
+          // gets its own disposition instead: the record was read fine, it named a live-or-unproven
+          // coordinator, and this build could not reach it.
+          return observeProcessLiveness(record.pid) === 'absent'
+            ? { status: 'unavailable' }
+            : { status: 'unreachable', detail: 'ipc_connect_failed' };
         }
         throw error;
       }

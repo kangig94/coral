@@ -154,19 +154,47 @@ describe('resolveProjectSource', () => {
     execFileSyncMock.mockImplementation((_cmd: string, _args: string[], options: ExecOptions): string =>
       remoteForProjectRoot(options.cwd ?? '/tmp/missing'),
     );
-    const { PROJECT_SOURCE_CACHE_MAX_ENTRIES, resolveProjectSource } = await loadProjectSourceModule();
+    const { PROJECT_SOURCE_MAP_MAX_ENTRIES, resolveProjectSource } = await loadProjectSourceModule();
     const baseRoot = '/tmp/coral-project-source-cache';
     const firstRoot = `${baseRoot}/repo-0`;
 
     expect(resolveProjectSource(firstRoot)).toBe('owner/repo-0');
-    for (let index = 1; index <= PROJECT_SOURCE_CACHE_MAX_ENTRIES; index += 1) {
+    for (let index = 1; index <= PROJECT_SOURCE_MAP_MAX_ENTRIES; index += 1) {
       expect(resolveProjectSource(`${baseRoot}/repo-${index}`)).toBe(`owner/repo-${index}`);
     }
 
     const callsAfterFill = execFileSyncMock.mock.calls.length;
-    expect(callsAfterFill).toBe(PROJECT_SOURCE_CACHE_MAX_ENTRIES + 1);
+    expect(callsAfterFill).toBe(PROJECT_SOURCE_MAP_MAX_ENTRIES + 1);
     expect(resolveProjectSource(firstRoot)).toBe('owner/repo-0');
     expect(execFileSyncMock).toHaveBeenCalledTimes(callsAfterFill + 1);
+  });
+
+  // Mirrors the cache-eviction test above, but for the other map the same cap bounds: `indecisiveProbeAt`.
+  // The clock never advances in this test, so the hold (`INDECISIVE_PROBE_REPROBE_INTERVAL_MS`) would still
+  // cover `firstRoot` if its entry survived — the only way a second probe happens is that eviction pushed it
+  // out first.
+  it('evicts indecisive-probe entries past the project source map cap', async () => {
+    execFileSyncMock.mockImplementation(() => {
+      throw failure({ status: null, code: 'EAGAIN' });
+    });
+    const { PROJECT_SOURCE_MAP_MAX_ENTRIES, resolveProjectSource } = await loadProjectSourceModule();
+    const baseRoot = '/tmp/coral-indecisive-map-cache';
+    const firstRoot = `${baseRoot}/repo-0`;
+
+    expect(resolveProjectSource(firstRoot)).toBe('local/repo-0');
+    for (let index = 1; index <= PROJECT_SOURCE_MAP_MAX_ENTRIES; index += 1) {
+      expect(resolveProjectSource(`${baseRoot}/repo-${index}`)).toBe(`local/repo-${index}`);
+    }
+
+    const callsAfterFill = execFileSyncMock.mock.calls.length;
+    expect(callsAfterFill).toBe(PROJECT_SOURCE_MAP_MAX_ENTRIES + 1);
+    expect(
+      resolveProjectSource(firstRoot),
+      'still within the hold interval, so a surviving entry would have skipped this probe',
+    ).toBe('local/repo-0');
+    expect(execFileSyncMock, "firstRoot's entry was evicted, so the hold could not find it").toHaveBeenCalledTimes(
+      callsAfterFill + 1,
+    );
   });
 
   // §11: "Tolerance is not silence." This was the one of five declining sites that said nothing, and it is the
@@ -204,5 +232,18 @@ describe('resolveProjectSource', () => {
 
     expect(warn, 'a project with no git remote is ordinary, not a condition to report').not.toHaveBeenCalled();
     warn.mockRestore();
+  });
+
+  // `GIT_REMOTE_PROBE_TIMEOUT_MS`'s JSDoc is asserted as source text elsewhere, but that only proves a
+  // `timeout:` literal exists somewhere in the file — not that it reaches `execFileSync`. This inspects the
+  // actual call options, the way `tests/unit/hooks/live-work-registry-lock.test.ts` pins its own probe timeout.
+  it('passes the documented probe timeout through to execFileSync', async () => {
+    const { resolveProjectSource } = await loadProjectSourceModule();
+    execFileSyncMock.mockImplementation(() => remoteForProjectRoot('/tmp/timeout-wiring'));
+
+    resolveProjectSource('/tmp/timeout-wiring');
+
+    const options = execFileSyncMock.mock.calls[0]?.[2] as { timeout?: number } | undefined;
+    expect(options?.timeout, 'the 2s documented on GIT_REMOTE_PROBE_TIMEOUT_MS must reach the child').toBe(2_000);
   });
 });

@@ -210,12 +210,32 @@ describe('git sync says so when it cannot tell whether a remote exists', () => {
     const warn = vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
     const controller = controllerWithRemoteProbe(couldNotRun('EAGAIN'));
 
-    await controller.gitSync();
+    const result = await controller.gitSync();
 
     expect(warn, 'the operator enabled this; a silent skip is the collapse the split removed').toHaveBeenCalledWith(
       expect.stringContaining('could not list remotes'),
     );
     expect(warn.mock.calls.at(-1)?.[0], 'and it names what was observed').toContain('EAGAIN');
+    // §11: a cycle that could not ask git anything must not tell the Corpus authority nothing changed.
+    // `no-change` there means "safe to skip a rebuild"; this cycle observed nothing that would make that true.
+    expect(result, 'an unanswered probe is not a report that nothing changed').toEqual({ kind: 'ambiguous' });
+    warn.mockRestore();
+  });
+
+  // `launch-refused` (git itself could not be launched) used to return `false` from `isGitSyncEnabled` with no
+  // warning at all — silently indistinguishable from a settled "no remote configured". It says exactly as
+  // little about whether a remote exists as a timeout does, so it must be reported and treated the same way.
+  it('warns and reports ambiguous when the remote probe itself could not be launched', async () => {
+    const warn = vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
+    const controller = controllerWithRemoteProbe(couldNotRun('ENOENT'));
+
+    const result = await controller.gitSync();
+
+    expect(warn, 'a launch failure is as much a non-answer as a timeout').toHaveBeenCalledWith(
+      expect.stringContaining('could not list remotes'),
+    );
+    expect(warn.mock.calls.at(-1)?.[0]).toContain('ENOENT');
+    expect(result).toEqual({ kind: 'ambiguous' });
     warn.mockRestore();
   });
 
@@ -223,12 +243,56 @@ describe('git sync says so when it cannot tell whether a remote exists', () => {
     const warn = vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
     const controller = controllerWithRemoteProbe(answered(''));
 
-    await controller.gitSync();
+    const result = await controller.gitSync();
 
     expect(
       warn.mock.calls.filter((call) => String(call[0]).includes('could not list remotes')),
       'a settled answer is not a non-answer, and must not be reported as one',
     ).toEqual([]);
+    expect(result, 'a settled "no remote" is a real no-change, not an ambiguous one').toEqual({ kind: 'no-change' });
     warn.mockRestore();
+  });
+});
+
+// The work-tree probe has the same shape of bug: `isGitRepo` collapses "not a repository" and "could not tell"
+// into the same `false`, which is correct for the six call sites that only need to skip an operation. `gitSync`
+// is the seventh, and reporting `no-change` here means the same thing `inbound-sync-service.ts` reads
+// `no-change` to mean everywhere else — safe to skip a rebuild — which an unanswered probe never established.
+describe('gitSync does not report no-change for a work-tree probe it could not answer', () => {
+  function controllerWithWorkTreeProbe(probeResult: ExecResult) {
+    const execSync = vi.fn(((_file: string, args: readonly string[]) => {
+      if (args[0] === IS_WORK_TREE[0] && args[1] === IS_WORK_TREE[1]) return probeResult;
+      return answered('');
+    }) as unknown as ExecSync);
+
+    return createGitSyncController({
+      kb: { markdownRoot: ROOT, version: 'test', time: { now: () => Date.now() } } as unknown as KbRuntime,
+      curateAssistant: { complete: async () => '' },
+      processPort: { execSync, exec: vi.fn() } as unknown as GitSyncRuntimePicks['processPort'],
+      storagePort: {
+        existsSync: () => false,
+        readFileSync: vi.fn(),
+        writeAtomicSync: vi.fn(),
+        statSync: vi.fn(),
+        rmSync: vi.fn(),
+      } as unknown as GitSyncRuntimePicks['storagePort'],
+      envPort: { get: (key: string) => (key === 'CORAL_KB_GIT_SYNC' ? '1' : undefined) },
+    });
+  }
+
+  it('reports ambiguous, not no-change, when it could not tell whether this is a work tree', async () => {
+    const controller = controllerWithWorkTreeProbe(couldNotRun('EAGAIN'));
+
+    const result = await controller.gitSync();
+
+    expect(result).toEqual({ kind: 'ambiguous' });
+  });
+
+  it('still reports no-change when git decisively says this is not a work tree', async () => {
+    const controller = controllerWithWorkTreeProbe(saidNo());
+
+    const result = await controller.gitSync();
+
+    expect(result, 'a decisive "no" is a real no-change, not an ambiguous one').toEqual({ kind: 'no-change' });
   });
 });

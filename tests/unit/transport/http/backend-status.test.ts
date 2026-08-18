@@ -90,7 +90,7 @@ describe('getBackendStatusFull record disposition', () => {
   // one in the health response.
   it('does not report a pre-version incumbent as not running', async () => {
     const { version: _v, instanceId: _i, ...preVersion } = backendInfo();
-    mockState.observed = { kind: 'addressed', coordinator: preVersion };
+    mockState.observed = { kind: 'addressed', coordinator: preVersion, pidLiveness: 'alive' };
     const fetchMock = vi.fn(async () => new Response('{}', { status: 500 }));
     vi.stubGlobal('fetch', fetchMock);
 
@@ -106,10 +106,10 @@ describe('getBackendStatusFull record disposition', () => {
     expect(result.status).toBe('unreachable');
   });
 
-  // Six call sites answered "not running" for three different things. A peer identifying as another namespace
+  // Five call sites answered "not running" for three different things. A peer identifying as another namespace
   // really is not this backend; a bad response and a dead request are not absence at all.
   it('reports a coordinator that answers badly as unreachable, not as stopped', async () => {
-    mockState.observed = { kind: 'addressed', coordinator: backendInfo() };
+    mockState.observed = { kind: 'addressed', coordinator: backendInfo(), pidLiveness: 'alive' };
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => new Response('{}', { status: 500 })),
@@ -120,8 +120,28 @@ describe('getBackendStatusFull record disposition', () => {
     await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({ status: 'unreachable' });
   });
 
+  // The payload here must actually pass `isBackendPing` — it needs `version`, `bundleHash`, `instanceId` and
+  // `pid` alongside the foreign `namespace`. A payload missing those fails the shape check first, so the `||`
+  // in `probeUnauthenticatedPing` used to short-circuit before the namespace comparison ever ran, and this
+  // test passed for a reason it did not describe.
   it('still reports not_running for a peer whose namespace says it is not this backend', async () => {
-    mockState.observed = { kind: 'addressed', coordinator: backendInfo() };
+    mockState.observed = { kind: 'addressed', coordinator: backendInfo(), pidLiveness: 'alive' };
+    const foreignPing = { ...JSON.parse(ping('ok')), namespace: 'someone-else' } as Record<string, unknown>;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify(foreignPing), { status: 200 })),
+    );
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'not_running' });
+  });
+
+  // This is the payload the test above used to send: it fails `isBackendPing` (no `version`, `bundleHash`,
+  // `instanceId`, or `pid`), so it is a shape rejection, not a namespace disagreement — and proves nothing
+  // about whose coordinator answered. Must not fall into `notOurCoordinator`'s `not_running`.
+  it('reports unreachable, not not_running, for a 200 ping body this build cannot decode', async () => {
+    mockState.observed = { kind: 'addressed', coordinator: backendInfo(), pidLiveness: 'alive' };
     vi.stubGlobal(
       'fetch',
       vi.fn(
@@ -132,7 +152,10 @@ describe('getBackendStatusFull record disposition', () => {
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
-    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'not_running' });
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
+      status: 'unreachable',
+      responded: true,
+    });
   });
 
   it.each([['corrupt-json'], ['shape-rejected']] as const)(
@@ -259,7 +282,14 @@ function stubProbes(...responses: readonly Response[]): ReturnType<typeof vi.fn>
 // another. The vocabulary was reworked; which response produces which word was not pinned.
 describe('getBackendStatusFull maps each answer to the word that describes it', () => {
   beforeEach(() => {
-    mockState.observed = { kind: 'addressed', coordinator: backendInfo() };
+    mockState.observed = { kind: 'addressed', coordinator: backendInfo(), pidLiveness: 'alive' };
+  });
+
+  // Unlike the first `describe` in this file, none of the seven tests below restored `fetch` on their own —
+  // `vi.stubGlobal` is a process-wide replacement, so a stub any of them left behind would leak into whatever
+  // ran next. Same reasoning as the note on the first `describe`'s `afterEach`.
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it('reports a draining ping as shutting_down without asking the detailed probe', async () => {
@@ -323,5 +353,55 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'unauthorized' });
+  });
+
+  // `probeDetailedHealth`'s own not-our-coordinator branch had no test: every namespace-mismatch case above
+  // exercised only the unauthenticated ping, which returns before the detailed probe is ever asked.
+  it('reports not_running for a peer whose namespace disagrees only at the detailed probe', async () => {
+    const foreignDetailed = { ...JSON.parse(detailed('ok')), namespace: 'someone-else' } as Record<string, unknown>;
+    stubProbes(
+      new Response(ping('ok'), { status: 200 }),
+      new Response(JSON.stringify(foreignDetailed), { status: 200 }),
+    );
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'not_running' });
+  });
+
+  // Same split as the ping probe: a detailed body this build cannot decode proves nothing about whose
+  // coordinator answered, so it must not fall into `notOurCoordinator`'s `not_running`.
+  it('reports unreachable, not not_running, for a 200 detailed body this build cannot decode', async () => {
+    stubProbes(
+      new Response(ping('ok'), { status: 200 }),
+      new Response(JSON.stringify({ status: 'ok' }), { status: 200 }),
+    );
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
+      status: 'unreachable',
+      responded: true,
+    });
+  });
+
+  // The `catch` in `getBackendStatusFull` had no test that ever made `fetch` itself reject — every existing
+  // case resolved a `Response`, good or bad. `responded: false` is the one thing that branch alone produces:
+  // no response was received at all, so `formatBackendStatus` must not claim anything is listening.
+  it('reports unreachable with responded: false when the probe request never completes', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new Error('getaddrinfo ENOTFOUND coordinator.example');
+      }),
+    );
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
+      status: 'unreachable',
+      detail: 'getaddrinfo ENOTFOUND coordinator.example',
+      responded: false,
+    });
   });
 });

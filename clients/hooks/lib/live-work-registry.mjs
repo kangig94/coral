@@ -44,7 +44,10 @@ const BG_CLEANUP_TTL_MS = 60 * 60_000; // prune terminal/dead bg entries older t
 const LOCK_PROBE_TIMEOUT_MS = 1_000;
 // The per-probe bound does not bound the sweep: this loop visits every locked task, so N wedged tasks cost
 // N × LOCK_PROBE_TIMEOUT_MS against the Stop hook's own 5s budget. Once this much has been spent, the rest are
-// left unprobed — and therefore left alone, since not knowing is not grounds for pruning.
+// left unprobed — and therefore left alone, since not knowing is not grounds for pruning. The deadline check
+// below reserves one `LOCK_PROBE_TIMEOUT_MS` of headroom before this line, so a probe that starts just under
+// the deadline still finishes inside it: the loop's own wall time stays within this budget rather than this
+// budget plus one more full timeout.
 const LOCK_PROBE_SWEEP_BUDGET_MS = 2_000;
 
 function sessionRoot(projectDir, sessionId) {
@@ -234,7 +237,11 @@ function hasLiveBg(projectDir, sessionId) {
   }
 
   const now = Date.now();
-  const probeDeadline = now + LOCK_PROBE_SWEEP_BUDGET_MS;
+  // Reserves one probe's worth of headroom: a probe that has already started when the deadline is reached
+  // still runs to completion, up to LOCK_PROBE_TIMEOUT_MS more. Checking against the raw budget would let a
+  // probe start right at the edge and carry the sweep's own wall time past LOCK_PROBE_SWEEP_BUDGET_MS by up to
+  // a full timeout; stopping new probes this much early keeps the total inside the budget instead.
+  const probeDeadline = now + LOCK_PROBE_SWEEP_BUDGET_MS - LOCK_PROBE_TIMEOUT_MS;
   let live = false;
   for (const [id, task] of tasks) {
     if (Date.now() >= probeDeadline) {
@@ -275,41 +282,26 @@ function parseBgMarker(name) {
   return null;
 }
 
-// Probe whether an exclusive flock on `lockPath` is still held. Namespace-agnostic
-// (inode-based), so it works across the command-sandbox boundary where a pid
-// probe would not. Returns true (held/alive), false (free/dead), or null when the
-// probe could not answer, so the caller falls back to the mtime window.
+// Probe whether an exclusive flock on `lockPath` is still held. Namespace-agnostic (inode-based), so it works
+// across the command-sandbox boundary where a pid probe would not. Three answers, not two: true (held/alive),
+// false (free/dead), or null when the probe could not ask at all — the caller falls back to the mtime window
+// only on null. (`err.status` is a number only when flock actually ran and exited, which is what tells true
+// apart from null below.)
 //
-// Three answers, and which one an unanswerable probe gets is the whole question here.
+// `null` is reserved for `STANDING_PROBE_ERRNOS` (the same set the project-source probe uses) — no `flock`
+// binary, not executable, no such directory — because the mtime window is the designed fallback for exactly
+// those: the heartbeat (`while kill -0 $$; do touch …; sleep 10; done` in `bgWrapperPreamble`) runs `touch` and
+// `sleep` as external commands, so the standing condition that stopped this probe forking stops the heartbeat
+// too, and the window still reads a live, current timestamp. An earlier revision routed every non-ENOENT
+// failure to `null` instead, reasoning that the catch-all `true` below has no expiry — but that lack of expiry
+// is exactly why a *standing* failure like `EACCES` must not go there: it does not clear while the session
+// runs, so `true` would not be the bounded hold it is for everything else, but a permanent one gating ralph and
+// kb with no event that could end it.
 //
-// `null` means "flock(1) is not installed", and the mtime window exists for exactly that: a machine with no
-// flock still has a heartbeat to read. It is *not* a general "could not tell", and an earlier revision made it
-// one — routing every non-ENOENT failure there on the reasoning that `true` had no expiry while the window
-// does. The reasoning missed that the window is not independent of the failure. The heartbeat is
-// `while kill -0 $$; do touch …; sleep 10; done` (see `bgWrapperPreamble` below) — `touch` and `sleep` are
-// external commands, so the conditions that stop this probe forking (EAGAIN, EMFILE, ENOMEM) are the same
-// conditions that stop the heartbeat refreshing the mtime. Deferring to it then reads a stale timestamp,
-// concludes the task is dead, un-gates ralph and kb while it is still running, and after the cleanup TTL
-// unlinks a live task's lock file so it is invisible forever.
-//
-// Un-gating live work and pruning a live task are both finalizations, so an unanswered probe may authorize
-// neither. It reports `true` — the conservative direction — and that is not the unbounded hold it looks like:
-// the probe is bounded, so the next hook invocation asks again, and a machine that recovers answers `false` on
-// its own. What the old code lacked was the bound, not this direction.
-//
-// Which failures get `null` is decided by whether the mtime window is *independent* of them, and that is a
-// wider set than "flock is not installed". `STANDING_PROBE_ERRNOS` is the same enumeration the project-source
-// probe uses, and it means the same thing here: a launch that failed this way failed on a standing fact about
-// this machine — no `flock` binary, no permission to execute it, no such directory — not on this moment.
-// Nothing about those conditions stops the heartbeat's `touch` and `sleep` from running, so the window still
-// reads a live timestamp and is the designed fallback for all four alike.
-//
-// The distinction matters because `true` here has no expiry. `EACCES` on `flock` does not clear while the
-// session runs, so routing it to `true` is not a conservative hold that the next hook re-asks — it is a
-// permanent one, gating ralph and kb for the rest of the session with no event that could end it. That is the
-// failure mode this function's own paragraph above argues against, arrived at from the other side.
-//
-// `err.status` is a number only when flock actually ran and exited.
+// Every other failure — transient, not a standing fact about the machine — returns `true`, and that hold
+// really is bounded: un-gating live work and pruning a live task are both finalizations an unanswered probe may
+// not authorize, but the next hook invocation probes again, and a machine that recovers answers `false` on its
+// own.
 function lockHeld(lockPath) {
   try {
     execFileSync('flock', ['-n', lockPath, '-c', 'true'], {

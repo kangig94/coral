@@ -23,7 +23,7 @@ The observation is not in that model. Two facts put it outside every window that
    completes. One unobservable root does not end the sweep — the remaining roots are still probed.
 
 What each probe costs depends on the platform, and this is the part that changed recently.
-`observeProcessIdentity` (`:155`) calls `readIncarnation` per root. On Linux that is a `/proc` read. On Darwin
+`observeProcessIdentity` (`:151`) calls `readIncarnation` per root. On Linux that is a `/proc` read. On Darwin
 `probeMacProcessIncarnation` (`src/infra/node-process.ts`) issues **two** synchronous `execFileSync` calls —
 `sysctl` for the boot session id, then `ps` — and the boot session id is deliberately uncached, so both are
 paid on every observation of every root. Each is now bounded by `PROCESS_INCARNATION_PROBE_TIMEOUT_MS` (2,000ms),
@@ -62,9 +62,9 @@ loop turn cannot fire while the sweep is inside `execFileSync`.
   gives the other its mechanism; neither closes the other, and both still owe their own reproduction.
 - `probeCoordinator`'s disposition, closed 2026-08-18. Its _read_ half no longer derives an incarnation at
   all — it observes liveness — so nothing on that path forks a subprocess. The **write** half still does:
-  `writeDiscoveryRecord` (`src/infra/backend-discovery.ts:89`) probes an incarnation when its caller supplies
+  `writeDiscoveryRecord` (`src/infra/backend-discovery.ts:87`) probes an incarnation when its caller supplies
   none, and lifecycle's `writeBackendInfoFn({…})` — the record written immediately before `kernel-ready`,
-  `src/coordinator/lifecycle.ts` ~:1056 — supplies none, so a darwin boot pays two `execFileSync` calls
+  `src/coordinator/lifecycle.ts:1073` — supplies none, so a darwin boot pays two `execFileSync` calls
   between the listener opening and `kernel-ready`. That is one probe of one pid, not a sweep, and it is inside
   the CLI's `KERNEL_READY_DEADLINE_MS` rather than a teardown reserve — related, bounded, and not what this
   entry is about, but an earlier revision of this bullet claimed the whole discovery path was out of reach and
