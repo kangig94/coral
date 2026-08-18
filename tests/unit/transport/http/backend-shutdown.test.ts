@@ -341,7 +341,7 @@ describe('shutdownBackend', () => {
     });
   });
 
-  // Neither the error nor its `.cause` carries a `.code` at all, so `nodeErrnoCode` must fall all the way
+  // Neither the error nor its `.cause` carries a `.code` at all, so `thrownErrnoCode` must fall all the way
   // through to the error's own message rather than stringifying `undefined` or throwing.
   it('falls back to the error message when nothing carries an errno code', async () => {
     mockState.observed = { kind: 'addressed', coordinator: backendInfo(), pidLiveness: 'alive' };
@@ -363,7 +363,7 @@ describe('shutdownBackend', () => {
 
   // Method requirement: a hand-built `Error` that happens to carry the shape the reader expects is exactly how
   // `socket_refused` went dead in the first place (`code: 'ECONNREFUSED'` set at the top level, which real
-  // `fetch` never does — see the measurement note on `nodeErrnoCode` in shutdown.ts). These two drive the real
+  // `fetch` never does — see the measurement note on `thrownErrnoCode` in `src/infra/error-format.ts`). These two drive the real
   // global `fetch` against a real socket instead of a fixture, so the assertion cannot agree with the bug.
   it('reports socket_refused against a real closed port, not a hand-built error', async () => {
     const { createServer } = await import('node:net');

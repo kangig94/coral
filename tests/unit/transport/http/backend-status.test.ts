@@ -437,7 +437,7 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
 
   // Node's `fetch` rejects a refused connection with a `TypeError` whose own `.message` is the generic "fetch
   // failed" and whose `.code` is `undefined`; the errno travels on `.cause` instead (same measurement as
-  // `shutdown.ts`'s `nodeErrnoCode`, `backend-shutdown.test.ts`). Without unwrapping `.cause`, this branch
+  // `thrownErrnoCode` in `src/infra/error-format.ts`, and `backend-shutdown.test.ts`). Without unwrapping `.cause`, this branch
   // reported the generic message here while `backend shutdown` already reported the real errno for the
   // identical failure — one fact, two different words in two commands asking the same question.
   it('reports the errno from .cause rather than the generic fetch-failed message', async () => {

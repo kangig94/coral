@@ -1,6 +1,6 @@
 import { observeCoordinator } from './coordinator-observation.js';
 import { readBuildFlavor } from '../../../infra/bundle-manifest.js';
-import { errorMessage } from '../../../infra/error-format.js';
+import { errorMessage, thrownErrnoCode } from '../../../infra/error-format.js';
 import { isRecord } from '../../../infra/json.js';
 import type { StoragePort } from '../../../infra/port-types.js';
 import { parseIsoTimestamp } from '../../../infra/time.js';
@@ -273,16 +273,7 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
     // connection with a `TypeError` whose own `.message` is the generic "fetch failed", while the errno travels
     // on `.cause`. Reporting the bare message here told an operator "fetch failed" for the same `ECONNREFUSED`
     // that `backend shutdown` already reports by its actual errno.
-    const code = nodeErrnoCode(error instanceof Error ? error.cause : undefined) ?? nodeErrnoCode(error);
+    const code = thrownErrnoCode(error);
     return { status: 'unreachable', detail: code ?? errorMessage(error), responded: false };
   }
-}
-
-/**
- * A Node system errno, if `value` carries one as a string. Mirrors `shutdown.ts`'s helper of the same name —
- * kept as its own three-line copy here rather than a shared export: it is a fetch-failure-shape reader, not a
- * concept either file's owning domain (coordinator observation, shutdown disposition) is about.
- */
-function nodeErrnoCode(value: unknown): string | undefined {
-  return isRecord(value) && typeof value.code === 'string' ? value.code : undefined;
 }

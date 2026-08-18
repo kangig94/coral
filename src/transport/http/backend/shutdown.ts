@@ -2,7 +2,7 @@ import { observeCoordinator } from './coordinator-observation.js';
 import { readBuildFlavor } from '../../../infra/bundle-manifest.js';
 import { createRealRuntime } from '../../../runtime/real.js';
 import { HEALTH_TIMEOUT_MS, parseJsonResponse } from '../sse.js';
-import { errorMessage } from '../../../infra/error-format.js';
+import { errorMessage, thrownErrnoCode } from '../../../infra/error-format.js';
 import { isRecord } from '../../../infra/json.js';
 import { isCoralChildEnvironment } from '../../../security/child-principal-env.js';
 
@@ -143,15 +143,10 @@ export async function shutdownBackend(pluginRoot: string): Promise<ShutdownResul
     // Node's `fetch` rejects a refused connection with a `TypeError` whose own `.code` is `undefined`; the
     // errno travels on `.cause` instead (measured: `error.cause.code === 'ECONNREFUSED'`). A timeout rejects
     // with a `DOMException` whose `.code` is the *number* `23` — not an errno, and not safe to print as one.
-    const code = nodeErrnoCode(error instanceof Error ? error.cause : undefined) ?? nodeErrnoCode(error);
+    const code = thrownErrnoCode(error);
     if (code === 'ECONNREFUSED') {
       return { ok: false, reason: 'socket_refused', pidLiveness: observed.pidLiveness };
     }
     return { ok: false, reason: 'no_response', detail: code ?? errorMessage(error) };
   }
-}
-
-/** A Node system errno, if `value` carries one as a string. A `DOMException` timeout carries a numeric `.code`. */
-function nodeErrnoCode(value: unknown): string | undefined {
-  return isRecord(value) && typeof value.code === 'string' ? value.code : undefined;
 }
