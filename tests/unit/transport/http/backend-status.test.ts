@@ -8,25 +8,22 @@
 // serving on the socket.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { BackendInfo, DiscoveryRead } from '#src/infra/backend-discovery.js';
+import type { BackendInfo } from '#src/infra/backend-discovery.js';
+import type { CoordinatorObservation } from '#src/transport/http/backend/coordinator-observation.js';
 
 const mockState = vi.hoisted(() => ({
-  info: null as BackendInfo | null,
-  read: { kind: 'missing' } as DiscoveryRead,
+  observed: { kind: 'no-record' } as CoordinatorObservation,
 }));
 
-vi.mock('#src/infra/backend-discovery.js', () => ({
-  readBackendInfo: vi.fn(() => mockState.info),
-  readDiscoveryRecordDisposition: vi.fn(() => mockState.read),
+// Mocked at the seam this function depends on. `status` and `shutdown` ask the same three questions about the
+// coordinator, and driving them through two lower mocks meant each test file re-assembled that prelude itself
+// — two fixtures for one observation, which is the duplication the production split removed.
+vi.mock('#src/transport/http/backend/coordinator-observation.js', () => ({
+  observeCoordinator: vi.fn(() => mockState.observed),
 }));
 
 vi.mock('#src/infra/bundle-manifest.js', () => ({
   readBuildFlavor: vi.fn(() => 'prod'),
-}));
-
-const livenessMock = vi.hoisted(() => vi.fn<() => 'alive' | 'absent' | 'unknown'>(() => 'absent'));
-vi.mock('#src/infra/node-process.js', () => ({
-  observeProcessLiveness: livenessMock,
 }));
 
 vi.mock('#src/runtime/real.js', () => ({
@@ -38,7 +35,11 @@ vi.mock('#src/runtime/real.js', () => ({
     },
     env: {},
     time: { now: () => 1_700_000_000_000 },
-    paths: { coral: { coordinator: { startupDiagnosticFile: '/tmp/coral-startup.json' } } },
+    paths: {
+      coral: {
+        coordinator: { startupDiagnosticFile: '/tmp/coral-startup.json', infoFile: '/run/coral/coordinator.json' },
+      },
+    },
   })),
 }));
 
@@ -61,8 +62,7 @@ function backendInfo(): BackendInfo {
 
 describe('getBackendStatusFull record disposition', () => {
   beforeEach(() => {
-    mockState.info = null;
-    mockState.read = { kind: 'missing' };
+    mockState.observed = { kind: 'no-record' };
   });
 
   // `vi.stubGlobal` replaces a process-wide binding, so cleanup cannot live at the tail of each test: an
@@ -84,9 +84,7 @@ describe('getBackendStatusFull record disposition', () => {
   // one in the health response.
   it('does not report a pre-version incumbent as not running', async () => {
     const { version: _v, instanceId: _i, ...preVersion } = backendInfo();
-    mockState.read = { kind: 'record', record: preVersion };
-    mockState.info = null;
-    livenessMock.mockReturnValue('alive');
+    mockState.observed = { kind: 'addressed', coordinator: preVersion };
     const fetchMock = vi.fn(async () => new Response('{}', { status: 500 }));
     vi.stubGlobal('fetch', fetchMock);
 
@@ -100,14 +98,12 @@ describe('getBackendStatusFull record disposition', () => {
     // the recorded address. An earlier revision of this test pinned `not_running` here and called the
     // difference out of scope; the sweep that enumerated the class reached it, so it is in scope after all.
     expect(result.status).toBe('unreachable');
-    livenessMock.mockReturnValue('absent');
   });
 
   // Six call sites answered "not running" for three different things. A peer identifying as another namespace
   // really is not this backend; a bad response and a dead request are not absence at all.
   it('reports a coordinator that answers badly as unreachable, not as stopped', async () => {
-    mockState.read = { kind: 'record', record: backendInfo() };
-    livenessMock.mockReturnValue('alive');
+    mockState.observed = { kind: 'addressed', coordinator: backendInfo() };
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => new Response('{}', { status: 500 })),
@@ -116,12 +112,10 @@ describe('getBackendStatusFull record disposition', () => {
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({ status: 'unreachable' });
-    livenessMock.mockReturnValue('absent');
   });
 
   it('still reports not_running for a peer whose namespace says it is not this backend', async () => {
-    mockState.read = { kind: 'record', record: backendInfo() };
-    livenessMock.mockReturnValue('alive');
+    mockState.observed = { kind: 'addressed', coordinator: backendInfo() };
     vi.stubGlobal(
       'fetch',
       vi.fn(
@@ -133,22 +127,21 @@ describe('getBackendStatusFull record disposition', () => {
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'not_running' });
-    livenessMock.mockReturnValue('absent');
   });
 
   it.each([['corrupt-json'], ['shape-rejected']] as const)(
     'reports the %s record as its own status, not as an absent coordinator',
     async (reason) => {
-      mockState.read = { kind: 'undecodable', reason };
+      mockState.observed = { kind: 'unreadable-record', reason, path: '/run/coral/coordinator.json' };
       // The record-derived view is still populated here, so a consumer reading only that would fall through to
       // the liveness check and report `not_running` — the collapse this branch exists to stop.
-      mockState.info = backendInfo();
 
       const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
       await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
         status: 'undecodable_record',
         reason,
+        path: '/run/coral/coordinator.json',
       });
     },
   );

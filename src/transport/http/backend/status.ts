@@ -1,8 +1,7 @@
-import { DEFAULT_DISCOVERY_HOST, readDiscoveryRecordDisposition } from '../../../infra/backend-discovery.js';
+import { observeCoordinator } from './coordinator-observation.js';
 import { readBuildFlavor } from '../../../infra/bundle-manifest.js';
 import { errorMessage } from '../../../infra/error-format.js';
 import { isRecord } from '../../../infra/json.js';
-import { observeProcessLiveness } from '../../../infra/node-process.js';
 import type { StoragePort } from '../../../infra/port-types.js';
 import { parseIsoTimestamp } from '../../../infra/time.js';
 import { isSerializedCoralSetupError } from '../../../runtime/errors.js';
@@ -201,43 +200,32 @@ async function probeDetailedHealth(
 
 export async function getBackendStatusFull(pluginRoot: string): Promise<BackendStatusFull> {
   const runtime = createRealRuntime(readBuildFlavor(pluginRoot));
-  const discoveryRuntime = { storage: runtime.storage, env: runtime.env, paths: runtime.paths };
+  const observed = observeCoordinator({
+    storage: runtime.storage,
+    env: runtime.env,
+    paths: runtime.paths,
+  });
 
-  // Two axes can each fail to answer, and both used to arrive as `not_running`. The process axis was already
-  // handled below; the record axis was not — `readBackendInfo` returns `null` for a missing file and for one it
-  // could not decode alike, so a truncated `coordinator.json` reported a confident absence while a coordinator
-  // was serving. `.passthrough()` on the record schema makes the cross-version case realistic, not theoretical.
-  const read = readDiscoveryRecordDisposition(discoveryRuntime);
-  if (read.kind === 'undecodable') {
-    // The path travels with the status because the remedy is "delete this file" and an operator should not
-    // have to derive where it lives. Nothing else in Coral rewrites it while a coordinator is up.
-    return { status: 'undecodable_record', reason: read.reason, path: runtime.paths.coral.coordinator.infoFile };
+  switch (observed.kind) {
+    case 'unreadable-record':
+      return { status: 'undecodable_record', reason: observed.reason, path: observed.path };
+    case 'no-record':
+      return noDaemonStatus(runtime.storage, runtime.paths.coral.coordinator.startupDiagnosticFile, runtime.time.now());
+    case 'process-absent':
+      // Absence is established, so the startup diagnostic may explain it — scoped to this pid so a stale
+      // diagnostic from another run cannot be read as this one's failure.
+      return noDaemonStatus(
+        runtime.storage,
+        runtime.paths.coral.coordinator.startupDiagnosticFile,
+        runtime.time.now(),
+        undefined,
+        observed.pid,
+      );
+    case 'addressed':
+      break;
   }
+  const info = observed.coordinator;
 
-  // The decoded record, not `readBackendInfo`. That helper also answers `null` when `version` or `instanceId`
-  // is absent, and this function reads neither — everything it uses (`startedAt`, `pid`, `host`, `port`,
-  // `namespace`, `flavor`, `bootToken`) is on the record itself, and the version an operator sees comes from
-  // the health response, not from the file. Routing through it reported a coordinator old enough to omit two
-  // unused fields as not running while it was serving. An earlier revision of this comment defended that as a
-  // display question; it was not one, because nothing here displays the record's version.
-  const record = read.kind === 'record' ? read.record : null;
-  const info = record === null ? null : { ...record, host: record.host ?? DEFAULT_DISCOVERY_HOST };
-  // Only an observed absence reports not-running; an unanswerable probe is not that observation.
-  if (!info || observeProcessLiveness(info.pid) === 'absent') {
-    return noDaemonStatus(
-      runtime.storage,
-      runtime.paths.coral.coordinator.startupDiagnosticFile,
-      runtime.time.now(),
-      info?.startedAt,
-      info?.pid,
-    );
-  }
-
-  // Two answers, not one. `notOurCoordinator` is for a peer that identifies as a different namespace or
-  // flavor: the thing on that socket is not this backend, so reporting this backend as not running is true,
-  // and the startup diagnostic may still explain why ours is gone. `unreachable` is for our own coordinator
-  // answering badly or not at all — something is there, addressed by our own record, and calling that "not
-  // running" is a claim about a process that just replied.
   const notOurCoordinator = (): BackendStatusFull =>
     noDaemonStatus(
       runtime.storage,
