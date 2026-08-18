@@ -181,11 +181,19 @@ function mergeBodiesWithGit(
   }
 }
 
-/** Raised when `git merge-file` did not answer, so nothing may be written to git's `%A`. */
+/**
+ * Raised when `git merge-file` did not answer, so nothing may be written to git's `%A`.
+ *
+ * The message names the exit because the state it leaves is the confusing one: this refusal reaches git as a
+ * non-zero exit, git marks the path conflicted, and `%A` still holds our side *without conflict markers*. A
+ * file that looks clean in a conflicted path is the thing an operator stages without reading, which turns a
+ * refusal that protected their edit into the loss it was protecting them from. Saying only "left untouched"
+ * describes the state and names no action, which is half a refusal.
+ */
 export class FrontmatterMergeUnavailableError extends Error {
   constructor(detail: string) {
     super(
-      `Coral could not merge this file: \`git merge-file\` did not answer (${detail}). The working-tree file was left untouched.`,
+      `Coral could not merge this file: \`git merge-file\` did not answer (${detail}). Your version is intact and git has left the path conflicted — resolve it yourself (\`git checkout --ours\`/\`--theirs\`, or an editor) rather than staging it as-is, because it carries no conflict markers to review.`,
     );
     this.name = 'FrontmatterMergeUnavailableError';
   }

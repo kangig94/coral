@@ -308,6 +308,13 @@ describe('frontmatter merge driver', () => {
 
     expect(result.status, 'zero here would tell git the merge succeeded').not.toBe(0);
     expect(result.stderr, 'and the refusal has to be readable, not just signalled').toMatch(/did not answer/u);
+    // The state this leaves is the confusing one: git marks the path conflicted while the file carries no
+    // conflict markers, so it looks resolved. A refusal that describes that state without naming an action is
+    // what gets the file staged as-is.
+    expect(result.stderr, 'the operator is told what to do, not only what did not happen').toMatch(
+      /resolve it yourself/u,
+    );
+    expect(result.stderr, 'including why it must not simply be staged').toMatch(/no conflict markers/u);
     expect(readFileSync(oursPath, 'utf-8'), 'the working-tree file is untouched').toBe(original);
   });
 

@@ -890,3 +890,48 @@ describe('PdfMarkerConverter separates "not installed" from "could not check"', 
     ).rejects.toThrow('this is not a report that it is missing');
   });
 });
+
+// `runCommand`'s three non-answers each get a different exit, and only one of them is a retry. The overflow
+// case had no test: a child whose output exceeds `maxBuffer` is killed, so the command did not answer — and
+// running it again on the same source overflows again, which makes "Retry the import" the one instruction
+// that cannot work.
+describe('a converter command that overran its buffer is not told to retry', () => {
+  it('names the source size as the thing to change', async () => {
+    const root = tempRoot('coral-source-import-maxbuffer-');
+    const input = join(root, 'paper.pdf');
+    mkdirSync(root, { recursive: true });
+    writeFileSync(input, '%PDF test fixture\n', 'utf8');
+
+    const runtime = fakeRuntime({
+      process: {
+        exec: async (command) =>
+          command === 'which'
+            ? { stdout: '/usr/bin/marker_single\n', stderr: '', status: 0 }
+            : {
+                stdout: '',
+                stderr: '',
+                status: null,
+                // The shape `runtime/exec-builder.ts` produces when it kills a child for overflow.
+                error: Object.assign(new Error('maxBuffer exceeded: marker_single'), {
+                  code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER',
+                }),
+              },
+      },
+    });
+
+    const failure = await new PdfMarkerConverter()
+      .convert(input, { runtime, runtimeRoot: join(root, 'runtime'), fileSizeLimitBytes: USER_SOURCE_IMPORT_MAX_BYTES })
+      .then(
+        () => null,
+        (error: unknown) => (error as Error).message,
+      );
+
+    expect(failure, 'the command did not answer, so this is not a report that it failed').toMatch(
+      /could not be run \(ERR_CHILD_PROCESS_STDIO_MAXBUFFER\)/u,
+    );
+    expect(failure, 'and the exit is a smaller source, not another identical attempt').toMatch(
+      /import a smaller source/u,
+    );
+    expect(failure).not.toMatch(/Retry the import/u);
+  });
+});

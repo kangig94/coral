@@ -485,6 +485,19 @@ describe('codexPreflight', () => {
     ).rejects.not.toThrow(LOGIN);
   });
 
+  // Both branches of the unreadable case have to leave the operator with something to do. Naming what was not
+  // established and stopping there is half a refusal — it closes the wrong door without opening one — and the
+  // deferred half (teaching the job to ask again instead of dying) is `docs/todo/preflight-cannot-defer.md`,
+  // so until then the retry is the operator's and has to be said.
+  it.each([
+    ['EACCES', /readable by the user running the Coral daemon/u],
+    ['EIO', /Retry the command/u],
+  ])('names an action for an auth.json it could not read (%s)', async (code, remedy) => {
+    const runtime = preflightRuntime({ authFile: errno(code), home: `/home/user/.codex-remedy-${code}-${clock}` });
+
+    await expect(codexPreflight(runtime)).rejects.toThrow(remedy);
+  });
+
   it('reports a readable auth.json without tokens as unauthenticated', async () => {
     const runtime = preflightRuntime({
       authFile: JSON.stringify({ tokens: {} }),

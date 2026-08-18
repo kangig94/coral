@@ -182,10 +182,14 @@ function probeCodexAuthTokens(runtime: ProviderPreflightRuntime<CodexProviderAcc
     const code = (error as NodeJS.ErrnoException).code;
     // `EACCES`/`EPERM` is the one non-answer here with a remedy that is knowable from the errno alone, so it
     // gets one. The others get no invented advice.
+    // Every branch names an action, including the one that is only "ask again": a refusal that stops at what
+    // was not established leaves the operator with nothing to do. The deferred half — teaching the job itself
+    // to ask again rather than dying — is `docs/todo/preflight-cannot-defer.md`; until then the retry is the
+    // operator's, so it is said out loud.
     const remedy =
       code === 'EACCES' || code === 'EPERM'
         ? ' Check that this file is readable by the user running the Coral daemon.'
-        : '';
+        : ' Retry the command; this says nothing about whether the account is authenticated.';
     return {
       kind: 'undetermined',
       message: `Codex preflight could not read ${authPath} (${code ?? 'unknown error'}); whether this account is authenticated was not established.${remedy}`,
