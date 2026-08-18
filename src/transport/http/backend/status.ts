@@ -1,5 +1,6 @@
 import { DEFAULT_DISCOVERY_HOST, readDiscoveryRecordDisposition } from '../../../infra/backend-discovery.js';
 import { readBuildFlavor } from '../../../infra/bundle-manifest.js';
+import { errorMessage } from '../../../infra/error-format.js';
 import { isRecord } from '../../../infra/json.js';
 import { observeProcessLiveness } from '../../../infra/node-process.js';
 import type { StoragePort } from '../../../infra/port-types.js';
@@ -65,6 +66,12 @@ export type BackendStatusFull =
    * or a record shaped by a build this one rejects both produce it while a coordinator may be serving.
    */
   | { status: 'undecodable_record'; reason: 'corrupt-json' | 'shape-rejected' }
+  /**
+   * Something answers at the recorded address and did not give a usable answer — a non-2xx that is not a
+   * drain, or a request that never completed. Distinct from `not_running`, which is reserved for an observed
+   * absence and for a peer whose namespace or flavor says it is somebody else's coordinator, not ours.
+   */
+  | { status: 'unreachable'; detail: string }
   | { status: 'recent_failure'; phase: PublicDiagnosticPhase; setupError?: PublicSetupErrorSummary };
 
 type RecentFailureStatus = Extract<BackendStatusFull, { status: 'recent_failure' }>;
@@ -166,7 +173,12 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
     );
   }
 
-  const unreachableStatus = (): BackendStatusFull =>
+  // Two answers, not one. `notOurCoordinator` is for a peer that identifies as a different namespace or
+  // flavor: the thing on that socket is not this backend, so reporting this backend as not running is true,
+  // and the startup diagnostic may still explain why ours is gone. `unreachable` is for our own coordinator
+  // answering badly or not at all — something is there, addressed by our own record, and calling that "not
+  // running" is a claim about a process that just replied.
+  const notOurCoordinator = (): BackendStatusFull =>
     noDaemonStatus(
       runtime.storage,
       runtime.paths.coral.coordinator.startupDiagnosticFile,
@@ -174,6 +186,7 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
       info.startedAt,
       info.pid,
     );
+  const unreachable = (detail: string): BackendStatusFull => ({ status: 'unreachable', detail });
 
   try {
     const pingResponse = await fetch(`http://${info.host}:${info.port}/health`, {
@@ -183,7 +196,7 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
     const pingBody = await parseJsonResponse(pingResponse);
     if (pingResponse.status === 200) {
       if (!isBackendPing(pingBody) || pingBody.namespace !== info.namespace || pingBody.flavor !== info.flavor) {
-        return unreachableStatus();
+        return notOurCoordinator();
       }
       if (pingBody.status === 'draining') {
         return { status: 'shutting_down' };
@@ -191,7 +204,7 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
     } else if (pingResponse.status === 503 || TransientHttpError.isTransientStatus(pingResponse.status)) {
       return { status: 'shutting_down' };
     } else {
-      return unreachableStatus();
+      return unreachable(`health responded ${pingResponse.status}`);
     }
 
     const healthResponse = await fetch(`http://${info.host}:${info.port}/health?detailed=1`, {
@@ -202,7 +215,7 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
     const body = await parseJsonResponse(healthResponse);
     if (healthResponse.status === 200) {
       if (!isBackendHealth(body) || body.namespace !== info.namespace || body.flavor !== info.flavor) {
-        return unreachableStatus();
+        return notOurCoordinator();
       }
       if (body.status === 'draining') {
         return { status: 'shutting_down' };
@@ -214,8 +227,8 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
       return { status: 'shutting_down' };
     }
     if (healthResponse.status === 401) return { status: 'unauthorized' };
-    return unreachableStatus();
-  } catch {
-    return unreachableStatus();
+    return unreachable(`detailed health responded ${healthResponse.status}`);
+  } catch (error: unknown) {
+    return unreachable(errorMessage(error));
   }
 }

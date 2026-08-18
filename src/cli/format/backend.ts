@@ -23,6 +23,15 @@ export function formatBackendStatus(result: BackendStatusFull): string {
         'A coordinator may still be running; this is not a report that none is.',
         'Next step: stop any running coordinator, delete the discovery record under the Coral run directory, then run a coral-cli mutating command to relaunch.',
       ].join('\n');
+    case 'unreachable':
+      // Deliberately not "not running": something answered at the recorded address, or the request to it did
+      // not complete. Six call sites used to route here and to the not-running report alike, so an operator
+      // whose coordinator returned a 500 was told it was stopped.
+      return [
+        `Backend state is unknown: the coordinator did not give a usable answer (${result.detail}).`,
+        'Something is listening at the recorded address; this is not a report that the backend stopped.',
+        'Next step: retry, and check the coordinator logs if it persists.',
+      ].join('\n');
     case 'recent_failure': {
       const lines = ['Backend is not running after a recent coordinator failure.', `Phase: ${result.phase}`];
       if (result.setupError === undefined) {

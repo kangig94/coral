@@ -364,6 +364,25 @@ describe('expansion activation', () => {
     },
   );
 
+  // The same false absence one failure mode later: a record that decodes says a coordinator claimed the
+  // socket, so failing to reach it is not evidence that none is there. `setupError` folds a refused socket, a
+  // timeout and a permission error into one code, so this path cannot tell them apart either.
+  it('does not report a coordinator absent when the record exists and the dial failed', async () => {
+    const activation = createCliExpansionActivation();
+    process.env.CORAL_FLAVOR = 'dev';
+    mockState.readDiscoveryRecordDisposition.mockReturnValue({ kind: 'record', record: makeDiscoveryRecord() });
+    mockState.createIpcClient.mockReturnValue({
+      request: vi.fn(async () => {
+        throw Object.assign(new Error('nope'), { code: 'ipc_connect_failed' });
+      }),
+    });
+
+    await expect(activation.readExpansionStatus('vector')).resolves.toEqual({
+      status: 'unreadable',
+      detail: 'ipc_connect_failed',
+    });
+  });
+
   it('does not report an unknown expansion from a record it could not read', async () => {
     const activation = createCliExpansionActivation();
     process.env.CORAL_FLAVOR = 'dev';
@@ -428,7 +447,9 @@ describe('expansion activation', () => {
     }
   });
 
-  it('returns unavailable when passive IPC dial fails after discovery succeeds', async () => {
+  // Was `unavailable` — this test pinned the collapse rather than a behaviour. A dial that did not get through
+  // to a socket a record says is claimed establishes nothing about whether a coordinator is there.
+  it('reports unreadable, not unavailable, when the passive IPC dial fails after discovery succeeds', async () => {
     const activation = createCliExpansionActivation();
     const request = vi
       .fn()
@@ -439,7 +460,10 @@ describe('expansion activation', () => {
     });
     mockState.createIpcClient.mockReturnValue({ request });
 
-    await expect(activation.readExpansionStatus()).resolves.toEqual({ status: 'unavailable' });
+    await expect(activation.readExpansionStatus()).resolves.toEqual({
+      status: 'unreadable',
+      detail: 'ipc_connect_failed',
+    });
     expect(mockState.createIpcClient).toHaveBeenCalledWith('/tmp/coral-passive.sock', expect.any(Object), {
       kind: 'boot',
       token: 'boot-token-a',

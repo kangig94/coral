@@ -297,7 +297,12 @@ export function createCliExpansionActivation(): CliExpansionActivation {
         };
       } catch (error: unknown) {
         if (isIpcConnectFailed(error)) {
-          return { status: 'unavailable' };
+          // Reached only with a decoded record in hand, which is a coordinator saying it claimed this socket.
+          // `setupError` wraps every connect failure into one code — a refused socket, a timeout, a permission
+          // error — so this cannot tell "nothing is there" from "we did not get through", and the record
+          // present is evidence against the first. `unavailable` would be the same false absence the
+          // `unreadable` variant above exists to prevent, one failure mode later.
+          return { status: 'unreadable', detail: 'ipc_connect_failed' };
         }
         throw error;
       }

@@ -88,10 +88,45 @@ describe('getBackendStatusFull record disposition', () => {
     // What this change establishes: the daemon is asked at all. Before it, `readBackendInfo` answered `null`
     // for this record and the function short-circuited to a not-running report without dialling anything.
     expect(fetchMock, 'the record carries host, port and bootToken, so the daemon can be asked').toHaveBeenCalled();
-    // What it does not establish, deliberately: the eventual status. A daemon that answers badly still routes
-    // through `unreachableStatus`, which reports `not_running` for "we reached something and it was wrong" —
-    // the same collapse one layer out, pre-dating this branch and not narrowed here.
-    expect(result.status).toBe('not_running');
+    // And the answer is now `unreachable` rather than `not_running`: the 500 came from something listening at
+    // the recorded address. An earlier revision of this test pinned `not_running` here and called the
+    // difference out of scope; the sweep that enumerated the class reached it, so it is in scope after all.
+    expect(result.status).toBe('unreachable');
+    vi.unstubAllGlobals();
+    livenessMock.mockReturnValue('absent');
+  });
+
+  // Six call sites answered "not running" for three different things. A peer identifying as another namespace
+  // really is not this backend; a bad response and a dead request are not absence at all.
+  it('reports a coordinator that answers badly as unreachable, not as stopped', async () => {
+    mockState.read = { kind: 'record', record: backendInfo() };
+    livenessMock.mockReturnValue('alive');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('{}', { status: 500 })),
+    );
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({ status: 'unreachable' });
+    vi.unstubAllGlobals();
+    livenessMock.mockReturnValue('absent');
+  });
+
+  it('still reports not_running for a peer whose namespace says it is not this backend', async () => {
+    mockState.read = { kind: 'record', record: backendInfo() };
+    livenessMock.mockReturnValue('alive');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ status: 'ok', namespace: 'someone-else', flavor: 'prod' }), { status: 200 }),
+      ),
+    );
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'not_running' });
     vi.unstubAllGlobals();
     livenessMock.mockReturnValue('absent');
   });
