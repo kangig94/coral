@@ -793,7 +793,7 @@ describe('source import runtime isolation', () => {
         runtimeRoot: '/isolated-runtime',
         fileSizeLimitBytes: USER_SOURCE_IMPORT_MAX_BYTES,
       }),
-    ).resolves.toBe('available');
+    ).resolves.toEqual({ kind: 'available' });
 
     expect(observedPaths).toEqual(['/isolated-home/.local/bin:/usr/bin']);
   });
@@ -825,7 +825,24 @@ describe('PdfMarkerConverter separates "not installed" from "could not check"', 
   }
 
   it.each([['ETIMEDOUT'], ['EAGAIN']])('reports %s as undetermined, not as absent', async (code) => {
-    await expect(new PdfMarkerConverter().isAvailable(ctx(locatorUnanswered(code)))).resolves.toBe('undetermined');
+    // The reason travels with the answer: it is the only thing separating "retry" from "this machine cannot
+    // run the lookup", and the caller renders one of those two sentences from it.
+    await expect(new PdfMarkerConverter().isAvailable(ctx(locatorUnanswered(code)))).resolves.toEqual({
+      kind: 'undetermined',
+      detail: code,
+    });
+  });
+
+  // `which` itself missing is not a fact about marker_single, so it is still undetermined — but it is a
+  // standing one, and the advice must not be the retry that cannot work.
+  it('does not tell an operator to retry when the lookup itself cannot be launched', async () => {
+    await expect(new PdfMarkerConverter().isAvailable(ctx(locatorUnanswered('ENOENT')))).resolves.toEqual({
+      kind: 'undetermined',
+      detail: 'ENOENT',
+    });
+    await expect(new PdfMarkerConverter().install(() => {}, ctx(locatorUnanswered('ENOENT')))).rejects.toThrow(
+      /A retry will fail the same way/u,
+    );
   });
 
   it('still reports a locator that ran and found nothing as absent', async () => {
@@ -833,7 +850,7 @@ describe('PdfMarkerConverter separates "not installed" from "could not check"', 
       process: { exec: async () => ({ stdout: '', stderr: 'not found', status: 1 }) },
     });
 
-    await expect(new PdfMarkerConverter().isAvailable(ctx(runtime))).resolves.toBe('absent');
+    await expect(new PdfMarkerConverter().isAvailable(ctx(runtime))).resolves.toEqual({ kind: 'absent' });
   });
 
   it('does not install anything when it could not check for uv', async () => {

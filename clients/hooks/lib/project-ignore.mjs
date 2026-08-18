@@ -10,6 +10,7 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  readlinkSync,
   realpathSync,
   renameSync,
   symlinkSync,
@@ -17,7 +18,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { dirname, isAbsolute, join, relative, sep } from 'node:path';
-import { coralProjectDir } from './hook-utils.mjs';
+import { coralProjectDir, coralStateRoot } from './hook-utils.mjs';
 
 const MAX_GITIGNORE_BYTES = 1024 * 1024;
 const NO_FOLLOW = constants.O_NOFOLLOW ?? 0;
@@ -275,17 +276,43 @@ function ensureScopedIgnore(projectDir, token) {
   );
 }
 
+/**
+ * Whether an existing `.claude/coral` link is one Coral placed and has since outgrown.
+ *
+ * Only a link pointing into `~/.coral/projects*` qualifies. Anything else — a link an operator made to a
+ * directory of their own — is left exactly where it is; correcting our own artifact is not licence to
+ * overwrite someone's.
+ *
+ * This exists because the flavor fix in `coralProjectDir` moved the target on dev builds, and this function
+ * returned on "a symlink is there" without asking where it went. That left a link into the prod tree on every
+ * dev install that already had one, while `CORAL_PROJECT` moved to `projects-dev` — the two-directory split
+ * the flavor fix was closing, reopened one path over.
+ */
+function isOutgrownCoralLink(link, target) {
+  let current;
+  try {
+    current = readlinkSync(link);
+  } catch {
+    return false;
+  }
+  if (current === target) return false;
+  const projectsRoot = join(coralStateRoot(), 'projects');
+  return current.startsWith(projectsRoot);
+}
+
 function ensureCoralSymlink(projectDir) {
   const link = join(projectDir, '.claude', 'coral');
+  const target = coralProjectDir(projectDir);
   try {
     const stat = lstatSync(link);
-    return { ok: stat.isSymbolicLink(), created: false };
+    if (!stat.isSymbolicLink()) return { ok: false, created: false };
+    if (!isOutgrownCoralLink(link, target)) return { ok: true, created: false };
+    safeUnlink(link);
   } catch (error) {
     if (!isMissing(error)) return { ok: false, created: false };
   }
 
   try {
-    const target = coralProjectDir(projectDir);
     mkdirSync(target, { recursive: true });
     symlinkSync(target, link);
     return { ok: true, created: true };

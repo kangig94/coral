@@ -3,7 +3,7 @@ import { writeAuditEvent } from '../../../infra/audit-log.js';
 import { nowIsoString } from '../../../infra/time.js';
 import { throwIfAborted } from '../../../runtime/abort.js';
 import { classifyExecOutcome, type EnvPort, type StoragePort, type TimePort } from '../../../infra/port-types.js';
-import { EXEC_TIMEOUT_CODE } from '../../../infra/process-constants.js';
+import { EXEC_MAXBUFFER_CODE, EXEC_TIMEOUT_CODE, STANDING_PROBE_ERRNOS } from '../../../infra/process-constants.js';
 import type { ResourceBinding } from '../../../security/principal.js';
 import type { IdPort, ProcessPort } from '../../../runtime/ports.js';
 import { FRONTMATTER_BLOCK, serializeSourceFrontmatter } from '../../corpus/frontmatter.js';
@@ -98,12 +98,34 @@ export type ResolvedSourceImportFile = { path: string };
  * has them, on evidence nobody produced. The same collapse in `cli-detection.ts` told operators to install a
  * CLI they had; here it does not merely say so, it acts.
  */
-type ConverterAvailability = 'available' | 'absent' | 'undetermined';
+type ConverterAvailability =
+  | Readonly<{ kind: 'available' }>
+  | Readonly<{ kind: 'absent' }>
+  | Readonly<{ kind: 'undetermined'; detail: string }>;
 
 interface Converter {
   isAvailable(ctx: SourceImportContext): Promise<ConverterAvailability>;
   install(log: (msg: string) => void, ctx: SourceImportContext): Promise<void>;
   convert(filePath: string, ctx: SourceImportContext): Promise<ConversionResult>;
+}
+
+/**
+ * What ends the hold, for a probe or a command that produced no answer.
+ *
+ * Not one sentence for all of them, because only one of the three exits is a retry. A standing errno — no such
+ * binary, not executable, not a directory — fails identically next time, and output that overran the buffer
+ * overruns it again. Telling an operator to retry either is a refusal naming an exit that cannot be reached,
+ * which is the defect this module's three-answer split exists to stop; writing it into the sentence instead of
+ * the branch is the same defect one layer out.
+ */
+function nonAnswerExit(detail: string): string {
+  if (STANDING_PROBE_ERRNOS.has(detail)) {
+    return 'A retry will fail the same way: it could not be launched on this machine at all.';
+  }
+  if (detail === EXEC_MAXBUFFER_CODE) {
+    return 'A retry produces the same overflow; import a smaller source instead.';
+  }
+  return 'Retry the import.';
 }
 
 /** Where a command lives, or which of the two reasons this run does not have a path for it. */
@@ -407,7 +429,7 @@ async function runCommand(
   if (outcome.kind !== 'answered') {
     const detail = outcome.kind === 'launch-refused' ? outcome.code : outcome.detail;
     throw new Error(
-      `${displayName} could not be run (${detail}); this is not a report that it failed. Retry the import.`,
+      `${displayName} could not be run (${detail}); this is not a report that it failed. ${nonAnswerExit(detail)}`,
     );
   }
 
@@ -420,9 +442,10 @@ async function runCommand(
   if (stdout.length > 0) {
     outputLines.push(stdout);
   }
-  if (result.error !== undefined && result.error.message.length > 0) {
-    outputLines.push(result.error.message);
-  }
+  // No `result.error` line here: reaching this point means `classifyExecOutcome` answered, and it only does
+  // that when the port reported no error at all. The async port makes the two mutually exclusive by
+  // construction (`status: error ? null : status` in `runtime/exec-builder.ts`), so a branch reading both was
+  // describing a result shape that cannot arrive.
   const output = outputLines.join('\n');
   throw new Error(output ? `${displayName} failed: ${output}` : `${displayName} exited with code ${outcome.status}`);
 }
@@ -763,14 +786,14 @@ export async function prepareSourceImport(
   if (signal !== undefined) throwIfAborted(signal, 'convert');
   log(`Converting ${sourceFilePath}`);
   const availability = await converter.isAvailable(ctx);
-  if (availability === 'absent') {
+  if (availability.kind === 'absent') {
     log(`Installing converter dependencies for ${ext || 'source'} import`);
     await converter.install(log, ctx);
-  } else if (availability === 'undetermined') {
+  } else if (availability.kind === 'undetermined') {
     // Installing is the finalization here — it downloads and writes tooling — and nothing observed that it was
-    // needed. The exit is the operator retrying, which is an operation that exists.
+    // needed. So the refusal has to name what ends it, which is not always the same action.
     throw new Error(
-      `Could not check whether the ${ext || 'source'} converter is installed, so Coral did not install one. Retry the import.`,
+      `Could not check whether the ${ext || 'source'} converter is installed (${availability.detail}), so Coral did not install one. ${nonAnswerExit(availability.detail)}`,
     );
   }
 
@@ -798,7 +821,7 @@ export async function prepareSourceImport(
 
 class MarkdownCopyConverter implements Converter {
   async isAvailable(_ctx: SourceImportContext): Promise<ConverterAvailability> {
-    return 'available';
+    return { kind: 'available' };
   }
 
   async install(log: (msg: string) => void, _ctx: SourceImportContext): Promise<void> {
@@ -822,7 +845,7 @@ class MarkdownCopyConverter implements Converter {
 class HtmlTurndownConverter implements Converter {
   async isAvailable(_ctx: SourceImportContext): Promise<ConverterAvailability> {
     // A bundled dependency: present or not, with nothing to fail to observe.
-    return missingPackages(['turndown']).length === 0 ? 'available' : 'absent';
+    return missingPackages(['turndown']).length === 0 ? { kind: 'available' } : { kind: 'absent' };
   }
 
   async install(log: (msg: string) => void, _ctx: SourceImportContext): Promise<void> {
@@ -845,7 +868,7 @@ class HtmlTurndownConverter implements Converter {
 
 class DocxMammothConverter implements Converter {
   async isAvailable(_ctx: SourceImportContext): Promise<ConverterAvailability> {
-    return missingPackages(['mammoth', 'turndown']).length === 0 ? 'available' : 'absent';
+    return missingPackages(['mammoth', 'turndown']).length === 0 ? { kind: 'available' } : { kind: 'absent' };
   }
 
   async install(log: (msg: string) => void, _ctx: SourceImportContext): Promise<void> {
@@ -877,11 +900,13 @@ export class PdfMarkerConverter implements Converter {
     const located = await resolveCommandPath('marker_single', ctx);
     switch (located.kind) {
       case 'found':
-        return 'available';
+        return { kind: 'available' };
       case 'absent':
-        return 'absent';
+        return { kind: 'absent' };
       case 'undetermined':
-        return 'undetermined';
+        // The reason travels with the answer: it is what separates "retry" from "this machine cannot run the
+        // lookup", and the caller has no other way to tell those apart.
+        return { kind: 'undetermined', detail: located.detail };
     }
   }
 
@@ -889,7 +914,7 @@ export class PdfMarkerConverter implements Converter {
     let uv = await resolveCommandPath('uv', ctx);
     if (uv.kind === 'undetermined') {
       throw new Error(
-        `Could not check whether uv is installed (${uv.detail}); Coral will not install over an unknown state. Retry the import.`,
+        `Could not check whether uv is installed (${uv.detail}); Coral will not install over an unknown state. ${nonAnswerExit(uv.detail)}`,
       );
     }
 
@@ -906,7 +931,9 @@ export class PdfMarkerConverter implements Converter {
         throw new Error('uv was not found after installation');
       }
       if (uv.kind === 'undetermined') {
-        throw new Error(`uv was installed, but checking for it did not answer (${uv.detail}). Retry the import.`);
+        throw new Error(
+          `uv was installed, but checking for it did not answer (${uv.detail}). ${nonAnswerExit(uv.detail)}`,
+        );
       }
     }
     const uvCommand = uv.path;
@@ -934,7 +961,7 @@ export class PdfMarkerConverter implements Converter {
     }
     if (marker.kind === 'undetermined') {
       throw new Error(
-        `marker-pdf was installed, but checking for marker_single did not answer (${marker.detail}). Retry the import.`,
+        `marker-pdf was installed, but checking for marker_single did not answer (${marker.detail}). ${nonAnswerExit(marker.detail)}`,
       );
     }
   }
@@ -951,7 +978,9 @@ export class PdfMarkerConverter implements Converter {
       throw new Error('marker_single is not available');
     }
     if (marker.kind === 'undetermined') {
-      throw new Error(`Could not check for marker_single (${marker.detail}); this is not a report that it is missing.`);
+      throw new Error(
+        `Could not check for marker_single (${marker.detail}); this is not a report that it is missing. ${nonAnswerExit(marker.detail)}`,
+      );
     }
     const markerCommand = marker.path;
 
