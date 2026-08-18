@@ -38,48 +38,20 @@ describe('resolveProjectSource', () => {
   // `status: null`, and a timeout carries `code: 'ETIMEDOUT'` with `status: null`.
   const failure = (props: Record<string, unknown>): Error => Object.assign(new Error('probe failed'), props);
 
-  it.each([
-    ['a non-zero exit — there is no remote, and re-asking cannot change that', { status: 128 }],
-    // The regression this pins: a predicate keyed on `status` being a number made a machine without git
-    // re-spawn it on every call for the daemon's lifetime.
-    ['a missing git binary — git will not appear under a running daemon', { status: null, code: 'ENOENT' }],
-    ['a git binary that may not be executed', { status: null, code: 'EACCES' }],
-  ])('caches the local fallback after %s', async (_label, props) => {
+  // Only a launch that actually ran and exited is decisive here. `ENOENT`/`EACCES` moved out of this group:
+  // a missing or unexecutable git binary is a standing fact about the *machine*, not a report about whether
+  // *this project* has a remote (`process-constants.ts`'s `STANDING_PROBE_ERRNOS` docstring), so caching it as
+  // "no remote" is the same durably-wrong-answer shape as caching a timeout would be. They now live in the
+  // "re-probes rather than caching" group below, alongside every other non-answer.
+  it('caches the local fallback after a non-zero exit — there is no remote, and re-asking cannot change that', async () => {
     const { resolveProjectSource } = await loadProjectSourceModule();
     execFileSyncMock.mockImplementation(() => {
-      throw failure(props);
+      throw failure({ status: 128 });
     });
 
     expect(resolveProjectSource('/tmp/some-project')).toBe('local/some-project');
     expect(resolveProjectSource('/tmp/some-project')).toBe('local/some-project');
-    expect(execFileSyncMock, 'a standing fact is asked once').toHaveBeenCalledOnce();
-  });
-
-  // Asking once is not what separates the two dispositions: an indecisive probe is also asked once, because
-  // the hold suppresses the re-probe for the interval. Only the clock tells them apart, and without this the
-  // `launch-refused` branch of `classifyThrownExecOutcome` could be deleted with the whole suite green —
-  // measured, not supposed. A standing errno demoted to `no-answer` re-forks git once a minute forever on a
-  // machine that will never have it, which is the shape of the defect the row above pins for the first call.
-  it.each([
-    ['a missing git binary', 'ENOENT'],
-    ['a git binary that may not be executed', 'EACCES'],
-  ])('never re-asks after %s, however long the daemon runs', async (_label, code) => {
-    const { resolveProjectSource } = await loadProjectSourceModule();
-    execFileSyncMock.mockImplementation(() => {
-      throw failure({ status: null, code });
-    });
-
-    expect(resolveProjectSource('/tmp/standing')).toBe('local/standing');
-
-    vi.setSystemTime(Date.now() + 61_000);
-    expect(resolveProjectSource('/tmp/standing')).toBe('local/standing');
-    vi.setSystemTime(Date.now() + 6 * 60 * 60_000);
-    expect(resolveProjectSource('/tmp/standing')).toBe('local/standing');
-
-    expect(
-      execFileSyncMock,
-      'the answer does not expire: git will not appear under a running daemon',
-    ).toHaveBeenCalledOnce();
+    expect(execFileSyncMock, 'a decisive answer is asked once').toHaveBeenCalledOnce();
   });
 
   // `classifyThrownExecOutcome` guards `typeof error !== 'object' || error === null` before reading `.code`.
@@ -111,15 +83,22 @@ describe('resolveProjectSource', () => {
     );
   });
 
-  // The enumeration is on the standing side so that an errno nobody thought of is NOT cached as a fact. The
-  // first three were each missed by one of the earlier transient-side revisions. The list is not trying to be
-  // exhaustive and should not grow toward it — `EWOULDBLOCKX` is the case that matters, because an errno this
-  // codebase has never heard of is the one a future revision will also not have heard of.
+  // `ETIMEDOUT`/`EAGAIN`/`ESTALE`/`EWOULDBLOCKX` are `no-answer` outright — the launch never produced a verdict.
+  // `ENOENT`/`EACCES` are `launch-refused`: a *standing* fact about the machine (git will not appear under a
+  // running daemon), but not a *decisive* one about this project's remote, which is the only question this
+  // function asks (`process-constants.ts`'s `STANDING_PROBE_ERRNOS` docstring draws the distinction). Both
+  // kinds reach the same indecisive-with-expiry path here, which is what this shared test proves — a caller
+  // asking a domain question may not tell them apart, even though `classifyThrownExecOutcome` does. The
+  // enumeration itself is on the standing side so that an errno nobody thought of is NOT cached as a fact; it
+  // is not trying to be exhaustive and should not grow toward it — `EWOULDBLOCKX` is the case that matters,
+  // because an errno this codebase has never heard of is the one a future revision will also not have heard of.
   it.each([
     ['ETIMEDOUT — the mount did not answer in time', 'ETIMEDOUT'],
     ['EAGAIN — no process slot right now', 'EAGAIN'],
     ['ESTALE — a stalled mount reporting immediately', 'ESTALE'],
     ['EWOULDBLOCKX — an errno this list has never heard of', 'EWOULDBLOCKX'],
+    ['ENOENT — a missing git binary answers nothing about this project', 'ENOENT'],
+    ['EACCES — a git binary this process may not execute answers nothing about this project', 'EACCES'],
   ])('re-probes rather than caching after %s', async (_label, code) => {
     const { resolveProjectSource } = await loadProjectSourceModule();
     execFileSyncMock.mockImplementationOnce(() => {
@@ -169,6 +148,36 @@ describe('resolveProjectSource', () => {
     expect(execFileSyncMock).toHaveBeenCalledTimes(callsAfterFill + 1);
   });
 
+  // The test above fills one past the cap either way, so a cap guard mutated from `>` to `>=` still evicts
+  // `firstRoot` — both land well past the boundary, and the assertion cannot tell which line was responsible.
+  // This pins the boundary itself: exactly at the cap, nothing has been evicted yet. It also isolates *which*
+  // map is under test by construction rather than by inspecting internal state — `execFileSyncMock` never
+  // throws here, so the code never reaches the `catch` branch at all, and only `rememberProjectSource`'s own
+  // eviction loop (never `rememberIndecisiveProbe`'s, on the untouched `indecisiveProbeAt` map) can be
+  // responsible for whatever this test observes.
+  it('does not evict anything while still exactly at the project source cache cap', async () => {
+    execFileSyncMock.mockImplementation((_cmd: string, _args: string[], options: ExecOptions): string =>
+      remoteForProjectRoot(options.cwd ?? '/tmp/missing'),
+    );
+    const { PROJECT_SOURCE_MAP_MAX_ENTRIES, resolveProjectSource } = await loadProjectSourceModule();
+    const baseRoot = '/tmp/coral-project-source-cache-boundary';
+    const firstRoot = `${baseRoot}/repo-0`;
+
+    expect(resolveProjectSource(firstRoot)).toBe('owner/repo-0');
+    // firstRoot plus (MAX - 1) more is exactly MAX entries — the cap, not one past it.
+    for (let index = 1; index < PROJECT_SOURCE_MAP_MAX_ENTRIES; index += 1) {
+      expect(resolveProjectSource(`${baseRoot}/repo-${index}`)).toBe(`owner/repo-${index}`);
+    }
+
+    const callsAtCap = execFileSyncMock.mock.calls.length;
+    expect(callsAtCap).toBe(PROJECT_SOURCE_MAP_MAX_ENTRIES);
+    expect(resolveProjectSource(firstRoot), 'still within the cap, so this must be a cache hit').toBe('owner/repo-0');
+    expect(
+      execFileSyncMock,
+      'a cache hit must not fork — a `>=` cap guard would already have evicted this',
+    ).toHaveBeenCalledTimes(callsAtCap);
+  });
+
   // Mirrors the cache-eviction test above, but for the other map the same cap bounds: `indecisiveProbeAt`.
   // The clock never advances in this test, so the hold (`INDECISIVE_PROBE_REPROBE_INTERVAL_MS`) would still
   // cover `firstRoot` if its entry survived — the only way a second probe happens is that eviction pushed it
@@ -195,6 +204,35 @@ describe('resolveProjectSource', () => {
     expect(execFileSyncMock, "firstRoot's entry was evicted, so the hold could not find it").toHaveBeenCalledTimes(
       callsAfterFill + 1,
     );
+  });
+
+  // The indecisive-map mirror of the cache-cap boundary test above, isolated the same way: `execFileSyncMock`
+  // always throws here, so only `rememberIndecisiveProbe`'s eviction loop (on `indecisiveProbeAt`) is ever
+  // reached — `rememberProjectSource`'s cap logic on the untouched decisive-answer map cannot be responsible
+  // for anything this test observes.
+  it('does not evict anything while still exactly at the indecisive-probe map cap', async () => {
+    execFileSyncMock.mockImplementation(() => {
+      throw failure({ status: null, code: 'EAGAIN' });
+    });
+    const { PROJECT_SOURCE_MAP_MAX_ENTRIES, resolveProjectSource } = await loadProjectSourceModule();
+    const baseRoot = '/tmp/coral-indecisive-map-cache-boundary';
+    const firstRoot = `${baseRoot}/repo-0`;
+
+    expect(resolveProjectSource(firstRoot)).toBe('local/repo-0');
+    for (let index = 1; index < PROJECT_SOURCE_MAP_MAX_ENTRIES; index += 1) {
+      expect(resolveProjectSource(`${baseRoot}/repo-${index}`)).toBe(`local/repo-${index}`);
+    }
+
+    const callsAtCap = execFileSyncMock.mock.calls.length;
+    expect(callsAtCap).toBe(PROJECT_SOURCE_MAP_MAX_ENTRIES);
+    // Re-reading firstRoot cannot distinguish a surviving hold from a fresh probe the way the decisive map's
+    // cache hit does (both return the same `local/repo-0` fallback), so the discriminator is the fork count,
+    // not the return value: a surviving hold must not fork again.
+    expect(resolveProjectSource(firstRoot)).toBe('local/repo-0');
+    expect(
+      execFileSyncMock,
+      'a `>=` cap guard would already have evicted this and re-forked to fill the hold again',
+    ).toHaveBeenCalledTimes(callsAtCap);
   });
 
   // §11: "Tolerance is not silence." This was the one of five declining sites that said nothing, and it is the

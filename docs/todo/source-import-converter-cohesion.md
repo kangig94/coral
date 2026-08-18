@@ -17,10 +17,14 @@ was made and the decision is still separable from those fixes.
   `PdfMarkerConverter` — plus the `Converter` interface and `resolveConverter` dispatcher;
 - markdown rendering/staging helpers.
 
-The four converters are the shape [`design-philosophy.md`](../../.claude/rules/design-philosophy.md) §7 names
-as the subdivision trigger: four siblings sharing a prefix, each owning a distinct facet of one bounded
-responsibility. Nothing enforces this — per-file line caps were removed when the rewrite landed and growth
-discipline lives in code review, which is exactly where it was raised.
+The four converter classes share a suffix ("Converter"), not a prefix, and today they are four classes in one
+file rather than four sibling files — so this is not literally the case
+[`design-philosophy.md`](../../.claude/rules/design-philosophy.md) §7's subdivision trigger names (promoting
+an existing cluster of same-prefix sibling *files* to a subdirectory). It is the same shape one layer down:
+each class already owns a distinct facet of one bounded responsibility, which is what makes splitting them
+into sibling files — and then meeting the real trigger — the natural next step. Nothing enforces this —
+per-file line caps were removed when the rewrite landed and growth discipline lives in code review, which is
+exactly where it was raised.
 
 ## Why it was not done here
 

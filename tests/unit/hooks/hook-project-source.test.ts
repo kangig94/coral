@@ -72,15 +72,11 @@ describe('hook lane project source', () => {
     expect(execSyncMock).toHaveBeenCalledTimes(1);
   });
 
-  it.each([['ENOENT'], ['EACCES']])('caches %s, a standing fact about this machine', (code) => {
-    unanswered(code);
-
-    expect(resolveProjectSource(`${PROJECT}-${code}`)).toBe(`local/some-project-${code}`);
-    expect(resolveProjectSource(`${PROJECT}-${code}`)).toBe(`local/some-project-${code}`);
-    expect(execSyncMock).toHaveBeenCalledTimes(1);
-  });
-
-  it.each([['ETIMEDOUT'], ['EAGAIN'], ['EMFILE'], ['EWOULDBLOCKX']])(
+  // `ENOENT`/`EACCES` are a standing fact about the machine — git will not appear under a running daemon — but
+  // that is not the same as answering whether *this project* has a remote, which is the only question this
+  // function asks. They join the non-answers below rather than getting a cache of their own: a missing git
+  // binary caching "no remote" is the same durably-wrong-answer shape as a timeout doing so would be.
+  it.each([['ETIMEDOUT'], ['EAGAIN'], ['EMFILE'], ['EWOULDBLOCKX'], ['ENOENT'], ['EACCES']])(
     "never remembers %s as this project's identity",
     (code) => {
       const dir = `${PROJECT}-${code}`;

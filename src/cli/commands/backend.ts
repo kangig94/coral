@@ -74,16 +74,47 @@ import { formatStoreResetList, formatStoreResetReport } from '../format/store-re
  * `formatShutdown`'s `assertNever` provides for the message.
  */
 export const SHUTDOWN_REFUSAL_EXIT_CODES: Readonly<Record<ShutdownReason, 1 | 75>> = {
-  // Observed: nothing recorded itself, the recorded process is gone, or nothing was listening on the socket.
+  // Observed: nothing recorded itself, or the recorded process is decisively gone.
   no_record: 1,
   recorded_process_absent: 1,
-  socket_refused: 1,
   // Observed: the coordinator answered and declined. It is running, and this run knows it.
   capability_rejected: 1,
   // Observed: this process refused to act, before asking anything. Retrying from the same child repeats it.
   nested_child: 1,
-  // Not observed: the record could not be read, or the request never completed. A coordinator may be serving.
+  // Not observed: a refused connection proves nothing was listening on that exact socket at that moment, but
+  // the recorded pid was never established absent before this request was sent (an absent pid short-circuits
+  // to `recorded_process_absent` first) — so this is not the same "observed absence" as the two rows above.
+  // Exit `1` here previously claimed it was, inverting the one deterministic window where a coordinator's HTTP
+  // listener closes at the top of its drain while its process, confirmed alive, keeps running.
+  socket_refused: 75,
+  // Not observed: the record could not be read, the request never completed, or a response arrived but did not
+  // resolve the question either way. A coordinator may be serving.
   unreadable_record: 75,
+  refused_by_response: 75,
+  no_response: 75,
+};
+
+/**
+ * `backend status` never set an exit code before this, so `backend status && <destructive op>` read every
+ * outcome — including "state is unknown" — as permission to proceed. The two `BackendStatusFull` statuses named
+ * `undecodable_record` and `unreachable` are exactly that: `getBackendStatusFull` itself refuses to call either
+ * one `ok` or `not_running` because it could not tell. Every other status is a confidently observed answer —
+ * the backend genuinely is running, stopped, draining, or unauthorized — and this command succeeding at
+ * determining that stays exit `0` even when the answer itself is bad news.
+ *
+ * `75`, not `1`: matches `SHUTDOWN_REFUSAL_EXIT_CODES`'s "not observed, retry" code above rather than a
+ * `backend shutdown`-style observed refusal, since neither status is a refusal at all — this is a read-only
+ * inspection, and both mean only "ask again". A `Record` over the full `BackendStatusFull['status']` union for
+ * the same reason as `SHUTDOWN_REFUSAL_EXIT_CODES`: a new status fails to compile here until someone decides
+ * its exit code, instead of silently inheriting `0`.
+ */
+export const BACKEND_STATUS_EXIT_CODES: Readonly<Record<BackendStatusFull['status'], 0 | 75>> = {
+  ok: 0,
+  not_running: 0,
+  shutting_down: 0,
+  unauthorized: 0,
+  recent_failure: 0,
+  undecodable_record: 75,
   unreachable: 75,
 };
 import { renderHandoffNotice } from '../handoff-notice.js';
@@ -239,6 +270,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
       }
       const status = await backendStatus.getStatus();
       process.stdout.write(formatBackendStatus(status) + '\n');
+      process.exitCode = BACKEND_STATUS_EXIT_CODES[status.status];
     } catch (error) {
       emitError(error);
     }

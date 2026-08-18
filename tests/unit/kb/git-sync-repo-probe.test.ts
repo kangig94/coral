@@ -125,16 +125,26 @@ describe('git-sync work-tree probe', () => {
     expect(probeCount()).toBe(1);
   });
 
+  // `ENOENT`/`EACCES` are `STANDING_PROBE_ERRNOS` (`infra/process-constants.ts`): a standing fact that git
+  // could not be *launched* in this environment. That is a different fact from "this directory is not a git
+  // work tree" — the question this probe asks — and deriving the second from the first is exactly the bug
+  // this suite exists to pin. Before the fix, `probeIsGitRepo` read only its own `no-answer` branch as
+  // indecisive; `classifyExecOutcome` puts these two codes on `launch-refused` instead (see
+  // `STANDING_PROBE_ERRNOS`), so they fell through to `cachedIsGitRepo = false` and stayed there for the
+  // daemon's life. `probeIsGitSyncEnabled`, a few lines below in `git-sync.ts`, already folded
+  // `launch-refused` into `'unanswered'`; this test now pins `probeIsGitRepo` to agree with it, the same way
+  // the "does not cache" block below already does for the plain `no-answer` codes.
   it.each([
     ['ENOENT', 'git is not installed'],
     ['EACCES', 'this process may not execute it'],
-  ])('caches %s, because %s does not change under a running daemon', (code) => {
+  ])('does not cache %s — a launch refusal answers nothing about whether this is a work tree', (code) => {
     const { controller, probeCount } = createController(() => couldNotRun(code));
 
     controller.gitAutoCommit('first');
+    vi.setSystemTime(new Date(Date.now() + INDECISIVE_PROBE_REPROBE_INTERVAL_MS + 1));
     controller.gitAutoCommit('second');
 
-    expect(probeCount()).toBe(1);
+    expect(probeCount(), 'a launch refusal must not disable git sync for the process lifetime').toBe(2);
   });
 
   it.each([['ETIMEDOUT'], ['EAGAIN'], ['EMFILE'], ['ENOMEM']])(
@@ -252,6 +262,33 @@ describe('git sync says so when it cannot tell whether a remote exists', () => {
     expect(result, 'a settled "no remote" is a real no-change, not an ambiguous one').toEqual({ kind: 'no-change' });
     warn.mockRestore();
   });
+
+  // Measured against real git 2.43: `git remote` reports "no remotes configured" by exiting 0 with empty
+  // stdout, and every failure it can have — run outside a repository, against a corrupted `.git` — exits 128
+  // with nothing on stdout. There is no outcome where git answers non-zero and means "no remote"; a non-zero
+  // exit is git refusing the question, the same as a timeout or a launch failure, and reading `outcome.status
+  // !== 0` as `'no'` (as this used to) reports every one of those refusals as a settled "no remote configured".
+  it('warns and reports ambiguous when git remote exits non-zero, because that is a refusal, not "no remote"', async () => {
+    const warn = vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
+    const controller = controllerWithRemoteProbe({
+      stdout: '',
+      stderr: 'fatal: not a git repository',
+      status: 128,
+      signal: null,
+      error: undefined,
+      pid: 1,
+      output: [],
+    } as ExecResult);
+
+    const result = await controller.gitSync();
+
+    expect(warn, 'a non-zero exit is git refusing to answer, not a settled no-remote').toHaveBeenCalledWith(
+      expect.stringContaining('could not list remotes'),
+    );
+    expect(warn.mock.calls.at(-1)?.[0]).toContain('128');
+    expect(result, 'a refusal must not be read as a real no-change').toEqual({ kind: 'ambiguous' });
+    warn.mockRestore();
+  });
 });
 
 // The work-tree probe has the same shape of bug: `isGitRepo` collapses "not a repository" and "could not tell"
@@ -288,11 +325,63 @@ describe('gitSync does not report no-change for a work-tree probe it could not a
     expect(result).toEqual({ kind: 'ambiguous' });
   });
 
+  // `ENOENT` classifies as `launch-refused`, not `no-answer` — the split `probeIsGitRepo` used to miss. Before
+  // the fix this cached `cachedIsGitRepo = false` on the first probe, so `gitSync` read `repoProbe === 'no'`
+  // and returned `no-change` straight away: a KB whose git daemon hit one `EPERM`/`ENOTDIR` would silently stop
+  // syncing for its whole life, because `inbound-sync-service.ts` treats `no-change` as "safe to skip a
+  // rebuild" everywhere it reads a `GitSyncResult`.
+  it('reports ambiguous, not no-change, when the work-tree probe could not be launched', async () => {
+    const controller = controllerWithWorkTreeProbe(couldNotRun('ENOENT'));
+
+    const result = await controller.gitSync();
+
+    expect(result, 'a launch refusal is not evidence that this is not a git repository').toEqual({
+      kind: 'ambiguous',
+    });
+  });
+
   it('still reports no-change when git decisively says this is not a work tree', async () => {
     const controller = controllerWithWorkTreeProbe(saidNo());
 
     const result = await controller.gitSync();
 
     expect(result, 'a decisive "no" is a real no-change, not an ambiguous one').toEqual({ kind: 'no-change' });
+  });
+});
+
+// `readHead()` returns `null` when `git rev-parse HEAD` could not be answered. `gitSync` used to compare
+// `headBeforeSync === headAfterSync` before checking either for `null`, so when the same wedged condition
+// makes both reads fail — the common case, since whatever broke the first read is still in effect moments
+// later for the second — `null === null` is true and the null-guard beneath it never runs. That guard was
+// dead code for exactly the case it names.
+describe('gitSync does not report no-change when HEAD could not be read on either side of the sync', () => {
+  it('reports ambiguous, not no-change, when rev-parse HEAD fails before and after the sync attempt', async () => {
+    const execSync = vi.fn(((_file: string, args: readonly string[]) => {
+      if (args[0] === IS_WORK_TREE[0] && args[1] === IS_WORK_TREE[1]) return answered('true');
+      if (args[0] === 'remote') return answered('origin\n');
+      if (args[0] === 'config') return answered('');
+      if (args[0] === 'rev-parse' && args[1] === 'HEAD') return couldNotRun('EAGAIN');
+      if (args[0] === 'status' && args[1] === '--porcelain') return answered('');
+      return answered('');
+    }) as unknown as ExecSync);
+    const exec = vi.fn(async (_file: string, _args: readonly string[]) => ({ stdout: '', stderr: '', status: 0 }));
+
+    const controller = createGitSyncController({
+      kb: { markdownRoot: ROOT, version: 'test', time: { now: () => Date.now() } } as unknown as KbRuntime,
+      curateAssistant: { complete: async () => '' },
+      processPort: { execSync, exec } as unknown as GitSyncRuntimePicks['processPort'],
+      storagePort: {
+        existsSync: () => false,
+        readFileSync: vi.fn(),
+        writeAtomicSync: vi.fn(),
+        statSync: vi.fn(),
+        rmSync: vi.fn(),
+      } as unknown as GitSyncRuntimePicks['storagePort'],
+      envPort: { get: (key: string) => (key === 'CORAL_KB_GIT_SYNC' ? '1' : undefined) },
+    });
+
+    const result = await controller.gitSync();
+
+    expect(result, 'two unreadable HEADs is not evidence that nothing changed').toEqual({ kind: 'ambiguous' });
   });
 });

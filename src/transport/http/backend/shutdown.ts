@@ -13,10 +13,10 @@ import { isCoralChildEnvironment } from '../../../security/child-principal-env.j
  * returned both for a socket that refused a connection and for a request that never finished — and the split
  * was then flattened again into a raw token at the render layer.
  *
- * The set is closed so that cannot come back. While `reason` was `string`, `formatShutdown` could not use the
- * `assertNever` that keeps `formatBackendStatus` exhaustive, so a seventh token would have compiled, fallen
- * through to a raw-token render, and broken no test. Two producers were also using this field as prose, which
- * is what made it look like it had to stay open; their sentences live in `detail` now.
+ * The set is closed so that cannot come back: `formatShutdown` switches on `reason` and its `default` arm calls
+ * `assertNever(result)`, so a new member fails to compile there until a sentence is written for it. Two
+ * producers were also using this field as prose, which is what made it look like it had to stay open; their
+ * sentences live in `detail` now.
  */
 export type ShutdownReason =
   | 'nested_child'
@@ -24,28 +24,45 @@ export type ShutdownReason =
   | 'no_record'
   | 'recorded_process_absent'
   | 'socket_refused'
-  | 'unreachable'
+  | 'refused_by_response'
+  | 'no_response'
   | 'capability_rejected';
 
+/** `observeCoordinator`'s own prior finding — never `'absent'` here, because an absent pid short-circuits to `recorded_process_absent` before any request is sent. */
+type PidLiveness = 'alive' | 'unknown';
+
+/**
+ * `pidLiveness` is scoped to exactly the two members that need it, not carried as an optional field on the
+ * shared `ok: false` shape:
+ *
+ * - `capability_rejected`: a 401 proves a coordinator answers at the recorded address and rejected our token;
+ *   it proves nothing about the recorded pid specifically beyond what `observeCoordinator` already found before
+ *   this request was sent, so the render layer must not promise more certainty about the pid than that.
+ * - `socket_refused`: the opposite observation — nothing answered at all — and the pid was already known not
+ *   to be `'absent'` (see above), so a refused connection is never grounds for "not running" on its own: the
+ *   deterministic window is a coordinator's HTTP listener closing at the top of its drain while its process,
+ *   already confirmed alive, keeps running through IPC close and the store finalizers. An earlier revision
+ *   reported this case as "not running" and exited `1`, inverting the one case `pidLiveness` exists to keep
+ *   honest — see `src/coordinator/shutdown.ts` for the drain ordering that opens this window.
+ *
+ * A member split on a *subset* of `reason`'s literals does not defeat exhaustiveness narrowing: `formatShutdown`
+ * calls `assertNever(result)` — the whole, already-narrowed result, as `formatBackendStatus` already does five
+ * lines above it — not `assertNever(result.reason)`. Verified against this repo's own `tsc --strict`:
+ * `assertNever(result.reason)` fails to compile in the `default` arm with `TS2339: Property 'reason' does not
+ * exist on type 'never'` — narrowing already collapsed `result` itself to `never` there, so reading `.reason`
+ * off it is the error, not a live exhaustiveness gap. `assertNever(result)` compiles clean today and still
+ * fails to compile the moment a new `reason` literal is added without a case for it.
+ */
 export type ShutdownResult =
   | { ok: true; alreadyDraining?: true }
-  | {
-      ok: false;
-      reason: ShutdownReason;
-      detail?: string;
-      /**
-       * Set only alongside `reason: 'capability_rejected'` — the pid liveness `observeCoordinator` had
-       * already found *before* the 401 was ever sent. The 401 proves a coordinator answers at the recorded
-       * host:port and rejected our token; it proves nothing about `detail` (the record's pid) beyond that
-       * prior observation, so the render layer must not promise more certainty about the pid than this.
-       *
-       * Modeled as optional-on-the-shared-shape rather than as a fourth split member of this union: a member
-       * split on a *subset* of `reason`'s literals (one case value vs. the other six) defeats TypeScript's
-       * switch-exhaustiveness narrowing in `formatShutdown` — measured directly, `assertNever(result.reason)`
-       * stops typechecking in the `default` arm once one variant's `reason` is multi-valued.
-       */
-      pidLiveness?: 'alive' | 'unknown';
-    };
+  | { ok: false; reason: 'nested_child' }
+  | { ok: false; reason: 'unreadable_record'; detail: string }
+  | { ok: false; reason: 'no_record' }
+  | { ok: false; reason: 'recorded_process_absent'; detail: string }
+  | { ok: false; reason: 'socket_refused'; pidLiveness: PidLiveness }
+  | { ok: false; reason: 'refused_by_response'; detail: string }
+  | { ok: false; reason: 'no_response'; detail: string }
+  | { ok: false; reason: 'capability_rejected'; detail: string; pidLiveness: PidLiveness };
 
 function isShuttingDownError(value: unknown): value is { code: 'backend_shutting_down' } {
   return isRecord(value) && value.code === 'backend_shutting_down';
@@ -53,6 +70,37 @@ function isShuttingDownError(value: unknown): value is { code: 'backend_shutting
 
 function isShutdownAccepted(value: unknown): boolean {
   return isRecord(value) && (value.status === 'draining' || value.status === 'shutting_down');
+}
+
+/**
+ * What a resolved (non-throwing) `fetch` to `/admin/shutdown` means, once its body has been read. Split out of
+ * `shutdownBackend` because this is the half that fans out over HTTP status/body shape; the exception half
+ * below it is a different kind of evidence (no response at all) and reads better kept apart from it.
+ */
+function classifyShutdownResponse(
+  response: Response,
+  body: unknown,
+  info: { readonly pid: number },
+  pidLiveness: PidLiveness,
+): ShutdownResult {
+  if (response.status === 200 && isShutdownAccepted(body)) {
+    return { ok: true };
+  }
+  if (response.status === 503 && isShuttingDownError(body)) {
+    return { ok: true, alreadyDraining: true };
+  }
+  if (response.status === 401) {
+    // The pid travels with the refusal because it is the only thing an operator can act on here. A coordinator
+    // answered and rejected the token from our own discovery record, so nothing this command offers will get
+    // in — and a refusal that names no exit is the shape §11 forbids. `pidLiveness` is `observeCoordinator`'s
+    // own prior finding: the 401 confirms the address, not that pid specifically.
+    return { ok: false, reason: 'capability_rejected', detail: String(info.pid), pidLiveness };
+  }
+  // Something answered at the address our own record names and did not accept the shutdown. That is the same
+  // observation `getBackendStatusFull` reports as `unreachable`, distinguished there by `responded: true`; this
+  // used to render as a bare `Shutdown failed: 500 Internal Server Error`, so one fact carried opposite
+  // implications in two commands.
+  return { ok: false, reason: 'refused_by_response', detail: `${response.status} ${response.statusText}` };
 }
 
 export async function shutdownBackend(pluginRoot: string): Promise<ShutdownResult> {
@@ -85,37 +133,21 @@ export async function shutdownBackend(pluginRoot: string): Promise<ShutdownResul
       signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
     });
     const body = await parseJsonResponse(response);
-    if (response.status === 200 && isShutdownAccepted(body)) {
-      return { ok: true };
-    }
-    if (response.status === 503 && isShuttingDownError(body)) {
-      return { ok: true, alreadyDraining: true };
-    }
-    if (response.status === 401) {
-      // The pid travels with the refusal because it is the only thing an operator can act on here. A
-      // coordinator answered and rejected the token from our own discovery record, so nothing this command
-      // offers will get in — and a refusal that names no exit is the shape §11 forbids. `pidLiveness` is
-      // `observeCoordinator`'s own prior finding: the 401 confirms the address, not that pid specifically.
-      return { ok: false, reason: 'capability_rejected', detail: String(info.pid), pidLiveness: observed.pidLiveness };
-    }
-    // Something answered at the address our own record names and did not accept the shutdown. That is the same
-    // observation `getBackendStatusFull` reports as `unreachable`; this used to render as a bare
-    // `Shutdown failed: 500 Internal Server Error`, so one fact carried opposite implications in two commands.
-    return { ok: false, reason: 'unreachable', detail: `${response.status} ${response.statusText}` };
+    return classifyShutdownResponse(response, body, info, observed.pidLiveness);
   } catch (error: unknown) {
     // The request not completing is not the coordinator not being there. A refused connection says nothing was
-    // listening on that socket, which is the closest thing here to an observed absence; a timeout, a DNS
-    // failure or an aborted request says only that this attempt did not finish, and reporting `not_running`
-    // for those tells an operator their daemon is stopped at the moment it is least likely to be.
+    // listening on that socket; a timeout, a DNS failure or an aborted request says only that this attempt did
+    // not finish. Neither says anything the prior `pidLiveness` observation didn't already say, because an
+    // absent pid was already excluded before this request was ever sent (see `case 'process-absent'` above).
     //
     // Node's `fetch` rejects a refused connection with a `TypeError` whose own `.code` is `undefined`; the
     // errno travels on `.cause` instead (measured: `error.cause.code === 'ECONNREFUSED'`). A timeout rejects
     // with a `DOMException` whose `.code` is the *number* `23` — not an errno, and not safe to print as one.
     const code = nodeErrnoCode(error instanceof Error ? error.cause : undefined) ?? nodeErrnoCode(error);
     if (code === 'ECONNREFUSED') {
-      return { ok: false, reason: 'socket_refused' };
+      return { ok: false, reason: 'socket_refused', pidLiveness: observed.pidLiveness };
     }
-    return { ok: false, reason: 'unreachable', detail: code ?? errorMessage(error) };
+    return { ok: false, reason: 'no_response', detail: code ?? errorMessage(error) };
   }
 }
 

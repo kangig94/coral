@@ -243,6 +243,15 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
   }
   const info = observed.coordinator;
 
+  // `observed.pidLiveness` is deliberately not read here, unlike `shutdownBackend`'s `socket_refused` case
+  // (`shutdown.ts`). There the *only* evidence is the prior liveness snapshot — no response ever arrives — so
+  // ignoring it lets a stale "not running" claim override the one fact that run has. Here a response DID
+  // arrive and decode: it names a namespace/flavor that is not ours, direct proof that whatever answers at
+  // `info.host`:`info.port` is not the coordinator this record described. A live `info.pid` does not contradict
+  // that — pid liveness only says some process holds that OS pid number, not that it is the process serving
+  // this address, and a pid is reused (see the `process-absent` case above). `not_running` here claims only
+  // that *this* recorded coordinator is not the one answering, which the decoded mismatch already establishes
+  // regardless of what `info.pid` is doing.
   const notOurCoordinator = (): BackendStatusFull =>
     noDaemonStatus(
       runtime.storage,
@@ -260,6 +269,20 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
     if (ping !== null) return ping;
     return await probeDetailedHealth(info, notOurCoordinator, unreachable);
   } catch (error: unknown) {
-    return { status: 'unreachable', detail: errorMessage(error), responded: false };
+    // Same measurement as `shutdownBackend`'s catch (`shutdown.ts`): Node's `fetch` rejects a refused
+    // connection with a `TypeError` whose own `.message` is the generic "fetch failed", while the errno travels
+    // on `.cause`. Reporting the bare message here told an operator "fetch failed" for the same `ECONNREFUSED`
+    // that `backend shutdown` already reports by its actual errno.
+    const code = nodeErrnoCode(error instanceof Error ? error.cause : undefined) ?? nodeErrnoCode(error);
+    return { status: 'unreachable', detail: code ?? errorMessage(error), responded: false };
   }
+}
+
+/**
+ * A Node system errno, if `value` carries one as a string. Mirrors `shutdown.ts`'s helper of the same name —
+ * kept as its own three-line copy here rather than a shared export: it is a fetch-failure-shape reader, not a
+ * concept either file's owning domain (coordinator observation, shutdown disposition) is about.
+ */
+function nodeErrnoCode(value: unknown): string | undefined {
+  return isRecord(value) && typeof value.code === 'string' ? value.code : undefined;
 }

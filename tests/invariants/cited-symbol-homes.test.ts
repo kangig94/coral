@@ -34,17 +34,26 @@
 //
 // What line citations buy instead — sound because it needs no interpretation, only arithmetic — is the
 // bounds check below: a cited line or range must fall inside the file it names. Measured against the same
-// corpus, requiring a directory separator in the path (the existing policy, next paragraph): 89 hits, 0
-// unresolved, 0 ambiguous, 0 out of bounds. That is not a coincidence of a lenient bound — before the
-// citations this branch corrected, the same check caught every multi-hundred-line drift this branch fixed
-// (`docs/todo/store-format-routing.md` twice cited `lifecycle.ts:924`/`:1013` for calls that had moved to
-// `:1008`/`:1123`, `docs/todo/jobs-read-contract-schema-first.md` cited a range 8 lines past the end of a
-// 267-line file). It is exactly the "narrow but sound" trade the two bullets above already made: no claim
-// this test cannot decide by counting.
+// corpus, requiring a directory separator in the path (the existing policy, next paragraph): every citation
+// resolves to exactly one file and its cited line or range falls inside it — zero unresolved, zero ambiguous,
+// zero out of bounds, which is what the second `it` below re-asserts on every run. That is not a coincidence
+// of a lenient bound — before the citations this branch corrected, the same check caught every multi-hundred-
+// line drift this branch fixed (`docs/todo/store-format-routing.md` twice cited `lifecycle.ts:924`/`:1013`
+// for calls that had moved to `:1008`/`:1123`, `docs/todo/jobs-read-contract-schema-first.md` cited a range
+// 8 lines past the end of a 267-line file). It is exactly the "narrow but sound" trade the two bullets above
+// already made: no claim this test cannot decide by counting.
 //
 // What is left is the one form with no honest reading other than a live claim: a symbol named *together with*
-// the file it lives in. There is no reason to write that pair about a symbol that has moved, and 46 of them
-// exist in the tree with zero failures — so this starts green and stays cheap.
+// the file it lives in. There is no reason to write that pair about a symbol that has moved, and every one
+// currently in the tree resolves to a single file that mentions the symbol it names — which is what the first
+// `it` below re-asserts on every run. So this starts green and stays cheap.
+//
+// Deliberately not asserted: how many citations exist. A fixed count was tried in an earlier revision of this
+// header and it went stale before this file's own PR landed — the corpus is written concurrently by more than
+// one author, correct citations are added routinely, not rarely, and a count is exactly the kind of claim
+// this file exists to stop someone writing without a way to check it. `toBeGreaterThan` below exists only as
+// a canary against a regex silently matching nothing; it is not a substitute for "the count is N" and does
+// not try to be.
 //
 // It checks "the file mentions the symbol", not "the file exports it". A definition, a re-export in an
 // `index.ts`, or a mention in that file's own comment are all evidence the reader will be sent somewhere

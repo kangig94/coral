@@ -623,31 +623,68 @@ describe('cli format', () => {
       },
     );
 
-    it.each([
-      ['unreadable_record', /may still be running/u],
-      ['unreachable', /did not complete/u],
-      ['no_record', /no coordinator has recorded itself/u],
-      ['recorded_process_absent', /recorded coordinator process/u],
-      ['socket_refused', /socket refused the connection/u],
-    ] as const)('renders shutdown reason %s as a sentence, not as a token', (reason, expected) => {
-      const text = formatShutdown({ ok: false, reason, detail: 'corrupt-json' });
+    // Each row is a full `ShutdownResult`, not a bare `reason` token: `refused_by_response` and
+    // `recorded_process_absent` require `detail`, and `socket_refused` requires `pidLiveness` — a shared
+    // generic `detail` fallback (as this table used to build) no longer type-checks against the discriminated
+    // union, which is itself part of what F3 fixed.
+    //
+    // Every row used to also assert `.not.toMatch(/Shutdown failed: <reason>$/)` — a raw-token render that no
+    // path in `src/` produces any more (the string exists only in comments), so that assertion was vacuous
+    // before this rewrite: it could never fail regardless of what `formatShutdown` actually returned.
+    const SHUTDOWN_REFUSAL_SENTENCES: ReadonlyArray<readonly [ShutdownResult, RegExp]> = [
+      [{ ok: false, reason: 'unreadable_record', detail: 'corrupt-json' }, /may still be running/u],
+      [
+        { ok: false, reason: 'refused_by_response', detail: '500 Internal Server Error' },
+        /coordinator responded but did not accept/u,
+      ],
+      [{ ok: false, reason: 'no_response', detail: 'ETIMEDOUT' }, /did not complete/u],
+      [{ ok: false, reason: 'no_record' }, /no coordinator has recorded itself/u],
+      [{ ok: false, reason: 'recorded_process_absent', detail: '4242' }, /recorded coordinator process/u],
+      [{ ok: false, reason: 'socket_refused', pidLiveness: 'alive' }, /socket refused the connection/u],
+    ];
 
-      expect(text).toMatch(expected);
-      expect(text, 'the raw reason token must not be what an operator reads').not.toMatch(
-        new RegExp(`Shutdown failed: ${reason}$`, 'u'),
-      );
+    it.each(SHUTDOWN_REFUSAL_SENTENCES)(
+      'renders a shutdown refusal as a sentence, not as a token',
+      (result, expected) => {
+        expect(formatShutdown(result)).toMatch(expected);
+      },
+    );
+
+    // `refused_by_response` proves something is listening (a response arrived); `no_response` proves neither
+    // way. Neither may claim the backend stopped — that split is what F2 fixed, replacing a single `unreachable`
+    // reason that rendered "did not complete" even when a response had, in fact, arrived.
+    it('does not claim the backend stopped when a response arrived but was not accepted', () => {
+      const text = formatShutdown({ ok: false, reason: 'refused_by_response', detail: '500 Internal Server Error' });
+
+      expect(text).not.toMatch(/did not complete/u);
+      expect(text).not.toMatch(/Backend not running/u);
     });
+
+    // `socket_refused` never claims "not running" (see F1): a refused connection cannot prove absence, because
+    // an absent pid is excluded before this request is ever sent. Both liveness values must render a hedge,
+    // not a claim that the backend stopped.
+    it.each([['alive'], ['unknown']] as const)(
+      'does not claim the backend stopped on a refused connection when pidLiveness is %s',
+      (pidLiveness) => {
+        const text = formatShutdown({ ok: false, reason: 'socket_refused', pidLiveness });
+
+        expect(text).not.toMatch(/^Backend not running/mu);
+      },
+    );
 
     // Three separate observations used to share one sentence, and that sentence named a socket dial only the
     // third of them performs. Each must say what was actually looked at.
-    it.each([['no_record'], ['recorded_process_absent']] as const)(
-      'does not claim a socket dial for %s, which never made one',
-      (reason) => {
-        const text = formatShutdown({ ok: false, reason, detail: '4242' });
+    it('does not claim a socket dial for no_record, which never made one', () => {
+      const text = formatShutdown({ ok: false, reason: 'no_record' });
 
-        expect(text, 'only socket_refused observed the socket').not.toMatch(/socket refused|listening/u);
-      },
-    );
+      expect(text, 'only socket_refused observed the socket').not.toMatch(/socket refused|listening/u);
+    });
+
+    it('does not claim a socket dial for recorded_process_absent, which never made one', () => {
+      const text = formatShutdown({ ok: false, reason: 'recorded_process_absent', detail: '4242' });
+
+      expect(text, 'only socket_refused observed the socket').not.toMatch(/socket refused|listening/u);
+    });
     const baseHealth = {
       status: 'ok' as const,
       version: '1.2.3',
@@ -928,6 +965,15 @@ describe('cli format', () => {
     it('formats a successful shutdown result', () => {
       const result = { ok: true } satisfies ShutdownResult;
       expect(formatShutdown(result)).toBe('Backend shutdown initiated');
+    });
+
+    // `alreadyDraining` was produced by `shutdownBackend` and asserted in its own test, but `formatShutdown`
+    // rendered it identically to a fresh shutdown it had just initiated — telling an operator this request
+    // started a drain that was, in fact, already under way before it was sent.
+    it('formats an already-draining shutdown result distinctly from a freshly initiated one', () => {
+      const result = { ok: true, alreadyDraining: true } satisfies ShutdownResult;
+      expect(formatShutdown(result)).toBe('Backend shutdown already in progress');
+      expect(formatShutdown(result)).not.toBe('Backend shutdown initiated');
     });
 
     // Was `reason: 'unauthorized'` — a token no producer emits, pinning the raw-token render that the closed

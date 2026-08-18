@@ -2,7 +2,7 @@ import { currentCoralStoreFormat } from '#src/store-format.js';
 import { mkdtempSync, rmSync, writeFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import type { Command } from 'commander';
+import { Command } from 'commander';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as CommandClientMod from '#src/cli/dispatch.js';
 import type * as CommandOutputMod from '#src/cli/emit.js';
@@ -30,6 +30,7 @@ import { IpcRpcError } from '#src/transport/ipc/client.js';
 import { ProviderHostUnserviceableError } from '#src/providers/host-admission.js';
 import { encodeHostRef } from '#src/providers/host-ref-codec.js';
 import type { HostRef } from '#src/providers/contract.js';
+import { registerBackendCommands, type BackendStatusCommandOperations } from '#src/cli/commands/backend.js';
 
 const genericInstallMethod = 'shell' satisfies InstallMethod;
 
@@ -464,14 +465,18 @@ describe('cli main routing', () => {
   //
   // 75 rather than 2, which an earlier revision used: 2 is `invalid_usage` across this CLI, so "you called
   // this wrong" and "I could not observe the daemon" would have shared a code.
+  // `socket_refused` exits `75`, not `1`: a refused connection never establishes the recorded pid absent (an
+  // absent pid is excluded before any request is sent), so it cannot join the observed-absence/observed-refusal
+  // rows above it — see the production table's own comment for the deterministic mid-drain window this guards.
   const SHUTDOWN_EXIT_EXPECTATIONS = [
     ['no_record', 1],
     ['recorded_process_absent', 1],
-    ['socket_refused', 1],
     ['nested_child', 1],
     ['capability_rejected', 1],
     ['unreadable_record', 75],
-    ['unreachable', 75],
+    ['socket_refused', 75],
+    ['refused_by_response', 75],
+    ['no_response', 75],
   ] as const;
 
   it.each(SHUTDOWN_EXIT_EXPECTATIONS)('exits %s with %s', async (reason, expected) => {
@@ -494,6 +499,60 @@ describe('cli main routing', () => {
     expect(SHUTDOWN_EXIT_EXPECTATIONS.map(([reason]) => reason).sort()).toEqual(
       Object.keys(SHUTDOWN_REFUSAL_EXIT_CODES).sort(),
     );
+  });
+
+  describe('backend status exit codes', () => {
+    // Unlike `backend shutdown` above, this registers a standalone program instead of driving `buildProgram()`:
+    // the default `backendStatus.inspectReadiness()` reads real local generation state, which this suite has no
+    // fixture for and no reason to depend on. Injecting operations directly is the same pattern
+    // `tests/unit/cli/backend-status.test.ts` already uses for this exact command.
+    function statusProgram(getStatus: BackendStatusCommandOperations['getStatus']): Command {
+      const program = new Command();
+      program.exitOverride();
+      registerBackendCommands(program, {
+        backendStatus: { inspectReadiness: () => ({ kind: 'no-legacy' }), getStatus },
+      });
+      return program;
+    }
+
+    // `backend status` never set an exit code before this, so `backend status && <destructive op>` read every
+    // outcome — including "state is unknown" — as permission to proceed. Only the two statuses that mean the
+    // state genuinely could not be determined get a non-zero exit; every confidently observed answer, even bad
+    // news like `not_running`, stays exit 0. Two rows only: `ok` needs a full `BackendHealth` fixture that adds
+    // nothing here — the lookup is a plain object index, so proving the wiring works for one exit-0 and one
+    // exit-75 status is what the completeness test below cannot itself prove.
+    it.each([
+      [{ status: 'not_running' }, 0],
+      [{ status: 'unreachable', detail: 'ECONNRESET', responded: false }, 75],
+    ] as const)('exits %j with %s', async (status, expected) => {
+      const program = statusProgram(async () => status);
+
+      await program.parseAsync(['node', 'coral-cli', 'backend', 'status']);
+
+      expect(process.exitCode).toBe(expected);
+    });
+
+    // The rows above only cover two of the seven `BackendStatusFull['status']` values — this is the complete
+    // statement, independent of the it.each rows, mirroring `SHUTDOWN_REFUSAL_EXIT_CODES`'s own completeness
+    // test: a new status gets an exit code in the production table and no row here, and that is the shape of
+    // every "the list is exhaustive" claim this branch found to be stale.
+    const BACKEND_STATUS_EXIT_EXPECTATIONS = [
+      ['ok', 0],
+      ['not_running', 0],
+      ['shutting_down', 0],
+      ['unauthorized', 0],
+      ['recent_failure', 0],
+      ['undecodable_record', 75],
+      ['unreachable', 75],
+    ] as const;
+
+    it('has a row for every status the command can produce', async () => {
+      const { BACKEND_STATUS_EXIT_CODES } = await import('#src/cli/commands/backend.js');
+
+      expect(BACKEND_STATUS_EXIT_EXPECTATIONS.map(([status]) => status).sort()).toEqual(
+        Object.keys(BACKEND_STATUS_EXIT_CODES).sort(),
+      );
+    });
   });
 
   it('preserves top-level help output via snapshot', async () => {

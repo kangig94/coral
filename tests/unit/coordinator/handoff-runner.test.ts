@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { runHandoff, validateForeignHandoffTarget, type HandoffOperation } from '#src/coordinator/handoff-runner.js';
+import { backendLog } from '#src/infra/backend-log.js';
 import type * as BackendDiscoveryMod from '#src/infra/backend-discovery.js';
 import type * as BundleManifestMod from '#src/infra/bundle-manifest.js';
 import type { TimePort } from '#src/infra/port-types.js';
@@ -405,6 +406,83 @@ describe('handoff-runner', () => {
     expect(mockState.health, 'there is no socket path or boot token to ask with').not.toHaveBeenCalled();
   });
 
+  // F1: a connect failure, a timed-out round-trip, and a reply this build cannot validate are three different
+  // events, and none of them is `probeCoordinator` observing absence — folding all four into one `null` is the
+  // defect this pair (plus the schema-rejection test below) exists to catch. Mutating either arm of
+  // `LiveIncumbentReading`'s production back to `null`, or the routing switch back to `=== null`, keeps this
+  // green only if the warning assertion is also deleted — which is the point: the outcome alone cannot tell
+  // the two `not-observed` reasons apart, so the signal a caller (and this test) can actually check is the log.
+  it('should return run-current and warn when authenticated health cannot be reached', async () => {
+    mockState.probeCoordinator.mockReturnValue({
+      kind: 'live',
+      record: {
+        socketPath,
+        pid: 4242,
+        bundleHash: manifest.bundleHash,
+        flavor: manifest.flavor,
+        namespace: 'handoff-runner',
+        bootToken: 'boot-token',
+      },
+    });
+    mockState.health.mockRejectedValue(new Error('ECONNREFUSED'));
+    const warnSpy = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
+
+    await expect(runHandoff(cliOperation('run'), { pluginRoot: '/plugin/root' })).resolves.toEqual({
+      kind: 'run-current',
+    });
+
+    expect(
+      mockState.spawn,
+      'a round-trip that never completed must not be read as an observed incumbent',
+    ).not.toHaveBeenCalled();
+    expect(
+      warnSpy,
+      'an unresolved probe must be visible, not silently identical to an observed absence',
+    ).toHaveBeenCalled();
+  });
+
+  it('should return run-current and warn when authenticated health fails schema validation', async () => {
+    mockState.probeCoordinator.mockReturnValue({
+      kind: 'live',
+      record: {
+        socketPath,
+        pid: 4242,
+        bundleHash: manifest.bundleHash,
+        flavor: manifest.flavor,
+        namespace: 'handoff-runner',
+        bootToken: 'boot-token',
+      },
+    });
+    // Missing every field `liveIncumbentHealthSchema` requires beyond `status` — a reply, not a refusal.
+    mockState.health.mockResolvedValue({ status: 'ok' });
+    const warnSpy = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
+
+    await expect(runHandoff(cliOperation('run'), { pluginRoot: '/plugin/root' })).resolves.toEqual({
+      kind: 'run-current',
+    });
+
+    expect(
+      mockState.spawn,
+      'a reply this build cannot validate must not be read as an observed incumbent',
+    ).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalled();
+  });
+
+  it('should not warn when the probe itself observed absence', async () => {
+    mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
+    const warnSpy = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
+
+    await expect(runHandoff(cliOperation('run'), { pluginRoot: '/plugin/root' })).resolves.toEqual({
+      kind: 'run-current',
+    });
+
+    expect(mockState.health).not.toHaveBeenCalled();
+    expect(
+      warnSpy,
+      'a decisive absence is not the same event as an unresolved probe and must not share its signal',
+    ).not.toHaveBeenCalled();
+  });
+
   it.each([0, 23])(
     'should report an immediate backend startup exit with code %s when no coordinator is live',
     async (code) => {
@@ -426,6 +504,41 @@ describe('handoff-runner', () => {
       expect(child?.unref).toHaveBeenCalledOnce();
     },
   );
+
+  // The same confirmation site, reached through the other `not-observed` reason: a discovery record exists
+  // and health could not be resolved from it. Reporting success here would be exactly the finalization this
+  // branch's design rules forbid — an early exit-shaped outcome plus a probe that could not confirm life is
+  // not evidence the backend is up. `liveCoordinator.kind === 'observed'` is what this test would catch a
+  // regression to `!== null` (or similar) from failing to guard: both compile, only one refuses correctly.
+  it('should report an immediate backend startup exit, not a false success, when health cannot be reached', async () => {
+    const target = validatedTarget(roots[0]);
+    let child: ChildProcess | undefined;
+    mockState.probeCoordinator.mockReturnValue({
+      kind: 'live',
+      record: {
+        socketPath,
+        pid: 4242,
+        bundleHash: manifest.bundleHash,
+        flavor: manifest.flavor,
+        namespace: 'handoff-runner',
+        bootToken: 'boot-token',
+      },
+    });
+    mockState.health.mockRejectedValue(new Error('ECONNREFUSED'));
+    mockState.spawn.mockImplementationOnce(() => {
+      child = childThatExits(1, null);
+      return child;
+    });
+
+    await expect(
+      runHandoff({ kind: 'backend-startup' }, { pluginRoot: '/plugin/root', activeSelectionTarget: target }),
+    ).resolves.toEqual({
+      kind: 'delegated',
+      version: manifest.version,
+      outcome: { kind: 'handoff-exit', exitCode: 1 },
+    });
+    expect(child?.unref).toHaveBeenCalledOnce();
+  });
 
   it('should reject a byte mismatch at the final re-hash without spawning', async () => {
     const bundleDir = roots[0];

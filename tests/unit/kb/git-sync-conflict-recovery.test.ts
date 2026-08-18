@@ -176,6 +176,69 @@ describe('git sync conflict recovery', () => {
     expect(existsSync(rebaseState)).toBe(true);
   });
 
+  // F6: `.gitattributes` names `merge=coral-frontmatter`/`coral-entity-graph`; the `git config` calls in the
+  // same function are what make those names resolve to anything. If the attributes file were written first (as
+  // it used to be) and a `git config` call then failed, `.gitattributes` would be left naming a driver git had
+  // never registered — git falls back to its built-in text merge for every later conflict on that path, and for
+  // `.entity-graph.json` that means raw `<<<<<<<` markers written straight into the file. This pins the
+  // ordering: a failed config attempt must not leave the attributes file claiming a driver.
+  it('does not let .gitattributes name a merge driver that git config failed to register', () => {
+    const root = mkdtempSync(join(tmpdir(), 'coral-merge-driver-order-'));
+    roots.push(root);
+    process.env.CLAUDE_CONFIG_DIR = join(root, '.claude');
+    const runtime = createRealRuntime('prod');
+    initRepo(root);
+    const db = createKbTestDb(root);
+    const kb = createTestKbRuntime({
+      markdownRoot: root,
+      runtimeDir: root,
+      db,
+      runtime,
+    });
+
+    let failConfig = true;
+    const execSync: typeof runtime.process.execSync = (command, args, options) => {
+      if (args[0] === 'config' && failConfig) {
+        return {
+          stdout: '',
+          stderr: 'fatal: could not lock config file .git/config',
+          status: 255,
+          signal: null,
+          error: undefined,
+          pid: 1,
+          output: [],
+        } as ExecResult;
+      }
+      return runtime.process.execSync(command, args, options);
+    };
+
+    const controller = createGitSyncController({
+      kb,
+      curateAssistant: { complete: async () => '' },
+      processPort: { ...runtime.process, execSync },
+      storagePort: runtime.storage,
+      envPort: { get: () => undefined },
+    });
+
+    controller.ensureKbMergeDrivers();
+
+    expect(
+      existsSync(join(root, '.gitattributes')),
+      'a failed git config attempt must not write .gitattributes at all',
+    ).toBe(false);
+
+    failConfig = false;
+    controller.ensureKbMergeDrivers();
+
+    const attributesAfterSuccess = readFileSync(join(root, '.gitattributes'), 'utf-8');
+    expect(attributesAfterSuccess, 'a later successful attempt still registers the driver').toContain(
+      'merge=coral-frontmatter',
+    );
+    expect(git(root, ['config', 'merge.coral-frontmatter.driver']).length, 'and git config backs it').toBeGreaterThan(
+      0,
+    );
+  });
+
   it('detects staged leftover conflict markers before rebase continuation', () => {
     const root = mkdtempSync(join(tmpdir(), 'coral-staged-marker-'));
     roots.push(root);
@@ -433,6 +496,157 @@ describe('git sync conflict recovery', () => {
     expect(processPort.execSync.mock.calls.some(([, args]) => args[0] === 'rebase' && args[1] === '--abort')).toBe(
       false,
     );
+  });
+
+  // §11 / F2: a path a merge driver refused reaches the index unmerged but with no `<<<<<<<` markers —
+  // `git ls-files -u` lists it, `git diff --check` does not (`FrontmatterMergeUnavailableError`'s docstring:
+  // nothing was written to `%A`). The assistant's prompt only knows how to resolve markers and "stage all
+  // resolved files with git add", so handing it a conflict set that includes this path risks it being swept
+  // into that staging as if already resolved. This pins that it never gets the chance: recovery, not the
+  // assistant, handles a rebase whose conflict set includes a markerless-unmerged path.
+  //
+  // Mocked at the `processPort` level, like the multi-commit test above, rather than through a real merge
+  // driver subprocess: `__PLUGIN_ROOT__` is fixed to this repo's own `clients/` under vitest
+  // (`vitest/setup.ts`), so `ensureKbMergeDrivers` always configures the real bundled `coral-cli.cjs` and a
+  // fake driver script written to a scratch `pluginRoot` is never actually invoked — proven by running this
+  // scenario against a hand-written refusing driver first, which produced real `git merge-file` markers
+  // instead, coming from the real bundle. Driving `ls-files -u`/`diff --check` directly exercises the exact
+  // git-observable state a refusal leaves, independent of which driver binary produced it.
+  it('recovers without ever invoking the assistant when the conflict has no markers to review', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'coral-rebase-markerless-'));
+    roots.push(root);
+    process.env.CLAUDE_CONFIG_DIR = join(root, '.claude');
+
+    const runtime = createRealRuntime('prod');
+    const db = createKbTestDb(root);
+    const kb = createTestKbRuntime({
+      markdownRoot: root,
+      runtimeDir: root,
+      db,
+      runtime,
+    });
+
+    let rebaseInProgress = false;
+    let head = 'local-before';
+
+    const ok = (stdout = ''): ExecResult => ({ stdout, stderr: '', status: 0 });
+    const fail = (stderr: string): ExecResult => ({ stdout: '', stderr, status: 1 });
+
+    const complete = vi.fn(async () => '');
+
+    const processPort = {
+      exec: vi.fn(async (command: string, args: string[], _options?: RuntimeExecOptions): Promise<ExecResult> => {
+        expect(command).toBe('git');
+        if (args[0] === 'fetch' && args[1] === 'origin') {
+          return ok();
+        }
+        if (args[0] === 'rebase' && args[1] === 'origin/main') {
+          rebaseInProgress = true;
+          return fail('CONFLICT (content): Merge conflict in notes/conflict.md');
+        }
+        throw new Error(`unexpected async git ${args.join(' ')}`);
+      }),
+      execSync: vi.fn((command: string, args: string[], _options?: RuntimeExecOptions): ExecResult => {
+        expect(command).toBe('git');
+
+        if (args[0] === 'rev-parse' && args[1] === '--is-inside-work-tree') {
+          return ok('true\n');
+        }
+        if (args[0] === 'remote') {
+          return ok('origin\n');
+        }
+        if (args[0] === 'config') {
+          return ok();
+        }
+        if (args[0] === 'symbolic-ref') {
+          return ok('origin/main\n');
+        }
+        if (args[0] === 'rev-parse' && args[1] === 'HEAD') {
+          return ok(`${head}\n`);
+        }
+        if (args[0] === 'status' && args[1] === '--porcelain') {
+          return ok();
+        }
+        // The refused path stays unmerged in the index through the whole recovery flow: the driver never
+        // resolved it, and — this is the property under test — neither the fallback `git add -A` nor the
+        // assistant may either.
+        if (args[0] === 'ls-files' && args[1] === '-u') {
+          return ok(rebaseInProgress ? '100644 deadbeef 1\tnotes/conflict.md\n' : '');
+        }
+        // No markers to find, by construction: a refused driver writes nothing to `%A`.
+        if (args[0] === 'diff' && args[1] === '--check') {
+          return ok();
+        }
+        if (args[0] === 'rev-parse' && args[1] === '--git-path' && args[2] === 'rebase-merge') {
+          return ok('.git/rebase-merge\n');
+        }
+        if (args[0] === 'rev-parse' && args[1] === '--git-path' && args[2] === 'rebase-apply') {
+          return ok('.git/rebase-apply\n');
+        }
+        if (args[0] === 'rebase' && args[1] === '--abort') {
+          rebaseInProgress = false;
+          return ok();
+        }
+        if (args[0] === 'update-ref') {
+          return ok();
+        }
+        if (args[0] === 'for-each-ref') {
+          return ok();
+        }
+        if (args[0] === 'reset' && args[1] === '--hard') {
+          head = 'origin-main';
+          return ok();
+        }
+
+        throw new Error(`unexpected sync git ${args.join(' ')}`);
+      }),
+    };
+
+    const storagePort = {
+      readFileSync: vi.fn(() => {
+        throw new Error('missing');
+      }),
+      writeAtomicSync: vi.fn(() => true),
+      existsSync: vi.fn((path: string) => {
+        if (path === join(root, '.git', 'rebase-merge')) {
+          return rebaseInProgress;
+        }
+        if (path === join(root, '.git', 'rebase-apply')) {
+          return false;
+        }
+        return false;
+      }),
+      statSync: vi.fn(() => ({ size: 0, mtimeMs: 0, isDirectory: () => false, isFile: () => true })) as never,
+      rmSync: vi.fn(),
+    };
+
+    const controller = createGitSyncController({
+      kb,
+      curateAssistant: { complete },
+      processPort,
+      storagePort,
+      envPort: {
+        get: (key: string) => (key === 'CORAL_KB_GIT_SYNC' ? '1' : undefined),
+      },
+    });
+
+    const syncResult = await controller.gitSync();
+
+    expect(syncResult).toEqual({ kind: 'ambiguous' });
+    expect(complete, 'a markerless-unmerged path must never reach the assistant').not.toHaveBeenCalled();
+    expect(
+      processPort.execSync.mock.calls.some(([, args]) => args[0] === 'rebase' && args[1] === '--abort'),
+      'a refused path recovers instead of looping forever with nothing to do',
+    ).toBe(true);
+
+    const quarantined = readCurateConflictQuarantine(curateDb(kb));
+    expect(quarantined, 'the refusal is durable status, not only the warn log line').toMatchObject([
+      {
+        entryId: noteEntryId('conflict'),
+        slug: 'conflict',
+        path: 'notes/conflict.md',
+      },
+    ]);
   });
 
   it('preserves conflicting local commits on a recovery ref, unwedges push, and quarantines the entry', async () => {

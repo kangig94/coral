@@ -244,18 +244,27 @@ export function createGitSyncController({
     // produced the permanent wrong answer instead of a repeated command.
     const outcome = classifyExecOutcome(gitRaw(processPort, root, ['rev-parse', '--is-inside-work-tree'], 5000));
 
-    if (outcome.kind === 'no-answer') {
+    // `launch-refused` folds in here rather than being read as "answered, and non-zero, so no": it means git
+    // itself could not be launched (measured: EPERM under a sandbox that denies `execve`, or ENOTDIR/EACCES on
+    // a root that is momentarily not traversable — autofs, NFS, an encrypted home not yet unlocked). That is a
+    // standing fact about *launching git in this environment*, which `infra/process-constants.ts` documents as
+    // cacheable — but it answers nothing about whether `root` is a git work tree, the question this probe
+    // asks. Caching the derived "no" from it is what let one EPERM/ENOTDIR turn off KB git sync for the
+    // daemon's lifetime with no commit, no push, and no warning. `probeIsGitSyncEnabled` below already folds
+    // `launch-refused` into `'unanswered'` for the same reason; this keeps the two in agreement.
+    if (outcome.kind === 'no-answer' || outcome.kind === 'launch-refused') {
       // Once per interval rather than once per call, and said at all because the consequence — a KB that
       // stops committing — is otherwise indistinguishable from a KB that was never a repository.
+      const detail = outcome.kind === 'no-answer' ? outcome.detail : outcome.code;
       backendLog.warn(
-        `[KB] git sync could not determine whether ${root} is a git work tree (${outcome.detail}); skipping git operations for now.`,
+        `[KB] git sync could not determine whether ${root} is a git work tree (${detail}); skipping git operations for now.`,
       );
       lastUnansweredGitRepoProbeAt = kb.time.now();
       return 'unanswered';
     }
 
     lastUnansweredGitRepoProbeAt = null;
-    cachedIsGitRepo = outcome.kind === 'answered' && outcome.status === 0;
+    cachedIsGitRepo = outcome.status === 0;
     return cachedIsGitRepo ? 'yes' : 'no';
   }
 
@@ -303,7 +312,14 @@ export function createGitSyncController({
       return 'unanswered';
     }
     if (outcome.status !== 0) {
-      return 'no';
+      // Measured against real git: `git remote` reports "no remotes configured" by exiting 0 with empty
+      // stdout, and every failure — outside a repository, a corrupted `.git`, anything fatal — exits 128 with
+      // nothing on stdout. There is no outcome where a non-zero exit means "no remote"; it means git refused
+      // to answer the question, same as a timeout, so it must not be read as the settled "no" below.
+      backendLog.warn(
+        `[KB] git sync could not list remotes for ${root} (git remote exited ${outcome.status}); skipping this cycle.`,
+      );
+      return 'unanswered';
     }
     return result.stdout.trim().length > 0 ? 'yes' : 'no';
   }
@@ -546,13 +562,23 @@ export function createGitSyncController({
     }
   }
 
+  /**
+   * `.gitattributes` names the merge drivers by name; the `git config` calls below are what make those names
+   * resolve to anything. Writing the attributes file first — as this used to — let `.gitattributes` claim a
+   * driver before `git config` had ever registered it: if `isGitRepo()` was momentarily false, or any one
+   * `git config` call threw (both best-effort, both plausible under fork pressure), the attributes stayed
+   * written while the drivers stayed unconfigured for the rest of this process's life, since this function
+   * runs once at daemon start and — for an installation that never sets `CORAL_KB_GIT_SYNC=1` — never again.
+   * With `merge=coral-entity-graph`/`coral-frontmatter` named but not configured, git falls back to its
+   * built-in text merge for every later conflict, writing raw `<<<<<<<` markers straight into
+   * `.entity-graph.json`.
+   *
+   * So the attributes file is now the last write in this function, inside the same try as the config calls:
+   * `.gitattributes` only ever names a driver once every `git config` call that backs it has already
+   * succeeded this attempt. `appendMissingManagedLines` is idempotent, so a later successful attempt still
+   * catches up a repo that was not one yet.
+   */
   function ensureKbMergeDrivers(): void {
-    try {
-      appendMissingManagedLines(join(root, '.gitattributes'), GITATTRIBUTES_HEADER, GITATTRIBUTES_ENTRIES);
-    } catch {
-      // best-effort
-    }
-
     try {
       if (!isGitRepo()) {
         return;
@@ -562,6 +588,7 @@ export function createGitSyncController({
       git(['config', 'merge.coral-frontmatter.name', 'Coral markdown frontmatter/body merge driver'], 5000);
       git(['config', 'merge.coral-frontmatter.driver', buildFrontmatterMergeDriverCommand()], 5000);
       git(['config', 'rebase.backend', 'merge'], 5000);
+      appendMissingManagedLines(join(root, '.gitattributes'), GITATTRIBUTES_HEADER, GITATTRIBUTES_ENTRIES);
     } catch {
       // best-effort
     }
@@ -597,6 +624,23 @@ export function createGitSyncController({
 
   function detectConflictState(): GitConflictState {
     return detectGitConflictState({ root, processPort });
+  }
+
+  /**
+   * `ls-files -u` marks a path unmerged whenever git could not resolve it on its own — including a path a
+   * merge driver refused to answer for. `FrontmatterMergeUnavailableError`'s docstring is the reason why: a
+   * refused path reaches git as a non-zero driver exit, so git marks it conflicted, but nothing was written to
+   * `%A`, so it carries no `<<<<<<<` markers. `diff --check` finds only paths that do. A path present in the
+   * first set and absent from the second is therefore a path the assistant's prompt — "resolve the remaining
+   * <<<<<<< / ======= / >>>>>>> conflicts ... stage all resolved files with git add" — has nothing to act on:
+   * it looks already resolved, and a blanket `git add -A` (the assistant's own, or the fallback below) stages
+   * whatever content is sitting there as the resolution. That content is not the user's edit (verified against
+   * git 2.43: it is git's pre-driver "ours" seed, the upstream side under Coral's rebase). Recovery, not the
+   * assistant, is what may touch a path like this.
+   */
+  function markerlessUnmergedPaths(state: GitConflictState): string[] {
+    const markerPathSet = new Set(state.markerPaths);
+    return state.unmergedPaths.filter((path) => !markerPathSet.has(path));
   }
 
   function sanitizeRefComponent(value: string): string {
@@ -851,6 +895,19 @@ export function createGitSyncController({
       }
 
       if (hasConflictMarkers()) {
+        const conflictState = detectConflictState();
+        const unresolvable = markerlessUnmergedPaths(conflictState);
+        if (unresolvable.length > 0) {
+          // §11: a refusal must be visible as durable status, not swallowed and re-tried as if it were a
+          // normal conflict. `recoverRebaseConflict` below is that durable status — it quarantines each path
+          // in `conflictState.paths` (which includes these) in the curate DB, keyed by entry — not just this
+          // log line.
+          backendLog.warn(
+            `[KB] git rebase conflict on ${branch} leaves ${unresolvable.join(', ')} unmerged with no conflict markers for the assistant to act on (a merge driver may have refused to answer, or the conflict has no text form); recovering instead of asking it to resolve markers that are not there.`,
+          );
+          return recoverRebaseConflict(branch, conflictState) ? 'recovered' : 'failed';
+        }
+
         if (await resolveConflictsWithClaude(signal)) {
           usedLlmConflictResolution = true;
           if (!isRebaseInProgress() && !hasConflictMarkers()) {
@@ -938,6 +995,13 @@ export function createGitSyncController({
     }
 
     const headAfterSync = readHead();
+    // Checked before the equality comparison below, not after: `readHead()` returns `null` when `git
+    // rev-parse HEAD` could not be answered, and `null === null` is true. A guard placed after the equality
+    // check never runs for the both-unreadable case — the common one, since whatever made the first read fail
+    // is still in effect for the second — so that guard was dead code for exactly the case it names.
+    if (headBeforeSync === null || headAfterSync === null) {
+      return { kind: 'ambiguous' };
+    }
     if (headBeforeSync === headAfterSync) {
       return { kind: 'no-change' };
     }
@@ -945,9 +1009,6 @@ export function createGitSyncController({
       return { kind: 'ambiguous' };
     }
     if (usedLlmConflictResolution) {
-      return { kind: 'ambiguous' };
-    }
-    if (headBeforeSync === null || headAfterSync === null) {
       return { kind: 'ambiguous' };
     }
 

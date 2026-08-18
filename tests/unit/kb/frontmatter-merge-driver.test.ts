@@ -314,8 +314,16 @@ describe('frontmatter merge driver', () => {
     // The state this leaves is the confusing one: git marks the path conflicted while the file carries no
     // conflict markers, so it looks resolved. A refusal that describes that state without naming an action is
     // what gets the file staged as-is.
+    //
+    // `git rebase --abort` is the command asserted here, not `git checkout --ours`/`--theirs`: reproduced
+    // against real git 2.43, `--ours` during Coral's only automated path into this driver (`git rebase`) is
+    // the *upstream* side, so a message telling an operator to run it to "keep their edit" discards that
+    // edit instead. `git rebase --abort` is correct regardless of which side `%A` currently holds.
     expect(result.stderr, 'the operator is told what to do, not only what did not happen').toMatch(
-      /resolve it yourself/u,
+      /git rebase --abort/u,
+    );
+    expect(result.stderr, 'never prescribes the command that discards the edit under rebase').not.toMatch(
+      /checkout --ours/u,
     );
     expect(result.stderr, 'including why it must not simply be staged').toMatch(/no conflict markers/u);
     // A rebase touching several `.md` files invokes this driver once per file, and git does not prefix a

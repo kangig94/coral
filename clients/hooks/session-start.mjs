@@ -34,6 +34,24 @@ import { isKbEnabled } from './lib/kb-toggle.mjs';
 
 const LOG_ROTATE_THRESHOLD_BYTES = 2 * 1024 * 1024;
 const PROJECT_IGNORE_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), 'project-ignore.mjs');
+/**
+ * What the child is allowed, and why it is not the sum of what the child spends.
+ *
+ * `project-ignore.mjs` pays two bounded git forks on its ordinary path: `git rev-parse --show-toplevel`
+ * (1500ms, to find the ignore root) and `git remote get-url origin` (2000ms, to derive the project directory
+ * the symlink must point at). That is 3500ms of child work before its own Node startup, and this bound used to
+ * be exactly 3500 — so a child doing nothing wrong, on a slow mount, was SIGTERMed while its own bounds were
+ * still running, and `runProjectIgnoreMaintenance` returned `null`, which reads as "never ran".
+ *
+ * A budget equal to the work it bounds is not a budget. The margin goes here rather than into shrinking either
+ * probe, because shortening those trades a correct answer for headroom that belongs to the caller: a probe cut
+ * short reports "could not tell" for a machine that was merely slow. This hook is registered with a 10s
+ * timeout, so 5000ms still leaves half of it for everything else this file does.
+ *
+ * `tests/unit/hooks/project-ignore-symlink.test.ts` pins the child's 3500ms sum by reading both mocks' actual
+ * options; if either bound moves, that test fails and this number has to be re-derived rather than guessed.
+ */
+const PROJECT_IGNORE_SPAWN_TIMEOUT_MS = 5000;
 // Long enough to still catch the failure when a session starts minutes after the
 // user's last attempt, short enough that a cured problem stops being reported.
 const STARTUP_FAILURE_NOTICE_WINDOW_MS = 10 * 60 * 1000;
@@ -181,6 +199,7 @@ try {
   process.exit(0);
 }
 
+
 function runProjectIgnoreMaintenance(projectDir, createSymlink) {
   try {
     const args = [PROJECT_IGNORE_SCRIPT, '--project-dir', projectDir];
@@ -188,7 +207,7 @@ function runProjectIgnoreMaintenance(projectDir, createSymlink) {
     const result = spawnSync(process.execPath, args, {
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 3500,
+      timeout: PROJECT_IGNORE_SPAWN_TIMEOUT_MS,
       maxBuffer: 16 * 1024,
     });
     if (result.error || !result.stdout) return null;

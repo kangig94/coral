@@ -155,15 +155,30 @@ export function hasLiveWork(projectDir, sessionId, transcriptPath) {
   return subagentLive || bgLive;
 }
 
+// A missing registry directory is decisive: this kind of work has never been recorded for the session, so
+// `readdirSync`'s `ENOENT` means there is nothing live, and both callers below may treat it exactly like an
+// empty directory. Any other failure (`EACCES`, `EIO`, ...) is unobserved state, not an observed absence, and
+// per the budget-exhaustion path in `hasLiveBg` below, unobserved does not authorize pruning — so it is
+// re-thrown, and each caller answers "live" for the same reason that path does: a hook that could not read its
+// own registry has not learned that the work is gone.
+function tryReaddir(dir) {
+  try {
+    return readdirSync(dir);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return [];
+    throw error;
+  }
+}
+
 // === Subagent liveness ===
 
 function hasLiveSubagent(projectDir, sessionId, transcriptPath) {
   const dir = subagentsPath(projectDir, sessionId);
   let markers;
   try {
-    markers = readdirSync(dir);
+    markers = tryReaddir(dir);
   } catch {
-    return false;
+    return true; // unobserved ⇒ do not conclude there is nothing live
   }
 
   const transcriptsDir = resolveSubagentsDir(projectDir, sessionId, transcriptPath);
@@ -216,9 +231,9 @@ function hasLiveBg(projectDir, sessionId) {
   const dir = bgPath(projectDir, sessionId);
   let entries;
   try {
-    entries = readdirSync(dir);
+    entries = tryReaddir(dir);
   } catch {
-    return false;
+    return true; // unobserved ⇒ do not conclude there is nothing live
   }
 
   const tasks = new Map(); // id -> { lock, exited, newestMs }
@@ -285,23 +300,26 @@ function parseBgMarker(name) {
 // Probe whether an exclusive flock on `lockPath` is still held. Namespace-agnostic (inode-based), so it works
 // across the command-sandbox boundary where a pid probe would not. Three answers, not two: true (held/alive),
 // false (free/dead), or null when the probe could not ask at all — the caller falls back to the mtime window
-// only on null. (`err.status` is a number only when flock actually ran and exited, which is what tells true
-// apart from null below.)
+// only on null.
 //
-// `null` is reserved for `STANDING_PROBE_ERRNOS` (the same set the project-source probe uses) — no `flock`
-// binary, not executable, no such directory — because the mtime window is the designed fallback for exactly
-// those: the heartbeat (`while kill -0 $$; do touch …; sleep 10; done` in `bgWrapperPreamble`) runs `touch` and
-// `sleep` as external commands, so the standing condition that stopped this probe forking stops the heartbeat
-// too, and the window still reads a live, current timestamp. An earlier revision routed every non-ENOENT
-// failure to `null` instead, reasoning that the catch-all `true` below has no expiry — but that lack of expiry
-// is exactly why a *standing* failure like `EACCES` must not go there: it does not clear while the session
-// runs, so `true` would not be the bounded hold it is for everything else, but a permanent one gating ralph and
+// `null` is reserved for a launch that never asked the question: no `flock` binary, not executable, no such
+// directory for the binary itself (`STANDING_PROBE_ERRNOS`, the same set the project-source probe uses), or
+// `flock` running but unable to even open `lockPath` (`EROFS`, or the path replaced by a directory it cannot
+// read) — util-linux `flock(1)` exits 66 (`EX_NOINPUT`) for the latter, distinct from the plain nonzero exit a
+// held lock produces, and it is a standing fact about `lockPath` for the same reason a missing binary is one:
+// neither clears while this session runs. The mtime window is the designed fallback for both, because the
+// heartbeat (`while kill -0 $$; do touch …; sleep 10; done` in `bgWrapperPreamble`) runs `touch` and `sleep` as
+// external commands, so whatever stopped this probe from asking stops the heartbeat too, and the window still
+// reads a live, current timestamp. An earlier revision routed every failure with a numeric exit status to
+// `true` regardless of which of these it was, reasoning that the catch-all `true` below has no expiry — but
+// that lack of expiry is exactly why a failure that will not clear on its own, busy or not, must not land
+// there: `true` would not be the bounded hold it is for everything else, but a permanent one gating ralph and
 // kb with no event that could end it.
 //
-// Every other failure — transient, not a standing fact about the machine — returns `true`, and that hold
-// really is bounded: un-gating live work and pruning a live task are both finalizations an unanswered probe may
-// not authorize, but the next hook invocation probes again, and a machine that recovers answers `false` on its
-// own.
+// Every other failure — transient, not a standing fact about the machine or about `lockPath` — returns `true`,
+// and that hold really is bounded: un-gating live work and pruning a live task are both finalizations an
+// unanswered probe may not authorize, but the next hook invocation probes again, and a machine that recovers
+// answers `false` on its own.
 function lockHeld(lockPath) {
   try {
     execFileSync('flock', ['-n', lockPath, '-c', 'true'], {
@@ -310,8 +328,9 @@ function lockHeld(lockPath) {
     });
     return false; // acquired ⇒ not held
   } catch (err) {
-    if (typeof err?.status === 'number') return true; // flock ran and refused ⇒ busy ⇒ held
-    if (STANDING_PROBE_ERRNOS.has(err?.code)) return null; // flock unusable here ⇒ the mtime window is designed for it
+    if (STANDING_PROBE_ERRNOS.has(err?.code)) return null; // flock(1) itself unusable ⇒ the mtime window is designed for it
+    if (err?.status === 66) return null; // flock ran but could not open lockPath ⇒ same standing shape, same fallback
+    if (typeof err?.status === 'number') return true; // flock ran, opened lockPath, and refused ⇒ busy ⇒ held
     return true; // could not ask *this time* ⇒ do not conclude the work is gone; the next hook re-asks
   }
 }

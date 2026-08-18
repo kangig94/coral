@@ -177,7 +177,9 @@ describe('session-start.mjs', () => {
     const link = join(fixture.projectRoot, '.claude', 'coral');
     expect(lstatSync(link).isSymbolicLink()).toBe(true);
     expect(readlinkSync(link)).toBe(coralProjectDir(fixture.root, 'acme/repo'));
-    expect(readFileSync(join(fixture.projectRoot, '.claude', '.gitignore'), 'utf-8')).toBe('coral\n');
+    expect(readFileSync(join(fixture.projectRoot, '.claude', '.gitignore'), 'utf-8')).toBe(
+      'coral\ncoral.coral-*.tmp\n',
+    );
     expect(existsSync(join(fixture.projectRoot, '.gitignore'))).toBe(false);
   });
 
@@ -202,7 +204,7 @@ describe('session-start.mjs', () => {
     expect(second.status).toBe(0);
     expect(readFileSync(join(fixture.projectRoot, '.gitignore'), 'utf-8')).toBe('dist/\ncoverage/\n');
     expect(readFileSync(join(fixture.projectRoot, '.claude', '.gitignore'), 'utf-8')).toBe(
-      'settings.local.json\ncoral\n',
+      'settings.local.json\ncoral\ncoral.coral-*.tmp\n',
     );
     expect(existsSync(join(fixture.projectRoot, '.claude', 'coral'))).toBe(false);
     expect(expectHookOutput(first).hookSpecificOutput.additionalContext).toContain(
@@ -234,7 +236,7 @@ describe('session-start.mjs', () => {
     expect(first.status).toBe(0);
     expect(second.status).toBe(0);
     expect(readFileSync(join(fixture.projectRoot, '.gitignore'), 'utf-8')).toBe(expected);
-    expect(readFileSync(join(nestedProject, '.claude', '.gitignore'), 'utf-8')).toBe('coral\n');
+    expect(readFileSync(join(nestedProject, '.claude', '.gitignore'), 'utf-8')).toBe('coral\ncoral.coral-*.tmp\n');
   });
 
   it('adds the scoped ignore for an existing symlink without replacing it', () => {
@@ -260,7 +262,7 @@ describe('session-start.mjs', () => {
 
     expect(result.status).toBe(0);
     expect(readlinkSync(join(claudeDir, 'coral'))).toBe(existingTarget);
-    expect(readFileSync(join(claudeDir, '.gitignore'), 'utf-8')).toBe('coral\n');
+    expect(readFileSync(join(claudeDir, '.gitignore'), 'utf-8')).toBe('coral\ncoral.coral-*.tmp\n');
   });
 
   it('preserves the legacy protection when the scoped ignore is a symlink', () => {
@@ -360,7 +362,9 @@ describe('session-start.mjs', () => {
 
     expect(results.every((result) => result.status === 0)).toBe(true);
     expect(readFileSync(join(fixture.projectRoot, '.gitignore'), 'utf-8')).toBe('dist/\ncoverage/\n');
-    expect(readFileSync(join(fixture.projectRoot, '.claude', '.gitignore'), 'utf-8')).toBe('coral\n');
+    expect(readFileSync(join(fixture.projectRoot, '.claude', '.gitignore'), 'utf-8')).toBe(
+      'coral\ncoral.coral-*.tmp\n',
+    );
     expect(readdirSync(fixture.projectRoot).filter((name) => name.includes('.coral-'))).toEqual([]);
     expect(readdirSync(join(fixture.projectRoot, '.claude')).filter((name) => name.includes('.coral-'))).toEqual([]);
   });

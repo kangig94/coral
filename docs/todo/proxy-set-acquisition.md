@@ -60,9 +60,9 @@ repo-wide, and `src/infra/node-process.ts` now carries an opaque `ProcessIncarna
 only against a value derived in the same process — the paragraph below is why. #324 renamed the field at
 this acquisition's own `expectedIdentity` site too (`acquisition-steps.ts:354`, compared at
 `role-control.ts:173`), so the disagreement quoted above — one that grows with the incumbent's age —
-cannot recur there: on every supported platform the token is a fixed kernel-stored fact once a process
-starts, not a value recomputed against a moving clock reference. Past tense in the rest of this section is
-deliberate; nothing else here describes code that is still in the tree.
+cannot recur there on any supported platform: no probe caches a clock reading across calls anymore, which
+is what made one process's derived value drift from another's fresh one. Past tense in the rest of this
+section is deliberate; nothing else here describes code that is still in the tree.
 
 So the number is not a timestamp. It was a **process-local pid disambiguator rendered in seconds**, and
 its only sound operation was equality against a value derived in the same process. That is exactly what
@@ -95,7 +95,7 @@ half is fixed under `build-identity-and-upgrade.md`. The remaining pairs, enumer
 | proxy self-report vs guardian-observed containment held by the reaper | `acquisition-steps.ts:385` vs `reaper.ts:191`                |
 | guardian-reported containment vs proxy self-report during inheritance | `inheritance.ts:564`                                         |
 | successor coordinator's probe vs role-reported durable identity       | `inheritance.ts:371`, then `process-containment.ts:151`      |
-| predecessor coordinator's durable CLI evidence vs successor's probe   | `durable-transport.ts:81` vs `carrier-observation.ts:79`     |
+| predecessor coordinator's durable CLI evidence vs successor's probe   | `durable-transport.ts:81` vs `coordinator/composition/carrier-observation.ts:79` |
 
 The last three **fail open**: a readable mismatch is interpreted as absence, so a live process group is
 declared gone, never signalled, and can be issued a disappearance receipt while it is still running.
@@ -132,10 +132,15 @@ group that nothing will ever signal.
 
 ### Shipped: the primitive is now an opaque token
 
-`processStartedAtSeconds` is gone. `ProcessIncarnation` is a branded string — `linux:<boot_id>:<startTicks>`
-on Linux, and the kernel-stored creation stamps macOS and Windows already expose — with no clock term, no
-`HZ` division and no `Math.floor`. Every comparison in the table above is now sound, because both sides
-name the same kernel fact instead of each adding its own reading of a moving clock.
+`processStartedAtSeconds` is gone. `ProcessIncarnation` is a branded string: `linux:<boot_id>:<startTicks>`
+on Linux, with no clock term, no `HZ` division and no `Math.floor` — boot-relative and, per
+`incarnationMayAuthorizeSignal`, collision-safe. macOS and Windows instead brand a creation timestamp read at
+probe time (`ps -o lstart=` parsed by `Date.parse`, and WMI's `CreationDate`, respectively) together with a
+boot-session identifier. That closes the across-reboot half on every platform and closes the drift-with-age
+bug quoted at the top of this entry everywhere too, because no probe caches a reading across calls anymore —
+but it does not make every comparison in the table above sound on every platform: Darwin's token is still a
+moving-clock reading, and the DST/NTP collision window that leaves open is tracked separately
+(`docs/todo/darwin-signal-authority.md`).
 
 The brand is the enforcement, and it earned that on the first compile: `process-containment.ts` was
 found doing `identity.incarnation < 0`, an ordering on an identity, which a string simply cannot express.
@@ -221,9 +226,10 @@ environment weirdness: a fast machine acquires, a slow one does not, on the same
 ## What has to be decided
 
 1. **Whether the acquisition should keep comparing a value it derived against one the role separately
-   derives and self-reports.** That shape is sound today — `ProcessIncarnation` is a fixed kernel fact,
-   not a value recomputed from a moving clock, so the disagreement this entry was opened for cannot recur
-   (see "Confirmed" above) — but it is still cross-process, and the alternative is to read the identity
+   derives and self-reports.** The disagreement this entry was opened for cannot recur on any platform,
+   because `ProcessIncarnation` no longer accumulates drift across a process's own age the way
+   `processStartedAtSeconds` did (see "Confirmed" above) — but the shape is still cross-process, and the
+   alternative is to read the identity
    the same way on both sides: re-probe the connected pid itself once open, and drop the self-report, the
    pattern the redeem path already uses (`expectedIdentity: {}`, `inheritance.ts:464,489,519`). This is a
    design choice now, not a bug fix.

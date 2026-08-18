@@ -34,7 +34,7 @@ export class UserInputError extends Error {
   }
 }
 
-function expansionExitCode(result: InstallResult | InstallError): number {
+export function expansionExitCode(result: InstallResult | InstallError): number {
   if (result.status !== 'error') {
     return 0;
   }

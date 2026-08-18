@@ -17,7 +17,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, isAbsolute, join, relative, sep } from 'node:path';
+import { dirname, isAbsolute, join, normalize, relative, sep } from 'node:path';
 import { coralProjectDir, coralStateRoot } from './hook-utils.mjs';
 
 const MAX_GITIGNORE_BYTES = 1024 * 1024;
@@ -25,6 +25,10 @@ const NO_FOLLOW = constants.O_NOFOLLOW ?? 0;
 const READ_FLAGS = constants.O_RDONLY | constants.O_NONBLOCK | NO_FOLLOW;
 const TEMP_WRITE_FLAGS = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NO_FOLLOW;
 const CORAL_IGNORE_ENTRY = 'coral';
+// `ensureCoralSymlink` swaps the link in via `renameSync` over a temp name so a kill between the write and the
+// swap never leaves `.claude/coral` missing — but a kill before the swap leaves the temp name itself behind,
+// and its `.coral-<pid>-<ts>.tmp` suffix means the exact-match `coral` line above does not cover it.
+const CORAL_IGNORE_TEMP_ENTRY = 'coral.coral-*.tmp';
 const LEGACY_CORAL_IGNORE_ENTRY = '.claude/coral';
 
 function isMissing(error) {
@@ -136,21 +140,12 @@ function appendExactLine(content, entry) {
   const newline = preferredNewline(content);
   const needsBoundary =
     content.length > 0 && content[content.length - 1] !== 0x0a && content[content.length - 1] !== 0x0d;
-  return Buffer.concat([
-    content,
-    ...(needsBoundary ? [newline] : []),
-    Buffer.from(entry),
-    newline,
-  ]);
+  return Buffer.concat([content, ...(needsBoundary ? [newline] : []), Buffer.from(entry), newline]);
 }
 
 function snapshotUnchanged(path, snapshot) {
   const current = readRegularSnapshot(path, { allowMissing: true });
-  return (
-    current.ok
-    && current.exists === snapshot.exists
-    && current.content.equals(snapshot.content)
-  );
+  return current.ok && current.exists === snapshot.exists && current.content.equals(snapshot.content);
 }
 
 function fsyncParent(path) {
@@ -229,6 +224,12 @@ function ensureRealDirectory(path) {
   }
 }
 
+// This fork is paid by every call to `resolveProjectContext` below, no-op or not — finding the ignore-scoped
+// git root is not something the symlink logic can skip past. On the common path where `.claude/coral` already
+// exists, `ensureCoralSymlink` pays a second fork of its own (`coralProjectDir`'s 2000ms bound in
+// `hook-utils.mjs`, to confirm the link is not outgrown), so the worst case here is 1500 + 2000 = 3500ms —
+// exactly `session-start.mjs`'s `spawnSync` timeout for this whole script, with no margin left for this
+// process's own Node startup on top. Both totals are measured, not assumed.
 function findGitRoot(projectDir) {
   try {
     const root = execFileSync('git', ['rev-parse', '--show-toplevel'], {
@@ -260,9 +261,7 @@ function resolveProjectContext(projectDir) {
     projectDir: realProjectDir,
     gitRoot,
     rootGitignore: join(gitRoot, '.gitignore'),
-    legacyEntry: gitignorePrefix
-      ? `${gitignorePrefix}/${LEGACY_CORAL_IGNORE_ENTRY}`
-      : LEGACY_CORAL_IGNORE_ENTRY,
+    legacyEntry: gitignorePrefix ? `${gitignorePrefix}/${LEGACY_CORAL_IGNORE_ENTRY}` : LEGACY_CORAL_IGNORE_ENTRY,
   };
 }
 
@@ -271,7 +270,7 @@ function ensureScopedIgnore(projectDir, token) {
   if (!ensureRealDirectory(claudeDir)) return { ok: false, changed: false };
   return atomicTransform(
     join(claudeDir, '.gitignore'),
-    (content) => appendExactLine(content, CORAL_IGNORE_ENTRY),
+    (content) => appendExactLine(appendExactLine(content, CORAL_IGNORE_ENTRY), CORAL_IGNORE_TEMP_ENTRY),
     token,
   );
 }
@@ -291,7 +290,12 @@ function ensureScopedIgnore(projectDir, token) {
 function isOutgrownCoralLink(link, target) {
   let current;
   try {
-    current = readlinkSync(link);
+    // `readlinkSync` returns the target text exactly as stored, with no normalization — `symlinkSync` does not
+    // normalize on write either, so a target like `<root>/projects/../projects-mine/<slug>` reads back with the
+    // `..` still in it. It textually starts with the `projects` root while semantically escaping it, and
+    // `normalize()` is what tells those apart without resolving anything through the filesystem the way
+    // `realpathSync` would (the link's target need not exist for this check).
+    current = normalize(readlinkSync(link));
   } catch {
     return false;
   }
@@ -313,9 +317,11 @@ function ensureCoralSymlink(projectDir, token) {
   try {
     const stat = lstatSync(link);
     if (!stat.isSymbolicLink()) return { ok: false, created: false, repointed: false };
-    // Computed here, not before the lstat: the common case is a link that already exists and is fine, and the
-    // two branches that don't reach this point (not a symlink, or an lstat error below) have no need to know
-    // the target at all — so they stay fork-free instead of paying `coralProjectDir`'s git probe up front.
+    // Computed here, not before the lstat: only the two branches that don't reach this point — not a symlink,
+    // or an lstat error below — have no need to know the target at all, so only they are fork-free. The
+    // ordinary case, an existing symlink that turns out to already be correct, still pays this fork:
+    // confirming "already correct" is impossible without a target to compare against (see `findGitRoot`'s
+    // comment above for the combined budget this adds up to).
     target = coralProjectDir(projectDir);
     if (!isOutgrownCoralLink(link, target)) return { ok: true, created: false, repointed: false };
     repointed = true;

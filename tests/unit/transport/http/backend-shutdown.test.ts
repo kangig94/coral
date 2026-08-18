@@ -179,12 +179,20 @@ describe('shutdownBackend', () => {
 
     await expect(shutdownBackend('/plugin-root')).resolves.toEqual({
       ok: false,
-      reason: 'unreachable',
+      reason: 'no_response',
       detail: 'ETIMEDOUT',
     });
   });
 
-  it('reports not_running when the socket refused the connection', async () => {
+  // A refused connection used to be reported as `not_running` here. It cannot be: an absent pid is excluded
+  // before this request is ever sent (`case 'process-absent'` returns earlier), so `pidLiveness` is always
+  // `'alive'` or `'unknown'` by this point — and `'alive'`, pinned by this fixture, is the deterministic window
+  // where a coordinator's HTTP listener has closed at the top of its drain while its process, confirmed alive
+  // moments earlier, keeps running through IPC close and the store finalizers. Reporting "not running" (and
+  // exiting `1`, the "you may proceed" family per docs/cli-errors.md) there is the exact inversion this
+  // fixture now guards against; `pidLiveness` is carried through so the render layer can say what was actually
+  // known instead of promising an absence nothing here observed.
+  it('reports socket_refused carrying pidLiveness, not a claimed absence', async () => {
     mockState.observed = { kind: 'addressed', coordinator: backendInfo(), pidLiveness: 'alive' };
     vi.stubGlobal(
       'fetch',
@@ -195,7 +203,32 @@ describe('shutdownBackend', () => {
 
     const { shutdownBackend } = await import('#src/transport/http/backend/shutdown.js');
 
-    await expect(shutdownBackend('/plugin-root')).resolves.toEqual({ ok: false, reason: 'socket_refused' });
+    await expect(shutdownBackend('/plugin-root')).resolves.toEqual({
+      ok: false,
+      reason: 'socket_refused',
+      pidLiveness: 'alive',
+    });
+  });
+
+  // The other half of `pidLiveness` on `socket_refused`: a prior liveness check that could not resolve either
+  // way must not be upgraded to `'alive'` just because this test also drives a real closed socket below — this
+  // one pins that `'unknown'` survives unchanged through the refused-connection path too.
+  it('carries an unresolved pid liveness through a refused connection rather than upgrading it', async () => {
+    mockState.observed = { kind: 'addressed', coordinator: backendInfo(), pidLiveness: 'unknown' };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw Object.assign(new Error('connection refused'), { code: 'ECONNREFUSED' });
+      }),
+    );
+
+    const { shutdownBackend } = await import('#src/transport/http/backend/shutdown.js');
+
+    await expect(shutdownBackend('/plugin-root')).resolves.toEqual({
+      ok: false,
+      reason: 'socket_refused',
+      pidLiveness: 'unknown',
+    });
   });
 
   // Each of these used to answer `not_running`, and the sentence rendered for that named a dial only the last
@@ -289,8 +322,10 @@ describe('shutdownBackend', () => {
 
   // `parseJsonResponse` never throws for a resolved response, so this branch was reachable only through the
   // exception path's neighbor — a real HTTP response that resolved, was not a drain, and was not a 401. Only
-  // the exception path had a test before this.
-  it('reports unreachable for a resolved response that is neither a drain nor a 401', async () => {
+  // the exception path had a test before this. `refused_by_response`, not `no_response`: a response arrived,
+  // which is the one thing that proves something is listening — the same split `status.ts` makes with
+  // `responded`.
+  it('reports refused_by_response for a resolved response that is neither a drain nor a 401', async () => {
     mockState.observed = { kind: 'addressed', coordinator: backendInfo(), pidLiveness: 'alive' };
     vi.stubGlobal(
       'fetch',
@@ -301,7 +336,7 @@ describe('shutdownBackend', () => {
 
     await expect(shutdownBackend('/plugin-root')).resolves.toEqual({
       ok: false,
-      reason: 'unreachable',
+      reason: 'refused_by_response',
       detail: '500 Internal Server Error',
     });
   });
@@ -321,7 +356,7 @@ describe('shutdownBackend', () => {
 
     await expect(shutdownBackend('/plugin-root')).resolves.toEqual({
       ok: false,
-      reason: 'unreachable',
+      reason: 'no_response',
       detail: 'boom',
     });
   });
@@ -354,10 +389,14 @@ describe('shutdownBackend', () => {
 
     const { shutdownBackend } = await import('#src/transport/http/backend/shutdown.js');
 
-    await expect(shutdownBackend('/plugin-root')).resolves.toEqual({ ok: false, reason: 'socket_refused' });
+    await expect(shutdownBackend('/plugin-root')).resolves.toEqual({
+      ok: false,
+      reason: 'socket_refused',
+      pidLiveness: 'alive',
+    });
   });
 
-  it('reports unreachable with a string detail, not a numeric DOMException code, against a real timeout', async () => {
+  it('reports no_response with a string detail, not a numeric DOMException code, against a real timeout', async () => {
     const { createServer } = await import('node:net');
     // `net.Server#close` waits for every accepted connection to end before its callback fires — unlike
     // `http.Server`, it has no `closeAllConnections()`. The client aborts on its own timeout, but nothing here
@@ -384,8 +423,7 @@ describe('shutdownBackend', () => {
       const result = await shutdownBackend('/plugin-root');
 
       expect(result.ok).toBe(false);
-      if (result.ok) throw new Error('unreachable in this branch');
-      expect(result.reason).toBe('unreachable');
+      if (result.ok || result.reason !== 'no_response') throw new Error('expected a no_response result');
       // Measured on Node v26.3.1: a `fetch` timeout rejects with a `DOMException` whose own `.code` is the
       // number `23`, not an errno. `detail` must never carry that raw number to an operator.
       expect(typeof result.detail).toBe('string');

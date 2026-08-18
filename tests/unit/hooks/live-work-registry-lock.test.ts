@@ -51,6 +51,16 @@ function flockUnavailable(): void {
     throw err;
   });
 }
+function flockCannotOpenLockPath(): void {
+  // flock launches fine but cannot open lockPath itself (EROFS, or the path replaced by something it cannot
+  // read) — measured against a real util-linux flock(1): this exits 66 (EX_NOINPUT), not the plain nonzero
+  // exit a busy lock produces, and `execFileSync` reports it the same way as a busy lock (`status`, no `code`).
+  execFileSyncMock.mockImplementation(() => {
+    const err = new Error('flock: cannot open lock file') as NodeJS.ErrnoException & { status?: number };
+    err.status = 66;
+    throw err;
+  });
+}
 
 beforeEach(() => {
   sandbox = mkdtempSync(join(tmpdir(), 'coral-work-lock-'));
@@ -183,6 +193,23 @@ describe('live-work-registry: bg lock liveness (flock mocked)', () => {
       expect(hasLiveWork(projectDir, SESSION), 'and a stopped one reads as dead, which `true` could never do').toBe(
         false,
       );
+    },
+  );
+
+  // The failure this pins is distinct from the standing-errno case above: both reach `lockHeld`'s catch with a
+  // numeric `status` and no `code`, so a fix that only checked `err?.code` would leave this one routed to the
+  // busy branch — permanently "held", since the condition producing it does not clear while the session runs.
+  it.each([
+    ['fresh heartbeat', 0, true],
+    ['stale heartbeat', BG_STALE_MS, false],
+  ] as const)(
+    'falls back to the mtime window (%s) when flock cannot open lockPath (exit 66), rather than treating it as busy',
+    (_label, ageMs, expectedLive) => {
+      flockCannotOpenLockPath();
+      writeBgMarker('task-open-failure.started', ageMs);
+      writeBgMarker('task-open-failure.lock', ageMs);
+
+      expect(hasLiveWork(projectDir, SESSION)).toBe(expectedLive);
     },
   );
 

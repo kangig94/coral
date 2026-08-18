@@ -1,8 +1,27 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import type * as NodeFs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// `readdirSync` fails for two different reasons the registry must not treat alike: `ENOENT` (the directory was
+// never created — a decisive "nothing recorded here") and everything else (`EACCES`, `EIO`, ... — the read was
+// refused, which says nothing about what the directory holds). Only the named path below is intercepted; every
+// other call, including the test helpers' own `readdirSync`, passes straight through to the real filesystem.
+const readdirFixture = vi.hoisted(() => ({ failPath: null as string | null }));
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof NodeFs>();
+  return {
+    ...actual,
+    readdirSync: (path: unknown, options?: unknown) => {
+      if (readdirFixture.failPath !== null && String(path) === readdirFixture.failPath) {
+        throw Object.assign(new Error('simulated unreadable registry dir'), { code: 'EACCES' });
+      }
+      return (actual.readdirSync as (p: unknown, o?: unknown) => string[])(path, options);
+    },
+  };
+});
 
 // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
 import * as liveWorkRegistry from '../../../clients/hooks/lib/live-work-registry.mjs';
@@ -43,6 +62,7 @@ beforeEach(() => {
   parentTranscript = join(sandbox, 'projects', 'slug', `${SESSION}.jsonl`);
   mkdirSync(dirname(parentTranscript), { recursive: true });
   writeFileSync(parentTranscript, '{}');
+  readdirFixture.failPath = null;
 });
 
 afterEach(() => {
@@ -256,6 +276,33 @@ describe('live-work-registry: background tasks', () => {
 
     expect(hasLiveWork(projectDir, SESSION, parentTranscript)).toBe(true);
     expect(markerCount(SESSION)).toBe(0); // dead subagent still pruned
+  });
+});
+
+describe('live-work-registry: an unreadable registry directory is unobserved, not empty', () => {
+  it('still reports no live work when a registry directory was simply never created (ENOENT stays decisive)', () => {
+    // Neither writeBgMarker nor recordSubagentStart has run, so neither directory exists yet.
+    expect(hasLiveWork(projectDir, SESSION, parentTranscript)).toBe(false);
+  });
+
+  it('treats an unreadable subagents directory as live, not as "no subagents"', () => {
+    recordSubagentStart(projectDir, SESSION, 'agentA');
+    readdirFixture.failPath = subagentsDirFor(SESSION);
+
+    expect(
+      hasLiveWork(projectDir, SESSION, parentTranscript),
+      'a readdirSync failure that is not ENOENT is unobserved state; it must not un-gate ralph/kb on nothing',
+    ).toBe(true);
+  });
+
+  it('treats an unreadable bg directory as live, not as "no bg tasks"', () => {
+    writeBgMarker(SESSION, 'taskA.started');
+    readdirFixture.failPath = bgDirFor(SESSION);
+
+    expect(
+      hasLiveWork(projectDir, SESSION, parentTranscript),
+      'a readdirSync failure that is not ENOENT is unobserved state; it must not un-gate ralph/kb on nothing',
+    ).toBe(true);
   });
 });
 

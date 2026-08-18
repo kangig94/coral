@@ -374,6 +374,7 @@ describe('expansion activation', () => {
     await expect(activation.readExpansionStatus('vector')).resolves.toEqual({
       status: 'unreadable',
       detail: "EACCES: permission denied, open '/coordinator.json'",
+      path: createRealRuntime('dev').paths.coral.coordinator.infoFile,
     });
     expect(mockState.createIpcClient).not.toHaveBeenCalled();
   });
@@ -390,6 +391,7 @@ describe('expansion activation', () => {
       await expect(activation.readExpansionStatus('vector')).resolves.toEqual({
         status: 'unreadable',
         detail: reason,
+        path: createRealRuntime('dev').paths.coral.coordinator.infoFile,
       });
       expect(mockState.createIpcClient).not.toHaveBeenCalled();
     },
@@ -415,9 +417,34 @@ describe('expansion activation', () => {
       await expect(activation.readExpansionStatus('vector')).resolves.toEqual({
         status: 'unreachable',
         detail: 'ipc_connect_failed',
+        path: createRealRuntime('dev').paths.coral.coordinator.infoFile,
+        pid: 1234,
       });
     },
   );
+
+  // The end-to-end sibling of the `unreadable` case below: `list()` must route a decoded-but-unreachable
+  // record through `assertDaemonViewObserved` into `coordinator_unreachable`, with both the record path and
+  // the recorded pid actually reaching the remediation an operator reads — not just present on the
+  // intermediate `ExpansionStatus` value that `readExpansionStatus` alone was asserted against above.
+  it('reports coordinator_unreachable from list(), naming both the record path and the recorded pid', async () => {
+    const activation = createCliExpansionActivation();
+    process.env.CORAL_FLAVOR = 'dev';
+    mockState.readDiscoveryRecordDisposition.mockReturnValue({ kind: 'record', record: makeDiscoveryRecord() });
+    mockState.processLiveness = 'alive';
+    mockState.createIpcClient.mockReturnValue({
+      request: vi.fn(async () => {
+        throw Object.assign(new Error('nope'), { code: 'ipc_connect_failed' });
+      }),
+    });
+
+    const response = await activation.list();
+
+    expect(response).toMatchObject({ status: 'error', code: 'coordinator_unreachable' });
+    const remediation = (response as { remediation?: string }).remediation ?? '';
+    expect(remediation).toContain(createRealRuntime('dev').paths.coral.coordinator.infoFile);
+    expect(remediation).toContain('1234');
+  });
 
   it('does not report an unknown expansion from a record it could not read', async () => {
     const activation = createCliExpansionActivation();
@@ -436,17 +463,20 @@ describe('expansion activation', () => {
     expect((response as { userMessage?: string }).userMessage).toMatch(/could not be read/u);
     // And the remediation must be the one that can work. A bare `Error` here was encoded as `unknown_error`,
     // whose remediation is "retry once" — the retry reads the same unreadable file and reaches the same
-    // refusal, so it named no exit at all. The accurate sentence was in `userMessage` while `remediation`
-    // contradicted it.
+    // refusal, so it named no exit at all. The remediation names the record path and its own clearing step
+    // directly rather than deferring to `coral-cli backend status`, which does not answer this exact condition
+    // cleanly either — see `coordinator_record_unreadable`'s doc comment in `runtime/errors.ts`.
     expect((response as { code?: string }).code).toBe('coordinator_record_unreadable');
-    expect((response as { remediation?: string }).remediation).toMatch(/coral-cli backend status/u);
+    expect((response as { remediation?: string }).remediation).toContain(
+      createRealRuntime('dev').paths.coral.coordinator.infoFile,
+    );
     expect(
       (response as { remediation?: string }).remediation,
       'the one action that cannot help must not be the advice',
     ).not.toMatch(/^Retry once/u);
   });
 
-  // The third `assertDaemonViewReadable` call site: unlike the two above, `info()` already found `name` in the
+  // The third `assertDaemonViewObserved` call site: unlike the two above, `info()` already found `name` in the
   // local catalog here, so rendering would only need `toCatalogEntry(entry, runtime, null)` — a real-looking
   // package entry built from local install state alone, silently omitting whatever the daemon actually holds
   // (equipped status, provides, capability status). That is stale data wearing a valid shape, not a refusal.

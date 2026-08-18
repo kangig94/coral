@@ -186,20 +186,33 @@ function mergeBodiesWithGit(
  * Raised when `git merge-file` did not answer, so nothing may be written to git's `%A`.
  *
  * The message names the exit because the state it leaves is the confusing one: this refusal reaches git as a
- * non-zero exit, git marks the path conflicted, and `%A` still holds our side *without conflict markers*. A
- * file that looks clean in a conflicted path is the thing an operator stages without reading, which turns a
- * refusal that protected their edit into the loss it was protecting them from. Saying only "left untouched"
- * describes the state and names no action, which is half a refusal.
+ * non-zero exit, git marks the path conflicted, and `%A` is left holding whatever git had already staged there
+ * before the driver ran — *without conflict markers*. A file that looks clean in a conflicted path is the
+ * thing an operator stages without reading, which turns a refusal that protected an edit into the loss it was
+ * protecting against. Saying only "left untouched" describes the state and names no action, which is half a
+ * refusal.
  *
- * It also names *which* file. This driver runs once per conflicted path — a `git rebase`/`git merge` touching
- * several `.md` files invokes it separately for each — and git does not prefix a merge driver's stderr with
- * the path it ran on. Without `label` (git's `%P`), a refusal mid-multi-file-conflict is ambiguous about which
- * of several unresolved files it describes, and the recovery command it prescribes has no target to name.
+ * `%A` is not the user's edit here, and an earlier version of this message got that backwards. Coral's only
+ * automated path into this driver is `git rebase` (`ensureKbMergeDrivers` in `git-sync.ts` sets
+ * `rebase.backend merge` and runs `git rebase origin/<branch>`), and git's `--ours`/`--theirs` swap meaning
+ * under rebase: `%A`/`--ours` is the upstream commit being rebased onto, `%B`/`--theirs` is the user's own
+ * commit being replayed. Reproduced against git 2.43 with a driver that refuses mid-rebase: the real
+ * working-tree file is left holding the *upstream* content, and `git checkout --ours` — what this message used
+ * to prescribe as "keep your version" — reapplies that same upstream content, discarding the edit it claimed
+ * to protect. `git rebase --abort` is the one recovery verified correct regardless of which commit in the
+ * rebase is conflicting: it restores the pre-rebase state in full, including the edit that produced the
+ * conflict, without picking a side.
+ *
+ * It also names *which* file. This driver runs once per conflicted path — a `git rebase` touching several
+ * `.md` files invokes it separately for each — and git does not prefix a merge driver's stderr with the path
+ * it ran on. Without `label` (git's `%P`), a refusal mid-multi-file-conflict gives no way to tell which of
+ * several unresolved files it is about, even though the recovery it prescribes (`git rebase --abort`) undoes
+ * the whole rebase rather than targeting one file.
  */
 export class FrontmatterMergeUnavailableError extends Error {
   constructor(label: string, detail: string) {
     super(
-      `Coral could not merge ${label}: \`git merge-file\` did not answer (${detail}). Your version is intact and git has left the path conflicted — resolve it yourself (\`git checkout --ours -- ${label}\`/\`--theirs\`, or an editor) rather than staging it as-is, because it carries no conflict markers to review.`,
+      `Coral could not merge ${label}: \`git merge-file\` did not answer (${detail}). Git has left the path conflicted, and the copy of ${label} on disk right now is the incoming rebase content, not the edit that caused this conflict — it carries no conflict markers to review, so do not stage it as-is. Coral's git sync only reaches this driver through \`git rebase\`; run \`git rebase --abort\` to restore ${label} to what you had before it started, then retry once the underlying failure is resolved.`,
     );
     this.name = 'FrontmatterMergeUnavailableError';
   }

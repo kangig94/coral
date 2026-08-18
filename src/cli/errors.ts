@@ -161,6 +161,16 @@ export function errorCodeToExit(code: string, httpStatus?: number): number {
     // against any registry, and `CoralSetupError.code` itself is typed `string` because domains outside this
     // registry construct it with their own vocabularies. Closing that fully means touching every such call
     // site; this list closes it for the codes this fix actually introduced.
+    //
+    // For the set's current sole member (`coordinator_unreachable`), this specific membership check is forward
+    // defense, not a live dual-consult: that code is constructed only in `cli/expansion/index.ts`, and
+    // `cli/expansion/contract.ts`'s `encodeInstallError` reaches it through `findStructuredSetupError` /
+    // `serializeCoralSetupError`, never through `buildErrorEnvelope` — `cliBoundaryInstallError`, the one path
+    // in that file that does call `buildErrorEnvelope` (and so this function), handles only
+    // `ChildPrincipalBindingError` and `IpcRpcError`. Expansion's actual exit code always comes from
+    // `expansionExitCode` (`cli/commands/expansion.ts`), which checks the same shared set independently. This
+    // branch stays live for any future call site that routes a `coordinator_unreachable`-coded
+    // `CoralSetupError` through `buildErrorEnvelope` on a path whose exit code is actually used.
     NOT_OBSERVED_CORAL_SETUP_ERROR_CODES.has(code) ||
     httpStatus === 503
   ) {

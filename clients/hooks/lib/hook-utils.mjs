@@ -174,9 +174,8 @@ function hookOutputForHost(value) {
   if (Object.keys(retained).length === 0) return { ...rest, ...hoisted };
   // `hookEventName` is preserved here: the enveloped form Copilot was verified
   // to honor for `updatedInput` carried it.
-  const remainder = envelope.hookEventName === undefined
-    ? retained
-    : { hookEventName: envelope.hookEventName, ...retained };
+  const remainder =
+    envelope.hookEventName === undefined ? retained : { hookEventName: envelope.hookEventName, ...retained };
   return { ...rest, ...hoisted, hookSpecificOutput: remainder };
 }
 
@@ -194,7 +193,13 @@ const _projectSourceCache = new Map();
 const _projectSourceUnanswered = new Map();
 // Errnos from a failed subprocess *launch* that are a standing fact about this machine rather than about this
 // moment: the binary is not installed, not executable, or the working directory is not one. None changes while
-// a hook session runs, so a probe that fails with one has answered, and what it answered is "not here".
+// a hook session runs — but standing is not decisive. A domain probe (does this project have a remote?) that
+// fails to launch git for one of these reasons has learned nothing about the remote, only that it could not
+// ask; `computeProjectSource` below treats every code in this set exactly like any other failed launch,
+// `{ answered: false }`, held only for the reprobe window. The exception is a caller whose own question IS "can
+// this binary be launched here" — `live-work-registry.mjs`'s flock probe reads this set directly, because for
+// that question membership in this set is itself the decisive answer, routed to its own mtime-window fallback
+// rather than a re-probe.
 //
 // The list is the standing side on purpose — a missed entry costs a re-probe, where listing the transient side
 // instead makes every unlisted errno a durable wrong answer nobody can see.
@@ -202,8 +207,7 @@ const _projectSourceUnanswered = new Map();
 // The same enumeration as `STANDING_PROBE_ERRNOS` in `src/infra/process-constants.ts`, spelled again because
 // hooks may not import from `src/`, and asserted equal by `tests/unit/hooks/hook-project-source.test.ts` —
 // "kept in step" was the previous claim, and this branch found two other places where a sentence like that was
-// the only thing keeping two spellings together. It is the hook lane's one home for the set: the flock probe
-// in `live-work-registry.mjs` reads it too, for the same distinction on a different binary.
+// the only thing keeping two spellings together. It is the hook lane's one home for the set.
 export const STANDING_PROBE_ERRNOS = new Set(['ENOENT', 'EACCES', 'EPERM', 'ENOTDIR']);
 const UNANSWERED_REPROBE_INTERVAL_MS = 60_000;
 
@@ -251,7 +255,9 @@ export function resolveProjectSource(projectDir) {
 /**
  * `{ answered: true, source }` when git ran and reported — including the ordinary "not a repository" and "no
  * such remote" exits — and `{ answered: false }` when it could not be asked. `execSync` throws with a numeric
- * `status` only in the first case; a timeout or a failed launch carries a string `code` and `status: null`.
+ * `status` only in the first case; a timeout or a failed launch — including one of `STANDING_PROBE_ERRNOS`,
+ * which says the launch will fail the same way again but says nothing about whether this project has a remote
+ * — carries a string `code` and `status: null`, and is `{ answered: false }` here too.
  */
 function computeProjectSource(projectDir, local) {
   let remote;
@@ -263,8 +269,7 @@ function computeProjectSource(projectDir, local) {
       timeout: 2000,
     });
   } catch (err) {
-    const answered = typeof err?.status === 'number' || STANDING_PROBE_ERRNOS.has(err?.code);
-    return answered ? { answered: true, source: local } : { answered: false };
+    return typeof err?.status === 'number' ? { answered: true, source: local } : { answered: false };
   }
 
   return { answered: true, source: parseRemoteSource(remote) ?? local };
@@ -295,7 +300,10 @@ function parseRemoteUrlPath(remote) {
  * something re-checks it. A comment asserting exactly that sat above this function while they diverged.
  */
 export function parseRemoteSource(remote) {
-  const normalized = remote.trim().replace(/\/+$/, '').replace(/\.git$/, '');
+  const normalized = remote
+    .trim()
+    .replace(/\/+$/, '')
+    .replace(/\.git$/, '');
   if (!normalized) return null;
 
   const sshPath = normalized.match(/^[^@]+@[^:]+:(.+)$/)?.[1];

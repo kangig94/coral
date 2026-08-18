@@ -192,8 +192,8 @@ Recorded so the next attempt starts from the end of the argument, not the beginn
 
 1. **~~`probeCoordinator()` conflates "no evidence" with "absent."~~ Closed 2026-08-18.** It returned `null`
    when the identity could not be read, and a caller reading `null` as _dead_ would reap a live host. It now
-   answers `CoordinatorProbe` — `live | absent | unobservable` with the record carried on the unobservable-pid
-   variant (`src/infra/backend-discovery.ts`) — and `observeProcessLiveness` answers `alive | absent |
+   answers `CoordinatorProbe` — `live | absent | unobservable` with the record carried on the
+   `reason: 'unreadable-process'` variant (`src/infra/backend-discovery.ts`) — and `observeProcessLiveness` answers `alive | absent |
    unknown`, with only `absent` treated as an absence. The requirement this item stated is met; what it does
    *not* settle is anything about routing, so the rest of this entry stands on its own.
 

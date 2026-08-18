@@ -2,7 +2,7 @@ declare const __PLUGIN_ROOT__: string | undefined;
 
 import type { EngineManifest, InstallOnlyManifest, LocalExpansionInstallState } from '../../expansion/contract.js';
 import { readDiscoveryRecordDisposition } from '../../infra/backend-discovery.js';
-import { errorMessage } from '../../infra/error-format.js';
+import { assertNever, errorMessage } from '../../infra/error-format.js';
 import { observeProcessLiveness } from '../../infra/node-process.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { documentedCoralSetupError } from '../../runtime/errors.js';
@@ -70,8 +70,8 @@ function isIpcConnectFailed(error: unknown): boolean {
 type ExpansionStatus =
   | { status: 'available'; expansions: Array<ExpansionView & { slot?: string }> }
   | { status: 'unavailable' }
-  | { status: 'unreachable'; detail: string }
-  | { status: 'unreadable'; detail: string };
+  | { status: 'unreachable'; detail: string; path: string; pid: number }
+  | { status: 'unreadable'; detail: string; path: string };
 
 export interface CliExpansionActivation {
   list(): Promise<InstallResponse>;
@@ -123,7 +123,8 @@ function unknownExpansionResponse(name: string) {
 }
 
 /**
- * Refuse to render a catalog from a daemon view we could not read or reach.
+ * Refuse to render a catalog from a daemon view we could not read or reach; return normally for every other
+ * disposition, including `unavailable`.
  *
  * Every rendered status is a claim about the daemon: `not_equipped` and `inactive` say it does not hold this
  * expansion, and `unavailable` says none was found — which `clients/skills/equip/SKILL.md` pairs with "run
@@ -135,32 +136,45 @@ function unknownExpansionResponse(name: string) {
  *
  * `unavailable` as a *disposition* still renders: no coordinator recorded itself, or a recorded coordinator's
  * pid was observed decisively gone, is an answer — nothing is equipped, and `localCatalogStatus` derives the
- * rest from local files. `unreadable` and `unreachable` get their own documented codes, not a shared one,
- * because `backend status` answers them differently: `undecodable_record` names the record file,
- * `unreachable` does not, and a shared remediation would send an operator looking for a file that in the
- * second case was never in question.
+ * rest from local files. `unreadable` and `unreachable` get their own documented codes and their own exit
+ * codes rather than a shared one — see those codes' doc comments in `runtime/errors.ts` for why one is
+ * durable (exit 1) and the other stays retryable (exit 75) — and each remediation now names the discovery
+ * record path itself instead of deferring to `backend status`.
+ *
+ * A `switch` with `assertNever` rather than sequential `if`s: this is a `void` function whose two throwing
+ * cases used to be the only visible control flow, so a third refusal variant would have compiled straight
+ * into "fall through and render `unavailable`'s shape" — the exact false claim this function exists to
+ * prevent. A future non-exhaustive addition to `ExpansionStatus` now fails to compile here instead.
  */
-function assertDaemonViewReadable(passive: ExpansionStatus, subject: string): void {
-  if (passive.status === 'unreadable') {
-    // A documented setup error rather than a bare `Error`. `encodeInstallError` maps anything else to
-    // `unknown_error`, whose remediation is "retry once, then report it" — advice that is wrong here in the
-    // specific way §11 warns about: the retry reads the same unreadable file and reaches the same refusal, so
-    // the hold names no exit. The sentence naming the real exit was already written; it was landing in
-    // `userMessage` while the `remediation` field contradicted it.
-    throw documentedCoralSetupError({
-      code: 'coordinator_record_unreadable',
-      subject,
-      detail: passive.detail,
-    });
-  }
-  if (passive.status === 'unreachable') {
-    // The record decoded — a coordinator claimed this socket at some point — and its pid was not observed
-    // absent, so this is not the same claim as `unreadable` and must not share its code or its remedy.
-    throw documentedCoralSetupError({
-      code: 'coordinator_unreachable',
-      subject,
-      detail: passive.detail,
-    });
+function assertDaemonViewObserved(passive: ExpansionStatus, subject: string): void {
+  switch (passive.status) {
+    case 'unreadable':
+      // A documented setup error rather than a bare `Error`. `encodeInstallError` maps anything else to
+      // `unknown_error`, whose remediation is "retry once, then report it" — advice that is wrong here in the
+      // specific way §11 warns about: the retry reads the same unreadable file and reaches the same refusal, so
+      // the hold names no exit. The sentence naming the real exit was already written; it was landing in
+      // `userMessage` while the `remediation` field contradicted it.
+      throw documentedCoralSetupError({
+        code: 'coordinator_record_unreadable',
+        subject,
+        detail: passive.detail,
+        path: passive.path,
+      });
+    case 'unreachable':
+      // The record decoded — a coordinator claimed this socket at some point — and its pid was not observed
+      // absent, so this is not the same claim as `unreadable` and must not share its code or its remedy.
+      throw documentedCoralSetupError({
+        code: 'coordinator_unreachable',
+        subject,
+        detail: passive.detail,
+        path: passive.path,
+        pid: String(passive.pid),
+      });
+    case 'available':
+    case 'unavailable':
+      return;
+    default:
+      assertNever(passive);
   }
 }
 
@@ -301,6 +315,10 @@ export function createCliExpansionActivation(): CliExpansionActivation {
     async readExpansionStatus(name?: string): Promise<ExpansionStatus> {
       const runtime = resolveRuntime();
       const discoveryRuntime = { storage: runtime.storage, env: runtime.env, paths: runtime.paths };
+      // Computed unconditionally: the discovery record lives at a fixed location regardless of whether it
+      // could be read, decoded, or reached, so every refusal below can name it directly instead of sending an
+      // operator to a separate command to learn it.
+      const recordPath = runtime.paths.coral.coordinator.infoFile;
 
       let read;
       try {
@@ -309,10 +327,10 @@ export function createCliExpansionActivation(): CliExpansionActivation {
         // The read itself failing (`EACCES`, `EIO`) is not an absent coordinator either. This used to be a
         // blanket `catch` to `null`, which is also why `backend-discovery.ts` could claim that letting these
         // throw was safe because every CLI path renders them — this path swallowed them.
-        return { status: 'unreadable', detail: errorMessage(error) };
+        return { status: 'unreadable', detail: errorMessage(error), path: recordPath };
       }
       if (read.kind === 'undecodable') {
-        return { status: 'unreadable', detail: read.reason };
+        return { status: 'unreadable', detail: read.reason, path: recordPath };
       }
       if (read.kind === 'missing') {
         return { status: 'unavailable' };
@@ -347,7 +365,7 @@ export function createCliExpansionActivation(): CliExpansionActivation {
           // coordinator, and this build could not reach it.
           return observeProcessLiveness(record.pid) === 'absent'
             ? { status: 'unavailable' }
-            : { status: 'unreachable', detail: 'ipc_connect_failed' };
+            : { status: 'unreachable', detail: 'ipc_connect_failed', path: recordPath, pid: record.pid };
         }
         throw error;
       }
@@ -371,7 +389,7 @@ export function createCliExpansionActivation(): CliExpansionActivation {
         const runtime = resolveRuntime();
         const catalog = readExpansionCatalog(runtime);
         const passive = await lowLevel.readExpansionStatus();
-        assertDaemonViewReadable(passive, 'the expansion catalog');
+        assertDaemonViewObserved(passive, 'the expansion catalog');
         const expansionByName =
           passive.status === 'available' ? new Map(passive.expansions.map((entry) => [entry.name, entry])) : new Map();
         const currentIds = new Set([
@@ -410,7 +428,7 @@ export function createCliExpansionActivation(): CliExpansionActivation {
         const entry = resolveCatalogManifest(catalog, name);
         if (!entry) {
           const passive = await lowLevel.readExpansionStatus(name);
-          assertDaemonViewReadable(passive, `"${name}"`);
+          assertDaemonViewObserved(passive, `"${name}"`);
           const retired =
             passive.status === 'available' ? passive.expansions.find((view) => view.name === name) : undefined;
           if (retired !== undefined) {
@@ -423,7 +441,7 @@ export function createCliExpansionActivation(): CliExpansionActivation {
         }
 
         const passive = await lowLevel.readExpansionStatus(name);
-        assertDaemonViewReadable(passive, `"${name}"`);
+        assertDaemonViewObserved(passive, `"${name}"`);
         return infoResultSchema.parse({
           status: 'info',
           package: toCatalogEntry(

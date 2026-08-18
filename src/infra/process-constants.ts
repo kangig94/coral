@@ -41,8 +41,26 @@ export const EXEC_MAXBUFFER_CODE = 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
 /**
  * Errnos from a failed subprocess *launch* that are a standing fact about this environment rather than about
  * this moment: git is not installed, or this process may not execute it, or the working directory is not one.
- * None of them changes under a running daemon, so a probe that fails with one has answered and its answer may
- * be cached.
+ * None of them changes under a running daemon, so a repeat launch of the same command fails the same way again
+ * — that is the one thing membership in this set says on its own.
+ *
+ * It does not say the probe's *question* was answered. Standing describes the launch failure itself, not what
+ * the caller asked with it: a probe launched to learn whether a directory is a git repository, or a project has
+ * a remote, asks a domain question that `ENOENT` on `git` never touches — the binary being absent says nothing
+ * about the repository. A `launch-refused` outcome (`ExecOutcome`, `infra/port-types.ts`) is therefore not
+ * `answered` for a caller asking a domain question, and must be treated exactly like `no-answer`: indecisive,
+ * remembered only for `INDECISIVE_PROBE_REPROBE_INTERVAL_MS`. Conflating the two is how a missing `git` binary
+ * became a cached, durably wrong "not a repository" — the caller's whole domain question, decided by evidence
+ * that never addressed it.
+ *
+ * Because the failure is standing rather than transient, that reprobe never resolves on a permanently broken
+ * host — but it stays a flat, cheap cost (one probe per interval, forever) rather than a wrong answer cached
+ * for the daemon's life, which is the trade this set exists to make affordable.
+ *
+ * A caller whose own question IS "can this binary be launched at all" is different, and reads this set
+ * directly rather than going through `ExecOutcome`: `live-work-registry.mjs`'s flock probe asks exactly that —
+ * not anything about the lock it would take — so for it a launch failure in this set is itself the decisive
+ * answer, routed to its own designed fallback (an mtime window) rather than a re-probe.
  *
  * The enumeration is on this side deliberately, and the reason is which mistake it makes cheap. Listing the
  * *transient* errnos instead puts the dangerous outcome on the default: every errno nobody thought of becomes

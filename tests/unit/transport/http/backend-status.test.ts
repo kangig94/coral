@@ -137,6 +137,22 @@ describe('getBackendStatusFull record disposition', () => {
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'not_running' });
   });
 
+  // `probeUnauthenticatedPing`'s guard is `namespace !== ... || flavor !== ...`: a namespace-only mismatch
+  // exercises just the left side. Deleting `|| body.flavor !== info.flavor` left this suite green until this
+  // test existed, because nothing sent a body agreeing on namespace and disagreeing only on flavor.
+  it('reports not_running for a peer whose flavor disagrees, even with a matching namespace', async () => {
+    mockState.observed = { kind: 'addressed', coordinator: backendInfo(), pidLiveness: 'alive' };
+    const foreignFlavorPing = { ...JSON.parse(ping('ok')), flavor: 'dev' } as Record<string, unknown>;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify(foreignFlavorPing), { status: 200 })),
+    );
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'not_running' });
+  });
+
   // This is the payload the test above used to send: it fails `isBackendPing` (no `version`, `bundleHash`,
   // `instanceId`, or `pid`), so it is a shape rejection, not a namespace disagreement — and proves nothing
   // about whose coordinator answered. Must not fall into `notOurCoordinator`'s `not_running`.
@@ -369,6 +385,20 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'not_running' });
   });
 
+  // Same gap as the ping probe, one level down: `probeDetailedHealth`'s guard is also `namespace !== ... ||
+  // flavor !== ...`, and nothing exercised the flavor-only side of it here either.
+  it('reports not_running for a peer whose flavor disagrees only at the detailed probe', async () => {
+    const foreignFlavorDetailed = { ...JSON.parse(detailed('ok')), flavor: 'dev' } as Record<string, unknown>;
+    stubProbes(
+      new Response(ping('ok'), { status: 200 }),
+      new Response(JSON.stringify(foreignFlavorDetailed), { status: 200 }),
+    );
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'not_running' });
+  });
+
   // Same split as the ping probe: a detailed body this build cannot decode proves nothing about whose
   // coordinator answered, so it must not fall into `notOurCoordinator`'s `not_running`.
   it('reports unreachable, not not_running, for a 200 detailed body this build cannot decode', async () => {
@@ -401,6 +431,30 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
       status: 'unreachable',
       detail: 'getaddrinfo ENOTFOUND coordinator.example',
+      responded: false,
+    });
+  });
+
+  // Node's `fetch` rejects a refused connection with a `TypeError` whose own `.message` is the generic "fetch
+  // failed" and whose `.code` is `undefined`; the errno travels on `.cause` instead (same measurement as
+  // `shutdown.ts`'s `nodeErrnoCode`, `backend-shutdown.test.ts`). Without unwrapping `.cause`, this branch
+  // reported the generic message here while `backend shutdown` already reported the real errno for the
+  // identical failure — one fact, two different words in two commands asking the same question.
+  it('reports the errno from .cause rather than the generic fetch-failed message', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw Object.assign(new TypeError('fetch failed'), {
+          cause: Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:4321'), { code: 'ECONNREFUSED' }),
+        });
+      }),
+    );
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
+      status: 'unreachable',
+      detail: 'ECONNREFUSED',
       responded: false,
     });
   });

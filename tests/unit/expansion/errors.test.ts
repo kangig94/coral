@@ -2,7 +2,7 @@ import { CommanderError } from 'commander';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 
-import { UserInputError } from '#src/cli/commands/expansion.js';
+import { UserInputError, expansionExitCode } from '#src/cli/commands/expansion.js';
 import { CoralSetupError } from '#src/runtime/errors.js';
 import { installErrorSchema } from '#src/expansion/rpc-contract.js';
 import { encodeInstallError } from '#src/cli/expansion/contract.js';
@@ -172,5 +172,39 @@ describe('encodeInstallError', () => {
       context: { name: 'vector' },
     });
     expect(installErrorSchema.parse(encoded)).toEqual(encoded);
+  });
+});
+
+describe('expansionExitCode', () => {
+  it('exits 0 for a non-error result', () => {
+    expect(expansionExitCode({ status: 'uninstalled' })).toBe(0);
+  });
+
+  it.each([
+    ['invalid_usage', 2],
+    ['missing_capability', 77],
+    ['child_credentials_incomplete', 77],
+    // `coordinator_record_unreadable` is observed and durable — retrying reads the same unreadable file — so
+    // it is exit 1, not a NOT_OBSERVED_CORAL_SETUP_ERROR_CODES member. See its doc comment in
+    // `runtime/errors.ts`.
+    ['coordinator_record_unreadable', 1],
+    ['unknown_expansion', 1],
+    ['unmapped_code', 1],
+  ] as const)('maps error code %s to exit %i', (code, exitCode) => {
+    expect(expansionExitCode({ status: 'error', code, userMessage: 'unused', remediation: 'unused' })).toBe(exitCode);
+  });
+
+  // `coordinator_unreachable` is this file's one live example of a `NOT_OBSERVED_CORAL_SETUP_ERROR_CODES`
+  // member reaching `expansionExitCode` — the errors.test.ts suite in tests/unit/cli asserts the general case
+  // by iterating the real exported set against both consumers.
+  it('exits 75 for coordinator_unreachable', () => {
+    expect(
+      expansionExitCode({
+        status: 'error',
+        code: 'coordinator_unreachable',
+        userMessage: 'unused',
+        remediation: 'unused',
+      }),
+    ).toBe(75);
   });
 });

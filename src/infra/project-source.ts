@@ -156,11 +156,14 @@ export function resolveProjectSource(projectRoot: string): string {
     }).trim();
   } catch (error: unknown) {
     const outcome = classifyThrownExecOutcome(error);
-    if (outcome.kind !== 'no-answer') {
+    // `answered` alone is decisive here: `launch-refused` is a standing fact about this machine, not a report
+    // about this project's remote (`process-constants.ts`'s `STANDING_PROBE_ERRNOS`), so it takes the same
+    // indecisive-with-expiry path as `no-answer` rather than being cached as "no remote" for the process's life.
+    if (outcome.kind === 'answered') {
       indecisiveProbeAt.delete(projectRoot);
       rememberProjectSource(projectRoot, local);
     } else {
-      rememberIndecisiveProbe(projectRoot, outcome.detail);
+      rememberIndecisiveProbe(projectRoot, outcome.kind === 'launch-refused' ? outcome.code : outcome.detail);
     }
     return local;
   }
