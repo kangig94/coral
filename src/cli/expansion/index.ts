@@ -330,6 +330,11 @@ export function createCliExpansionActivation(): CliExpansionActivation {
           ...catalog.map((entry) => entry.id),
           ...INSTALL_ONLY_PACKAGES.map((entry) => entry.id),
         ]);
+        // Retired residue is by definition what only the daemon knows, so an unreadable record yields an empty
+        // list. Recorded as a known omission rather than left to be read as "there is none": every
+        // equip-activated entry above already says `unavailable` on that path, which is the signal an operator
+        // has that this listing is partial. Saying it in the payload would need a field the schema does not
+        // have, and that is a wire change this does not make.
         const retiredResidue =
           passive.status === 'available'
             ? passive.expansions

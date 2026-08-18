@@ -623,6 +623,9 @@ describe('cli format', () => {
     it.each([
       ['unreadable_record', /may still be running/u],
       ['unreachable', /did not complete/u],
+      ['no_record', /no coordinator has recorded itself/u],
+      ['recorded_process_absent', /recorded coordinator process/u],
+      ['socket_refused', /socket refused the connection/u],
     ] as const)('renders shutdown reason %s as a sentence, not as a token', (reason, expected) => {
       const text = formatShutdown({ ok: false, reason, detail: 'corrupt-json' });
 
@@ -631,6 +634,17 @@ describe('cli format', () => {
         new RegExp(`Shutdown failed: ${reason}$`, 'u'),
       );
     });
+
+    // Three separate observations used to share one sentence, and that sentence named a socket dial only the
+    // third of them performs. Each must say what was actually looked at.
+    it.each([['no_record'], ['recorded_process_absent']] as const)(
+      'does not claim a socket dial for %s, which never made one',
+      (reason) => {
+        const text = formatShutdown({ ok: false, reason, detail: '4242' });
+
+        expect(text, 'only socket_refused observed the socket').not.toMatch(/socket refused|listening/u);
+      },
+    );
     const baseHealth = {
       status: 'ok' as const,
       version: '1.2.3',

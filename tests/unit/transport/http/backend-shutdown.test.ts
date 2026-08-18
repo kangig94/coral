@@ -17,8 +17,9 @@ vi.mock('#src/infra/bundle-manifest.js', () => ({
   readBuildFlavor: vi.fn(() => 'prod'),
 }));
 
+const livenessMock = vi.hoisted(() => vi.fn<() => 'alive' | 'absent' | 'unknown'>(() => 'alive'));
 vi.mock('#src/infra/node-process.js', () => ({
-  observeProcessLiveness: vi.fn(() => 'alive'),
+  observeProcessLiveness: livenessMock,
 }));
 
 vi.mock('#src/runtime/real.js', () => ({
@@ -190,8 +191,34 @@ describe('shutdownBackend', () => {
 
     const { shutdownBackend } = await import('#src/transport/http/backend/shutdown.js');
 
-    await expect(shutdownBackend('/plugin-root')).resolves.toEqual({ ok: false, reason: 'not_running' });
+    await expect(shutdownBackend('/plugin-root')).resolves.toEqual({ ok: false, reason: 'socket_refused' });
     vi.unstubAllGlobals();
+  });
+
+  // Each of these used to answer `not_running`, and the sentence rendered for that named a dial only the last
+  // one performs. Split so the reason carries which observation was actually made.
+  it('names an absent record as such, not as a refused socket', async () => {
+    mockState.read = { kind: 'missing' };
+    mockState.info = null;
+
+    const { shutdownBackend } = await import('#src/transport/http/backend/shutdown.js');
+
+    await expect(shutdownBackend('/plugin-root')).resolves.toEqual({ ok: false, reason: 'no_record' });
+  });
+
+  it('names a decisively gone recorded process as such', async () => {
+    mockState.read = { kind: 'record', record: backendInfo() };
+    mockState.info = backendInfo();
+    livenessMock.mockReturnValue('absent');
+
+    const { shutdownBackend } = await import('#src/transport/http/backend/shutdown.js');
+
+    await expect(shutdownBackend('/plugin-root')).resolves.toEqual({
+      ok: false,
+      reason: 'recorded_process_absent',
+      detail: '12345',
+    });
+    livenessMock.mockReturnValue('alive');
   });
 
   // `readBackendInfo` also returns null when `version`/`instanceId` are absent — fields the shutdown request

@@ -72,8 +72,15 @@ export function formatShutdown(result: ShutdownResult): string {
         'The coordinator may still be running and may still be serving; this is not a report that it stopped.',
         'Next step: run coral-cli backend status, then retry the shutdown.',
       ].join('\n');
-    case 'not_running':
-      return 'Backend not running: nothing was listening on the coordinator socket.';
+    // Three separate observations, and the sentence has to be the one that was made. An earlier version of
+    // this branch rendered them all as "nothing was listening on the coordinator socket", which was a claim
+    // about a dial that only the third of them performs.
+    case 'no_record':
+      return 'Backend not running: no coordinator has recorded itself.';
+    case 'recorded_process_absent':
+      return `Backend not running: the recorded coordinator process (pid ${result.detail ?? 'unknown'}) is gone.`;
+    case 'socket_refused':
+      return 'Backend not running: the coordinator socket refused the connection.';
     default:
       return `Shutdown failed: ${result.reason}`;
   }

@@ -46,10 +46,16 @@ export async function shutdownBackend(pluginRoot: string): Promise<ShutdownResul
   // `instanceId` is absent, which nothing here reads — the request needs `host`, `port` and `bootToken`, and
   // a record from a build that predates those two fields carries all three. Routing through it meant an
   // incumbent old enough to omit them was reported as not running and never asked to stop.
+  // Three different things used to answer `not_running`, and only one of them had dialled the socket. The
+  // reasons are separate so the sentence an operator reads names what was actually observed: no record at
+  // all, a recorded process seen to be gone, or a connection this process made and had refused.
   const record = read.kind === 'record' ? read.record : null;
+  if (record === null) {
+    return { ok: false, reason: 'no_record' };
+  }
   // Only an observed absence skips the shutdown request. Unknown still tries, which is the safe direction.
-  if (record === null || observeProcessLiveness(record.pid) === 'absent') {
-    return { ok: false, reason: 'not_running' };
+  if (observeProcessLiveness(record.pid) === 'absent') {
+    return { ok: false, reason: 'recorded_process_absent', detail: String(record.pid) };
   }
   const info = { ...record, host: record.host ?? DEFAULT_DISCOVERY_HOST };
 
@@ -78,7 +84,7 @@ export async function shutdownBackend(pluginRoot: string): Promise<ShutdownResul
     // for those tells an operator their daemon is stopped at the moment it is least likely to be.
     const code = (error as NodeJS.ErrnoException | undefined)?.code;
     if (code === 'ECONNREFUSED') {
-      return { ok: false, reason: 'not_running' };
+      return { ok: false, reason: 'socket_refused' };
     }
     return { ok: false, reason: 'unreachable', detail: code ?? errorMessage(error) };
   }
