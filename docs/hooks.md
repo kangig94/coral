@@ -122,7 +122,7 @@ Hook SQLite access goes through the supported Node runtime's built-in `node:sqli
 It also:
 
 - adds `Bash(node *coral-cli*)` permission to `.claude/settings.local.json`
-- on every valid project SessionStart, migrates Coral's exact legacy project entry from the Git-root `.gitignore` into `.claude/.gitignore`; this is independent of `CORAL_AUTO_SYMLINK`
+- on every valid project SessionStart, maintains the two entries Coral owns in `.claude/.gitignore` — `coral` for the symlink, and `*.coral-*.tmp` for the temp files its own atomic writes leave behind if interrupted — and migrates Coral's exact legacy project entry out of the Git-root `.gitignore`; this is independent of `CORAL_AUTO_SYMLINK`. Both entries are appended only when absent, so a build that writes one of them and a build that writes both leave the same file usable to each other.
 - when `CORAL_AUTO_SYMLINK=1`, ensures the scoped ignore first and then creates `.claude/coral -> ~/.coral/projects/{slug}/`
 - runs ignore maintenance in a time-bounded child process; unsafe, oversized, changed-during-write, or non-regular ignore paths fail closed without removing legacy protection
 - refreshes the HUD only for prod builds; `hud-auto-update.mjs` exits early for dev flavor even if the hook is registered locally
