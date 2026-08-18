@@ -8,6 +8,7 @@
 
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 
+import { backendLog } from '#src/infra/backend-log.js';
 import { createGitSyncController } from '#src/kb/curate/git-sync.js';
 import { INDECISIVE_PROBE_REPROBE_INTERVAL_MS } from '#src/infra/process-constants.js';
 import type { KbRuntime } from '#src/kb/contract.js';
@@ -172,5 +173,62 @@ describe('git-sync work-tree probe', () => {
     controller.gitAutoCommit('and again');
 
     expect(probeCount(), 'the recovered answer is decisive and is cached like any other').toBe(2);
+  });
+});
+
+// The operator turned git sync on. A cycle that skips it is a cycle that did not do the thing they enabled,
+// and skipping because `git remote` could not be run looks exactly like skipping because the repository has no
+// remote configured — the second is a settled fact, the first is nothing at all.
+//
+// The only thing separating them is the warning, and nothing asserted it: deleting the line left the whole
+// suite green, so the visibility that makes this refusal not-silent could be removed without a signal. §11
+// asks for the refusal to be visible; a log line nobody checks is one edit from not being.
+describe('git sync says so when it cannot tell whether a remote exists', () => {
+  function controllerWithRemoteProbe(remoteResult: ExecResult) {
+    const execSync = vi.fn(((_file: string, args: readonly string[]) => {
+      if (args[0] === IS_WORK_TREE[0] && args[1] === IS_WORK_TREE[1]) return answered('true');
+      if (args[0] === 'remote' && args.length === 1) return remoteResult;
+      return answered('');
+    }) as unknown as ExecSync);
+
+    return createGitSyncController({
+      kb: { markdownRoot: ROOT, version: 'test', time: { now: () => Date.now() } } as unknown as KbRuntime,
+      curateAssistant: { complete: async () => '' },
+      processPort: { execSync, exec: vi.fn() } as unknown as GitSyncRuntimePicks['processPort'],
+      storagePort: {
+        existsSync: () => false,
+        readFileSync: vi.fn(),
+        writeAtomicSync: vi.fn(),
+        statSync: vi.fn(),
+        rmSync: vi.fn(),
+      } as unknown as GitSyncRuntimePicks['storagePort'],
+      envPort: { get: (key: string) => (key === 'CORAL_KB_GIT_SYNC' ? '1' : undefined) },
+    });
+  }
+
+  it('warns when the remote probe could not be answered, rather than skipping silently', async () => {
+    const warn = vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
+    const controller = controllerWithRemoteProbe(couldNotRun('EAGAIN'));
+
+    await controller.gitSync();
+
+    expect(warn, 'the operator enabled this; a silent skip is the collapse the split removed').toHaveBeenCalledWith(
+      expect.stringContaining('could not list remotes'),
+    );
+    expect(warn.mock.calls.at(-1)?.[0], 'and it names what was observed').toContain('EAGAIN');
+    warn.mockRestore();
+  });
+
+  it('stays quiet when git answers that there is no remote, because that is a fact', async () => {
+    const warn = vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
+    const controller = controllerWithRemoteProbe(answered(''));
+
+    await controller.gitSync();
+
+    expect(
+      warn.mock.calls.filter((call) => String(call[0]).includes('could not list remotes')),
+      'a settled answer is not a non-answer, and must not be reported as one',
+    ).toEqual([]);
+    warn.mockRestore();
   });
 });

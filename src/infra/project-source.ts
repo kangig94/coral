@@ -68,10 +68,15 @@ export function parseRemoteSource(remote: string): string | null {
 }
 
 function rememberIndecisiveProbe(projectRoot: string, detail: string): void {
-  // Said out loud because this was the one site of five that declined in silence, and it is the one whose
-  // value lands on disk: `projectData` derives a directory from the string this function makes us fall back
-  // to, so a memo written now is filed under a name a later read will not look for. At most once per interval
-  // per root, since the hold below suppresses the re-probe.
+  // Said out loud because this decline is the one whose value lands on disk: `projectData` derives a
+  // directory from the string this function makes us fall back to, so a memo written now is filed under a
+  // name a later read will not look for. Every other site that declines on a non-answer either throws or
+  // returns a verdict its caller renders; this one returned a plausible string and said nothing. At most once
+  // per interval per root, since the hold below suppresses the re-probe.
+  //
+  // An earlier revision put a count here — "the one site of five" — and it went stale the next time a site
+  // was converted, which is the whole lesson of this branch applied to its own comments: a number in prose is
+  // a claim, and this one had nothing checking it.
   backendLog.warn(
     `Could not derive the project source for ${projectRoot} (${detail}); using the local fallback for now, which is not a statement that this project has no git remote.`,
   );

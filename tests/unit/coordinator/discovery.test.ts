@@ -318,4 +318,25 @@ describe('coordinator discovery', () => {
       record: { namespace: 'ns-d', token: 'token-d' },
     });
   });
+
+  // The fourth outcome, and the only one that is not a variant: a file that exists and cannot be *opened* is
+  // this process failing to read its own run directory, not a statement about the incumbent. `DiscoveryRead`
+  // says so in prose and nothing checked it — deleting the `ENOENT` guard turns every unreadable file into
+  // `missing`, which is the confident absence this whole type exists to stop, and no test noticed.
+  it.each([['EACCES'], ['EIO']] as const)('throws on a %s read rather than reporting no coordinator', async (code) => {
+    makeHome();
+    const { readDiscoveryRecordDisposition } = await importDiscovery();
+    const runtime = makeDiscoveryRuntime('prod');
+    const failing = {
+      ...runtime,
+      storage: {
+        ...runtime.storage,
+        readFileSync: () => {
+          throw Object.assign(new Error(code), { code });
+        },
+      },
+    } as DiscoveryRuntime;
+
+    expect(() => readDiscoveryRecordDisposition(failing)).toThrow(code);
+  });
 });
