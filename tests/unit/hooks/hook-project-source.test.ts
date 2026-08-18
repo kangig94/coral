@@ -14,16 +14,22 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { isOwnerId as isOwnerIdInDaemon } from '#src/infra/identifiers.js';
+import { isLivePhase as isLivePhaseInDaemon, jobPhaseSchema } from '#src/jobs/phase.js';
 import { parseRemoteSource as parseRemoteSourceInDaemon } from '#src/infra/project-source.js';
 import {
   INDECISIVE_PROBE_REPROBE_INTERVAL_MS as INDECISIVE_PROBE_REPROBE_INTERVAL_MS_IN_DAEMON,
   STANDING_PROBE_ERRNOS as STANDING_PROBE_ERRNOS_IN_DAEMON,
 } from '#src/infra/process-constants.js';
 
+// @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
+import { isLivePhase as isLivePhaseInHook } from '../../../clients/hooks/lib/jobs-state.mjs';
+
 const { execSyncMock } = vi.hoisted(() => ({ execSyncMock: vi.fn() }));
 vi.mock('node:child_process', () => ({ execSync: execSyncMock }));
 
 import {
+  isValidSessionId as isValidSessionIdInHook,
   parseRemoteSource as parseRemoteSourceInHook,
   resolveProjectSource,
   STANDING_PROBE_ERRNOS as STANDING_PROBE_ERRNOS_IN_HOOK,
@@ -175,5 +181,48 @@ describe('both lanes hold a non-answer for the same interval', () => {
   // claim that the two copies match was a comment, not a check.
   it('matches, so a new interval cannot be set on one lane alone', () => {
     expect(UNANSWERED_REPROBE_INTERVAL_MS_IN_HOOK).toBe(INDECISIVE_PROBE_REPROBE_INTERVAL_MS_IN_DAEMON);
+  });
+});
+
+// The two pins above cover the errno set and the reprobe interval. These are the rest of the class: every
+// value the hook lane must agree with the daemon on, spelled twice because hooks may not import from `src/`
+// (design-philosophy §6). Driven rather than compared, for the reason this file's header gives — a set
+// comparison answers only for the members both sides already list.
+
+describe('both lanes agree on which job phases are live', () => {
+  // `src/jobs/phase.ts` owns the enum; `clients/hooks/lib/jobs-state.mjs` re-spells the live subset to decide
+  // what a pre-compact snapshot carries. A phase added to the domain and not to the hook drops live jobs from
+  // that snapshot silently, which reads afterwards as "there was nothing running".
+  it('answers identically for every phase the domain declares', () => {
+    const disagreed = jobPhaseSchema.options.filter((phase) => isLivePhaseInHook(phase) !== isLivePhaseInDaemon(phase));
+
+    expect(disagreed).toEqual([]);
+  });
+});
+
+describe('both lanes accept the same identifiers', () => {
+  // `identPattern` (`src/infra/identifiers.ts`) and the hook's own copy decide whether a session id is usable
+  // at all. The hook rejecting one the daemon minted means a session whose work is recorded under an id no
+  // hook will look for; the reverse means a hook writing under an id nothing else reads.
+  it('agrees on every candidate, so neither lane trusts an id the other refuses', () => {
+    const candidates = [
+      'abc',
+      'a.b-c_1',
+      '9',
+      'A-1.b_2',
+      '-lead',
+      '.lead',
+      '_lead',
+      '',
+      ' ',
+      'has space',
+      'has/slash',
+      'tail-',
+      'ident\u00fc',
+    ];
+
+    const disagreed = candidates.filter((value) => isValidSessionIdInHook(value) !== isOwnerIdInDaemon(value));
+
+    expect(disagreed).toEqual([]);
   });
 });
