@@ -34,6 +34,15 @@ function flockFree(): void {
   // Acquired ⇒ the `-c true` command runs and execFileSync returns normally.
   execFileSyncMock.mockImplementation(() => Buffer.from(''));
 }
+function flockUnanswered(code: string): void {
+  // Killed by its own bound, or never forked — `status` stays null and a string `code` is what arrives.
+  execFileSyncMock.mockImplementation(() => {
+    const err = new Error(code) as NodeJS.ErrnoException & { status?: number | null };
+    err.code = code;
+    err.status = null;
+    throw err;
+  });
+}
 function flockUnavailable(): void {
   // flock(1) missing ⇒ spawn ENOENT.
   execFileSyncMock.mockImplementation(() => {
@@ -103,5 +112,38 @@ describe('live-work-registry: bg lock liveness (flock mocked)', () => {
     writeBgMarker('taskA.lock', BG_STALE_MS);
 
     expect(hasLiveWork(projectDir, SESSION, undefined)).toBe(false);
+  });
+
+  // `true` was the answer for every failure that was not ENOENT, and it is the one value here with no expiry:
+  // a probe that could not run made the task live for as long as the condition lasted, gating ralph and kb
+  // with nothing able to end it. The mtime window is the exit, so a non-answer has to reach it.
+  it.each([['ETIMEDOUT'], ['EAGAIN'], ['EMFILE']])(
+    'falls back to the mtime window when the lock probe fails with %s',
+    (code) => {
+      flockUnanswered(code);
+      writeBgMarker('task-unanswered.lock', BG_STALE_MS);
+
+      expect(hasLiveWork(projectDir, SESSION), 'a probe that could not answer must not assert the task is alive').toBe(
+        false,
+      );
+    },
+  );
+
+  it('still treats a stale-mtime task as live when the probe could not answer but activity is fresh', () => {
+    flockUnanswered('EAGAIN');
+    writeBgMarker('task-fresh.lock');
+
+    expect(hasLiveWork(projectDir, SESSION), 'the window decides, not the failed probe').toBe(true);
+  });
+
+  it('bounds the lock probe, because a hook has no event loop to interrupt a synchronous child with', () => {
+    flockFree();
+    writeBgMarker('task-bounded.lock');
+
+    hasLiveWork(projectDir, SESSION);
+
+    expect(execFileSyncMock).toHaveBeenCalled();
+    const options = execFileSyncMock.mock.calls[0]?.[2] as { timeout?: number } | undefined;
+    expect(options?.timeout, 'zero and undefined are both "no bound" to execFileSync').toBeGreaterThan(0);
   });
 });

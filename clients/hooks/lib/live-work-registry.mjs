@@ -38,6 +38,10 @@ const BG_DIR = 'bg';
 const SUBAGENT_WINDOW_MS = 60 * 60_000; // 60 min without transcript activity ⇒ presumed dead
 const BG_MTIME_WINDOW_MS = 30_000; // flock-absent fallback: no heartbeat within 30s ⇒ dead
 const BG_CLEANUP_TTL_MS = 60 * 60_000; // prune terminal/dead bg entries older than this
+// `flock -n` never blocks on the lock, so this bounds the fork itself, not the wait. A hook has no event loop
+// to interrupt a synchronous child with, so an unbounded one here stalls the hook — and a stalled hook is a
+// stalled Claude Code turn.
+const LOCK_PROBE_TIMEOUT_MS = 1_000;
 
 function sessionRoot(projectDir, sessionId) {
   return join(sandboxTmpDir(), WORK_DIR, projectPathKey(projectDir), sessionId);
@@ -262,15 +266,28 @@ function parseBgMarker(name) {
 
 // Probe whether an exclusive flock on `lockPath` is still held. Namespace-agnostic
 // (inode-based), so it works across the command-sandbox boundary where a pid
-// probe would not. Returns true (held/alive), false (free/dead), or null when
-// flock(1) is unavailable so the caller can fall back to the mtime window.
+// probe would not. Returns true (held/alive), false (free/dead), or null when the
+// probe could not answer, so the caller falls back to the mtime window.
+//
+// The three answers are the point, and only two of them used to be real: every failure that was not ENOENT
+// returned true. `flock` exiting non-zero is an answer — the lock is busy — but the fork losing to EAGAIN, or
+// the probe being killed, is not, and `true` is the one value here with no expiry behind it. `false` prunes,
+// `null` defers to a 30s window that ends on its own, and `true` says "this work is alive" for as long as the
+// condition lasts, which for a wedged machine is a background task that never stops gating ralph and kb.
+//
+// `err.status` is a number only when the child actually ran and exited; a launch failure or a timeout carries
+// a string `err.code` and `status: null`. That is the same split `src/infra/project-source.ts` makes, spelled
+// again rather than shared, because hook scripts may not import from `src/`.
 function lockHeld(lockPath) {
   try {
-    execFileSync('flock', ['-n', lockPath, '-c', 'true'], { stdio: 'ignore' });
+    execFileSync('flock', ['-n', lockPath, '-c', 'true'], {
+      stdio: 'ignore',
+      timeout: LOCK_PROBE_TIMEOUT_MS,
+    });
     return false; // acquired ⇒ not held
   } catch (err) {
-    if (err?.code === 'ENOENT') return null; // flock(1) not installed
-    return true; // non-zero exit ⇒ busy ⇒ held
+    if (typeof err?.status === 'number') return true; // flock ran and refused ⇒ busy ⇒ held
+    return null; // never ran, or was killed ⇒ no answer ⇒ let the mtime window decide
   }
 }
 
