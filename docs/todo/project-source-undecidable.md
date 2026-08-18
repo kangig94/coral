@@ -56,7 +56,7 @@ Two consequences, in increasing order of how hard they are to notice:
   could not answer is not merely filed oddly, it is discarded by the next recovery run as belonging to another
   source. Durable, outlives the process, and reads as an ordinary "no continuation to resume".
 
-  A second call at :820 is *not* part of that path, though an earlier revision of this entry folded it in. It
+  A second call at :820 is _not_ part of that path, though an earlier revision of this entry folded it in. It
   builds a `DiscussionSourceCoordinate` whose `sourceId` becomes a recovery-fact detail string, recomputed on
   every scan and never compared against a stored value — so it can be inconsistent between scans but cannot
   reject anything.
@@ -74,9 +74,19 @@ which is worse.
 - `containment-observation-deadline`, which is also about a synchronous probe that cannot be interrupted but
   asks whether a _deadline_ survives it, not what its answer means. Sharing the observation that a wedged
   subprocess blocks everything does not make them one entry, and neither fix produces the other.
-- `isGitRepo` in `src/kb/curate/git-sync.ts`, which had the same collapse and was fixed the same way on the
-  same day. It is not part of this entry because its residue is different: it gates behaviour rather than
-  naming anything, so a wrong answer suspends git sync for an interval and persists nothing.
+- `isGitRepo` in `src/kb/curate/git-sync.ts`, which had the same collapse. It is not part of this entry
+  because what a wrong answer costs there is different: it gates behaviour rather than naming anything, so the
+  KB stops committing for an interval. Not "persists nothing", which an earlier revision of this line claimed
+  and a reviewer corrected — uncommitted KB content is a durable divergence, it is simply not a durable _wrong
+  identity_, which is what this entry is about.
+
+  The two were also fixed differently, and the asymmetry is structural rather than pending. `isGitRepo` reads
+  an `ExecResult` from the runtime port and delegates to `classifyExecOutcome` (`src/runtime/ports.ts`), the
+  one owner of that rule. `resolveProjectSource` cannot: `runtime/real.ts` imports it to build
+  `paths.projectSource`, so it sits below the runtime composition and has no port to read a result from. It
+  calls `node:child_process` directly and inspects a _thrown_ error, which is a different input, and keeps its
+  own `probeWasDecisive`. Unifying them means moving project-source above the runtime, which is a larger change
+  than this entry and is not the thing this entry is waiting on.
 
 ## Required shape
 
