@@ -86,7 +86,7 @@ function formatNoRecordSocketPresentStatus(
     'Backend state is unknown: the coordinator IPC socket exists, but no discovery record has been written yet.',
     `Socket: ${result.socketPath}`,
     'A coordinator may still be starting, or this may be a stale socket left by one that did not exit cleanly; this is not a report that the backend is running or that it has stopped.',
-    'Next step: retry, and check the coordinator logs if it persists.',
+    'Next step: retry — a coordinator mid-boot writes its record within seconds. If it persists, the socket is stale: run any coral-cli mutating command (or start a Claude Code session) to relaunch, which clears a stale socket as it binds.',
   ].join('\n');
 }
 
@@ -186,7 +186,9 @@ function formatNoRecordSocketPresentShutdown(): string {
   return [
     'Shutdown not attempted: the coordinator IPC socket exists, but no discovery record has been written yet.',
     'A coordinator may still be starting, or this may be a stale socket left by one that did not exit cleanly; this is not a report that it stopped.',
-    SHUTDOWN_RETRY_NEXT_STEP,
+    // Not `SHUTDOWN_RETRY_NEXT_STEP`: `backend status` is a read, so for a stale socket it reports this same
+    // state forever and the two commands loop. Relaunching is what ends it — binding clears a stale socket.
+    'Next step: retry shortly in case a coordinator is mid-boot. If it persists, run any coral-cli mutating command (or start a Claude Code session) to relaunch, which clears a stale socket as it binds, then retry the shutdown.',
   ].join('\n');
 }
 

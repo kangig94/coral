@@ -14,13 +14,10 @@ export type AddressedCoordinator = CoordinatorDiscoveryRecord & { host: string }
 /**
  * What `backend status` and `backend shutdown` both learn about the local coordinator before they diverge.
  *
- * The two commands ask the same questions in the same order — can the record be read, was one written (and if
- * not, is a coordinator mid-boot), is the recorded process still there — and used to answer them separately.
- * That produced two vocabularies for
- * one subject: `undecodable_record` here and `unreadable_record` there for the same two lines reading the same
- * file, with `reason` typed on one side and a free-form `detail` on the other, rendered by the same `coral-cli
- * backend` surface. Two spellings of one observation is how they drifted apart twice on this branch — one
- * command was corrected and the other was not, in both directions.
+ * Both ask the same questions in the same order — can the record be read, was one written (and if not, is a
+ * coordinator mid-boot), is the recorded process still there. Answering them here rather than once per command
+ * is what holds one observation to one vocabulary: two spellings of it drift apart a correction at a time,
+ * because a fix lands on whichever command surfaced the defect and not on its twin.
  *
  * Each command still owns what it does *with* the answer: `status` folds absence into a startup-diagnostic
  * read, `shutdown` refuses before it ever dials. This type is the shared evidence, not the shared decision.

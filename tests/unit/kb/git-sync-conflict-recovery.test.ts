@@ -16,6 +16,7 @@ import { noteEntryId, type KbIndex } from '#src/kb/entry-types.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { RuntimeExecOptions } from '#src/runtime/ports.js';
 import type { ExecResult } from '#src/infra/port-types.js';
+import { backendLog } from '#src/infra/backend-log.js';
 import { createKbTestDb } from './runtime-test-helpers.js';
 import { createTestKbRuntime } from '../../fixtures/test-runtime.js';
 
@@ -672,6 +673,7 @@ describe('git sync conflict recovery', () => {
   // nothing to show for this path, and this pins that the quarantine table stays honestly empty rather than
   // claiming a row that does not exist.
   it('recovers a refused .entity-graph.json conflict without quarantining a path no KB entry maps to', async () => {
+    const warnSpy = vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
     const root = mkdtempSync(join(tmpdir(), 'coral-rebase-markerless-entity-graph-'));
     roots.push(root);
     process.env.CLAUDE_CONFIG_DIR = join(root, '.claude');
@@ -800,6 +802,13 @@ describe('git sync conflict recovery', () => {
       readCurateConflictQuarantine(curateDb(kb)),
       'no KB entry maps to .entity-graph.json, so the table stays empty rather than claiming a row',
     ).toEqual([]);
+    // An empty table is the condition, not the remedy. Recovery reports `recovered-unaccounted` rather than
+    // `recovered`, and this line is the whole of what an operator gets for a path `kb diagnose` cannot list —
+    // so it is the one thing here that must not be droppable without a test failing.
+    expect(
+      warnSpy.mock.calls.map(([message]) => String(message)).join('\n'),
+      'a path no quarantine row can key must still name itself, and where to recover it from',
+    ).toMatch(/Not tracked by 'kb diagnose'.*\.entity-graph\.json.*Recover them from refs\//su);
   });
 
   // S1: a delete/modify conflict is unmerged with no markers too, but for a reason the recovery diversion must
