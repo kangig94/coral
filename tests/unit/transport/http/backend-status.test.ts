@@ -452,6 +452,31 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
     });
   });
 
+  // The other half of `thrownErrnoCode`'s string check, and the half `backend status` renders on its own path:
+  // an `AbortSignal.timeout` rejection is a `DOMException` whose `.code` is the *number* `23` (measured on Node
+  // v26.3.1). `detail` is a string an operator reads, so a reader that took any `.code` would put `23` in a
+  // sentence about their coordinator. Driven by a shaped rejection rather than a real timeout because the
+  // subject is what the reader does with a numeric `code`, not how long a socket takes to give up.
+  it('does not render a numeric DOMException code as the detail an operator reads', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw Object.assign(new Error('The operation was aborted due to timeout'), {
+          name: 'TimeoutError',
+          code: 23,
+        });
+      }),
+    );
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
+      status: 'unreachable',
+      detail: 'The operation was aborted due to timeout',
+      cause: 'no_response',
+    });
+  });
+
   // Node's `fetch` rejects a refused connection with a `TypeError` whose own `.message` is the generic "fetch
   // failed" and whose `.code` is `undefined`; the errno travels on `.cause` instead (same measurement as
   // `thrownErrnoCode` in `src/infra/error-format.ts`, and `backend-shutdown.test.ts`). Without unwrapping
