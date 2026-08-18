@@ -212,13 +212,15 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
     case 'no-record':
       return noDaemonStatus(runtime.storage, runtime.paths.coral.coordinator.startupDiagnosticFile, runtime.time.now());
     case 'process-absent':
-      // Absence is established, so the startup diagnostic may explain it — scoped to this pid so a stale
-      // diagnostic from another run cannot be read as this one's failure.
+      // Absence is established, so the startup diagnostic may explain it — scoped to both halves of the dead
+      // coordinator's identity, because either alone admits a diagnostic that is not this run's. A pid is
+      // reused, so an old diagnostic naming the same number passes a pid-only check; a `startedAt` floor alone
+      // admits any later run's. `notOurCoordinator` below passes the same pair for the same reason.
       return noDaemonStatus(
         runtime.storage,
         runtime.paths.coral.coordinator.startupDiagnosticFile,
         runtime.time.now(),
-        undefined,
+        observed.startedAt,
         observed.pid,
       );
     case 'addressed':

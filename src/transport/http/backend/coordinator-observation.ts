@@ -30,8 +30,16 @@ export type CoordinatorObservation =
   | Readonly<{ kind: 'unreadable-record'; reason: 'corrupt-json' | 'shape-rejected'; path: string }>
   /** No coordinator recorded itself. A real absence. */
   | Readonly<{ kind: 'no-record' }>
-  /** A record names a pid that decisively no longer exists. Also a real absence, and it names the pid. */
-  | Readonly<{ kind: 'process-absent'; pid: number }>;
+  /**
+   * A record names a pid that decisively no longer exists. Also a real absence.
+   *
+   * It carries both halves of the dead coordinator's identity because absence is where they are needed:
+   * `status` reads a startup diagnostic to explain the absence, and a diagnostic is only this coordinator's if
+   * it names this pid *and* was recorded no earlier than this run began. Dropping `startedAt` here left the pid
+   * as the sole scope, and a pid is reused — so the recycled-pid case this pairing exists to exclude came back
+   * silently, under a comment still claiming it was excluded.
+   */
+  | Readonly<{ kind: 'process-absent'; pid: number; startedAt: number }>;
 
 export function observeCoordinator(
   runtime: DiscoveryRuntime & { paths: { readonly coral: CoralPaths } },
@@ -52,7 +60,7 @@ export function observeCoordinator(
   // Only an observed absence is an absence. `unknown` keeps the record and lets the caller try, which is the
   // safe direction for both of them: status goes on to ask health, shutdown goes on to send the request.
   if (observeProcessLiveness(record.pid) === 'absent') {
-    return { kind: 'process-absent', pid: record.pid };
+    return { kind: 'process-absent', pid: record.pid, startedAt: record.startedAt };
   }
   return { kind: 'addressed', coordinator: { ...record, host: record.host ?? DEFAULT_DISCOVERY_HOST } };
 }

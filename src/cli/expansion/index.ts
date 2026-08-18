@@ -128,10 +128,16 @@ function unknownExpansionResponse(name: string) {
  */
 function assertDaemonViewReadable(passive: ExpansionStatus, subject: string): void {
   if (passive.status === 'unreadable') {
-    throw new Error(
-      `Cannot report ${subject}: the coordinator discovery record could not be read (${passive.detail}). ` +
-        'Every status here is a statement about the coordinator, and it was not asked. Run coral-cli backend status.',
-    );
+    // A documented setup error rather than a bare `Error`. `encodeInstallError` maps anything else to
+    // `unknown_error`, whose remediation is "retry once, then report it" — advice that is wrong here in the
+    // specific way §11 warns about: the retry reads the same unreadable file and reaches the same refusal, so
+    // the hold names no exit. The sentence naming the real exit was already written; it was landing in
+    // `userMessage` while the `remediation` field contradicted it.
+    throw documentedCoralSetupError({
+      code: 'coordinator_record_unreadable',
+      subject,
+      detail: passive.detail,
+    });
   }
 }
 

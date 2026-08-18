@@ -53,6 +53,7 @@ export type DocumentedCoralSetupErrorCode =
   | 'recovery_quarantine_retry_in_progress'
   | 'expansion_binary_corrupt'
   | 'installer_payload_invalid'
+  | 'coordinator_record_unreadable'
   | 'unknown_expansion'
   | 'expansion_bundled_immutable'
   | 'expansion_runtime_unavailable'
@@ -365,6 +366,18 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
     userMessage: 'Expansion installer returned an invalid payload.',
     remediation:
       'Retry the command. If this persists, report the code because the installer response failed internal validation.',
+  },
+  /**
+   * Documented rather than left to `unknown_error`, whose remediation is "retry once" — the one thing that
+   * cannot help here. Every expansion status is a statement about the coordinator, and this build could not
+   * read the record that names it: the same read fails the same way next time, so the exit is looking at the
+   * record, not repeating the command.
+   */
+  coordinator_record_unreadable: {
+    userMessage: (context) =>
+      `Coral cannot report ${stringContextValue(context, 'subject', 'expansion status')}: the coordinator discovery record could not be read (${stringContextValue(context, 'detail', 'unknown')}). Every status here is a statement about the coordinator, and it was not asked.`,
+    remediation:
+      "Run 'coral-cli backend status', which names the record file and how to clear it. Retrying this command reads the same file.",
   },
   unknown_expansion: {
     userMessage: (context) =>

@@ -453,7 +453,7 @@ describe('cli main routing', () => {
     expect(stdout).toBe('');
     expect(stderr).toMatch(/cannot shut down its parent coordinator/u);
     expect(stderr, 'the remedy is the point of this refusal').toMatch(/top-level Coral session/u);
-    // 1, not 2: this run established the refusal. The undetermined reasons are the ones that exit 2.
+    // 1, not 75: this run established the refusal. The undetermined reasons are the ones that exit 75.
     expect(process.exitCode).toBe(1);
   });
 
@@ -461,20 +461,39 @@ describe('cli main routing', () => {
   // operators to run it before `store-reset discard`. Every failure exited 1 alike, so a script could not tell
   // "it is stopped, proceed" from "I could not tell" — the disposition the type had just gained, discarded at
   // the boundary that carries it out of the process.
-  it.each([
+  //
+  // 75 rather than 2, which an earlier revision used: 2 is `invalid_usage` across this CLI, so "you called
+  // this wrong" and "I could not observe the daemon" would have shared a code.
+  const SHUTDOWN_EXIT_EXPECTATIONS = [
     ['no_record', 1],
     ['recorded_process_absent', 1],
     ['socket_refused', 1],
-    ['unreadable_record', 2],
-    ['unreachable', 2],
-  ] as const)('exits %s with %s', async (reason, expected) => {
+    ['nested_child', 1],
+    ['capability_rejected', 1],
+    ['unreadable_record', 75],
+    ['unreachable', 75],
+  ] as const;
+
+  it.each(SHUTDOWN_EXIT_EXPECTATIONS)('exits %s with %s', async (reason, expected) => {
     const { buildProgram } = await loadMainModule();
     const program = buildProgram();
     mockState.shutdownBackend.mockResolvedValueOnce({ ok: false, reason });
 
     await program.parseAsync(['node', 'coral-cli', 'backend', 'shutdown']);
 
-    expect(process.exitCode, 'observed refusals exit 1; unobserved state exits 2').toBe(expected);
+    expect(process.exitCode, 'observed refusals exit 1; unobserved state exits 75').toBe(expected);
+  });
+
+  // The rows above are written out by hand so they are an independent statement of the mapping rather than a
+  // read of it. This is what keeps them a *complete* statement: a new `ShutdownReason` gets an exit code in
+  // the production table and no row here, and that is the shape of every "the list is exhaustive" claim this
+  // branch found to be stale.
+  it('has a row for every refusal the command can produce', async () => {
+    const { SHUTDOWN_REFUSAL_EXIT_CODES } = await import('#src/cli/commands/backend.js');
+
+    expect(SHUTDOWN_EXIT_EXPECTATIONS.map(([reason]) => reason).sort()).toEqual(
+      Object.keys(SHUTDOWN_REFUSAL_EXIT_CODES).sort(),
+    );
   });
 
   it('preserves top-level help output via snapshot', async () => {

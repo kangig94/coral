@@ -186,22 +186,29 @@ function hookOutputForHost(value) {
 const _projectSourceCache = new Map();
 /** When a root last failed to produce an answer, so a wedge is re-probed per interval rather than per call. */
 const _projectSourceUnanswered = new Map();
-// Errnos that are a standing fact about this machine rather than about this moment: git not installed, not
-// executable, no such directory. None changes while a hook session runs, so a probe that fails with one has
-// answered. The list is the standing side on purpose — a missed entry costs a re-probe, where listing the
-// transient side instead makes every unlisted errno a wrong identity nobody can see. Kept in step with
-// `STANDING_PROBE_ERRNOS` in `src/infra/process-constants.ts`, spelled again because hooks may not import from
-// `src/`.
-const STANDING_PROBE_ERRNOS = new Set(['ENOENT', 'EACCES', 'EPERM', 'ENOTDIR']);
+// Errnos from a failed subprocess *launch* that are a standing fact about this machine rather than about this
+// moment: the binary is not installed, not executable, or the working directory is not one. None changes while
+// a hook session runs, so a probe that fails with one has answered, and what it answered is "not here".
+//
+// The list is the standing side on purpose — a missed entry costs a re-probe, where listing the transient side
+// instead makes every unlisted errno a durable wrong answer nobody can see.
+//
+// The same enumeration as `STANDING_PROBE_ERRNOS` in `src/infra/process-constants.ts`, spelled again because
+// hooks may not import from `src/`, and asserted equal by `tests/unit/hooks/hook-project-source.test.ts` —
+// "kept in step" was the previous claim, and this branch found two other places where a sentence like that was
+// the only thing keeping two spellings together. It is the hook lane's one home for the set: the flock probe
+// in `live-work-registry.mjs` reads it too, for the same distinction on a different binary.
+export const STANDING_PROBE_ERRNOS = new Set(['ENOENT', 'EACCES', 'EPERM', 'ENOTDIR']);
 const UNANSWERED_REPROBE_INTERVAL_MS = 60_000;
 
 /**
  * The project's `<owner>/<repo>`, or `local/<basename>` when there is no remote to read.
  *
- * This string is an identity, not a label: `coralProjectDir` below turns it into `~/.coral/projects/<slug>`
- * with the same rule the daemon uses (`sourceToSlug` in `src/infra/path/index.ts`), and that directory holds
- * memos and is exported to every skill as `CORAL_PROJECT`. So the two lanes must agree, and only an answered
- * probe may be remembered.
+ * This string is an identity, not a label: `coralProjectDir` below turns it into
+ * `~/.coral/projects[-dev]/<slug>` with the same rule the daemon uses (`sourceToSlug` in
+ * `src/infra/path/index.ts`), and that directory holds memos and is exported to every skill as
+ * `CORAL_PROJECT`. So the two lanes must agree — a sentence that was here while they did not, which is why
+ * the agreement is now a table both implementations are driven over rather than a claim in a comment.
  *
  * Every failure used to be cached under `local/<basename>` permanently and silently, which meant one timeout
  * or one lost fork at hook time pinned a whole session's `CORAL_PROJECT` to a directory later reads do not
@@ -239,27 +246,64 @@ function computeProjectSource(projectDir, local) {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
       timeout: 2000,
-    })
-      .trim()
-      .replace(/\.git$/, '');
+    });
   } catch (err) {
     const answered = typeof err?.status === 'number' || STANDING_PROBE_ERRNOS.has(err?.code);
     return answered ? { answered: true, source: local } : { answered: false };
   }
 
-  const sshPath = remote.match(/^[^@]+@[^:]+:(.+)$/)?.[1];
-  const rawPath =
-    sshPath ??
-    remote
-      .replace(/^[^:]+:\/\//, '')
-      .replace(/^[^@/]+@/, '')
-      .replace(/^[^/]+\/+/, '');
-  const segments = rawPath.split('/').filter(Boolean);
-  return { answered: true, source: segments.length >= 2 ? `${segments.at(-2)}/${segments.at(-1)}` : local };
+  return { answered: true, source: parseRemoteSource(remote) ?? local };
 }
 
+function parseRemoteUrlPath(remote) {
+  try {
+    return new URL(remote).pathname.replace(/^\/+/, '').replace(/\/+$/, '');
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A remote URL as `<owner>/<repo>`, or `null` when it names no such pair.
+ *
+ * Rule for rule the same as `parseRemoteSource` in `src/infra/project-source.ts`, because the two lanes name
+ * the same directory. It was not: driven over nineteen remotes the two disagreed on five, and each
+ * disagreement is a memo filed under a name the other lane never looks up. A trailing slash after `.git`
+ * (`…/repo.git/`) gave `repo.git` here and `repo` there; a query string and a fragment survived into the slug
+ * here and not there; and a scheme-less path — `some/deep/owner/repo`, `/abs/path/owner/repo` — was accepted
+ * here as an identity and rejected there as unparseable.
+ *
+ * `new URL` rather than a chain of prefix strips is what closes three of those five, and stripping the
+ * trailing slash *before* `.git` closes the fourth. Exported only so a single table in
+ * `tests/unit/hooks/hook-project-source.test.ts` can drive both implementations: hooks may not import from
+ * `src/`, so this rule has to be written twice, and a claim that two spellings agree stays true only while
+ * something re-checks it. A comment asserting exactly that sat above this function while they diverged.
+ */
+export function parseRemoteSource(remote) {
+  const normalized = remote.trim().replace(/\/+$/, '').replace(/\.git$/, '');
+  if (!normalized) return null;
+
+  const sshPath = normalized.match(/^[^@]+@[^:]+:(.+)$/)?.[1];
+  const rawPath = sshPath ?? parseRemoteUrlPath(normalized);
+  if (!rawPath) return null;
+
+  const segments = rawPath.split('/').filter((segment) => segment.length > 0);
+  if (segments.length < 2) return null;
+
+  return `${segments[segments.length - 2]}/${segments[segments.length - 1]}`;
+}
+
+/**
+ * `~/.coral/projects[-dev]/<slug>` — the same directory `projectsPaths` (`src/infra/path/index.ts`) derives.
+ *
+ * The flavor was missing here while `resolveKbRoot` below already carried it, so on a dev build every skill's
+ * `CORAL_PROJECT` named the prod directory while the daemon wrote to `projects-dev` — a split nobody reports,
+ * because both directories are legitimate names. `tests/invariants/flavor-path-separation.test.ts` enforces
+ * this separation "uniformly" and scans `src/` only, which is how one lane kept a hard-coded name.
+ */
 export function coralProjectDir(projectDir) {
-  return join(coralStateRoot(), 'projects', resolveProjectSource(projectDir).replace(/\//g, '-'));
+  const projectsRoot = buildFlavor() === 'dev' ? 'projects-dev' : 'projects';
+  return join(coralStateRoot(), projectsRoot, resolveProjectSource(projectDir).replace(/\//g, '-'));
 }
 
 // Claude's config dir, honoring CLAUDE_CONFIG_DIR (set when launching `claude`,

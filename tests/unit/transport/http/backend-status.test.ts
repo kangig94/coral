@@ -11,8 +11,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BackendInfo } from '#src/infra/backend-discovery.js';
 import type { CoordinatorObservation } from '#src/transport/http/backend/coordinator-observation.js';
 
+const NOW = 1_700_000_000_000;
+
 const mockState = vi.hoisted(() => ({
   observed: { kind: 'no-record' } as CoordinatorObservation,
+  /** The startup diagnostic on disk, or `null` for none. */
+  diagnostic: null as string | null,
 }));
 
 // Mocked at the seam this function depends on. `status` and `shutdown` ask the same three questions about the
@@ -30,7 +34,8 @@ vi.mock('#src/runtime/real.js', () => ({
   createRealRuntime: vi.fn(() => ({
     storage: {
       readFileSync: () => {
-        throw Object.assign(new Error('no diagnostic'), { code: 'ENOENT' });
+        if (mockState.diagnostic === null) throw Object.assign(new Error('no diagnostic'), { code: 'ENOENT' });
+        return mockState.diagnostic;
       },
     },
     env: {},
@@ -63,6 +68,7 @@ function backendInfo(): BackendInfo {
 describe('getBackendStatusFull record disposition', () => {
   beforeEach(() => {
     mockState.observed = { kind: 'no-record' };
+    mockState.diagnostic = null;
   });
 
   // `vi.stubGlobal` replaces a process-wide binding, so cleanup cannot live at the tail of each test: an
@@ -145,4 +151,60 @@ describe('getBackendStatusFull record disposition', () => {
       });
     },
   );
+});
+
+/** A well-formed startup diagnostic, so only the scoping fields under test decide whether it is accepted. */
+function startupDiagnostic(recordedAt: number, pid: number): string {
+  return JSON.stringify({
+    schemaVersion: 1,
+    state: 'stopped_with_diagnostic',
+    retryable: false,
+    phase: 'startup_failed',
+    recordedAt: new Date(recordedAt).toISOString(),
+    pid,
+    error: { kind: 'other' },
+  });
+}
+
+// An absent coordinator is the one case where a diagnostic is allowed to explain the absence, so it is also
+// the one case where the wrong diagnostic becomes the reported cause. Two fields scope it and each admits
+// something alone: a pid is reused by the OS, and a `startedAt` floor without a pid admits any run after it.
+// The observation carried both, then carried only the pid for a while — under a comment that still said the
+// scoping held.
+describe('getBackendStatusFull scopes a startup diagnostic to the coordinator that died', () => {
+  const STARTED_AT = NOW - 100_000;
+  const PID = 12_345;
+
+  beforeEach(() => {
+    mockState.observed = { kind: 'process-absent', pid: PID, startedAt: STARTED_AT };
+  });
+
+  it('reports a diagnostic recorded during this run', async () => {
+    mockState.diagnostic = startupDiagnostic(STARTED_AT + 10_000, PID);
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
+      status: 'recent_failure',
+      phase: 'startup_failed',
+    });
+  });
+
+  it('ignores one recorded before this coordinator started, even though the pid matches', async () => {
+    // The recycled-pid case. Without the `startedAt` floor this reports a previous daemon's crash as the
+    // explanation for a coordinator that exited cleanly minutes later.
+    mockState.diagnostic = startupDiagnostic(STARTED_AT - 10_000, PID);
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'not_running' });
+  });
+
+  it('ignores one recorded during this run by a different pid', async () => {
+    mockState.diagnostic = startupDiagnostic(STARTED_AT + 10_000, PID + 1);
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'not_running' });
+  });
 });

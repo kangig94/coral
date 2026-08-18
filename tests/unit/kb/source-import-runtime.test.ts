@@ -467,11 +467,15 @@ describe('source import runtime isolation', () => {
           }
           if (command === '/usr/bin/marker_single') {
             markerExecOptions.push(options ?? {});
+            // The shape `runtime/exec-builder.ts` actually produces for its own timeout: a message *and* the
+            // `ETIMEDOUT` code. The code is what tells a timeout from a child killed from outside, and this
+            // fixture carried only the message — so it agreed with a reader that matched on the message and
+            // would have gone on agreeing with one that got the distinction wrong.
             return {
               stdout: '',
               stderr: '',
               status: null,
-              error: new Error('timeout: /usr/bin/marker_single'),
+              error: Object.assign(new Error('timeout: /usr/bin/marker_single'), { code: 'ETIMEDOUT' }),
             };
           }
           return { stdout: '', stderr: 'missing command', status: 1 };
@@ -789,8 +793,83 @@ describe('source import runtime isolation', () => {
         runtimeRoot: '/isolated-runtime',
         fileSizeLimitBytes: USER_SOURCE_IMPORT_MAX_BYTES,
       }),
-    ).resolves.toBe(true);
+    ).resolves.toBe('available');
 
     expect(observedPaths).toEqual(['/isolated-home/.local/bin:/usr/bin']);
+  });
+});
+
+// `which` has three outcomes and the converter used to see two. A probe that never ran arrived as "the tool is
+// not installed", and the negative answer here does not merely produce advice — it runs `install()`, which
+// downloads and writes uv and marker-pdf. That is a finalization authorized by evidence nobody produced, on a
+// machine that quite possibly already has both.
+describe('PdfMarkerConverter separates "not installed" from "could not check"', () => {
+  const ctx = (runtime: SourceImportRuntime) => ({
+    runtime,
+    runtimeRoot: '/isolated-runtime',
+    fileSizeLimitBytes: USER_SOURCE_IMPORT_MAX_BYTES,
+  });
+
+  /** The port resolves for a child that never answered; it does not reject. */
+  function locatorUnanswered(code: string): SourceImportRuntime {
+    return fakeRuntime({
+      process: {
+        exec: async () => ({
+          stdout: '',
+          stderr: '',
+          status: null,
+          error: Object.assign(new Error(code), { code }),
+        }),
+      },
+    });
+  }
+
+  it.each([['ETIMEDOUT'], ['EAGAIN']])('reports %s as undetermined, not as absent', async (code) => {
+    await expect(new PdfMarkerConverter().isAvailable(ctx(locatorUnanswered(code)))).resolves.toBe('undetermined');
+  });
+
+  it('still reports a locator that ran and found nothing as absent', async () => {
+    const runtime = fakeRuntime({
+      process: { exec: async () => ({ stdout: '', stderr: 'not found', status: 1 }) },
+    });
+
+    await expect(new PdfMarkerConverter().isAvailable(ctx(runtime))).resolves.toBe('absent');
+  });
+
+  it('does not install anything when it could not check for uv', async () => {
+    const commands: string[] = [];
+    const runtime = fakeRuntime({
+      process: {
+        exec: async (command) => {
+          commands.push(command);
+          return {
+            stdout: '',
+            stderr: '',
+            status: null,
+            error: Object.assign(new Error('EAGAIN'), { code: 'EAGAIN' }),
+          };
+        },
+      },
+    });
+
+    await expect(new PdfMarkerConverter().install(() => {}, ctx(runtime))).rejects.toThrow(
+      /Could not check whether uv is installed \(EAGAIN\)/,
+    );
+    expect(commands, 'only the locator ran; no installer was launched').toEqual(['which']);
+  });
+
+  it('refuses to convert without claiming marker_single is missing', async () => {
+    const root = tempRoot('coral-source-import-undetermined-');
+    const input = join(root, 'paper.pdf');
+    mkdirSync(root, { recursive: true });
+    writeFileSync(input, '%PDF test fixture\n', 'utf8');
+
+    await expect(
+      new PdfMarkerConverter().convert(input, {
+        runtime: locatorUnanswered('ETIMEDOUT'),
+        runtimeRoot: join(root, 'runtime'),
+        fileSizeLimitBytes: USER_SOURCE_IMPORT_MAX_BYTES,
+      }),
+    ).rejects.toThrow('this is not a report that it is missing');
   });
 });

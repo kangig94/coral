@@ -76,7 +76,10 @@ export async function shutdownBackend(pluginRoot: string): Promise<ShutdownResul
       return { ok: true, alreadyDraining: true };
     }
     if (response.status === 401) {
-      return { ok: false, reason: 'capability_rejected' };
+      // The pid travels with the refusal because it is the only thing an operator can act on here. The
+      // coordinator is alive and rejected the token from our own discovery record, so nothing this command
+      // offers will get in — and a refusal that names no exit is the shape §11 forbids.
+      return { ok: false, reason: 'capability_rejected', detail: String(info.pid) };
     }
     // Something answered at the address our own record names and did not accept the shutdown. That is the same
     // observation `getBackendStatusFull` reports as `unreachable`; this used to render as a bare

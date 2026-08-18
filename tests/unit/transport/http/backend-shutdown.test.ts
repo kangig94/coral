@@ -204,8 +204,7 @@ describe('shutdownBackend', () => {
   });
 
   it('names a decisively gone recorded process as such', async () => {
-    mockState.observed = { kind: 'addressed', coordinator: backendInfo() };
-    mockState.observed = { kind: 'process-absent', pid: 12345 };
+    mockState.observed = { kind: 'process-absent', pid: 12345, startedAt: 1 };
 
     const { shutdownBackend } = await import('#src/transport/http/backend/shutdown.js');
 

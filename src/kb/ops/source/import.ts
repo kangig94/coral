@@ -2,7 +2,8 @@ import { basename, delimiter, extname, isAbsolute, join, resolve } from 'node:pa
 import { writeAuditEvent } from '../../../infra/audit-log.js';
 import { nowIsoString } from '../../../infra/time.js';
 import { throwIfAborted } from '../../../runtime/abort.js';
-import type { EnvPort, StoragePort, TimePort } from '../../../infra/port-types.js';
+import { classifyExecOutcome, type EnvPort, type StoragePort, type TimePort } from '../../../infra/port-types.js';
+import { EXEC_TIMEOUT_CODE } from '../../../infra/process-constants.js';
 import type { ResourceBinding } from '../../../security/principal.js';
 import type { IdPort, ProcessPort } from '../../../runtime/ports.js';
 import { FRONTMATTER_BLOCK, serializeSourceFrontmatter } from '../../corpus/frontmatter.js';
@@ -88,11 +89,28 @@ export type SourceImportReadPolicy =
 export type ResolvedSourceImportFile = { path: string };
 
 // CLI-only source import converters. Keep npm conversion dependencies isolated here.
+/**
+ * Whether a converter's tooling is installed — three answers, because `install()` is what the negative one
+ * triggers and installing is a finalization.
+ *
+ * `undetermined` is the probe that never ran: `which`/`where` killed by its bound, or no process slot to fork.
+ * Collapsed into `absent`, that answer downloads and installs uv and marker-pdf over a machine that already
+ * has them, on evidence nobody produced. The same collapse in `cli-detection.ts` told operators to install a
+ * CLI they had; here it does not merely say so, it acts.
+ */
+type ConverterAvailability = 'available' | 'absent' | 'undetermined';
+
 interface Converter {
-  isAvailable(ctx: SourceImportContext): Promise<boolean>;
+  isAvailable(ctx: SourceImportContext): Promise<ConverterAvailability>;
   install(log: (msg: string) => void, ctx: SourceImportContext): Promise<void>;
   convert(filePath: string, ctx: SourceImportContext): Promise<ConversionResult>;
 }
+
+/** Where a command lives, or which of the two reasons this run does not have a path for it. */
+type CommandLocation =
+  | Readonly<{ kind: 'found'; path: string }>
+  | Readonly<{ kind: 'absent' }>
+  | Readonly<{ kind: 'undetermined'; detail: string }>;
 
 type MarkerDevice = 'auto' | 'cpu' | 'cuda' | 'mps';
 type MarkerTimeoutProfile = 'cpu' | 'cuda' | 'mps';
@@ -300,33 +318,51 @@ async function resolveMarkerCommandOptions(
   };
 }
 
-async function resolveCommandPath(command: string, ctx: SourceImportContext): Promise<string | undefined> {
+/**
+ * `which`/`where`, read for what it actually reported.
+ *
+ * A non-zero exit is the locator answering "not on this PATH" and is `absent`. A probe that never produced an
+ * exit — its own 10s bound, or a fork that failed — is `undetermined`, and it used to be `undefined` alongside
+ * the answer: indistinguishable at every call site, where it authorized a network install, a "not found after
+ * installation" error naming a cause nobody saw, and a refusal to convert.
+ */
+async function resolveCommandPath(command: string, ctx: SourceImportContext): Promise<CommandLocation> {
   const locator = ctx.runtime.env.platform() === 'win32' ? 'where' : 'which';
 
+  let result;
   try {
-    const result = await ctx.runtime.process.exec(locator, [command], {
+    result = await ctx.runtime.process.exec(locator, [command], {
       encoding: 'utf-8',
       env: commandEnv(ctx.runtime),
       inheritEnv: false,
       timeout: 10_000,
     });
-    if (result.status !== 0) {
-      return undefined;
-    }
-    for (const rawLine of result.stdout.split(/\r?\n/)) {
-      const line = rawLine.trim();
-      if (line.length > 0) {
-        return line;
-      }
-    }
-    return undefined;
-  } catch {
-    return undefined;
+  } catch (error: unknown) {
+    // The port resolves rather than rejecting for a failed child, so reaching here means the call itself
+    // failed — which is also not an answer about `command`.
+    return { kind: 'undetermined', detail: (error as Error | null)?.message ?? 'unknown error' };
   }
-}
 
-async function commandExists(command: string, ctx: SourceImportContext): Promise<boolean> {
-  return (await resolveCommandPath(command, ctx)) !== undefined;
+  const outcome = classifyExecOutcome(result);
+  switch (outcome.kind) {
+    case 'no-answer':
+      return { kind: 'undetermined', detail: outcome.detail };
+    case 'launch-refused':
+      // `which` itself could not be launched, and for a reason that will not change under this daemon. That
+      // says nothing about `command`, so it is not an absence either — it is a machine this check cannot run
+      // on.
+      return { kind: 'undetermined', detail: outcome.code };
+    case 'answered':
+      break;
+  }
+  if (outcome.status !== 0) return { kind: 'absent' };
+
+  for (const rawLine of result.stdout.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (line.length > 0) return { kind: 'found', path: line };
+  }
+  // Exit 0 with no path is the locator contradicting itself; treat it as the answer it gave, not as a hold.
+  return { kind: 'absent' };
 }
 
 async function runCommand(
@@ -344,10 +380,14 @@ async function runCommand(
     maxBuffer: 20 * 1024 * 1024,
     timeout: timeoutMs,
   });
-  if (result.status === 0) {
+  const outcome = classifyExecOutcome(result);
+  if (outcome.kind === 'answered' && outcome.status === 0) {
     return;
   }
-  if (result.status === null && result.error?.message.startsWith('timeout:')) {
+  // The port's own timeout, read from the `code` it stamps rather than from the prose of its message. The
+  // message prefix this used to match is set in three places in `runtime/`; matching it coupled this module to
+  // a sentence, and a sentence is not where a disposition lives.
+  if (outcome.kind === 'no-answer' && outcome.detail === EXEC_TIMEOUT_CODE) {
     const remediation = options.timeoutRemediation === undefined ? '' : ` ${options.timeoutRemediation}`;
     writeAuditEvent(
       'source_import_command_timeout',
@@ -360,6 +400,15 @@ async function runCommand(
       'warn',
     );
     throw new Error(`${displayName} timed out after ${formatDuration(timeoutMs)}.${remediation}`);
+  }
+  // Everything else that is not an exit: the child could not be launched, or was killed before it exited.
+  // Reported as itself rather than folded into the failure text below, which reads as the tool having run and
+  // rejected the input — a claim about a command nobody observed run.
+  if (outcome.kind !== 'answered') {
+    const detail = outcome.kind === 'launch-refused' ? outcome.code : outcome.detail;
+    throw new Error(
+      `${displayName} could not be run (${detail}); this is not a report that it failed. Retry the import.`,
+    );
   }
 
   const outputLines: string[] = [];
@@ -375,8 +424,7 @@ async function runCommand(
     outputLines.push(result.error.message);
   }
   const output = outputLines.join('\n');
-  const code = result.status === null ? 'unknown' : String(result.status);
-  throw new Error(output ? `${displayName} failed: ${output}` : `${displayName} exited with code ${code}`);
+  throw new Error(output ? `${displayName} failed: ${output}` : `${displayName} exited with code ${outcome.status}`);
 }
 
 function createPdfOutputDir(ctx: SourceImportContext): string {
@@ -714,9 +762,16 @@ export async function prepareSourceImport(
 
   if (signal !== undefined) throwIfAborted(signal, 'convert');
   log(`Converting ${sourceFilePath}`);
-  if (!(await converter.isAvailable(ctx))) {
+  const availability = await converter.isAvailable(ctx);
+  if (availability === 'absent') {
     log(`Installing converter dependencies for ${ext || 'source'} import`);
     await converter.install(log, ctx);
+  } else if (availability === 'undetermined') {
+    // Installing is the finalization here — it downloads and writes tooling — and nothing observed that it was
+    // needed. The exit is the operator retrying, which is an operation that exists.
+    throw new Error(
+      `Could not check whether the ${ext || 'source'} converter is installed, so Coral did not install one. Retry the import.`,
+    );
   }
 
   const converted = await converter.convert(sourceFilePath, ctx);
@@ -742,8 +797,8 @@ export async function prepareSourceImport(
 }
 
 class MarkdownCopyConverter implements Converter {
-  async isAvailable(_ctx: SourceImportContext): Promise<boolean> {
-    return true;
+  async isAvailable(_ctx: SourceImportContext): Promise<ConverterAvailability> {
+    return 'available';
   }
 
   async install(log: (msg: string) => void, _ctx: SourceImportContext): Promise<void> {
@@ -765,8 +820,9 @@ class MarkdownCopyConverter implements Converter {
 }
 
 class HtmlTurndownConverter implements Converter {
-  async isAvailable(_ctx: SourceImportContext): Promise<boolean> {
-    return missingPackages(['turndown']).length === 0;
+  async isAvailable(_ctx: SourceImportContext): Promise<ConverterAvailability> {
+    // A bundled dependency: present or not, with nothing to fail to observe.
+    return missingPackages(['turndown']).length === 0 ? 'available' : 'absent';
   }
 
   async install(log: (msg: string) => void, _ctx: SourceImportContext): Promise<void> {
@@ -788,8 +844,8 @@ class HtmlTurndownConverter implements Converter {
 }
 
 class DocxMammothConverter implements Converter {
-  async isAvailable(_ctx: SourceImportContext): Promise<boolean> {
-    return missingPackages(['mammoth', 'turndown']).length === 0;
+  async isAvailable(_ctx: SourceImportContext): Promise<ConverterAvailability> {
+    return missingPackages(['mammoth', 'turndown']).length === 0 ? 'available' : 'absent';
   }
 
   async install(log: (msg: string) => void, _ctx: SourceImportContext): Promise<void> {
@@ -817,14 +873,27 @@ class DocxMammothConverter implements Converter {
 }
 
 export class PdfMarkerConverter implements Converter {
-  async isAvailable(ctx: SourceImportContext): Promise<boolean> {
-    return commandExists('marker_single', ctx);
+  async isAvailable(ctx: SourceImportContext): Promise<ConverterAvailability> {
+    const located = await resolveCommandPath('marker_single', ctx);
+    switch (located.kind) {
+      case 'found':
+        return 'available';
+      case 'absent':
+        return 'absent';
+      case 'undetermined':
+        return 'undetermined';
+    }
   }
 
   async install(log: (msg: string) => void, ctx: SourceImportContext): Promise<void> {
-    let uvCommand = await resolveCommandPath('uv', ctx);
+    let uv = await resolveCommandPath('uv', ctx);
+    if (uv.kind === 'undetermined') {
+      throw new Error(
+        `Could not check whether uv is installed (${uv.detail}); Coral will not install over an unknown state. Retry the import.`,
+      );
+    }
 
-    if (!uvCommand) {
+    if (uv.kind === 'absent') {
       log('Installing uv...');
       if (ctx.runtime.env.platform() === 'win32') {
         await runCommand('powershell', ['-c', 'irm https://astral.sh/uv/install.ps1 | iex'], 'uv installer', ctx);
@@ -832,11 +901,15 @@ export class PdfMarkerConverter implements Converter {
         await runCommand('sh', ['-c', 'curl -LsSf https://astral.sh/uv/install.sh | sh'], 'uv installer', ctx);
       }
 
-      uvCommand = await resolveCommandPath('uv', ctx);
-      if (!uvCommand) {
+      uv = await resolveCommandPath('uv', ctx);
+      if (uv.kind === 'absent') {
         throw new Error('uv was not found after installation');
       }
+      if (uv.kind === 'undetermined') {
+        throw new Error(`uv was installed, but checking for it did not answer (${uv.detail}). Retry the import.`);
+      }
     }
+    const uvCommand = uv.path;
 
     log('Installing Python 3.12 + Marker...');
     const installEnv = ctx.runtime.env.fullSnapshot();
@@ -855,8 +928,14 @@ export class PdfMarkerConverter implements Converter {
       },
     );
 
-    if (!(await commandExists('marker_single', ctx))) {
+    const marker = await resolveCommandPath('marker_single', ctx);
+    if (marker.kind === 'absent') {
       throw new Error('marker_single was not found after installing marker-pdf');
+    }
+    if (marker.kind === 'undetermined') {
+      throw new Error(
+        `marker-pdf was installed, but checking for marker_single did not answer (${marker.detail}). Retry the import.`,
+      );
     }
   }
 
@@ -867,10 +946,14 @@ export class PdfMarkerConverter implements Converter {
       ctx.fileSizeLimitBytes,
       'KB source import PDF file',
     );
-    const markerCommand = await resolveCommandPath('marker_single', ctx);
-    if (!markerCommand) {
+    const marker = await resolveCommandPath('marker_single', ctx);
+    if (marker.kind === 'absent') {
       throw new Error('marker_single is not available');
     }
+    if (marker.kind === 'undetermined') {
+      throw new Error(`Could not check for marker_single (${marker.detail}); this is not a report that it is missing.`);
+    }
+    const markerCommand = marker.path;
 
     const outputDir = createPdfOutputDir(ctx);
 

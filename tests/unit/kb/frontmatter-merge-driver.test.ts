@@ -357,6 +357,11 @@ describe('frontmatter merge driver', () => {
     ['a timeout', { code: 'ETIMEDOUT', status: null }],
     ['a launch failure', { code: 'ENOENT', status: null }],
     ['an error carrying nothing recognisable', {}],
+    // Not a non-answer from the *port* — git ran and exited — but not a conflict count either. Above 127 the
+    // number is an error code: 129 is a usage error, 255 is git refusing the inputs. Both were read as
+    // "255 conflicts" and "129 conflicts" for as long as the predicate was `status > 0`.
+    ['git refusing the inputs (255)', { status: 255 }],
+    ['a usage error (129)', { status: 129 }],
   ])('refuses to touch the working-tree file when git merge-file answers with %s', (_label, props) => {
     const meta = {
       tags: ['seed'],
@@ -393,6 +398,67 @@ describe('frontmatter merge driver', () => {
 
     expect(written, 'the working-tree file must not be among the writes').not.toContain(oursPath);
     expect(readFileSync(oursPath, 'utf-8'), 'and it must be byte-identical to what the user had').toBe(original);
+  });
+
+  // The reachable half, with real git and no timeout involved. A KB note holding a NUL byte makes
+  // `git merge-file` exit 255 having written nothing — no merge, and no conflict markers either. Under a
+  // `status > 0` predicate that arrived as "255 conflicts", the driver wrote the *unmerged* body over the
+  // user's file and told git the merge conflicted; the next `git add` made it permanent. This is why the
+  // upper bound belongs to the same fix as the timeout refusal rather than beside it.
+  it('refuses when real git rejects a binary input, rather than reading 255 as a conflict count', () => {
+    const meta = {
+      tags: ['seed'],
+      principles: [],
+      source: ['kangig94/coral'],
+      createdAt: '2026-06-15T00:00:00.000Z',
+      updatedAt: '2026-06-15T00:00:00.000Z',
+    };
+    const oursPath = join(root, 'binary-note.md');
+    const basePath = join(root, 'binary-base.md');
+    const theirsPath = join(root, 'binary-theirs.md');
+    const original = renderNote(meta, 'the body the user still has');
+    writeFileSync(oursPath, original, 'utf-8');
+    writeFileSync(basePath, renderNote(meta, 'base body'), 'utf-8');
+    writeFileSync(theirsPath, renderNote(meta, 'incoming\u0000body'), 'utf-8');
+
+    expect(() =>
+      runFrontmatterMergeDriver(
+        { basePath, oursPath, theirsPath, filePath: 'notes/binary-note.md' },
+        createFrontmatterMergeHost(root),
+      ),
+    ).toThrow(FrontmatterMergeUnavailableError);
+
+    expect(readFileSync(oursPath, 'utf-8'), 'the working-tree file is what the user had').toBe(original);
+  });
+
+  it('still treats the top of the conflict range as a count, not an error', () => {
+    // git clamps its own conflict count at 127 so the error range stays distinguishable, so 127 is a real
+    // answer and must still reach the write. A bound set one too low silently discards merges.
+    const meta = {
+      tags: ['seed'],
+      principles: [],
+      source: ['kangig94/coral'],
+      createdAt: '2026-06-15T00:00:00.000Z',
+      updatedAt: '2026-06-15T00:00:00.000Z',
+    };
+    const oursPath = join(root, 'clamped-note.md');
+    const basePath = join(root, 'clamped-base.md');
+    const theirsPath = join(root, 'clamped-theirs.md');
+    writeFileSync(oursPath, renderNote(meta, 'ours body'), 'utf-8');
+    writeFileSync(basePath, renderNote(meta, 'base body'), 'utf-8');
+    writeFileSync(theirsPath, renderNote(meta, 'theirs body'), 'utf-8');
+
+    const host: FrontmatterMergeDriverHost = {
+      ...createFrontmatterMergeHost(root),
+      execFileSync: () => {
+        throw Object.assign(new Error('127 conflicts'), { status: 127 });
+      },
+    };
+
+    expect(runFrontmatterMergeDriver({ basePath, oursPath, theirsPath, filePath: 'notes/clamped.md' }, host)).toEqual({
+      status: 127,
+      bodyConflict: true,
+    });
   });
 
   it('still writes the working-tree file when git merge-file reports conflicts', () => {

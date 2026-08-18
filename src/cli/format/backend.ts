@@ -97,8 +97,9 @@ export function formatShutdown(result: ShutdownResult): string {
       ].join('\n');
     case 'capability_rejected':
       return [
-        'Shutdown refused: the coordinator rejected this shutdown capability.',
-        'It is running and did not accept the request, so stopping it needs manual intervention.',
+        "Shutdown refused: the coordinator rejected the boot token in this build's discovery record.",
+        `It is running (pid ${result.detail ?? 'unknown'}) and did not accept the request, so no retry of this command will get in.`,
+        'Next step: run coral-cli backend status to see which build is answering; if it is not this one, shut it down from its own install, or stop that pid directly.',
       ].join('\n');
     default:
       // The mechanism `formatBackendStatus` has and this function could not have while `reason` was `string`.

@@ -909,12 +909,18 @@ describe('cli format', () => {
 
     // Was `reason: 'unauthorized'` — a token no producer emits, pinning the raw-token render that the closed
     // union and the exhaustive switch now make impossible to reach.
-    it('formats a rejected shutdown capability as a refusal, not a token', () => {
-      const result = { ok: false, reason: 'capability_rejected' } satisfies ShutdownResult;
-      expect(formatShutdown(result)).toMatch(/rejected this shutdown capability/u);
+    it('formats a rejected shutdown capability as a refusal that names an exit', () => {
+      const result = { ok: false, reason: 'capability_rejected', detail: '4242' } satisfies ShutdownResult;
+      expect(formatShutdown(result)).toMatch(/rejected the boot token/u);
       expect(formatShutdown(result), 'the coordinator is up; this is not a report that it stopped').toMatch(
         /did not accept the request/u,
       );
+      // A refusal with nothing an operator can do is the shape §11 forbids, and this one said "needs manual
+      // intervention" while naming neither the process nor a command. The pid comes from our own record, and
+      // it is the only handle on a coordinator that will not accept our token.
+      expect(formatShutdown(result), 'the live coordinator is identified').toMatch(/pid 4242/u);
+      expect(formatShutdown(result), 'and the next step is a command that exists').toMatch(/coral-cli backend status/u);
+      expect(formatShutdown(result), 'retrying is the one thing that cannot work here').toMatch(/no retry/u);
     });
   });
 

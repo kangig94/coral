@@ -29,7 +29,7 @@ import { randomBytes } from 'node:crypto';
 import { mkdirSync, readdirSync, rmdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 
-import { claudeConfigDir, isValidSessionId } from './hook-utils.mjs';
+import { claudeConfigDir, isValidSessionId, STANDING_PROBE_ERRNOS } from './hook-utils.mjs';
 import { claudeProjectSlug, projectPathKey, sandboxTmpDir } from './plugin-paths.mjs';
 
 const WORK_DIR = 'coral-work';
@@ -297,6 +297,18 @@ function parseBgMarker(name) {
 // the probe is bounded, so the next hook invocation asks again, and a machine that recovers answers `false` on
 // its own. What the old code lacked was the bound, not this direction.
 //
+// Which failures get `null` is decided by whether the mtime window is *independent* of them, and that is a
+// wider set than "flock is not installed". `STANDING_PROBE_ERRNOS` is the same enumeration the project-source
+// probe uses, and it means the same thing here: a launch that failed this way failed on a standing fact about
+// this machine — no `flock` binary, no permission to execute it, no such directory — not on this moment.
+// Nothing about those conditions stops the heartbeat's `touch` and `sleep` from running, so the window still
+// reads a live timestamp and is the designed fallback for all four alike.
+//
+// The distinction matters because `true` here has no expiry. `EACCES` on `flock` does not clear while the
+// session runs, so routing it to `true` is not a conservative hold that the next hook re-asks — it is a
+// permanent one, gating ralph and kb for the rest of the session with no event that could end it. That is the
+// failure mode this function's own paragraph above argues against, arrived at from the other side.
+//
 // `err.status` is a number only when flock actually ran and exited.
 function lockHeld(lockPath) {
   try {
@@ -307,8 +319,8 @@ function lockHeld(lockPath) {
     return false; // acquired ⇒ not held
   } catch (err) {
     if (typeof err?.status === 'number') return true; // flock ran and refused ⇒ busy ⇒ held
-    if (err?.code === 'ENOENT') return null; // flock(1) absent ⇒ the mtime window is the designed fallback
-    return true; // could not ask ⇒ do not conclude the work is gone
+    if (STANDING_PROBE_ERRNOS.has(err?.code)) return null; // flock unusable here ⇒ the mtime window is designed for it
+    return true; // could not ask *this time* ⇒ do not conclude the work is gone; the next hook re-asks
   }
 }
 

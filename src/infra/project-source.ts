@@ -42,7 +42,15 @@ function parseRemoteUrlPath(remote: string): string | null {
   }
 }
 
-function parseRemoteSource(remote: string): string | null {
+/**
+ * A remote URL as `<owner>/<repo>`, or `null` when it names no such pair.
+ *
+ * Exported for one reason: `clients/hooks/lib/hook-utils.mjs` must spell this rule again — hooks may not
+ * import from `src/` — and both spellings name the same `~/.coral/projects[-dev]/<slug>` directory. A single
+ * table in `tests/unit/hooks/hook-project-source.test.ts` drives both, because the two had already diverged
+ * on five of nineteen remotes underneath a comment saying they must agree.
+ */
+export function parseRemoteSource(remote: string): string | null {
   const normalized = remote
     .trim()
     .replace(/\/+$/, '')
@@ -109,7 +117,7 @@ function probeDetail(error: unknown): string {
  * stalled mount becomes one blocking probe *per row* on the loops that call this. It is therefore cached with
  * an expiry, which is neither.
  *
- * `classifyThrownExecOutcome` (`runtime/ports.ts`) draws the line — the same owner `git-sync.ts` and both
+ * `classifyThrownExecOutcome` (`infra/port-types.ts`) draws the line — the same owner `git-sync.ts` and both
  * provider preflights use. This file reads a thrown error rather than an `ExecResult` only because it sits
  * below the runtime composition (`runtime/real.ts` imports it to build `paths.projectSource`) and so has no
  * port to read a result from; that is why the owner has two entry points rather than this file having its own

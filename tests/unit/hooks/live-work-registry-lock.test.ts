@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -69,14 +69,31 @@ afterEach(() => {
   }
 });
 
+function bgDir(): string {
+  return join(sandbox, 'coral-work', projectPathKey(projectDir), SESSION, 'bg');
+}
+
 function writeBgMarker(name: string, ageMs = 0): void {
-  const dir = join(sandbox, 'coral-work', projectPathKey(projectDir), SESSION, 'bg');
+  const dir = bgDir();
   mkdirSync(dir, { recursive: true });
   const file = join(dir, name);
   writeFileSync(file, '');
   if (ageMs > 0) {
     const seconds = (Date.now() - ageMs) / 1000;
     utimesSync(file, seconds, seconds);
+  }
+}
+
+function remainingLockIds(): string[] {
+  return readdirSync(bgDir())
+    .filter((name) => name.endsWith('.lock'))
+    .map((name) => name.slice(0, -'.lock'.length));
+}
+
+/** Leave one task in the registry, so a second sweep in the same test asks about that task alone. */
+function pruneOtherTasks(keepId: string): void {
+  for (const name of readdirSync(bgDir())) {
+    if (!name.startsWith(`${keepId}.`)) rmSync(join(bgDir(), name), { force: true });
   }
 }
 
@@ -141,6 +158,65 @@ describe('live-work-registry: bg lock liveness (flock mocked)', () => {
     flockFree();
 
     expect(hasLiveWork(projectDir, SESSION), 'a recovered machine answers, and the answer decides').toBe(false);
+  });
+
+  // The other half of the same question, and it took the opposite answer. `EACCES` on `flock` — present but
+  // not executable here — is a standing fact about the machine, not about this moment: it does not clear while
+  // the session runs, so `true` is not a hold the next hook re-asks its way out of. It is permanent, and it
+  // gates ralph and kb for the rest of the session with no event that can end it. Nothing about these errnos
+  // stops the heartbeat's `touch` and `sleep`, so the mtime window is independent of them and is the designed
+  // fallback, exactly as for a missing binary.
+  it.each([['EACCES'], ['EPERM'], ['ENOTDIR']])(
+    'falls back to the mtime window when flock is unusable here (%s), rather than gating forever',
+    (code) => {
+      flockUnanswered(code);
+      writeBgMarker('task-standing.started');
+      writeBgMarker('task-standing.lock');
+
+      expect(hasLiveWork(projectDir, SESSION), 'a fresh heartbeat still reads as live').toBe(true);
+
+      flockUnanswered(code);
+      writeBgMarker('task-standing-stale.started', BG_STALE_MS);
+      writeBgMarker('task-standing-stale.lock', BG_STALE_MS);
+      pruneOtherTasks('task-standing-stale');
+
+      expect(hasLiveWork(projectDir, SESSION), 'and a stopped one reads as dead, which `true` could never do').toBe(
+        false,
+      );
+    },
+  );
+
+  // The budget had no test at all: every assertion above drives a single task, and one task never reaches the
+  // deadline. A sweep that runs out of time has looked at nothing, so it prunes nothing and reports live —
+  // the same rule as an unanswered probe, applied to tasks that were never asked.
+  it('stops probing when the sweep budget is spent, and treats what it never looked at as live', () => {
+    for (const id of ['task-1', 'task-2', 'task-3']) {
+      writeBgMarker(`${id}.started`, BG_STALE_MS);
+      writeBgMarker(`${id}.lock`, BG_STALE_MS);
+    }
+    expect(remainingLockIds()).toHaveLength(3);
+
+    // Baseline: every probe is cheap, so all three are asked and all three answer "free" ⇒ nothing is live.
+    flockFree();
+    expect(hasLiveWork(projectDir, SESSION)).toBe(false);
+    expect(execFileSyncMock, 'the sweep visits every locked task when it can afford to').toHaveBeenCalledTimes(3);
+
+    // Same registry, one wedged probe. It spends the whole 2s budget on its own, and the deadline is checked
+    // before each remaining task rather than only per probe.
+    execFileSyncMock.mockReset();
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date());
+    execFileSyncMock.mockImplementation(() => {
+      vi.advanceTimersByTime(2_500);
+      return Buffer.from('');
+    });
+
+    const live = hasLiveWork(projectDir, SESSION);
+
+    expect(execFileSyncMock, 'the budget bounds the sweep, not just each probe').toHaveBeenCalledTimes(1);
+    expect(live, 'the two tasks nobody looked at were not observed to be gone').toBe(true);
+
+    vi.useRealTimers();
   });
 
   it('bounds the lock probe, because a hook has no event loop to interrupt a synchronous child with', () => {

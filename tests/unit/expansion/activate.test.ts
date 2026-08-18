@@ -398,6 +398,16 @@ describe('expansion activation', () => {
       'the false-absence code is the one thing this path must never produce',
     ).not.toBe('unknown_expansion');
     expect((response as { userMessage?: string }).userMessage).toMatch(/could not be read/u);
+    // And the remediation must be the one that can work. A bare `Error` here was encoded as `unknown_error`,
+    // whose remediation is "retry once" — the retry reads the same unreadable file and reaches the same
+    // refusal, so it named no exit at all. The accurate sentence was in `userMessage` while `remediation`
+    // contradicted it.
+    expect((response as { code?: string }).code).toBe('coordinator_record_unreadable');
+    expect((response as { remediation?: string }).remediation).toMatch(/coral-cli backend status/u);
+    expect(
+      (response as { remediation?: string }).remediation,
+      'the one action that cannot help must not be the advice',
+    ).not.toMatch(/^Retry once/u);
   });
 
   it('uses the settled build flavor for passive discovery when CORAL_FLAVOR is unset', async () => {

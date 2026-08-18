@@ -192,30 +192,56 @@ export class FrontmatterMergeUnavailableError extends Error {
 }
 
 /**
- * What a thrown `git merge-file` means — and the one case that is not a merge result at all.
- *
- * `git merge-file` answers by exiting: `0` merged cleanly, a positive count is that many conflicts, and it is
- * the caller's job to write the result. So a numeric `status` is an answer whatever its value.
- *
- * A throw carrying no numeric status is not, and it comes back as its own variant rather than as a number a
- * caller might act on. `execFileSync` reports its own timeout with `code: 'ETIMEDOUT'`
- * and `status: null`, and a launch failure the same way with an errno — and this used to fall through to
- * `return 1`, which for this command means "one conflict". That mattered more here than anywhere else on this
- * branch: `oursPath` is git's `%A`, the real working-tree file, and `runFrontmatterMergeDriver` writes it
- * unconditionally. So a probe that never ran wrote the *unmerged* body — with no conflict markers — over the
- * user's file while telling git the merge conflicted, and the next `git add` or conflict-resolution pass made
- * the loss permanent. Nothing observed the merge; something finalized it.
- *
- * The bound that makes this reachable on a healthy install is deliberate and stays (an unbounded synchronous
- * subprocess cannot be interrupted). What changes is that a non-answer now refuses instead of guessing.
+ * The largest number `git merge-file` will report as a conflict count. Above it the exit status stops being a
+ * count at all: git clamps its own count here precisely so the error range stays distinguishable.
  */
-type MergeFileOutcome = Readonly<{ kind: 'exited'; status: number }> | Readonly<{ kind: 'no-answer'; detail: string }>;
+const MAX_MERGE_FILE_CONFLICT_COUNT = 127;
+
+/**
+ * What a thrown `git merge-file` means — and the cases that are not a merge result at all.
+ *
+ * `git merge-file` answers by exiting: `0` merged cleanly, and `1`–`127` is that many conflicts, with the
+ * merged text — markers and all — left in `%A` for the caller to keep. Outside that range the number is not a
+ * count and no merge happened: `129` is a usage error, and `255` is git refusing the inputs, which is what a
+ * NUL byte anywhere in the three files produces. Both were measured against git 2.43 rather than reasoned
+ * about, and `255` is the one that matters, because git exits it having written *nothing* — no merge, and no
+ * conflict markers either.
+ *
+ * So a numeric status is read as an answer only inside the range where it is a count. Outside it, and when the
+ * throw carries no numeric status at all, the result comes back as its own variant rather than as a number a
+ * caller might act on. `execFileSync` reports its own timeout with `code: 'ETIMEDOUT'` and `status: null`, and
+ * a launch failure the same way with an errno — and this used to fall through to `return 1`, which for this
+ * command means "one conflict". That mattered more here than anywhere else on this branch: `oursPath` is git's
+ * `%A`, the real working-tree file, and `runFrontmatterMergeDriver` writes it unconditionally. So a probe that
+ * never ran wrote the *unmerged* body — with no conflict markers — over the user's file while telling git the
+ * merge conflicted, and the next `git add` or conflict-resolution pass made the loss permanent. Nothing
+ * observed the merge; something finalized it.
+ *
+ * A KB note holding a NUL byte reaches that same end through a different door, on an install with no timeout
+ * and nothing wedged, which is why the bound on the count belongs to this fix rather than beside it: the first
+ * version of this comment argued a numeric status was "an answer whatever its value", and the two values that
+ * disprove it are the two most likely to be seen.
+ *
+ * The bound that makes the timeout reachable on a healthy install is deliberate and stays (an unbounded
+ * synchronous subprocess cannot be interrupted). What changes is that a non-answer now refuses instead of
+ * guessing.
+ *
+ * `answered` rather than `exited`: this is the same distinction `classifyExecOutcome` (`infra/port-types.ts`)
+ * draws for every other subprocess here, and it does not get a second spelling for being local to one file.
+ * It stays a separate type because the input differs — that classifier reads an `ExecResult` from a port and
+ * this one reads a thrown `execFileSync` error against a command-specific exit range.
+ */
+type MergeFileOutcome =
+  | Readonly<{ kind: 'answered'; status: number }>
+  | Readonly<{ kind: 'no-answer'; detail: string }>;
 
 function classifyMergeFileFailure(error: unknown): MergeFileOutcome {
   if (typeof error === 'object' && error !== null && 'status' in error) {
     const status = (error as { status?: unknown }).status;
-    if (typeof status === 'number' && status > 0) {
-      return { kind: 'exited', status };
+    if (typeof status === 'number') {
+      return status > 0 && status <= MAX_MERGE_FILE_CONFLICT_COUNT
+        ? { kind: 'answered', status }
+        : { kind: 'no-answer', detail: `git merge-file exited ${status}` };
     }
   }
   const code = (error as NodeJS.ErrnoException | null)?.code;

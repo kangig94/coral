@@ -6,7 +6,7 @@
 // same file, with `reason` typed on one and free-form on the other. Each was then corrected once without the
 // other, in both directions. This file holds the shared answer so that cannot recur silently.
 
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type * as BackendDiscoveryModule from '#src/infra/backend-discovery.js';
 import type * as NodeProcessModule from '#src/infra/node-process.js';
@@ -55,6 +55,15 @@ function record(overrides: Partial<CoordinatorDiscoveryRecord> = {}): Coordinato
 }
 
 describe('observeCoordinator', () => {
+  // Reset here rather than at the tail of each test that mutates it. Three tests below set `liveness` and two
+  // restored it on their last line — a restore an assertion that throws skips, leaking `'absent'` into
+  // whatever ran next and turning one failure into a cascade that names the wrong test. The same reasoning
+  // already put an `afterEach` in `tests/unit/transport/http/backend-status.test.ts`.
+  beforeEach(() => {
+    mockState.read = { kind: 'missing' };
+    mockState.liveness = 'alive';
+  });
+
   it.each([['corrupt-json'], ['shape-rejected']] as const)(
     'reports a %s record as unreadable, carrying the path its remedy needs',
     (reason) => {
@@ -70,12 +79,18 @@ describe('observeCoordinator', () => {
     expect(observeCoordinator(runtime())).toEqual({ kind: 'no-record' });
   });
 
-  it('reports a decisively gone process as an absence, and names the pid', () => {
-    mockState.read = { kind: 'record', record: record() };
+  // Both halves of the dead coordinator's identity, because `status` scopes a startup diagnostic by both: a
+  // pid is reused, so a pid alone admits an older run's diagnostic as this one's explanation. Dropping
+  // `startedAt` from this variant re-opened that while the comment at the call site still claimed it was shut.
+  it('reports a decisively gone process as an absence, naming the pid and when it started', () => {
+    mockState.read = { kind: 'record', record: record({ pid: 4242, startedAt: 1_700_000_000_000 }) };
     mockState.liveness = 'absent';
 
-    expect(observeCoordinator(runtime())).toEqual({ kind: 'process-absent', pid: 4242 });
-    mockState.liveness = 'alive';
+    expect(observeCoordinator(runtime())).toEqual({
+      kind: 'process-absent',
+      pid: 4242,
+      startedAt: 1_700_000_000_000,
+    });
   });
 
   it('keeps the record when the pid could not be observed, because unknown is not absent', () => {
@@ -83,7 +98,6 @@ describe('observeCoordinator', () => {
     mockState.liveness = 'unknown';
 
     expect(observeCoordinator(runtime())).toMatchObject({ kind: 'addressed' });
-    mockState.liveness = 'alive';
   });
 
   it('defaults the host so neither command re-derives it', () => {

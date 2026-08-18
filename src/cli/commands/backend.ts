@@ -21,12 +21,6 @@ import { openReadOnlyStoreDatabase } from '../../store/read-port.js';
 import { getBackendStatusFull, type BackendStatusFull } from '../../transport/http/backend/status.js';
 import { shutdownBackend, type ShutdownReason } from '../../transport/http/backend/shutdown.js';
 
-/**
- * The `backend shutdown` failures where the coordinator's state was *not* established, so a caller must not
- * treat the command as having stopped anything. Exit 1 keeps its meaning — a refusal this run observed — and
- * exit 2 says the run could not observe.
- */
-const SHUTDOWN_UNDETERMINED_REASONS: ReadonlySet<ShutdownReason> = new Set(['unreadable_record', 'unreachable']);
 import { TOOL_TIMEOUT_MS } from '../../transport/http/sse.js';
 import { childPrincipalAuthFromEnv, childPrincipalAuthOptions } from '../../transport/ipc/child-principal-auth.js';
 import { IpcRpcError } from '../../transport/ipc/client.js';
@@ -58,6 +52,40 @@ import {
   RECOVERY_REVISION_UNTIL_CLEARED,
 } from '../format/backend.js';
 import { formatStoreResetList, formatStoreResetReport } from '../format/store-reset.js';
+
+/**
+ * What each `backend shutdown` refusal means to a script, as an exit code.
+ *
+ * `docs/configuration.md` tells operators to run `backend shutdown` before `store-reset discard` and
+ * `kb-commit quarantine`, so the question this code answers is "may I proceed to destroy state?" — and there
+ * are three answers, not two. Exit `0` is "it is stopping". Exit `1` is a refusal this run *observed*: the
+ * daemon was seen to be absent, or seen to be alive and unwilling. Exit `75` is the third — this run could not
+ * tell, so a caller must neither proceed nor read the outcome as failure. Every refusal exited `1` alike
+ * before, discarding at the boundary the disposition `ShutdownReason` had just gained.
+ *
+ * `75` rather than `2`, which an earlier revision used: `2` is `invalid_usage` (`docs/cli-errors.md`), so a
+ * script could not tell "you called this wrong" from "I could not observe the daemon". `75` is already this
+ * CLI's "not concluded, resume or retry" across `wait jobs` and every transient code, which is what both
+ * members below are.
+ *
+ * A `Record` rather than a set of the undetermined ones. A set answers only for its members and defaults the
+ * rest, so a new `ShutdownReason` silently inherits "observed" — the exact shape of the collapse this table
+ * exists to prevent. Here it fails to compile until someone decides, which is the same mechanism
+ * `formatShutdown`'s `assertNever` provides for the message.
+ */
+export const SHUTDOWN_REFUSAL_EXIT_CODES: Readonly<Record<ShutdownReason, 1 | 75>> = {
+  // Observed: nothing recorded itself, the recorded process is gone, or nothing was listening on the socket.
+  no_record: 1,
+  recorded_process_absent: 1,
+  socket_refused: 1,
+  // Observed: the coordinator answered and declined. It is running, and this run knows it.
+  capability_rejected: 1,
+  // Observed: this process refused to act, before asking anything. Retrying from the same child repeats it.
+  nested_child: 1,
+  // Not observed: the record could not be read, or the request never completed. A coordinator may be serving.
+  unreadable_record: 75,
+  unreachable: 75,
+};
 import { renderHandoffNotice } from '../handoff-notice.js';
 import { quarantineKbCommitLocal } from '../kb-commit-quarantine.js';
 import type { StoreResetTarget } from '../../store/operator-store-reset.js';
@@ -228,11 +256,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
       }
 
       process.stderr.write(text + '\n');
-      // The exit code is the only machine-readable channel this command has, and `docs/configuration.md` tells
-      // operators to run `backend shutdown` before `store-reset discard` and `kb-commit quarantine`. A script
-      // following that needs to tell "it is stopped, proceed" from "I could not tell, do not proceed" — and
-      // every failure exited 1 alike, discarding at the boundary the disposition the type had just gained.
-      process.exitCode = SHUTDOWN_UNDETERMINED_REASONS.has(result.reason) ? 2 : 1;
+      process.exitCode = SHUTDOWN_REFUSAL_EXIT_CODES[result.reason];
     } catch (error) {
       emitError(error);
     }
