@@ -48,7 +48,8 @@ export type DiscoveryRuntime = {
   paths: { readonly coral: CoralPaths };
 };
 
-const DEFAULT_DISCOVERY_HOST = '127.0.0.1';
+/** Where a record that names no host is assumed to be listening. Exported because two readers now need it. */
+export const DEFAULT_DISCOVERY_HOST = '127.0.0.1';
 
 const nonEmptyStringSchema = z.string().min(1);
 const positiveIntegerSchema = z.number().int().positive();
@@ -210,13 +211,18 @@ export type CoordinatorProbe =
  * a confident `not_running` from evidence they could not read, which is the same collapse this type exists to
  * end. They now consult `readDiscoveryRecordDisposition` first.
  *
- * That closes two of those three. The third is open and stated rather than left to be found: a record that
- * decodes and omits `version` or `instanceId` still reaches `!info` and still reports `not_running`. Nothing
- * this build writes produces one — `writeBackendInfo` takes a `BackendInfo`, where both are required — so the
- * case is a coordinator from a build that predates them, which is the cross-version scenario `.passthrough()`
- * exists for. Closing it means `status.ts` reporting from the raw record, whose `host`/`port`/`bootToken` are
- * all present, and deciding what to display where the version was. That is a change to what the command shows,
- * not a disposition fix, and it is not made here.
+ * That closes two of those three, and the third is now split rather than deferred whole. A record that decodes
+ * and omits `version` or `instanceId` makes `readBackendInfo` answer `null`, and nothing this build writes
+ * produces one — `writeBackendInfo` takes a `BackendInfo`, where both are required — so the case is a
+ * coordinator from a build that predates them, the cross-version scenario `.passthrough()` exists for.
+ *
+ * `shutdown.ts` no longer goes through that helper: the request it makes reads `host`, `port` and `bootToken`,
+ * all of which such a record carries, so routing through `readBackendInfo` meant an incumbent old enough to
+ * omit two unrelated fields was reported as not running and never asked to stop. It uses the decoded record.
+ *
+ * `status.ts` still does, and that half stays open on purpose: it *displays* the version, so reporting from
+ * the raw record is a decision about what the command shows where the version would be, not a disposition
+ * fix. The two halves looked like one entry until the consequences were written down separately.
  *
  * What binds all three is the rule rather than the shape: only an observed `'absent'` is an absence. There is
  * no invariant test behind that sentence and one was tried — see the rejection recorded in

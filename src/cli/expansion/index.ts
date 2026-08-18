@@ -113,14 +113,25 @@ function unknownExpansionResponse(name: string) {
   return encodeInstallError(documentedCoralSetupError('unknown_expansion', { name }));
 }
 
-function toCatalogEntry(
-  entry: EngineManifest,
-  runtime: Runtime,
-  passive: (ExpansionView & { slot?: string }) | null,
-): CatalogEntry {
+/**
+ * What the daemon said about one expansion, or that it could not be asked.
+ *
+ * A plain `entry | null` was not enough: `null` meant both "the daemon is not there, so nothing is equipped"
+ * — true, and `localCatalogStatus` derives the right answer from local files — and "we could not read the
+ * record", where the same derivation asserts `not_equipped` about state nobody checked. `list` did the second
+ * for every package on the branch that introduced the `unreadable` disposition, because only `info` was fixed.
+ */
+type DaemonExpansionView =
+  | Readonly<{ kind: 'read'; entry: (ExpansionView & { slot?: string }) | null }>
+  | Readonly<{ kind: 'unreadable' }>;
+
+function toCatalogEntry(entry: EngineManifest, runtime: Runtime, view: DaemonExpansionView): CatalogEntry {
+  const passive = view.kind === 'read' ? view.entry : null;
   const local = inspectExpansionInstallState(runtime, entry.id);
   const provides = passive?.provides ?? entry.provides;
-  const status = passive?.status ?? localCatalogStatus(entry, local);
+  // `unavailable` is already the enum's word for "coordinator unreachable" and is documented as such in
+  // `clients/skills/equip/SKILL.md`, so this needs no new status and no wire change.
+  const status = view.kind === 'unreadable' ? 'unavailable' : (passive?.status ?? localCatalogStatus(entry, local));
   return catalogEntrySchema.parse({
     id: entry.id,
     name: entry.id,
@@ -310,6 +321,9 @@ export function createCliExpansionActivation(): CliExpansionActivation {
         const runtime = resolveRuntime();
         const catalog = readExpansionCatalog(runtime);
         const passive = await lowLevel.readExpansionStatus();
+        // `unreadable` is not `unavailable`: one is a daemon that is not there, the other is a daemon we could
+        // not ask. Both leave `expansionByName` empty; only the second must stop the entries claiming a state.
+        const daemonViewUnreadable = passive.status === 'unreadable';
         const expansionByName =
           passive.status === 'available' ? new Map(passive.expansions.map((entry) => [entry.name, entry])) : new Map();
         const currentIds = new Set([
@@ -326,7 +340,15 @@ export function createCliExpansionActivation(): CliExpansionActivation {
         return catalogResultSchema.parse({
           status: 'catalog',
           packages: [
-            ...catalog.map((entry) => toCatalogEntry(entry, runtime, expansionByName.get(entry.id) ?? null)),
+            ...catalog.map((entry) =>
+              toCatalogEntry(
+                entry,
+                runtime,
+                daemonViewUnreadable
+                  ? { kind: 'unreadable' }
+                  : { kind: 'read', entry: expansionByName.get(entry.id) ?? null },
+              ),
+            ),
             ...INSTALL_ONLY_PACKAGES.map((manifest) => toInstallOnlyCatalogEntry(manifest, runtime)),
             ...retiredResidue,
           ],
@@ -373,7 +395,9 @@ export function createCliExpansionActivation(): CliExpansionActivation {
           package: toCatalogEntry(
             entry,
             runtime,
-            passive.status === 'available' ? (passive.expansions[0] ?? null) : null,
+            passive.status === 'unreadable'
+              ? { kind: 'unreadable' }
+              : { kind: 'read', entry: passive.status === 'available' ? (passive.expansions[0] ?? null) : null },
           ),
         });
       } catch (error: unknown) {

@@ -446,4 +446,48 @@ describe('expansion activation', () => {
     });
     expect(request).toHaveBeenCalledWith('coordinator.listExpansion', {}, undefined);
   });
+
+  // The sibling of the `info` case, and the one that was missed when only `info` was fixed: `list` derived
+  // each entry's status from local files when the daemon view was absent, which is right for a daemon that is
+  // not there and a claim about state nobody checked when the record simply could not be read.
+  it('does not claim per-package equip state from a record it could not read', async () => {
+    const activation = createCliExpansionActivation();
+    process.env.CORAL_FLAVOR = 'dev';
+    mockState.readDiscoveryRecordDisposition.mockReturnValue({ kind: 'undecodable', reason: 'corrupt-json' });
+
+    const response = (await activation.list()) as {
+      status: string;
+      packages: Array<{ id: string; status: string; activation: string }>;
+    };
+
+    expect(response.status).toBe('catalog');
+    expect(response.packages.length).toBeGreaterThan(0);
+    // Asserted positively rather than as a blocklist. The first version of this test listed the statuses that
+    // must not appear and missed `inactive` — "installed but not registered", which is a claim about the
+    // daemon just like `not_equipped` is — so the mutant it was written against survived it.
+    const equipStatuses = response.packages.filter((p) => p.activation === 'equip').map((p) => p.status);
+    expect(
+      equipStatuses.length,
+      'the fixture must contain equip-activated packages or this proves nothing',
+    ).toBeGreaterThan(0);
+    expect(equipStatuses, 'every one of them must say the daemon was not asked').toEqual(
+      equipStatuses.map(() => 'unavailable'),
+    );
+  });
+
+  it('still derives per-package state locally when no coordinator is there at all', async () => {
+    const activation = createCliExpansionActivation();
+    process.env.CORAL_FLAVOR = 'dev';
+    mockState.readDiscoveryRecordDisposition.mockReturnValue({ kind: 'missing' });
+
+    const response = (await activation.list()) as {
+      status: string;
+      packages: Array<{ id: string; status: string; activation: string }>;
+    };
+
+    expect(
+      response.packages.some((p) => p.activation === 'equip' && p.status !== 'unavailable'),
+      'an absent daemon is an answer: nothing is equipped, and local files say the rest',
+    ).toBe(true);
+  });
 });

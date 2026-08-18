@@ -193,4 +193,24 @@ describe('shutdownBackend', () => {
     await expect(shutdownBackend('/plugin-root')).resolves.toEqual({ ok: false, reason: 'not_running' });
     vi.unstubAllGlobals();
   });
+
+  // `readBackendInfo` also returns null when `version`/`instanceId` are absent — fields the shutdown request
+  // never reads. A coordinator old enough to omit them was therefore reported as not running and never asked
+  // to stop, which is the cross-version case `.passthrough()` on the record schema exists for.
+  it('asks a pre-version incumbent to stop instead of calling it not running', async () => {
+    const { version: _v, instanceId: _i, ...preVersion } = backendInfo();
+    mockState.read = { kind: 'record', record: preVersion };
+    mockState.info = null;
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ status: 'draining' }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { shutdownBackend } = await import('#src/transport/http/backend/shutdown.js');
+
+    await expect(shutdownBackend('/plugin-root')).resolves.toEqual({ ok: true });
+    expect(
+      fetchMock,
+      'the request needs host, port and bootToken, all of which that record carries',
+    ).toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
 });

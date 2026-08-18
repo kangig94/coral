@@ -233,14 +233,7 @@ export function createGitSyncController({
     // (an answer) or an error `real.ts` passed through (not one). An earlier fix did read the caught error and
     // defaulted an unrecognised shape to "git answered" — the one place on this branch where an unknown shape
     // produced the permanent wrong answer instead of a repeated command.
-    const outcome = classifyExecOutcome(
-      processPort.execSync('git', ['rev-parse', '--is-inside-work-tree'], {
-        cwd: root,
-        encoding: 'utf-8',
-        timeout: 5000,
-        inheritEnv: true,
-      }),
-    );
+    const outcome = classifyExecOutcome(gitRaw(processPort, root, ['rev-parse', '--is-inside-work-tree'], 5000));
 
     if (outcome.kind === 'no-answer') {
       // Once per interval rather than once per call, and said at all because the consequence — a KB that

@@ -1,4 +1,4 @@
-import { readBackendInfo, readDiscoveryRecordDisposition } from '../../../infra/backend-discovery.js';
+import { DEFAULT_DISCOVERY_HOST, readDiscoveryRecordDisposition } from '../../../infra/backend-discovery.js';
 import { readBuildFlavor } from '../../../infra/bundle-manifest.js';
 import { observeProcessLiveness } from '../../../infra/node-process.js';
 import { createRealRuntime } from '../../../runtime/real.js';
@@ -42,11 +42,16 @@ export async function shutdownBackend(pluginRoot: string): Promise<ShutdownResul
     return { ok: false, reason: 'unreadable_record', detail: read.reason };
   }
 
-  const info = readBackendInfo(discoveryRuntime);
+  // The decoded record, not `readBackendInfo`. That helper additionally returns `null` when `version` or
+  // `instanceId` is absent, which nothing here reads — the request needs `host`, `port` and `bootToken`, and
+  // a record from a build that predates those two fields carries all three. Routing through it meant an
+  // incumbent old enough to omit them was reported as not running and never asked to stop.
+  const record = read.kind === 'record' ? read.record : null;
   // Only an observed absence skips the shutdown request. Unknown still tries, which is the safe direction.
-  if (!info || observeProcessLiveness(info.pid) === 'absent') {
+  if (record === null || observeProcessLiveness(record.pid) === 'absent') {
     return { ok: false, reason: 'not_running' };
   }
+  const info = { ...record, host: record.host ?? DEFAULT_DISCOVERY_HOST };
 
   // Reached only for a record this build could read, naming a pid it did not observe absent.
   try {
