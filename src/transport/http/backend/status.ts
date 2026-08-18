@@ -1,4 +1,4 @@
-import { readBackendInfo, readDiscoveryRecordDisposition } from '../../../infra/backend-discovery.js';
+import { DEFAULT_DISCOVERY_HOST, readDiscoveryRecordDisposition } from '../../../infra/backend-discovery.js';
 import { readBuildFlavor } from '../../../infra/bundle-manifest.js';
 import { isRecord } from '../../../infra/json.js';
 import { observeProcessLiveness } from '../../../infra/node-process.js';
@@ -147,7 +147,14 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
     return { status: 'undecodable_record', reason: read.reason };
   }
 
-  const info = readBackendInfo(discoveryRuntime);
+  // The decoded record, not `readBackendInfo`. That helper also answers `null` when `version` or `instanceId`
+  // is absent, and this function reads neither — everything it uses (`startedAt`, `pid`, `host`, `port`,
+  // `namespace`, `flavor`, `bootToken`) is on the record itself, and the version an operator sees comes from
+  // the health response, not from the file. Routing through it reported a coordinator old enough to omit two
+  // unused fields as not running while it was serving. An earlier revision of this comment defended that as a
+  // display question; it was not one, because nothing here displays the record's version.
+  const record = read.kind === 'record' ? read.record : null;
+  const info = record === null ? null : { ...record, host: record.host ?? DEFAULT_DISCOVERY_HOST };
   // Only an observed absence reports not-running; an unanswerable probe is not that observation.
   if (!info || observeProcessLiveness(info.pid) === 'absent') {
     return noDaemonStatus(

@@ -24,8 +24,9 @@ vi.mock('#src/infra/bundle-manifest.js', () => ({
   readBuildFlavor: vi.fn(() => 'prod'),
 }));
 
+const livenessMock = vi.hoisted(() => vi.fn<() => 'alive' | 'absent' | 'unknown'>(() => 'absent'));
 vi.mock('#src/infra/node-process.js', () => ({
-  observeProcessLiveness: vi.fn(() => 'absent'),
+  observeProcessLiveness: livenessMock,
 }));
 
 vi.mock('#src/runtime/real.js', () => ({
@@ -68,6 +69,31 @@ describe('getBackendStatusFull record disposition', () => {
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'not_running' });
+  });
+
+  // Same fields, same omission, same wrong answer as the shutdown path: `readBackendInfo` returns `null` when
+  // `version` or `instanceId` is absent, and nothing here reads either — the version an operator sees is the
+  // one in the health response.
+  it('does not report a pre-version incumbent as not running', async () => {
+    const { version: _v, instanceId: _i, ...preVersion } = backendInfo();
+    mockState.read = { kind: 'record', record: preVersion };
+    mockState.info = null;
+    livenessMock.mockReturnValue('alive');
+    const fetchMock = vi.fn(async () => new Response('{}', { status: 500 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const result = await getBackendStatusFull('/plugin-root');
+
+    // What this change establishes: the daemon is asked at all. Before it, `readBackendInfo` answered `null`
+    // for this record and the function short-circuited to a not-running report without dialling anything.
+    expect(fetchMock, 'the record carries host, port and bootToken, so the daemon can be asked').toHaveBeenCalled();
+    // What it does not establish, deliberately: the eventual status. A daemon that answers badly still routes
+    // through `unreachableStatus`, which reports `not_running` for "we reached something and it was wrong" —
+    // the same collapse one layer out, pre-dating this branch and not narrowed here.
+    expect(result.status).toBe('not_running');
+    vi.unstubAllGlobals();
+    livenessMock.mockReturnValue('absent');
   });
 
   it.each([['corrupt-json'], ['shape-rejected']] as const)(

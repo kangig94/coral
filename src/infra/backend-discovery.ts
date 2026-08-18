@@ -211,18 +211,22 @@ export type CoordinatorProbe =
  * a confident `not_running` from evidence they could not read, which is the same collapse this type exists to
  * end. They now consult `readDiscoveryRecordDisposition` first.
  *
- * That closes two of those three, and the third is now split rather than deferred whole. A record that decodes
- * and omits `version` or `instanceId` makes `readBackendInfo` answer `null`, and nothing this build writes
- * produces one — `writeBackendInfo` takes a `BackendInfo`, where both are required — so the case is a
- * coordinator from a build that predates them, the cross-version scenario `.passthrough()` exists for.
+ * That closes two of those three, and the third is closed too, later and by a different route than this note
+ * once claimed. A record that decodes and omits `version` or `instanceId` makes `readBackendInfo` answer
+ * `null`; nothing this build writes produces one — `writeBackendInfo` takes a `BackendInfo`, where both are
+ * required — so the case is a coordinator from a build that predates them, the cross-version scenario
+ * `.passthrough()` exists for.
  *
- * `shutdown.ts` no longer goes through that helper: the request it makes reads `host`, `port` and `bootToken`,
- * all of which such a record carries, so routing through `readBackendInfo` meant an incumbent old enough to
- * omit two unrelated fields was reported as not running and never asked to stop. It uses the decoded record.
+ * Neither site reads either field. Between them they use `startedAt`, `pid`, `host`, `port`, `namespace`,
+ * `flavor` and `bootToken`, every one of which the record itself carries, and the version an operator sees
+ * comes from the health response. Both take the decoded record now. A previous revision scoped `status.ts`
+ * out as "a decision about what the command shows where the version would be" — it shows no version from the
+ * record, so that argument was false, and it survived two rereads because it sounded like a reason.
  *
- * `status.ts` still does, and that half stays open on purpose: it *displays* the version, so reporting from
- * the raw record is a decision about what the command shows where the version would be, not a disposition
- * fix. The two halves looked like one entry until the consequences were written down separately.
+ * `readBackendInfo` is left to the callers whose question those fields *are*:
+ * `coordinator/ownership-checker.ts` asks whether a record names a different `instanceId`, so a record without
+ * one genuinely cannot answer it and `null` is right. `tools/simulation` is a harness. Requiring fields a
+ * caller does not read is what turned a live incumbent into an absent one.
  *
  * What binds all three is the rule rather than the shape: only an observed `'absent'` is an absence. There is
  * no invariant test behind that sentence and one was tried — see the rejection recorded in
