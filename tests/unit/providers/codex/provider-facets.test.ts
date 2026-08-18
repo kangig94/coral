@@ -1,12 +1,17 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { TEST_CODEX_ACCESS } from '../../../helpers/provider-credentials.js';
 
 import type { DirentLike, StoragePort } from '#src/infra/port-types.js';
-import { codexAppServerLifecycle, codexRecoveryLifecycle } from '#src/providers/codex/provider-facets.js';
+import {
+  codexAppServerLifecycle,
+  codexPreflight,
+  codexRecoveryLifecycle,
+} from '#src/providers/codex/provider-facets.js';
 import { buildCodexContinuity } from '#src/providers/codex/request-mapping.js';
 import { jsonValueSchema } from '#src/infra/json-value.js';
 import { codexArtifactCapability, locateCodexRolloutArtifact } from '#src/providers/codex/artifacts.js';
-import type { ArtifactCleanupRuntime, AppServerTransport } from '#src/providers/contract.js';
+import type { ArtifactCleanupRuntime, AppServerTransport, ProviderPreflightRuntime } from '#src/providers/contract.js';
+import type { CodexProviderAccess } from '#src/providers/codex/execution-plan.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
@@ -352,5 +357,132 @@ describe('codexArtifactCapability', () => {
         runtime,
       }),
     ).toBeNull();
+  });
+});
+
+// `codexPreflight` had no tests. Both of its checks answered every failure with the remedy for the one cause
+// they could name — "update the Codex CLI", "run codex login" — so a fork that lost to EAGAIN and an
+// `auth.json` this process may not open were reported as an outdated CLI and an unauthenticated account. Both
+// verdicts are also cached for a minute, so the wrong sentence is repeated without re-checking.
+describe('codexPreflight', () => {
+  const UPGRADE = /npm update -g @openai\/codex/u;
+  const LOGIN = /Run "codex login"/u;
+  const TOKENS = JSON.stringify({ tokens: { access_token: 'live-token' } });
+
+  // The module-level caches outlive each test, so every case starts a full TTL past the previous one.
+  let clock = 1_700_000_000_000;
+  beforeEach(() => {
+    clock += 120_000;
+  });
+
+  function errno(code: string): Error {
+    return Object.assign(new Error(code), { code });
+  }
+
+  function preflightRuntime(options: {
+    appServer?: { status?: number | null; error?: Error };
+    authFile?: string | Error;
+    home?: string;
+  }): ProviderPreflightRuntime<CodexProviderAccess> & { runExact: ReturnType<typeof vi.fn> } {
+    const appServer = options.appServer ?? { status: 0 };
+    const authFile = options.authFile ?? TOKENS;
+    return {
+      access: { home: options.home ?? TEST_CODEX_ACCESS.home },
+      cwd: '/workspace/project',
+      storage: {
+        readFileSync: () => {
+          if (authFile instanceof Error) throw authFile;
+          return authFile;
+        },
+      },
+      time: { now: () => clock },
+      runExact: vi.fn(async () => ({
+        stdout: '',
+        stderr: '',
+        signal: null,
+        status: appServer.status ?? null,
+        ...(appServer.error === undefined ? {} : { error: appServer.error }),
+      })),
+    } as unknown as ProviderPreflightRuntime<CodexProviderAccess> & { runExact: ReturnType<typeof vi.fn> };
+  }
+
+  it('accepts a Codex CLI that answers and a home that holds tokens', async () => {
+    await expect(codexPreflight(preflightRuntime({}))).resolves.toBeUndefined();
+  });
+
+  it.each([['EAGAIN'], ['ETIMEDOUT'], ['EMFILE']])(
+    'does not blame the installed CLI when the probe failed on %s',
+    async (code) => {
+      const runtime = preflightRuntime({ appServer: { error: errno(code), status: null } });
+
+      await expect(codexPreflight(runtime)).rejects.toThrow(/could not run/iu);
+      await expect(
+        codexPreflight(preflightRuntime({ appServer: { error: errno(code), status: null } })),
+      ).rejects.not.toThrow(UPGRADE);
+    },
+  );
+
+  it('does not blame the installed CLI when the probe was killed before it answered', async () => {
+    await expect(codexPreflight(preflightRuntime({ appServer: { status: null } }))).rejects.toThrow(/killed/iu);
+  });
+
+  it.each([
+    ['ENOENT', 'the binary is not installed'],
+    ['EACCES', 'this process may not execute it'],
+  ])('reports %s as an unusable CLI, because %s is a fact about this machine', async (code) => {
+    await expect(codexPreflight(preflightRuntime({ appServer: { error: errno(code), status: null } }))).rejects.toThrow(
+      UPGRADE,
+    );
+  });
+
+  it('reports a CLI without the subcommand as one to update', async () => {
+    await expect(codexPreflight(preflightRuntime({ appServer: { status: 1 } }))).rejects.toThrow(UPGRADE);
+  });
+
+  it('repeats a held undetermined verdict without re-probing, then re-probes after the TTL', async () => {
+    const runtime = preflightRuntime({ appServer: { error: errno('EAGAIN'), status: null } });
+
+    await expect(codexPreflight(runtime)).rejects.toThrow(/could not run/iu);
+    await expect(codexPreflight(runtime)).rejects.toThrow(/could not run/iu);
+    expect(
+      runtime.runExact,
+      'the hold is what keeps a wedged machine off the 10s bound per operation',
+    ).toHaveBeenCalledTimes(1);
+
+    clock += 120_000;
+    await expect(codexPreflight(runtime)).rejects.toThrow(/could not run/iu);
+    expect(runtime.runExact, 'and it ends, so a recovered machine is asked again').toHaveBeenCalledTimes(2);
+  });
+
+  it('reports an absent auth.json as an unauthenticated account', async () => {
+    const runtime = preflightRuntime({ authFile: errno('ENOENT'), home: `/home/user/.codex-a-${clock}` });
+
+    await expect(codexPreflight(runtime)).rejects.toThrow(LOGIN);
+  });
+
+  it('reports a corrupt auth.json as unauthenticated, because logging in rewrites it', async () => {
+    const runtime = preflightRuntime({ authFile: '{not json', home: `/home/user/.codex-b-${clock}` });
+
+    await expect(codexPreflight(runtime)).rejects.toThrow(LOGIN);
+  });
+
+  it('does not tell an operator to log in when auth.json could not be read at all', async () => {
+    // `codex login` writes this file; it does not grant the daemon permission to read it afterwards, so the
+    // remedy does not apply and must not be offered.
+    const runtime = preflightRuntime({ authFile: errno('EACCES'), home: `/home/user/.codex-c-${clock}` });
+
+    await expect(codexPreflight(runtime)).rejects.toThrow(/could not read/iu);
+    await expect(
+      codexPreflight(preflightRuntime({ authFile: errno('EACCES'), home: `/home/user/.codex-d-${clock}` })),
+    ).rejects.not.toThrow(LOGIN);
+  });
+
+  it('reports a readable auth.json without tokens as unauthenticated', async () => {
+    const runtime = preflightRuntime({
+      authFile: JSON.stringify({ tokens: {} }),
+      home: `/home/user/.codex-e-${clock}`,
+    });
+
+    await expect(codexPreflight(runtime)).rejects.toThrow(LOGIN);
   });
 });

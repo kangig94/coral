@@ -135,9 +135,22 @@ export function createCliDetector(
       return { available: false, reason: 'not-found', error: config.notFoundMessage };
     }
 
-    // No launch failure: the binary ran. A non-zero exit is it answering that it cannot report a version,
-    // which is as settled as an absent binary and is cached the same way.
-    if (result.status !== null && result.status !== 0) {
+    // No launch failure, so the binary ran — which is not yet the same as it having answered. A null status is
+    // a child that died on a signal this process did not ask for (the port reports its own timeout as an
+    // error, not as this), and whatever partial stdout had arrived is still sitting in `result`. The version
+    // string is read from exactly that buffer, so treating a killed probe as success mints a version out of a
+    // truncated line. This branch predates the split and read as available.
+    if (result.status === null) {
+      return {
+        available: false,
+        reason: 'undetermined',
+        error: `\`${config.binaryName} ${config.versionArgs.join(' ')}\` was killed before it answered; this is not a statement that ${config.binaryName} is missing`,
+      };
+    }
+
+    // A non-zero exit is the binary answering that it cannot report a version, which is as settled as an
+    // absent one and is cached the same way.
+    if (result.status !== 0) {
       return { available: false, reason: 'not-found', error: config.notFoundMessage };
     }
     return { available: true, version: result.stdout.trim(), authState: 'unknown' };

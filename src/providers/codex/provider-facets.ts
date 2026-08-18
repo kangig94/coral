@@ -30,6 +30,8 @@ import {
   type CodexProviderAccess,
   type CodexExecutionPlan,
 } from './execution-plan.js';
+import { isNoEntryError } from '../../infra/fs-errors.js';
+import { STANDING_PROBE_ERRNOS } from '../../infra/process-constants.js';
 import { windowsCommandName } from '../../infra/windows-shell.js';
 
 const CODEX_APP_SERVER_UPGRADE_MESSAGE =
@@ -39,13 +41,35 @@ const CODEX_AUTH_ERROR_MESSAGE =
 const CODEX_PREFLIGHT_CACHE_TTL_MS = 60_000;
 const CODEX_AUTH_TOKEN_KEYS = ['access_token', 'refresh_token', 'id_token'] as const;
 
+/**
+ * What a preflight check observed, in three answers rather than two.
+ *
+ * `refused` is a condition this run actually established — no app-server subcommand, no auth tokens — and its
+ * message names a remedy because there is one. `undetermined` is a check that never completed, and it must not
+ * borrow the other's message: telling someone to `npm update -g @openai/codex` because a fork lost to `EAGAIN`
+ * sends them to fix software that was never broken, and cites a cause nobody observed.
+ *
+ * Both still refuse the operation. The distinction is what the operator is told, and — because these are
+ * cached — what a later preflight repeats for up to `CODEX_PREFLIGHT_CACHE_TTL_MS` without re-checking.
+ */
+type PreflightVerdict =
+  | { kind: 'satisfied' }
+  | { kind: 'refused'; message: string }
+  | { kind: 'undetermined'; message: string };
+
 type PreflightCacheEntry = {
-  available: boolean;
+  verdict: PreflightVerdict;
   checkedAt: number;
 };
 
 let codexAppServerAvailabilityCache: PreflightCacheEntry | null = null;
 const codexAuthTokensCache = new Map<string, PreflightCacheEntry>();
+
+function throwUnlessSatisfied(verdict: PreflightVerdict): void {
+  if (verdict.kind !== 'satisfied') {
+    throw new Error(verdict.message);
+  }
+}
 
 async function rpc<M extends AppServerMethod>(
   lease: AppServerTransport,
@@ -76,27 +100,97 @@ export async function codexPreflight(runtime: ProviderPreflightRuntime<CodexProv
   await assertCodexAuthTokens(runtime);
 }
 
+/**
+ * Whether this Codex CLI has an `app-server` subcommand — and whether we got to find out.
+ *
+ * Only the binary answering settles it. A launch that failed on anything but a standing fact about this
+ * machine, and a child killed before it exited, are both non-answers: they leave the installed Codex CLI
+ * exactly as unknown as before the probe ran.
+ */
+async function probeCodexAppServer(runtime: ProviderPreflightRuntime<CodexProviderAccess>): Promise<PreflightVerdict> {
+  const result = await runtime.runExact('codex', ['app-server', '--help'], {
+    encoding: 'utf-8',
+    timeout: 10_000,
+  });
+
+  if (result.error !== undefined) {
+    const code = (result.error as NodeJS.ErrnoException).code;
+    if (typeof code !== 'string' || !STANDING_PROBE_ERRNOS.has(code)) {
+      return {
+        kind: 'undetermined',
+        message: `Codex preflight could not run \`codex app-server --help\` (${code ?? result.error.message}); this is not a statement about the installed Codex CLI.`,
+      };
+    }
+    return { kind: 'refused', message: CODEX_APP_SERVER_UPGRADE_MESSAGE };
+  }
+
+  if (result.status === null) {
+    return {
+      kind: 'undetermined',
+      message: 'Codex preflight was killed before `codex app-server --help` answered; the CLI was not assessed.',
+    };
+  }
+
+  return result.status === 0 ? { kind: 'satisfied' } : { kind: 'refused', message: CODEX_APP_SERVER_UPGRADE_MESSAGE };
+}
+
 async function assertCodexAppServerAvailable(runtime: ProviderPreflightRuntime<CodexProviderAccess>): Promise<void> {
   const now = runtime.time.now();
   if (
     codexAppServerAvailabilityCache &&
     now - codexAppServerAvailabilityCache.checkedAt < CODEX_PREFLIGHT_CACHE_TTL_MS
   ) {
-    if (!codexAppServerAvailabilityCache.available) {
-      throw new Error(CODEX_APP_SERVER_UPGRADE_MESSAGE);
-    }
+    throwUnlessSatisfied(codexAppServerAvailabilityCache.verdict);
     return;
   }
 
-  const result = await runtime.runExact('codex', ['app-server', '--help'], {
-    encoding: 'utf-8',
-    timeout: 10_000,
-  });
-  const available = !result.error && result.status === 0;
-  codexAppServerAvailabilityCache = { available, checkedAt: now };
-  if (!available) {
-    throw new Error(CODEX_APP_SERVER_UPGRADE_MESSAGE);
+  // An undetermined verdict is cached too, and that is the hold rather than an answer being kept: without it a
+  // machine that cannot fork pays the 10s bound on every operation. The existing TTL already bounds it to the
+  // same minute the rest of the codebase re-probes on, so the check simply happens again after it.
+  const verdict = await probeCodexAppServer(runtime);
+  codexAppServerAvailabilityCache = { verdict, checkedAt: now };
+  throwUnlessSatisfied(verdict);
+}
+
+/**
+ * Whether the selected Codex home holds usable auth tokens.
+ *
+ * The one blanket `catch` here covered a file that is not there, a file that is there and is not JSON, and a
+ * file this process is not allowed to open — and answered all three with "run `codex login`". The first two
+ * are answers, and that remedy is the right one for both: `codex login` writes the file, whether it is absent
+ * or corrupt. The third is not an answer at all, and the remedy does not apply to it — a login that cannot
+ * read `auth.json` afterwards has fixed nothing.
+ *
+ * `ENOENT` sits on the decisive side here, which is the reverse of what it means to
+ * `STANDING_PROBE_ERRNOS` above. There it describes a binary that could not be launched; here it describes a
+ * file that is simply absent, and absence is exactly the thing being asked about. Same errno, different
+ * question — do not unify the two lists.
+ */
+function probeCodexAuthTokens(runtime: ProviderPreflightRuntime<CodexProviderAccess>): PreflightVerdict {
+  const authPath = join(runtime.access.home, 'auth.json');
+
+  let raw: string;
+  try {
+    raw = runtime.storage.readFileSync(authPath, 'utf-8');
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) {
+      return { kind: 'refused', message: CODEX_AUTH_ERROR_MESSAGE };
+    }
+    const code = (error as NodeJS.ErrnoException).code;
+    return {
+      kind: 'undetermined',
+      message: `Codex preflight could not read ${authPath} (${code ?? 'unknown error'}); whether this account is authenticated was not established.`,
+    };
   }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch {
+    return { kind: 'refused', message: CODEX_AUTH_ERROR_MESSAGE };
+  }
+
+  return hasCodexAuthTokens(parsed) ? { kind: 'satisfied' } : { kind: 'refused', message: CODEX_AUTH_ERROR_MESSAGE };
 }
 
 async function assertCodexAuthTokens(runtime: ProviderPreflightRuntime<CodexProviderAccess>): Promise<void> {
@@ -104,27 +198,13 @@ async function assertCodexAuthTokens(runtime: ProviderPreflightRuntime<CodexProv
   const cacheKey = runtime.access.home;
   const cached = codexAuthTokensCache.get(cacheKey);
   if (cached && now - cached.checkedAt < CODEX_PREFLIGHT_CACHE_TTL_MS) {
-    if (!cached.available) {
-      throw new Error(CODEX_AUTH_ERROR_MESSAGE);
-    }
+    throwUnlessSatisfied(cached.verdict);
     return;
   }
 
-  const authPath = join(runtime.access.home, 'auth.json');
-  let parsed: unknown;
-
-  try {
-    parsed = JSON.parse(runtime.storage.readFileSync(authPath, 'utf-8')) as unknown;
-  } catch {
-    codexAuthTokensCache.set(cacheKey, { available: false, checkedAt: now });
-    throw new Error(CODEX_AUTH_ERROR_MESSAGE);
-  }
-
-  const available = hasCodexAuthTokens(parsed);
-  codexAuthTokensCache.set(cacheKey, { available, checkedAt: now });
-  if (!available) {
-    throw new Error(CODEX_AUTH_ERROR_MESSAGE);
-  }
+  const verdict = probeCodexAuthTokens(runtime);
+  codexAuthTokensCache.set(cacheKey, { verdict, checkedAt: now });
+  throwUnlessSatisfied(verdict);
 }
 
 function hasCodexAuthTokens(value: unknown): boolean {

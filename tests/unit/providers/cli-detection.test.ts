@@ -134,6 +134,18 @@ describe('provider-neutral CLI detection', () => {
     });
   });
 
+  // Not a launch failure and not an answer: the port reports its own timeout as an error, so a null status is
+  // a child killed by something else. The partial stdout it leaves behind is the same buffer the version is
+  // read from, which is how a killed probe used to mint a version out of a truncated line.
+  it('reports a probe killed by a signal as undetermined rather than as a version', async () => {
+    const exec = vi.fn().mockResolvedValue({ stdout: 'fixt', stderr: '', status: null, signal: 'SIGKILL' });
+
+    await expect(detector({ exec }).detect()).resolves.toMatchObject({
+      available: false,
+      reason: 'undetermined',
+    });
+  });
+
   it.each([
     ['ENOENT', 'the binary is not installed'],
     ['EACCES', 'this process may not execute it'],
