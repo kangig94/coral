@@ -25,7 +25,8 @@ exited, or it could not be launched for a reason that will not change under a ru
 (`STANDING_PROBE_ERRNOS` in `src/infra/process-constants.ts` — no git binary, no permission to execute it, no
 such directory). A probe that could not be answered is remembered separately and only until
 `INDECISIVE_PROBE_REPROBE_INTERVAL_MS`, so a recovered mount self-heals without a restart, and a wedged one
-costs one probe per interval per root instead of one per call. The predicate is `probeWasDecisive`.
+costs one probe per interval per root instead of one per call. The predicate is `classifyThrownExecOutcome`
+(`src/infra/port-types.ts`), which this file used to spell for itself as a local `probeWasDecisive`.
 
 The enumeration sits on the standing side, and it was written the other way round first. Listing the
 _transient_ errnos and caching everything else puts the dangerous outcome on the default: every errno nobody
@@ -83,12 +84,13 @@ which is worse.
   identity_, which is what this entry is about.
 
   The two were also fixed differently, and the asymmetry is structural rather than pending. `isGitRepo` reads
-  an `ExecResult` from the runtime port and delegates to `classifyExecOutcome` (`src/runtime/ports.ts`), the
+  an `ExecResult` from the runtime port and delegates to `classifyExecOutcome` (`src/infra/port-types.ts`), the
   one owner of that rule. `resolveProjectSource` cannot: `runtime/real.ts` imports it to build
   `paths.projectSource`, so it sits below the runtime composition and has no port to read a result from. It
-  calls `node:child_process` directly and inspects a _thrown_ error, which is a different input, and keeps its
-  own `probeWasDecisive`. Unifying them means moving project-source above the runtime, which is a larger change
-  than this entry and is not the thing this entry is waiting on.
+  calls `node:child_process` directly and inspects a _thrown_ error, which is a different input — so it uses
+  that owner's second entry point, `classifyThrownExecOutcome`, rather than a predicate of its own. That much
+  is now shared; what is not is the *input*, and unifying that means moving project-source above the runtime,
+  which is a larger change than this entry and is not the thing this entry is waiting on.
 
 ## Required shape
 

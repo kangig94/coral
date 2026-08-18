@@ -51,11 +51,13 @@ filesystem — makes them disagree, and the acquisition fails.
 
 ### Confirmed: the same defect as the upgrade takeover, and it is not the spawn
 
-**Root cause established 2026-08-15 and fixed for the coordinator's own paths.** `probeProcessStartedAtSeconds`
-(`src/infra/node-process.ts:74-99`) returns `/proc/stat` btime plus the process's start ticks, and btime
-is **cached per process** (`:16`, module-level). Every value a process derives is therefore consistent
-with its own other values forever, and inconsistent with another process's by roughly the age gap
-between their first reads.
+**Root cause established 2026-08-15 and fixed for the coordinator's own paths.** The primitive was
+`probeProcessStartedAtSeconds`, which returned `/proc/stat` btime plus the process's start ticks, over a
+module-level btime cache. Every value a process derived was therefore consistent with its own other values
+forever, and inconsistent with another process's by roughly the age gap between their first reads. It no
+longer exists: #324 deleted it, and `src/infra/node-process.ts` now carries an opaque `ProcessIncarnation`
+that is comparable only against a value derived in the same process — the paragraph below is why. Past
+tense throughout this section is deliberate; nothing here describes code that is still in the tree.
 
 So the number is not a timestamp. It is a **process-local pid disambiguator rendered in seconds**, and
 its only sound operation is equality against a value derived in the same process. That is exactly what
@@ -63,8 +65,8 @@ its only sound operation is equality against a value derived in the same process
 reports one it derived.
 
 **Measured, not inferred — and the earlier framing here was wrong.** btime is not cached by the kernel;
-it is recomputed on every read as `realtime_now - boottime_now`. The per-process constancy is entirely
-Coral's own module-level cache (`node-process.ts:16`). On this host `CLOCK_BOOTTIME` runs slow against
+it is recomputed on every read as `realtime_now - boottime_now`. The per-process constancy was entirely
+Coral's own module-level cache. On this host `CLOCK_BOOTTIME` runs slow against
 `CLOCK_REALTIME`, so btime climbs: **3 seconds in 23 seconds of wall time, 13.5%**. A four-hour-old
 daemon is therefore ~1900 seconds away from a fresh reader.
 
@@ -193,7 +195,7 @@ seconds** — a snapshot taken 2026-08-15, not a bound. The same daemon later re
 called spawn latency the cause. Two seconds is a spawn crossing a boundary. **Six hundred is not.**
 
 A spread that reaches eleven minutes points at the two sides deriving the value from different clock
-bases rather than at either side being slow. `probeProcessStartedAtSeconds` converts a per-process tick
+bases rather than at either side being slow. The primitive converted a per-process tick
 count into an absolute time using a boot reference; if that reference moves — WSL2 suspend/resume is the
 obvious local candidate, and this host is WSL2 — every process started before the move reports a start
 time in a different frame from one computed after it. That would produce exactly this: a roughly

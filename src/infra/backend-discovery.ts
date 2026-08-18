@@ -193,16 +193,18 @@ export type CoordinatorProbe =
   | Readonly<{ kind: 'unobservable'; reason: 'unreadable-process'; record: CoordinatorDiscoveryRecord }>;
 
 /**
- * Three other sites ask *this* question — whether an incumbent exists — without this type:
- * `transport/http/backend/status.ts`, `.../shutdown.ts` and `cli/expansion/index.ts`. Each keeps its own
- * shape for a reason of its own: `status.ts` reports the not-running case with the dead record's `pid` and
- * `startedAt`, which `absent` does not carry, and `cli/expansion` answers about expansions rather than about
- * a coordinator. All three consult `readDiscoveryRecordDisposition` and none collapses an unreadable record
- * into an absence.
+ * Two other sites ask *this* question — whether an incumbent exists — without this type:
+ * `transport/http/backend/coordinator-observation.ts`, which answers it once for `backend status` and
+ * `backend shutdown` both, and `cli/expansion/index.ts`. Each keeps its own shape for a reason of its own:
+ * the observation reports the absent case with the dead record's `pid` and `startedAt`, which `absent` does
+ * not carry, and `cli/expansion` answers about expansions rather than about a coordinator. Both consult
+ * `readDiscoveryRecordDisposition` and neither collapses an unreadable record into an absence.
  *
  * **Re-derive that list rather than trusting it.** `trace_path` over `readDiscoveryRecordDisposition` is the
- * check; this paragraph has undercounted twice, and each time the site it missed was answering a confident
- * absence from a file it could not read.
+ * check. This paragraph has been wrong three times: twice it undercounted, and each time the site it missed
+ * was answering a confident absence from a file it could not read; the third time it overcounted, still
+ * naming `status.ts` and `shutdown.ts` separately after they were merged into one observation — so the count
+ * is evidence of nothing on its own, and only the trace settles it.
  *
  * `readBackendInfo`'s remaining callers ask something else, which is the distinction rather than an omission.
  * `coordinator/ownership-checker.ts` asks whether someone *replaced* it, and is the shape this type argues
