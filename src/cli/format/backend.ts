@@ -67,7 +67,7 @@ function formatUnreachableCauseLine(result: Extract<BackendStatusFull, { status:
       return 'Something is listening at the recorded address; this is not a report that the backend stopped.';
     case 'refused':
       return result.pidLiveness === 'alive'
-        ? 'Nothing is listening at the recorded address, though the recorded process was confirmed running moments before this request — its HTTP listener can close before that process finishes shutting down, so this alone does not mean the backend stopped.'
+        ? "Nothing is listening at the recorded address, though the recorded pid still belongs to a running process — a coordinator's HTTP listener can close before that process finishes shutting down, and a reused pid looks the same from here, so this alone does not mean the backend stopped."
         : 'Nothing is listening at the recorded address, and the recorded process could not be independently confirmed alive or gone before this request was sent.';
     case 'no_response':
       return 'The request to the recorded address never completed; this is not a report that the backend stopped, and nothing observed here says whether anything is listening.';
@@ -132,7 +132,7 @@ export function formatShutdown(result: ShutdownResult): string {
     case 'recorded_process_absent':
       return `Backend not running: the recorded coordinator process (pid ${result.detail}) is gone.`;
     case 'socket_refused':
-      return formatSocketRefused(result.pidLiveness);
+      return formatSocketRefused(result);
     case 'nested_child':
       return [
         'Shutdown refused: this nested Coral process cannot shut down its parent coordinator.',
@@ -195,16 +195,21 @@ function formatNoRecordSocketPresentShutdown(): string {
 // A refused connection is never grounds for "not running" here: an absent pid is excluded before this request
 // is ever sent (see `ShutdownResult`'s doc in shutdown.ts), so `pidLiveness` is always `'alive'` or `'unknown'`
 // — and `'alive'` is the deterministic mid-drain window where the coordinator's HTTP listener has closed while
-// the process, confirmed alive, keeps running. Neither case may claim the backend stopped.
-function formatSocketRefused(pidLiveness: 'alive' | 'unknown'): string {
+// the process keeps running. Neither case may claim the backend stopped.
+//
+// `'alive'` says the recorded pid still belongs to a running process, and nothing more: `observeProcessLiveness`
+// is a bare `kill(pid, 0)` that counts `EPERM` as alive, so it cannot tell Coral's coordinator from whatever
+// reused that number. That second reading is why retrying is not the only exit offered — a drain finishes on
+// its own, a record naming a stranger's pid never does, and the two are indistinguishable from here.
+function formatSocketRefused(result: Extract<ShutdownResult, { reason: 'socket_refused' }>): string {
   const whatRefusalMeans =
-    pidLiveness === 'alive'
-      ? 'A coordinator process was confirmed running moments before this request, but its admin socket refused the connection — its HTTP listener can close before the coordinator finishes shutting down, so this alone does not mean the backend stopped.'
-      : 'The coordinator socket refused the connection, and the recorded process could not be independently confirmed alive or gone before this request was sent.';
+    result.pidLiveness === 'alive'
+      ? `The recorded pid ${result.pid} still belongs to a running process, but the admin socket refused the connection — a coordinator's HTTP listener can close before the process finishes shutting down, so this alone does not mean the backend stopped.`
+      : `The coordinator socket refused the connection, and the recorded process (pid ${result.pid}) could not be independently confirmed alive or gone before this request was sent.`;
   return [
     `Shutdown not confirmed: ${whatRefusalMeans}`,
     'The coordinator may still be running; this is not a report that it stopped.',
-    SHUTDOWN_RETRY_NEXT_STEP,
+    `Next step: retry shortly — a drain finishes on its own. If it keeps refusing, the record may name a pid something else now holds: run 'ps -p ${result.pid}' (or check your process manager), and if that is not Coral, delete ${result.recordPath} and run a coral-cli mutating command to relaunch.`,
   ].join('\n');
 }
 

@@ -501,7 +501,7 @@ describe('cli main routing', () => {
       case 'no_response':
         return { ok: false, reason, detail: 'ETIMEDOUT' };
       case 'socket_refused':
-        return { ok: false, reason, pidLiveness: 'alive' };
+        return { ok: false, reason, pidLiveness: 'alive', pid: 4242, recordPath: '/run/coral/coordinator.json' };
       case 'capability_rejected':
         return { ok: false, reason, detail: '4242', pidLiveness: 'alive' };
       default:

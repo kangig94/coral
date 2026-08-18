@@ -208,6 +208,8 @@ describe('shutdownBackend', () => {
       ok: false,
       reason: 'socket_refused',
       pidLiveness: 'alive',
+      pid: 12345,
+      recordPath: '/run/coral/coordinator.json',
     });
   });
 
@@ -229,6 +231,8 @@ describe('shutdownBackend', () => {
       ok: false,
       reason: 'socket_refused',
       pidLiveness: 'unknown',
+      pid: 12345,
+      recordPath: '/run/coral/coordinator.json',
     });
   });
 
@@ -398,6 +402,8 @@ describe('shutdownBackend', () => {
       ok: false,
       reason: 'socket_refused',
       pidLiveness: 'alive',
+      pid: 12345,
+      recordPath: '/run/coral/coordinator.json',
     });
   });
 

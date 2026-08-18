@@ -641,7 +641,16 @@ describe('cli format', () => {
       [{ ok: false, reason: 'no_record' }, /no coordinator has recorded itself/u],
       [{ ok: false, reason: 'no_record_socket_present' }, /no discovery record has been written yet/u],
       [{ ok: false, reason: 'recorded_process_absent', detail: '4242' }, /recorded coordinator process/u],
-      [{ ok: false, reason: 'socket_refused', pidLiveness: 'alive' }, /socket refused the connection/u],
+      [
+        {
+          ok: false,
+          reason: 'socket_refused',
+          pidLiveness: 'alive',
+          pid: 4242,
+          recordPath: '/run/coral/coordinator.json',
+        },
+        /socket refused the connection/u,
+      ],
       [{ ok: false, reason: 'nested_child' }, /cannot shut down its parent coordinator/u],
     ];
 
@@ -680,7 +689,13 @@ describe('cli format', () => {
     it.each([['alive'], ['unknown']] as const)(
       'does not claim the backend stopped on a refused connection when pidLiveness is %s',
       (pidLiveness) => {
-        const text = formatShutdown({ ok: false, reason: 'socket_refused', pidLiveness });
+        const text = formatShutdown({
+          ok: false,
+          reason: 'socket_refused',
+          pidLiveness,
+          pid: 4242,
+          recordPath: '/run/coral/coordinator.json',
+        });
 
         expect(text).not.toMatch(/^Backend not running/mu);
       },
@@ -690,12 +705,35 @@ describe('cli format', () => {
     // assertion in this file green, since both arms match `/socket refused the connection/u` and neither
     // matches `/^Backend not running/mu`. Only a direct check that `'unknown'` does NOT claim a prior
     // confirmation catches that inversion.
-    it('claims the process was confirmed running only when pidLiveness is alive, not unknown', () => {
-      const aliveText = formatShutdown({ ok: false, reason: 'socket_refused', pidLiveness: 'alive' });
-      const unknownText = formatShutdown({ ok: false, reason: 'socket_refused', pidLiveness: 'unknown' });
+    it('says the pid still belongs to a process only when pidLiveness is alive, not unknown', () => {
+      const aliveText = formatShutdown({
+        ok: false,
+        reason: 'socket_refused',
+        pidLiveness: 'alive',
+        pid: 4242,
+        recordPath: '/run/coral/coordinator.json',
+      });
+      const unknownText = formatShutdown({
+        ok: false,
+        reason: 'socket_refused',
+        pidLiveness: 'unknown',
+        pid: 4242,
+        recordPath: '/run/coral/coordinator.json',
+      });
 
-      expect(aliveText, 'alive was actually confirmed').toMatch(/was confirmed running/u);
-      expect(unknownText, 'unknown was never confirmed either way').not.toMatch(/was confirmed running/u);
+      expect(aliveText, 'alive observed a process holding that pid').toMatch(
+        /pid 4242 still belongs to a running process/u,
+      );
+      expect(unknownText, 'unknown observed neither').not.toMatch(/still belongs to a running process/u);
+      // The remedy names both things it asks the operator to act on; a sentence telling them to check a pid
+      // it does not print, and delete a file whose path it does not give, is a next step only in form.
+      expect(aliveText, 'the pid the operator is told to check').toMatch(/ps -p 4242/u);
+      expect(aliveText, 'the record the operator is told to delete').toMatch(/\/run\/coral\/coordinator\.json/u);
+      // `observeProcessLiveness` is a bare `kill(pid, 0)`, so the sentence may not upgrade "some process holds
+      // this number" into "Coral's coordinator is running" — the overclaim this arm shipped with.
+      expect(aliveText, 'a bare pid probe cannot identify the program holding the pid').not.toMatch(
+        /coordinator process was confirmed running/u,
+      );
     });
 
     // Three separate observations used to share one sentence, and that sentence named a socket dial only the
@@ -948,7 +986,7 @@ describe('cli format', () => {
     // But that is not the same as a confirmed-absent backend, since a coordinator's HTTP listener can close
     // mid-drain while its process, already confirmed alive, keeps running — hence the `pidLiveness` hedge.
     it.each([
-      ['alive', /was confirmed running/u],
+      ['alive', /pid still belongs to a running process/u],
       ['unknown', /could not be independently confirmed alive or gone/u],
     ] as const)('claims nothing is listening on a refusal, hedged by pidLiveness %s', (pidLiveness, expected) => {
       const text = formatBackendStatus({

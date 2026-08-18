@@ -58,7 +58,7 @@ export type ShutdownResult =
   | { ok: false; reason: 'no_record' }
   | { ok: false; reason: 'no_record_socket_present' }
   | { ok: false; reason: 'recorded_process_absent'; detail: string }
-  | { ok: false; reason: 'socket_refused'; pidLiveness: PidLiveness }
+  | { ok: false; reason: 'socket_refused'; pidLiveness: PidLiveness; pid: number; recordPath: string }
   | { ok: false; reason: 'refused_by_response'; detail: string }
   | { ok: false; reason: 'no_response'; detail: string }
   | { ok: false; reason: 'capability_rejected'; detail: string; pidLiveness: PidLiveness };
@@ -155,7 +155,16 @@ export async function shutdownBackend(pluginRoot: string): Promise<ShutdownResul
     // with a `DOMException` whose `.code` is the *number* `23` — not an errno, and not safe to print as one.
     const code = thrownErrnoCode(error);
     if (code === 'ECONNREFUSED') {
-      return { ok: false, reason: 'socket_refused', pidLiveness: observed.pidLiveness };
+      // The pid and the record path travel with the refusal because they are what the remedy acts on: a
+      // refusal that keeps refusing is a record naming a pid something else now holds, and neither checking
+      // that pid nor clearing that record is possible from a sentence that names neither.
+      return {
+        ok: false,
+        reason: 'socket_refused',
+        pidLiveness: observed.pidLiveness,
+        pid: info.pid,
+        recordPath: runtime.paths.coral.coordinator.infoFile,
+      };
     }
     return { ok: false, reason: 'no_response', detail: code ?? errorMessage(error) };
   }
