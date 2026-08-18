@@ -170,6 +170,29 @@ function tryReaddir(dir) {
   }
 }
 
+/**
+ * What a registry directory we cannot read means for "is any work still live".
+ *
+ * `true` is the conservative answer and stays — un-gating ralph and kb on an unobserved state is what this
+ * pair was just fixed to stop doing. But `true` alone is a hold with nothing that ends it, and the errno says
+ * which kind of hold it is. A transient failure clears on the next hook invocation, because each one is a
+ * fresh process that re-reads. A standing one — the work root not traversable, not permitted, not a directory
+ * — never clears, so the same answer silently gates every later turn with no event that could release it.
+ *
+ * So the standing case is said out loud. That is deliberately noisy: it repeats per invocation because the
+ * condition repeats per invocation, and the alternative is ralph and kb quietly never running again with
+ * nothing anywhere saying why. `lockHeld` below draws the same line for the same reason; this pair did not,
+ * which is how the two halves of one rule ended up a hundred lines apart.
+ */
+function unreadableRegistryIsLive(dir, error) {
+  if (STANDING_PROBE_ERRNOS.has(error?.code)) {
+    process.stderr.write(
+      `[coral] cannot read the live-work registry at ${dir} (${error.code}); treating work as live, so ralph and kb stay gated until this is fixed.\n`,
+    );
+  }
+  return true;
+}
+
 // === Subagent liveness ===
 
 function hasLiveSubagent(projectDir, sessionId, transcriptPath) {
@@ -177,8 +200,8 @@ function hasLiveSubagent(projectDir, sessionId, transcriptPath) {
   let markers;
   try {
     markers = tryReaddir(dir);
-  } catch {
-    return true; // unobserved ⇒ do not conclude there is nothing live
+  } catch (error) {
+    return unreadableRegistryIsLive(dir, error);
   }
 
   const transcriptsDir = resolveSubagentsDir(projectDir, sessionId, transcriptPath);
@@ -232,8 +255,8 @@ function hasLiveBg(projectDir, sessionId) {
   let entries;
   try {
     entries = tryReaddir(dir);
-  } catch {
-    return true; // unobserved ⇒ do not conclude there is nothing live
+  } catch (error) {
+    return unreadableRegistryIsLive(dir, error);
   }
 
   const tasks = new Map(); // id -> { lock, exited, newestMs }

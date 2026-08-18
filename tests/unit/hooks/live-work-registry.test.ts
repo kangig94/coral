@@ -9,14 +9,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // never created — a decisive "nothing recorded here") and everything else (`EACCES`, `EIO`, ... — the read was
 // refused, which says nothing about what the directory holds). Only the named path below is intercepted; every
 // other call, including the test helpers' own `readdirSync`, passes straight through to the real filesystem.
-const readdirFixture = vi.hoisted(() => ({ failPath: null as string | null }));
+const readdirFixture = vi.hoisted(() => ({ failPath: null as string | null, failCode: 'EACCES' }));
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof NodeFs>();
   return {
     ...actual,
     readdirSync: (path: unknown, options?: unknown) => {
       if (readdirFixture.failPath !== null && String(path) === readdirFixture.failPath) {
-        throw Object.assign(new Error('simulated unreadable registry dir'), { code: 'EACCES' });
+        throw Object.assign(new Error('simulated unreadable registry dir'), { code: readdirFixture.failCode });
       }
       return (actual.readdirSync as (p: unknown, o?: unknown) => string[])(path, options);
     },
@@ -63,6 +63,7 @@ beforeEach(() => {
   mkdirSync(dirname(parentTranscript), { recursive: true });
   writeFileSync(parentTranscript, '{}');
   readdirFixture.failPath = null;
+  readdirFixture.failCode = 'EACCES';
 });
 
 afterEach(() => {
@@ -293,6 +294,44 @@ describe('live-work-registry: an unreadable registry directory is unobserved, no
       hasLiveWork(projectDir, SESSION, parentTranscript),
       'a readdirSync failure that is not ENOENT is unobserved state; it must not un-gate ralph/kb on nothing',
     ).toBe(true);
+  });
+
+  // Holding is right; holding silently is not. A transient failure clears on the next hook invocation, because
+  // each one is a fresh process that re-reads. A standing one — the work root not traversable, not permitted,
+  // not a directory — never clears, so the same `true` gates ralph and kb on every later turn with no event
+  // that could release it. `lockHeld` in the same module already splits those two; this pair did not.
+  it.each([['EACCES'], ['EPERM'], ['ENOTDIR']])('says so when the hold cannot clear (%s)', (code) => {
+    writeBgMarker(SESSION, 'taskA.started');
+    readdirFixture.failPath = bgDirFor(SESSION);
+    readdirFixture.failCode = code;
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    try {
+      expect(hasLiveWork(projectDir, SESSION, parentTranscript)).toBe(true);
+      expect(
+        stderr.mock.calls.map((call) => String(call[0])).join(''),
+        'a permanent gate that says nothing is a hold with no exit',
+      ).toMatch(new RegExp(`live-work registry.*${code}`, 'u'));
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+
+  it('stays quiet for a failure the next hook invocation will simply re-ask', () => {
+    writeBgMarker(SESSION, 'taskA.started');
+    readdirFixture.failPath = bgDirFor(SESSION);
+    readdirFixture.failCode = 'EIO';
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    try {
+      expect(hasLiveWork(projectDir, SESSION, parentTranscript)).toBe(true);
+      expect(
+        stderr.mock.calls.map((call) => String(call[0])).join(''),
+        'warning every turn for something that clears by itself is the noise that gets filtered',
+      ).not.toMatch(/live-work registry/u);
+    } finally {
+      stderr.mockRestore();
+    }
   });
 
   it('treats an unreadable bg directory as live, not as "no bg tasks"', () => {
