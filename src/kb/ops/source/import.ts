@@ -117,10 +117,14 @@ interface Converter {
  * overruns it again. Telling an operator to retry either is a refusal naming an exit that cannot be reached,
  * which is the defect this module's three-answer split exists to stop; writing it into the sentence instead of
  * the branch is the same defect one layer out.
+ *
+ * Each branch names what *does* end it, not only what does not. "A retry will not help" is half a refusal: it
+ * closes the wrong door without opening one, which leaves the operator exactly where the collapsed version
+ * did. The errno itself is printed by the caller, so this supplies the action rather than repeating the code.
  */
 function nonAnswerExit(detail: string): string {
   if (STANDING_PROBE_ERRNOS.has(detail)) {
-    return 'A retry will fail the same way: it could not be launched on this machine at all.';
+    return 'A retry will fail the same way: it could not be launched at all. Check that the command is installed and executable on this PATH.';
   }
   if (detail === EXEC_MAXBUFFER_CODE) {
     return 'A retry produces the same overflow; import a smaller source instead.';

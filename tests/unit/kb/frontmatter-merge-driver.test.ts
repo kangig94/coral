@@ -272,6 +272,45 @@ describe('frontmatter merge driver', () => {
     expect(parseFrontmatter(readFileSync(oursPath, 'utf-8')).tags).toEqual(['ours-tag', 'theirs-tag']);
   });
 
+  // The git-facing half, and the highest-consequence property in this file. Git reads a merge driver's exit
+  // code as zero = merged cleanly, non-zero = conflict — nothing else. So a refusal that exits 0 tells git the
+  // file is merged while `%A` still holds the pre-merge body and the incoming revision is silently gone: the
+  // same loss as writing the unmerged body, reached through the exit code instead of the write.
+  //
+  // Nothing at this command enforces that. It holds only because `buildErrorEnvelope` has no branch returning
+  // 0, which is a property of the error registry rather than a decision made here — so it is asserted here,
+  // where breaking it costs a user their edit.
+  it('exits non-zero when the driver refuses, because git reads zero as merged', async () => {
+    const meta = {
+      tags: ['seed'],
+      principles: [],
+      source: ['kangig94/coral'],
+      createdAt: '2026-06-15T00:00:00.000Z',
+      updatedAt: '2026-06-15T00:00:00.000Z',
+    };
+    const basePath = join(root, 'cli-refusal-base.md');
+    const oursPath = join(root, 'cli-refusal-ours.md');
+    const theirsPath = join(root, 'cli-refusal-theirs.md');
+    const original = renderNote(meta, 'the body the user still has');
+    writeFileSync(basePath, renderNote(meta, 'base body'), 'utf-8');
+    writeFileSync(oursPath, original, 'utf-8');
+    // Real git exits 255 on this and writes nothing — no merge, and no conflict markers either.
+    writeFileSync(theirsPath, renderNote(meta, 'incoming\u0000body'), 'utf-8');
+
+    const result = await runCli(buildProgram(), [
+      'kb',
+      'merge-frontmatter',
+      basePath,
+      oursPath,
+      theirsPath,
+      'notes/cli-refusal.md',
+    ]);
+
+    expect(result.status, 'zero here would tell git the merge succeeded').not.toBe(0);
+    expect(result.stderr, 'and the refusal has to be readable, not just signalled').toMatch(/did not answer/u);
+    expect(readFileSync(oursPath, 'utf-8'), 'the working-tree file is untouched').toBe(original);
+  });
+
   it('registers the frontmatter merge driver alongside the entity-graph driver', () => {
     const pluginRoot = join(root, 'plugin root');
     const runtime = createRealRuntime('prod');

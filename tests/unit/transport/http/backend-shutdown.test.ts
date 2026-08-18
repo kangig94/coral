@@ -215,6 +215,26 @@ describe('shutdownBackend', () => {
     });
   });
 
+  // The 401 branch had no test on this side at all. `formatShutdown` asserts the rendered sentence against a
+  // hand-built result, so the pid could be dropped here and every test would stay green — a fixture agreeing
+  // with a producer it never runs. The pid is the whole remedy in that message: the coordinator is alive and
+  // will not accept our token, so identifying the process is the only action left.
+  it('names the live coordinator when it rejects the boot token', async () => {
+    mockState.observed = { kind: 'addressed', coordinator: backendInfo({ pid: 9001 }) };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ error: 'nope' }), { status: 401 })),
+    );
+
+    const { shutdownBackend } = await import('#src/transport/http/backend/shutdown.js');
+
+    await expect(shutdownBackend('/plugin-root')).resolves.toEqual({
+      ok: false,
+      reason: 'capability_rejected',
+      detail: '9001',
+    });
+  });
+
   // `readBackendInfo` also returns null when `version`/`instanceId` are absent — fields the shutdown request
   // never reads — which is why `observeCoordinator` hands back the decoded record instead. A coordinator old
   // enough to omit them used to be reported as not running and never asked to stop.
