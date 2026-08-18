@@ -4,7 +4,6 @@ import {
   type CliDetectorConfig,
   type CliDetectorEnvPort,
   type CliDetectorProcessPort,
-  type CliDetectorTimePort,
   type CliInfo,
 } from '../cli-detection.js';
 
@@ -80,19 +79,20 @@ const CONFIG: CliDetectorConfig = Object.freeze({
  * Detectors are memoised per (process port, env port) pair, and `claudePreflight` builds both as fresh object
  * literals on every call — so this `WeakMap` never hits from there and each preflight gets an empty detector.
  * Everything `createCliDetector` remembers, including a decisive `not-found`, is therefore per-call at that
- * site rather than per-daemon. Recorded because the detector's own caching reads as process-wide and is not,
- * and because holding these two ports steady is all it would take to change that.
+ * site rather than per-daemon.
+ *
+ * Left as it is on purpose. Object identity is what keeps two callers holding different `exec` ports from
+ * sharing an answer, which is the property `tests/unit/providers/claude/cli-detection.test.ts` pins; keying by
+ * value would make the memo live for the production caller and merge those. Since nothing here now caches a
+ * non-answer, the cost of the miss is a repeated probe rather than a wrong answer kept — so the isolation is
+ * worth more than the memo.
  */
 const detectorsByProcess = new WeakMap<
   CliDetectorProcessPort,
   WeakMap<CliDetectorEnvPort, ReturnType<typeof createCliDetector>>
 >();
 
-export function detectClaudeCli(
-  processPort: CliDetectorProcessPort,
-  envPort: CliDetectorEnvPort,
-  timePort: CliDetectorTimePort,
-): Promise<CliInfo> {
+export function detectClaudeCli(processPort: CliDetectorProcessPort, envPort: CliDetectorEnvPort): Promise<CliInfo> {
   let detectorsByEnv = detectorsByProcess.get(processPort);
   if (detectorsByEnv === undefined) {
     detectorsByEnv = new WeakMap();
@@ -100,7 +100,7 @@ export function detectClaudeCli(
   }
   let detector = detectorsByEnv.get(envPort);
   if (detector === undefined) {
-    detector = createCliDetector(processPort, envPort, CONFIG, timePort);
+    detector = createCliDetector(processPort, envPort, CONFIG);
     detectorsByEnv.set(envPort, detector);
   }
   return detector.detect();

@@ -18,12 +18,11 @@ const CONFIG: CliDetectorConfig = {
         : null,
 };
 
-function detector(options: { token?: string; exec: ReturnType<typeof vi.fn>; now?: () => number }) {
+function detector(options: { token?: string; exec: ReturnType<typeof vi.fn> }) {
   return createCliDetector(
     { exec: options.exec } as never,
     { get: (key) => (key === 'FIXTURE_TOKEN' ? options.token : undefined) },
     CONFIG,
-    { now: options.now ?? (() => 1_700_000_000_000) },
   );
 }
 
@@ -159,24 +158,21 @@ describe('provider-neutral CLI detection', () => {
     });
   });
 
-  it('does not remember an undetermined probe as an answer', async () => {
-    let now = 1_700_000_000_000;
+  it('never remembers an undetermined probe, so a recovered machine heals on the next call', async () => {
     const exec = vi
       .fn()
       .mockResolvedValueOnce(launchFailure('EAGAIN'))
       .mockResolvedValueOnce({ stdout: 'fixture 1.0', stderr: '', status: 0 });
-    const subject = detector({ token: 'secret', exec, now: () => now });
+    const subject = detector({ token: 'secret', exec });
 
     await expect(subject.detect()).resolves.toMatchObject({ reason: 'undetermined' });
-    now += 60_001;
-
-    await expect(subject.detect(), 'a recovered machine heals without a daemon restart').resolves.toMatchObject({
+    await expect(subject.detect(), 'no restart, no interval to wait out').resolves.toMatchObject({
       available: true,
       version: 'fixture 1.0',
     });
   });
 
-  it('holds an undetermined probe for the interval rather than re-forking per preflight', async () => {
+  it('re-asks after every undetermined probe rather than letting one answer for the next', async () => {
     const exec = vi.fn().mockResolvedValue(launchFailure('EAGAIN'));
     const subject = detector({ exec });
 
@@ -184,7 +180,7 @@ describe('provider-neutral CLI detection', () => {
       await expect(subject.detect()).resolves.toMatchObject({ reason: 'undetermined' });
     }
 
-    expect(exec, 'five preflights on a wedged machine must not cost five 10s probes').toHaveBeenCalledTimes(1);
+    expect(exec, 'one unobserved fork failure must not decide for five later calls').toHaveBeenCalledTimes(5);
   });
 
   it('still caches a decisive not-found for the process lifetime', async () => {
@@ -196,18 +192,5 @@ describe('provider-neutral CLI detection', () => {
     await subject.detect();
 
     expect(exec, 'a missing binary does not appear under a running daemon').toHaveBeenCalledTimes(1);
-  });
-
-  it('forgets a held undetermined probe on an explicit reset', async () => {
-    const exec = vi
-      .fn()
-      .mockResolvedValueOnce(launchFailure('ETIMEDOUT'))
-      .mockResolvedValue({ stdout: 'fixture 1.0', stderr: '', status: 0 });
-    const subject = detector({ token: 'secret', exec });
-
-    await expect(subject.detect()).resolves.toMatchObject({ reason: 'undetermined' });
-    subject.resetCache();
-
-    await expect(subject.detect()).resolves.toMatchObject({ available: true });
   });
 });

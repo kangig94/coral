@@ -138,17 +138,59 @@ describe('shutdownBackend', () => {
   // A file that exists and cannot be decoded is not an absent coordinator. Reporting `not_running` here would
   // skip a shutdown request a live daemon is waiting for, and the operator would then be told the thing they
   // are trying to stop is already stopped.
-  it.each([
-    ['corrupt-json', 'discovery_record_corrupt_json'],
-    ['shape-rejected', 'discovery_record_shape_rejected'],
-  ] as const)('refuses to report not_running when the discovery record is %s', async (reason, expected) => {
-    mockState.read = { kind: 'undecodable', reason };
-    // The record-derived view is still available, so a consumer reading only that would proceed as normal —
-    // which is exactly the collapse this branch exists to stop.
+  it.each([['corrupt-json'], ['shape-rejected']] as const)(
+    'refuses to report not_running when the discovery record is %s',
+    async (reason) => {
+      mockState.read = { kind: 'undecodable', reason };
+      // The record-derived view is still available, so a consumer reading only that would proceed as normal —
+      // which is exactly the collapse this branch exists to stop.
+      mockState.info = backendInfo();
+
+      const { shutdownBackend } = await import('#src/transport/http/backend/shutdown.js');
+
+      await expect(shutdownBackend('/plugin-root')).resolves.toEqual({
+        ok: false,
+        reason: 'unreadable_record',
+        detail: reason,
+      });
+    },
+  );
+
+  // Found by sweeping for the pattern rather than by review: the same collapse sat one function below the
+  // record split, where every way a request can fail to complete answered `not_running`.
+  it('does not report not_running when the shutdown request never completed', async () => {
+    mockState.read = { kind: 'record', record: backendInfo() };
     mockState.info = backendInfo();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw Object.assign(new Error('timed out'), { code: 'ETIMEDOUT' });
+      }),
+    );
 
     const { shutdownBackend } = await import('#src/transport/http/backend/shutdown.js');
 
-    await expect(shutdownBackend('/plugin-root')).resolves.toEqual({ ok: false, reason: expected });
+    await expect(shutdownBackend('/plugin-root')).resolves.toEqual({
+      ok: false,
+      reason: 'unreachable',
+      detail: 'ETIMEDOUT',
+    });
+    vi.unstubAllGlobals();
+  });
+
+  it('reports not_running when the socket refused the connection', async () => {
+    mockState.read = { kind: 'record', record: backendInfo() };
+    mockState.info = backendInfo();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw Object.assign(new Error('connection refused'), { code: 'ECONNREFUSED' });
+      }),
+    );
+
+    const { shutdownBackend } = await import('#src/transport/http/backend/shutdown.js');
+
+    await expect(shutdownBackend('/plugin-root')).resolves.toEqual({ ok: false, reason: 'not_running' });
+    vi.unstubAllGlobals();
   });
 });

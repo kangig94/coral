@@ -112,4 +112,41 @@ describe('resolveProjectSource', () => {
     expect(resolveProjectSource(firstRoot)).toBe('owner/repo-0');
     expect(execFileSyncMock).toHaveBeenCalledTimes(callsAfterFill + 1);
   });
+
+  // §11: "Tolerance is not silence." This was the one of five declining sites that said nothing, and it is the
+  // one whose value lands on disk — `projectData` derives a directory from the fallback, so a memo written now
+  // is filed under a name a later read will not look for.
+  it('says so when it could not derive the source, rather than falling back in silence', async () => {
+    // Loaded first: `loadProjectSourceModule` calls `vi.resetModules()`, so a `backendLog` imported before it
+    // is a different module instance from the one the subject captured, and the spy would never fire.
+    const { resolveProjectSource } = await loadProjectSourceModule();
+    const { backendLog } = await import('#src/infra/backend-log.js');
+    const warn = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
+    execFileSyncMock.mockImplementation(() => {
+      throw failure({ status: null, code: 'EAGAIN' });
+    });
+
+    expect(resolveProjectSource('/tmp/quiet')).toBe('local/quiet');
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    const [line] = warn.mock.calls[0] as [string];
+    expect(line).toContain('/tmp/quiet');
+    expect(line, 'the errno is what tells an operator this is not "no remote"').toContain('EAGAIN');
+    expect(line, 'and it must not read as a fact about the project').toMatch(/not a statement/u);
+    warn.mockRestore();
+  });
+
+  it('stays quiet when the probe answered, whatever the answer', async () => {
+    const { resolveProjectSource } = await loadProjectSourceModule();
+    const { backendLog } = await import('#src/infra/backend-log.js');
+    const warn = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
+    execFileSyncMock.mockImplementation(() => {
+      throw failure({ status: 128 });
+    });
+
+    expect(resolveProjectSource('/tmp/no-remote')).toBe('local/no-remote');
+
+    expect(warn, 'a project with no git remote is ordinary, not a condition to report').not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
 });

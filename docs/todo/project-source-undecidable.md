@@ -50,11 +50,16 @@ Two consequences, in increasing order of how hard they are to notice:
   at :138, the membership test at :81, the enumeration at :112. A root that resolves differently after the
   interval gets a second, unrelated set of state, and a lookup made with one identity misses rows filed under
   the other.
-- `discuss/shell/recovery.ts` writes it into a persisted continuation as `sourceId` (:252, :820) and then
+- `discuss/shell/recovery.ts` writes it into a persisted continuation as `sourceId` (:252) and then
   **re-derives it on read and rejects the row when the two disagree** (:235,
   `continuation.sourceId !== sourceId`). That is the sharpest form of this: a continuation written while git
   could not answer is not merely filed oddly, it is discarded by the next recovery run as belonging to another
   source. Durable, outlives the process, and reads as an ordinary "no continuation to resume".
+
+  A second call at :820 is *not* part of that path, though an earlier revision of this entry folded it in. It
+  builds a `DiscussionSourceCoordinate` whose `sourceId` becomes a recovery-fact detail string, recomputed on
+  every scan and never compared against a stored value — so it can be inconsistent between scans but cannot
+  reject anything.
 
 So the fix moved the problem from "wrong for the process lifetime, invisibly" to "wrong for one interval, and
 whatever was persisted during it stays wrong". That is a real improvement and is not a closure.

@@ -43,7 +43,7 @@ containment; they are [`durable-cli-signal-authority.md`](./durable-cli-signal-a
 
 ## What is open
 
-`reapRecordedContainment` (`src/infra/process-containment.ts:366`) still signals on Darwin against the same
+`reapRecordedContainment` (`src/infra/process-containment.ts:382`) still signals on Darwin against the same
 token, from four call sites:
 
 | Call site                                                        | Reaps                                                   |

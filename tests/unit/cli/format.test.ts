@@ -607,6 +607,30 @@ describe('cli format', () => {
   });
 
   describe('backend formatters', () => {
+    // The one operator-facing sentence on this branch that had no test. The load-bearing line is the caveat:
+    // an unreadable record must not read as a stopped daemon.
+    it.each([['corrupt-json'], ['shape-rejected']] as const)(
+      'reports a %s discovery record as unknown state, not as not-running',
+      (reason) => {
+        const text = formatBackendStatus({ status: 'undecodable_record', reason });
+
+        expect(text).toContain('could not be read');
+        expect(text, 'the caveat is the whole point of the variant').toContain('may still be running');
+        expect(text).not.toMatch(/Backend not running/u);
+      },
+    );
+
+    it.each([
+      ['unreadable_record', /may still be running/u],
+      ['unreachable', /did not complete/u],
+    ] as const)('renders shutdown reason %s as a sentence, not as a token', (reason, expected) => {
+      const text = formatShutdown({ ok: false, reason, detail: 'corrupt-json' });
+
+      expect(text).toMatch(expected);
+      expect(text, 'the raw reason token must not be what an operator reads').not.toMatch(
+        new RegExp(`Shutdown failed: ${reason}$`, 'u'),
+      );
+    });
     const baseHealth = {
       status: 'ok' as const,
       version: '1.2.3',

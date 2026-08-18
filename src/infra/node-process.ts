@@ -14,8 +14,8 @@ import { z } from 'zod';
  * that sweep a recorded set — `docs/todo/containment-observation-deadline.md` owns that analysis, deliberately
  * rather than here, because every fact in it belongs to a module this one cannot see change.
  *
- * 2s matches the bound `env-sanitize.ts` already uses for a synchronous subprocess; there is no measurement
- * behind either number, and an earlier version of this comment asserted one.
+ * 2s matches the bound `env-sanitize.ts` already uses for a synchronous subprocess. There is no measurement
+ * behind either number — do not add one to a comment without taking it.
  *
  * What the bound cannot do is the part that makes it safe: it turns a would-be-successful observation into a
  * throw, and every call site's existing `catch` answers `null`. It cannot fabricate a token, so it cannot
@@ -199,8 +199,7 @@ function readMacBootSessionId(): string | null {
  * The residual, stated because it is the reason `incarnationMayAuthorizeSignal` refuses this platform: two
  * processes that hold the same pid *and* the same displayed start second *within one boot* are
  * indistinguishable. The boot session id closes the across-reboot half completely — a UUID minted per boot
- * that no reboot preserves. It does **not** close a clock change, and an earlier version of this comment
- * claimed it did. `ps -o lstart=` prints local time and `Date.parse` reads a zone-less string as local, so a
+ * that no reboot preserves. It does **not** close a clock change. `ps -o lstart=` prints local time and `Date.parse` reads a zone-less string as local, so a
  * backward step — an NTP correction, the autumn DST fallback — makes one displayed string name two instants.
  * The window is then an hour rather than a second, which is why equality here authorizes nothing.
  *

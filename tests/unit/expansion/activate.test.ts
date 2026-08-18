@@ -5,14 +5,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type * as BackendDiscoveryModule from '#src/infra/backend-discovery.js';
 import type * as IpcClientModule from '#src/transport/ipc/client.js';
-import type { CoordinatorDiscoveryRecord } from '#src/infra/backend-discovery.js';
+import type { CoordinatorDiscoveryRecord, DiscoveryRead } from '#src/infra/backend-discovery.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { openStoreDatabase } from '#src/store/db.js';
 
 const mockState = vi.hoisted(() => ({
   ensure: vi.fn(),
-  readDiscoveryRecord: vi.fn<(runtime: unknown) => CoordinatorDiscoveryRecord | null>(),
+  readDiscoveryRecordDisposition: vi.fn<(runtime: unknown) => DiscoveryRead>(),
   createIpcClient: vi.fn(),
 }));
 
@@ -24,7 +24,7 @@ vi.mock('#src/infra/backend-discovery.js', async () => {
   const actual = await vi.importActual<typeof BackendDiscoveryModule>('#src/infra/backend-discovery.js');
   return {
     ...actual,
-    readDiscoveryRecord: mockState.readDiscoveryRecord,
+    readDiscoveryRecordDisposition: mockState.readDiscoveryRecordDisposition,
   };
 });
 
@@ -73,7 +73,7 @@ describe('expansion activation', () => {
 
   beforeEach(() => {
     mockState.ensure.mockReset();
-    mockState.readDiscoveryRecord.mockReset();
+    mockState.readDiscoveryRecordDisposition.mockReset();
     mockState.createIpcClient.mockReset();
     testHome = mkdtempSync(join(tmpdir(), 'coral-activate-home-'));
     process.env.HOME = testHome;
@@ -241,7 +241,7 @@ describe('expansion activation', () => {
 
   it('merges catalog-absent daemon state into the operator-visible retired residue list', async () => {
     const activation = createCliExpansionActivation();
-    mockState.readDiscoveryRecord.mockReturnValue(makeDiscoveryRecord());
+    mockState.readDiscoveryRecordDisposition.mockReturnValue({ kind: 'record', record: makeDiscoveryRecord() });
     mockState.createIpcClient.mockReturnValue({
       request: vi.fn().mockResolvedValue({
         expansions: [
@@ -291,7 +291,7 @@ describe('expansion activation', () => {
     'does not expose an executable cleanup command for unsafe or reserved residue %s',
     async (name) => {
       const activation = createCliExpansionActivation();
-      mockState.readDiscoveryRecord.mockReturnValue(makeDiscoveryRecord());
+      mockState.readDiscoveryRecordDisposition.mockReturnValue({ kind: 'record', record: makeDiscoveryRecord() });
       mockState.createIpcClient.mockReturnValue({
         request: vi.fn().mockResolvedValue({
           expansions: [
@@ -337,14 +337,48 @@ describe('expansion activation', () => {
     });
   });
 
-  it('returns unavailable when passive discovery cannot be read', async () => {
+  it('returns unavailable when no coordinator claimed the socket', async () => {
     const activation = createCliExpansionActivation();
     process.env.CORAL_FLAVOR = 'dev';
-    mockState.readDiscoveryRecord.mockReturnValue(null);
+    mockState.readDiscoveryRecordDisposition.mockReturnValue({ kind: 'missing' });
 
     await expect(activation.readExpansionStatus('vector')).resolves.toEqual({ status: 'unavailable' });
-    expect(mockState.readDiscoveryRecord).toHaveBeenCalled();
+    expect(mockState.readDiscoveryRecordDisposition).toHaveBeenCalled();
     expect(mockState.createIpcClient).not.toHaveBeenCalled();
+  });
+
+  // A record that exists and cannot be decoded is not an absent coordinator. This path used to answer
+  // `unavailable` for it, and `info` then reported "no such expansion" for a name the daemon may well hold.
+  it.each([['corrupt-json'], ['shape-rejected']] as const)(
+    'reports an undecodable discovery record (%s) as unreadable, not unavailable',
+    async (reason) => {
+      const activation = createCliExpansionActivation();
+      process.env.CORAL_FLAVOR = 'dev';
+      mockState.readDiscoveryRecordDisposition.mockReturnValue({ kind: 'undecodable', reason });
+
+      await expect(activation.readExpansionStatus('vector')).resolves.toEqual({
+        status: 'unreadable',
+        detail: reason,
+      });
+      expect(mockState.createIpcClient).not.toHaveBeenCalled();
+    },
+  );
+
+  it('does not report an unknown expansion from a record it could not read', async () => {
+    const activation = createCliExpansionActivation();
+    process.env.CORAL_FLAVOR = 'dev';
+    mockState.readDiscoveryRecordDisposition.mockReturnValue({ kind: 'undecodable', reason: 'corrupt-json' });
+
+    const response = await activation.info('definitely-not-in-the-catalog');
+
+    // `unknown_expansion` is the code that says the name does not exist. It must not be reachable from a
+    // record this build could not read — that claim is about the daemon's state, and the daemon was not asked.
+    expect(response).toMatchObject({ status: 'error' });
+    expect(
+      (response as { code?: string }).code,
+      'the false-absence code is the one thing this path must never produce',
+    ).not.toBe('unknown_expansion');
+    expect((response as { userMessage?: string }).userMessage).toMatch(/could not be read/u);
   });
 
   it('uses the settled build flavor for passive discovery when CORAL_FLAVOR is unset', async () => {
@@ -354,7 +388,7 @@ describe('expansion activation', () => {
     delete process.env.CORAL_FLAVOR;
 
     mockState.createIpcClient.mockReset();
-    mockState.readDiscoveryRecord.mockReset();
+    mockState.readDiscoveryRecordDisposition.mockReset();
     vi.resetModules();
     vi.doUnmock('#src/infra/backend-discovery.js');
 
@@ -399,7 +433,10 @@ describe('expansion activation', () => {
     const request = vi
       .fn()
       .mockRejectedValue(Object.assign(new Error('connect failed'), { code: 'ipc_connect_failed' }));
-    mockState.readDiscoveryRecord.mockReturnValue(makeDiscoveryRecord({ socketPath: '/tmp/coral-passive.sock' }));
+    mockState.readDiscoveryRecordDisposition.mockReturnValue({
+      kind: 'record',
+      record: makeDiscoveryRecord({ socketPath: '/tmp/coral-passive.sock' }),
+    });
     mockState.createIpcClient.mockReturnValue({ request });
 
     await expect(activation.readExpansionStatus()).resolves.toEqual({ status: 'unavailable' });

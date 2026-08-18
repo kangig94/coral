@@ -2,6 +2,7 @@ import type { ProcessIncarnation, ProcessLiveness } from '../infra/node-process.
 import type { BuildFlavor } from '../infra/build-flavor.js';
 import type { CoralPaths } from '../infra/path/index.js';
 import type { ChildProcessLike, EnvPort, StoragePort, TimePort } from '../infra/port-types.js';
+import { STANDING_PROBE_ERRNOS } from '../infra/process-constants.js';
 import type { DurableCliRuntimeRecord, DurableProcessExit } from './durable-runtime.js';
 
 export interface RuntimePaths {
@@ -88,6 +89,48 @@ export type ExecResult = {
   status: number | null;
   error?: Error;
 };
+
+/**
+ * What an `ExecResult` says about whether the command answered — the three cases its four fields encode
+ * between them, named once instead of re-derived per caller.
+ *
+ * `answered` is the command having run and exited: `status` is its code, and a non-zero one is an answer, not
+ * a failure to obtain one. `launch-refused` is the command not starting for a reason that is a standing fact
+ * about this machine, so asking again changes nothing. `no-answer` is everything else — the bound elapsed, the
+ * system had no process slot, a signal arrived from outside — and it leaves the question exactly as open as it
+ * was before the command ran.
+ *
+ * This exists because the derivation was written four times against the same four fields, in modules that do
+ * not own them, and the copies disagreed. Two of the copies had to explain themselves by pointing at a third
+ * module's opposite default, which is what a missing owner looks like. The disagreement was real and reachable:
+ * on the version that read a codeless error as "it answered", a KB whose disk was busy silently stopped being
+ * version-controlled for the daemon's lifetime.
+ *
+ * The unrecognised shape lands on `no-answer` deliberately. A wrong `no-answer` costs a repeated command; a
+ * wrong `answered` is a durable claim nobody observed.
+ */
+export type ExecOutcome =
+  | Readonly<{ kind: 'answered'; status: number }>
+  | Readonly<{ kind: 'launch-refused'; code: string }>
+  | Readonly<{ kind: 'no-answer'; detail: string }>;
+
+export function classifyExecOutcome(result: ExecResult): ExecOutcome {
+  if (result.error !== undefined) {
+    const code = (result.error as NodeJS.ErrnoException).code;
+    if (typeof code === 'string' && STANDING_PROBE_ERRNOS.has(code)) {
+      return { kind: 'launch-refused', code };
+    }
+    return { kind: 'no-answer', detail: code ?? result.error.message };
+  }
+  // No launch failure, so the command ran — which is not yet the same as it having answered. A null status is
+  // a child killed by a signal this process did not ask for (both ports report their own timeout as an error
+  // instead), and whatever partial output had arrived is still in `result`; reading it as success is how a
+  // killed probe mints an answer out of a truncated line.
+  if (result.status === null) {
+    return { kind: 'no-answer', detail: 'killed before it exited' };
+  }
+  return { kind: 'answered', status: result.status };
+}
 
 export interface ProcessPort {
   spawn(options: RuntimeSpawnOptions): ChildProcessLike;

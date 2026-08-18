@@ -23,13 +23,19 @@ function renderNote(meta: KbNoteFrontmatter, body: string): string {
   return `${serializeFrontmatter(meta)}# Merge Note\n\n${body.trim()}\n`;
 }
 
-function createFrontmatterMergeHost(root: string): FrontmatterMergeDriverHost {
+function createFrontmatterMergeHost(
+  root: string,
+  observed?: { options: { stdio: 'ignore'; timeout: number } | null },
+): FrontmatterMergeDriverHost {
   return {
     readFileSync,
     writeFileSync,
     createTempDir: (prefix) => mkdtempSync(join(root, prefix)),
     rmSync,
-    execFileSync: (command, args, options) => execFileSync(command, args, options),
+    execFileSync: (command, args, options) => {
+      if (observed) observed.options = options;
+      return execFileSync(command, args, options);
+    },
   };
 }
 
@@ -310,5 +316,32 @@ describe('frontmatter merge driver', () => {
   it('documents the deterministic scalar tiebreak rule', () => {
     expect(FRONTMATTER_SCALAR_TIEBREAK_RULE).toContain('lexicographically greatest');
     expect(FRONTMATTER_SCALAR_TIEBREAK_RULE).toContain('updatedAt uses the lexicographic maximum');
+  });
+
+  // The host type requires a `timeout`, which is what makes the invariant's exemption of the forwarding
+  // adapter true — but a required field is satisfied by `0`, and `execFileSync` reads `0` as no bound. The
+  // type check and the AST scan both pass on that; only an assertion on the value does not.
+  it('bounds git merge-file with a positive timeout', () => {
+    const body = 'Body that both sides keep.';
+    const meta = {
+      tags: ['seed'],
+      principles: [],
+      source: ['kangig94/coral'],
+      createdAt: '2026-06-15T00:00:00.000Z',
+      updatedAt: '2026-06-15T00:00:00.000Z',
+    };
+    const observed: { options: { stdio: 'ignore'; timeout: number } | null } = { options: null };
+
+    mergeMarkdownRevisions(
+      renderNote(meta, body),
+      renderNote({ ...meta, tags: ['seed', 'ours'] }, body),
+      renderNote({ ...meta, tags: ['seed', 'theirs'] }, body),
+      'notes/merge-note.md',
+      createFrontmatterMergeHost(root, observed),
+    );
+
+    expect(observed.options?.timeout, 'zero is what "no bound" looks like while still being a number').toBeGreaterThan(
+      0,
+    );
   });
 });

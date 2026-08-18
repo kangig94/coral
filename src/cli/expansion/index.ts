@@ -1,7 +1,8 @@
 declare const __PLUGIN_ROOT__: string | undefined;
 
 import type { EngineManifest, InstallOnlyManifest, LocalExpansionInstallState } from '../../expansion/contract.js';
-import { readDiscoveryRecord } from '../../infra/backend-discovery.js';
+import { readDiscoveryRecordDisposition } from '../../infra/backend-discovery.js';
+import { errorMessage } from '../../infra/error-format.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { documentedCoralSetupError } from '../../runtime/errors.js';
 import { createIpcClient } from '../../transport/ipc/client.js';
@@ -48,9 +49,20 @@ function isIpcConnectFailed(error: unknown): boolean {
   );
 }
 
+/**
+ * `unavailable` is an observed absence — no coordinator claimed the socket, or the socket refused the
+ * connection. `unreadable` is this build failing to read the evidence, which says nothing about whether a
+ * coordinator is serving or what it holds.
+ *
+ * The split exists because collapsing them produced a claim about someone else's data from a file we could
+ * not open: `readDiscoveryRecord` returns `null` for a `coordinator.json` that is truncated or written in a
+ * shape this build rejects, that reached `unavailable`, and `info` then answered "no such expansion" for an
+ * expansion the daemon may well be holding.
+ */
 type ExpansionStatus =
   | { status: 'available'; expansions: Array<ExpansionView & { slot?: string }> }
-  | { status: 'unavailable' };
+  | { status: 'unavailable' }
+  | { status: 'unreadable'; detail: string };
 
 export interface CliExpansionActivation {
   list(): Promise<InstallResponse>;
@@ -237,19 +249,24 @@ export function createCliExpansionActivation(): CliExpansionActivation {
 
     async readExpansionStatus(name?: string): Promise<ExpansionStatus> {
       const runtime = resolveRuntime();
-      let record;
+      const discoveryRuntime = { storage: runtime.storage, env: runtime.env, paths: runtime.paths };
+
+      let read;
       try {
-        record = readDiscoveryRecord({
-          storage: runtime.storage,
-          env: runtime.env,
-          paths: runtime.paths,
-        });
-      } catch {
-        record = null;
+        read = readDiscoveryRecordDisposition(discoveryRuntime);
+      } catch (error: unknown) {
+        // The read itself failing (`EACCES`, `EIO`) is not an absent coordinator either. This used to be a
+        // blanket `catch` to `null`, which is also why `backend-discovery.ts` could claim that letting these
+        // throw was safe because every CLI path renders them — this path swallowed them.
+        return { status: 'unreadable', detail: errorMessage(error) };
       }
-      if (record === null) {
+      if (read.kind === 'undecodable') {
+        return { status: 'unreadable', detail: read.reason };
+      }
+      if (read.kind === 'missing') {
         return { status: 'unavailable' };
       }
+      const record = read.record;
 
       try {
         const bootAuth: IpcAuthMetadata = { kind: 'boot', token: record.bootToken };
@@ -338,6 +355,14 @@ export function createCliExpansionActivation(): CliExpansionActivation {
               status: 'info',
               package: toRetiredResidueCatalogEntry(retired),
             });
+          }
+          if (passive.status === 'unreadable') {
+            // Not in the catalog, and the daemon's own list could not be read — so whether this name exists is
+            // exactly what was not established. Saying "no such expansion" here is the claim this variant
+            // exists to prevent.
+            throw new Error(
+              `Cannot tell whether "${name}" is installed: the coordinator discovery record could not be read (${passive.detail}). Run coral-cli backend status.`,
+            );
           }
           return unknownExpansionResponse(name);
         }

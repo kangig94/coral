@@ -103,7 +103,6 @@ export async function claudePreflight(runtime: ProviderPreflightRuntime<ClaudePr
   const cli = await detectClaudeCli(
     { exec: (command, args, options) => runtime.runExact(command, args, options) },
     { get: (key) => routingEnv[key] },
-    runtime.time,
   );
   if (!cli.available) {
     // Both refuse the operation, and they must not say the same thing while doing it: one tells the operator

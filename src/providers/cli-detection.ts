@@ -1,6 +1,5 @@
-import type { EnvPort, TimePort } from '../infra/port-types.js';
-import { INDECISIVE_PROBE_REPROBE_INTERVAL_MS, STANDING_PROBE_ERRNOS } from '../infra/process-constants.js';
-import type { ProcessPort } from '../runtime/ports.js';
+import type { EnvPort } from '../infra/port-types.js';
+import { classifyExecOutcome, type ProcessPort } from '../runtime/ports.js';
 
 /**
  * Three answers about the binary, not two. `not-found` is a probe that ran and settled the question; the CLI
@@ -27,7 +26,6 @@ export type AuthProbeResult =
 
 export type CliDetectorProcessPort = Pick<ProcessPort, 'exec'>;
 export type CliDetectorEnvPort = Pick<EnvPort, 'get'>;
-export type CliDetectorTimePort = Pick<TimePort, 'now'>;
 
 export type CliDetectorConfig = {
   binaryName: string;
@@ -40,17 +38,22 @@ export type CliDetectorConfig = {
   parseAuthOutput?: (stdout: string) => AuthProbeResult | null;
 };
 
-type UndeterminedCli = Extract<CliInfo, { reason: 'undetermined' }>;
-
 export function createCliDetector(
   processPort: CliDetectorProcessPort,
   envPort: CliDetectorEnvPort,
   config: CliDetectorConfig,
-  timePort: CliDetectorTimePort,
 ): { detect: () => Promise<CliInfo>; resetCache: () => void } {
-  /** Answers only. A probe that could not be answered is held below instead, and expires. */
+  /**
+   * Answers only. A probe that could not be answered is not remembered at all, and deliberately so.
+   *
+   * A hold with an expiry was written here and removed. It could not fire: the only production caller builds
+   * its port objects as fresh literals per call, so the memoiser that hands out detectors never hits and every
+   * preflight gets an empty instance — including this field. Keying that memoiser by value instead of by object
+   * identity would have made the hold live, and would also have merged the detectors that
+   * `keeps detector caches isolated by process port` exists to keep apart. Rather than ship a mechanism that
+   * runs only in tests, the non-answer is simply re-asked, which is what happened before the split too.
+   */
   let cachedCli: CliInfo | null = null;
-  let heldUndetermined: { info: UndeterminedCli; at: number } | null = null;
   let inFlightProbe: Promise<CliInfo> | null = null;
   let confirmedAuth = false;
 
@@ -59,18 +62,6 @@ export function createCliDetector(
   async function detect(): Promise<CliInfo> {
     if (cachedCli !== null && (confirmedAuth || !cachedCli.available)) return cachedCli;
     if (inFlightProbe !== null) return inFlightProbe;
-    // A non-answer is not remembered as one, but re-forking on every call is its own failure: `detect` runs on
-    // each provider preflight, so a machine that cannot fork would pay the 10s bound per operation. Held for
-    // one interval, then asked again — a recovered machine heals without a daemon restart.
-    //
-    // Whether any of this state survives between calls is the caller's to decide: a provider that builds fresh
-    // port objects per probe gets a fresh detector from its own memoiser and keeps nothing. One such caller
-    // exists today and its own module records it. The type split above holds regardless — it is about what
-    // this answers, not about how long the answer is kept.
-    if (heldUndetermined !== null) {
-      if (timePort.now() - heldUndetermined.at < INDECISIVE_PROBE_REPROBE_INTERVAL_MS) return heldUndetermined.info;
-      heldUndetermined = null;
-    }
     inFlightProbe = runProbe().finally(() => {
       inFlightProbe = null;
     });
@@ -79,18 +70,15 @@ export function createCliDetector(
 
   function resetCache(): void {
     cachedCli = null;
-    heldUndetermined = null;
     inFlightProbe = null;
     confirmedAuth = false;
   }
 
   async function runProbe(): Promise<CliInfo> {
     const cli = cachedCli ?? (await queryCliVersion());
-    if (!cli.available && cli.reason === 'undetermined') {
-      heldUndetermined = { info: cli, at: timePort.now() };
-      return cli;
-    }
-    heldUndetermined = null;
+    // A non-answer is returned and forgotten: caching it would let one unobserved fork failure answer for
+    // every later call, which is the collapse the `reason` split above exists to end.
+    if (!cli.available && cli.reason === 'undetermined') return cli;
     cachedCli = cli;
     if (!cli.available) return cli;
 
@@ -116,44 +104,26 @@ export function createCliDetector(
       encoding: 'utf-8',
     });
 
-    if (result.error !== undefined) {
-      const code = (result.error as NodeJS.ErrnoException).code;
-      // Everything the launch failed on that is not a standing fact about this machine is a non-answer,
-      // including an error carrying no recognisable code at all. That default is the opposite of the one
-      // `git-sync.ts` takes on its own probe, and deliberately: there, a codeless error is a known synthesis
-      // meaning git ran and exited, so it decides. Here nothing guarantees that, and the wrong guess is not a
-      // wasted fork — it is telling an operator to install software they already have.
-      if (typeof code !== 'string' || !STANDING_PROBE_ERRNOS.has(code)) {
+    const command = `${config.binaryName} ${config.versionArgs.join(' ')}`;
+    const outcome = classifyExecOutcome(result);
+    switch (outcome.kind) {
+      case 'no-answer':
         return {
           available: false,
           reason: 'undetermined',
-          error: `could not run \`${config.binaryName} ${config.versionArgs.join(' ')}\` to check (${
-            code ?? result.error.message
-          }); this is not a statement that ${config.binaryName} is missing`,
+          error: `could not run \`${command}\` to check (${outcome.detail}); this does not mean ${config.binaryName} is missing — retry the command in a moment`,
         };
-      }
-      return { available: false, reason: 'not-found', error: config.notFoundMessage };
+      case 'launch-refused':
+        // The launch failed for a reason that will not change under a running daemon, so the configured
+        // "install it" message is the right one and is worth caching.
+        return { available: false, reason: 'not-found', error: config.notFoundMessage };
+      case 'answered':
+        // A non-zero exit is the binary answering that it cannot report a version, which is as settled as an
+        // absent one and is cached the same way.
+        return outcome.status === 0
+          ? { available: true, version: result.stdout.trim(), authState: 'unknown' }
+          : { available: false, reason: 'not-found', error: config.notFoundMessage };
     }
-
-    // No launch failure, so the binary ran — which is not yet the same as it having answered. A null status is
-    // a child that died on a signal this process did not ask for (the port reports its own timeout as an
-    // error, not as this), and whatever partial stdout had arrived is still sitting in `result`. The version
-    // string is read from exactly that buffer, so treating a killed probe as success mints a version out of a
-    // truncated line. This branch predates the split and read as available.
-    if (result.status === null) {
-      return {
-        available: false,
-        reason: 'undetermined',
-        error: `\`${config.binaryName} ${config.versionArgs.join(' ')}\` was killed before it answered; this is not a statement that ${config.binaryName} is missing`,
-      };
-    }
-
-    // A non-zero exit is the binary answering that it cannot report a version, which is as settled as an
-    // absent one and is cached the same way.
-    if (result.status !== 0) {
-      return { available: false, reason: 'not-found', error: config.notFoundMessage };
-    }
-    return { available: true, version: result.stdout.trim(), authState: 'unknown' };
   }
 
   async function queryAuthState(): Promise<AuthProbeResult> {

@@ -439,19 +439,27 @@ describe('codexPreflight', () => {
     await expect(codexPreflight(preflightRuntime({ appServer: { status: 1 } }))).rejects.toThrow(UPGRADE);
   });
 
-  it('repeats a held undetermined verdict without re-probing, then re-probes after the TTL', async () => {
+  // The cache has no tenant key, so anything it holds decides for every later job. An answer may do that; an
+  // unobserved cause may not — each job asks again and is refused, or not, on evidence of its own.
+  it('never caches an undetermined verdict, so every preflight re-probes', async () => {
     const runtime = preflightRuntime({ appServer: { error: errno('EAGAIN'), status: null } });
 
     await expect(codexPreflight(runtime)).rejects.toThrow(/could not run/iu);
     await expect(codexPreflight(runtime)).rejects.toThrow(/could not run/iu);
-    expect(
-      runtime.runExact,
-      'the hold is what keeps a wedged machine off the 10s bound per operation',
-    ).toHaveBeenCalledTimes(1);
-
-    clock += 120_000;
     await expect(codexPreflight(runtime)).rejects.toThrow(/could not run/iu);
-    expect(runtime.runExact, 'and it ends, so a recovered machine is asked again').toHaveBeenCalledTimes(2);
+
+    expect(runtime.runExact, 'one fork that lost to EAGAIN must not answer for two later jobs').toHaveBeenCalledTimes(
+      3,
+    );
+  });
+
+  it('still caches an answered verdict for the TTL', async () => {
+    const runtime = preflightRuntime({ appServer: { status: 1 } });
+
+    await expect(codexPreflight(runtime)).rejects.toThrow(UPGRADE);
+    await expect(codexPreflight(runtime)).rejects.toThrow(UPGRADE);
+
+    expect(runtime.runExact, 'the CLI answered; asking again inside the minute repeats it').toHaveBeenCalledTimes(1);
   });
 
   it('reports an absent auth.json as an unauthenticated account', async () => {

@@ -443,7 +443,7 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
     if (result.error) {
       const hasOutput = stdout.length > 0 || stderr.length > 0;
       const errorCode = (result.error as NodeJS.ErrnoException).code;
-      if (errorCode === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' || (hasOutput && result.signal === null)) {
+      if (errorCode === EXEC_MAXBUFFER_CODE || (hasOutput && result.signal === null)) {
         return {
           stdout,
           stderr,
@@ -710,7 +710,7 @@ function isSpawnFailure(error: unknown): error is Error & { code?: string } {
   return (
     error instanceof Error &&
     (error as NodeJS.ErrnoException).code !== undefined &&
-    (error as NodeJS.ErrnoException).code !== 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'
+    (error as NodeJS.ErrnoException).code !== EXEC_MAXBUFFER_CODE
   );
 }
 

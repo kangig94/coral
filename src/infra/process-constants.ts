@@ -45,11 +45,9 @@ export const EXEC_MAXBUFFER_CODE = 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
  * be cached.
  *
  * The enumeration is on this side deliberately, and the reason is which mistake it makes cheap. Listing the
- * *transient* errnos instead and caching everything else puts the dangerous outcome on the default: every
- * errno nobody thought of becomes a wrong answer cached for the process's lifetime, and the list needs a
- * correction each time one is noticed — `EAGAIN` and `EMFILE` in one pass, then `ENOMEM`, `ESTALE` and `EIO`
- * in review, the last two being how a stalled mount reports immediately rather than by hanging. Listing the
- * standing failures makes a missed entry cost a wasted fork instead.
+ * *transient* errnos instead puts the dangerous outcome on the default: every errno nobody thought of becomes
+ * a wrong answer cached for the process's lifetime. Listing the standing failures makes a missed entry cost a
+ * wasted fork instead, so this list may be incomplete without being unsafe.
  *
  * This says nothing about a launch that *succeeded* and exited non-zero. That is an answer whatever the code,
  * and each caller reads it from its own result rather than from here.

@@ -47,8 +47,36 @@ export function formatBackendStatus(result: BackendStatusFull): string {
   }
 }
 
+/**
+ * The mirror of `formatBackendStatus`'s `undecodable_record` case, and it exists because it did not.
+ *
+ * `shutdownBackend` computes the same three-way disposition as `getBackendStatusFull`, and this function used
+ * to render whatever token came back — so an operator who ran `backend shutdown` against an unreadable record
+ * was told `Shutdown failed: discovery_record_corrupt_json`, while `backend status` explained the identical
+ * condition in three lines. The disposition was split and then flattened one call before it reached a person.
+ */
 export function formatShutdown(result: ShutdownResult): string {
-  return result.ok ? 'Backend shutdown initiated' : `Shutdown failed: ${result.reason}`;
+  if (result.ok) {
+    return 'Backend shutdown initiated';
+  }
+  switch (result.reason) {
+    case 'unreadable_record':
+      return [
+        `Shutdown not attempted: the coordinator discovery record could not be read (${result.detail ?? 'unknown'}).`,
+        'A coordinator may still be running; this is not confirmation that one stopped.',
+        'Next step: run coral-cli backend status, which reports the record path and how to clear it.',
+      ].join('\n');
+    case 'unreachable':
+      return [
+        `Shutdown not confirmed: the request to the coordinator did not complete (${result.detail ?? 'unknown'}).`,
+        'The coordinator may still be running and may still be serving; this is not a report that it stopped.',
+        'Next step: run coral-cli backend status, then retry the shutdown.',
+      ].join('\n');
+    case 'not_running':
+      return 'Backend not running: nothing was listening on the coordinator socket.';
+    default:
+      return `Shutdown failed: ${result.reason}`;
+  }
 }
 
 export function formatRecoveryQuarantineList(entries: readonly RecoveryQuarantineEntry[]): string {

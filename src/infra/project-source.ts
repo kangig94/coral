@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { basename } from 'node:path';
 
+import { backendLog } from './backend-log.js';
 import { INDECISIVE_PROBE_REPROBE_INTERVAL_MS, STANDING_PROBE_ERRNOS } from './process-constants.js';
 
 export const PROJECT_SOURCE_CACHE_MAX_ENTRIES = 256;
@@ -16,9 +17,7 @@ export const PROJECT_SOURCE_CACHE_MAX_ENTRIES = 256;
  * meet it.
  *
  * 2s, matching what `clients/hooks/lib/hook-utils.mjs` already uses for this same command — one command should
- * not have two answers. An earlier version of this comment argued for 5s on the grounds that a possibly-remote
- * filesystem read deserves a longer schedule than a local process probe; that reasoning is fine and the hook
- * falsifies its conclusion, having run the identical command under a tighter bound all along.
+ * not have two answers.
  *
  * Best-effort like every synchronous timeout here: Node signals the child and keeps waiting, so a child that
  * ignores the signal still overruns. What happens on timeout is not "fall back and move on" — see
@@ -59,7 +58,14 @@ function parseRemoteSource(remote: string): string | null {
   return `${segments[segments.length - 2]}/${segments[segments.length - 1]}`;
 }
 
-function rememberIndecisiveProbe(projectRoot: string): void {
+function rememberIndecisiveProbe(projectRoot: string, detail: string): void {
+  // Said out loud because this was the one site of five that declined in silence, and it is the one whose
+  // value lands on disk: `projectData` derives a directory from the string this function makes us fall back
+  // to, so a memo written now is filed under a name a later read will not look for. At most once per interval
+  // per root, since the hold below suppresses the re-probe.
+  backendLog.warn(
+    `Could not derive the project source for ${projectRoot} (${detail}); using the local fallback for now, which is not a statement that this project has no git remote.`,
+  );
   indecisiveProbeAt.delete(projectRoot);
   indecisiveProbeAt.set(projectRoot, Date.now());
 
@@ -88,6 +94,12 @@ function rememberProjectSource(projectRoot: string, source: string): void {
  * ordinary "not a repository" and "no such remote" exits — or it could not be run for a reason that will not
  * change (`STANDING_PROBE_ERRNOS`). Anything else is the system declining to answer right now.
  */
+/** What the probe reported, for the operator-facing line — the errno when there is one, the message otherwise. */
+function probeDetail(error: unknown): string {
+  const errno = error as NodeJS.ErrnoException | null;
+  return errno?.code ?? errno?.message ?? 'unknown error';
+}
+
 function probeWasDecisive(error: unknown): boolean {
   if (typeof error !== 'object' || error === null) return false;
   const errno = error as NodeJS.ErrnoException & { status?: unknown };
@@ -147,7 +159,7 @@ export function resolveProjectSource(projectRoot: string): string {
       indecisiveProbeAt.delete(projectRoot);
       rememberProjectSource(projectRoot, local);
     } else {
-      rememberIndecisiveProbe(projectRoot);
+      rememberIndecisiveProbe(projectRoot, probeDetail(error));
     }
     return local;
   }

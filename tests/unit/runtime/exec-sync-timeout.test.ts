@@ -80,4 +80,17 @@ describe('ProcessPort.execSync bound', () => {
     expect(result.status, 'a killed child has no exit status').toBeNull();
     expect((result.error as NodeJS.ErrnoException | undefined)?.code).toBe(EXEC_TIMEOUT_CODE);
   });
+
+  // The async twin. `exec` kills on its own timer and never sees `spawnSync`, so it synthesises its own error
+  // — and for the same reason the sync path does, that error has to name the cause. `providers/cli-detection`
+  // reaches this path, not the sync one, and sorts on exactly this code.
+  it('marks a real async timeout with the same code', async () => {
+    spawnSyncMock.mockReset();
+    const runtime = createRealRuntime('prod');
+
+    const result = await runtime.process.exec('sleep', ['5'], { timeout: 250 });
+
+    expect(result.status, 'a killed child has no exit status').toBeNull();
+    expect((result.error as NodeJS.ErrnoException | undefined)?.code).toBe(EXEC_TIMEOUT_CODE);
+  });
 });

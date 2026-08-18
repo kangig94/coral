@@ -31,7 +31,7 @@ import {
   type CodexExecutionPlan,
 } from './execution-plan.js';
 import { isNoEntryError } from '../../infra/fs-errors.js';
-import { STANDING_PROBE_ERRNOS } from '../../infra/process-constants.js';
+import { classifyExecOutcome } from '../../runtime/ports.js';
 import { windowsCommandName } from '../../infra/windows-shell.js';
 
 const CODEX_APP_SERVER_UPGRADE_MESSAGE =
@@ -113,25 +113,20 @@ async function probeCodexAppServer(runtime: ProviderPreflightRuntime<CodexProvid
     timeout: 10_000,
   });
 
-  if (result.error !== undefined) {
-    const code = (result.error as NodeJS.ErrnoException).code;
-    if (typeof code !== 'string' || !STANDING_PROBE_ERRNOS.has(code)) {
+  const outcome = classifyExecOutcome(result);
+  switch (outcome.kind) {
+    case 'no-answer':
       return {
         kind: 'undetermined',
-        message: `Codex preflight could not run \`codex app-server --help\` (${code ?? result.error.message}); this is not a statement about the installed Codex CLI.`,
+        message: `Codex preflight could not run \`codex app-server --help\` (${outcome.detail}); this says nothing about the installed Codex CLI. Retry the command in a moment.`,
       };
-    }
-    return { kind: 'refused', message: CODEX_APP_SERVER_UPGRADE_MESSAGE };
+    case 'launch-refused':
+      return { kind: 'refused', message: CODEX_APP_SERVER_UPGRADE_MESSAGE };
+    case 'answered':
+      return outcome.status === 0
+        ? { kind: 'satisfied' }
+        : { kind: 'refused', message: CODEX_APP_SERVER_UPGRADE_MESSAGE };
   }
-
-  if (result.status === null) {
-    return {
-      kind: 'undetermined',
-      message: 'Codex preflight was killed before `codex app-server --help` answered; the CLI was not assessed.',
-    };
-  }
-
-  return result.status === 0 ? { kind: 'satisfied' } : { kind: 'refused', message: CODEX_APP_SERVER_UPGRADE_MESSAGE };
 }
 
 async function assertCodexAppServerAvailable(runtime: ProviderPreflightRuntime<CodexProviderAccess>): Promise<void> {
@@ -144,11 +139,19 @@ async function assertCodexAppServerAvailable(runtime: ProviderPreflightRuntime<C
     return;
   }
 
-  // An undetermined verdict is cached too, and that is the hold rather than an answer being kept: without it a
-  // machine that cannot fork pays the 10s bound on every operation. The existing TTL already bounds it to the
-  // same minute the rest of the codebase re-probes on, so the check simply happens again after it.
+  // Only an answer is cached. This cache has no tenant key, so a cached verdict decides for every later job,
+  // and a job must not be refused on an observation some earlier job failed to make — `throwUnlessSatisfied`
+  // rejects, and a rejected preflight terminalizes. Holding the non-answer would have saved a fork per
+  // operation on a wedged machine; it would have spent that saving on deciding for jobs that never observed
+  // anything, which is the trade §11 forbids.
+  //
+  // The residual is that an `undetermined` verdict still terminalizes the job that *did* observe it, because
+  // `ProviderPreflight` returns `Promise<void>` and any rejection is terminal — there is no way here to say
+  // "ask again". That needs a provider-contract change and is `docs/todo/preflight-cannot-defer.md`.
   const verdict = await probeCodexAppServer(runtime);
-  codexAppServerAvailabilityCache = { verdict, checkedAt: now };
+  if (verdict.kind !== 'undetermined') {
+    codexAppServerAvailabilityCache = { verdict, checkedAt: runtime.time.now() };
+  }
   throwUnlessSatisfied(verdict);
 }
 
@@ -177,9 +180,15 @@ function probeCodexAuthTokens(runtime: ProviderPreflightRuntime<CodexProviderAcc
       return { kind: 'refused', message: CODEX_AUTH_ERROR_MESSAGE };
     }
     const code = (error as NodeJS.ErrnoException).code;
+    // `EACCES`/`EPERM` is the one non-answer here with a remedy that is knowable from the errno alone, so it
+    // gets one. The others get no invented advice.
+    const remedy =
+      code === 'EACCES' || code === 'EPERM'
+        ? ' Check that this file is readable by the user running the Coral daemon.'
+        : '';
     return {
       kind: 'undetermined',
-      message: `Codex preflight could not read ${authPath} (${code ?? 'unknown error'}); whether this account is authenticated was not established.`,
+      message: `Codex preflight could not read ${authPath} (${code ?? 'unknown error'}); whether this account is authenticated was not established.${remedy}`,
     };
   }
 
@@ -203,7 +212,11 @@ async function assertCodexAuthTokens(runtime: ProviderPreflightRuntime<CodexProv
   }
 
   const verdict = probeCodexAuthTokens(runtime);
-  codexAuthTokensCache.set(cacheKey, { verdict, checkedAt: now });
+  // Same rule as above: an unreadable `auth.json` is not an answer about this account, and must not stand in
+  // as one for the next job. This cache is keyed by home, so the blast radius is narrower, not absent.
+  if (verdict.kind !== 'undetermined') {
+    codexAuthTokensCache.set(cacheKey, { verdict, checkedAt: now });
+  }
   throwUnlessSatisfied(verdict);
 }
 

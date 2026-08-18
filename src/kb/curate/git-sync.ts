@@ -1,10 +1,11 @@
 import { isAbsolute, join } from 'node:path';
 import { backendLog } from '../../infra/backend-log.js';
 import type { TimerHandle } from '../../infra/port-types.js';
-import { INDECISIVE_PROBE_REPROBE_INTERVAL_MS, STANDING_PROBE_ERRNOS } from '../../infra/process-constants.js';
+import { INDECISIVE_PROBE_REPROBE_INTERVAL_MS } from '../../infra/process-constants.js';
 import { nowIsoString } from '../../infra/time.js';
 import type { KbRuntime } from '../contract.js';
 import { communityEntryId, noteEntryId, sourceEntryId, wikiEntryId, type KbEntryId } from '../entry-types.js';
+import { classifyExecOutcome } from '../../runtime/ports.js';
 import type { GitSyncRuntimePicks } from './pipeline-types.js';
 import type { CurateAssistantPort } from './assistant.js';
 import { curateDb } from './db-access.js';
@@ -206,26 +207,6 @@ export function createGitSyncController({
   }
 
   /**
-   * Whether `git()` failed because git answered, or because it could not be asked.
-   *
-   * The discriminator is the `code`, and what it means is narrower than "did git run". A non-zero exit — which
-   * is how `rev-parse --is-inside-work-tree` says "no" — reaches `git()` in-band and is rethrown as a
-   * synthesized `Error` with no `code`, so codeless means git reported. Everything with a `code` is a failure
-   * the port named, and those split by whether the name describes this environment (`STANDING_PROBE_ERRNOS`)
-   * or this moment.
-   *
-   * Not "a launch that never got that far": the most important member of the second group is a timeout, where
-   * git launched, ran, and was killed. It reaches here as `ETIMEDOUT` only because `real.ts` puts that code
-   * back on the error it substitutes for `spawnSync`'s — `spawnSync` supplies it, the port used to drop it
-   * while rewriting the message, and a timeout was then indistinguishable here from git answering "no" and
-   * was cached as one.
-   */
-  function gitAnswered(error: unknown): boolean {
-    const code = (error as NodeJS.ErrnoException | null)?.code;
-    return typeof code !== 'string' || STANDING_PROBE_ERRNOS.has(code);
-  }
-
-  /**
    * Every git-sync operation gates on this, so a wrong `false` is not a degraded mode — it is the KB silently
    * ceasing to be version-controlled, with no commit, no push, and nothing said. That is what caching every
    * failure produced: one `EAGAIN` under fork pressure, or one 5s timeout on a busy disk, and the answer was
@@ -246,25 +227,34 @@ export function createGitSyncController({
     ) {
       return false;
     }
-    try {
-      git(['rev-parse', '--is-inside-work-tree'], 5000);
-    } catch (error: unknown) {
-      if (!gitAnswered(error)) {
-        // Once per interval rather than once per call, and said at all because the consequence — a KB that
-        // stops committing — is otherwise indistinguishable from a KB that was never a repository.
-        backendLog.warn(
-          `KB git sync could not determine whether ${root} is a git work tree; skipping git operations for now.`,
-        );
-        lastUnansweredGitRepoProbeAt = kb.time.now();
-        return false;
-      }
-      lastUnansweredGitRepoProbeAt = null;
-      cachedIsGitRepo = false;
+
+    // Classified from the raw result rather than from a caught error. `git()` rethrows, and by the time an
+    // exception reaches a `catch` here it has lost which of the two it is: a non-zero exit `git()` synthesised
+    // (an answer) or an error `real.ts` passed through (not one). An earlier fix did read the caught error and
+    // defaulted an unrecognised shape to "git answered" — the one place on this branch where an unknown shape
+    // produced the permanent wrong answer instead of a repeated command.
+    const outcome = classifyExecOutcome(
+      processPort.execSync('git', ['rev-parse', '--is-inside-work-tree'], {
+        cwd: root,
+        encoding: 'utf-8',
+        timeout: 5000,
+        inheritEnv: true,
+      }),
+    );
+
+    if (outcome.kind === 'no-answer') {
+      // Once per interval rather than once per call, and said at all because the consequence — a KB that
+      // stops committing — is otherwise indistinguishable from a KB that was never a repository.
+      backendLog.warn(
+        `[KB] git sync could not determine whether ${root} is a git work tree (${outcome.detail}); skipping git operations for now.`,
+      );
+      lastUnansweredGitRepoProbeAt = kb.time.now();
       return false;
     }
+
     lastUnansweredGitRepoProbeAt = null;
-    cachedIsGitRepo = true;
-    return true;
+    cachedIsGitRepo = outcome.kind === 'answered' && outcome.status === 0;
+    return cachedIsGitRepo;
   }
 
   /**
