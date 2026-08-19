@@ -39,6 +39,18 @@ export const EXEC_TIMEOUT_CODE = 'ETIMEDOUT';
 export const EXEC_MAXBUFFER_CODE = 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
 
 /**
+ * What `spawnSync` itself reports for a `maxBuffer` overflow, which is not `EXEC_MAXBUFFER_CODE`.
+ *
+ * `EXEC_MAXBUFFER_CODE` is the asynchronous path's own synthesised name; the synchronous path receives this
+ * instead, and receives it in two shapes depending on a race the caller does not control — `status: 0,
+ * signal: null` when the child finished writing before Node intervened, and `status: null,
+ * signal: 'SIGTERM'` when Node killed it first. Measured on Node 26.3.1: 40/40 the first shape on an idle
+ * machine, and the second appearing under CPU saturation. Only the code is the same across both, which is
+ * why it, and not the shape, is what the port sorts on.
+ */
+export const SPAWN_SYNC_MAXBUFFER_ERRNO = 'ENOBUFS';
+
+/**
  * Errnos from a failed subprocess *launch* that are a standing fact about this environment rather than about
  * this moment: git is not installed, or this process may not execute it, or the working directory is not one.
  * None of them changes under a running daemon, so a repeat launch of the same command fails the same way again

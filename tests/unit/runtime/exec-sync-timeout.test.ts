@@ -97,15 +97,58 @@ describe('ProcessPort.execSync bound', () => {
     const runtime = createRealRuntime('prod');
 
     // The bound is a stuck-child backstop, not part of the scenario: `printf` emits 100KB at once, so the
-    // 16-byte overflow is what must win. At 5s it did not always — under a loaded machine the timer landed
-    // first and the assertion read `ETIMEDOUT`, testing the timeout twice and the overflow never.
-    const result = runtime.process.execSync('sh', ['-c', 'printf %0100000d 1'], { maxBuffer: 16, timeout: 60_000 });
+    // overflow is what ends this run whatever the bound is.
+    const result = runtime.process.execSync('sh', ['-c', 'printf %0100000d 1'], { maxBuffer: 16, timeout: 5_000 });
 
     expect(result.status, 'a truncated read is not an exit status worth reporting').toBeNull();
     expect((result.error as NodeJS.ErrnoException | undefined)?.code).toBe(EXEC_MAXBUFFER_CODE);
     expect(result.stdout.length, 'and what did arrive is kept, because it is evidence of the overflow').toBeGreaterThan(
       0,
     );
+  });
+
+  // The shape the real subprocess above cannot be made to produce on demand, and the one that was
+  // misclassified: when Node kills the child before it finishes writing, the overflow keeps its `ENOBUFS`
+  // code but arrives with `status: null, signal: 'SIGTERM'` — the same shape a timeout arrives in. Measured on
+  // Node 26.3.1 at roughly 1 run in 40 under CPU saturation and never on an idle machine, so it is driven by a
+  // fixture here rather than by a race; the fixture is the measurement, not a guess at it.
+  it('reads a signalled overflow as an overflow, not as the timeout it looks like', () => {
+    spawnSyncMock.mockReset().mockReturnValue({
+      stdout: 'x'.repeat(65_536),
+      stderr: '',
+      status: null,
+      signal: 'SIGTERM',
+      error: Object.assign(new Error('spawnSync sh ENOBUFS'), { code: 'ENOBUFS' }),
+      pid: 1,
+      output: [],
+    });
+    const runtime = createRealRuntime('prod');
+
+    const result = runtime.process.execSync('sh', ['-c', 'printf %0100000d 1'], { maxBuffer: 16 });
+
+    expect((result.error as NodeJS.ErrnoException | undefined)?.code, 'the code is stable across both shapes').toBe(
+      EXEC_MAXBUFFER_CODE,
+    );
+    expect(result.stdout.length, 'what did arrive is still evidence of the overflow').toBeGreaterThan(0);
+  });
+
+  // A timeout arrives in that same signalled shape, and must not be read as an overflow now that the code
+  // decides. `spawnSync` names it `ETIMEDOUT`; nothing else here does.
+  it('still reads a signalled timeout as a timeout', () => {
+    spawnSyncMock.mockReset().mockReturnValue({
+      stdout: 'hi',
+      stderr: '',
+      status: null,
+      signal: 'SIGTERM',
+      error: Object.assign(new Error('spawnSync sh ETIMEDOUT'), { code: 'ETIMEDOUT' }),
+      pid: 1,
+      output: [],
+    });
+    const runtime = createRealRuntime('prod');
+
+    const result = runtime.process.execSync('sh', ['-c', 'printf hi; sleep 5'], { timeout: 250 });
+
+    expect((result.error as NodeJS.ErrnoException | undefined)?.code).toBe(EXEC_TIMEOUT_CODE);
   });
 
   // The async twin. `exec` kills on its own timer and never sees `spawnSync`, so it synthesises its own error

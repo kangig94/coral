@@ -45,6 +45,7 @@ import {
   DEFAULT_SYNC_EXEC_TIMEOUT_MS,
   EXEC_MAXBUFFER_CODE,
   EXEC_TIMEOUT_CODE,
+  SPAWN_SYNC_MAXBUFFER_ERRNO,
   MAX_BUFFER,
 } from '../infra/process-constants.js';
 import { composeChildEnv, parsePassthrough, resolveEnvBudgetBytes } from '../infra/env-sanitize.js';
@@ -441,14 +442,13 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
     // no signal reads as maxBuffer. What the codes are relied on for is narrower and holds for every case they
     // cover — the command did not answer — so a mislabel costs a caller a retry, never a wrong answer kept.
     if (result.error) {
-      const hasOutput = stdout.length > 0 || stderr.length > 0;
-      // `EXEC_MAXBUFFER_CODE` is the async path's synthesised code (`exec-builder.ts` sets it on its own
-      // wrapper-killed timer, which `spawnSync` never runs through), so it can never arrive here — measured
-      // directly: a real `spawnSync` maxBuffer overflow always carries `error.code: 'ENOBUFS'`, whether or not
-      // the child also had to be signalled. This path recognises overflow by shape instead: output arrived and
-      // no signal killed the child, which is what happens when the child's own write already exceeded
-      // `maxBuffer` and it exited before Node needed to intervene.
-      if (hasOutput && result.signal === null) {
+      // Sorted on `spawnSync`'s own code, not on the shape around it. A `maxBuffer` overflow arrives as
+      // `ENOBUFS` either way, but its shape depends on whether the child finished writing before Node killed
+      // it — `signal: null` when it did, `signal: 'SIGTERM'` when it did not — and a timeout arrives in that
+      // same second shape. So reading the shape puts a loaded machine's overflow on the timeout side, while
+      // the code separates every case `spawnSync` produces here: `ENOBUFS`, `ETIMEDOUT`, and a launch errno.
+      const code = (result.error as NodeJS.ErrnoException).code;
+      if (code === SPAWN_SYNC_MAXBUFFER_ERRNO) {
         return {
           stdout,
           stderr,
@@ -456,7 +456,7 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
           error: Object.assign(new Error(`maxBuffer exceeded: ${command}`), { code: EXEC_MAXBUFFER_CODE }),
         };
       }
-      if (result.signal) {
+      if (code === EXEC_TIMEOUT_CODE || result.signal) {
         return {
           stdout,
           stderr,
