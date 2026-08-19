@@ -60,10 +60,11 @@ const PROJECT_IGNORE_SPAWN_TIMEOUT_MS = 5000;
  * What each non-`ok` maintenance outcome is told to the session as, keyed by the outcome itself.
  *
  * Splitting the outcomes apart only moves the defect if nobody reads the split: a child SIGTERMed on a slow
- * mount and a child that never launched both leave `.claude/.gitignore` and the coral symlink exactly as they
- * were, and silence is what made that read as "there was nothing to do". Every outcome
- * `runProjectIgnoreMaintenance` can return other than `ok` has an entry here, and
- * `tests/unit/hooks/project-ignore-symlink.test.ts` fails if a new one is added without one.
+ * mount, a child that never launched, and a child that ran to completion but reported it could not finish
+ * safely all leave `.claude/.gitignore` and the coral symlink exactly as they were, and silence is what made
+ * that read as "there was nothing to do". Every outcome `runProjectIgnoreMaintenance` can return other than
+ * `ok` has an entry here, and `tests/unit/hooks/project-ignore-symlink.test.ts` fails if a new one is added
+ * without one.
  *
  * `no-project-dir` is absent deliberately — no project directory means there was no maintenance to attempt,
  * which is not a refusal to report.
@@ -73,6 +74,7 @@ const PROJECT_IGNORE_OUTCOME_NOTICES = {
   'not-spawned': 'could not be started',
   'no-output': 'exited without reporting a result',
   'unparseable-output': 'reported a result Coral could not read',
+  failed: 'ran and reported it could not complete safely',
 };
 // Long enough to still catch the failure when a session starts minutes after the
 // user's last attempt, short enough that a cured problem stops being reported.
@@ -225,9 +227,12 @@ try {
   process.exit(0);
 }
 
-// `result.error` alone would still conflate a timeout kill with a launch that never started: Node sets
-// `result.signal` to the kill signal only in the former case, leaving it `null` in the latter, so the two are
-// told apart here rather than left for the caller to guess from a shared `null`.
+// A launch failure and a timeout kill both leave `result.status` null and set `result.error`, and `result.signal`
+// does not separate them either: this call also sets `maxBuffer`, and a buffer overflow can arrive with a signal
+// set or left null depending on a race this code does not control, so a signal by itself proves nothing about
+// which of the three happened. `result.error.code` is what `spawnSync` itself reports the reason as —
+// `'ETIMEDOUT'` for the timeout kill, whatever launch errno the OS gave otherwise — so the code is sorted on
+// below, not the signal.
 function runProjectIgnoreMaintenance(projectDir, createSymlink) {
   try {
     const args = [PROJECT_IGNORE_SCRIPT, '--project-dir', projectDir];
@@ -238,10 +243,21 @@ function runProjectIgnoreMaintenance(projectDir, createSymlink) {
       timeout: PROJECT_IGNORE_SPAWN_TIMEOUT_MS,
       maxBuffer: 16 * 1024,
     });
-    if (result.error) return { outcome: result.signal ? 'killed' : 'not-spawned', maintenance: null };
+    if (result.error) {
+      if (result.error.code === 'ETIMEDOUT') return { outcome: 'killed', maintenance: null };
+      return { outcome: 'not-spawned', maintenance: null };
+    }
     if (!result.stdout) return { outcome: 'no-output', maintenance: null };
+    // A parse that succeeds is not the same as a result Coral can act on: `maintainProjectIgnore`'s contract is
+    // an object carrying a boolean `ok`, and anything else reaching here — `null`, an array, a bare primitive, or
+    // an object whose `ok` is missing or not a boolean — is exactly as unusable as a parse failure, so it is
+    // reported the same way rather than silently passed through as a successful `ok` outcome with no data.
     const parsed = JSON.parse(result.stdout);
-    return { outcome: 'ok', maintenance: parsed && typeof parsed === 'object' ? parsed : null };
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed) || typeof parsed.ok !== 'boolean') {
+      return { outcome: 'unparseable-output', maintenance: null };
+    }
+    if (!parsed.ok) return { outcome: 'failed', maintenance: parsed };
+    return { outcome: 'ok', maintenance: parsed };
   } catch {
     return { outcome: 'unparseable-output', maintenance: null };
   }

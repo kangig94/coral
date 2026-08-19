@@ -11,9 +11,11 @@
 //      which need it for the same reason, a `fetch` rejection that hides `ECONNREFUSED` behind `.cause` —
 //      still import and call the canonical function rather than answering the question locally.
 //   3. A bounded, best-effort sweep of the rest of `src/`: inside a `catch` block or a function parameter
-//      typed exactly `unknown`, a property chain reading `.cause` near `.code`, paired with a second, bare
-//      read of `.code` off the same identifier (direct, or through an `as` cast), is precisely the shape
-//      `thrownErrnoCode` exists to own — so a file matching it must import that function.
+//      typed exactly `unknown`, either (a) a chain reading `.cause` off that value with a `.code` at its end,
+//      paired with a second, independent read of `.code` off the same identifier (direct, or through an `as`
+//      cast), or (b) a single-argument helper called once with that value's `.cause` side and once with the
+//      bare value, joined by `??` — the shape `thrownErrnoCode` itself is — is precisely the shape
+//      `thrownErrnoCode` exists to own, so a file matching either must import that function.
 //
 // (3) is bounded, not general, and that is a deliberate, measured choice. The value being unwrapped is
 // `unknown`, so a real re-implementation narrows it through an `as` cast or a type-guard helper before
@@ -21,8 +23,10 @@
 // a domain type with its own `.cause` field (a control directive's abort cause) and its own unrelated
 // `.code` field, or a local variable whose name merely contains the substring "cause". Scoping to a single
 // `catch`/`unknown`-parameter block (rather than the whole file) was what took the measured hits on this
-// repo's own `.cause`-adjacent code from three false positives to zero; a hand-built regression fixture
-// using an `as`-cast on both branches confirmed the scoped match still catches the shape it exists to.
+// repo's own `.cause`-adjacent code from three false positives to zero; the "historical duplicate" and
+// "idiomatic inline form" cases below reproduce, respectively, this walk's own past duplicate
+// (`git show 3bf6bb95:src/transport/http/backend/shutdown.ts`, around line 146) and an `as`-cast rewrite of
+// it, and assert the scoped match still catches both.
 // That is the same trade `cited-symbol-homes.test.ts` documents for its own rejected wider forms: sound
 // only by staying bounded, and honest about what a text scan cannot decide — a sufficiently indirect
 // rewrite (a helper predicate, a differently-named local) can still evade it.
@@ -96,16 +100,35 @@ function findUnknownScopes(text: string): Scope[] {
   return scopes;
 }
 
-/** True if `scope` reads `.code` off `.cause` and also reads a bare `.code` off the same identifier
- *  (directly, or through an `as` cast) that is not itself part of that `.cause` access. */
+/**
+ * True if `scope` walks `.cause` then a top-level `.code` off the same identifier — the shape
+ * `thrownErrnoCode` exists to own — through either of two forms:
+ *
+ *   (a) A direct chain: `.cause` off `ident` (bare, or through an `as` cast) with a `.code` within reach,
+ *       plus a second, independent `.code` read off `ident` that is not that same chain's own terminal
+ *       `.code`. The two reads are told apart by match *end* index rather than by scanning nearby text for
+ *       the word "cause" — the latter also matches a second `??`-branch sitting a few characters after the
+ *       first, which is exactly the shape a one-line rewrite takes.
+ *   (b) A delegated walk: a single-argument helper called once with `ident`'s `.cause` side and once with
+ *       `ident` bare, joined by `??` — the literal shape `thrownErrnoCode` itself is. This proves both halves
+ *       on its own; the helper is where `.code` is read; no `.code` text needs to appear in `scope` at all.
+ */
 function scopeWalksCauseThenTopLevel(scope: Scope): boolean {
   const { ident, body } = scope;
-  if (!new RegExp(`\\b${ident}\\.cause\\b[\\s\\S]{0,120}?\\.code\\b`).test(body)) return false;
+  const identOrCast = `(?:\\(\\s*${ident}\\s+as\\s+[^)]*\\)\\??|\\b${ident}\\b)`;
 
-  const bareCodeAccess = new RegExp(`(?:\\b${ident}\\.code\\b|\\(\\s*${ident}\\s+as\\s+[^)]*\\)\\??\\.code\\b)`, 'g');
-  for (const match of body.matchAll(bareCodeAccess)) {
-    const precedingStart = Math.max(0, match.index - 30);
-    if (!/cause/.test(body.slice(precedingStart, match.index))) return true;
+  const delegatedWalk = new RegExp(
+    `([A-Za-z_$][\\w$]*)\\(\\s*(?:${ident}\\s+instanceof\\s+Error\\s*\\?\\s*)?${identOrCast}\\.cause\\b[^()]*\\)\\s*\\?\\?\\s*\\1\\(\\s*${ident}\\s*\\)`,
+  );
+  if (delegatedWalk.test(body)) return true;
+
+  const causeChain = new RegExp(`${identOrCast}\\.cause\\b[\\s\\S]{0,120}?\\.code\\b`, 'g');
+  const chainEnds = new Set([...body.matchAll(causeChain)].map((match) => match.index + match[0].length));
+  if (chainEnds.size === 0) return false;
+
+  const codeAccess = new RegExp(`${identOrCast}\\.code\\b`, 'g');
+  for (const match of body.matchAll(codeAccess)) {
+    if (!chainEnds.has(match.index + match[0].length)) return true;
   }
   return false;
 }
@@ -141,5 +164,40 @@ describe('no other src/ module walks .cause then a bare .code on the same identi
       undeclared,
       'a .cause-then-.code walk outside error-format.ts must import thrownErrnoCode rather than answer this itself',
     ).toEqual([]);
+  });
+
+  // Proof that the detector can fail, run directly against the two shapes a green suite was found not to
+  // catch. The first test below reproduces `git show 3bf6bb95:src/transport/http/backend/shutdown.ts` around
+  // line 146, before it imported `thrownErrnoCode`; the second is the idiomatic one-line `as`-cast rewrite of
+  // the same walk. Both must be caught by `scopeWalksCauseThenTopLevel` directly, not merely by "the suite
+  // stays green" — a detector that cannot fail is not a detector.
+  it("flags this walk's own historical duplicate", () => {
+    const body = `{
+      const code = nodeErrnoCode(error instanceof Error ? error.cause : undefined) ?? nodeErrnoCode(error);
+      if (code === 'ECONNREFUSED') {
+        return { ok: false, reason: 'socket_refused', pidLiveness: observed.pidLiveness };
+      }
+      return { ok: false, reason: 'no_response', detail: code ?? errorMessage(error) };
+    }`;
+
+    expect(scopeWalksCauseThenTopLevel({ ident: 'error', body })).toBe(true);
+  });
+
+  it('flags the idiomatic inline `as`-cast rewrite of the same walk', () => {
+    const body = `{
+      const code = (error as NodeJS.ErrnoException).cause?.code ?? (error as NodeJS.ErrnoException).code;
+      return code;
+    }`;
+
+    expect(scopeWalksCauseThenTopLevel({ ident: 'error', body })).toBe(true);
+  });
+
+  it('does not flag a single `.cause` read with no independent top-level `.code`', () => {
+    const body = `{
+      const code = (error as NodeJS.ErrnoException).cause?.code;
+      return code;
+    }`;
+
+    expect(scopeWalksCauseThenTopLevel({ ident: 'error', body })).toBe(false);
   });
 });

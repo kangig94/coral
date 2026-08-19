@@ -99,15 +99,15 @@ export const SHUTDOWN_REFUSAL_EXIT_CODES: Readonly<Record<ShutdownReason, 1 | 75
 
 /**
  * `backend status` never set an exit code before this, so `backend status && <destructive op>` read every
- * outcome — including "state is unknown" — as permission to proceed. The two `BackendStatusFull` statuses named
- * `undecodable_record` and `unreachable` are exactly that: `getBackendStatusFull` itself refuses to call either
- * one `ok` or `not_running` because it could not tell. Every other status is a confidently observed answer —
- * the backend genuinely is running, stopped, draining, or unauthorized — and this command succeeding at
- * determining that stays exit `0` even when the answer itself is bad news.
+ * outcome — including "state is unknown" — as permission to proceed. The three `BackendStatusFull` statuses
+ * named `undecodable_record`, `unreachable`, and `no_record_socket_present` are exactly that: `getBackendStatusFull`
+ * itself refuses to call any of them `ok` or `not_running` because it could not tell. Every other status is a
+ * confidently observed answer — the backend genuinely is running, stopped, draining, or unauthorized — and this
+ * command succeeding at determining that stays exit `0` even when the answer itself is bad news.
  *
  * `75`, not `1`: matches `SHUTDOWN_REFUSAL_EXIT_CODES`'s "not observed, retry" code above rather than a
- * `backend shutdown`-style observed refusal, since neither status is a refusal at all — this is a read-only
- * inspection, and both mean only "ask again". A `Record` over the full `BackendStatusFull['status']` union for
+ * `backend shutdown`-style observed refusal, since none of the three is a refusal at all — this is a read-only
+ * inspection, and all three mean only "ask again". A `Record` over the full `BackendStatusFull['status']` union for
  * the same reason as `SHUTDOWN_REFUSAL_EXIT_CODES`: a new status fails to compile here until someone decides
  * its exit code, instead of silently inheriting `0`.
  */

@@ -82,14 +82,10 @@ describe('ProcessPort.execSync bound', () => {
   });
 
   // The other substituted error, driven the same way and for the same reason. `spawnSync` reports an overflow
-  // as `status: 0`, `signal: null` and `error.code: 'ENOBUFS'` — measured, and the shape is why the port reads
-  // "an error with output and no signal" rather than the code: `ERR_CHILD_PROCESS_STDIO_MAXBUFFER` is what
-  // the *async* path synthesises, and never what this one receives.
-  //
-  // Without that branch the result still reaches a caller as a non-answer, so nothing crashes — the loss is
-  // that it arrives as `ENOBUFS`, and callers sorting on the maxBuffer code stop recognising it. `import.ts`
-  // is one: it tells an operator to bring a smaller source for an overflow and to retry for anything else,
-  // and a retry is the one thing that cannot help here. The whole suite stayed green without this.
+  // as `error.code: 'ENOBUFS'` regardless of shape, and this is the shape a single-burst writer produces:
+  // `status: 0`, `signal: null`, because the child had already finished writing before Node's overflow kill
+  // could land. `ERR_CHILD_PROCESS_STDIO_MAXBUFFER` is what the *async* path synthesises, and never what this
+  // one receives.
   it('marks a real maxBuffer overflow with a code a caller can sort on', () => {
     const actualSpawnSync = realSpawnSync.current;
     if (actualSpawnSync === null) throw new Error('the module mock did not capture the real spawnSync');
@@ -107,25 +103,20 @@ describe('ProcessPort.execSync bound', () => {
     );
   });
 
-  // The shape the real subprocess above cannot be made to produce on demand, and the one that was
-  // misclassified: when Node kills the child before it finishes writing, the overflow keeps its `ENOBUFS`
-  // code but arrives with `status: null, signal: 'SIGTERM'` — the same shape a timeout arrives in. Measured on
-  // Node 26.3.1 at roughly 1 run in 40 under CPU saturation and never on an idle machine, so it is driven by a
-  // fixture here rather than by a race; the fixture is the measurement, not a guess at it.
+  // The shape a child that is still running when the overflow kill lands produces: `ENOBUFS` arrives with
+  // `status: null, signal: 'SIGTERM'` — the same shape a timeout arrives in. The `sleep 0.3` keeps the child
+  // alive past its own first (overflowing) write so the kill reaches a live process instead of a reaped one;
+  // measured at 20/20 on an idle machine, against the single-burst writer's 20/20 the other shape, so this is
+  // the exit race, not load, and reproducible on demand.
   it('reads a signalled overflow as an overflow, not as the timeout it looks like', () => {
-    spawnSyncMock.mockReset().mockReturnValue({
-      stdout: 'x'.repeat(65_536),
-      stderr: '',
-      status: null,
-      signal: 'SIGTERM',
-      error: Object.assign(new Error('spawnSync sh ENOBUFS'), { code: 'ENOBUFS' }),
-      pid: 1,
-      output: [],
-    });
+    const actualSpawnSync = realSpawnSync.current;
+    if (actualSpawnSync === null) throw new Error('the module mock did not capture the real spawnSync');
+    spawnSyncMock.mockReset().mockImplementation(actualSpawnSync);
     const runtime = createRealRuntime('prod');
 
-    const result = runtime.process.execSync('sh', ['-c', 'printf %0100000d 1'], { maxBuffer: 16 });
+    const result = runtime.process.execSync('sh', ['-c', 'printf %040d 1; sleep 0.3; printf x'], { maxBuffer: 16 });
 
+    expect(result.status, 'a killed child has no exit status').toBeNull();
     expect((result.error as NodeJS.ErrnoException | undefined)?.code, 'the code is stable across both shapes').toBe(
       EXEC_MAXBUFFER_CODE,
     );

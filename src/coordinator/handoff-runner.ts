@@ -103,14 +103,16 @@ type LiveIncumbentHealth = z.infer<typeof liveIncumbentHealthSchema>;
  * round-trip, or a reply that failed `liveIncumbentHealthSchema` all land here alike, because none of the
  * three is evidence that nobody answered; they are evidence that this probe did not get a usable answer.
  *
- * `'observed-unusable'` is the opposite: a live incumbent answered and decoded, and is disqualified for a
- * stated reason rather than absent — `'draining'` (it reported its own shutdown) or `'identity-mismatch'`
- * (the reply names a different pid, bundle, or namespace than the discovery record this probe asked). Filing
- * either of those under `'not-observed'` would claim nobody answered when someone did.
+ * `'observed-unusable'` is the opposite: a live incumbent answered and decoded, and is disqualified — reporting
+ * its own shutdown, or naming a different pid, bundle, or namespace than the discovery record this probe asked
+ * — rather than absent. Filing that under `'not-observed'` would claim nobody answered when someone did.
+ * `backendLog.warn` (below) records which disqualifying reason applied at the point it was observed; every
+ * consumer of this type routes `'observed-unusable'` and `'not-observed'` to the same non-usable outcome, so
+ * neither carries a payload past that point.
  */
 type LiveIncumbentReading =
   | Readonly<{ kind: 'observed'; health: LiveIncumbentHealth }>
-  | Readonly<{ kind: 'observed-unusable'; reason: 'draining' | 'identity-mismatch'; health: LiveIncumbentHealth }>
+  | Readonly<{ kind: 'observed-unusable' }>
   | Readonly<{ kind: 'not-observed'; reason: 'absent' | 'unresolved' }>;
 
 export type HandoffOperation =
@@ -214,10 +216,12 @@ function discoveryMatchesHealth(
   );
 }
 
+// Never returns `'observed-unusable'`: that disposition belongs to `readLiveCoordinatorHealth` below, which is
+// the one place a decoded reply is checked against `draining` and the discovery record's own identity.
 async function readAuthenticatedHealth(
   discovery: CoordinatorDiscoveryRecord,
   time: TimePort,
-): Promise<LiveIncumbentReading> {
+): Promise<Extract<LiveIncumbentReading, { kind: 'observed' | 'not-observed' }>> {
   try {
     const value = await createIpcClient(discovery.socketPath, time, {
       kind: 'boot',
@@ -304,7 +308,7 @@ async function readLiveCoordinatorHealth(
     // own wording, so a caller cannot mistake this for the unresolved probe above or the identity mismatch
     // below.
     backendLog.warn(`Live incumbent at ${discovery.socketPath} reported status draining; treating it as unusable.`);
-    return { kind: 'observed-unusable', reason: 'draining', health: reading.health };
+    return { kind: 'observed-unusable' };
   }
   if (!discoveryMatchesHealth(discovery, runtime.paths.coral.coordinator.socketPath, reading.health)) {
     // Also a positive observation: something answered and decoded, naming an identity the discovery record
@@ -312,7 +316,7 @@ async function readLiveCoordinatorHealth(
     backendLog.warn(
       `Authenticated health from ${discovery.socketPath} named a different coordinator identity than the discovery record; treating it as unusable.`,
     );
-    return { kind: 'observed-unusable', reason: 'identity-mismatch', health: reading.health };
+    return { kind: 'observed-unusable' };
   }
   return reading;
 }

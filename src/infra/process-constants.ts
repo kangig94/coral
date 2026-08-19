@@ -42,11 +42,13 @@ export const EXEC_MAXBUFFER_CODE = 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
  * What `spawnSync` itself reports for a `maxBuffer` overflow, which is not `EXEC_MAXBUFFER_CODE`.
  *
  * `EXEC_MAXBUFFER_CODE` is the asynchronous path's own synthesised name; the synchronous path receives this
- * instead, and receives it in two shapes depending on a race the caller does not control — `status: 0,
- * signal: null` when the child finished writing before Node intervened, and `status: null,
- * signal: 'SIGTERM'` when Node killed it first. Measured on Node 26.3.1: 40/40 the first shape on an idle
- * machine, and the second appearing under CPU saturation. Only the code is the same across both, which is
- * why it, and not the shape, is what the port sorts on.
+ * instead, and receives it in two shapes depending on whether the child has already exited by the time
+ * Node's own overflow kill lands — `status: 0, signal: null` when it exited first, and `status: null,
+ * signal: 'SIGTERM'` when the kill reached a still-running child. Measured on Node 26.3.1, 20 runs each on an
+ * idle machine: a single-burst writer (`sh -c 'printf %0100000d 1'`) gives the first shape every time, and a
+ * child that overflows and then keeps running (`sh -c 'printf %040d 1; sleep 0.3; printf x'`) gives the
+ * second every time. The discriminator is that exit race, not machine load. Only the code is the same across
+ * both, which is why it, and not the shape, is what the port sorts on.
  */
 export const SPAWN_SYNC_MAXBUFFER_ERRNO = 'ENOBUFS';
 

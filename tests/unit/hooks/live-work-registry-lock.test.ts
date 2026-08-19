@@ -1,6 +1,7 @@
+import type * as NodeFs from 'node:fs';
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // The flock probe in live-work-registry shells out to `flock -n <lock> -c true`
@@ -9,6 +10,24 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // "flock(1) absent ⇒ mtime fallback" paths are covered identically on every OS.
 const { execFileSyncMock } = vi.hoisted(() => ({ execFileSyncMock: vi.fn() }));
 vi.mock('node:child_process', () => ({ execFileSync: execFileSyncMock }));
+
+// Drives the "lock already gone by probe time" path without needing real concurrent timing: when set, a
+// `readdirSync` of the `bg/` dir reports one extra `.lock` name that was never actually written, the same shape
+// a concurrent prune leaves in the window between another process's own listing and this call's probe. Every
+// other path (including every other `readdirSync` call this file makes, real writes included) passes through
+// untouched.
+const ghostLock = vi.hoisted(() => ({ name: null as string | null }));
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof NodeFs>();
+  return {
+    ...actual,
+    readdirSync: (path: unknown, options?: unknown) => {
+      const names = (actual.readdirSync as (p: unknown, o: unknown) => string[])(path, options);
+      if (ghostLock.name && basename(String(path)) === 'bg') return [...names, ghostLock.name];
+      return names;
+    },
+  };
+});
 
 // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
 import { hasLiveWork } from '../../../clients/hooks/lib/live-work-registry.mjs';
@@ -54,9 +73,10 @@ function flockUnavailable(): void {
 function flockCannotOpenLockPath(): void {
   // flock launches fine but cannot open lockPath itself — measured against a real util-linux flock(1) 2.39.3:
   // an existing lockPath whose permission bits were changed after this task's own readdir listing found it
-  // (`EACCES`), or one removed in that same window (`ENOENT`), both exit 66 (EX_NOINPUT), not the plain
-  // nonzero exit a busy lock produces, and `execFileSync` reports it the same way as a busy lock (`status`, no
-  // `code`).
+  // (`EACCES`), or one whose containing directory vanished in that same window (`ENOENT` on the directory,
+  // never on the file itself — `flock`'s own `O_CREAT` rules that out), both exit 66 (EX_NOINPUT), not the
+  // plain nonzero exit a busy lock produces, and `execFileSync` reports it the same way as a busy lock
+  // (`status`, no `code`).
   execFileSyncMock.mockImplementation(() => {
     const err = new Error('flock: cannot open lock file') as NodeJS.ErrnoException & { status?: number };
     err.status = 66;
@@ -70,10 +90,12 @@ beforeEach(() => {
   projectDir = join(sandbox, 'project-root');
   mkdirSync(projectDir, { recursive: true });
   execFileSyncMock.mockReset();
+  ghostLock.name = null;
 });
 
 afterEach(() => {
   delete process.env.CORAL_WORK_ROOT_OVERRIDE;
+  ghostLock.name = null;
   try {
     rmSync(sandbox, { recursive: true, force: true });
   } catch {
@@ -115,7 +137,13 @@ describe('live-work-registry: bg lock liveness (flock mocked)', () => {
     writeBgMarker('taskA.started', BG_STALE_MS); // stale — the lock signal must win
     writeBgMarker('taskA.lock', BG_STALE_MS);
 
-    expect(hasLiveWork(projectDir, SESSION, undefined).live).toBe(true);
+    const result = hasLiveWork(projectDir, SESSION, undefined);
+
+    expect(result.live).toBe(true);
+    expect(
+      result.notice,
+      'a lock genuinely found held is a decisive answer, not a hold worth telling about',
+    ).toBeNull();
     expect(execFileSyncMock).toHaveBeenCalled();
   });
 
@@ -124,7 +152,10 @@ describe('live-work-registry: bg lock liveness (flock mocked)', () => {
     writeBgMarker('taskA.started'); // fresh — the lock signal must win
     writeBgMarker('taskA.lock');
 
-    expect(hasLiveWork(projectDir, SESSION, undefined).live).toBe(false);
+    const result = hasLiveWork(projectDir, SESSION, undefined);
+
+    expect(result.live).toBe(false);
+    expect(result.notice, 'a lock genuinely found free is a decisive answer too').toBeNull();
   });
 
   it('falls back to the mtime window (fresh ⇒ live) when flock(1) is unavailable', () => {
@@ -132,7 +163,13 @@ describe('live-work-registry: bg lock liveness (flock mocked)', () => {
     writeBgMarker('taskA.started'); // fresh
     writeBgMarker('taskA.lock');
 
-    expect(hasLiveWork(projectDir, SESSION, undefined).live).toBe(true);
+    const result = hasLiveWork(projectDir, SESSION, undefined);
+
+    expect(result.live).toBe(true);
+    expect(
+      result.notice,
+      'flock(1) being unusable here is exactly the case the direct check could not answer',
+    ).not.toBeNull();
   });
 
   it('falls back to the mtime window (stale ⇒ dead) when flock(1) is unavailable', () => {
@@ -140,7 +177,13 @@ describe('live-work-registry: bg lock liveness (flock mocked)', () => {
     writeBgMarker('taskA.started', BG_STALE_MS);
     writeBgMarker('taskA.lock', BG_STALE_MS);
 
-    expect(hasLiveWork(projectDir, SESSION, undefined).live).toBe(false);
+    const result = hasLiveWork(projectDir, SESSION, undefined);
+
+    expect(result.live).toBe(false);
+    expect(
+      result.notice,
+      'the fallback concluding "dead" does not erase that the direct probe never got to answer',
+    ).not.toBeNull();
   });
 
   // The mtime window is not independent of these failures. The heartbeat that refreshes the mtime is
@@ -154,10 +197,13 @@ describe('live-work-registry: bg lock liveness (flock mocked)', () => {
       flockUnanswered(code);
       writeBgMarker('task-unanswered.lock', BG_STALE_MS);
 
+      const result = hasLiveWork(projectDir, SESSION);
+
       expect(
-        hasLiveWork(projectDir, SESSION).live,
+        result.live,
         'the stale mtime is not evidence: the heartbeat needs the same forks this probe just failed to get',
       ).toBe(true);
+      expect(result.notice, 'a probe that could not ask at all is not a decisive answer').not.toBeNull();
     },
   );
 
@@ -165,11 +211,15 @@ describe('live-work-registry: bg lock liveness (flock mocked)', () => {
     // The bound is what ends this hold — not a window. One unanswered probe latches nothing.
     flockUnanswered('EAGAIN');
     writeBgMarker('task-recovers.lock', BG_STALE_MS);
-    expect(hasLiveWork(projectDir, SESSION).live).toBe(true);
+    const first = hasLiveWork(projectDir, SESSION);
+    expect(first.live).toBe(true);
+    expect(first.notice, 'the failed attempt is exactly what a notice exists for').not.toBeNull();
 
     flockFree();
 
-    expect(hasLiveWork(projectDir, SESSION).live, 'a recovered machine answers, and the answer decides').toBe(false);
+    const second = hasLiveWork(projectDir, SESSION);
+    expect(second.live, 'a recovered machine answers, and the answer decides').toBe(false);
+    expect(second.notice, 'a decisive free answer needs no notice').toBeNull();
   });
 
   // The other half of the same question, and it took the opposite answer. `EACCES` on `flock` — present but
@@ -185,17 +235,24 @@ describe('live-work-registry: bg lock liveness (flock mocked)', () => {
       writeBgMarker('task-standing.started');
       writeBgMarker('task-standing.lock');
 
-      expect(hasLiveWork(projectDir, SESSION).live, 'a fresh heartbeat still reads as live').toBe(true);
+      const fresh = hasLiveWork(projectDir, SESSION);
+      expect(fresh.live, 'a fresh heartbeat still reads as live').toBe(true);
+      expect(
+        fresh.notice,
+        'flock being unusable here is a standing fact the direct check could not get past',
+      ).not.toBeNull();
 
       flockUnanswered(code);
       writeBgMarker('task-standing-stale.started', BG_STALE_MS);
       writeBgMarker('task-standing-stale.lock', BG_STALE_MS);
       pruneOtherTasks('task-standing-stale');
 
+      const stale = hasLiveWork(projectDir, SESSION);
+      expect(stale.live, 'and a stopped one reads as dead, which `true` could never do').toBe(false);
       expect(
-        hasLiveWork(projectDir, SESSION).live,
-        'and a stopped one reads as dead, which `true` could never do',
-      ).toBe(false);
+        stale.notice,
+        'the fallback concluding "dead" is still not the direct check itself answering',
+      ).not.toBeNull();
     },
   );
 
@@ -212,7 +269,10 @@ describe('live-work-registry: bg lock liveness (flock mocked)', () => {
       writeBgMarker('task-open-failure.started', ageMs);
       writeBgMarker('task-open-failure.lock', ageMs);
 
-      expect(hasLiveWork(projectDir, SESSION).live).toBe(expectedLive);
+      const result = hasLiveWork(projectDir, SESSION);
+
+      expect(result.live).toBe(expectedLive);
+      expect(result.notice, 'exit 66 is flock answering about itself, not about the lock').not.toBeNull();
     },
   );
 
@@ -228,7 +288,9 @@ describe('live-work-registry: bg lock liveness (flock mocked)', () => {
 
     // Baseline: every probe is cheap, so all three are asked and all three answer "free" ⇒ nothing is live.
     flockFree();
-    expect(hasLiveWork(projectDir, SESSION).live).toBe(false);
+    const baseline = hasLiveWork(projectDir, SESSION);
+    expect(baseline.live).toBe(false);
+    expect(baseline.notice, 'three decisive probes leave nothing unobserved').toBeNull();
     expect(execFileSyncMock, 'the sweep visits every locked task when it can afford to').toHaveBeenCalledTimes(3);
 
     // Same registry, one wedged probe. It spends the whole 2s budget on its own, and the deadline is checked
@@ -241,10 +303,11 @@ describe('live-work-registry: bg lock liveness (flock mocked)', () => {
       return Buffer.from('');
     });
 
-    const live = hasLiveWork(projectDir, SESSION).live;
+    const result = hasLiveWork(projectDir, SESSION);
 
     expect(execFileSyncMock, 'the budget bounds the sweep, not just each probe').toHaveBeenCalledTimes(1);
-    expect(live, 'the two tasks nobody looked at were not observed to be gone').toBe(true);
+    expect(result.live, 'the two tasks nobody looked at were not observed to be gone').toBe(true);
+    expect(result.notice, 'tasks the budget left unchecked are exactly the case a notice exists for').not.toBeNull();
 
     vi.useRealTimers();
   });
@@ -270,13 +333,14 @@ describe('live-work-registry: bg lock liveness (flock mocked)', () => {
       return Buffer.from('');
     });
 
-    const live = hasLiveWork(projectDir, SESSION).live;
+    const result = hasLiveWork(projectDir, SESSION);
 
     expect(
       execFileSyncMock,
       'a third probe would start at 1400ms — inside the raw 2000ms budget, but past the reserved deadline',
     ).toHaveBeenCalledTimes(2);
-    expect(live, 'the tasks never probed are treated as live, not pruned').toBe(true);
+    expect(result.live, 'the tasks never probed are treated as live, not pruned').toBe(true);
+    expect(result.notice, 'budget exhaustion is not a decisive answer either').not.toBeNull();
 
     vi.useRealTimers();
   });
@@ -290,5 +354,28 @@ describe('live-work-registry: bg lock liveness (flock mocked)', () => {
     expect(execFileSyncMock).toHaveBeenCalled();
     const options = execFileSyncMock.mock.calls[0]?.[2] as { timeout?: number } | undefined;
     expect(options?.timeout, 'zero and undefined are both "no bound" to execFileSync').toBeGreaterThan(0);
+  });
+
+  // A `.lock` name can be listed by `readdirSync` and be gone by the time this call gets to probe it — another
+  // task's prune running first in the same sweep, or a concurrent Stop hook's own sweep, does exactly this.
+  // `ghostLock` reproduces the shape deterministically: `readdirSync` reports a `.lock` name with no file behind
+  // it, the same thing a real race leaves. Measured against a real util-linux `flock(1)` 2.39.3, asking `flock`
+  // about a missing path would create it and answer "free" about a lock this call had just manufactured; the
+  // fix is to never ask.
+  it('does not ask flock about a lock file already gone, and settles it from the mtime it already has', () => {
+    mkdirSync(bgDir(), { recursive: true });
+    ghostLock.name = 'task-ghost.lock';
+
+    const result = hasLiveWork(projectDir, SESSION);
+
+    expect(result.live, 'no marker ever backed the name, so its mtime is 0 — ancient by any window').toBe(false);
+    expect(
+      result.notice,
+      'a lock already gone by the time it is asked about is settled by the mtime this call already took, not left unobserved',
+    ).toBeNull();
+    expect(
+      execFileSyncMock,
+      'flock must never be asked about a lock file this call already found missing',
+    ).not.toHaveBeenCalled();
   });
 });

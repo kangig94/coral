@@ -811,6 +811,159 @@ describe('git sync conflict recovery', () => {
     ).toMatch(/Not tracked by 'kb diagnose'.*\.entity-graph\.json.*Recover them from refs\//su);
   });
 
+  // §11: `recoverRebaseConflict` must not report the same "fully accounted for" outcome when the conflict
+  // state could not be read at all as when it was read and everything in it was quarantined — those are
+  // different claims about what was inspected. This drives the throw through a real failure this file itself
+  // produces rather than an injected one: `git ls-files -u` answering with no exit status at all, which
+  // `detectGitConflictState` must throw on (see the ls-files -u block above) instead of reading as "nothing is
+  // unmerged". `hasConflictMarkers()` and `detectConflictStateOrFallback()` then both go through their own
+  // catch for that same throw, and recovery must say it was blind, not clean.
+  it('reports a blind recovery instead of a clean one when the conflict state itself could not be read', async () => {
+    const warnSpy = vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
+    const root = mkdtempSync(join(tmpdir(), 'coral-rebase-blind-recovery-'));
+    roots.push(root);
+    process.env.CLAUDE_CONFIG_DIR = join(root, '.claude');
+
+    const runtime = createRealRuntime('prod');
+    const db = createKbTestDb(root);
+    const kb = createTestKbRuntime({
+      markdownRoot: root,
+      runtimeDir: root,
+      db,
+      runtime,
+    });
+
+    let rebaseInProgress = false;
+    let head = 'local-before';
+
+    const ok = (stdout = ''): ExecResult => ({ stdout, stderr: '', status: 0 });
+    const fail = (stderr: string): ExecResult => ({ stdout: '', stderr, status: 1 });
+    // No exit status at all — a process error, not an answer. This is the shape `detectGitConflictState` must
+    // throw on rather than read as "no unmerged paths".
+    const unanswered = (): ExecResult =>
+      ({
+        stdout: '',
+        stderr: '',
+        status: null,
+        signal: null,
+        error: Object.assign(new Error('EAGAIN'), { code: 'EAGAIN' }),
+        pid: 0,
+        output: [],
+      }) as unknown as ExecResult;
+    const complete = vi.fn(async () => {
+      throw new Error('assistant unavailable');
+    });
+
+    const processPort = {
+      exec: vi.fn(async (command: string, args: string[], _options?: RuntimeExecOptions): Promise<ExecResult> => {
+        expect(command).toBe('git');
+        if (args[0] === 'fetch' && args[1] === 'origin') {
+          return ok();
+        }
+        if (args[0] === 'rebase' && args[1] === 'origin/main') {
+          rebaseInProgress = true;
+          return fail('CONFLICT (content): Merge conflict in notes/conflict.md');
+        }
+        throw new Error(`unexpected async git ${args.join(' ')}`);
+      }),
+      execSync: vi.fn((command: string, args: string[], _options?: RuntimeExecOptions): ExecResult => {
+        expect(command).toBe('git');
+
+        if (args[0] === 'rev-parse' && args[1] === '--is-inside-work-tree') {
+          return ok('true\n');
+        }
+        if (args[0] === 'remote') {
+          return ok('origin\n');
+        }
+        if (args[0] === 'config') {
+          return ok();
+        }
+        if (args[0] === 'symbolic-ref') {
+          return ok('origin/main\n');
+        }
+        if (args[0] === 'rev-parse' && args[1] === 'HEAD') {
+          return ok(`${head}\n`);
+        }
+        if (args[0] === 'status' && args[1] === '--porcelain') {
+          return ok();
+        }
+        if (args[0] === 'ls-files' && args[1] === '-u') {
+          return unanswered();
+        }
+        if (args[0] === 'diff' && args[1] === '--check') {
+          return ok();
+        }
+        if (args[0] === 'rev-parse' && args[1] === '--git-path' && args[2] === 'rebase-merge') {
+          return ok('.git/rebase-merge\n');
+        }
+        if (args[0] === 'rev-parse' && args[1] === '--git-path' && args[2] === 'rebase-apply') {
+          return ok('.git/rebase-apply\n');
+        }
+        if (args[0] === 'rebase' && args[1] === '--abort') {
+          rebaseInProgress = false;
+          return ok();
+        }
+        if (args[0] === 'update-ref') {
+          return ok();
+        }
+        if (args[0] === 'for-each-ref') {
+          return ok();
+        }
+        if (args[0] === 'reset' && args[1] === '--hard') {
+          head = 'origin-main';
+          return ok();
+        }
+
+        throw new Error(`unexpected sync git ${args.join(' ')}`);
+      }),
+    };
+
+    const storagePort = {
+      readFileSync: vi.fn(() => {
+        throw new Error('missing');
+      }),
+      writeAtomicSync: vi.fn(() => true),
+      existsSync: vi.fn((path: string) => {
+        if (path === join(root, '.git', 'rebase-merge')) {
+          return rebaseInProgress;
+        }
+        return false;
+      }),
+      statSync: vi.fn(() => ({ size: 0, mtimeMs: 0, isDirectory: () => false, isFile: () => true })) as never,
+      rmSync: vi.fn(),
+    };
+
+    const controller = createGitSyncController({
+      kb,
+      curateAssistant: { complete },
+      processPort,
+      storagePort,
+      envPort: {
+        get: (key: string) => (key === 'CORAL_KB_GIT_SYNC' ? '1' : undefined),
+      },
+    });
+
+    const syncResult = await controller.gitSync();
+
+    expect(syncResult).toEqual({ kind: 'ambiguous' });
+    expect(
+      processPort.execSync.mock.calls.some(([, args]) => args[0] === 'rebase' && args[1] === '--abort'),
+      'recovery still runs even though nothing about the conflict could be read',
+    ).toBe(true);
+    expect(
+      readCurateConflictQuarantine(curateDb(kb)),
+      'nothing was inspected, so nothing is quarantined — an honestly empty table, not a claimed-complete one',
+    ).toEqual([]);
+    const warnedMessages = warnSpy.mock.calls.map(([message]) => String(message)).join('\n');
+    expect(
+      warnedMessages,
+      'the operator must be told the conflict state itself could not be read, not given the clean-recovery message',
+    ).toMatch(/could not be read.*nothing was inspected or quarantined/su);
+    expect(warnedMessages, 'a blind recovery must not claim a quarantine outcome it never computed').not.toMatch(
+      /Quarantined entries:/u,
+    );
+  });
+
   // S1: a delete/modify conflict is unmerged with no markers too, but for a reason the recovery diversion must
   // not act on — `git ls-files -u` shows only one of stage 2/3 (the side that deleted has no blob), so
   // `contentConflictPaths` excludes it. This pins that such a path still reaches the assistant instead of

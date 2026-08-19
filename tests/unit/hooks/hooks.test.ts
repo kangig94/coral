@@ -337,6 +337,13 @@ describe('session-start.mjs', () => {
     expect(readFileSync(join(fixture.projectRoot, '.gitignore'))).toEqual(oversized);
     expect(existsSync(join(fixture.projectRoot, '.claude', '.gitignore'))).toBe(false);
     expect(existsSync(join(fixture.projectRoot, '.claude', 'coral'))).toBe(false);
+    // The child ran, decided the root `.gitignore` was unsafe to touch, and reported `{ ok: false, ... }` — a
+    // real maintenance failure, not a transport one. Silently folding that into the bare `ok` outcome is exactly
+    // the defect this pins: the session must be told the same way it is told about a kill or a launch failure.
+    expect(
+      expectHookOutput(result).hookSpecificOutput.additionalContext,
+      'a maintenance pass that ran and reported ok:false must reach the session as a notice, not be dropped',
+    ).toContain('Coral project-ignore maintenance ran and reported it could not complete safely');
   });
 
   it('serializes concurrent migration outcomes without duplicate entries or temp residue', async () => {

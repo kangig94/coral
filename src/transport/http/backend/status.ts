@@ -75,11 +75,20 @@ export type BackendStatusFull =
    * HTTP response (any status, any body) — the one thing that proves something is listening. `'refused'` is a
    * TCP-level refusal at the moment of the attempt — it proves nothing was listening on that exact socket at
    * that moment, but not that the coordinator process itself is gone, so it carries `pidLiveness`, the prior
-   * observation of that specific question. `'no_response'` is everything else that keeps a request from
-   * completing (timeout, DNS failure, ...), which proves neither way.
+   * observation of that specific question, plus `pid` and `recordPath` — the same evidence `shutdownBackend`'s
+   * `socket_refused` (`shutdown.ts`) carries for the identical hold, so the render layer can offer the same
+   * check-and-clear remedy for the same unresolved case. `'no_response'` is everything else that keeps a
+   * request from completing (timeout, DNS failure, ...), which proves neither way.
    */
   | { status: 'unreachable'; detail: string; cause: 'responded' }
-  | { status: 'unreachable'; detail: string; cause: 'refused'; pidLiveness: 'alive' | 'unknown' }
+  | {
+      status: 'unreachable';
+      detail: string;
+      cause: 'refused';
+      pidLiveness: 'alive' | 'unknown';
+      pid: number;
+      recordPath: string;
+    }
   | { status: 'unreachable'; detail: string; cause: 'no_response' }
   /**
    * The coordinator's own IPC socket file exists but no discovery record has been written — see
@@ -141,6 +150,24 @@ export function statusFromStartupDiagnostic(
   };
 }
 
+/** A decoded, in-scope startup diagnostic, or `null` if none applies — the shared read behind both
+ *  `noDaemonStatus`'s decisive absence and `no-record-socket-present`'s unresolved one, which differ only in
+ *  what they fall back to when no diagnostic applies. */
+function readRecentFailureDiagnostic(
+  storage: Pick<StoragePort, 'readFileSync'>,
+  diagnosticFile: string,
+  now: number,
+  earliestRecordedAt?: number,
+  expectedPid?: number,
+): RecentFailureStatus | null {
+  try {
+    const value: unknown = JSON.parse(storage.readFileSync(diagnosticFile, 'utf-8'));
+    return statusFromStartupDiagnostic(value, now, earliestRecordedAt, expectedPid);
+  } catch {
+    return null;
+  }
+}
+
 function noDaemonStatus(
   storage: Pick<StoragePort, 'readFileSync'>,
   diagnosticFile: string,
@@ -148,12 +175,11 @@ function noDaemonStatus(
   earliestRecordedAt?: number,
   expectedPid?: number,
 ): BackendStatusFull {
-  try {
-    const value: unknown = JSON.parse(storage.readFileSync(diagnosticFile, 'utf-8'));
-    return statusFromStartupDiagnostic(value, now, earliestRecordedAt, expectedPid) ?? { status: 'not_running' };
-  } catch {
-    return { status: 'not_running' };
-  }
+  return (
+    readRecentFailureDiagnostic(storage, diagnosticFile, now, earliestRecordedAt, expectedPid) ?? {
+      status: 'not_running',
+    }
+  );
 }
 
 /**
@@ -237,7 +263,17 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
     case 'no-record':
       return noDaemonStatus(runtime.storage, runtime.paths.coral.coordinator.startupDiagnosticFile, runtime.time.now());
     case 'no-record-socket-present':
-      return { status: 'no_record_socket_present', socketPath: observed.socketPath };
+      // A crash can remove the discovery record and leave the socket file behind before the diagnostic write
+      // that explains the crash lands, so this arm reads the same diagnostic `noDaemonStatus` reads for
+      // `no-record` and falls back to the vague evidence only when no diagnostic applies — never to
+      // `not_running`, which the surviving socket file already rules out.
+      return (
+        readRecentFailureDiagnostic(
+          runtime.storage,
+          runtime.paths.coral.coordinator.startupDiagnosticFile,
+          runtime.time.now(),
+        ) ?? { status: 'no_record_socket_present', socketPath: observed.socketPath }
+      );
     case 'process-absent':
       // Absence is established, so the startup diagnostic may explain it — scoped to both halves of the dead
       // coordinator's identity, because either alone admits a diagnostic that is not this run's. A pid is
@@ -290,7 +326,14 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
     // so it carries the prior `pidLiveness` observation rather than a fresh claim.
     const code = thrownErrnoCode(error);
     if (code === 'ECONNREFUSED') {
-      return { status: 'unreachable', detail: code, cause: 'refused', pidLiveness: observed.pidLiveness };
+      return {
+        status: 'unreachable',
+        detail: code,
+        cause: 'refused',
+        pidLiveness: observed.pidLiveness,
+        pid: info.pid,
+        recordPath: runtime.paths.coral.coordinator.infoFile,
+      };
     }
     return { status: 'unreachable', detail: code ?? errorMessage(error), cause: 'no_response' };
   }

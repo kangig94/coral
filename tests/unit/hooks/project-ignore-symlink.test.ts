@@ -313,23 +313,20 @@ describe('ensureCoralSymlink keeps its own link pointing at the current flavor',
     ).toBeGreaterThan(childBoundSum);
   });
 
-  // `runProjectIgnoreMaintenance` tells a timeout kill, a failed launch, an empty result and an unreadable one
-  // apart, and that split buys nothing unless the caller reads it — a maintenance pass that did not run leaves
-  // the ignore file and the symlink exactly as a pass that had nothing to do would. Read from source rather
-  // than by import: `session-start.mjs` is a script with a top-level `await readStdin()` that exits the
-  // process. Driving the outcomes end-to-end is not available either — the child is spawned with
-  // `process.execPath` against a path derived from `import.meta.url`, so no fixture can make it fail.
+  // `runProjectIgnoreMaintenance` tells a timeout kill, a failed launch, an empty result, an unreadable one, and
+  // a maintenance pass that ran to completion but reported it could not finish apart, and that split buys
+  // nothing unless the caller reads it — a maintenance pass that did not run leaves the ignore file and the
+  // symlink exactly as a pass that had nothing to do would. Read from source rather than by import:
+  // `session-start.mjs` is a script with a top-level `await readStdin()` that exits the process. Driving the
+  // outcomes end-to-end is not available either — the child is spawned with `process.execPath` against a path
+  // derived from `import.meta.url`, so no fixture can make it fail.
   it('renders every maintenance outcome it distinguishes, so none is split apart and then dropped', () => {
     const source = readFileSync(
       join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'clients', 'hooks', 'session-start.mjs'),
       'utf-8',
     );
 
-    const produced = new Set(
-      [...source.matchAll(/outcome:\s*(?:'([^']+)'|result\.signal \? '([^']+)' : '([^']+)')/gu)]
-        .flatMap((match) => [match[1], match[2], match[3]])
-        .filter((value): value is string => value !== undefined),
-    );
+    const produced = new Set([...source.matchAll(/outcome:\s*'([^']+)'/gu)].map((match) => match[1]));
     const noticed = new Set(
       [
         ...(source.match(/const PROJECT_IGNORE_OUTCOME_NOTICES = \{[^}]*\}/su)?.[0] ?? '').matchAll(

@@ -101,6 +101,21 @@ describe('getBackendStatusFull record disposition', () => {
     });
   });
 
+  // A socket close that exceeds the drain budget can outlive the record's removal, so a fresh startup
+  // diagnostic can exist in this exact window too — and reporting the vague evidence instead of it would
+  // discard the authored remediation for a genuine coordinator failure.
+  it('reports recent_failure, not no_record_socket_present, when a fresh startup diagnostic explains the socket', async () => {
+    mockState.observed = { kind: 'no-record-socket-present', socketPath: '/tmp/coral.sock' };
+    mockState.diagnostic = startupDiagnostic(NOW - 10_000, 4242);
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
+      status: 'recent_failure',
+      phase: 'startup_failed',
+    });
+  });
+
   // Same fields, same omission, same wrong answer as the shutdown path: `readBackendInfo` returns `null` when
   // `version` or `instanceId` is absent, and nothing here reads either — the version an operator sees is the
   // one in the health response.
@@ -499,6 +514,8 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
       detail: 'ECONNREFUSED',
       cause: 'refused',
       pidLiveness: 'alive',
+      pid: 12345,
+      recordPath: '/run/coral/coordinator.json',
     });
   });
 
@@ -523,6 +540,8 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
       detail: 'ECONNREFUSED',
       cause: 'refused',
       pidLiveness: 'alive',
+      pid: 12345,
+      recordPath: '/run/coral/coordinator.json',
     });
   });
 });

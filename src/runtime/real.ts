@@ -436,11 +436,8 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
     const stdout = normalizeSpawnSyncOutput(result.stdout, encoding);
     const stderr = normalizeSpawnSyncOutput(result.stderr, encoding);
 
-    // The two substituted errors below carry a `code` because callers sort on it — `git-sync.ts`'s `isGitRepo`
-    // decides from it whether a failure is worth caching. Both branches are causal guesses and the codes are
-    // no more precise than the messages they accompany: any signal death reads as a timeout, and output plus
-    // no signal reads as maxBuffer. What the codes are relied on for is narrower and holds for every case they
-    // cover — the command did not answer — so a mislabel costs a caller a retry, never a wrong answer kept.
+    // The two branches below substitute a `code` for whatever `spawnSync` put on `result.error`, so what a
+    // caller sees names which non-answer this was instead of an error with no code at all.
     if (result.error) {
       // Sorted on `spawnSync`'s own code, not on the shape around it. A `maxBuffer` overflow arrives as
       // `ENOBUFS` either way, but its shape depends on whether the child finished writing before Node killed

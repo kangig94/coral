@@ -166,11 +166,20 @@ export function detectGitConflictState({
   paths?: readonly string[];
 }): GitConflictState {
   const unmergedResult = gitRaw(processPort, root, ['ls-files', '-u', '--', ...paths], 5000);
-  const unmergedOutput = `${unmergedResult.stdout}\n${unmergedResult.stderr}`;
-  const { paths: unmergedPaths, contentConflictPaths } =
-    unmergedResult.error !== undefined || unmergedResult.status === null || unmergedResult.status > 1
-      ? { paths: [], contentConflictPaths: [] }
-      : parseUnmergedIndex(unmergedOutput);
+  if (unmergedResult.error !== undefined || unmergedResult.status === null || unmergedResult.status > 1) {
+    // `hasUnmergedIndex()` below takes the same non-answer from the same command and assumes the worst
+    // (unmerged). Reading it here as "nothing is unmerged" would give a caller of this function a conflict
+    // state that claims to have found no unmerged paths from a question git never actually answered. Throwing
+    // puts every caller of this function through the same catch `hasConflictMarkers()` and
+    // `detectConflictStateOrFallback()` already give a state they cannot read, so both land on the same
+    // assume-the-worst side `hasUnmergedIndex()` takes.
+    throw (
+      unmergedResult.error ?? new Error(`git ls-files -u could not be answered (exit ${String(unmergedResult.status)})`)
+    );
+  }
+  const { paths: unmergedPaths, contentConflictPaths } = parseUnmergedIndex(
+    `${unmergedResult.stdout}\n${unmergedResult.stderr}`,
+  );
 
   const diffCheckResult = gitRaw(processPort, root, ['diff', '--check', 'HEAD', '--', ...paths], 5000);
   const diffCheckOutput = `${diffCheckResult.stdout}\n${diffCheckResult.stderr}`;
@@ -659,13 +668,12 @@ export function createGitSyncController({
 
   /**
    * Narrowed to `contentConflictPaths` rather than every unmerged path: a delete/modify conflict is unmerged
-   * with no markers too, but for a reason this function must not act on — the working-tree file there is a
-   * plain resolvable side (verified against git 2.43: the surviving version, staged by `git add` the ordinary
-   * way), not an unreviewed merge seed. Restricting to paths where both "ours" and "theirs" content exist is
-   * what tells the two apart: only that shape is one where a content merge — the default text merge, or a
-   * configured driver — was even attempted, so only there does "no markers" mean the merge produced nothing
-   * reviewable. `FrontmatterMergeUnavailableError` documents what a refused driver leaves at a path in that
-   * shape.
+   * with no markers too, but for a reason this function must not act on the same way — unlike a driver-refused
+   * content conflict, it is not a dead end for `resolveConflictsWithClaude` below, which is the path it reaches
+   * instead of the recovery diversion this function feeds. Restricting to paths where both "ours" and "theirs"
+   * content exist is what tells the two apart: only that shape is one where a content merge — the default text
+   * merge, or a configured driver — was even attempted, so only there does "no markers" mean the merge
+   * produced nothing reviewable.
    */
   function markerlessUnmergedPaths(state: GitConflictState): string[] {
     const markerPathSet = new Set(state.markerPaths);
@@ -805,17 +813,22 @@ export function createGitSyncController({
   function logRecoveryOutcome(
     recoveryRef: string,
     branch: string,
-    quarantined: readonly { slug: string }[],
-    unrecordable: readonly string[],
+    accounting:
+      | { kind: 'blind' }
+      | { kind: 'accounted'; quarantined: readonly { slug: string }[]; unrecordable: readonly string[] },
   ): void {
-    const quarantinedSlugs = quarantined.map((entry) => entry.slug).join(', ');
     backendLog.warn(
       [
         `[KB] git rebase body conflict recovered on ${branch}; local commits preserved at ${recoveryRef}; worktree reset to origin/${branch}.`,
-        quarantinedSlugs.length === 0 ? undefined : `Quarantined entries: ${quarantinedSlugs}.`,
-        unrecordable.length === 0
-          ? undefined
-          : `Not tracked by 'kb diagnose' (no KB entry keys these paths): ${unrecordable.join(', ')}. Recover them from ${recoveryRef} directly.`,
+        accounting.kind === 'blind'
+          ? `The conflict state could not be read before recovery, so nothing was inspected or quarantined; check the paths at ${recoveryRef} for KB entries yourself.`
+          : undefined,
+        accounting.kind === 'accounted' && accounting.quarantined.length > 0
+          ? `Quarantined entries: ${accounting.quarantined.map((entry) => entry.slug).join(', ')}.`
+          : undefined,
+        accounting.kind === 'accounted' && accounting.unrecordable.length > 0
+          ? `Not tracked by 'kb diagnose' (no KB entry keys these paths): ${accounting.unrecordable.join(', ')}. Recover them from ${recoveryRef} directly.`
+          : undefined,
         `List recovery refs with 'git for-each-ref ${RECOVERY_REF_NAMESPACE}'.`,
         `After landing or discarding recovered work, cleanup with 'git update-ref -d ${recoveryRef}'.`,
         `Coral keeps the newest ${RECOVERY_REF_KEEP_PER_BRANCH} recovery refs per branch automatically.`,
@@ -826,17 +839,21 @@ export function createGitSyncController({
   }
 
   /**
-   * `'recovered'` and `'recovered-unaccounted'` both mean the rebase was aborted and local commits are safe on
-   * `recoveryRef` — they differ only in whether every conflicted path also got a queryable quarantine row.
-   * Keeping that a type-level distinction, rather than collapsing both to one boolean, is what stops a caller
-   * from reporting full success over a path `quarantineConflictPaths` could not key a row for.
+   * `'recovered'`, `'recovered-unaccounted'`, and `'recovered-blind'` all mean the rebase was aborted and local
+   * commits are safe on `recoveryRef` — they differ in what could be said about the conflict itself.
+   * `'recovered'` means the state was read and every conflicted path also got a queryable quarantine row;
+   * `'recovered-unaccounted'` means the state was read but at least one path has no KB entry to key a row on;
+   * `'recovered-blind'` means the state could not be read at all, so nothing was inspected or quarantined.
+   * Keeping these apart at the type level, rather than collapsing them into one boolean, is what stops a
+   * caller from reporting full accounting over a conflict this file never looked at.
    */
   type RebaseRecoveryOutcome =
     | { status: 'recovered' }
-    | { status: 'recovered-unaccounted'; unrecordablePaths: readonly string[] }
+    | { status: 'recovered-unaccounted' }
+    | { status: 'recovered-blind' }
     | { status: 'failed' };
 
-  function recoverRebaseConflict(branch: string, conflictState: GitConflictState): RebaseRecoveryOutcome {
+  function recoverRebaseConflict(branch: string, conflictReadout: ConflictStateReadout): RebaseRecoveryOutcome {
     try {
       git(['rebase', '--abort'], 10000);
     } catch (error: unknown) {
@@ -865,16 +882,19 @@ export function createGitSyncController({
     let quarantineOutcome: {
       quarantined: Array<{ entryId: KbEntryId; slug: string; path: string }>;
       unrecordable: string[];
-    };
-    try {
-      quarantineOutcome = quarantineConflictPaths(conflictState.paths, recoveryRef);
-    } catch (error: unknown) {
-      backendLog.error(
-        `[KB] git rebase conflict recovery preserved local commits at ${recoveryRef} but could not write conflict quarantine; leaving worktree untouched`,
-        error,
-      );
-      return { status: 'failed' };
+    } | null = null;
+    if (conflictReadout.kind === 'observed') {
+      try {
+        quarantineOutcome = quarantineConflictPaths(conflictReadout.state.paths, recoveryRef);
+      } catch (error: unknown) {
+        backendLog.error(
+          `[KB] git rebase conflict recovery preserved local commits at ${recoveryRef} but could not write conflict quarantine; leaving worktree untouched`,
+          error,
+        );
+        return { status: 'failed' };
+      }
     }
+
     try {
       pruneRecoveryRefs(branch);
     } catch {
@@ -891,10 +911,17 @@ export function createGitSyncController({
       return { status: 'failed' };
     }
 
-    logRecoveryOutcome(recoveryRef, branch, quarantineOutcome.quarantined, quarantineOutcome.unrecordable);
-    return quarantineOutcome.unrecordable.length === 0
-      ? { status: 'recovered' }
-      : { status: 'recovered-unaccounted', unrecordablePaths: quarantineOutcome.unrecordable };
+    if (quarantineOutcome === null) {
+      logRecoveryOutcome(recoveryRef, branch, { kind: 'blind' });
+      return { status: 'recovered-blind' };
+    }
+
+    logRecoveryOutcome(recoveryRef, branch, {
+      kind: 'accounted',
+      quarantined: quarantineOutcome.quarantined,
+      unrecordable: quarantineOutcome.unrecordable,
+    });
+    return quarantineOutcome.unrecordable.length === 0 ? { status: 'recovered' } : { status: 'recovered-unaccounted' };
   }
 
   async function resolveConflictsWithClaude(signal?: AbortSignal): Promise<boolean> {
@@ -948,26 +975,35 @@ export function createGitSyncController({
   }
 
   /**
+   * The disposition `detectConflictState()` collapses into for a caller that must recover regardless of
+   * whether it could read the conflict: either the state was actually read (`observed`), or reading it failed
+   * and nothing about which paths conflicted is known (`unreadable`). `recoverRebaseConflict` reads this
+   * discriminant to decide whether it may quarantine anything at all — an `unreadable` readout has no `state`
+   * to quarantine from, rather than a `state` whose `paths` happen to be empty.
+   */
+  type ConflictStateReadout = { kind: 'observed'; state: GitConflictState } | { kind: 'unreadable' };
+
+  /**
    * `hasConflictMarkers()` above already treats a throw from this same probe as "assume the worst, let
    * recovery decide" rather than propagating it — every call site here needs that same fallback, since an
    * unguarded throw would escape this loop, be swallowed by `gitSync`'s outer catch as "offline or no remote",
-   * and leave the rebase in progress for the next cycle's `git add -A` to run against. The empty path lists on
-   * the fallback are honest about what happened: the state genuinely could not be read, so nothing is claimed
-   * to have been individually inspected, only that recovery — abort, preserve, reset — still runs.
+   * and leave the rebase in progress for the next cycle's `git add -A` to run against. `kind: 'unreadable'` is
+   * honest about what happened: the state genuinely could not be read, so nothing is claimed to have been
+   * individually inspected, only that recovery — abort, preserve, reset — still runs.
    */
-  function detectConflictStateOrFallback(): GitConflictState {
+  function detectConflictStateOrFallback(): ConflictStateReadout {
     try {
-      return detectConflictState();
+      return { kind: 'observed', state: detectConflictState() };
     } catch (error: unknown) {
       backendLog.error('[KB] git rebase conflict recovery could not read the conflict state; recovering blind', error);
-      return { hasMarkers: true, paths: [], markerPaths: [], unmergedPaths: [], contentConflictPaths: [] };
+      return { kind: 'unreadable' };
     }
   }
 
   async function continueOrRecoverRebase(
     branch: string,
     signal?: AbortSignal,
-  ): Promise<'continued' | 'llm-resolved' | 'recovered' | 'recovered-unaccounted' | 'failed'> {
+  ): Promise<'continued' | 'llm-resolved' | 'recovered' | 'recovered-unaccounted' | 'recovered-blind' | 'failed'> {
     let usedLlmConflictResolution = false;
 
     for (let attempt = 0; attempt < 64; attempt += 1) {
@@ -977,13 +1013,13 @@ export function createGitSyncController({
       }
 
       if (hasConflictMarkers()) {
-        const conflictState = detectConflictStateOrFallback();
-        const unresolvable = markerlessUnmergedPaths(conflictState);
+        const conflictReadout = detectConflictStateOrFallback();
+        const unresolvable = conflictReadout.kind === 'observed' ? markerlessUnmergedPaths(conflictReadout.state) : [];
         if (unresolvable.length > 0) {
           backendLog.warn(
             `[KB] git rebase conflict on ${branch} leaves ${unresolvable.join(', ')} unmerged with no conflict markers for the assistant to act on (a merge driver may have refused to answer, or the conflict has no text form); recovering instead of asking it to resolve markers that are not there.`,
           );
-          return recoverRebaseConflict(branch, conflictState).status;
+          return recoverRebaseConflict(branch, conflictReadout).status;
         }
 
         if (await resolveConflictsWithClaude(signal)) {
@@ -1011,9 +1047,9 @@ export function createGitSyncController({
       }
     }
 
-    const conflictState = detectConflictStateOrFallback();
-    if (conflictState.hasMarkers || isRebaseInProgress()) {
-      return recoverRebaseConflict(branch, conflictState).status;
+    const conflictReadout = detectConflictStateOrFallback();
+    if (conflictReadout.kind === 'unreadable' || conflictReadout.state.hasMarkers || isRebaseInProgress()) {
+      return recoverRebaseConflict(branch, conflictReadout).status;
     }
 
     return 'failed';
@@ -1044,6 +1080,7 @@ export function createGitSyncController({
     const headBeforeSync = readHead();
     let usedConflictRecovery = false;
     let usedLlmConflictResolution = false;
+    let rebaseRecoveryFailed = false;
 
     try {
       await gitAsync(['fetch', 'origin'], 30000);
@@ -1061,11 +1098,21 @@ export function createGitSyncController({
         await gitAsync(['rebase', `origin/${branch}`]);
       } catch {
         const rebaseResult = await continueOrRecoverRebase(branch, signal);
-        if (rebaseResult === 'recovered' || rebaseResult === 'recovered-unaccounted') {
+        if (
+          rebaseResult === 'recovered' ||
+          rebaseResult === 'recovered-unaccounted' ||
+          rebaseResult === 'recovered-blind'
+        ) {
           usedConflictRecovery = true;
         }
         if (rebaseResult === 'llm-resolved') {
           usedLlmConflictResolution = true;
+        }
+        if (rebaseResult === 'failed') {
+          // A rebase that neither continued nor recovered may still be in progress, mid-replay, at a HEAD that
+          // is not the KB's own history — `diffKbPathsBetweenRevisions` below must not be asked to describe
+          // what changed between two revisions when one of them is that transient state.
+          rebaseRecoveryFailed = true;
         }
       }
     } catch {
@@ -1092,6 +1139,9 @@ export function createGitSyncController({
       return { kind: 'ambiguous' };
     }
     if (usedLlmConflictResolution) {
+      return { kind: 'ambiguous' };
+    }
+    if (rebaseRecoveryFailed) {
       return { kind: 'ambiguous' };
     }
 

@@ -26,7 +26,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { mkdirSync, readdirSync, rmdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, rmdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 
 import { claudeConfigDir, isValidSessionId, STANDING_PROBE_ERRNOS } from './hook-utils.mjs';
@@ -144,9 +144,11 @@ function shSingleQuote(value) {
 /**
  * `{ live, notice }` — whether any subagent OR backgrounded Bash/Monitor task of this session is still live,
  * and text for the caller to surface through its own rendered channel (`writeHookOutput({ systemMessage })`)
- * when a registry directory could not be read at all. `notice` is non-null only in that case: ordinary "no
- * work recorded" and "work is genuinely running" both carry `notice: null`, because neither is a hold anyone
- * needs telling about — only "the answer could not be determined, so it defaults to live" is.
+ * whenever a registry directory could not be read at all, or a task's liveness could not be settled by a direct
+ * check. `notice` is non-null only in those cases: ordinary "no work recorded" and "work is genuinely running" —
+ * decided by a direct check, not a fallback — both carry `notice: null`, because neither is a hold anyone needs
+ * telling about; a direct check that could not answer and had to fall back to a proxy signal is, regardless of
+ * what that fallback then concluded.
  *
  * Prunes dead entries as a side effect on the ordinary path. `transcriptPath` is the Stop hook's own (parent)
  * transcript; the subagents dir is derived from it, with a slug-based fallback when it is absent.
@@ -300,33 +302,81 @@ function hasLiveBg(projectDir, sessionId) {
   // a full timeout; stopping new probes this much early keeps the total inside the budget instead.
   const probeDeadline = now + LOCK_PROBE_SWEEP_BUDGET_MS - LOCK_PROBE_TIMEOUT_MS;
   let live = false;
+  const uncertain = new Set(); // subset of {'budget', 'probe'}: which way this sweep left a task unobserved
   for (const [id, task] of tasks) {
     if (Date.now() >= probeDeadline) {
       // Out of budget. Every remaining task is treated as live and none is pruned: they were not looked at,
       // and a hook that runs out of time has observed nothing about them.
       live = true;
+      uncertain.add('budget');
       break;
     }
-    if (isBgTaskLive(dir, id, task, now)) {
+    const result = isBgTaskLive(dir, id, task, now);
+    if (result.uncertain) uncertain.add('probe');
+    if (result.live) {
       live = true;
     } else if (now - task.newestMs > BG_CLEANUP_TTL_MS) {
       // Dead — keep recent terminals around for exit-code reads, sweep old ones.
       pruneBgTask(dir, id);
     }
   }
-  return { live, notice: null };
+  return { live, notice: uncertain.size > 0 ? bgUncertainNotice(dir, uncertain) : null };
 }
 
+/**
+ * `{ live, uncertain }` for one bg task. `uncertain` is true only when `lockHeld` itself could not decide —
+ * everything else here (a clean terminal record, a decisive `lockHeld` answer, a lock file gone from a prune
+ * this same staleness rule already justified, or no lock file yet because the wrapper is still starting) is an
+ * ordinary, fully-observed outcome and carries `uncertain: false` regardless of which way `live` comes out.
+ */
 function isBgTaskLive(dir, id, task, now) {
-  if (task.exited) return false; // clean terminal record present
+  if (task.exited) return { live: false, uncertain: false }; // clean terminal record present
   if (task.lock) {
-    const held = lockHeld(join(dir, `${id}.lock`));
-    if (held === true) return true; // flock still held ⇒ process alive
-    if (held === false) return false; // flock free ⇒ process died/released
-    // held === null ⇒ flock(1) unavailable ⇒ fall through to mtime window
+    const probe = lockHeld(join(dir, `${id}.lock`));
+    if (probe === 'held') return { live: true, uncertain: false }; // flock still held ⇒ process alive
+    if (probe === 'free') return { live: false, uncertain: false }; // flock free ⇒ process died/released
+    if (probe === 'gone') {
+      // Only `pruneBgTask` below ever removes a `.lock` file, and only for a task this same loop already found
+      // not live and stale past `BG_CLEANUP_TTL_MS` (well beyond `BG_MTIME_WINDOW_MS`) — so the mtime this call
+      // already captured settles it the same way that prune did, with nothing left here to have missed.
+      return { live: now - task.newestMs <= BG_MTIME_WINDOW_MS, uncertain: false };
+    }
+    // 'unusable' (flock cannot be asked here at all, a standing fact) or 'unanswered' (this one attempt failed
+    // for a reason the next hook is not bound by) ⇒ the direct check did not happen, so the caller is told so.
+    return {
+      live: probe === 'unusable' ? now - task.newestMs <= BG_MTIME_WINDOW_MS : true,
+      uncertain: true,
+    };
   }
-  // No lock yet (wrapper still starting) or no flock(1): recent activity ⇒ alive.
-  return now - task.newestMs <= BG_MTIME_WINDOW_MS;
+  // No lock yet (wrapper still starting): recent activity ⇒ alive.
+  return { live: now - task.newestMs <= BG_MTIME_WINDOW_MS, uncertain: false };
+}
+
+/**
+ * Text for a bg sweep that left at least one task's liveness decided by something other than a direct probe of
+ * its lock. `reasons` is a subset of `{'budget', 'probe'}` naming which way(s) that happened this call: `'budget'`
+ * is `hasLiveBg`'s own per-sweep deadline ending the loop before every locked task was asked; `'probe'` is
+ * `lockHeld` answering with a fact about `flock` itself rather than about the lock (unusable here, or one
+ * attempt that did not answer at all).
+ */
+function bgUncertainNotice(dir, reasons) {
+  const parts = [];
+  if (reasons.has('budget')) {
+    parts.push(
+      'its per-sweep probe budget ran out before every background task lock could be asked, so the remaining ' +
+        'task(s) were left unchecked and are treated as live',
+    );
+  }
+  if (reasons.has('probe')) {
+    parts.push(
+      "at least one background task's lock could not be asked directly (flock was unusable here, or one " +
+        'attempt did not answer), so its liveness fell back to a heartbeat timestamp instead',
+    );
+  }
+  return (
+    `Coral live-work registry: under ${dir}, ${parts.join('; and ')}. If this keeps happening across sessions, ` +
+    `it will not resolve on its own.`
+  );
 }
 
 function parseBgMarker(name) {
@@ -340,46 +390,54 @@ function parseBgMarker(name) {
 }
 
 // Probe whether an exclusive flock on `lockPath` is still held. Namespace-agnostic (inode-based), so it works
-// across the command-sandbox boundary where a pid probe would not. Three answers, not two: true (held/alive),
-// false (free/dead), or null when the probe could not ask at all — the caller falls back to the mtime window
-// only on null.
+// across the command-sandbox boundary where a pid probe would not. Five answers: 'held' (alive), 'free' (dead,
+// a real probe of an existing file found it released), 'gone' (the file was already gone when asked), 'unusable'
+// (flock cannot be asked here at all, a standing fact about this machine), or 'unanswered' (this one attempt
+// failed for a reason the next attempt is not bound by). Only 'held' and 'free' are decisive; the caller falls
+// back to the mtime window on every other answer.
 //
-// `null` is reserved for a launch that never asked the question: no `flock` binary, not executable, no such
-// directory for the binary itself (`STANDING_PROBE_ERRNOS`, the same set the project-source probe uses), or
-// `flock` running but unable to even open `lockPath` — measured against a real util-linux `flock(1)` 2.39.3: it
-// opens the path `O_RDONLY|O_CREAT`, so the only way this branch is reached is a lock file this probe's own
-// caller already found by `readdirSync` (`isBgTaskLive` only calls here when `task.lock` is set) failing to
-// open anyway, because its permission bits were changed since that listing (`EACCES`) or it was removed in the
-// same window (`ENOENT`) — either way `flock(1)` exits 66 (`EX_NOINPUT`), distinct from the plain nonzero exit a
-// held lock produces, and it is a standing fact about `lockPath` for the same reason a missing binary is one:
-// neither clears while this session runs.
+// Existence is checked before `flock` ever runs, and this is not redundant with the `readdirSync` that already
+// found `lockPath` — measured against a real util-linux `flock(1)` 2.39.3: `flock -n <missing-file> -c true`
+// exits 0 and CREATES the file, because it opens the path `O_RDONLY|O_CREAT`. A file another process pruned
+// between that `readdirSync` and this call would come back "free" from a lock this probe just manufactured, not
+// from the one it was asked about, so the check below answers 'gone' instead — from evidence about nothing,
+// rather than a fabricated something — and leaves no new file behind.
 //
-// The mtime window is the designed fallback here not because the same cause also stops the heartbeat — measured
-// against the same binary, `touch` on a lock file stripped of its permission bits still succeeds, because
-// updating a file's own mtime is a POSIX owner privilege that bypasses the file's own mode, while `flock`'s
-// `open()` is not. So the heartbeat (`while kill -0 $$; do touch …; sleep 10; done` in `bgWrapperPreamble`) keeps
-// writing a live, current timestamp in exactly the case this probe cannot read the file, and the window is safe
-// for that reason, not because whatever blocks one blocks the other. A standing failure must not fall through
-// to the catch-all `true` below just because it arrived with a numeric exit status: that `true` has no expiry,
-// so for a failure that will not clear on its own it is not the bounded hold it is for everything else, but a
-// permanent one gating ralph and kb with no event that could end it.
+// `'unusable'` covers a `flock` that ran but could not even open a `lockPath` that does still exist: its
+// permission bits were changed since the listing that found it (`EACCES`), or the directory containing it is
+// itself gone (`ENOENT` on that directory, never on the file — the existence check above already ruled the file
+// itself out). Either way `flock(1)` exits 66 (`EX_NOINPUT`), distinct from the plain nonzero exit a held lock
+// produces, and it is a standing fact about `lockPath` for the same reason a missing binary is one (no `flock`
+// binary, not executable, no such directory for the binary itself — `STANDING_PROBE_ERRNOS`, the same set the
+// project-source probe uses): neither clears while this session runs.
 //
-// Every other failure — transient, not a standing fact about the machine or about `lockPath` — returns `true`,
-// and that hold really is bounded: un-gating live work and pruning a live task are both finalizations an
-// unanswered probe may not authorize, but the next hook invocation probes again, and a machine that recovers
-// answers `false` on its own.
+// The mtime window is the designed fallback for 'unusable' specifically because the same cause does not also
+// stop the heartbeat — measured against the same binary, `touch` on a lock file stripped of its permission bits
+// still succeeds, because updating a file's own mtime is a POSIX owner privilege that bypasses the file's own
+// mode, while `flock`'s `open()` is not. So the heartbeat (`while kill -0 $$; do touch …; sleep 10; done` in
+// `bgWrapperPreamble`) keeps writing a live, current timestamp in exactly the case this probe cannot read the
+// file. A standing failure must not fall through to the catch-all 'unanswered' below just because it arrived
+// with a numeric exit status: 'unanswered' defaults to alive with no expiry other than the next hook's own
+// re-ask, so treating a failure that will not clear on its own as 'unanswered' would gate ralph and kb forever
+// with no event that could end it — the mtime window is what gives 'unusable' an ending instead.
+//
+// 'unanswered' — transient, not a standing fact about the machine or about `lockPath` — defaults to alive, and
+// that hold really is bounded: un-gating live work and pruning a live task are both finalizations an unanswered
+// probe may not authorize, but the next hook invocation probes again, and a machine that recovers answers 'free'
+// on its own.
 function lockHeld(lockPath) {
+  if (!existsSync(lockPath)) return 'gone';
   try {
     execFileSync('flock', ['-n', lockPath, '-c', 'true'], {
       stdio: 'ignore',
       timeout: LOCK_PROBE_TIMEOUT_MS,
     });
-    return false; // acquired ⇒ not held
+    return 'free'; // acquired ⇒ not held
   } catch (err) {
-    if (STANDING_PROBE_ERRNOS.has(err?.code)) return null; // flock(1) itself unusable ⇒ the mtime window is designed for it
-    if (err?.status === 66) return null; // flock ran but could not open lockPath ⇒ same standing shape, same fallback
-    if (typeof err?.status === 'number') return true; // flock ran, opened lockPath, and refused ⇒ busy ⇒ held
-    return true; // could not ask *this time* ⇒ do not conclude the work is gone; the next hook re-asks
+    if (STANDING_PROBE_ERRNOS.has(err?.code)) return 'unusable'; // flock(1) itself unusable here
+    if (err?.status === 66) return 'unusable'; // flock ran but could not open lockPath ⇒ same standing shape
+    if (typeof err?.status === 'number') return 'held'; // flock ran, opened lockPath, and refused ⇒ busy
+    return 'unanswered'; // could not ask *this time*; the next hook re-asks
   }
 }
 

@@ -994,6 +994,8 @@ describe('cli format', () => {
         detail: 'ECONNREFUSED',
         cause: 'refused',
         pidLiveness,
+        pid: 4242,
+        recordPath: '/run/coral/coordinator.json',
       });
 
       expect(text).toContain('did not give a usable answer (ECONNREFUSED)');
@@ -1003,6 +1005,24 @@ describe('cli format', () => {
       expect(text).toMatch(expected);
       expect(text).not.toMatch(/is listening at the recorded address; this is not a report/u);
       expect(text).not.toMatch(/Backend not running/u);
+    });
+
+    // `backend shutdown` already resolves the identical evidence (a reused pid never clears by retrying) with
+    // a check-and-clear remedy; a refused `backend status` probe used to end at "check the coordinator logs",
+    // a hold with no exit for the one case that cannot end by retrying.
+    it('names the same check-and-clear remedy backend shutdown offers for a refused connection', () => {
+      const text = formatBackendStatus({
+        status: 'unreachable',
+        detail: 'ECONNREFUSED',
+        cause: 'refused',
+        pidLiveness: 'alive',
+        pid: 4242,
+        recordPath: '/run/coral/coordinator.json',
+      });
+
+      expect(text).toMatch(/ps -p 4242/u);
+      expect(text).toContain('/run/coral/coordinator.json');
+      expect(text).toMatch(/coral-cli mutating command to relaunch/u);
     });
 
     // Not "not running": the coordinator's own IPC socket exists with no record written yet, so a boot in

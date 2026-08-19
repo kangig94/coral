@@ -57,7 +57,7 @@ function formatUnreachableStatus(result: Extract<BackendStatusFull, { status: 'u
   return [
     `Backend state is unknown: the coordinator did not give a usable answer (${result.detail}).`,
     formatUnreachableCauseLine(result),
-    'Next step: retry, and check the coordinator logs if it persists.',
+    formatUnreachableNextStep(result),
   ].join('\n');
 }
 
@@ -76,6 +76,21 @@ function formatUnreachableCauseLine(result: Extract<BackendStatusFull, { status:
   }
 }
 
+// `refused` is the one cause here `backend shutdown` already resolves for the identical evidence
+// (`formatSocketRefused`): a reused pid never clears by retrying, so this arm names the same check-and-clear
+// remedy instead of leaving an operator to retry a hold that cannot end that way.
+function formatUnreachableNextStep(result: Extract<BackendStatusFull, { status: 'unreachable' }>): string {
+  switch (result.cause) {
+    case 'responded':
+    case 'no_response':
+      return 'Next step: retry, and check the coordinator logs if it persists.';
+    case 'refused':
+      return `Next step: retry shortly — a drain finishes on its own. If it keeps refusing, the record may name a pid something else now holds: run 'ps -p ${result.pid}' (or check your process manager), and if that is not Coral, delete ${result.recordPath} and run a coral-cli mutating command to relaunch.`;
+    default:
+      return assertNever(result);
+  }
+}
+
 // Not "not running": the coordinator's own IPC socket file exists, which a coordinator mid-boot and a stale
 // socket a killed one left behind both produce, indistinguishably — see `CoordinatorObservation`'s
 // `no-record-socket-present` for the mechanism.
@@ -86,7 +101,7 @@ function formatNoRecordSocketPresentStatus(
     'Backend state is unknown: the coordinator IPC socket exists, but no discovery record has been written yet.',
     `Socket: ${result.socketPath}`,
     'A coordinator may still be starting, or this may be a stale socket left by one that did not exit cleanly; this is not a report that the backend is running or that it has stopped.',
-    'Next step: retry — a coordinator mid-boot writes its record within seconds. If it persists, the socket is stale: run any coral-cli mutating command (or start a Claude Code session) to relaunch, which clears a stale socket as it binds.',
+    'Next step: retry shortly — a coordinator mid-boot writes its record within seconds, and how long this persists does not by itself tell a stale socket from one still starting. Run a coral-cli mutating command (or start a Claude Code session) either way: it binds and relaunches if the socket was stale, or negotiates with a live coordinator there and may itself refuse with a Manual repair required error instead of relaunching — treat that refusal as the next thing to read, not as a reason to keep retrying.',
   ].join('\n');
 }
 
@@ -188,7 +203,7 @@ function formatNoRecordSocketPresentShutdown(): string {
     'A coordinator may still be starting, or this may be a stale socket left by one that did not exit cleanly; this is not a report that it stopped.',
     // Not `SHUTDOWN_RETRY_NEXT_STEP`: `backend status` is a read, so for a stale socket it reports this same
     // state forever and the two commands loop. Relaunching is what ends it — binding clears a stale socket.
-    'Next step: retry shortly in case a coordinator is mid-boot. If it persists, run any coral-cli mutating command (or start a Claude Code session) to relaunch, which clears a stale socket as it binds, then retry the shutdown.',
+    'Next step: retry shortly in case a coordinator is mid-boot — how long this persists does not by itself tell a stale socket from one still starting. Run a coral-cli mutating command (or start a Claude Code session) either way: it binds and relaunches if the socket was stale, or negotiates with a live coordinator there and may itself refuse with a Manual repair required error instead. Treat that refusal as the next thing to read; once it relaunches, retry the shutdown.',
   ].join('\n');
 }
 
@@ -220,16 +235,12 @@ function formatCapabilityRejected(result: Extract<ShutdownResult, { reason: 'cap
   const pid = result.detail;
   const whatRespondedMeans =
     result.pidLiveness === 'alive'
-      ? `It is running (pid ${pid}) and did not accept the request, so no retry of this command will get in.`
+      ? `A coordinator is running at the recorded address and did not accept the request, so no retry of this command will get in — the recorded pid ${pid} still belongs to a running process, but a pid is reused, so that alone does not confirm it is this coordinator.`
       : `A coordinator is running at the recorded address and did not accept the request, so no retry of this command will get in — but the recorded pid (${pid}) was not independently confirmed alive, so do not act on the pid alone.`;
-  const stopHint =
-    result.pidLiveness === 'alive'
-      ? 'or stop that pid directly'
-      : 'or confirm with your process manager that the recorded pid is still the process serving that address before stopping it directly';
   return [
     "Shutdown refused: the coordinator rejected the boot token in this build's discovery record.",
     whatRespondedMeans,
-    `Next step: run coral-cli backend status to see which build is answering; if it is not this one, shut it down from its own install, ${stopHint}.`,
+    'Next step: run coral-cli backend status to see which build is answering; if it is not this one, shut it down from its own install, or confirm with your process manager that the recorded pid is still the process serving that address before stopping it directly.',
   ].join('\n');
 }
 

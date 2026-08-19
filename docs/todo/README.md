@@ -182,6 +182,14 @@ would have to satisfy both, and their requirements are opposites.
 
 ---
 
+## A quarantine row needs an address space wider than KbEntryId
+
+|                                                                                                      |                                                                                                                                                                                                                                                                                                                                    |
+| ------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`curate-conflict-quarantine-non-entry-paths.md`](./curate-conflict-quarantine-non-entry-paths.md) | **Scoped down deliberately, not missed.** `principles/`, `.entity-graph.json`, and `.gitattributes` sit inside the seven-path conflict scope but outside `KbEntryId`, so a merge-driver refusal on any of the three warns and leaves no quarantine row for `kb diagnose` to read. The refusal-is-not-silent half shipped; the durable row needs a quarantine subject union wider than `KbEntryId`, which touches every consumer keyed on that type and was out of the reviewed file set. |
+
+---
+
 ## Nothing is broken, and nothing would catch the next one
 
 Added 2026-08-18 from a PR-gate review. Neither entry is a defect: one file works and is hard to keep
