@@ -170,7 +170,6 @@ function scanDiscussionCandidateEnvelopes(
   });
 }
 
-/** Creates the complete raw discussion candidate source. */
 export function discussionCandidateRecoverySource(
   db: Database,
   subject?: RecoverySubject,

@@ -199,7 +199,6 @@ function scanWorkflowRecoveryEnvelopes(db: Database, subjectKey?: string): reado
   });
 }
 
-/** Creates the complete raw workflow recovery source. */
 export function workflowRecoverySource(
   db: Database,
   subject?: RecoverySubject,

@@ -51,7 +51,6 @@ function pendingLeaseSubject(row: RawPendingContinuationLeaseRow) {
   };
 }
 
-/** Creates the row-granular pending continuation-lease source. */
 export function sessionContinuationLeaseRecoverySource(
   db: Database,
   subject?: RecoverySubject,

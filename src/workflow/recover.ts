@@ -1629,7 +1629,6 @@ function createWorkflowRecoveryPolicy(
   };
 }
 
-/** Returns the exact-subject workflow retry plan owned by workflow recovery. */
 export function createWorkflowRecoveryRetryPlan(
   db: Database,
   subject: RecoverySubject,
