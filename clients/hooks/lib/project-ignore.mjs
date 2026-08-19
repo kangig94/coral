@@ -351,15 +351,20 @@ function ensureCoralSymlink(projectDir, token) {
   }
 }
 
+// Every refusal below answers `ok: false`, and a caller that only learns that cannot tell a project it could
+// not resolve from a symlink it could not place. `reason` is a fixed token per refusal so a notice repeated
+// every session says which one, without carrying a path or an errno to a surface that renders to a user.
+const FAILED = { ok: false, migrated: false, scopedIgnoreUpdated: false, symlinkCreated: false, symlinkRepointed: false };
+
 export function maintainProjectIgnore({ projectDir, createSymlink = false, token = `${process.pid}-${Date.now()}` }) {
   const context = resolveProjectContext(projectDir);
   if (!context) {
-    return { ok: false, migrated: false, scopedIgnoreUpdated: false, symlinkCreated: false, symlinkRepointed: false };
+    return { ...FAILED, reason: 'project-context-unresolvable' };
   }
 
   const rootSnapshot = readRegularSnapshot(context.rootGitignore, { allowMissing: true });
   if (!rootSnapshot.ok) {
-    return { ok: false, migrated: false, scopedIgnoreUpdated: false, symlinkCreated: false, symlinkRepointed: false };
+    return { ...FAILED, reason: 'root-gitignore-unreadable' };
   }
   const hasLegacyEntry = rootSnapshot.exists && hasExactLine(rootSnapshot.content, context.legacyEntry);
   let scopedIgnoreUpdated = false;
@@ -367,7 +372,7 @@ export function maintainProjectIgnore({ projectDir, createSymlink = false, token
   if (hasLegacyEntry || createSymlink) {
     const scoped = ensureScopedIgnore(context.projectDir, token);
     if (!scoped.ok) {
-      return { ok: false, migrated: false, scopedIgnoreUpdated: false, symlinkCreated: false, symlinkRepointed: false };
+      return { ...FAILED, reason: 'scoped-gitignore-unwritable' };
     }
     scopedIgnoreUpdated = scoped.changed;
   }
@@ -380,7 +385,7 @@ export function maintainProjectIgnore({ projectDir, createSymlink = false, token
       token,
     );
     if (!migration.ok) {
-      return { ok: false, migrated: false, scopedIgnoreUpdated, symlinkCreated: false, symlinkRepointed: false };
+      return { ...FAILED, scopedIgnoreUpdated, reason: 'legacy-entry-not-removable' };
     }
     migrated = migration.changed;
   }
@@ -390,7 +395,7 @@ export function maintainProjectIgnore({ projectDir, createSymlink = false, token
   if (createSymlink) {
     const symlink = ensureCoralSymlink(context.projectDir, token);
     if (!symlink.ok) {
-      return { ok: false, migrated, scopedIgnoreUpdated, symlinkCreated: false, symlinkRepointed: false };
+      return { ...FAILED, migrated, scopedIgnoreUpdated, reason: 'symlink-not-placeable' };
     }
     symlinkCreated = symlink.created;
     symlinkRepointed = symlink.repointed;

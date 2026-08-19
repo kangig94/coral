@@ -76,8 +76,11 @@ An alternative worth pricing first: `git rev-parse` distinguishes these on **std
 answer is more evidence than the exit code carries, and less durable than a git flag would be — measure what
 git actually prints across the cases before choosing it over the re-probe.
 
-**Member 2 does not need a judgement.** The port should not name a cause it did not observe: a signalled
-child with no timeout in flight is a non-answer whose detail says a signal ended it, and only a signal the
-port itself sent is that port's timeout. The one thing to check while making it true is that no existing
-caller is relying on the current over-broad `EXEC_TIMEOUT_CODE` to catch signal deaths — `git-sync.ts` and
-`kb/ops/source/import.ts` are the sync consumers to read.
+**Member 2 does not need a judgement, and nothing depends on the current behaviour.** The port should not
+name a cause it did not observe: a signalled child with no timeout in flight is a non-answer whose detail
+says a signal ended it, and only a signal the port itself sent is that port's timeout. The usual risk in
+narrowing a code — some caller quietly relying on the broad version — is absent here. `EXEC_TIMEOUT_CODE` has
+one reader in the repository, in `kb/ops/source/import.ts`, and it reaches that reader through the
+**asynchronous** port, which does not have this defect: it stamps an error only for a kill it scheduled
+itself, so a foreign signal arrives as a status-less non-answer exactly as `classifyExecOutcome` describes.
+No consumer of the synchronous port reads either exec code at all.

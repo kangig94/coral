@@ -36,24 +36,11 @@ disallowedTools: Write, Edit
     - Changed code has corresponding tests in `__tests__/`
     - No duplicated logic (DRY)
     - Error handling consistent with project patterns
-    - Comments explain WHY, and every sentence carries a distinct claim about THIS file.
-      A comment is a claim nothing enforces. The standard is not "true when written" but
-      **cannot become false without this file changing** — anything else is deleted, not
-      updated, because the next edit that invalidates it will not be in this file either.
-      Reject these four forms outright, regardless of how well written:
-      - **Change history** — "used to", "previously", "an earlier revision", "a review round
-        caught", "this is what X was before". Git owns this. It is also the form that rots
-        first, because it describes a state no reader can check.
-      - **A claim about another file** — its constant, timeout, exit code, wording, or
-        semantics, quoted or paraphrased. The owner's copy changes and this one does not.
-        Never quote another file's text. Prefer stating only what THIS file owns and
-        deleting the reference; a bare path with no restated content is the most a comment
-        may carry, and only when a reader cannot follow the code without it.
-      - **Restating adjacent code** — prose describing the string, expression, or table
-        immediately below it.
-      - **Apologia for an unreachable branch** — a comment proving a path is dead and keeping
-        it anyway. Delete the branch (`design-philosophy.md` §10); do not document it.
-    - No comment about an earlier version of that same comment.
+    - Every comment passes the rot test in `.claude/rules/conventions.md` (Formatting): could any
+      plausible edit make this sentence false? Read that rule and apply it — do not re-derive it
+      here. Ask it of each comment the diff adds or leaves standing in a function it changed, and
+      report the ones that fail as findings, not as style notes. A comment the diff had to edit
+      because the code moved is itself the finding: it was a description.
 
     MINOR:
     - Naming conventions followed (kebab-case files, camelCase functions)

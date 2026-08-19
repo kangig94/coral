@@ -343,7 +343,7 @@ describe('session-start.mjs', () => {
     expect(
       expectHookOutput(result).hookSpecificOutput.additionalContext,
       'a maintenance pass that ran and reported ok:false must reach the session as a notice, not be dropped',
-    ).toContain('Coral project-ignore maintenance ran and reported it could not complete safely');
+    ).toContain('could not complete safely');
   });
 
   it('serializes concurrent migration outcomes without duplicate entries or temp residue', async () => {

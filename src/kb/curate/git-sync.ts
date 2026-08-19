@@ -773,8 +773,8 @@ export function createGitSyncController({
   }
 
   /**
-   * `entryForConflictPath` only recognizes `notes/`, `sources/`, `communities/`, and `wiki/` `.md` paths —
-   * every KB entry has one of those four kinds. `principles/*.md`, `.gitattributes`, and `.entity-graph.json`
+   * `entryForConflictPath` only recognizes `notes/`, `sources/`, `communities/`, and `wiki/` `.md` paths.
+   * `principles/*.md`, `.gitattributes`, and `.entity-graph.json`
    * are real paths in `KB_GIT_DIFF_PATHS` with no entry kind to key a quarantine row on, so they come back here
    * as `unrecordable` rather than being silently dropped: `recoverRebaseConflict` below reads this list to
    * decide whether it may report full success.
@@ -844,8 +844,10 @@ export function createGitSyncController({
    * `'recovered'` means the state was read and every conflicted path also got a queryable quarantine row;
    * `'recovered-unaccounted'` means the state was read but at least one path has no KB entry to key a row on;
    * `'recovered-blind'` means the state could not be read at all, so nothing was inspected or quarantined.
-   * Keeping these apart at the type level, rather than collapsing them into one boolean, is what stops a
-   * caller from reporting full accounting over a conflict this file never looked at.
+   * Every caller today routes all three to the same recovered outcome, and the difference reaches an operator
+   * through `logRecoveryOutcome`'s text rather than through this status — which is decided before the status
+   * is returned. So the split buys nothing yet beyond naming which of the three happened; a caller that needs
+   * to act differently on them has to read it, and none does.
    */
   type RebaseRecoveryOutcome =
     | { status: 'recovered' }
@@ -1003,7 +1005,7 @@ export function createGitSyncController({
   async function continueOrRecoverRebase(
     branch: string,
     signal?: AbortSignal,
-  ): Promise<'continued' | 'llm-resolved' | 'recovered' | 'recovered-unaccounted' | 'recovered-blind' | 'failed'> {
+  ): Promise<'continued' | 'llm-resolved' | RebaseRecoveryOutcome['status']> {
     let usedLlmConflictResolution = false;
 
     for (let attempt = 0; attempt < 64; attempt += 1) {
@@ -1119,33 +1121,36 @@ export function createGitSyncController({
       // Offline or no remote; continue with local state.
     }
 
-    const headAfterSync = readHead();
-    // Checked before the equality comparison below, not after: `readHead()` returns `null` when `git
-    // rev-parse HEAD` could not be answered, and `null === null` is true. A guard placed after the equality
-    // check never runs for the both-unreadable case — the common one, since whatever made the first read fail
-    // is still in effect for the second — so that guard was dead code for exactly the case it names.
-    //
-    // `readHead()` also returns `null` for a repository with no commits yet, not only for a read that could
-    // not be answered — both read the same to this guard, and both share the same exit: the next cycle whose
-    // `git rev-parse HEAD` resolves (the KB's first commit lands, or the interruption clears) reports its real
-    // diff instead of `ambiguous`. A KB that never commits anything stays on this branch until it does.
-    if (headBeforeSync === null || headAfterSync === null) {
-      return { kind: 'ambiguous' };
-    }
-    if (headBeforeSync === headAfterSync) {
-      return { kind: 'no-change' };
-    }
-    if (usedConflictRecovery) {
-      return { kind: 'ambiguous' };
-    }
-    if (usedLlmConflictResolution) {
-      return { kind: 'ambiguous' };
-    }
-    if (rebaseRecoveryFailed) {
-      return { kind: 'ambiguous' };
-    }
+    return syncDisposition(headBeforeSync, readHead(), {
+      usedConflictRecovery,
+      usedLlmConflictResolution,
+      rebaseRecoveryFailed,
+    });
+  }
 
-    return diffKbPathsBetweenRevisions(headBeforeSync, headAfterSync);
+  /**
+   * What a completed cycle may claim about which KB paths changed.
+   *
+   * A diff between two revisions is a positive claim, so it is reachable only from two revisions this cycle
+   * actually read and a history nothing rewrote underneath them. Every other combination answers
+   * `'ambiguous'`, which asks the consumer to rebuild its surface rather than trust a list.
+   *
+   * The null check precedes the equality comparison because `null === null` is true, so an equality check
+   * placed first swallows the both-unreadable case — the common one, since whatever stopped the first read is
+   * still in effect for the second. `readHead()` also answers `null` for a repository with no commits yet;
+   * both share one exit, the next cycle whose `git rev-parse HEAD` resolves.
+   */
+  function syncDisposition(
+    headBefore: string | null,
+    headAfter: string | null,
+    rewrote: { usedConflictRecovery: boolean; usedLlmConflictResolution: boolean; rebaseRecoveryFailed: boolean },
+  ): GitSyncResult {
+    if (headBefore === null || headAfter === null) return { kind: 'ambiguous' };
+    if (headBefore === headAfter) return { kind: 'no-change' };
+    if (rewrote.usedConflictRecovery || rewrote.usedLlmConflictResolution || rewrote.rebaseRecoveryFailed) {
+      return { kind: 'ambiguous' };
+    }
+    return diffKbPathsBetweenRevisions(headBefore, headAfter);
   }
 
   async function gitPush(): Promise<void> {

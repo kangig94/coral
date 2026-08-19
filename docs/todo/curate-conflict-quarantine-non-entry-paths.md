@@ -35,14 +35,19 @@ the three that cannot be recorded.
 
 ## What was done
 
-`recoverRebaseConflict` returns `RebaseRecoveryOutcome` (`git-sync.ts:834`) instead of a boolean, so a caller
-cannot report plain `'recovered'` over a path that got no row:
+`recoverRebaseConflict` returns `RebaseRecoveryOutcome` (see `recoverRebaseConflict` in
+`src/kb/curate/git-sync.ts`) instead of a boolean, so a caller cannot report plain `'recovered'` over a path
+that got no row:
 
 ```ts
 | { status: 'recovered' }
-| { status: 'recovered-unaccounted'; unrecordablePaths: readonly string[] }
+| { status: 'recovered-unaccounted' }
+| { status: 'recovered-blind' }
 | { status: 'failed' }
 ```
+
+`'recovered-blind'` is a separate concern from this entry — it means the conflict state could not be read at
+all — and it is listed here only so the shape above matches the source.
 
 `logRecoveryOutcome` names those paths, says `kb diagnose` will not list them, and points at the recovery ref
 with the `git` command to read it. `tests/unit/kb/git-sync-conflict-recovery.test.ts` drives the
@@ -56,8 +61,8 @@ acted on with". An unrecordable path still has only a log line: `kb diagnose` (`
 `src/kb/queries.ts:111`) reads the quarantine table, and there is no row to read. The operator's own exit is
 real — the recovery ref, through `git` — but nothing in Coral will remind them it is outstanding.
 
-**The behavioral distinction dies at the boundary.** `git-sync.ts:1064` maps `'recovered'` and
-`'recovered-unaccounted'` to the same `usedConflictRecovery = true`, and both reach `{ kind: 'ambiguous' }`.
+**The behavioral distinction dies at the boundary.** `gitSync` maps every recovered status to the same
+`usedConflictRecovery = true`, and all of them reach `{ kind: 'ambiguous' }`.
 That is defensible — both genuinely need a surface rebuild, and `ambiguous` claims no success about the
 conflict — but it means the distinction is observable only through the warn, and there is nothing above
 `gitSync` that could act on it even if it wanted to.
@@ -78,5 +83,6 @@ other consumer reads. Concretely: a quarantine subject union of `{ kind: 'entry'
 `{ kind: 'path'; path: string }`, a `conflict_quarantine` row that stores either, and a `kb diagnose` section
 that lists path-keyed rows with the recovery ref and the `git update-ref -d` cleanup already in the warn.
 
-Then `RebaseRecoveryOutcome` collapses back to two states, because there is no longer a path recovery cannot
-account for — which is the signal that this entry is done.
+Then `'recovered-unaccounted'` has nothing left to describe and goes, because there is no longer a path
+recovery cannot account for — which is the signal that this entry is done. The other statuses answer a
+different question and stay.

@@ -87,7 +87,7 @@ try {
     // the session truly winds down.
     const liveWork = hasLiveWork(projectDir, sessionId, input.transcript_path);
     if (liveWork.live) {
-      if (liveWork.notice) writeHookOutput({ systemMessage: liveWork.notice });
+      if (liveWork.notice) writeHookOutput({ systemMessage: `KB memo review is deferring: ${liveWork.notice}` });
       process.exit(0);
     }
     const flag = sessionId && join(flagDir, `${FLAG_PREFIX}${sessionId}`);

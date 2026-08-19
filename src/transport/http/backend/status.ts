@@ -75,9 +75,9 @@ export type BackendStatusFull =
    * HTTP response (any status, any body) — the one thing that proves something is listening. `'refused'` is a
    * TCP-level refusal at the moment of the attempt — it proves nothing was listening on that exact socket at
    * that moment, but not that the coordinator process itself is gone, so it carries `pidLiveness`, the prior
-   * observation of that specific question, plus `pid` and `recordPath` — the same evidence `shutdownBackend`'s
-   * `socket_refused` (`shutdown.ts`) carries for the identical hold, so the render layer can offer the same
-   * check-and-clear remedy for the same unresolved case. `'no_response'` is everything else that keeps a
+   * observation of that specific question, plus the `pid` and `recordPath` a reader needs to settle it — a
+   * refusal that keeps refusing is a record naming a pid something else now holds, and neither checking that
+   * pid nor clearing that record is possible from a status that names neither. `'no_response'` is everything else that keeps a
    * request from completing (timeout, DNS failure, ...), which proves neither way.
    */
   | { status: 'unreachable'; detail: string; cause: 'responded' }

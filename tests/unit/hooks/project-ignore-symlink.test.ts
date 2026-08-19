@@ -341,9 +341,13 @@ describe('ensureCoralSymlink keeps its own link pointing at the current flavor',
       [...produced].filter((outcome) => outcome !== 'ok' && outcome !== 'no-project-dir' && !noticed.has(outcome)),
       'every outcome other than ok and no-project-dir must have a notice the session can read',
     ).toEqual([]);
-    expect(source, 'and that notice must reach additionalContext, not just be computed').toMatch(
-      /\$\{migrationNotice\}\$\{ignoreNotice\}/u,
-    );
+    // Both interpolations must reach the rendered head, but not in a fixed order or adjacency — pinning
+    // that would fail on a reformat that changed nothing about what the session is told.
+    const head = source.match(/const head = `[\s\S]*?`;/u)?.[0] ?? '';
+    expect(head, 'the head template must be readable from source').not.toBe('');
+    for (const interpolation of ['${migrationNotice}', '${ignoreNotice}']) {
+      expect(head, `${interpolation} must reach additionalContext, not just be computed`).toContain(interpolation);
+    }
   });
 
   it('leaves the working link in place when writing its replacement fails', async () => {

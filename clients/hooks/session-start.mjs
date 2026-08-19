@@ -45,11 +45,10 @@ const PROJECT_IGNORE_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), 'pro
  *
  * The margin goes here rather than into shrinking either probe, because shortening those trades a correct
  * answer for headroom that belongs to the caller: a probe cut short reports "could not tell" for a machine
- * that was merely slow. This hook is registered with a 10s timeout, and 5000ms is not the only cost charged
- * against it: `renderInject` pays a further 2000ms `git remote get-url origin` of its own, in this same process
- * rather than the child (`resolveProjectSource`, `hook-utils.mjs`) — so the two hard-bounded subprocess costs
- * alone already sum to 7000ms, leaving well under half of the registered budget for this process's own Node
- * startup and everything else this file does, not half of it.
+ * that was merely slow. This budget is not the only cost charged against the hook's registered timeout —
+ * `renderInject` runs its own bounded git fork in this process rather than the child (see
+ * `resolveProjectSource` in `clients/hooks/lib/hook-utils.mjs`) — so what is left for this file's own work is
+ * well under half of that timeout, not half of it.
  *
  * `tests/unit/hooks/project-ignore-symlink.test.ts` pins the child's 3500ms sum by reading both mocks' actual
  * options, and separately asserts this constant is strictly greater than that sum; if either bound moves, one
@@ -209,8 +208,13 @@ try {
     ? '\n\nCoral migration: moved the generated coral ignore rule from the Git-root .gitignore into .claude/.gitignore.'
     : '';
   const ignoreFailure = PROJECT_IGNORE_OUTCOME_NOTICES[ignoreOutcome.outcome];
+  // The reason travels when the child got far enough to have one. Without it a notice that repeats every
+  // session says only that maintenance failed, which is the same sentence for a project directory that could
+  // not be resolved and a symlink that could not be placed.
+  const ignoreReason =
+    typeof ignoreOutcome.maintenance?.reason === 'string' ? ` (${ignoreOutcome.maintenance.reason})` : '';
   const ignoreNotice = ignoreFailure
-    ? `\n\nCoral project-ignore maintenance ${ignoreFailure}; .claude/.gitignore and the coral symlink were left as they are. It is attempted again at the next session start.`
+    ? `\n\nCoral project-ignore maintenance ${ignoreFailure}${ignoreReason}; .claude/.gitignore and the coral symlink were left as they are. It is attempted again at the next session start.`
     : '';
   const startupFailureNotice = readRecentStartupFailureNotice(coordinatorRunDir());
   const head = `SessionStart:session_id=${sessionId}\nCurrent host: ${host}\nClaude config dir: ${claudeConfigDir()}\n\n${injectContent}${migrationNotice}${ignoreNotice}`;

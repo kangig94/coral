@@ -101,7 +101,7 @@ function formatNoRecordSocketPresentStatus(
     'Backend state is unknown: the coordinator IPC socket exists, but no discovery record has been written yet.',
     `Socket: ${result.socketPath}`,
     'A coordinator may still be starting, or this may be a stale socket left by one that did not exit cleanly; this is not a report that the backend is running or that it has stopped.',
-    'Next step: retry shortly — a coordinator mid-boot writes its record within seconds, and how long this persists does not by itself tell a stale socket from one still starting. Run a coral-cli mutating command (or start a Claude Code session) either way: it binds and relaunches if the socket was stale, or negotiates with a live coordinator there and may itself refuse with a Manual repair required error instead of relaunching — treat that refusal as the next thing to read, not as a reason to keep retrying.',
+    'Next step: retry shortly — a coordinator mid-boot writes its record within seconds, and how long this persists does not by itself tell a stale socket from one still starting. Run a coral-cli mutating command (or start a Claude Code session) either way: it binds and relaunches if the socket was stale, and if it instead reports the backend unreachable, the coordinator log is what says why.',
   ].join('\n');
 }
 
@@ -203,7 +203,7 @@ function formatNoRecordSocketPresentShutdown(): string {
     'A coordinator may still be starting, or this may be a stale socket left by one that did not exit cleanly; this is not a report that it stopped.',
     // Not `SHUTDOWN_RETRY_NEXT_STEP`: `backend status` is a read, so for a stale socket it reports this same
     // state forever and the two commands loop. Relaunching is what ends it — binding clears a stale socket.
-    'Next step: retry shortly in case a coordinator is mid-boot — how long this persists does not by itself tell a stale socket from one still starting. Run a coral-cli mutating command (or start a Claude Code session) either way: it binds and relaunches if the socket was stale, or negotiates with a live coordinator there and may itself refuse with a Manual repair required error instead. Treat that refusal as the next thing to read; once it relaunches, retry the shutdown.',
+    'Next step: retry shortly in case a coordinator is mid-boot — how long this persists does not by itself tell a stale socket from one still starting. Run a coral-cli mutating command (or start a Claude Code session) either way: it binds and relaunches if the socket was stale, and if it instead reports the backend unreachable, the coordinator log is what says why. Once it relaunches, retry the shutdown.',
   ].join('\n');
 }
 
@@ -212,9 +212,9 @@ function formatNoRecordSocketPresentShutdown(): string {
 // — and `'alive'` is the deterministic mid-drain window where the coordinator's HTTP listener has closed while
 // the process keeps running. Neither case may claim the backend stopped.
 //
-// `'alive'` says the recorded pid still belongs to a running process, and nothing more: `observeProcessLiveness`
-// is a bare `kill(pid, 0)` that counts `EPERM` as alive, so it cannot tell Coral's coordinator from whatever
-// reused that number. That second reading is why retrying is not the only exit offered — a drain finishes on
+// `'alive'` says the recorded pid still belongs to a running process, and nothing more — a pid is reused, so
+// it cannot separate Coral's coordinator from whatever now holds that number (see `observeProcessLiveness` in
+// `src/infra/node-process.ts`). That second reading is why retrying is not the only exit offered — a drain finishes on
 // its own, a record naming a stranger's pid never does, and the two are indistinguishable from here.
 function formatSocketRefused(result: Extract<ShutdownResult, { reason: 'socket_refused' }>): string {
   const whatRefusalMeans =

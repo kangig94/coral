@@ -40,7 +40,11 @@ import { describe, expect, it } from 'vitest';
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const CANONICAL_FILE = 'src/infra/error-format.ts';
 const HOME_PATTERNS = ['thrownErrnoCode', 'errnoCode'];
-const KNOWN_CONSUMERS = ['src/transport/http/backend/status.ts', 'src/transport/http/backend/shutdown.ts'];
+const KNOWN_CONSUMERS = [
+  'src/transport/http/backend/status.ts',
+  'src/transport/http/backend/shutdown.ts',
+  'src/engines/kiwi/artifact.ts',
+];
 
 function read(relativePath: string): string {
   return readFileSync(join(ROOT, relativePath), 'utf-8');

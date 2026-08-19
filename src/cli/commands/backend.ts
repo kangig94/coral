@@ -526,7 +526,8 @@ function parseKbCommitId(value: string): string {
  *
  * `list` renders each field with `JSON.stringify`, so a subject key containing a character JSON escapes
  * reaches the terminal as an escape sequence — and `session-retention-work` joins its two identifiers
- * with a NUL (`retention-work-item-recovery-source.ts:63`), which argv cannot carry at all. Passing the
+ * with a NUL (see `workKey` in `src/sessions/retention-work-item-recovery-source.ts`), which argv cannot
+ * carry at all. Passing the
  * printed text through verbatim therefore never matched the stored key, and no other input could:
  * copying gave a literal backslash-u, and the real byte cannot survive a command line. Those rows were
  * unreachable by the one command documented to reach them.
