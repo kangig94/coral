@@ -202,6 +202,87 @@ file returns nothing); and `src/coordinator/live/provider-hosts/index.ts`'s `ens
 not key sizing) — no comment anywhere in the tree contains the cited reasoning. Both false clauses were
 deleted; the code itself was correct in both cases, so nothing else was ledgered.
 
+## Sector 7 — `src/provider-proxy/`
+
+- **What is wrong**: An orphaned-JSDoc shape, the same pattern as the Sector 1 and Sector 3 findings above. A
+  JSDoc block beginning "Rebuilds the `BoundProvider` this operation names from its binding envelope. A fresh
+  built-in registry per call is cheap …" describes `rebuildBoundProvider`'s own body (it creates a fresh
+  registry via `createBuiltInProviderRegistry()`, connects the host authority, and rehydrates the binding) —
+  but it sits directly above `BoundProviderReconstruction`, a discriminated-union type declaration with no such
+  behavior. `rebuildBoundProvider` itself is declared 23 lines later, past two unrelated helper functions
+  (`prepareRefusal`, `boundedRefusalReason`), with no doc comment of its own immediately preceding it.
+- **Where**: `rebuildBoundProvider` and `BoundProviderReconstruction`, both in
+  `src/provider-proxy/semantic-operation-runner.ts`.
+- **Evidence**: Read directly — the block's content (fresh-registry-per-call cost/mutability rationale) matches
+  only `rebuildBoundProvider`'s body, not `BoundProviderReconstruction`'s two-variant union, which does no
+  registry construction of any kind. Not inferred — the mismatch is legible from the text of the block against
+  both declarations.
+- **Why it was not fixed**: Comment-only sweep scope is keep-or-delete per the rot test; relocating a comment
+  block to sit above a different symbol is a structural edit beyond that mandate, so it was left in place
+  rather than moved.
+- **Severity, as observed**: Documentation-only; no behavior is affected. A reader who edits
+  `BoundProviderReconstruction` expecting the block directly above it to be its own doc, or who looks for
+  `rebuildBoundProvider`'s rationale immediately above that function and finds nothing, is the reachable
+  confusion. Not hit by any test failure — reachability is as a human-readability defect, not a runtime one.
+
+- **What is wrong**: A provably unreachable branch. `observePairingLoss`'s closing assignment,
+  `pairingLossAt = pairingLossAt === null ? now : clock.earlier(pairingLossAt, now)`, can only ever take its
+  first arm; the second arm (`clock.earlier(pairingLossAt, now)`) can never execute. The comment beside it
+  said so directly ("In practice this is the only report that can ever land — the moment it is recorded,
+  `adoptionDeadline` itself collapses to `now`, so any later call already sees itself latched out by
+  `sampleBeforeQueuedWork` above") — a comment justifying an unreachable branch rather than the branch being
+  removed, so under this sweep's own rule the comment was deleted and the branch is recorded here instead.
+- **Where**: `observePairingLoss` in `src/provider-proxy/orphan-deadline.ts`, together with `adoptionDeadline`
+  and `sampleBeforeQueuedWork` in the same file, which the unreachability depends on.
+- **Evidence**: Traced, not tested. On the first call, `pairingLossAt` is still `null`, so
+  `sampleBeforeQueuedWork` computing `adoptionDeadline()` (which returns `derived` while `pairingLossAt` is
+  `null`) must find `now < derived` for the call to return non-null at all — call that instant `t1`, so
+  `t1 < derived` at the moment `pairingLossAt` is set to `t1`. On every later call, `adoptionDeadline()`
+  returns `clock.earlier(derived, pairingLossAt)`; `derived` (built from round-trip evidence) is
+  non-decreasing across calls, so `min(derived, t1) = t1` from then on. Because the clock is monotonic, any
+  later `now` is `>= t1`, so `sampleBeforeQueuedWork`'s own `clock.compare(now, adoptionDeadline()) >= 0`
+  check is always true on a second call, which latches teardown and makes `sampleBeforeQueuedWork` return
+  `null` before `observePairingLoss` ever reaches its ternary a second time.
+- **Why it was not fixed**: Comment-only sweep scope; deleting a live branch (even a dead one) is a code
+  change. This sweep deletes only the comment that described the branch instead of the branch being removed,
+  per this sector's own rule that an unreachable branch is ledgered rather than deleted.
+- **Severity, as observed**: No behavioral defect — the branch is dead, not wrong, so nothing currently
+  depends on `clock.earlier(pairingLossAt, now)` ever running. Reachability is a future reader trusting the
+  ternary's second arm as live logic (for example, while modifying it under the belief that pairing loss can
+  be recorded more than once), or a coverage tool flagging it once the justifying comment is gone.
+
+Nine comments were found and corrected as factually wrong under the "certain delete" rule (comment wrong,
+code correct — not ledger-worthy per that rule), spread across the sector: `handoff-capsule.ts`'s
+`proxyHandoffInstallParamsSchema` doc claimed to be "the last send in this protocol that was validated only on
+receipt," contradicted by `coordinator/live/provider-proxy/set-authority.ts`, which parses and validates this
+exact schema before sending; the same file's `writeHandoffCapsuleFile` doc cited `kb/ops/promote-marker.ts` as
+using the same durable-publish primitive, but that file only defines the marker's types/paths — the actual
+`writeAtomicDurableSync` caller is `kb/ops/promote-recovery.ts`; `enforcement.ts`'s
+`MAX_PROXY_RECORDED_PROVIDER_ROOTS` doc claimed a signal sweep and a receipt were "the only things that read
+it," but `guardian.ts`/`reaper.ts`'s `assertRecordedSetAgreement` and `reaper.confirm-provider-root.v1` read it
+too; `semantic-operation-runner.ts` named a type `ProxyPreparedAppServerOperationV1`, which does not exist (the
+real type is `ProxyPreparedAppServerOperation`); `role-main.ts` twice cited a file `semantic-operation.ts`,
+which does not exist anywhere in the repository (the real file is `semantic-operation-runner.ts` — the same
+stale name also still appears in `docs/architecture.md` and in
+`tests/unit/provider-proxy/semantic-operation.test.ts`, both out of this sweep's scope); `role-main.ts` also
+cited a field `environment.process.isAlive`, which does not exist anywhere in the tree (the real field is
+`observeLiveness`); and `reaper.ts` attributed a quoted phrase, "one enforcer state machine, not two," to
+`orphan-deadline.ts`, which does not contain that quote (the underlying claim — one shared
+`EnforcerDeadlineState` enum — is true and was kept; only the fabricated attribution was cut). All nine false
+clauses were deleted or excised; the code itself was correct in every case, so nothing else was ledgered.
+
+Two additional observations, not ledgered as defects: (1) A citation form new to this sweep, `plan §"<section
+title>"` (e.g. `plan §"Process topology, endpoint, guardian, and authentication"`), appears identically in
+both `semantic-operation-runner.ts` and `provider-root-authority.ts`, naming a planning document this
+repository does not contain. It was treated the same as the cross-sector "comments cite documents this
+repository does not contain" finding below, even though it is not covered by that finding's enumeration regex
+— left untouched for the same reason that finding gives. (2) A vaguer, unlocatable form, `(see the task
+report)`, appeared twice in `provider-root-authority.ts` and three times in `semantic-operation-runner.ts`.
+Unlike `plan §"…"`, this names no section, id, or title — a repository-wide search (`grep -r "task report"`
+across `docs/` and `src/`, plus a filename search) found no such document anywhere, so it was treated as an
+unlocatable citation rather than a protected external-spec reference, and deleted under the same rule as any
+other unverifiable claim.
+
 ## Spans every sector — comments cite documents this repository does not contain
 
 Recorded once here rather than per sector, because it is one finding with 48 sites and every sector meets it.

@@ -151,9 +151,7 @@ export type ControlChallengeEcho =
  * claiming one-use semantics is how round-trip evidence ends up recorded in one place and checked in
  * another, which is exactly the seam where a heartbeat can look accepted while no deadline advances.
  *
- * The authority mints every challenge it hands out, rather than receiving one minted by the endpoint: minting
- * and recording were one act that the endpoint used to split in two, and a mint the authority never recorded
- * is exactly what let a duplicate open destroy the challenge a live successor was still waiting to echo.
+ * The authority mints every challenge it hands out, rather than receiving one minted by the endpoint.
  */
 export interface ControlChallengeAuthority {
   /** Mints and records the challenge for the bootstrap tenancy. A refusal means the tenancy must not open. */
@@ -203,7 +201,6 @@ export type ControlEndpointOptions = Readonly<{
   observer: ControlEndpointObserver;
   challenges: ControlChallengeAuthority;
   timer: ControlEndpointTimer;
-  /** Default absolute budget for one request handler, in milliseconds. */
   requestTimeoutMs: number;
 }>;
 
