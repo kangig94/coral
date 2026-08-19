@@ -73,7 +73,6 @@ function crashedJobSubject(raw: RawCrashedJobRow) {
   };
 }
 
-/** Creates the raw row-granular live-job crash terminalization source. */
 export function crashedJobTerminalizationSource(
   db: Database,
   subject?: RecoverySubject,

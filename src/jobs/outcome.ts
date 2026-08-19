@@ -116,8 +116,7 @@ export function describeJobProgressFault(fault: JobProgressFault): string {
   }
 }
 
-/** Append a stack trace to a one-line fault description when present.
- * Causal-chain output stays single-line for the common case; fault paths
+/** Causal-chain output stays single-line for the common case; fault paths
  * deliberately surface multi-line stack so production debugging has the
  * trace without needing a separate raw-event query. */
 function appendCauseStack(base: string, stack: string | undefined): string {
