@@ -8,7 +8,7 @@ choices.
 
 ## Member 1 — `git rev-parse` exit 128 is cached as "this is not a work tree"
 
-`probeIsGitRepo` (`src/kb/curate/git-sync.ts:264-303`) ends:
+`probeIsGitRepo` (`src/kb/curate/git-sync.ts`) ends:
 
 ```ts
 cachedIsGitRepo = outcome.status === 0;
@@ -16,11 +16,11 @@ return cachedIsGitRepo ? 'yes' : 'no';
 ```
 
 Any answered non-zero status becomes a durable `false` for the daemon's lifetime, and `isGitRepo()`
-(`git-sync.ts:321`) gates every git-sync operation on it. `git rev-parse --is-inside-work-tree` exits `128`
+(`src/kb/curate/git-sync.ts`) gates every git-sync operation on it. `git rev-parse --is-inside-work-tree` exits `128`
 for "not a work tree" **and** for dubious ownership, a corrupt `.git`, and anything else git calls fatal.
 
 The same file already refuses that inference for the same evidence. `probeIsGitSyncEnabled`
-(`git-sync.ts:332`), on `git remote`'s non-zero exit (`:350`):
+(`src/kb/curate/git-sync.ts`), on `git remote`'s non-zero exit:
 
 > Measured against real git: … every failure — outside a repository, a corrupted `.git`, anything fatal —
 > exits 128 with nothing on stdout. There is no outcome where a non-zero exit means "no remote"; it means git
@@ -29,7 +29,7 @@ The same file already refuses that inference for the same evidence. `probeIsGitS
 It returns `'unanswered'` and caches nothing. `probeIsGitRepo` reads the same code as a settled negative and
 remembers it forever.
 
-The consequence is the one `isGitRepo`'s own docstring (`git-sync.ts:305-320`) says the function exists to
+The consequence is the one `isGitRepo`'s own docstring (`src/kb/curate/git-sync.ts`) says the function exists to
 prevent: "the KB silently ceasing to be version-controlled, with no commit, no push, and nothing said". That
 docstring is about caching _non-answers_, which was fixed; caching an answer to a different question produces
 the identical outcome and is still there.
@@ -44,7 +44,7 @@ process did not ask for, and states its premise in place:
 
 That premise does not hold for the synchronous port. `real.ts`'s `execSync` wrapper substitutes an error for
 **every** signalled result before returning: the `ENOBUFS` branch first, then
-`if (code === EXEC_TIMEOUT_CODE || result.signal)` (`src/runtime/real.ts:456`), which stamps
+`if (code === EXEC_TIMEOUT_CODE || result.signal)` (`src/runtime/real.ts`), which stamps
 `EXEC_TIMEOUT_CODE` on any remaining signal death. So no synchronous result ever reaches `classifyExecOutcome` with `status: null` and no error, that
 branch is unreachable from this port, and a child killed by an operator, an OOM killer, or a supervisor is
 reported to every caller as _this port's own timeout_.

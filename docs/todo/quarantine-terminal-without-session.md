@@ -25,7 +25,7 @@ symptom read at intervals is not a measurement, and the cost of opening the reco
 Every quarantined terminal belongs to a **workflow root job** — 25 such events in the store, all of jobs
 that completed successfully. A workflow root has no provider session by construction, so its terminal
 legitimately carries no `refs.sessionId`, and a boundary about session claims has nothing to do with it.
-`retention-release-pair-recovery-source.ts:29-33` says so in as many words. `0.10.6` admitted them
+`src/sessions/retention-release-pair-recovery-source.ts` says so in as many words. `0.10.6` admitted them
 anyway and failed at hydrate on a field the pair never reads.
 
 The first version of this document guessed exactly this shape and then attached it to the wrong
@@ -53,7 +53,7 @@ Two things follow:
 
 Clearing the 24 left **two** rows of a different boundary, `session-retention-work`, both workflow slot
 children of one workflow (`…:0:0` and `…:0:1`). `LifecycleReactor.enforceRetention` throws when
-`readyBoundProvider` returns null (`src/sessions/lifecycle-reactor.ts:667-670`), and the coordinator log
+`readyBoundProvider` returns null (`src/sessions/lifecycle-reactor.ts`), and the coordinator log
 says why:
 
 ```
@@ -73,7 +73,7 @@ repaired and the row stayed; here, the cause will never be repaired and the row 
 ### And they could not be cleared at all
 
 The subject key for this boundary is `${sessionId}\u0000${jobId}`
-(`src/sessions/retention-work-item-recovery-source.ts:63`). `recovery-quarantine list` renders every
+(`src/sessions/retention-work-item-recovery-source.ts`). `recovery-quarantine list` renders every
 field with `JSON.stringify`, so it prints as an escape sequence; `clear --key` took its argument from
 argv verbatim, and **argv cannot carry a NUL at all**. Copying what `list` printed produced a literal
 backslash-u that matched nothing, and the real byte could not be typed. The command's own error message

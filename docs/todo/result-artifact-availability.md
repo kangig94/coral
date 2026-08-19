@@ -18,7 +18,7 @@ scope itself away from the thing that prompted it.
 
 ## What actually remains
 
-`WaitCoordinator.resultPathFor` (`src/jobs/shell/wait.ts:362-374`) catches a rebuild failure, logs to
+`WaitCoordinator.resultPathFor` (`src/jobs/shell/wait.ts`) catches a rebuild failure, logs to
 coordinator stderr, and returns the **expected** filename. The terminal wait event then carries a path
 that was never verified, and `wait` prints it.
 
@@ -34,7 +34,7 @@ materialize a rebuildable cache and must not fail a job when the cache write fai
 ## The designed answer
 
 Artifact availability is not part of terminal success, but it must be explicit in the event. Replace
-`resultPath: string` in the terminal arm of `WaitStreamEvent` (`src/jobs/wait.ts:68-77`) with a
+`resultPath: string` in the terminal arm of `WaitStreamEvent` (`src/jobs/wait.ts`) with a
 discriminated value:
 
 ```ts
@@ -43,14 +43,14 @@ discriminated value:
 ```
 
 `WaitCoordinator` stops substituting a filename. The validator at
-`src/jobs/wait-stream-event.ts:73-84` validates the discriminant. Exit status stays derived from the
+`src/jobs/wait-stream-event.ts` validates the discriminant. Exit status stays derived from the
 durable terminal outcome alone — and under the settled `wait` contract, from the monitor's own success
 (see `cli-machine-channel.md`).
 
 The dependency is genuinely optional in the interface (`ensureResultArtifact?`,
-`src/jobs/shell/wait.ts:226`) and the four test harnesses that construct a `WaitCoordinator` omit it, but
-the **sole production composition supplies it** (`src/coordinator/execution-service.ts:120`, inside the
-one `new WaitCoordinator` at `:108`). The work is making the constructor contract require what
+`src/jobs/shell/wait.ts`) and the four test harnesses that construct a `WaitCoordinator` omit it, but
+the **sole production composition supplies it** (`src/coordinator/execution-service.ts`, inside the
+one `new WaitCoordinator` call). The work is making the constructor contract require what
 production already provides, not adding missing wiring.
 
 ## Why it is still split

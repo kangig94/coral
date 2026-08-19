@@ -10,7 +10,7 @@
 //      and re-attaches it in its fresh discussRegistry.
 //
 // Unit-level coverage already exists for piece (1) in
-// `tests/unit/discuss/shell/discuss-manager-lifecycle.test.ts:249`. This file
+// `tests/unit/discuss/shell/discuss-manager-lifecycle.test.ts`. This file
 // adds end-to-end coverage of the lifecycle wiring + recovery composition,
 // closing the cross-domain integration gap left open by Phase A2.
 

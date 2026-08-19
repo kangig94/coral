@@ -6,7 +6,7 @@ during the PR-gate repairs on `fix/build-identity-per-boot`.
 
 ## What exists
 
-`ensureScopedIgnore` (`clients/hooks/lib/project-ignore.mjs:273-281`) maintains two exact lines in the
+`ensureScopedIgnore` (`clients/hooks/lib/project-ignore.mjs`) maintains two exact lines in the
 project's `.claude/.gitignore`:
 
 ```js
@@ -17,8 +17,8 @@ const CORAL_IGNORE_TEMP_ENTRY = '*.coral-*.tmp';
 The second exists for the temp files Coral's own atomic writes leave behind if interrupted. There are exactly
 two of them, and both sit directly in the directory the pattern is written into:
 
-- `${path}.coral-${token}.tmp` — `atomicTransform`'s staging file (`project-ignore.mjs:182`)
-- `${link}.coral-${token}.tmp` — the symlink swap's staging name (`project-ignore.mjs:341`)
+- `${path}.coral-${token}.tmp` — `atomicTransform`'s staging file (`clients/hooks/lib/project-ignore.mjs`)
+- `${link}.coral-${token}.tmp` — the symlink swap's staging name (`clients/hooks/lib/project-ignore.mjs`)
 
 A gitignore pattern with no `/` matches at **any depth** below the file it is written in. So the line covers
 both writers and also any file anywhere under `.claude/` whose name happens to contain `.coral-` followed by
@@ -27,13 +27,13 @@ both writers and also any file anywhere under `.claude/` whose name happens to c
 ## Why it was left
 
 `.claude/.gitignore` is a user-owned file, checked into the user's repository, and this line has already
-shipped into it. `hasExactLine` and `appendExactLine` (`project-ignore.mjs:114`, `:143`) match the literal string, so
+shipped into it. `hasExactLine` and `appendExactLine` (both in `clients/hooks/lib/project-ignore.mjs`) match the literal string, so
 changing the literal does not update the old line — it adds a second one beside it and leaves the first there
 forever.
 
 A retirement mechanism for exactly this does exist in the same file: `maintainProjectIgnore` removes the
-retired root entry with `removeExactLines(content, context.legacyEntry)` (`project-ignore.mjs:379`), gated on
-`hasExactLine` finding it first (`:364`). So the claim that anchoring has "no migration path" is wrong — the
+retired root entry with `removeExactLines(content, context.legacyEntry)` (`clients/hooks/lib/project-ignore.mjs`), gated on
+`hasExactLine` finding it first. So the claim that anchoring has "no migration path" is wrong — the
 path is there and is the one this file already uses. The real cost is different and smaller: every existing
 installation pays one more read-modify-rename of `.claude/.gitignore` on the SessionStart that first sees the
 retired line, and the retirement branch stays in the code afterwards for as long as any un-migrated checkout

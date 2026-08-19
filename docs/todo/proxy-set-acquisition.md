@@ -13,7 +13,7 @@ this acquisition issued 1786780788, the process reported 1786780791.
 ```
 
 Three seconds apart. The check is `assertIdentityFieldsAgree`
-(`src/coordinator/live/provider-proxy/role-control.ts:167-179`, comparison at `:173`): an acquisition
+(`src/coordinator/live/provider-proxy/role-control.ts`): an acquisition
 issues an expected identity and compares every field against what the spawned process reports; any
 disagreement — `processStartedAtSeconds` included — throws and fails the acquisition.
 
@@ -31,13 +31,13 @@ branch, and a real reporting gap — but not at what was happening here.
 
 Two things survive from that version and remain true:
 
-- `ensureProxySetFor` (`src/coordinator/live/provider-hosts/index.ts:334-368`) reports only the
-  `capacity` refusal (`:346-350`). Every other non-accepted admission returns silently, and so does the
-  earlier `routeFor(identityKey) !== null` short-circuit at `:341`. That is still a reporting gap worth
+- `ensureProxySetFor` (`src/coordinator/live/provider-hosts/index.ts`) reports only the
+  `capacity` refusal. Every other non-accepted admission returns silently, and so does the
+  earlier `routeFor(identityKey) !== null` short-circuit. That is still a reporting gap worth
   closing, and it is why the real cause took a second incident to surface.
 - `ProviderProxySetLifecycleSnapshot` already computes `startupDiscoveryCompleted`, `represented`,
-  `available` and `states` (`src/coordinator/services/provider-proxy-set/index.ts:150`, produced by
-  `snapshot()` at `:593`), and has **no production consumer** — its only readers are in
+  `available` and `states` (`src/coordinator/services/provider-proxy-set/index.ts`, produced by
+  `snapshot()`), and has **no production consumer** — its only readers are in
   `tests/unit/coordinator/services/provider-proxy-set-lifecycle.test.ts`, a unit test, not an
   integration test as an earlier revision said. The observability this needs is already built and
   unpublished.
@@ -58,8 +58,8 @@ derived was therefore consistent with its own other values forever, and inconsis
 process's by roughly the age gap between their first reads. It no longer exists: #324 deleted it
 repo-wide, and `src/infra/node-process.ts` now carries an opaque `ProcessIncarnation` that is comparable
 only against a value derived in the same process — the paragraph below is why. #324 renamed the field at
-this acquisition's own `expectedIdentity` site too (`acquisition-steps.ts:354`, compared at
-`role-control.ts:173`), so the disagreement quoted above — one that grows with the incumbent's age —
+this acquisition's own `expectedIdentity` site too (`src/coordinator/live/provider-proxy/acquisition-steps.ts`, compared at
+`src/coordinator/live/provider-proxy/role-control.ts`), so the disagreement quoted above — one that grows with the incumbent's age —
 cannot recur there on any supported platform: no probe caches a clock reading across calls anymore, which
 is what made one process's derived value drift from another's fresh one. Past tense in the rest of this
 section is deliberate; nothing else here describes code that is still in the tree.
@@ -89,20 +89,20 @@ noise sample taken at probe time, with no record of which sample was used.
 The identical mistake, in `probeCoordinator`, made an installed upgrade unable to take over at all; that
 half is fixed under `build-identity-and-upgrade.md`. The remaining pairs, enumerated rather than sampled:
 
-| Comparison                                                            | Sites                                                        |
-| --------------------------------------------------------------------- | ------------------------------------------------------------ |
-| parent's probe at spawn vs guardian self-report                       | `acquisition-steps.ts:354` compared at `role-control.ts:173` |
-| proxy self-report vs guardian-observed containment held by the reaper | `acquisition-steps.ts:385` vs `reaper.ts:191`                |
-| guardian-reported containment vs proxy self-report during inheritance | `inheritance.ts:564`                                         |
-| successor coordinator's probe vs role-reported durable identity       | `inheritance.ts:371`, then `process-containment.ts:151`      |
-| predecessor coordinator's durable CLI evidence vs successor's probe   | `durable-transport.ts:81` vs `coordinator/composition/carrier-observation.ts:79` |
+| Comparison                                                            | Sites                                                                                                                        |
+| --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| parent's probe at spawn vs guardian self-report                       | `src/coordinator/live/provider-proxy/acquisition-steps.ts` compared at `src/coordinator/live/provider-proxy/role-control.ts` |
+| proxy self-report vs guardian-observed containment held by the reaper | `src/coordinator/live/provider-proxy/acquisition-steps.ts` vs `src/provider-proxy/reaper.ts`                                 |
+| guardian-reported containment vs proxy self-report during inheritance | `src/coordinator/services/provider-proxy-set/inheritance.ts`                                                                 |
+| successor coordinator's probe vs role-reported durable identity       | `src/coordinator/services/provider-proxy-set/inheritance.ts`, then `src/infra/process-containment.ts`                        |
+| predecessor coordinator's durable CLI evidence vs successor's probe   | `src/coordinator/live/durable-transport.ts` vs `src/coordinator/composition/carrier-observation.ts`                          |
 
 The last three **fail open**: a readable mismatch is interpreted as absence, so a live process group is
 declared gone, never signalled, and can be issued a disappearance receipt while it is still running.
 That is the more dangerous direction and it is not what the measured acquisition failures show — those
 fail closed. Both come from the same primitive.
 
-**One of them is fixed**: `inheritance.ts:369` no longer requires an exact match to conclude an enforcer
+**One of them is fixed**: `src/coordinator/services/provider-proxy-set/inheritance.ts` no longer requires an exact match to conclude an enforcer
 might be live — a readable start time already proves the pid exists, and whether it is still _ours_ is
 what a successor cannot tell. Reproduced first: without the fix that function returns a disappearance
 receipt for a set whose enforcers are alive.
@@ -111,9 +111,9 @@ receipt for a set whose enforcers are alive.
 
 An earlier revision of this entry, and of the fix that shipped with it, assumed `observeContainment`'s
 mismatch-means-absent inference was sound for "the recorder". Traced, the recorder is not who it looked
-like: the **guardian** probes at spawn (`role-spawn.ts:148`), arms its own enforcer with that value —
+like: the **guardian** probes at spawn (`src/provider-proxy/role-spawn.ts`), arms its own enforcer with that value —
 genuinely sound, same frame — and then **forwards the identical value** to the reaper
-(`guardian.ts:676`). The reaper stores it (`reaper.ts:221`) and compares it against **its own** probes.
+(`src/provider-proxy/guardian.ts`). The reaper stores it (`src/provider-proxy/reaper.ts`) and compares it against **its own** probes.
 
 It has not been seen failing only because guardian and reaper are born milliseconds apart, so their
 cached samples nearly agree. That margin degrades linearly with the drift rate.
@@ -171,11 +171,11 @@ kernel-stored creation stamps those platforms already expose. `startTicks` alone
 reboot a durable `pid=1234, ticks=500` can genuinely match a fresh low-pid process, a false _match_ at
 exactly the pids reused earliest in boot. `boot_id` closes that structurally.
 
-Then every site above becomes sound at once, `inheritance.ts:564` becomes a real cross-check, and the
+Then every site above becomes sound at once, `src/coordinator/services/provider-proxy-set/inheritance.ts` becomes a real cross-check, and the
 `enforcerMayStillBeLive` softening shipped alongside this entry can be deleted in favour of the stronger
 comparison it replaced.
 
-**The build gate makes the wire half atomic.** `assertNamedCoordinatorBuild` (`protocol.ts:373`) requires
+**The build gate makes the wire half atomic.** `assertNamedCoordinatorBuild` (`src/provider-proxy/protocol.ts`) requires
 `buildSetId` equality and gates handoff-redeem on guardian, proxy and reaper, so a new build can never
 redeem an old build's live set. No negotiation and no compatibility window is needed for the control
 protocol — only for the two surfaces that genuinely span builds: the journal's `durable_cli_process.v1`
@@ -193,10 +193,10 @@ subprocess, the `CORAL_DISCOVERY_PROBE_CLK_TCK` environment variable and its row
 `docs/configuration.md`, and the floor that made 1-second aliasing possible.
 
 The redeem path's three `establishControl` calls pass `expectedIdentity: {}`
-(`inheritance.ts:464,489,519`) and compare nothing, because the capsule secret is the authority — that is
+(`src/coordinator/services/provider-proxy-set/inheritance.ts`) and compare nothing, because the capsule secret is the authority — that is
 the pattern the fresh acquisition path should have copied.
 
-The comparison forty-five lines later (`inheritance.ts:564`, guardian-observed containment against proxy
+The comparison forty-five lines later (`src/coordinator/services/provider-proxy-set/inheritance.ts`, guardian-observed containment against proxy
 self-report) is a **different thing, and it is correct in intent**: an independent cross-check between
 two views of one containment. An earlier revision of this entry called it "the defect again". It is not.
 The check is sound; the primitive underneath it is not, and under a comparable primitive the check
@@ -231,7 +231,7 @@ environment weirdness: a fast machine acquires, a slow one does not, on the same
    `processStartedAtSeconds` did (see "Confirmed" above) — but the shape is still cross-process, and the
    alternative is to read the identity
    the same way on both sides: re-probe the connected pid itself once open, and drop the self-report, the
-   pattern the redeem path already uses (`expectedIdentity: {}`, `inheritance.ts:464,489,519`). This is a
+   pattern the redeem path already uses (`expectedIdentity: {}`, `src/coordinator/services/provider-proxy-set/inheritance.ts`). This is a
    design choice now, not a bug fix.
 2. **Whether disagreement should fail the acquisition at all**, or retire the attempt and retry. A
    failed acquisition currently costs the coordinator its proxy for the rest of its uptime unless
@@ -258,7 +258,7 @@ reading different clock bases" against current code is chasing a symptom the fix
 platform it was observed on.
 
 What is left to decide is item 1 above, and its entry price is reading `assertIdentityFieldsAgree` and
-the two probes that feed it (`acquisition-steps.ts:354`, `role-main.ts:173`), not reproducing a failure.
+the two probes that feed it (`src/coordinator/live/provider-proxy/acquisition-steps.ts`, `src/provider-proxy/role-main.ts`), not reproducing a failure.
 The role's self-report is checked against the acquisition's own probe rather than trusted outright, which
 is sound on Linux; whether that is the shape to keep, or whether the acquisition should re-probe the
 connected pid itself the way the redeem path does, is the open question — not whether the two sides can

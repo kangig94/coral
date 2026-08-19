@@ -14,12 +14,12 @@ that disagrees with the recorded one is `absent`, a matching one is `alive`, no 
 unreadable probe falls back to liveness, and either reader failing is `unknown`. Absence is the only answer
 that may retire anything. Three shapes never produce it.
 
-1. **V1 records no process.** `handoffCapsuleV1Schema` (`src/provider-proxy/handoff-capsule.ts:201`) declares
-   no process fields at all — the pids arrive with V2 (`:240`) and the incarnations with V3 (`:256`) — so the
-   decision is skipped before any observation is taken. A V1 carries no evidence of absence, which is not the
-   same as evidence that something is present.
+1. **V1 records no process.** `handoffCapsuleV1Schema` (`src/provider-proxy/handoff-capsule.ts`) declares
+   no process fields at all — the pids arrive with `handoffCapsuleV2Schema` and the incarnations with
+   `handoffCapsuleV3Schema` — so the decision is skipped before any observation is taken. A V1 carries no
+   evidence of absence, which is not the same as evidence that something is present.
 2. **A V2 whose pid was recycled.** V2 records pids and no incarnation, so the observer has nothing to compare
-   and falls back to liveness, where `observeProcessLiveness` (`src/infra/node-process.ts:53`) reads a live
+   and falls back to liveness, where `observeProcessLiveness` (`src/infra/node-process.ts`) reads a live
    stranger and an `EPERM` refusal alike as `alive`. Recycling is likeliest after exactly the event that made
    the recorded set absent — a host reboot — so the capsules this work exists for are the ones where a V2 is
    likeliest to read `alive`. It retains, which is the safe direction, and it never stops retaining.
@@ -43,7 +43,7 @@ kept here rather than edited away, because what does not re-derive is why it was
 source-mode boot now mints its own `buildSetId`, a capsule's canonical filename hashes that id —
 `providerPathIdentityHash` and `providerHandoffCapsulePath` (`src/infra/path/provider-proxy.ts`) — so every
 capsule a previous source-mode boot left behind is now another build's, refused as `other-build` by
-`classifyProviderProxySetInheritance` (`src/coordinator/services/provider-proxy-set/inheritance.ts:265`), and
+`classifyProviderProxySetInheritance` (`src/coordinator/services/provider-proxy-set/inheritance.ts`), and
 those capsules are current-generation, so they carry incarnations and the new decision retires them.
 
 **A source-mode boot cannot leave a handoff capsule behind, so that population is empty.** The only writer is
@@ -68,16 +68,16 @@ claims one a second boot also claims. What survives here is this entry's three m
 
 Two further between-boot effects follow from the same mint, and both are intended. A boot without a strict
 identity does not inherit an earlier run's proxy set: `redeem`
-(`src/coordinator/services/provider-proxy-set/inheritance.ts:633`) refuses a durable provider-operation record
+(`src/coordinator/services/provider-proxy-set/inheritance.ts`) refuses a durable provider-operation record
 whose `buildSetId` differs and answers `not-bequeathed` before reading a capsule at all, so the abandoned set
 is left to its own bounded enforcement and then to this retirement work. Stated as "no longer inherits _its
 own_ previous run's set", this was the same vacuous claim as the one above — the sets such a boot refuses were
 acquired by bundled builds. And an interrupted automatic store reset written by an earlier such boot no longer
 resumes: `authorizeAutomaticIncidentResume`
-(`src/store/backend-store-reset.ts:1105`) compares the manifest's `buildSetId` against the running authority
+(`src/store/backend-store-reset.ts`) compares the manifest's `buildSetId` against the running authority
 and refuses as `store_reset_interrupted_authority_mismatch`. That refusal already names its exit, and the exit
 is a command that exists rather than one this work would have to add — `interruptedStoreResetRemediation`
-(`src/runtime/errors.ts:113`) prints `coral-cli backend store-reset discard --target gen2 --flavor <prod|dev>`.
+(`src/runtime/errors.ts`) prints `coral-cli backend store-reset discard --target gen2 --flavor <prod|dev>`.
 
 ## The correction this entry inherits, kept in place
 
@@ -97,7 +97,7 @@ was retracted for may have been right as first written.
 
 What is certain is the part that does not depend on either argument: the path is gone, and a same-build V1 and
 a same-build V2 are now refused as `unreadable-identity` by the same branch
-(`classifyProviderProxySetInheritance`, `inheritance.ts:265`), so a V1 is classified exactly as a V2 is. Three
+(`classifyProviderProxySetInheritance`, `src/coordinator/services/provider-proxy-set/inheritance.ts`), so a V1 is classified exactly as a V2 is. Three
 successive revisions of this one claim were each argued from a population nobody checked — that is the reason
 this entry keeps all three rather than the latest.
 
@@ -109,7 +109,7 @@ warning per discovery. Observation is the one term that differs: a retained V2 p
 probes and a retained V3 up to six Darwin subprocess probes, both stopping at the first non-`absent` answer,
 while a V1 pays none because the decision is skipped before observation. A foreign slot is excluded from the
 admission count and from retained/excess classification
-(`src/coordinator/services/provider-proxy-set/index.ts:1001-1014`), so none of it can deny service.
+(`src/coordinator/services/provider-proxy-set/index.ts`), so none of it can deny service.
 
 ## Two prescriptions retired with the entry this narrows
 

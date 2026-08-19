@@ -6,7 +6,7 @@ while reasoning about macOS containment, not because anything failed.
 ## What exists now
 
 `IdleTimer` (`src/coordinator/live/idle.ts`) polls every 60s and drains after `DEFAULT_IDLE_TIMEOUT_MS`
-(`:5`, six hours) of no inflight work. It is the coordinator's only unattended exit.
+(six hours) of no inflight work. It is the coordinator's only unattended exit.
 
 It runs on the coordinator's own event loop, through `TimePort.setInterval`. So does the shutdown budget, so
 does every finalizer it contains, and so does a proxy set's orphan deadline inside its own roles.
@@ -24,8 +24,8 @@ hang, which is the hardest shape to attribute.
 
 **Stuck inflight work — the loop turns fine.** A never-settling `await` does **not** stop the event loop, and
 saying it did was the error. Timers keep firing, other requests keep being served, and
-`/health` keeps answering — operational routes return at `src/transport/http/handler.ts:1342`, before
-`deps.admin.beginRequest()` at `:1365`, so they are not even counted. What actually happens is narrower and
+`/health` keeps answering — operational routes return at `src/transport/http/handler.ts`, before
+`deps.admin.beginRequest()`, so they are not even counted. What actually happens is narrower and
 quieter: `beginRequest()` ran for the stuck request and `endRequest()` never will, so `inflight` never returns
 to zero and `IdleTimer.tryDrain` declines forever. The daemon is healthy by every signal it publishes and will
 simply never retire.

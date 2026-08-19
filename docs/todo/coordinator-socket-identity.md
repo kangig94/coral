@@ -6,7 +6,7 @@ blocked on a refactor nobody has appetite for.
 
 ## The defect
 
-`socketPathForRunDir` (`src/infra/path/coordinator.ts:36-43`):
+`socketPathForRunDir` (`src/infra/path/coordinator.ts`):
 
 ```ts
 const candidateSocket = join(runDir, 'coordinator.sock');
@@ -29,7 +29,7 @@ which every ownership, recovery and handoff guarantee in the system is written o
 
 ## The same fallback exists a second time
 
-`providerEndpoint` (`src/infra/path/provider-proxy.ts:126-150`) resolves guardian, proxy and reaper
+`providerEndpoint` (`src/infra/path/provider-proxy.ts`) resolves guardian, proxy and reaper
 sockets with the identical shape: try `generationRunDir(...)`, and on a length overflow fall back to
 `join(env.tempDirectory, 'coral-<uid>')`. Same ambient variable, same consequence — two processes that
 agree on a provider set's identity can disagree on where its socket lives, so an existing set looks
@@ -57,19 +57,19 @@ Produced by accident while exercising `backend status` against an isolated `HOME
 project's own sandbox scratch root. `composeCoralPaths('prod')` returned a socket path of **134 bytes**
 against the Linux limit of 108, and `net.Server#listen` on it failed `EINVAL`.
 
-That is not the two-coordinator case. When the *fallback itself* overflows — a long `TMPDIR`, which is
+That is not the two-coordinator case. When the _fallback itself_ overflows — a long `TMPDIR`, which is
 the same condition that makes the fallback get taken at all — there is no second coordinator, because
 there is no coordinator: `socketPathForRunDir` returns a path nothing can bind, and the operator gets
 `listen EINVAL` naming no limit, no byte count, and no variable to change. The entry above reads as
 though the overflow branch always ends in two owners; it can equally end in none.
 
 This half is separable and much cheaper than the identity decision. `providerEndpoint`
-(`src/infra/path/provider-proxy.ts:141-146`) already refuses with `proxy_endpoint_too_long`, carrying
+(`src/infra/path/provider-proxy.ts`) already refuses with `proxy_endpoint_too_long`, carrying
 `observedBytes`, `limit` and `platform`; the coordinator can raise the same shape without settling where
 the fallback should live. Copying it costs nothing that the identity fix would have to undo, and it
 turns an undiagnosable startup failure into one that names its own remedy. The existing coverage does
 not catch it: `tests/unit/infra/coordinator-paths.test.ts` asserts at 107/108/109 bytes that the
-fallback is *taken*, never that what it returns *fits*.
+fallback is _taken_, never that what it returns _fits_.
 
 ## What has to be decided
 

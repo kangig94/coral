@@ -1,6 +1,6 @@
 # TODO — the coordinator that must refuse to finish starting, and what ends the refusal
 
-**Status**: open, and open *because it was written once and taken back out*. The hold shipped on
+**Status**: open, and open _because it was written once and taken back out_. The hold shipped on
 `refactor/process-incarnation-token` as commit `0e59ac52`, was rejected by review, and was removed by
 `42b8a559`. Nothing about the diagnosis was wrong; what was wrong was shipping the refusal without the
 capability that discharges it. This entry carries the whole unit so the next attempt ships it whole.
@@ -26,7 +26,7 @@ The refusal was represented honestly and then returned through the ordinary succ
 
 1. Bootstrap logged "Running on …" and `backend status` printed "Backend ok" for a coordinator that had
    admitted nothing.
-2. A hard shutdown then ran `markJobsAsErrorFn` (`src/coordinator/shutdown.ts:398`) and terminalized
+2. A hard shutdown then ran `markJobsAsErrorFn` (`src/coordinator/shutdown.ts`) and terminalized
    every nonterminal job — **the hold destroyed exactly what it was protecting.**
 3. `state.started = true` foreclosed any in-process retry, so the daemon could never reach `running`
    even after the blocker was gone. Only a restart could re-ask, and a restart met the same row.
@@ -34,7 +34,7 @@ The refusal was represented honestly and then returned through the ordinary succ
    launches got `recovering — retry after 500ms` forever, `jobs.wait` bypassed the fence and presented
    as a 590s hang.
 5. Nothing ended it. Host eviction (`services/provider-host-administration.ts`) evicts the host, not the
-   row, and does not re-ask. Automatic absence retirement scans only *superseded* generations, so a
+   row, and does not re-ask. Automatic absence retirement scans only _superseded_ generations, so a
    malformed **current** row refuses again on every boot, forever. The refusal message's advice —
    restore the build that owns the row — is not a CLI operation, and is simply false when the current
    build owns corrupt bytes.
@@ -103,18 +103,18 @@ when admitted, finish Era II exactly once and transition to `running`. Emit one 
 
 Each of these is a finding above, and the compiler should force each one:
 
-| Site | Answer |
-| --- | --- |
-| `coordinator/bootstrap.ts` | already awaits `start()`, so "Running on …" becomes correct for free |
-| `coordinator/composition/index.ts` health | coarse `starting` for old clients; detailed health carries `admission-held` + blockers |
-| `transport/server-ports.ts`, `transport/http/backend/health.ts` | one blocker shape, not a second definition |
-| `transport/ipc/ensure.ts` | authenticated `admission-held` is **reachable**, not `BackendUnreachableError` |
-| `transport/ipc/server.ts`, `transport/http/handler.ts` | exhaustive switch: `running` permits; `admission-held` → `backend_admission_held`; `starting`/`kernel-ready` → `backend_recovering`; `draining`/`stopped` → `backend_shutting_down` |
-| `transport/dispatch.ts` launch routes | immediate non-retrying `backend_admission_held` carrying blockers and the exact remediation command — never the 500ms retry |
-| `transport/dispatch.ts` `jobs.wait` | reject **before** opening a subscription that cannot progress; `jobs.list`/`jobs.detail` stay readable |
-| `transport/http/backend/status.ts` | a public `held` result naming every `key@revision`, printing the clear command and identifying abandon as an override — never "Backend ok" |
-| handoff replacement | a held daemon is a live authenticated incumbent eligible for hot handoff; not healthy-ready, not absent |
-| `coordinator/shutdown.ts` | see below |
+| Site                                                            | Answer                                                                                                                                                                              |
+| --------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `coordinator/bootstrap.ts`                                      | already awaits `start()`, so "Running on …" becomes correct for free                                                                                                                |
+| `coordinator/composition/index.ts` health                       | coarse `starting` for old clients; detailed health carries `admission-held` + blockers                                                                                              |
+| `transport/server-ports.ts`, `transport/http/backend/health.ts` | one blocker shape, not a second definition                                                                                                                                          |
+| `transport/ipc/ensure.ts`                                       | authenticated `admission-held` is **reachable**, not `BackendUnreachableError`                                                                                                      |
+| `transport/ipc/server.ts`, `transport/http/handler.ts`          | exhaustive switch: `running` permits; `admission-held` → `backend_admission_held`; `starting`/`kernel-ready` → `backend_recovering`; `draining`/`stopped` → `backend_shutting_down` |
+| `transport/dispatch.ts` launch routes                           | immediate non-retrying `backend_admission_held` carrying blockers and the exact remediation command — never the 500ms retry                                                         |
+| `transport/dispatch.ts` `jobs.wait`                             | reject **before** opening a subscription that cannot progress; `jobs.list`/`jobs.detail` stay readable                                                                              |
+| `transport/http/backend/status.ts`                              | a public `held` result naming every `key@revision`, printing the clear command and identifying abandon as an override — never "Backend ok"                                          |
+| handoff replacement                                             | a held daemon is a live authenticated incumbent eligible for hot handoff; not healthy-ready, not absent                                                                             |
+| `coordinator/shutdown.ts`                                       | see below                                                                                                                                                                           |
 
 ### Held shutdown
 
@@ -122,7 +122,7 @@ Switch on the pre-drain phase. If it was held: do not call `markJobsAsErrorFn`, 
 reconcile, or release claims and fences; stop only resources this incarnation can prove it created and
 owns; close IPC last, preserving the existing handoff authority ordering.
 
-There is no honest protected-job exclusion list — an indeterminate row may own *any* job — so held
+There is no honest protected-job exclusion list — an indeterminate row may own _any_ job — so held
 shutdown skips store-wide terminalization entirely rather than filtering it.
 
 ## The proofs, and they are the point

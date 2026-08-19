@@ -11,7 +11,7 @@ about 86 characters; a maximum-length label is about 103. A workflow-detail repl
 
 `formatTable` receives no terminal-width input, so an 80-column terminal wraps cells and destroys alignment.
 List and detail therefore cannot respond to available width. Follow/wait does receive terminal width, but
-`renderWaitLine` only pads (`src/cli/format/wait.ts:144`); it never bounds the identity label, so prompt labels
+`renderWaitLine` only pads (`src/cli/format/wait.ts`); it never bounds the identity label, so prompt labels
 and terminal headers wrap as well.
 
 ## Decision required
