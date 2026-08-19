@@ -408,8 +408,7 @@ async function callCarrierStatusBatch(
 /**
  * Observes durable provider operations through fresh connections owned only for this pass.
  *
- * Grouping, duplicate rejection, and build-homogeneous batching finish before scheduling. Each exact locator
- * owns one fresh connection and one serial scheduler lane for the pass.
+ * Each exact locator owns one fresh connection and one serial scheduler lane for the pass.
  */
 export async function observeCarrierStatuses(
   records: readonly CarrierStatusRecord[],

@@ -40,7 +40,6 @@ function readRecoveryStatus(db: Database): RuntimeComponentStatus {
   };
 }
 
-/** Surface unresolved recovery quarantine rows through the runtime component registry. */
 export function createRecoveryComponent(db: Database): RuntimeComponent {
   return {
     id: RECOVERY_COMPONENT_ID,

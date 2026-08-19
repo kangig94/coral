@@ -127,9 +127,6 @@ function deriveCoordinatorFlavor(options: CoordinatorServerOptions): 'prod' | 'd
   return readBuildFlavor(options.pluginRoot);
 }
 
-// Default deadline for waiting on backend boot freshness (KB readiness, store
-// projection cursors, etc.). Preserves the prior 90s budget so behavior under
-// `CORAL_BOOT_FRESHNESS_TIMEOUT_MS` unset/invalid is unchanged.
 const DEFAULT_BOOT_FRESHNESS_TIMEOUT_MS = 90_000;
 
 function resolveBootFreshnessTimeoutMs(runtime: Pick<Runtime, 'env'>): number {

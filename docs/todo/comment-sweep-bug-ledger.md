@@ -170,6 +170,38 @@ rather than ledgered. (2) This sector's tree also carries an internal, undocumen
 enumeration regex. Left untouched for the same reason that finding gives: deciding whether to bring in, restate,
 or drop the reference is not a keep-or-delete call this sweep is authorized to make.
 
+## Sector 6 — `src/coordinator`
+
+- **What is wrong**: `registerRunningRecovery` settles (terminalizes) a job whose provider-binding capture
+  failed for an operator-repairable reason (`profile-unavailable`, `identity-unavailable`,
+  `subject-mismatch`) even when its durable carrier process may still be alive, instead of quarantining
+  with a live-carrier custody transfer. The comment at this site states the gap plainly and is the
+  ruling-7 case for this sector: a comment stating a rule the code currently violates, kept rather than
+  deleted.
+- **Where**: `registerRunningRecovery` in `src/coordinator/services/recovery/actions.ts`.
+- **Evidence**: Read directly. The comment cites `docs/todo/coordinator-process-disposition.md`, which
+  exists and already tracks this exact gap in full — including why an earlier quarantine attempt
+  (`0e59ac52`) was reverted for stranding process ownership, and the Principle 11 clause it violates
+  ("A boundary may release local ownership of a still-live or not-proven-absent obligation only after the
+  returned disposition names a successor owner..."). This sweep did not discover a new defect; it
+  confirmed the comment is accurate and correctly left in place per ruling 7.
+- **Why it was not fixed**: Comment-only sweep scope, and the fix (a two-part custody-transfer mechanism)
+  is already fully specified in `docs/todo/coordinator-process-disposition.md`. Recorded here only to
+  confirm the sweep found and preserved this ruling-7 case — not duplicated in full, since the linked
+  TODO is the authoritative record.
+- **Severity, as observed**: Already tracked as an open, current TODO with its own reproduction plan; no
+  new severity assessment needed from this sweep.
+
+Two comments were found and corrected as factually wrong under the "certain delete" rule (comment wrong,
+code correct — not ledger-worthy per that rule): `src/coordinator/live/kb-daemon-supervisor.ts`'s
+`stdin.on('error', ...)` handler claimed to "mirror the sibling live transports (app-server-transport,
+durable-transport)," but `durable-transport.ts` has no `stdin` handling at all (`grep -n "stdin"` on that
+file returns nothing); and `src/coordinator/live/provider-hosts/index.ts`'s `ensureProxySetFor` cited "the
+`liveProxySets` field comment" for its per-entry-key rationale, but `liveProxySets` is a local variable in
+`src/coordinator/shutdown.ts` whose own comment discusses something unrelated (call-time snapshot safety,
+not key sizing) — no comment anywhere in the tree contains the cited reasoning. Both false clauses were
+deleted; the code itself was correct in both cases, so nothing else was ledgered.
+
 ## Spans every sector — comments cite documents this repository does not contain
 
 Recorded once here rather than per sector, because it is one finding with 48 sites and every sector meets it.

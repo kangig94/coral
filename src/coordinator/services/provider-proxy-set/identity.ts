@@ -143,15 +143,9 @@ export function providerProxySetIdentityFromCapsule(capsule: HandoffCapsuleV3): 
 }
 
 /**
- * Whether a discovered capsule names the set an identity describes.
- *
- * One home, because there were two and this file is where the other two halves already live — the
- * capsule-to-identity projection above and `providerProxySetIdentitiesEqual`. The copies had to be edited
- * identically when V3 arrived, which is the cost the rule against a second canonical home is about.
- *
  * V3 alone carries a comparable process identity, so only it is compared in full. V1 has none, and V2's is
  * seconds from a retired derivation — comparing those against a token would manufacture a disagreement
- * rather than find one, so both are held to the eight fields that mean the same thing in every version.
+ * rather than find one, so both are held to the fields that mean the same thing in every version.
  */
 export function providerProxySetCapsuleMatchesIdentity(
   capsule: HandoffCapsule,

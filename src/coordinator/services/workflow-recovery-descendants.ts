@@ -28,7 +28,6 @@ function nestedCommit<Scope>(commit: CommitContext<Scope>): CommitEventsFn {
   };
 }
 
-/** Creates the exact-envelope descendant release and process-cleanup capability. */
 export function createFailedWorkflowDescendantReleaser(
   deps: FailedWorkflowDescendantReleaserDeps,
 ): AtomicFailedWorkflowDescendantReleaser {
@@ -41,13 +40,6 @@ export function createFailedWorkflowDescendantReleaser(
   ): readonly WorkflowRecoveryDescendantRelease[] => {
     const releases: WorkflowRecoveryDescendantRelease[] = [];
     for (const descendant of descendants) {
-      // An earlier revision re-derived this judgement here from a projection read, and got it wrong in
-      // two directions: it treated an already-released claim as a conflict, and it compared a session
-      // version captured when recovery started against one that recovery's own lawful work had since
-      // moved. Waiting for a child to terminate releases its claim; completing a replacement intent
-      // swaps it. Both are this pass doing its job, and both failed a check meant to catch foreign
-      // change.
-      //
       // The obligation is per-job and idempotent: what must hold afterwards is that `jobId` does not hold
       // `sessionId`. All three results say that it does not — `released` because we just released it,
       // `already_absent` because nothing held it, `owned_by_another_job` because someone else does. None

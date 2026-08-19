@@ -6,7 +6,6 @@
 //   - Domain-specific logic (belongs in jobs/, sessions/, discuss/, kb/, ...)
 //   - Coordinator global state (belongs in CoordinatorWorld via world.ts)
 //   - Default resolution policy (belongs in defaults.ts)
-//   - Job-control or drain logic (belongs in control.ts)
 // Adding any of those here turns this file from "orchestrator" into "magnet".
 
 import type { ServerResponse } from 'node:http';

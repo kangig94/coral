@@ -915,8 +915,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
         args: [entrypoint],
         cwd: pluginRoot,
         envAdditions: {
-          // Inherited CORAL_KB_* config + allowlisted parent knobs first; daemon-identity
-          // vars below override any collision.
+          // Daemon-identity vars below override any collision.
           ...forwardedKbDaemonEnv,
           CORAL_KB_DAEMON: '1',
           CORAL_KB_DAEMON_GENERATION: String(generation),
@@ -951,8 +950,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
     // A write to a dead child surfaces EPIPE asynchronously as a stdin 'error'
     // event; with no listener Node re-throws it as an uncaughtException and
     // crashes the coordinator. Swallow it here — the 'close' handler below owns
-    // real teardown (rejectPendingRequests / phase transition). Mirrors the
-    // sibling live transports (app-server-transport, durable-transport).
+    // real teardown (rejectPendingRequests / phase transition).
     stdin.on('error', (error: unknown) => {
       log(`[kb-daemon] stdin error: ${formatError(error)}`);
     });

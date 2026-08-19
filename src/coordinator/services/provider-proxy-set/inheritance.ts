@@ -241,7 +241,6 @@ export function providerProxySetAvailabilityReason(incident: ProviderProxySetAva
 
 const NOTHING_TO_INHERIT_REASON = 'no capsule at this address';
 
-/** Why this build may not inherit a proxy set. */
 export type ProviderProxySetInheritanceRefusal = 'other-build' | 'unreadable-identity';
 
 /**
@@ -348,15 +347,9 @@ async function proveProviderProxySetContainmentAbsent(
     { pid: identity.guardianPid, incarnation: identity.guardianIncarnation },
     { pid: identity.reaperPid, incarnation: identity.reaperIncarnation },
   ];
-  // Identity, now that identity is comparable. These incarnations were recorded by the guardian and the
-  // reaper rather than by this coordinator, and while the value carried a per-process clock term that made
-  // it useless across processes this had to settle for existence — a readable pid meant "might be ours".
-  // The token removed the clock term: a recorded incarnation and a fresh probe of the same process produce
-  // the same bytes, so a *different* one is not ambiguity, it is proof the pid belongs to someone else.
-  //
-  // Existence-only was safe in the direction that matters but not free. An unrelated process inheriting an
-  // enforcer's pid blocked this proof forever, and a set that can never be proven absent is a set whose
-  // operations never settle.
+  // These incarnations were recorded by the guardian and the reaper rather than by this coordinator. A
+  // recorded incarnation and a fresh probe of the same process produce the same bytes, so a *different* one
+  // is not ambiguity, it is proof the pid belongs to someone else.
   //
   // The polarity is this site's own. Discounting an enforcer takes proof it is absent, because concluding
   // here goes on to signal a process group; anything short of proof leaves that enforcer possibly ours.
@@ -667,13 +660,6 @@ async function redeem(
   return { kind: 'inherited', set };
 }
 
-/**
- * Reads the capsule addressed by `locator`'s own `buildSetId`/`hostFingerprint`/`proxyInstanceId` plus this
- * successor's own `generation`/`flavor`, and — only if it is present, matches, and every redemption step
- * accepts it — redeems the whole grant and hands the set to attachment reconciliation. Missing or
- * wrong-identity capsules return `{ kind: 'not-bequeathed' }`; ambiguous redemption failures reject unless
- * exact containment disappearance is proven.
- */
 export async function attemptProviderProxySetInheritance(
   locator: ProviderProxySetLocator,
   db: Database,
@@ -735,7 +721,7 @@ export type CreateProviderProxySetInheritanceOptions = Readonly<{
   operationRegistry: ProviderProxyOperationSnapshot;
   onProviderEvent?(): ProviderEventHandler;
   /** Where a successfully inherited set is folded in so it participates in this coordinator's own later
-   *  shutdown — `DefaultProviderHostManager.registerInheritedSet` in production. */
+   *  shutdown. */
   registerInheritedSet(set: ProviderProxyOperationAuthority): void;
 }>;
 
