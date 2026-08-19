@@ -143,7 +143,7 @@ type AbsenceDeliveryPendingSlot = Extract<ProviderProxySetSlot, { kind: 'absence
  */
 type ForeignCapsuleRetirementOwner = {
   readonly capsulePath: string;
-  /** The alias entries this capsule installed, so releasing them cannot reach an entry another one owns. */
+  /** The `#capsuleAddresses` and `#capsuleGrants` keys this capsule installed. */
   readonly addressKey: string;
   readonly grantId: string;
   readonly foreignSlotId: string | null;
@@ -151,6 +151,29 @@ type ForeignCapsuleRetirementOwner = {
   failures: Readonly<{ count: number; lastIncident: ProviderProxyForeignCapsuleRetirementRetryIncident }> | null;
   retryTimer: TimerHandle | null;
 };
+
+/**
+ * What ended a foreign retirement hold short of retirement, carried as facts: a call site that hands this
+ * sink a finished sentence becomes a second renderer of the one line an operator has to act on.
+ */
+type ForeignCapsuleRetirementAbandonment =
+  | Readonly<{
+      kind: 'attempt-limit';
+      attempts: number;
+      incident: ProviderProxyForeignCapsuleRetirementRetryIncident;
+    }>
+  | Readonly<{ kind: 'forwarded-fatal'; error: unknown }>;
+
+function renderForeignRetirementAbandonment(abandonment: ForeignCapsuleRetirementAbandonment): string {
+  if (abandonment.kind === 'forwarded-fatal') {
+    return `after a fatal it could not settle (${singleLineErrorSummary(abandonment.error)})`;
+  }
+  const observedCode =
+    'errorCode' in abandonment.incident && abandonment.incident.errorCode !== null
+      ? ` code=${abandonment.incident.errorCode}`
+      : '';
+  return `after ${abandonment.attempts} attempts (${abandonment.incident.kind}${observedCode})`;
+}
 
 /**
  * Whether a discovered capsule is one this build may act on. Returned as a variant rather than a boolean so
@@ -821,10 +844,7 @@ export class ProviderProxySetLifecycle {
         // settle this path — but the hold must still end where an operator can read it.
         fatal: (error) => {
           if (!stillOwned()) return;
-          this.#abandonForeignCapsuleRetirement(
-            owner,
-            `after a fatal it could not settle (${singleLineErrorSummary(error)})`,
-          );
+          this.#abandonForeignCapsuleRetirement(owner, { kind: 'forwarded-fatal', error });
         },
       },
     );
@@ -839,9 +859,16 @@ export class ProviderProxySetLifecycle {
    * Removes exactly what named this capsule path and nothing else. A recovering claim, its identity-index
    * entry, and every absence slot belong to owners this turn never held — a foreign retirement that released
    * one would strand the operations behind it.
+   *
+   * Releasing an alias entry is housekeeping for the discovery pass that installed it. Nothing may be given a
+   * reason to read those maps after that pass, because it would be depending on a release that an abandoned
+   * retirement never makes.
    */
   #completeForeignCapsuleRetirement(owner: ForeignCapsuleRetirementOwner): void {
     this.#dropForeignRetirementOwner(owner);
+    // Every release is conditioned on the entry still naming this owner's path: an entry a later capsule
+    // installed under the same key belongs to that capsule, and dropping it would surrender a credential this
+    // build is still representing.
     if (this.#capsuleAddresses.get(owner.addressKey) === owner.capsulePath) {
       this.#capsuleAddresses.delete(owner.addressKey);
     }
@@ -869,14 +896,11 @@ export class ProviderProxySetLifecycle {
     owner.retryTimer = null;
 
     if (failures.count >= FOREIGN_CAPSULE_RETIREMENT_ATTEMPT_LIMIT) {
-      const observedCode =
-        'errorCode' in failures.lastIncident && failures.lastIncident.errorCode !== null
-          ? ` code=${failures.lastIncident.errorCode}`
-          : '';
-      this.#abandonForeignCapsuleRetirement(
-        owner,
-        `after ${failures.count} attempts (${failures.lastIncident.kind}${observedCode})`,
-      );
+      this.#abandonForeignCapsuleRetirement(owner, {
+        kind: 'attempt-limit',
+        attempts: failures.count,
+        incident: failures.lastIncident,
+      });
       return;
     }
 
@@ -891,20 +915,30 @@ export class ProviderProxySetLifecycle {
 
   /**
    * The hold ends here with the capsule still on disk, so whatever was observed last must reach an operator:
-   * a refusal nobody can read is a credential nobody knows to remove.
+   * a refusal nobody can read is a credential nobody knows to remove. A named exit may not be suppressible,
+   * so this warning may not be routed through the preserve-report throttle.
    */
-  #abandonForeignCapsuleRetirement(owner: ForeignCapsuleRetirementOwner, observed: string): void {
+  #abandonForeignCapsuleRetirement(
+    owner: ForeignCapsuleRetirementOwner,
+    abandonment: ForeignCapsuleRetirementAbandonment,
+  ): void {
     this.#dropForeignRetirementOwner(owner);
     this.#report(
       'warn',
-      `Provider proxy capsule at ${owner.capsulePath} names only processes proven absent but could not be retired ${observed}; it stays represented for the rest of this boot, and a later boot retries it only while discovery still finds it and can still prove its recorded processes absent.`,
+      `Provider proxy capsule at ${owner.capsulePath} names only processes proven absent but could not be retired ${renderForeignRetirementAbandonment(abandonment)}; it stays represented for the rest of this boot, and a later boot retries it only while discovery still finds it and can still prove its recorded processes absent.`,
     );
   }
 
+  /**
+   * The map entry is the ownership token, so only the owner it names may retract it: retracting by path alone
+   * would make a hold's end depend on which turn happened to settle last.
+   */
   #dropForeignRetirementOwner(owner: ForeignCapsuleRetirementOwner): void {
     if (owner.retryTimer !== null) this.#deps.time.clearTimeout(owner.retryTimer);
     owner.retryTimer = null;
-    this.#foreignRetirementOwners.delete(owner.capsulePath);
+    if (this.#foreignRetirementOwners.get(owner.capsulePath) === owner) {
+      this.#foreignRetirementOwners.delete(owner.capsulePath);
+    }
   }
 
   #classifyCapsule(capsule: HandoffCapsule): CapsuleInheritance {

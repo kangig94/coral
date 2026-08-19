@@ -401,4 +401,23 @@ describe('provider proxy recovery producer classification', () => {
       retiredForeign: { evidence: 1, retryIncidents: [], localFatal: 0, globalFatal: 0 },
     });
   });
+
+  it('refuses a retirement outcome whose kind promises a retry it carries no incident for', async () => {
+    // The one malformed shape a `kind`-only check admits. What each seam receives must be the refusal, never
+    // a hold whose incident is absent: nothing downstream can decide what it is holding from `undefined`.
+    const incidentless: Settlement = { kind: 'value', value: { kind: 'temporarily-unavailable' } };
+
+    expect({
+      owned: await retireCapsuleOn('capsule-retirement', incidentless),
+      foreign: await retireCapsuleOn('foreign-capsule-retirement', incidentless),
+    }).toEqual({
+      owned: { evidence: 0, retryIncidents: [], localFatal: 1, globalFatal: 1 },
+      foreign: {
+        evidence: 0,
+        retryIncidents: [{ kind: 'foreign-capsule-retirement-contract-violation' }],
+        localFatal: 0,
+        globalFatal: 0,
+      },
+    });
+  });
 });

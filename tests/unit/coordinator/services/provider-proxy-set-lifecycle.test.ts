@@ -2198,6 +2198,55 @@ describe('ProviderProxySetLifecycle', () => {
     });
   });
 
+  it('carries a malformed retirement fulfillment to the same terminal under its own incident', async () => {
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([]);
+    const clock = new ManualClock();
+    const authority = fakeAuthority();
+    const path = '/capsules/foreign-malformed.handoff.v3.json';
+    // A producer that promises a retry and carries nothing to hold. The owner may read this only as an
+    // incident it can name, because an operator sent to the filesystem over a defect in this build looks
+    // there for as long as the capsule stays on disk.
+    const retireCapsule = vi.fn(() => ({ kind: 'temporarily-unavailable' }) as CapsuleRetirementAttemptOutcome);
+    const reportLifecycle = vi.fn();
+    const onFatal = vi.fn();
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+      retireCapsule,
+      reportLifecycle,
+      onFatal,
+    });
+    lifecycle.initializeClaimSlots();
+
+    lifecycle.installDiscoveredCapsules([{ path, capsule: foreignCapsuleV3For(authority) }], observesEveryRoleAbsent);
+    await settleScheduledWork(clock);
+
+    expect({
+      attempts: retireCapsule.mock.calls.length,
+      states: lifecycle.snapshot().states,
+      fatals: onFatal.mock.calls.length,
+      retirementWarnings: reportLifecycle.mock.calls
+        .filter((call) => call[0] === 'warn')
+        .map((call) => retirementWarningFacts(String(call[1])))
+        .filter((facts) => facts.attempts !== null),
+    }).toEqual({
+      attempts: 5,
+      states: ['capsule-foreign'],
+      fatals: 0,
+      retirementWarnings: [
+        {
+          capsulePath: path,
+          attempts: '5 attempts',
+          lastIncident: 'foreign-capsule-retirement-contract-violation',
+        },
+      ],
+    });
+  });
+
   it('keeps a failing retirement from clearing the aliases that name its capsule path', async () => {
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([]);
@@ -2286,6 +2335,90 @@ describe('ProviderProxySetLifecycle', () => {
     expect({ afterStaleFailure, afterEvidence: lifecycle.snapshot().states }).toEqual({
       afterStaleFailure: { scheduled: [], attempts: 2, states: ['capsule-foreign', 'capsule-foreign'] },
       afterEvidence: ['capsule-foreign'],
+    });
+  });
+
+  it('keeps the current owner retrying to its own terminal after a superseded turn resolves retired', async () => {
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([]);
+    const clock = new ManualClock();
+    const authority = fakeAuthority();
+    const path = '/capsules/foreign-stale-evidence.handoff.v3.json';
+    const capsule = foreignCapsuleV3For(authority);
+    const supersededTurn = deferred<CapsuleRetirementAttemptOutcome>();
+    const owningTurn = deferred<CapsuleRetirementAttemptOutcome>();
+    const deferredTurns = [supersededTurn, owningTurn];
+    const durabilityUnavailable = {
+      kind: 'temporarily-unavailable' as const,
+      incident: { kind: 'capsule-directory-durability-unavailable' as const },
+    };
+    let startedAttempts = 0;
+    const retireCapsule = vi.fn(() => {
+      const turn = deferredTurns[startedAttempts];
+      startedAttempts += 1;
+      return turn?.promise ?? Promise.resolve(durabilityUnavailable);
+    });
+    const reportLifecycle = vi.fn();
+    const onFatal = vi.fn();
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+      retireCapsule,
+      reportLifecycle,
+      onFatal,
+    });
+    lifecycle.initializeClaimSlots();
+
+    lifecycle.installDiscoveredCapsules(
+      [
+        { path, capsule },
+        { path, capsule: { ...capsule, proxyInstanceId: randomUUID(), grantId: randomUUID() } },
+      ],
+      observesEveryRoleAbsent,
+    );
+    await drainMicrotasks();
+
+    // `retired` is the outcome that releases things, and this turn no longer speaks for the path: neither
+    // representation may go, or a capsule still on disk loses the slot that keeps its address unaliasable.
+    supersededTurn.resolve({ kind: 'retired' });
+    await drainMicrotasks();
+    const afterStaleEvidence = {
+      states: lifecycle.snapshot().states,
+      attempts: retireCapsule.mock.calls.length,
+      scheduled: [...clock.scheduledDelays],
+    };
+
+    // The hold the current owner is carrying must still reach its own named end, with every attempt the bound
+    // allows: a stale outcome that quietly took its place would leave nothing for an operator to read.
+    owningTurn.resolve(durabilityUnavailable);
+    await settleScheduledWork(clock);
+
+    expect({
+      afterStaleEvidence,
+      attempts: retireCapsule.mock.calls.length,
+      scheduled: [...clock.scheduledDelays],
+      states: lifecycle.snapshot().states,
+      fatals: onFatal.mock.calls.length,
+      retirementWarnings: reportLifecycle.mock.calls
+        .filter((call) => call[0] === 'warn')
+        .map((call) => retirementWarningFacts(String(call[1])))
+        .filter((facts) => facts.attempts !== null),
+    }).toEqual({
+      afterStaleEvidence: {
+        states: ['capsule-foreign', 'capsule-foreign'],
+        attempts: 2,
+        scheduled: [],
+      },
+      attempts: 6,
+      scheduled: [1_000, 2_000, 4_000, 8_000],
+      states: ['capsule-foreign', 'capsule-foreign'],
+      fatals: 0,
+      retirementWarnings: [
+        { capsulePath: path, attempts: '5 attempts', lastIncident: 'capsule-directory-durability-unavailable' },
+      ],
     });
   });
 
