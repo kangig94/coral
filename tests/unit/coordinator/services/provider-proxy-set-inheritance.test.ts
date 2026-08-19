@@ -64,6 +64,9 @@ import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provid
 /** The build this fixture lifecycle belongs to — the same one `providerOperationRecord` stamps on its identities, so a discovered capsule is inheritable rather than foreign. */
 const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
 
+/** Nothing observed is never absence, so every discovered capsule is retained and no retirement begins. */
+const retainsEveryCapsule = { observeRecordedProcess: () => 'unknown' as const };
+
 const mockedReadCapsule = vi.mocked(readHandoffCapsuleFile);
 const mockedConnect = vi.mocked(connectRoleControlWithRetry);
 const mockedProbe = vi.mocked(probeProcessIncarnation);
@@ -1177,6 +1180,50 @@ describe('createProviderProxySetInheritance', () => {
     ).resolves.not.toBeNull();
   });
 
+  // The third answer, and the polarity that makes it load-bearing: only a proven absence may discount an
+  // enforcer, because what follows signals a process group. Reading the observation as `=== 'alive'` instead
+  // would hand that authority to an enforcer nobody could observe at all.
+  it.each<[string, () => ProcessIncarnation | null, ProcessLiveness]>([
+    [
+      'identity cannot be probed at all',
+      () => {
+        throw new Error('the incarnation probe could not run');
+      },
+      'absent',
+    ],
+    ['liveness cannot be observed either', () => null, 'unknown'],
+  ])('will not prove absence for an enforcer whose %s', async (_label, probe, liveness) => {
+    const reference = locator();
+    const db = proofDatabase([proofRecord(reference, { pid: 104, incarnation: testIncarnation(1_003) })]);
+    const signals: Array<{ pid: number; signal: NodeJS.Signals | 0 }> = [];
+    const base = createRealRuntime('prod');
+    const boundedRuntime = {
+      ...base,
+      process: {
+        ...base.process,
+        observeLiveness: () => liveness,
+        kill: (pid: number, signal: NodeJS.Signals | 0) => {
+          signals.push({ pid, signal });
+          return true;
+        },
+      },
+    };
+    mockedProbe.mockImplementation(probe);
+
+    const inheritance = createProviderProxySetInheritance({
+      runtime: boundedRuntime,
+      identity,
+      operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
+      registerInheritedSet: () => undefined,
+    });
+
+    await expect(
+      inheritance.proveContainmentAbsent(providerProxySetIdentityFromRecord(reference), db, neverAborts),
+      'an enforcer that could not be observed is not one that is gone',
+    ).resolves.toBeNull();
+    expect(signals, 'evidence nobody could produce authorizes no signal').toEqual([]);
+  });
+
   // The row may name a provider root that never enters the decoded inventory, so the proof cannot conclude
   // absence — but only for the set the row belongs to. Its key says which set that is without the row being
   // decodable, and fencing every set on any unreadable row anywhere blocks recovery for sets it has nothing to
@@ -1397,7 +1444,10 @@ describe('createProviderProxySetInheritance', () => {
       reportLifecycle: () => undefined,
     });
     lifecycle.initializeClaimSlots();
-    lifecycle.installDiscoveredCapsules([{ path: '/capsules/claim-backed.handoff.json', capsule }]);
+    lifecycle.installDiscoveredCapsules(
+      [{ path: '/capsules/claim-backed.handoff.json', capsule }],
+      retainsEveryCapsule,
+    );
     expect(established).not.toHaveBeenCalled();
     const registerInheritedSet = vi.fn((set: ProviderProxyOperationAuthority) => {
       if (!isProviderProxyOperationAuthority(set)) throw new Error('expected durable authority');

@@ -262,3 +262,54 @@ export function probeProcessIncarnation(pid: number, platform = process.platform
 
   return PROCESS_INCARNATION_PROBES.get(platform)?.(pid) ?? null;
 }
+
+/** The question "is this recorded process still there", bound to the readers that answer it. */
+export type RecordedProcessObserver = (
+  recorded: Readonly<{ pid: number; incarnation?: ProcessIncarnation }>,
+) => ProcessLiveness;
+
+/**
+ * Whether the process a record names is still the process that was recorded.
+ *
+ * Identity decides before liveness. A pid observed `alive` may be a different process wearing the same
+ * number, so `alive` alone is never proof the recorded process is still there, and a readable token that
+ * disagrees with the recorded one is proof it is gone whatever liveness would say. A record carrying no
+ * incarnation has nothing to compare, so the identity reader must not be asked for one: a token held against
+ * a record that has none disagrees with it, which would read as absence for a process nobody looked for.
+ *
+ * Identity is not the only evidence that may finalize. `absent` says nothing holds the pid, and the recorded
+ * process cannot be running without one, so a liveness `absent` decides on whichever route reaches it.
+ *
+ * An unreadable token is not a disagreement, so it falls through to liveness — never to `absent`, and not to
+ * `unknown` either, or a host whose identity reader cannot read would settle nothing, ever. The price of that
+ * fallback is that such a host treats every record as though it carried no token.
+ *
+ * A reader that *throws* answers `unknown`, never `absent`: a question that could not be asked has not been
+ * answered.
+ *
+ * The readers are injected rather than reached for, so what crosses to a caller allowed only to conclude is
+ * this one function and no capability to signal. The predicate a caller about to *signal* needs is not this
+ * one and must not be unified with it: the ambiguity this one is required to return, that one is required to
+ * refuse — see observeProcessIdentity in src/infra/process-containment.ts.
+ */
+export function createRecordedProcessObserver(
+  readers: Readonly<{
+    readIncarnation: (pid: number) => ProcessIncarnation | null;
+    observeLiveness: (pid: number) => ProcessLiveness;
+  }>,
+): RecordedProcessObserver {
+  return (recorded) => {
+    try {
+      if (recorded.incarnation === undefined) {
+        return readers.observeLiveness(recorded.pid);
+      }
+      const observed = readers.readIncarnation(recorded.pid);
+      if (observed === null) {
+        return readers.observeLiveness(recorded.pid);
+      }
+      return observed === recorded.incarnation ? 'alive' : 'absent';
+    } catch {
+      return 'unknown';
+    }
+  };
+}

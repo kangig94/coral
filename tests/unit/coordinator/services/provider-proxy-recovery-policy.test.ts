@@ -12,6 +12,7 @@ import {
   type ProviderProxyRecoveryProducerId,
   type ProviderProxyRecoveryProducerPorts,
 } from '#src/coordinator/services/provider-proxy-recovery-policy.js';
+import type { ProviderHandoffCapsuleRetirementOutcome } from '#src/coordinator/services/provider-proxy-capsule-discovery.js';
 import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 
@@ -91,6 +92,64 @@ async function observe(
   }
   for (let index = 0; index < 4; index += 1) await Promise.resolve();
   return { evidence, retry, localFatal, globalFatal };
+}
+
+/**
+ * The same producer, the same settlement, and the seam as the only difference — the whole point of the split
+ * is that a foreign capsule's cleanup failure cannot reach the process-wide fatal sink that the owned seam's
+ * identical failure must.
+ */
+async function retireCapsuleOn(
+  seam: ProviderProxyRecoveryConsumerSeam,
+  settlement: Settlement,
+): Promise<Readonly<{ evidence: number; retryIncidents: unknown[]; localFatal: number; globalFatal: number }>> {
+  let evidence = 0;
+  let localFatal = 0;
+  let globalFatal = 0;
+  const retryIncidents: unknown[] = [];
+  const dispatcher = createTestProviderProxyRecoveryDispatcher(
+    {
+      'capsule-retirement': () => {
+        if (settlement.kind === 'throw') throw settlement.error;
+        return settlement.value as ProviderHandoffCapsuleRetirementOutcome;
+      },
+    },
+    () => {
+      globalFatal += 1;
+    },
+  );
+  const turn = dispatcher.begin(
+    seam,
+    {},
+    {
+      evidence: () => {
+        evidence += 1;
+      },
+      retry: (retry) => {
+        retryIncidents.push(retry.incident);
+      },
+      fatal: () => {
+        localFatal += 1;
+      },
+    },
+  );
+  turn.start({
+    sourceId: 'retirement',
+    producerId: 'capsule-retirement',
+    input: { path: '/capsules/paired.handoff.v3.json' },
+  });
+  for (let index = 0; index < 4; index += 1) await Promise.resolve();
+  return { evidence, retryIncidents, localFatal, globalFatal };
+}
+
+function errorWithHostileCode(): Error {
+  const error = new Error('hostile code getter');
+  Object.defineProperty(error, 'code', {
+    get() {
+      throw new Error('reading code is not permitted');
+    },
+  });
+  return error;
 }
 
 describe('provider proxy recovery producer classification', () => {
@@ -242,5 +301,104 @@ describe('provider proxy recovery producer classification', () => {
         ),
       ).resolves.toEqual({ evidence: 0, retry: 0, localFatal: 1, globalFatal: 1 });
     }
+  });
+
+  it('keeps every capsule-retirement failure owner-local on the foreign seam and globally fatal on the owned one', async () => {
+    const rejections: readonly Readonly<{ named: string; error: unknown; errorCode: string | null }>[] = [
+      { named: 'null', error: null, errorCode: null },
+      { named: 'undefined', error: undefined, errorCode: null },
+      { named: 'object without a code', error: {}, errorCode: null },
+      { named: 'non-string code', error: Object.assign(new Error('numeric'), { code: 13 }), errorCode: null },
+      { named: 'hostile code getter', error: errorWithHostileCode(), errorCode: null },
+      { named: 'EACCES', error: Object.assign(new Error('denied'), { code: 'EACCES' }), errorCode: 'EACCES' },
+      { named: 'EROFS', error: Object.assign(new Error('read-only'), { code: 'EROFS' }), errorCode: 'EROFS' },
+      { named: 'EIO', error: Object.assign(new Error('io'), { code: 'EIO' }), errorCode: 'EIO' },
+    ];
+
+    const paired = await Promise.all(
+      rejections.map(async ({ named, error, errorCode }) => [
+        named,
+        {
+          owned: await retireCapsuleOn('capsule-retirement', { kind: 'throw', error }),
+          foreign: await retireCapsuleOn('foreign-capsule-retirement', { kind: 'throw', error }),
+          expectedIncident: { kind: 'foreign-capsule-retirement-rejected', errorCode },
+        },
+      ]),
+    );
+
+    expect(Object.fromEntries(paired)).toEqual(
+      Object.fromEntries(
+        rejections.map(({ named, errorCode }) => [
+          named,
+          {
+            owned: { evidence: 0, retryIncidents: [], localFatal: 1, globalFatal: 1 },
+            foreign: {
+              evidence: 0,
+              retryIncidents: [{ kind: 'foreign-capsule-retirement-rejected', errorCode }],
+              localFatal: 0,
+              globalFatal: 0,
+            },
+            expectedIncident: { kind: 'foreign-capsule-retirement-rejected', errorCode },
+          },
+        ]),
+      ),
+    );
+  });
+
+  it('replaces even a rejection the shared classifier recognises with the foreign seam incident', async () => {
+    // The shared classifier answers `unavailable` for this one, which is already owner-local — so only the
+    // seam's own branch can guarantee that what the owner receives never depends on the thrown type.
+    expect({
+      owned: await retireCapsuleOn('capsule-retirement', { kind: 'throw', error: unavailable }),
+      foreign: await retireCapsuleOn('foreign-capsule-retirement', { kind: 'throw', error: unavailable }),
+    }).toEqual({
+      owned: { evidence: 0, retryIncidents: [unavailable.incident], localFatal: 0, globalFatal: 0 },
+      foreign: {
+        evidence: 0,
+        retryIncidents: [{ kind: 'foreign-capsule-retirement-rejected', errorCode: null }],
+        localFatal: 0,
+        globalFatal: 0,
+      },
+    });
+  });
+
+  it('keeps a malformed retirement fulfillment owner-local under its own kind and leaves the shared outcomes alone', async () => {
+    const malformed: Settlement = { kind: 'value', value: { kind: 'not-a-retirement-outcome' } };
+    const unavailableOutcome: Settlement = {
+      kind: 'value',
+      value: { kind: 'temporarily-unavailable', incident: { kind: 'capsule-directory-durability-unavailable' } },
+    };
+
+    expect({
+      malformedOwned: await retireCapsuleOn('capsule-retirement', malformed),
+      malformedForeign: await retireCapsuleOn('foreign-capsule-retirement', malformed),
+      unavailableOwned: await retireCapsuleOn('capsule-retirement', unavailableOutcome),
+      unavailableForeign: await retireCapsuleOn('foreign-capsule-retirement', unavailableOutcome),
+      retiredForeign: await retireCapsuleOn('foreign-capsule-retirement', {
+        kind: 'value',
+        value: { kind: 'retired' },
+      }),
+    }).toEqual({
+      malformedOwned: { evidence: 0, retryIncidents: [], localFatal: 1, globalFatal: 1 },
+      malformedForeign: {
+        evidence: 0,
+        retryIncidents: [{ kind: 'foreign-capsule-retirement-contract-violation' }],
+        localFatal: 0,
+        globalFatal: 0,
+      },
+      unavailableOwned: {
+        evidence: 0,
+        retryIncidents: [{ kind: 'capsule-directory-durability-unavailable' }],
+        localFatal: 0,
+        globalFatal: 0,
+      },
+      unavailableForeign: {
+        evidence: 0,
+        retryIncidents: [{ kind: 'capsule-directory-durability-unavailable' }],
+        localFatal: 0,
+        globalFatal: 0,
+      },
+      retiredForeign: { evidence: 1, retryIncidents: [], localFatal: 0, globalFatal: 0 },
+    });
   });
 });

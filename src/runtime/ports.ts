@@ -94,6 +94,7 @@ export interface ProcessPort {
 }
 
 export interface IdPort {
+  /** Canonical lowercase UUID — see canonicalUuidSchema in src/provider-proxy/protocol.ts */
   uuid(): string;
   randomBytes(size: number): Buffer;
   sha256(input: string): string;

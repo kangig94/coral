@@ -3,6 +3,14 @@ import { randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { TimerHandle } from '#src/infra/port-types.js';
+import {
+  createRecordedProcessObserver,
+  observeProcessLiveness,
+  probeProcessIncarnation,
+  type ProcessIncarnation,
+  type ProcessLiveness,
+  type RecordedProcessObserver,
+} from '#src/infra/node-process.js';
 import type {
   HandoffCapsule,
   HandoffCapsuleV1,
@@ -38,6 +46,7 @@ import { isProviderProxyRecoveryFatalError } from '#src/coordinator/services/pro
 import { providerProxySetIdentityFromRecord } from '#src/coordinator/services/provider-proxy-set/identity.js';
 import type { ProviderProxySetRedemptionOutcome } from '#src/coordinator/services/provider-proxy-set/inheritance.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
 import { ProviderOperationTerminalMetadataError } from '#src/jobs/provider-operation-terminalization.js';
 import type { ProviderOperationTerminalDirective } from '#src/store/provider-operation-record.js';
@@ -46,6 +55,11 @@ import type { ProviderOperationTerminalDirective } from '#src/store/provider-ope
 const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
 
 const noContainmentProof = async (): Promise<null> => null;
+/** Nothing observed is never absence, so every discovered capsule is retained and no retirement begins. */
+const retainsEveryCapsule = { observeRecordedProcess: () => 'unknown' as const };
+/** Every recorded process proven gone — the one observation that may retire a capsule. */
+const observesEveryRoleAbsent = { observeRecordedProcess: () => 'absent' as const };
+const FOREIGN_BUILD_SET_ID = '88888888-8888-4888-8888-888888888888';
 const ignoreControlEstablished = (): void => undefined;
 const operationPolicy: RetrySafeControlCallPolicy = {
   method: 'operation.settle.v1',
@@ -67,6 +81,18 @@ const reportLifecycleIsRequired: Record<PropertyKey, never> extends Pick<
 >
   ? false
   : true = true;
+
+/**
+ * The whole capability handed to capsule installation: one answer about one recorded process. A second key here
+ * would let installation act on a process it may only observe.
+ */
+const _installationInputsCarryOnlyObservation: keyof Parameters<
+  ProviderProxySetLifecycle['installDiscoveredCapsules']
+>[1] extends 'observeRecordedProcess'
+  ? true
+  : false = true;
+/** A process port on the dependency contract would carry spawn, exec and kill along with the observation. */
+const _lifecycleDepsCarryNoProcessPort: 'process' extends keyof ProviderProxySetLifecycleDeps ? false : true = true;
 
 function terminalAuthorityFault(): ProviderProxyAuthorityFault {
   return {
@@ -165,13 +191,21 @@ async function drainMicrotasks(): Promise<void> {
 class ManualClock {
   nowMs = 0;
   readonly timers: Array<{ at: number; active: boolean; callback: () => void }> = [];
+  readonly scheduledDelays: number[] = [];
+  readonly unreferencedDelays: number[] = [];
 
   now = (): number => this.nowMs;
 
   setTimeout = (callback: () => void, ms: number): TimerHandle => {
     const timer = { at: this.nowMs + ms, active: true, callback };
     this.timers.push(timer);
-    return { unref: () => undefined, __timer: timer } as TimerHandle;
+    this.scheduledDelays.push(ms);
+    return {
+      unref: () => {
+        this.unreferencedDelays.push(ms);
+      },
+      __timer: timer,
+    } as TimerHandle;
   };
 
   clearTimeout = (handle: TimerHandle | null): void => {
@@ -190,6 +224,23 @@ class ManualClock {
       timer.callback();
     }
   }
+}
+
+/**
+ * Runs a manual clock forward one scheduled wake at a time until nothing is waiting, always waking a
+ * millisecond after the requested time so that a retry which reported lateness would be caught reporting it.
+ * Bounded so a schedule that never terminates fails the count assertion that called this rather than hanging
+ * the suite.
+ */
+async function settleScheduledWork(clock: ManualClock): Promise<void> {
+  for (let round = 0; round < 8; round += 1) {
+    await drainMicrotasks();
+    const pending = clock.timers.filter((timer) => timer.active);
+    if (pending.length === 0) return;
+    clock.elapse(Math.max(...pending.map((timer) => timer.at)) + 1 - clock.nowMs);
+    clock.runDue();
+  }
+  await drainMicrotasks();
 }
 
 function fakeAuthority(
@@ -273,6 +324,101 @@ function capsuleFor(
   };
 }
 
+function capsuleV2For(authority: DurableProviderProxyOperationAuthority): HandoffCapsuleV2 {
+  const identity = authority.setIdentity;
+  return {
+    ...capsuleFor(authority),
+    version: 2,
+    guardianPid: identity.guardianPid,
+    guardianProcessStartedAtSeconds: 1_700_000_001,
+    proxyPid: identity.proxyPid,
+    reaperPid: identity.reaperPid,
+    reaperProcessStartedAtSeconds: 1_700_000_003,
+    containmentKind: identity.containmentKind,
+    proxyProcessStartedAtSeconds: 1_700_000_002,
+    proxyProcessGroupId: identity.proxyProcessGroupId,
+  };
+}
+
+/** This build's own capsule shape written by another build — the case an upgrade actually produces. */
+function foreignCapsuleV3For(authority: DurableProviderProxyOperationAuthority): HandoffCapsuleV3 {
+  return { ...capsuleV3For(authority), buildSetId: FOREIGN_BUILD_SET_ID };
+}
+
+type RecordedCapsule = HandoffCapsuleV2 | HandoffCapsuleV3;
+type RecordedRoleName = 'guardian' | 'reaper' | 'proxy';
+type RecordedRole = Readonly<{ pid: number; incarnation?: ProcessIncarnation }>;
+
+function recordedRole(capsule: RecordedCapsule, role: RecordedRoleName): RecordedRole {
+  const pid = { guardian: capsule.guardianPid, reaper: capsule.reaperPid, proxy: capsule.proxyPid }[role];
+  if (capsule.version === 2) return { pid };
+  return {
+    pid,
+    incarnation: {
+      guardian: capsule.guardianIncarnation,
+      reaper: capsule.reaperIncarnation,
+      proxy: capsule.proxyIncarnation,
+    }[role],
+  };
+}
+
+/**
+ * What a fresh look at one recorded role finds, said as what the two readers report rather than as the
+ * conclusion — the conclusion is the production predicate's to draw, and stating it here would assert the
+ * answer into the question.
+ *
+ * A throwing liveness reader is the only route to `unknown`: through the real `observeProcessLiveness`,
+ * `ESRCH` is `absent` and `EPERM` is `alive`, so nothing short of an unexpected errno produces it.
+ */
+type RoleProbe = Readonly<{
+  incarnation?: 'matches' | 'differs';
+  liveness: ProcessLiveness | 'throws';
+}>;
+
+function scriptedObservation(
+  capsule: RecordedCapsule,
+  probes: Readonly<Record<RecordedRoleName, RoleProbe>>,
+): Readonly<{
+  observeRecordedProcess: RecordedProcessObserver;
+  observed: RecordedRole[];
+  incarnationReads: number[];
+}> {
+  const roles: readonly RecordedRoleName[] = ['guardian', 'reaper', 'proxy'];
+  const scripted = new Map(roles.map((role) => [recordedRole(capsule, role).pid, probes[role]]));
+  const recorded = new Map(roles.flatMap((role) => [[role, recordedRole(capsule, role)] as const]));
+  const probeFor = (pid: number): RoleProbe => {
+    const probe = scripted.get(pid);
+    if (probe === undefined) throw new Error(`no probe is scripted for pid ${pid}`);
+    return probe;
+  };
+  const observed: RecordedRole[] = [];
+  const incarnationReads: number[] = [];
+  const observe = createRecordedProcessObserver({
+    readIncarnation: (pid) => {
+      incarnationReads.push(pid);
+      const probe = probeFor(pid);
+      if (probe.incarnation === undefined) return null;
+      if (probe.incarnation === 'differs') return testIncarnation(`another-process-on-${pid}`);
+      const token = [...recorded.values()].find((role) => role.pid === pid)?.incarnation;
+      if (token === undefined) throw new Error(`pid ${pid} records no incarnation to match`);
+      return token;
+    },
+    observeLiveness: (pid) => {
+      const probe = probeFor(pid);
+      if (probe.liveness === 'throws') throw new Error('the liveness probe failed');
+      return probe.liveness;
+    },
+  });
+  return {
+    observed,
+    incarnationReads,
+    observeRecordedProcess: (role) => {
+      observed.push({ ...role });
+      return observe(role);
+    },
+  };
+}
+
 function capsuleV3For(authority: DurableProviderProxyOperationAuthority): HandoffCapsuleV3 {
   const identity = authority.setIdentity;
   return {
@@ -286,6 +432,23 @@ function capsuleV3For(authority: DurableProviderProxyOperationAuthority): Handof
     containmentKind: identity.containmentKind,
     proxyIncarnation: identity.proxyIncarnation,
     proxyProcessGroupId: identity.proxyProcessGroupId,
+  };
+}
+
+/**
+ * The three facts a retirement-exhaustion warning must carry: which capsule is still on disk, that the hold
+ * ended on its bound rather than still running, and what the last attempt reported. An operator can act on
+ * none of it without all three; the prose carrying them owes nothing.
+ */
+function retirementWarningFacts(message: string): Readonly<{
+  capsulePath: string | null;
+  attempts: string | null;
+  lastIncident: string | null;
+}> {
+  return {
+    capsulePath: /\S+\.json/.exec(message)?.[0] ?? null,
+    attempts: /\d+ attempts/.exec(message)?.[0] ?? null,
+    lastIncident: /\(([a-z-]+(?: code=[A-Z]+)?)\)/.exec(message)?.[1] ?? null,
   };
 }
 
@@ -749,7 +912,7 @@ describe('ProviderProxySetLifecycle', () => {
     });
 
     lifecycle.initializeClaimSlots();
-    lifecycle.installDiscoveredCapsules([{ path: '/capsules/zero-claim.handoff.json', capsule }]);
+    lifecycle.installDiscoveredCapsules([{ path: '/capsules/zero-claim.handoff.json', capsule }], retainsEveryCapsule);
     await Promise.resolve();
 
     expect(lifecycle.snapshot()).toEqual(
@@ -783,9 +946,10 @@ describe('ProviderProxySetLifecycle', () => {
     });
     lifecycle.initializeClaimSlots();
 
-    lifecycle.installDiscoveredCapsules([
-      { path: '/capsules/unmatched.handoff.v3.json', capsule: capsuleV3For(authority) },
-    ]);
+    lifecycle.installDiscoveredCapsules(
+      [{ path: '/capsules/unmatched.handoff.v3.json', capsule: capsuleV3For(authority) }],
+      retainsEveryCapsule,
+    );
     await vi.waitFor(() => expect(lifecycle.snapshot().states).toEqual(['containing']));
 
     expect(established).not.toHaveBeenCalled();
@@ -818,9 +982,10 @@ describe('ProviderProxySetLifecycle', () => {
     });
     lifecycle.initializeClaimSlots();
 
-    lifecycle.installDiscoveredCapsules([
-      { path: '/capsules/claim-race.handoff.v3.json', capsule: capsuleV3For(authority) },
-    ]);
+    lifecycle.installDiscoveredCapsules(
+      [{ path: '/capsules/claim-race.handoff.v3.json', capsule: capsuleV3For(authority) }],
+      retainsEveryCapsule,
+    );
     claims.applyMutation({ kind: 'upserted', record });
     redemption.resolve({ kind: 'redeemed', set: authority });
     await vi.waitFor(() => expect(lifecycle.authorityFor(authority.setIdentity)).toBe(authority));
@@ -853,9 +1018,10 @@ describe('ProviderProxySetLifecycle', () => {
     });
     lifecycle.initializeClaimSlots();
 
-    lifecycle.installDiscoveredCapsules([
-      { path: '/capsules/unmatched-v3.handoff.json', capsule: capsuleV3For(authority) },
-    ]);
+    lifecycle.installDiscoveredCapsules(
+      [{ path: '/capsules/unmatched-v3.handoff.json', capsule: capsuleV3For(authority) }],
+      retainsEveryCapsule,
+    );
     await vi.waitFor(() => expect(lifecycle.snapshot().represented).toBe(0));
 
     expect(proveContainmentAbsent).toHaveBeenCalledOnce();
@@ -883,9 +1049,10 @@ describe('ProviderProxySetLifecycle', () => {
     });
     lifecycle.initializeClaimSlots();
 
-    lifecycle.installDiscoveredCapsules([
-      { path: '/capsules/corrupt-v3.handoff.json', capsule: capsuleV3For(authority) },
-    ]);
+    lifecycle.installDiscoveredCapsules(
+      [{ path: '/capsules/corrupt-v3.handoff.json', capsule: capsuleV3For(authority) }],
+      retainsEveryCapsule,
+    );
     await drainMicrotasks();
 
     expect({
@@ -923,9 +1090,10 @@ describe('ProviderProxySetLifecycle', () => {
       onFatal: fatals,
     });
     lifecycle.initializeClaimSlots();
-    lifecycle.installDiscoveredCapsules([
-      { path: '/capsules/arrival-fatal-v3.handoff.json', capsule: capsuleV3For(authority) },
-    ]);
+    lifecycle.installDiscoveredCapsules(
+      [{ path: '/capsules/arrival-fatal-v3.handoff.json', capsule: capsuleV3For(authority) }],
+      retainsEveryCapsule,
+    );
     const corrupted = {
       ...authority,
       setIdentity: { ...authority.setIdentity, guardianPid: authority.setIdentity.guardianPid + 1 },
@@ -968,9 +1136,10 @@ describe('ProviderProxySetLifecycle', () => {
       onFatal: fatals,
     });
     lifecycle.initializeClaimSlots();
-    lifecycle.installDiscoveredCapsules([
-      { path: '/capsules/corrupt.handoff.v3.json', capsule: capsuleV3For(authority) },
-    ]);
+    lifecycle.installDiscoveredCapsules(
+      [{ path: '/capsules/corrupt.handoff.v3.json', capsule: capsuleV3For(authority) }],
+      retainsEveryCapsule,
+    );
     const corrupted = {
       ...authority,
       setIdentity: { ...authority.setIdentity, guardianInstanceId: randomUUID() },
@@ -1004,10 +1173,13 @@ describe('ProviderProxySetLifecycle', () => {
     });
     duplicateAddress.initializeClaimSlots();
     expect(() =>
-      duplicateAddress.installDiscoveredCapsules([
-        { path: '/capsules/a.handoff.json', capsule: original },
-        { path: '/capsules/b.handoff.json', capsule: { ...original, grantId: randomUUID() } },
-      ]),
+      duplicateAddress.installDiscoveredCapsules(
+        [
+          { path: '/capsules/a.handoff.json', capsule: original },
+          { path: '/capsules/b.handoff.json', capsule: { ...original, grantId: randomUUID() } },
+        ],
+        retainsEveryCapsule,
+      ),
     ).toThrow('provider_proxy_capsule_address_alias');
 
     const duplicateGrant = lifecycleFor({
@@ -1019,17 +1191,20 @@ describe('ProviderProxySetLifecycle', () => {
     });
     duplicateGrant.initializeClaimSlots();
     expect(() =>
-      duplicateGrant.installDiscoveredCapsules([
-        { path: '/capsules/a.handoff.json', capsule: original },
-        {
-          path: '/capsules/c.handoff.json',
-          capsule: {
-            ...original,
-            hostFingerprint: 'd'.repeat(64),
-            proxyInstanceId: randomUUID(),
+      duplicateGrant.installDiscoveredCapsules(
+        [
+          { path: '/capsules/a.handoff.json', capsule: original },
+          {
+            path: '/capsules/c.handoff.json',
+            capsule: {
+              ...original,
+              hostFingerprint: 'd'.repeat(64),
+              proxyInstanceId: randomUUID(),
+            },
           },
-        },
-      ]),
+        ],
+        retainsEveryCapsule,
+      ),
     ).toThrow('provider_proxy_capsule_grant_alias');
 
     const claimAlias = lifecycleFor({
@@ -1041,12 +1216,15 @@ describe('ProviderProxySetLifecycle', () => {
     });
     claimAlias.initializeClaimSlots();
     expect(() =>
-      claimAlias.installDiscoveredCapsules([
-        {
-          path: '/capsules/claim.handoff.json',
-          capsule: { ...original, guardianInstanceId: randomUUID() },
-        },
-      ]),
+      claimAlias.installDiscoveredCapsules(
+        [
+          {
+            path: '/capsules/claim.handoff.json',
+            capsule: { ...original, guardianInstanceId: randomUUID() },
+          },
+        ],
+        retainsEveryCapsule,
+      ),
     ).toThrow('provider_proxy_capsule_claim_identity_mismatch');
   });
   it('continues containment when decision reporting throws after the authority fault latch resolves', async () => {
@@ -1656,41 +1834,33 @@ describe('ProviderProxySetLifecycle', () => {
     });
     lifecycle.initializeClaimSlots();
 
-    const shippedV2: HandoffCapsuleV2 = {
-      ...capsuleFor(authority),
-      version: 2,
-      guardianPid: identity.guardianPid,
-      guardianProcessStartedAtSeconds: 1_700_000_001,
-      proxyPid: identity.proxyPid,
-      reaperPid: identity.reaperPid,
-      reaperProcessStartedAtSeconds: 1_700_000_003,
-      containmentKind: identity.containmentKind,
-      proxyProcessStartedAtSeconds: 1_700_000_002,
-      proxyProcessGroupId: identity.proxyProcessGroupId,
-    };
+    const shippedV2 = capsuleV2For(authority);
 
-    lifecycle.installDiscoveredCapsules([
-      {
-        path: '/capsules/other-build-v1.handoff.json',
-        capsule: capsuleFor(authority, { buildSetId: '99999999-9999-4999-8999-999999999999' }),
-      },
-      {
-        // The case an upgrade actually produces: this build's own capsule shape, written by another build.
-        path: '/capsules/other-build-v3.handoff.json',
-        capsule: { ...capsuleV3For(authority), buildSetId: '88888888-8888-4888-8888-888888888888' },
-      },
-      { path: '/capsules/shipped-v2.handoff.json', capsule: shippedV2 },
-      {
-        // A fourth, so counting these again would exceed the four-slot limit outright. With three, a single
-        // acquisition still fits inside the limit and the assertion below passes whether they are counted or
-        // not — which is exactly how it passed while counting them.
-        path: '/capsules/other-build-v1-b.handoff.json',
-        capsule: capsuleFor(authority, {
-          buildSetId: '66666666-6666-4666-8666-666666666666',
-          grantId: randomUUID(),
-        }),
-      },
-    ]);
+    lifecycle.installDiscoveredCapsules(
+      [
+        {
+          path: '/capsules/other-build-v1.handoff.json',
+          capsule: capsuleFor(authority, { buildSetId: '99999999-9999-4999-8999-999999999999' }),
+        },
+        {
+          // The case an upgrade actually produces: this build's own capsule shape, written by another build.
+          path: '/capsules/other-build-v3.handoff.json',
+          capsule: { ...capsuleV3For(authority), buildSetId: '88888888-8888-4888-8888-888888888888' },
+        },
+        { path: '/capsules/shipped-v2.handoff.json', capsule: shippedV2 },
+        {
+          // A fourth, so counting these again would exceed the four-slot limit outright. With three, a single
+          // acquisition still fits inside the limit and the assertion below passes whether they are counted or
+          // not — which is exactly how it passed while counting them.
+          path: '/capsules/other-build-v1-b.handoff.json',
+          capsule: capsuleFor(authority, {
+            buildSetId: '66666666-6666-4666-8666-666666666666',
+            grantId: randomUUID(),
+          }),
+        },
+      ],
+      retainsEveryCapsule,
+    );
 
     expect(lifecycle.snapshot().states).toEqual([
       'capsule-foreign',
@@ -1711,5 +1881,572 @@ describe('ProviderProxySetLifecycle', () => {
       }),
       'an un-inheritable capsule must not deny acquisition for its own build and host',
     ).toMatchObject({ kind: 'accepted' });
+  });
+
+  // AC6's own words: `unknown` is never `absent`. Flipping the production predicate from `=== 'absent'` to
+  // `!== 'alive'` retires every capsule these rows retain for an unobservable role, so a row whose deciding
+  // answer is `unknown` fails, and so does every row asserting that a later role went unasked.
+  const EVIDENCE_LAW: readonly Readonly<{
+    name: string;
+    capsule(authority: DurableProviderProxyOperationAuthority): RecordedCapsule;
+    probes: Readonly<Record<RecordedRoleName, RoleProbe>>;
+    observedRoles: readonly RecordedRoleName[];
+    retires: boolean;
+  }>[] = [
+    {
+      name: 'retires a v3 capsule whose every recorded incarnation now names another process, although every pid is alive',
+      capsule: foreignCapsuleV3For,
+      probes: {
+        guardian: { incarnation: 'differs', liveness: 'alive' },
+        reaper: { incarnation: 'differs', liveness: 'alive' },
+        proxy: { incarnation: 'differs', liveness: 'alive' },
+      },
+      observedRoles: ['guardian', 'reaper', 'proxy'],
+      retires: true,
+    },
+    {
+      name: 'retires a v2 capsule on liveness alone, asking for no incarnation it records none of',
+      capsule: capsuleV2For,
+      probes: { guardian: { liveness: 'absent' }, reaper: { liveness: 'absent' }, proxy: { liveness: 'absent' } },
+      observedRoles: ['guardian', 'reaper', 'proxy'],
+      retires: true,
+    },
+    {
+      name: 'retains a v3 capsule whose guardian incarnation still matches, and asks nothing of the later roles',
+      capsule: foreignCapsuleV3For,
+      probes: {
+        guardian: { incarnation: 'matches', liveness: 'alive' },
+        reaper: { incarnation: 'differs', liveness: 'alive' },
+        proxy: { incarnation: 'differs', liveness: 'alive' },
+      },
+      observedRoles: ['guardian'],
+      retires: false,
+    },
+    {
+      name: 'retains a v2 capsule whose guardian pid is alive, and asks nothing of the later roles',
+      capsule: capsuleV2For,
+      probes: { guardian: { liveness: 'alive' }, reaper: { liveness: 'absent' }, proxy: { liveness: 'absent' } },
+      observedRoles: ['guardian'],
+      retires: false,
+    },
+    {
+      name: 'retains a v3 capsule whose reaper could not be observed at all, and asks nothing of the proxy',
+      capsule: foreignCapsuleV3For,
+      probes: {
+        guardian: { incarnation: 'differs', liveness: 'alive' },
+        reaper: { liveness: 'throws' },
+        proxy: { incarnation: 'differs', liveness: 'alive' },
+      },
+      observedRoles: ['guardian', 'reaper'],
+      retires: false,
+    },
+    {
+      name: 'retains a v3 capsule on two absences and one role that could not be observed',
+      capsule: foreignCapsuleV3For,
+      probes: {
+        guardian: { incarnation: 'differs', liveness: 'alive' },
+        reaper: { incarnation: 'differs', liveness: 'alive' },
+        proxy: { liveness: 'throws' },
+      },
+      observedRoles: ['guardian', 'reaper', 'proxy'],
+      retires: false,
+    },
+    {
+      name: 'retains a v2 capsule on two absences and one role that could not be observed',
+      capsule: capsuleV2For,
+      probes: { guardian: { liveness: 'absent' }, reaper: { liveness: 'absent' }, proxy: { liveness: 'throws' } },
+      observedRoles: ['guardian', 'reaper', 'proxy'],
+      retires: false,
+    },
+  ];
+
+  for (const row of EVIDENCE_LAW) {
+    it(row.name, async () => {
+      const claims = new ProviderProxySetClaimMirror();
+      claims.initialize([]);
+      const authority = fakeAuthority();
+      const capsule = row.capsule(authority);
+      const path = '/capsules/evidence-law.handoff.json';
+      const retiredPaths: string[] = [];
+      const retireCapsule = vi.fn(async (retiring: string) => {
+        retiredPaths.push(retiring);
+        return { kind: 'retired' as const };
+      });
+      const observation = scriptedObservation(capsule, row.probes);
+      const lifecycle = lifecycleFor({
+        claims,
+        controlEstablished: ignoreControlEstablished,
+        disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+        time: new ManualClock(),
+        proveContainmentAbsent: noContainmentProof,
+        retireCapsule,
+      });
+      lifecycle.initializeClaimSlots();
+
+      lifecycle.installDiscoveredCapsules([{ path, capsule }], observation);
+      await drainMicrotasks();
+
+      expect({
+        observed: observation.observed,
+        incarnationReads: observation.incarnationReads,
+        retired: retiredPaths,
+        states: lifecycle.snapshot().states,
+      }).toEqual({
+        observed: row.observedRoles.map((role) => recordedRole(capsule, role)),
+        incarnationReads: capsule.version === 3 ? row.observedRoles.map((role) => recordedRole(capsule, role).pid) : [],
+        retired: row.retires ? [path] : [],
+        states: row.retires ? [] : ['capsule-foreign'],
+      });
+    });
+  }
+
+  // The absence of evidence is not evidence of absence. A capsule that records no process may not be retired,
+  // and no probe may be spent asking about a process it does not name.
+  it('never retires a v1 capsule, and spends no probe on a process it records none of', async () => {
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([]);
+    const authority = fakeAuthority();
+    const path = '/capsules/records-no-process.handoff.json';
+    const retireCapsule = vi.fn(async () => ({ kind: 'retired' as const }));
+    const observeRecordedProcess = vi.fn((): ProcessLiveness => 'absent');
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: new ManualClock(),
+      proveContainmentAbsent: noContainmentProof,
+      retireCapsule,
+    });
+    lifecycle.initializeClaimSlots();
+
+    lifecycle.installDiscoveredCapsules([{ path, capsule: capsuleFor(authority) }], { observeRecordedProcess });
+    await drainMicrotasks();
+
+    expect({
+      observations: observeRecordedProcess.mock.calls.length,
+      retired: retireCapsule.mock.calls.length,
+      states: lifecycle.snapshot().states,
+    }).toEqual({ observations: 0, retired: 0, states: ['capsule-foreign'] });
+  });
+
+  it('retires an unclaimed all-absent capsule and releases only the representation of its own path', async () => {
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([]);
+    const authority = fakeAuthority();
+    const retiredPath = '/capsules/foreign-retired.handoff.v3.json';
+    const pendingPath = '/capsules/foreign-pending.handoff.v3.json';
+    const attemptedPaths: string[] = [];
+    const retireCapsule = vi.fn((path: string) => {
+      attemptedPaths.push(path);
+      return path === retiredPath
+        ? Promise.resolve({ kind: 'retired' as const })
+        : new Promise<CapsuleRetirementAttemptOutcome>(() => undefined);
+    });
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: new ManualClock(),
+      proveContainmentAbsent: noContainmentProof,
+      retireCapsule,
+    });
+    lifecycle.initializeClaimSlots();
+
+    lifecycle.installDiscoveredCapsules(
+      [
+        { path: retiredPath, capsule: foreignCapsuleV3For(authority) },
+        {
+          path: pendingPath,
+          capsule: {
+            ...capsuleV3For(authority),
+            buildSetId: '77777777-7777-4777-8777-777777777777',
+            grantId: randomUUID(),
+          },
+        },
+      ],
+      observesEveryRoleAbsent,
+    );
+
+    // Both slots exist while the dispatcher outcome is still pending, and neither denies this build a set of
+    // its own — a capsule left by another build must not consume acquisition capacity while it is retiring.
+    expect({
+      states: lifecycle.snapshot().states,
+      admission: lifecycle.beginFreshAcquisition('own-route', {
+        buildSetId: FIXTURE_BUILD_SET_ID,
+        hostFingerprint: authority.setIdentity.hostFingerprint,
+      }).kind,
+    }).toEqual({ states: ['capsule-foreign', 'capsule-foreign'], admission: 'accepted' });
+
+    await drainMicrotasks();
+
+    expect({
+      attempted: attemptedPaths,
+      states: lifecycle.snapshot().states,
+    }).toEqual({
+      attempted: [retiredPath, pendingPath],
+      states: ['capsule-foreign', 'acquiring'],
+    });
+  });
+
+  it('retries a foreign retirement four times and abandons the fifth without failing the coordinator', async () => {
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([]);
+    const clock = new ManualClock();
+    const authority = fakeAuthority();
+    const path = '/capsules/foreign-unavailable.handoff.v3.json';
+    const retireCapsule = vi.fn(async () => ({
+      kind: 'temporarily-unavailable' as const,
+      incident: { kind: 'capsule-directory-durability-unavailable' as const },
+    }));
+    const reportLifecycle = vi.fn();
+    const onFatal = vi.fn();
+    const progressViolations: ProviderProxySetLifecycleProgressViolation[] = [];
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+      retireCapsule,
+      reportLifecycle,
+      onFatal,
+      onProgressPremiseViolation: (violation) => progressViolations.push(violation),
+    });
+    lifecycle.initializeClaimSlots();
+
+    lifecycle.installDiscoveredCapsules([{ path, capsule: foreignCapsuleV3For(authority) }], observesEveryRoleAbsent);
+    await settleScheduledWork(clock);
+    const atTerminal = {
+      attempts: retireCapsule.mock.calls.length,
+      scheduled: [...clock.scheduledDelays],
+      unreferenced: [...clock.unreferencedDelays],
+      liveTimers: clock.timers.filter((timer) => timer.active).length,
+      states: lifecycle.snapshot().states,
+      fatals: onFatal.mock.calls.length,
+      // A foreign retirement retry is not containment progress, and no lateness is reported for this seam.
+      // Reporting one would hand an operator a containment progress violation about a hold no containment
+      // ever depended on.
+      progressViolations: [...progressViolations],
+      // The attempt count discriminates this warning: a capsule path alone is named by more than one.
+      retirementWarnings: reportLifecycle.mock.calls
+        .filter((call) => call[0] === 'warn')
+        .map((call) => retirementWarningFacts(String(call[1])))
+        .filter((facts) => facts.attempts !== null),
+    };
+
+    // No owner is left, so no amount of remaining boot can produce a sixth attempt.
+    clock.elapse(600_000);
+    clock.runDue();
+    await drainMicrotasks();
+
+    expect({ ...atTerminal, attemptsAfterTheRestOfTheBoot: retireCapsule.mock.calls.length }).toEqual({
+      attempts: 5,
+      scheduled: [1_000, 2_000, 4_000, 8_000],
+      unreferenced: [1_000, 2_000, 4_000, 8_000],
+      liveTimers: 0,
+      states: ['capsule-foreign'],
+      fatals: 0,
+      progressViolations: [],
+      retirementWarnings: [
+        { capsulePath: path, attempts: '5 attempts', lastIncident: 'capsule-directory-durability-unavailable' },
+      ],
+      attemptsAfterTheRestOfTheBoot: 5,
+    });
+  });
+
+  it('carries a rejected foreign retirement to the same terminal and names the errno it could read', async () => {
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([]);
+    const clock = new ManualClock();
+    const authority = fakeAuthority();
+    const path = '/capsules/foreign-readonly.handoff.v3.json';
+    const retireCapsule = vi.fn((): CapsuleRetirementAttemptOutcome => {
+      throw Object.assign(new Error('read-only file system'), { code: 'EROFS' });
+    });
+    const reportLifecycle = vi.fn();
+    const onFatal = vi.fn();
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+      retireCapsule,
+      reportLifecycle,
+      onFatal,
+    });
+    lifecycle.initializeClaimSlots();
+
+    lifecycle.installDiscoveredCapsules([{ path, capsule: foreignCapsuleV3For(authority) }], observesEveryRoleAbsent);
+    await settleScheduledWork(clock);
+
+    expect({
+      attempts: retireCapsule.mock.calls.length,
+      states: lifecycle.snapshot().states,
+      fatals: onFatal.mock.calls.length,
+      retirementWarnings: reportLifecycle.mock.calls
+        .filter((call) => call[0] === 'warn')
+        .map((call) => retirementWarningFacts(String(call[1])))
+        .filter((facts) => facts.attempts !== null),
+    }).toEqual({
+      attempts: 5,
+      states: ['capsule-foreign'],
+      fatals: 0,
+      retirementWarnings: [
+        { capsulePath: path, attempts: '5 attempts', lastIncident: 'foreign-capsule-retirement-rejected code=EROFS' },
+      ],
+    });
+  });
+
+  it('keeps a failing retirement from clearing the aliases that name its capsule path', async () => {
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([]);
+    const authority = fakeAuthority();
+    const capsule = foreignCapsuleV3For(authority);
+    const retireCapsule = vi.fn((): CapsuleRetirementAttemptOutcome => {
+      throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+    });
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: new ManualClock(),
+      proveContainmentAbsent: noContainmentProof,
+      retireCapsule,
+    });
+    lifecycle.initializeClaimSlots();
+
+    // The producer rejects inside the installation loop, so the second entry meets the alias map exactly as
+    // the first entry's failed retirement left it. A second path claiming that address without being refused
+    // would mean the failure had released a credential this build is still representing.
+    expect(() =>
+      lifecycle.installDiscoveredCapsules(
+        [
+          { path: '/capsules/foreign-alias-holder.handoff.v3.json', capsule },
+          { path: '/capsules/foreign-alias-rival.handoff.v3.json', capsule: { ...capsule, grantId: randomUUID() } },
+        ],
+        observesEveryRoleAbsent,
+      ),
+    ).toThrow('provider_proxy_capsule_address_alias');
+    expect(retireCapsule).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores a superseded owner's outcome and releases only what the current owner holds", async () => {
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([]);
+    const clock = new ManualClock();
+    const authority = fakeAuthority();
+    const path = '/capsules/foreign-superseded.handoff.v3.json';
+    const capsule = foreignCapsuleV3For(authority);
+    const supersededTurn = deferred<CapsuleRetirementAttemptOutcome>();
+    const owningTurn = deferred<CapsuleRetirementAttemptOutcome>();
+    const turnsInOrder = [supersededTurn, owningTurn];
+    let startedAttempts = 0;
+    const retireCapsule = vi.fn(() => {
+      const turn = turnsInOrder[startedAttempts];
+      startedAttempts += 1;
+      if (turn === undefined) throw new Error('unexpected retirement attempt');
+      return turn.promise;
+    });
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+      retireCapsule,
+    });
+    lifecycle.initializeClaimSlots();
+
+    // Two capsules at one path: the second installation takes ownership of that path, and the first turn is
+    // then a callback with nothing left to speak for.
+    lifecycle.installDiscoveredCapsules(
+      [
+        { path, capsule },
+        { path, capsule: { ...capsule, proxyInstanceId: randomUUID(), grantId: randomUUID() } },
+      ],
+      observesEveryRoleAbsent,
+    );
+    await drainMicrotasks();
+
+    supersededTurn.resolve({
+      kind: 'temporarily-unavailable',
+      incident: { kind: 'capsule-directory-durability-unavailable' },
+    });
+    await drainMicrotasks();
+    const afterStaleFailure = {
+      scheduled: [...clock.scheduledDelays],
+      attempts: retireCapsule.mock.calls.length,
+      states: lifecycle.snapshot().states,
+    };
+
+    owningTurn.resolve({ kind: 'retired' });
+    await settleScheduledWork(clock);
+
+    expect({ afterStaleFailure, afterEvidence: lifecycle.snapshot().states }).toEqual({
+      afterStaleFailure: { scheduled: [], attempts: 2, states: ['capsule-foreign', 'capsule-foreign'] },
+      afterEvidence: ['capsule-foreign'],
+    });
+  });
+
+  it('lets a later boot retire a capsule an exhausted owner left readable', async () => {
+    const authority = fakeAuthority();
+    const path = '/capsules/foreign-survived-a-boot.handoff.v3.json';
+    const capsule = foreignCapsuleV3For(authority);
+    const bootLifecycle = (
+      retireCapsule: ProviderProxySetLifecycleFixtureDeps['retireCapsule'],
+      clock: ManualClock,
+    ): ProviderProxySetLifecycle => {
+      const claims = new ProviderProxySetClaimMirror();
+      claims.initialize([]);
+      const lifecycle = lifecycleFor({
+        claims,
+        controlEstablished: ignoreControlEstablished,
+        disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+        time: clock,
+        proveContainmentAbsent: noContainmentProof,
+        retireCapsule,
+      });
+      lifecycle.initializeClaimSlots();
+      return lifecycle;
+    };
+
+    const firstBootClock = new ManualClock();
+    const firstBootRetire = vi.fn(async () => ({
+      kind: 'temporarily-unavailable' as const,
+      incident: { kind: 'capsule-directory-durability-unavailable' as const },
+    }));
+    const firstBoot = bootLifecycle(firstBootRetire, firstBootClock);
+    firstBoot.installDiscoveredCapsules([{ path, capsule }], observesEveryRoleAbsent);
+    await settleScheduledWork(firstBootClock);
+
+    const secondBootClock = new ManualClock();
+    const secondBootAttempts: string[] = [];
+    const secondBoot = bootLifecycle(async (retiring: string) => {
+      secondBootAttempts.push(retiring);
+      return { kind: 'retired' as const };
+    }, secondBootClock);
+    secondBoot.installDiscoveredCapsules([{ path, capsule }], observesEveryRoleAbsent);
+    await settleScheduledWork(secondBootClock);
+
+    expect({
+      firstBootAttempts: firstBootRetire.mock.calls.length,
+      firstBootStates: firstBoot.snapshot().states,
+      secondBootAttempts,
+      secondBootStates: secondBoot.snapshot().states,
+    }).toEqual({
+      firstBootAttempts: 5,
+      firstBootStates: ['capsule-foreign'],
+      secondBootAttempts: [path],
+      secondBootStates: [],
+    });
+  });
+
+  it('decides retirement for a claim-matched capsule before the branch that creates no foreign slot', async () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const authority = fakeAuthority({ record });
+    const path = '/capsules/claim-matched-v2.handoff.json';
+    const retiredPaths: string[] = [];
+    const retireCapsule = vi.fn(async (retiring: string) => {
+      retiredPaths.push(retiring);
+      return { kind: 'retired' as const };
+    });
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: new ManualClock(),
+      proveContainmentAbsent: noContainmentProof,
+      retireCapsule,
+    });
+    lifecycle.initializeClaimSlots();
+
+    lifecycle.installDiscoveredCapsules([{ path, capsule: capsuleV2For(authority) }], observesEveryRoleAbsent);
+    const beforeEvidence = lifecycle.snapshot().states;
+    await drainMicrotasks();
+
+    expect({
+      beforeEvidence,
+      retired: retiredPaths,
+      afterEvidence: lifecycle.snapshot().states,
+    }).toEqual({ beforeEvidence: ['recovering'], retired: [path], afterEvidence: ['recovering'] });
+
+    // The claim is still the one this coordinator holds by identity: releasing it here would strand every
+    // operation behind it, and a foreign retirement never held it to release.
+    expect(lifecycle.containmentAbsent(authority.setIdentity, 'claim-survived-retirement').kind).toBe('accepted');
+  });
+
+  it('retains a capsule whose recorded pid is zero, which a real observation answers alive', async () => {
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([]);
+    const authority = fakeAuthority();
+    const capsule = { ...foreignCapsuleV3For(authority), guardianPid: 0 };
+    const retireCapsule = vi.fn(async () => ({ kind: 'retired' as const }));
+    const observeRecordedProcess = createRecordedProcessObserver({
+      readIncarnation: (pid) => probeProcessIncarnation(pid),
+      observeLiveness: observeProcessLiveness,
+    });
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: new ManualClock(),
+      proveContainmentAbsent: noContainmentProof,
+      retireCapsule,
+    });
+    lifecycle.initializeClaimSlots();
+
+    // Said outright rather than left to "any `alive` retains": pid 0 names no recorded process, so no
+    // incarnation is readable for it and signal-0 answers for this process's own group instead.
+    expect(observeRecordedProcess({ pid: 0, incarnation: capsule.guardianIncarnation })).toBe('alive');
+
+    lifecycle.installDiscoveredCapsules([{ path: '/capsules/zero-pid.handoff.v3.json', capsule }], {
+      observeRecordedProcess,
+    });
+    await drainMicrotasks();
+
+    expect({ retired: retireCapsule.mock.calls.length, states: lifecycle.snapshot().states }).toEqual({
+      retired: 0,
+      states: ['capsule-foreign'],
+    });
+  });
+
+  it('hands capsule installation one answer about a recorded process and no way to act on one', async () => {
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([]);
+    const authority = fakeAuthority();
+    const retireCapsule = vi.fn(async () => ({ kind: 'retired' as const }));
+    const kill = vi.spyOn(process, 'kill');
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: new ManualClock(),
+      proveContainmentAbsent: noContainmentProof,
+      retireCapsule,
+    });
+    lifecycle.initializeClaimSlots();
+
+    try {
+      lifecycle.installDiscoveredCapsules(
+        [{ path: '/capsules/observation-only.handoff.v3.json', capsule: foreignCapsuleV3For(authority) }],
+        { observeRecordedProcess: () => 'alive' },
+      );
+      await drainMicrotasks();
+
+      expect({
+        signals: kill.mock.calls.length,
+        retired: retireCapsule.mock.calls.length,
+        states: lifecycle.snapshot().states,
+      }).toEqual({
+        signals: 0,
+        retired: 0,
+        states: ['capsule-foreign'],
+      });
+    } finally {
+      kill.mockRestore();
+    }
   });
 });

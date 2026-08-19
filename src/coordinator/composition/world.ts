@@ -334,9 +334,8 @@ export function createCoordinatorWorld(
   }
   const bundledVersion = typeof __VERSION__ === 'string' ? __VERSION__ : '0.1.0';
   const version = strictBuild.ok ? strictBuild.manifest.version : (bootSnapshot.version ?? bundledVersion);
-  const buildSetId = strictBuild.ok
-    ? strictBuild.manifest.buildSetId
-    : (bootSnapshot.buildSetId ?? '00000000-0000-4000-8000-000000000000');
+  // A build identity that cannot be proven must never be one two boots can both claim.
+  const buildSetId = strictBuild.ok ? strictBuild.manifest.buildSetId : (bootSnapshot.buildSetId ?? runtime.ids.uuid());
   const bundleHash = strictBuild.ok
     ? strictBuild.manifest.bundleHash
     : (bootSnapshot.bundleHash ?? readBundleHash(pluginRoot));

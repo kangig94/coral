@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import { describe, expect, it } from 'vitest';
 
 import { createCoordinatorWorld } from '#src/coordinator/composition/world.js';
@@ -11,6 +13,7 @@ const REMOTE_BIND_OPT_IN_ENV = 'CORAL_BACKEND_ALLOW_REMOTE';
 const REMOTE_BIND_ADDRESS_ALLOWLIST_ENV = 'CORAL_BACKEND_REMOTE_ADDR_ALLOWLIST';
 const REMOTE_BIND_UNRESTRICTED_ENV = 'CORAL_BACKEND_REMOTE_UNRESTRICTED';
 const SYSTEM_PROVIDER_SCOPE_ENV = 'CORAL_SYSTEM_PROVIDER_SCOPE';
+const CANONICAL_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 
 function envSnapshot(env: Readonly<Record<string, string | undefined>>): Readonly<Record<string, string>> {
   const snapshot: Record<string, string> = {};
@@ -22,7 +25,10 @@ function envSnapshot(env: Readonly<Record<string, string | undefined>>): Readonl
   return snapshot;
 }
 
-function createRuntime(env: Readonly<Record<string, string | undefined>>): Runtime {
+function createRuntime(
+  env: Readonly<Record<string, string | undefined>>,
+  uuid: () => string = () => 'world-test-instance',
+): Runtime {
   return {
     flavor: 'prod',
     env: {
@@ -37,7 +43,7 @@ function createRuntime(env: Readonly<Record<string, string | undefined>>): Runti
       coralSnapshot: () => envSnapshot(env),
     },
     ids: {
-      uuid: () => 'world-test-instance',
+      uuid,
       randomBytes: (size: number) => Buffer.alloc(size, 1),
       sha256: (input: string) => input,
     },
@@ -77,8 +83,11 @@ function createDefaultsPlan(): BackendDefaultsPlan {
   } as unknown as BackendDefaultsPlan;
 }
 
-function createWorld(env: Readonly<Record<string, string | undefined>>): ReturnType<typeof createCoordinatorWorld> {
-  const runtime = createRuntime(env);
+function createWorld(
+  env: Readonly<Record<string, string | undefined>>,
+  overrides: { uuid?: () => string; buildSetId?: string } = {},
+): ReturnType<typeof createCoordinatorWorld> {
+  const runtime = createRuntime(env, overrides.uuid);
   return createCoordinatorWorld(
     {
       runtime,
@@ -92,6 +101,7 @@ function createWorld(env: Readonly<Record<string, string | undefined>>): ReturnT
         pid: 4242,
         now: () => 123,
         log: () => undefined,
+        buildSetId: overrides.buildSetId,
       },
       backendNamespace: 'world-test-namespace',
       getConsumerStuck: () => [],
@@ -234,5 +244,25 @@ describe('createCoordinatorWorld system provider scope', () => {
     expect(() => createWorld({ [SYSTEM_PROVIDER_SCOPE_ENV]: JSON.stringify(value) })).toThrowError(
       expect.objectContaining({ code: 'system_provider_scope_invalid' }),
     );
+  });
+});
+
+describe('createCoordinatorWorld build identity when embedded identity is unavailable', () => {
+  it('mints a different identity for each boot that has none to inherit', () => {
+    // Vacuous against a uuid factory that does not vary per call: two worlds then agree either way.
+    const first = createWorld({}, { uuid: randomUUID });
+    const second = createWorld({}, { uuid: randomUUID });
+
+    expect(first.identity.buildSetId).not.toBe(second.identity.buildSetId);
+    expect(first.identity.buildSetId).toMatch(CANONICAL_UUID);
+    expect(second.identity.buildSetId).toMatch(CANONICAL_UUID);
+  });
+
+  it('keeps an inherited identity instead of minting over it', () => {
+    const inherited = 'f81d4fae-7dec-41d0-9765-00a0c91e6bf6';
+
+    const world = createWorld({}, { uuid: () => 'must-not-reach-the-build-set', buildSetId: inherited });
+
+    expect(world.identity.buildSetId).toBe(inherited);
   });
 });

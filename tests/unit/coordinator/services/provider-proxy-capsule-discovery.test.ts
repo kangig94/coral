@@ -23,6 +23,9 @@ import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provid
 /** The build this fixture lifecycle belongs to — the same one its capsule carries, so discovery treats it as inheritable rather than foreign. */
 const FIXTURE_BUILD_SET_ID = '22222222-2222-4222-8222-222222222222';
 
+/** Nothing observed is never absence, so every discovered capsule is retained and no retirement begins. */
+const retainsEveryCapsule = { observeRecordedProcess: () => 'unknown' as const };
+
 function retirementStorage(unlinkSync: () => void, syncDirectoryDurableSync: () => boolean): StoragePort {
   return { unlinkSync, syncDirectoryDurableSync } as unknown as StoragePort;
 }
@@ -191,7 +194,7 @@ describe('provider proxy capsule discovery', () => {
       reportLifecycle: () => undefined,
     });
     lifecycle.initializeClaimSlots();
-    lifecycle.installDiscoveredCapsules(discovered);
+    lifecycle.installDiscoveredCapsules(discovered, retainsEveryCapsule);
     const snapshotBeforeAdmission = lifecycle.snapshot();
     const admission = lifecycle.beginFreshAcquisition('matching-fresh-route', {
       buildSetId: capsule.buildSetId,

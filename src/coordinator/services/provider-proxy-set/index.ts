@@ -1,4 +1,5 @@
 import type { TimePort, TimerHandle } from '../../../infra/port-types.js';
+import type { ProcessIncarnation, RecordedProcessObserver } from '../../../infra/node-process.js';
 import { errorMessage } from '../../../infra/error-format.js';
 import type { OperationIdentity } from '../../../provider-proxy/protocol.js';
 import { type HandoffCapsule, type HandoffCapsuleV3 } from '../../../provider-proxy/handoff-capsule.js';
@@ -12,6 +13,7 @@ import type {
 import type { ProviderProxySetClaimMirror } from './claim-mirror.js';
 import type { ProviderProxyAuthorityFault, ProviderProxyOperationIncident } from '../provider-proxy-authority-fault.js';
 import type {
+  ProviderProxyForeignCapsuleRetirementRetryIncident,
   ProviderProxyRecoveryDispatcher,
   ProviderProxySetLifecycleFatalError,
 } from '../provider-proxy-recovery-policy.js';
@@ -129,6 +131,26 @@ type ProviderProxySetSlot =
     };
 
 type AbsenceDeliveryPendingSlot = Extract<ProviderProxySetSlot, { kind: 'absence-delivery-pending' }>;
+
+/**
+ * A retirement this build is attempting against a capsule it may not dial, keyed by the only thing it owns:
+ * the canonical path. Not the set identity — a foreign V2 has none this build can name — and not a slot,
+ * because a claim-matched capsule creates none.
+ *
+ * The hold this represents ends retired, or abandoned with the conservative representation left standing —
+ * at `FOREIGN_CAPSULE_RETIREMENT_ATTEMPT_LIMIT` failures, or on a fatal the turn could not settle. While the
+ * owner exists it is the only thing entitled to release this path's representation.
+ */
+type ForeignCapsuleRetirementOwner = {
+  readonly capsulePath: string;
+  /** The alias entries this capsule installed, so releasing them cannot reach an entry another one owns. */
+  readonly addressKey: string;
+  readonly grantId: string;
+  readonly foreignSlotId: string | null;
+  /** Absent until an attempt fails. The count and the incident that produced it are never separately valid. */
+  failures: Readonly<{ count: number; lastIncident: ProviderProxyForeignCapsuleRetirementRetryIncident }> | null;
+  retryTimer: TimerHandle | null;
+};
 
 /**
  * Whether a discovered capsule is one this build may act on. Returned as a variant rather than a boolean so
@@ -252,12 +274,41 @@ function preserveErrorIdentity(error: unknown): string {
   ]);
 }
 
+/**
+ * Whether every process a capsule recorded is provably gone.
+ *
+ * `absent` is the only answer that may retire anything. An `alive` pid may be a stranger wearing a recycled
+ * number, and `unknown` is a question that could not be asked — neither is proof, so neither may finalize. A
+ * V1 records no process at all, which is not evidence of absence but the absence of evidence. Retirement
+ * needs all three answers, so one that is not `absent` settles the question on its own.
+ */
+function recordedProcessesAllAbsent(capsule: HandoffCapsule, observe: RecordedProcessObserver): boolean {
+  if (capsule.version === 1) return false;
+  const recorded: readonly Readonly<{ pid: number; incarnation?: ProcessIncarnation }>[] =
+    capsule.version === 3
+      ? [
+          { pid: capsule.guardianPid, incarnation: capsule.guardianIncarnation },
+          { pid: capsule.reaperPid, incarnation: capsule.reaperIncarnation },
+          { pid: capsule.proxyPid, incarnation: capsule.proxyIncarnation },
+        ]
+      : [{ pid: capsule.guardianPid }, { pid: capsule.reaperPid }, { pid: capsule.proxyPid }];
+  return recorded.every((role) => observe(role) === 'absent');
+}
+
 function retryDelayMs(completedAttempts: number): number {
   return Math.min(1_000 * 2 ** Math.min(Math.max(completedAttempts - 1, 0), 5), 30_000);
 }
 
 const PRESERVE_REPORT_INTERVAL_MS = 60_000;
 const MAX_PRESERVE_REPORTS_PER_SET = 32;
+
+/**
+ * The named end of a foreign retirement hold: after this many failed attempts the owner is dropped and the
+ * capsule's conservative representation stands for the rest of the boot. Bounding a hold this way is only
+ * sound while the owner holds nothing else — an owner that also held acquisition capacity, a claim, or an
+ * absence slot would strand it, and must not be abandoned on a count.
+ */
+const FOREIGN_CAPSULE_RETIREMENT_ATTEMPT_LIMIT = 5;
 
 function createInitialDispositionLatch(): InitialDispositionLatch {
   let accept!: (value: ContainmentAbsenceInitialDisposition) => void;
@@ -291,6 +342,7 @@ export class ProviderProxySetLifecycle {
   readonly #routeIndex = new Map<string, ProviderProxySetKey>();
   readonly #capsuleAddresses = new Map<string, string>();
   readonly #capsuleGrants = new Map<string, string>();
+  readonly #foreignRetirementOwners = new Map<string, ForeignCapsuleRetirementOwner>();
   #nextSlotId = 1;
   #startupDiscoveryCompleted = false;
 
@@ -324,9 +376,19 @@ export class ProviderProxySetLifecycle {
     this.#startupDiscoveryCompleted = true;
   }
 
-  installDiscoveredCapsules(capsules: readonly Readonly<{ path: string; capsule: HandoffCapsule }>[]): void {
+  /**
+   * The observation is an operation input rather than a dependency because it is the only process question
+   * discovery is entitled to ask. A port would carry spawn, exec, kill and signal along with it; the answers
+   * this takes may authorize nothing beyond retiring a capsule whose every recorded process is absent.
+   */
+  installDiscoveredCapsules(
+    capsules: readonly Readonly<{ path: string; capsule: HandoffCapsule }>[],
+    inputs: Readonly<{ observeRecordedProcess: RecordedProcessObserver }>,
+  ): void {
     if (this.#startupDiscoveryCompleted) throw new Error('provider_proxy_capsule_discovery_already_completed');
-    for (const discovered of capsules) this.#installDiscoveredCapsule(discovered.path, discovered.capsule);
+    for (const discovered of capsules) {
+      this.#installDiscoveredCapsule(discovered.path, discovered.capsule, inputs.observeRecordedProcess);
+    }
     this.#classifyCapacity();
     this.#startupDiscoveryCompleted = true;
     for (const slot of this.#slots.values()) {
@@ -603,7 +665,7 @@ export class ProviderProxySetLifecycle {
     };
   }
 
-  #installDiscoveredCapsule(path: string, capsule: HandoffCapsule): void {
+  #installDiscoveredCapsule(path: string, capsule: HandoffCapsule, observe: RecordedProcessObserver): void {
     const address: ProviderProxySetAddress = {
       buildSetId: capsule.buildSetId,
       hostFingerprint: capsule.hostFingerprint,
@@ -636,6 +698,16 @@ export class ProviderProxySetLifecycle {
     const classified = this.#classifyCapsule(capsule);
     const uninheritable = classified.kind === 'uninheritable' ? classified.reason : null;
 
+    // The decision must precede the claim lookup: a capsule whose every recorded process is provably gone is
+    // retirable whether or not a claim names its address, and deciding later would leave it on disk for every
+    // subsequent boot to rediscover and re-observe.
+    const retirable = classified.kind === 'uninheritable' && recordedProcessesAllAbsent(capsule, observe);
+    // An operator reading a representation warning must be able to tell a capsule that is about to vanish
+    // from one that will sit represented for the whole boot.
+    const retirementNote = retirable
+      ? ' Every process it records is provably absent, so automatic retirement is being attempted.'
+      : '';
+
     const claimKey = this.#identityIndex.keyForAddress(address);
     if (claimKey !== null) {
       const claimSlot = this.#slots.get(claimKey);
@@ -651,8 +723,16 @@ export class ProviderProxySetLifecycle {
         // hands this credential to a redemption that must be refused.
         this.#deps.reportLifecycle(
           'warn',
-          `Provider proxy capsule at ${path} names a claimed set but is not inheritable (${uninheritable}); the claim will resolve without it.`,
+          `Provider proxy capsule at ${path} names a claimed set but is not inheritable (${uninheritable}); the claim will resolve without it.${retirementNote}`,
         );
+        if (retirable) {
+          this.#beginForeignCapsuleRetirement({
+            capsulePath: path,
+            addressKey,
+            grantId: capsule.grantId,
+            foreignSlotId: null,
+          });
+        }
         return;
       }
       claimSlot.capsulePath = path;
@@ -672,8 +752,16 @@ export class ProviderProxySetLifecycle {
       });
       this.#deps.reportLifecycle(
         'warn',
-        `Provider proxy capsule at ${path} is represented but not inheritable (${classified.reason}).`,
+        `Provider proxy capsule at ${path} is represented but not inheritable (${classified.reason}).${retirementNote}`,
       );
+      if (retirable) {
+        this.#beginForeignCapsuleRetirement({
+          capsulePath: path,
+          addressKey,
+          grantId: capsule.grantId,
+          foreignSlotId: slotId,
+        });
+      }
       return;
     }
     const inheritable = classified.capsule;
@@ -694,6 +782,129 @@ export class ProviderProxySetLifecycle {
       attemptToken: 0,
       attemptAbort: null,
     });
+  }
+
+  /**
+   * A `foreignSlotId` must name a slot that is already installed: completing a retirement deletes that slot,
+   * so an owner registered before the install would leave the representation of a capsule that is gone
+   * standing for the rest of the boot.
+   */
+  #beginForeignCapsuleRetirement(registration: Omit<ForeignCapsuleRetirementOwner, 'failures' | 'retryTimer'>): void {
+    const owner: ForeignCapsuleRetirementOwner = { ...registration, failures: null, retryTimer: null };
+    this.#foreignRetirementOwners.set(owner.capsulePath, owner);
+    this.#attemptForeignCapsuleRetirement(owner);
+  }
+
+  /**
+   * One turn per attempt. A turn is spent by its first non-evidence observation, so a bounded retry that
+   * reused one would make every attempt after the first unobservable.
+   */
+  #attemptForeignCapsuleRetirement(owner: ForeignCapsuleRetirementOwner): void {
+    // A callback that outlives its owner must not act: the map entry is the only thing that says this turn is
+    // still the one this build is running for this path.
+    const stillOwned = (): boolean => this.#foreignRetirementOwners.get(owner.capsulePath) === owner;
+    const turn = this.#deps.recoveryDispatcher.begin(
+      'foreign-capsule-retirement',
+      {},
+      {
+        evidence: () => {
+          if (stillOwned()) this.#completeForeignCapsuleRetirement(owner);
+        },
+        retry: (retry) => {
+          if (!stillOwned()) return;
+          this.#recordForeignRetirementFailure(
+            owner,
+            retry.incident as ProviderProxyForeignCapsuleRetirementRetryIncident,
+          );
+        },
+        // Nothing observed on this seam may finalize anything, and a turn that ends in a fatal can no longer
+        // settle this path — but the hold must still end where an operator can read it.
+        fatal: (error) => {
+          if (!stillOwned()) return;
+          this.#abandonForeignCapsuleRetirement(
+            owner,
+            `after a fatal it could not settle (${singleLineErrorSummary(error)})`,
+          );
+        },
+      },
+    );
+    turn.start({
+      sourceId: 'foreign-retirement',
+      producerId: 'capsule-retirement',
+      input: { path: owner.capsulePath },
+    });
+  }
+
+  /**
+   * Removes exactly what named this capsule path and nothing else. A recovering claim, its identity-index
+   * entry, and every absence slot belong to owners this turn never held — a foreign retirement that released
+   * one would strand the operations behind it.
+   */
+  #completeForeignCapsuleRetirement(owner: ForeignCapsuleRetirementOwner): void {
+    this.#dropForeignRetirementOwner(owner);
+    if (this.#capsuleAddresses.get(owner.addressKey) === owner.capsulePath) {
+      this.#capsuleAddresses.delete(owner.addressKey);
+    }
+    if (this.#capsuleGrants.get(owner.grantId) === owner.capsulePath) {
+      this.#capsuleGrants.delete(owner.grantId);
+    }
+    if (owner.foreignSlotId === null) return;
+    const slot = this.#slots.get(owner.foreignSlotId);
+    if (slot?.kind === 'capsule-foreign' && slot.capsulePath === owner.capsulePath) {
+      this.#slots.delete(owner.foreignSlotId);
+    }
+  }
+
+  /**
+   * Buys a bounded amount of time for a filesystem that may recover. The last failure must reach the terminal
+   * rather than another wait: a hold no reachable event can clear is an obligation nobody can discharge.
+   */
+  #recordForeignRetirementFailure(
+    owner: ForeignCapsuleRetirementOwner,
+    incident: ProviderProxyForeignCapsuleRetirementRetryIncident,
+  ): void {
+    const failures = { count: (owner.failures?.count ?? 0) + 1, lastIncident: incident };
+    owner.failures = failures;
+    if (owner.retryTimer !== null) this.#deps.time.clearTimeout(owner.retryTimer);
+    owner.retryTimer = null;
+
+    if (failures.count >= FOREIGN_CAPSULE_RETIREMENT_ATTEMPT_LIMIT) {
+      const observedCode =
+        'errorCode' in failures.lastIncident && failures.lastIncident.errorCode !== null
+          ? ` code=${failures.lastIncident.errorCode}`
+          : '';
+      this.#abandonForeignCapsuleRetirement(
+        owner,
+        `after ${failures.count} attempts (${failures.lastIncident.kind}${observedCode})`,
+      );
+      return;
+    }
+
+    const timer = this.#deps.time.setTimeout(() => {
+      owner.retryTimer = null;
+      if (this.#foreignRetirementOwners.get(owner.capsulePath) !== owner) return;
+      this.#attemptForeignCapsuleRetirement(owner);
+    }, retryDelayMs(failures.count));
+    timer.unref?.();
+    owner.retryTimer = timer;
+  }
+
+  /**
+   * The hold ends here with the capsule still on disk, so whatever was observed last must reach an operator:
+   * a refusal nobody can read is a credential nobody knows to remove.
+   */
+  #abandonForeignCapsuleRetirement(owner: ForeignCapsuleRetirementOwner, observed: string): void {
+    this.#dropForeignRetirementOwner(owner);
+    this.#report(
+      'warn',
+      `Provider proxy capsule at ${owner.capsulePath} names only processes proven absent but could not be retired ${observed}; it stays represented for the rest of this boot, and a later boot retries it only while discovery still finds it and can still prove its recorded processes absent.`,
+    );
+  }
+
+  #dropForeignRetirementOwner(owner: ForeignCapsuleRetirementOwner): void {
+    if (owner.retryTimer !== null) this.#deps.time.clearTimeout(owner.retryTimer);
+    owner.retryTimer = null;
+    this.#foreignRetirementOwners.delete(owner.capsulePath);
   }
 
   #classifyCapsule(capsule: HandoffCapsule): CapsuleInheritance {
