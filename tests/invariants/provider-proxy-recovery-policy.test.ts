@@ -659,7 +659,6 @@ const EXPECTED_REJECTION_NODE_INVENTORY = [
   'src/coordinator/services/provider-proxy-set/index.ts :: createInitialDispositionLatch :: Promise.catch :: promise.catch',
   'src/coordinator/services/provider-proxy-set/inheritance.ts :: attemptProviderProxySetInheritance :: catch#1 :: calls=[deps.proveContainmentAbsent] assignments=[]',
   'src/coordinator/services/provider-proxy-set/inheritance.ts :: attemptProviderProxySetInheritance :: catch#2 :: calls=[] assignments=[]',
-  'src/coordinator/services/provider-proxy-set/inheritance.ts :: proveProviderProxySetContainmentAbsent :: catch#1 :: calls=[] assignments=[]',
   'src/coordinator/services/provider-proxy-set/inheritance.ts :: redeemCapsule :: catch#1 :: calls=[heartbeatAssembly.stop, client.close] assignments=[]',
   'src/jobs/provider-operation-terminalization.ts :: terminalizeProviderOperation :: catch#1 :: calls=[] assignments=[]',
 ] as const;
@@ -1006,6 +1005,12 @@ describe('provider proxy recovery policy construction', () => {
       },
       {
         occurrence:
+          'src/coordinator/services/provider-proxy-set/index.ts :: #attemptForeignCapsuleRetirement :: foreign-capsule-retirement',
+        justification:
+          'Retirement of a capsule this build may not dial is classified on its own seam, so its failures stay owner-local.',
+      },
+      {
+        occurrence:
           'src/coordinator/services/provider-proxy-set/index.ts :: #deliverDisappearance :: disappearance-delivery',
         justification:
           'R3 requires every post-start disappearance delivery to enter the dispatcher before consumption.',
@@ -1047,6 +1052,11 @@ describe('provider proxy recovery policy construction', () => {
         occurrence:
           'src/coordinator/services/provider-proxy-set/index.ts :: #attemptRetirement :: retirement/capsule-retirement',
         justification: 'The retirement turn invokes only the capsule-retirement producer.',
+      },
+      {
+        occurrence:
+          'src/coordinator/services/provider-proxy-set/index.ts :: #attemptForeignCapsuleRetirement :: foreign-retirement/capsule-retirement',
+        justification: 'The foreign retirement turn invokes only the capsule-retirement producer.',
       },
       {
         occurrence:

@@ -31,4 +31,18 @@ describe('windows process incarnation', () => {
       BOUNDED,
     );
   });
+
+  it('is null rather than a partial token when wmic answers nothing it can parse', () => {
+    // Tokens are compared only by equality, so a token assembled from a creation date wmic did not supply
+    // would equal every other token assembled the same way — one identity shared by unrelated processes.
+    mockedExec.mockReturnValue('CreationDate=');
+    expect(probeProcessIncarnation(4321, 'win32')).toBeNull();
+
+    // And the probe answers rather than throws, because `null` is the value a caller branches on when it
+    // could not observe an identity.
+    mockedExec.mockImplementation((() => {
+      throw new Error('wmic is not on PATH');
+    }) as unknown as typeof execFileSync);
+    expect(probeProcessIncarnation(4321, 'win32')).toBeNull();
+  });
 });

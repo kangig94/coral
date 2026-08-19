@@ -22,7 +22,10 @@ import {
   type ContainmentDisappearanceNotice,
   type DisappearanceDeliveryAttemptOutcome,
 } from './provider-containment-disappearance.js';
-import type { ProviderHandoffCapsuleRetirementOutcome } from './provider-proxy-capsule-discovery.js';
+import {
+  providerHandoffCapsuleRetirementOutcomeSchema,
+  type ProviderHandoffCapsuleRetirementOutcome,
+} from './provider-proxy-capsule-discovery.js';
 import {
   providerProxySetCapsuleMatchesIdentity,
   providerProxySetIdentitiesEqual,
@@ -54,6 +57,7 @@ export const PROVIDER_PROXY_RECOVERY_CONSUMER_SEAMS = [
   'containment-attempt',
   'exact-capsule-recovery',
   'capsule-retirement',
+  'foreign-capsule-retirement',
 ] as const;
 
 export type ProviderProxyRecoveryConsumerSeam = (typeof PROVIDER_PROXY_RECOVERY_CONSUMER_SEAMS)[number];
@@ -116,6 +120,25 @@ export type ProviderProxyRecoveryRetry = Readonly<{
   producerId: ProviderProxyRecoveryProducerId;
   incident: unknown;
 }>;
+
+/**
+ * Why a foreign capsule retirement could not be completed, as the owner of that capsule path receives it. It
+ * retains no part of the rejection itself — nothing downstream of this seam may act on the thrown value.
+ *
+ * The two answers must stay tellable apart: a producer that broke its own contract is a defect in this build,
+ * and reporting that as a refusal an operating system gave sends an operator to the wrong system.
+ */
+export type ProviderProxyForeignCapsuleRetirementIncident =
+  | Readonly<{ kind: 'foreign-capsule-retirement-rejected'; errorCode: string | null }>
+  | Readonly<{ kind: 'foreign-capsule-retirement-contract-violation' }>;
+
+/**
+ * Every incident the foreign seam's retry may carry, named beside the routing that decides which one it is:
+ * an incident that routing can emit and this union does not admit is one no owner has a reported form for.
+ */
+export type ProviderProxyForeignCapsuleRetirementRetryIncident =
+  | ProviderProxyForeignCapsuleRetirementIncident
+  | Extract<ProviderHandoffCapsuleRetirementOutcome, { kind: 'temporarily-unavailable' }>['incident'];
 
 const providerProxyRecoveryFatalOrigin: unique symbol = Symbol('provider-proxy-recovery-fatal-origin');
 
@@ -331,16 +354,13 @@ function classifyFulfillment(
     return unknown(producerId, new Error('provider_proxy_containment_proof_contract_violation'));
   }
   if (producerId === 'capsule-retirement') {
-    if (
-      typeof value !== 'object' ||
-      value === null ||
-      !('kind' in value) ||
-      (value.kind !== 'retired' && value.kind !== 'temporarily-unavailable')
-    ) {
+    const parsed = providerHandoffCapsuleRetirementOutcomeSchema.safeParse(value);
+    if (!parsed.success) {
       return unknown(producerId, new Error('provider_proxy_capsule_retirement_contract_violation'));
     }
-    const outcome = value as ProviderHandoffCapsuleRetirementOutcome;
-    return outcome.kind === 'temporarily-unavailable' ? unavailable(producerId, outcome.incident) : evidence(outcome);
+    return parsed.data.kind === 'temporarily-unavailable'
+      ? unavailable(producerId, parsed.data.incident)
+      : evidence(parsed.data);
   }
   if (producerId === 'disappearance-consumer') {
     const parsed = disappearanceDeliveryAttemptOutcomeSchema.safeParse(value);
@@ -357,14 +377,43 @@ function classifyFulfillment(
   return evidence(value);
 }
 
+/**
+ * Reading `code` off a rejection must never fail: the value is an arbitrary thrown thing, a getter may throw,
+ * and this answer is operator metadata rather than a decision input. A rejection this cannot describe must
+ * still be describable.
+ */
+function errorCode(error: unknown): string | null {
+  if (typeof error !== 'object' || error === null) return null;
+  try {
+    const code = Reflect.get(error, 'code');
+    return typeof code === 'string' ? code : null;
+  } catch {
+    return null;
+  }
+}
+
+function foreignCapsuleRetirementRejection(error: unknown): ProviderProxyForeignCapsuleRetirementIncident {
+  return { kind: 'foreign-capsule-retirement-rejected', errorCode: errorCode(error) };
+}
+
+const foreignCapsuleRetirementContractViolation: ProviderProxyForeignCapsuleRetirementIncident = {
+  kind: 'foreign-capsule-retirement-contract-violation',
+};
+
 function classifyRejection(
   producerId: ProviderProxyRecoveryProducerId,
   input: ProviderProxyRecoveryProducerInput[ProviderProxyRecoveryProducerId],
   error: unknown,
+  seam: ProviderProxyRecoveryConsumerSeam,
 ): Observation {
   if (isProviderProxyRecoveryFatalError(error)) return { kind: 'forwarded-fatal', error };
   const cancelled = callerCancellation(input as { signal?: AbortSignal }, error);
   if (cancelled !== null) return cancelled;
+  // Retiring a capsule this build may not dial is one boot's housekeeping, not a claim on any authority. No
+  // way it can fail is evidence about this coordinator, so no way it can fail may end this coordinator.
+  if (seam === 'foreign-capsule-retirement') {
+    return unavailable(producerId, foreignCapsuleRetirementRejection(error));
+  }
   if (producerId === 'disappearance-terminalization') {
     if (error instanceof ProviderOperationTerminalizationUnavailableError) {
       return unavailable(producerId, error.incident);
@@ -511,6 +560,17 @@ export function createProviderProxyRecoveryDispatcher(
           return;
         }
         if (observation.kind === 'corrupt' || observation.kind === 'refused' || observation.kind === 'unknown') {
+          // The foreign seam holds a path and nothing else, so every way its producer can disappoint it is a
+          // hold this build carries locally rather than evidence about this coordinator. A fulfillment that
+          // breaks the producer's own contract must not be reported as a refusal the filesystem gave.
+          if (seam === 'foreign-capsule-retirement') {
+            retired = true;
+            effects.retry(sinks, {
+              producerId: observation.producerId,
+              incident: foreignCapsuleRetirementContractViolation,
+            });
+            return;
+          }
           retireFatal(observation);
           return;
         }
@@ -555,12 +615,13 @@ export function createProviderProxyRecoveryDispatcher(
           try {
             produced = invokeProducer(options.producers, source);
           } catch (error: unknown) {
-            submit(source.sourceId, classifyRejection(source.producerId, source.input, error));
+            submit(source.sourceId, classifyRejection(source.producerId, source.input, error, seam));
             return;
           }
           void Promise.resolve(produced).then(
             (value) => submit(source.sourceId, classifyFulfillment(source.producerId, value, context)),
-            (error: unknown) => submit(source.sourceId, classifyRejection(source.producerId, source.input, error)),
+            (error: unknown) =>
+              submit(source.sourceId, classifyRejection(source.producerId, source.input, error, seam)),
           );
         },
         cancel(reason) {

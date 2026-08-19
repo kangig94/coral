@@ -53,6 +53,9 @@ import type { JobProgressStore } from '#src/jobs/contracts/job-store.js';
 /** The build this fixture lifecycle belongs to — the same one `providerOperationRecord` stamps on its identities, so a discovered capsule is inheritable rather than foreign. */
 const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
 
+/** Nothing observed is never absence, so every discovered capsule is retained and no retirement begins. */
+const retainsEveryCapsule = { observeRecordedProcess: () => 'unknown' as const };
+
 function deferred<T>(): Readonly<{ promise: Promise<T>; resolve(value: T): void }> {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((accept) => {
@@ -802,7 +805,10 @@ async function discoveredCapsuleDeadlinePrecedenceCase(mode: 'disagreement' | 'd
     redeemCapsule: (candidate, path, signal) => inheritance.redeemDiscoveredCapsule(candidate, path, signal),
     onFatal: fatals,
   });
-  lifecycle.installDiscoveredCapsules([{ path: '/capsules/deadline-precedence.handoff.json', capsule }]);
+  lifecycle.installDiscoveredCapsules(
+    [{ path: '/capsules/deadline-precedence.handoff.json', capsule }],
+    retainsEveryCapsule,
+  );
   await vi.waitFor(() => expect(proxyOpen).toHaveBeenCalledOnce());
   await deadline.armed;
   deadline.fire();
@@ -996,7 +1002,7 @@ describe('provider proxy startup set recovery', () => {
     });
 
     const capsule = v3CapsuleFor(record);
-    lifecycle.installDiscoveredCapsules([{ path: '/capsules/startup-v3.handoff.json', capsule }]);
+    lifecycle.installDiscoveredCapsules([{ path: '/capsules/startup-v3.handoff.json', capsule }], retainsEveryCapsule);
     await retirementStarted.promise;
     retirementOutcome.resolve({ kind: 'retired' });
     await retirementOutcome.promise;
@@ -1105,7 +1111,10 @@ describe('provider proxy startup set recovery', () => {
         incident: { kind: 'capsule-directory-durability-unavailable' },
       }),
     });
-    lifecycle.installDiscoveredCapsules([{ path: '/capsules/set-a.handoff.json', capsule: v3CapsuleFor(setA) }]);
+    lifecycle.installDiscoveredCapsules(
+      [{ path: '/capsules/set-a.handoff.json', capsule: v3CapsuleFor(setA) }],
+      retainsEveryCapsule,
+    );
     const identityA = providerProxySetIdentityFromRecord(setA);
     const setBVisits = vi.fn();
     const startupSetRecovery: StartupSetRecoveryPort = {

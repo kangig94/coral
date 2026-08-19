@@ -20,6 +20,7 @@ import {
   subscribeProviderProxyControlEstablished,
 } from '../live/provider-proxy/operation-route.js';
 import { backendLog } from '../../infra/backend-log.js';
+import { createRecordedProcessObserver } from '../../infra/node-process.js';
 import { assertNever } from '../../infra/error-format.js';
 import type { ProviderOperationRecord } from '../../store/provider-operation-record.js';
 import { ProviderOperationCleanupRouter } from '../../jobs/provider-operation-cleanup.js';
@@ -292,6 +293,13 @@ export function createExecutionServices({
           storage: runtime.storage,
           uid: process.getuid?.() ?? 0,
         }),
+        {
+          observeRecordedProcess: createRecordedProcessObserver({
+            readIncarnation: (pid) =>
+              runtime.process.readProcessIncarnation(pid, runtime.env.platform() as NodeJS.Platform),
+            observeLiveness: (pid) => runtime.process.observeLiveness(pid),
+          }),
+        },
       );
     }
     providerProxyLifecycleInitialized = true;

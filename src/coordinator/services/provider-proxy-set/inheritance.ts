@@ -1,4 +1,8 @@
-import { probeProcessIncarnation, type ProcessIncarnation } from '../../../infra/node-process.js';
+import {
+  createRecordedProcessObserver,
+  probeProcessIncarnation,
+  type ProcessIncarnation,
+} from '../../../infra/node-process.js';
 import { createMonotonicClock } from '../../../infra/monotonic-clock.js';
 import { reapRecordedContainment } from '../../../infra/process-containment.js';
 import {
@@ -253,14 +257,6 @@ export type ProviderProxySetInheritanceRefusal = 'other-build' | 'unreadable-ide
  * The rule has no version exceptions, and that is the whole of it: **a capsule this build cannot derive a set
  * identity from is represented, never dialed.** `providerProxySetIdentityFromCapsule` accepts V3 alone, so V1
  * and V2 both fail it and both are refused here.
- *
- * V1 used to take a third path — redeemed opaquely by asking the roles, on the reasoning that carrying no
- * process identity is better than carrying one in seconds this build can no longer verify. That reasoning is
- * sound about the *numbers* and irrelevant to whether the roles may be *dialed*, which is what the path
- * actually did. Its only reachable population was a source-mode run meeting another source tree's capsule
- * under the shared fallback build id, where "same build" is forged rather than true; and it wrote its
- * upgraded bytes at the V1 filename, which discovery re-derives and rejects, so it manufactured a file
- * guaranteed to fail its own author's next boot. Removed rather than repaired.
  */
 export type ProviderProxySetInheritanceVerdict<T> =
   | Readonly<{ kind: 'inheritable'; candidate: T }>
@@ -362,20 +358,13 @@ async function proveProviderProxySetContainmentAbsent(
   // enforcer's pid blocked this proof forever, and a set that can never be proven absent is a set whose
   // operations never settle.
   //
-  // The unreadable case is unchanged and stays conservative: nothing observed is not absence, so a pid that
-  // is alive but unreadable still counts as possibly ours. This mirrors `observeProcessIdentity`
-  // (`infra/process-containment.ts`) deliberately rather than sharing it — that one throws on ambiguity
-  // because it is about to signal, and this one must return, because it is only allowed to conclude.
-  const enforcerMayStillBeLive = enforcerIdentities.some((enforcer) => {
-    try {
-      const live = probeProcessIncarnation(enforcer.pid, platform);
-      // Unreadable identity falls back to liveness, where anything but an observed absence keeps this enforcer
-      // "may still be live" — the conservative direction, since the caller may only conclude absence.
-      return live === null ? runtime.process.observeLiveness(enforcer.pid) !== 'absent' : live === enforcer.incarnation;
-    } catch {
-      return true;
-    }
+  // The polarity is this site's own. Discounting an enforcer takes proof it is absent, because concluding
+  // here goes on to signal a process group; anything short of proof leaves that enforcer possibly ours.
+  const observeEnforcer = createRecordedProcessObserver({
+    readIncarnation: (pid) => runtime.process.readProcessIncarnation(pid, platform),
+    observeLiveness: (pid) => runtime.process.observeLiveness(pid),
   });
+  const enforcerMayStillBeLive = enforcerIdentities.some((enforcer) => observeEnforcer(enforcer) !== 'absent');
   if (enforcerMayStillBeLive) {
     return null;
   }

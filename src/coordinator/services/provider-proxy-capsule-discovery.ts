@@ -1,5 +1,7 @@
 import { dirname, join } from 'node:path';
 
+import { z } from 'zod';
+
 import { providerHandoffCapsuleFileSuffix, providerHandoffCapsulePath } from '../../infra/path/index.js';
 import type { StoragePort } from '../../infra/port-types.js';
 import {
@@ -70,6 +72,22 @@ export type ProviderHandoffCapsuleRetirementOutcome =
       kind: 'temporarily-unavailable';
       incident: Readonly<{ kind: 'capsule-directory-durability-unavailable' }>;
     }>;
+
+/**
+ * An outcome a consumer may act on, whole. A hold is only as good as the incident it carries, because the
+ * consumer reads that incident to decide what it is holding and for how long — so an outcome whose `kind`
+ * promises a retry while its `incident` is absent must be rejected here, where the answer is still a
+ * disposition, rather than downstream in a sink that has no way left to refuse.
+ */
+export const providerHandoffCapsuleRetirementOutcomeSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('retired') }).strict(),
+  z
+    .object({
+      kind: z.literal('temporarily-unavailable'),
+      incident: z.object({ kind: z.literal('capsule-directory-durability-unavailable') }).strict(),
+    })
+    .strict(),
+]);
 
 export function retireProviderHandoffCapsule(
   storage: StoragePort,
