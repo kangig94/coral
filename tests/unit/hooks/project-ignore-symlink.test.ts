@@ -335,7 +335,7 @@ describe('ensureCoralSymlink keeps its own link pointing at the current flavor',
         ...(source.match(/const PROJECT_IGNORE_OUTCOME_NOTICES = \{[^}]*\}/su)?.[0] ?? '').matchAll(
           /^\s*'?([a-z-]+)'?:/gmu,
         ),
-      ].map((match) => match[1] as string),
+      ].map((match) => match[1]),
     );
 
     expect(produced.size, 'the outcome literals must be readable from source').toBeGreaterThan(3);
