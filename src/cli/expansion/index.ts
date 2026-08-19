@@ -127,12 +127,11 @@ function unknownExpansionResponse(name: string) {
  * disposition, including `unavailable`.
  *
  * Every rendered status is a claim about the daemon: `not_equipped` and `inactive` say it does not hold this
- * expansion, and `unavailable` says none was found — which `clients/skills/equip/SKILL.md` pairs with "run
- * `/equip <name>` to repair or reactivate". So there is no value in the enum that means "we did not check",
- * and borrowing `unavailable` for either "the record was corrupt" or "the record decoded but nothing answered"
- * sent an agent to re-equip a whole, possibly-healthy catalog over evidence that proved neither. The refusal
- * lives here, once, because `list` and `info` both render from the same view and an earlier fix caught only
- * one of the three call sites that do.
+ * expansion, and `unavailable` says none was found. No value in the enum means "we did not check", so
+ * borrowing `unavailable` for either "the record was corrupt" or "the record decoded but nothing answered"
+ * would tell a reader the daemon holds nothing on evidence that says neither — and a reader acting on that
+ * re-equips a whole, possibly-healthy catalog. The refusal lives here rather than at each render site because
+ * `list` and `info` both render from this one view.
  *
  * `unavailable` as a *disposition* still renders: no coordinator recorded itself, or a recorded coordinator's
  * pid was observed decisively gone, is an answer — nothing is equipped, and `localCatalogStatus` derives the
@@ -141,10 +140,10 @@ function unknownExpansionResponse(name: string) {
  * `NOT_OBSERVED_CORAL_SETUP_ERROR_CODES` — and each remediation names the discovery record path itself
  * instead of deferring to `backend status`.
  *
- * A `switch` with `assertNever` rather than sequential `if`s: this is a `void` function whose two throwing
- * cases used to be the only visible control flow, so a third refusal variant would have compiled straight
- * into "fall through and render `unavailable`'s shape" — the exact false claim this function exists to
- * prevent. A future non-exhaustive addition to `ExpansionStatus` now fails to compile here instead.
+ * A `switch` with `assertNever` rather than sequential `if`s: this function returns `void`, so a refusal
+ * variant with no case of its own falls through and renders `unavailable`'s shape — the exact false claim
+ * the function exists to prevent, and silent. The `switch` makes a non-exhaustive `ExpansionStatus` fail to
+ * compile here instead.
  */
 function assertDaemonViewObserved(passive: ExpansionStatus, subject: string): void {
   switch (passive.status) {

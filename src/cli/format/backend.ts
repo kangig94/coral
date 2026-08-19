@@ -39,9 +39,9 @@ export function formatBackendStatus(result: BackendStatusFull): string {
 // coordinator is serving. The remedy names the file because nothing in Coral rewrites it while a coordinator is
 // up — it is written once at startup — so an operator is the only party who can clear it.
 //
-// "Stop any running coordinator" cannot mean a coral-cli command here: `backend shutdown` itself refuses on
-// this exact condition, before it ever dials, because host/port/bootToken all live in the record it could not
-// read — so the only reachable exit is the operator finding and stopping the process directly.
+// The remedy is the operator rather than a coral-cli command because every command that could stop a
+// coordinator needs its host, port and boot token, and all three live in the record this status exists to
+// report unreadable. Nothing that reads them can act while it cannot be read.
 function formatUndecodableRecordStatus(result: Extract<BackendStatusFull, { status: 'undecodable_record' }>): string {
   return [
     `Backend state is unknown: the coordinator discovery record could not be read (${result.reason}).`,

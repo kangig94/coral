@@ -196,10 +196,9 @@ const _projectSourceUnanswered = new Map();
 // a hook session runs — but standing is not decisive. A domain probe (does this project have a remote?) that
 // fails to launch git for one of these reasons has learned nothing about the remote, only that it could not
 // ask; `computeProjectSource` below treats every code in this set exactly like any other failed launch,
-// `{ answered: false }`, held only for the reprobe window. The exception is a caller whose own question IS "can
-// this binary be launched here" — `live-work-registry.mjs`'s flock probe reads this set directly, because for
-// that question membership in this set is itself the decisive answer, routed to its own mtime-window fallback
-// rather than a re-probe.
+// `{ answered: false }`, held only for the reprobe window. A caller whose own question IS "can this binary be
+// launched here" is the exception and may read this set directly: for that question, membership is itself the
+// decisive answer rather than an unanswered probe, and such a caller owns its own fallback.
 //
 // The list is the standing side on purpose — a missed entry costs a re-probe, where listing the transient side
 // instead makes every unlisted errno a durable wrong answer nobody can see.

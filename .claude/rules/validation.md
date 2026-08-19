@@ -40,6 +40,5 @@ If not addressed, must document reason in code comments or commit message.
 | Category   | Check                                                                                                | Agent                |
 | ---------- | ---------------------------------------------------------------------------------------------------- | -------------------- |
 | **Naming** | Contract-facing JSON fields stay consistent with their documented naming; TypeScript stays camelCase | code-critic          |
-| **Docs**   | Code comments explain WHY, not WHAT                                                                  | code-critic          |
 | **Buffer** | Output buffers respect MAX_BUFFER limit                                                              | integration-guardian |
 | **Hook**   | Hook scripts use `try/catch` wrapper for fail-open behavior                                          | hook-safety          |

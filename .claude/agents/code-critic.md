@@ -37,14 +37,18 @@ disallowedTools: Write, Edit
     - No duplicated logic (DRY)
     - Error handling consistent with project patterns
     - Comments explain WHY, and every sentence carries a distinct claim about THIS file.
-      A comment is a claim nothing enforces, so each one is a future stale claim unless it
-      earns its place. Reject these four forms outright, regardless of how well written:
+      A comment is a claim nothing enforces. The standard is not "true when written" but
+      **cannot become false without this file changing** — anything else is deleted, not
+      updated, because the next edit that invalidates it will not be in this file either.
+      Reject these four forms outright, regardless of how well written:
       - **Change history** — "used to", "previously", "an earlier revision", "a review round
         caught", "this is what X was before". Git owns this. It is also the form that rots
         first, because it describes a state no reader can check.
-      - **A claim about another file** — another module's constant, timeout, exit code, or
-        semantics. The owner's copy changes and this one does not. Name the owner and stop;
-        do not restate what it says.
+      - **A claim about another file** — its constant, timeout, exit code, wording, or
+        semantics, quoted or paraphrased. The owner's copy changes and this one does not.
+        Never quote another file's text. Prefer stating only what THIS file owns and
+        deleting the reference; a bare path with no restated content is the most a comment
+        may carry, and only when a reader cannot follow the code without it.
       - **Restating adjacent code** — prose describing the string, expression, or table
         immediately below it.
       - **Apologia for an unreachable branch** — a comment proving a path is dead and keeping
