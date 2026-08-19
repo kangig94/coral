@@ -26,10 +26,10 @@
 
 import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { mkdirSync, readdirSync, rmdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, rmdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 
-import { claudeConfigDir, isValidSessionId } from './hook-utils.mjs';
+import { claudeConfigDir, isValidSessionId, STANDING_PROBE_ERRNOS } from './hook-utils.mjs';
 import { claudeProjectSlug, projectPathKey, sandboxTmpDir } from './plugin-paths.mjs';
 
 const WORK_DIR = 'coral-work';
@@ -38,6 +38,17 @@ const BG_DIR = 'bg';
 const SUBAGENT_WINDOW_MS = 60 * 60_000; // 60 min without transcript activity ⇒ presumed dead
 const BG_MTIME_WINDOW_MS = 30_000; // flock-absent fallback: no heartbeat within 30s ⇒ dead
 const BG_CLEANUP_TTL_MS = 60 * 60_000; // prune terminal/dead bg entries older than this
+// `flock -n` never blocks on the lock, so this bounds the fork itself, not the wait. A hook has no event loop
+// to interrupt a synchronous child with, so an unbounded one here stalls the hook — and a stalled hook is a
+// stalled Claude Code turn.
+const LOCK_PROBE_TIMEOUT_MS = 1_000;
+// The per-probe bound does not bound the sweep: this loop visits every locked task, so N wedged tasks cost
+// N × LOCK_PROBE_TIMEOUT_MS against the Stop hook's own 5s budget. Once this much has been spent, the rest are
+// left unprobed — and therefore left alone, since not knowing is not grounds for pruning. The deadline check
+// below reserves one `LOCK_PROBE_TIMEOUT_MS` of headroom before this line, so a probe that starts just under
+// the deadline still finishes inside it: the loop's own wall time stays within this budget rather than this
+// budget plus one more full timeout.
+const LOCK_PROBE_SWEEP_BUDGET_MS = 2_000;
 
 function sessionRoot(projectDir, sessionId) {
   return join(sandboxTmpDir(), WORK_DIR, projectPathKey(projectDir), sessionId);
@@ -130,18 +141,77 @@ function shSingleQuote(value) {
 
 // === Combined read: is any work of this session still live? ===
 
-// True iff at least one subagent OR backgrounded Bash/Monitor task of this
-// session is still live. Prunes dead entries as a side effect. `transcriptPath`
-// is the Stop hook's own (parent) transcript; the subagents dir is derived from
-// it, with a slug-based fallback when it is absent.
+/**
+ * `{ live, notice }` — whether any subagent OR backgrounded Bash/Monitor task of this session is still live,
+ * and text for the caller to surface through its own rendered channel (`writeHookOutput({ systemMessage })`)
+ * whenever a registry directory could not be read at all, or a task's liveness could not be settled by a direct
+ * check. `notice` is non-null only in those cases: ordinary "no work recorded" and "work is genuinely running" —
+ * decided by a direct check, not a fallback — both carry `notice: null`, because neither is a hold anyone needs
+ * telling about; a direct check that could not answer and had to fall back to a proxy signal is, regardless of
+ * what that fallback then concluded.
+ *
+ * Prunes dead entries as a side effect on the ordinary path. `transcriptPath` is the Stop hook's own (parent)
+ * transcript; the subagents dir is derived from it, with a slug-based fallback when it is absent.
+ *
+ * The session root is read once, before either subdirectory, because both `subagents/` and `bg/` sit under it:
+ * a permissions change on the root fails both child reads identically, and reading each separately would
+ * describe one cause as two near-identical warnings. A root failure is reported once, naming both, without
+ * touching either child directory — there is nothing a child-level read could learn that the root read has not
+ * already refused to say.
+ */
 export function hasLiveWork(projectDir, sessionId, transcriptPath) {
-  if (!isValidSessionId(sessionId)) return false;
+  if (!isValidSessionId(sessionId)) return { live: false, notice: null };
+
+  const root = sessionRoot(projectDir, sessionId);
+  try {
+    readdirSync(root);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return { live: false, notice: null };
+    return { live: true, notice: unreadableRegistryNotice(root, error, [SUBAGENTS_DIR, BG_DIR]) };
+  }
+
   // Evaluate both so each kind prunes its own dead markers even when the other
   // is already live.
-  const subagentLive = hasLiveSubagent(projectDir, sessionId, transcriptPath);
-  const bgLive = hasLiveBg(projectDir, sessionId);
-  if (!subagentLive && !bgLive) pruneEmptyDirs(projectDir, sessionId);
-  return subagentLive || bgLive;
+  const subagent = hasLiveSubagent(projectDir, sessionId, transcriptPath);
+  const bg = hasLiveBg(projectDir, sessionId);
+  if (!subagent.live && !bg.live) pruneEmptyDirs(projectDir, sessionId);
+  return {
+    live: subagent.live || bg.live,
+    notice: [subagent.notice, bg.notice].filter(Boolean).join(' ') || null,
+  };
+}
+
+// A missing registry directory is decisive: this kind of work has never been recorded for the session, so
+// `readdirSync`'s `ENOENT` means there is nothing live, and both callers below may treat it exactly like an
+// empty directory. Any other failure (`EACCES`, `EIO`, ...) is unobserved state, not an observed absence, and
+// per the budget-exhaustion path in `hasLiveBg` below, unobserved does not authorize pruning — so it is
+// re-thrown, and each caller answers "live" for the same reason that path does: a hook that could not read its
+// own registry has not learned that the work is gone.
+function tryReaddir(dir) {
+  try {
+    return readdirSync(dir);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return [];
+    throw error;
+  }
+}
+
+/**
+ * Text for a registry directory this process could not read at all, naming the subdirectory name(s) it covers.
+ *
+ * `true` is the conservative liveness answer and stays — un-gating ralph and kb on an unobserved state is what
+ * this pair was just fixed to stop doing. Every `readdirSync` failure reaching this function is already
+ * abnormal (its `ENOENT` case is handled by the caller before this is reached), so there is no errno worth
+ * filtering on: whatever the code, the same two facts are true and this says both — the gate holds for now,
+ * and if the same code keeps appearing across sessions, nothing here will clear it on its own.
+ */
+function unreadableRegistryNotice(dir, error, dirNames) {
+  const code = error?.code ?? 'an unknown error';
+  const scope = dirNames.length > 1 ? `${dirNames.join('/')} under ` : '';
+  return (
+    `Coral live-work registry: cannot read ${scope}${dir} (${code}); treating this session's work as live, so ` +
+    `ralph and kb stay gated. If ${code} keeps happening across sessions, the gate will not clear on its own.`
+  );
 }
 
 // === Subagent liveness ===
@@ -150,9 +220,9 @@ function hasLiveSubagent(projectDir, sessionId, transcriptPath) {
   const dir = subagentsPath(projectDir, sessionId);
   let markers;
   try {
-    markers = readdirSync(dir);
-  } catch {
-    return false;
+    markers = tryReaddir(dir);
+  } catch (error) {
+    return { live: true, notice: unreadableRegistryNotice(dir, error, [SUBAGENTS_DIR]) };
   }
 
   const transcriptsDir = resolveSubagentsDir(projectDir, sessionId, transcriptPath);
@@ -170,7 +240,7 @@ function hasLiveSubagent(projectDir, sessionId, transcriptPath) {
     }
   }
 
-  return live;
+  return { live, notice: null };
 }
 
 // Most-recent activity for a subagent: its transcript mtime, falling back to the
@@ -205,9 +275,9 @@ function hasLiveBg(projectDir, sessionId) {
   const dir = bgPath(projectDir, sessionId);
   let entries;
   try {
-    entries = readdirSync(dir);
-  } catch {
-    return false;
+    entries = tryReaddir(dir);
+  } catch (error) {
+    return { live: true, notice: unreadableRegistryNotice(dir, error, [BG_DIR]) };
   }
 
   const tasks = new Map(); // id -> { lock, exited, newestMs }
@@ -226,28 +296,87 @@ function hasLiveBg(projectDir, sessionId) {
   }
 
   const now = Date.now();
+  // Reserves one probe's worth of headroom: a probe that has already started when the deadline is reached
+  // still runs to completion, up to LOCK_PROBE_TIMEOUT_MS more. Checking against the raw budget would let a
+  // probe start right at the edge and carry the sweep's own wall time past LOCK_PROBE_SWEEP_BUDGET_MS by up to
+  // a full timeout; stopping new probes this much early keeps the total inside the budget instead.
+  const probeDeadline = now + LOCK_PROBE_SWEEP_BUDGET_MS - LOCK_PROBE_TIMEOUT_MS;
   let live = false;
+  const uncertain = new Set(); // subset of {'budget', 'probe'}: which way this sweep left a task unobserved
   for (const [id, task] of tasks) {
-    if (isBgTaskLive(dir, id, task, now)) {
+    if (Date.now() >= probeDeadline) {
+      // Out of budget. Every remaining task is treated as live and none is pruned: they were not looked at,
+      // and a hook that runs out of time has observed nothing about them.
+      live = true;
+      uncertain.add('budget');
+      break;
+    }
+    const result = isBgTaskLive(dir, id, task, now);
+    if (result.uncertain) uncertain.add('probe');
+    if (result.live) {
       live = true;
     } else if (now - task.newestMs > BG_CLEANUP_TTL_MS) {
       // Dead — keep recent terminals around for exit-code reads, sweep old ones.
       pruneBgTask(dir, id);
     }
   }
-  return live;
+  return { live, notice: uncertain.size > 0 ? bgUncertainNotice(dir, uncertain) : null };
 }
 
+/**
+ * `{ live, uncertain }` for one bg task. `uncertain` is true only when `lockHeld` itself could not decide —
+ * everything else here (a clean terminal record, a decisive `lockHeld` answer, a lock file gone from a prune
+ * this same staleness rule already justified, or no lock file yet because the wrapper is still starting) is an
+ * ordinary, fully-observed outcome and carries `uncertain: false` regardless of which way `live` comes out.
+ */
 function isBgTaskLive(dir, id, task, now) {
-  if (task.exited) return false; // clean terminal record present
+  if (task.exited) return { live: false, uncertain: false }; // clean terminal record present
   if (task.lock) {
-    const held = lockHeld(join(dir, `${id}.lock`));
-    if (held === true) return true; // flock still held ⇒ process alive
-    if (held === false) return false; // flock free ⇒ process died/released
-    // held === null ⇒ flock(1) unavailable ⇒ fall through to mtime window
+    const probe = lockHeld(join(dir, `${id}.lock`));
+    if (probe === 'held') return { live: true, uncertain: false }; // flock still held ⇒ process alive
+    if (probe === 'free') return { live: false, uncertain: false }; // flock free ⇒ process died/released
+    if (probe === 'gone') {
+      // Only `pruneBgTask` below ever removes a `.lock` file, and only for a task this same loop already found
+      // not live and stale past `BG_CLEANUP_TTL_MS` (well beyond `BG_MTIME_WINDOW_MS`) — so the mtime this call
+      // already captured settles it the same way that prune did, with nothing left here to have missed.
+      return { live: now - task.newestMs <= BG_MTIME_WINDOW_MS, uncertain: false };
+    }
+    // 'unusable' (flock cannot be asked here at all, a standing fact) or 'unanswered' (this one attempt failed
+    // for a reason the next hook is not bound by) ⇒ the direct check did not happen, so the caller is told so.
+    return {
+      live: probe === 'unusable' ? now - task.newestMs <= BG_MTIME_WINDOW_MS : true,
+      uncertain: true,
+    };
   }
-  // No lock yet (wrapper still starting) or no flock(1): recent activity ⇒ alive.
-  return now - task.newestMs <= BG_MTIME_WINDOW_MS;
+  // No lock yet (wrapper still starting): recent activity ⇒ alive.
+  return { live: now - task.newestMs <= BG_MTIME_WINDOW_MS, uncertain: false };
+}
+
+/**
+ * Text for a bg sweep that left at least one task's liveness decided by something other than a direct probe of
+ * its lock. `reasons` is a subset of `{'budget', 'probe'}` naming which way(s) that happened this call: `'budget'`
+ * is `hasLiveBg`'s own per-sweep deadline ending the loop before every locked task was asked; `'probe'` is
+ * `lockHeld` answering with a fact about `flock` itself rather than about the lock (unusable here, or one
+ * attempt that did not answer at all).
+ */
+function bgUncertainNotice(dir, reasons) {
+  const parts = [];
+  if (reasons.has('budget')) {
+    parts.push(
+      'its per-sweep probe budget ran out before every background task lock could be asked, so the remaining ' +
+        'task(s) were left unchecked and are treated as live',
+    );
+  }
+  if (reasons.has('probe')) {
+    parts.push(
+      "at least one background task's lock could not be asked directly (flock was unusable here, or one " +
+        'attempt did not answer), so its liveness fell back to a heartbeat timestamp instead',
+    );
+  }
+  return (
+    `Coral live-work registry: under ${dir}, ${parts.join('; and ')}. If this keeps happening across sessions, ` +
+    `it will not resolve on its own.`
+  );
 }
 
 function parseBgMarker(name) {
@@ -260,17 +389,55 @@ function parseBgMarker(name) {
   return null;
 }
 
-// Probe whether an exclusive flock on `lockPath` is still held. Namespace-agnostic
-// (inode-based), so it works across the command-sandbox boundary where a pid
-// probe would not. Returns true (held/alive), false (free/dead), or null when
-// flock(1) is unavailable so the caller can fall back to the mtime window.
+// Probe whether an exclusive flock on `lockPath` is still held. Namespace-agnostic (inode-based), so it works
+// across the command-sandbox boundary where a pid probe would not. Five answers: 'held' (alive), 'free' (dead,
+// a real probe of an existing file found it released), 'gone' (the file was already gone when asked), 'unusable'
+// (flock cannot be asked here at all, a standing fact about this machine), or 'unanswered' (this one attempt
+// failed for a reason the next attempt is not bound by). Only 'held' and 'free' are decisive; the caller falls
+// back to the mtime window on every other answer.
+//
+// Existence is checked before `flock` ever runs, and this is not redundant with the `readdirSync` that already
+// found `lockPath` — measured against a real util-linux `flock(1)` 2.39.3: `flock -n <missing-file> -c true`
+// exits 0 and CREATES the file, because it opens the path `O_RDONLY|O_CREAT`. A file another process pruned
+// between that `readdirSync` and this call would come back "free" from a lock this probe just manufactured, not
+// from the one it was asked about, so the check below answers 'gone' instead — from evidence about nothing,
+// rather than a fabricated something — and leaves no new file behind.
+//
+// `'unusable'` covers a `flock` that ran but could not even open a `lockPath` that does still exist: its
+// permission bits were changed since the listing that found it (`EACCES`), or the directory containing it is
+// itself gone (`ENOENT` on that directory, never on the file — the existence check above already ruled the file
+// itself out). Either way `flock(1)` exits 66 (`EX_NOINPUT`), distinct from the plain nonzero exit a held lock
+// produces, and it is a standing fact about `lockPath` for the same reason a missing binary is one (no `flock`
+// binary, not executable, no such directory for the binary itself — `STANDING_PROBE_ERRNOS`, the same set the
+// project-source probe uses): neither clears while this session runs.
+//
+// The mtime window is the designed fallback for 'unusable' specifically because the same cause does not also
+// stop the heartbeat — measured against the same binary, `touch` on a lock file stripped of its permission bits
+// still succeeds, because updating a file's own mtime is a POSIX owner privilege that bypasses the file's own
+// mode, while `flock`'s `open()` is not. So the heartbeat (`while kill -0 $$; do touch …; sleep 10; done` in
+// `bgWrapperPreamble`) keeps writing a live, current timestamp in exactly the case this probe cannot read the
+// file. A standing failure must not fall through to the catch-all 'unanswered' below just because it arrived
+// with a numeric exit status: 'unanswered' defaults to alive with no expiry other than the next hook's own
+// re-ask, so treating a failure that will not clear on its own as 'unanswered' would gate ralph and kb forever
+// with no event that could end it — the mtime window is what gives 'unusable' an ending instead.
+//
+// 'unanswered' — transient, not a standing fact about the machine or about `lockPath` — defaults to alive, and
+// that hold really is bounded: un-gating live work and pruning a live task are both finalizations an unanswered
+// probe may not authorize, but the next hook invocation probes again, and a machine that recovers answers 'free'
+// on its own.
 function lockHeld(lockPath) {
+  if (!existsSync(lockPath)) return 'gone';
   try {
-    execFileSync('flock', ['-n', lockPath, '-c', 'true'], { stdio: 'ignore' });
-    return false; // acquired ⇒ not held
+    execFileSync('flock', ['-n', lockPath, '-c', 'true'], {
+      stdio: 'ignore',
+      timeout: LOCK_PROBE_TIMEOUT_MS,
+    });
+    return 'free'; // acquired ⇒ not held
   } catch (err) {
-    if (err?.code === 'ENOENT') return null; // flock(1) not installed
-    return true; // non-zero exit ⇒ busy ⇒ held
+    if (STANDING_PROBE_ERRNOS.has(err?.code)) return 'unusable'; // flock(1) itself unusable here
+    if (err?.status === 66) return 'unusable'; // flock ran but could not open lockPath ⇒ same standing shape
+    if (typeof err?.status === 'number') return 'held'; // flock ran, opened lockPath, and refused ⇒ busy
+    return 'unanswered'; // could not ask *this time*; the next hook re-asks
   }
 }
 

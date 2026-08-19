@@ -52,7 +52,12 @@ import {
   type IncumbentHealth,
   type IncumbentIdentity,
 } from '../transport/ipc/handoff.js';
-import { probeCoordinator, type CoordinatorDiscoveryRecord } from '../infra/backend-discovery.js';
+import {
+  probeCoordinator,
+  type CoordinatorDiscoveryRecord,
+  type CoordinatorProbe,
+  type DiscoveryRuntime,
+} from '../infra/backend-discovery.js';
 import type { RecoveryCapableService } from '../jobs/reconcile/contracts.js';
 import type { ProjectRequestPort } from './contracts.js';
 import type { TypedEventBus } from './event-bus.js';
@@ -256,6 +261,60 @@ export function verifiedIncumbentFromDiscovery(
     bootToken: info.bootToken,
     shutdownToken: info.shutdownToken,
   };
+}
+
+/**
+ * The same question asked of a probe rather than a record: which of the probe's four outcomes still leaves an
+ * incumbent to contend with.
+ *
+ * Named for the same reason as the function above, though not after the same failure — that one is the
+ * sibling's own history, where an inline closure let the incarnation requirement be reverted with nothing
+ * breaking, because there was no exported name for a test to reach. This mapping was the inline closure
+ * beside it on the same bind path, carrying decisions of the same kind and equally unreachable. Two of the
+ * four outcomes are only correct for a stated reason:
+ *
+ * - `unreadable-process` keeps its record. The probe not answering is not the incumbent not existing, and the
+ *   record carries the `bootToken` a contender needs to ask it to stand down. `verifiedIncumbentFromDiscovery`
+ *   then refuses on its own terms if the record cannot be tied to the socket, which is the check that belongs
+ *   here — not a pid probe standing in for it.
+ * - `unreadable-record` has no record to agree with, so `null` is the only value available. It is not a claim
+ *   that nobody is there: `probeCoordinator` warns, and the kernel's exclusive bind arbitrates.
+ *
+ * The switch is exhaustive on purpose. A fifth `CoordinatorProbe` shape leaves `record` unassigned and fails
+ * the build, rather than defaulting into the `null` that reads as "no incumbent".
+ */
+export function verifiedIncumbentFromProbe(
+  probe: CoordinatorProbe,
+  evidence: Readonly<{ socketPath: string; desired: DesiredIncumbentIdentity; lastHealth: IncumbentHealth | null }>,
+): IncumbentIdentity | null {
+  let record: CoordinatorDiscoveryRecord | null;
+  switch (probe.kind) {
+    case 'live':
+      record = probe.record;
+      break;
+    case 'unobservable':
+      record = probe.reason === 'unreadable-process' ? probe.record : null;
+      break;
+    case 'absent':
+      record = null;
+      break;
+  }
+  return verifiedIncumbentFromDiscovery(record, evidence);
+}
+
+/**
+ * The exact composition the bind path below runs: probe the runtime's own discovery record, then apply
+ * `verifiedIncumbentFromProbe` to what it found. It existed only as the inline closure passed to
+ * `bindWithHandoff` as `readVerifiedIncumbentFromDiscovery` until now — the same gap the two functions above
+ * were pulled out of an inline closure to close, one call further out: `probeCoordinator` and
+ * `verifiedIncumbentFromProbe` each have their own tests against hand-built inputs, but nothing drove a real
+ * discovery read through both together the way the bind path actually does.
+ */
+export function verifiedIncumbentFromRuntimeProbe(
+  runtime: DiscoveryRuntime,
+  evidence: Readonly<{ socketPath: string; desired: DesiredIncumbentIdentity; lastHealth: IncumbentHealth | null }>,
+): IncumbentIdentity | null {
+  return verifiedIncumbentFromProbe(probeCoordinator(runtime), evidence);
 }
 
 export function closeServer(server: Server): Promise<void> {
@@ -880,8 +939,8 @@ async function runLifecycleStartup({
         runStartupRecovery,
         runtime,
         readVerifiedIncumbentFromDiscovery: (evidence) =>
-          verifiedIncumbentFromDiscovery(
-            probeCoordinator({ storage: runtime.storage, env: runtime.env, paths: runtime.paths }),
+          verifiedIncumbentFromRuntimeProbe(
+            { storage: runtime.storage, env: runtime.env, paths: runtime.paths },
             evidence,
           ),
         signalLedger: createFileHandoffSignalLedger({

@@ -8,7 +8,7 @@ conversion too broad for a workflow-identity change.
 Jobs list/detail responses cross producer, RPC, CLI dispatch, and formatting boundaries without one runtime
 schema as their authority.
 
-The core vocabulary lives as TypeScript-first records in `src/jobs/records.ts:69,246-274`, while `jobs.list`
+The core vocabulary lives as TypeScript-first records in `src/jobs/records.ts:69,246-266`, while `jobs.list`
 and `jobs.detail` lack response schemas in `src/transport/rpc/catalog.ts:253-271` — the only methods in the
 catalog that carry a `responseSchema` are the three `coordinator.provider_host.*` ones (`:139`, `:151`,
 `:163`). Producer values pass through `executeJobsListCatalogRequest` / `executeJobsDetailCatalogRequest`

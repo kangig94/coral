@@ -1,6 +1,39 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, type ExecFileSyncOptionsWithStringEncoding } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { z } from 'zod';
+
+/**
+ * Bounds one probe *subprocess*, not one probe: `probeMacProcessIncarnation` issues two in sequence and does
+ * not cache the first, so a wedged darwin probe costs twice this.
+ *
+ * Best-effort, and nothing may rely on more. Node implements a synchronous timeout by sending `killSignal`
+ * and then continuing to wait for the child to exit, so a child that blocks or ignores it still overruns.
+ * Nothing *can* rely on hardness anyway: every deadline mechanism here is asynchronous, and none of them
+ * preempt a synchronous `execFileSync`, which blocks the event loop outright. This makes a wedged probe
+ * return; it does not make any caller's deadline enforceable, and the difference is not academic for callers
+ * that sweep a recorded set — `docs/todo/containment-observation-deadline.md` owns that analysis, deliberately
+ * rather than here, because every fact in it belongs to a module this one cannot see change.
+ *
+ * 2s matches the bound `env-sanitize.ts` already uses for a synchronous subprocess. There is no measurement
+ * behind either number — do not add one to a comment without taking it.
+ *
+ * What the bound cannot do is the part that makes it safe: it turns a would-be-successful observation into a
+ * throw, and every call site's existing `catch` answers `null`. It cannot fabricate a token, so it cannot
+ * make an equality check newly pass. That is narrower than "it cannot authorize a signal" — not every signal
+ * is equality-gated — so it is the only claim to rely on.
+ */
+const PROCESS_INCARNATION_PROBE_TIMEOUT_MS = 2_000;
+
+/**
+ * The one exec shape the incarnation probes share. Named so the three call sites cannot drift apart on it —
+ * a site that quietly loses the timeout is the defect the bound exists to prevent, and
+ * `tests/invariants/sync-subprocess-timeout.test.ts` fails when one does.
+ */
+const PROBE_EXEC_OPTIONS: ExecFileSyncOptionsWithStringEncoding = {
+  encoding: 'utf-8',
+  stdio: ['ignore', 'pipe', 'ignore'],
+  timeout: PROCESS_INCARNATION_PROBE_TIMEOUT_MS,
+};
 
 /**
  * What a liveness probe can actually report — three outcomes, because there are three.
@@ -150,10 +183,7 @@ export function incarnationMayAuthorizeSignal(platform: NodeJS.Platform): boolea
 
 function readMacBootSessionId(): string | null {
   try {
-    const raw = execFileSync('sysctl', ['-n', 'kern.bootsessionuuid'], {
-      encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
+    const raw = execFileSync('sysctl', ['-n', 'kern.bootsessionuuid'], PROBE_EXEC_OPTIONS).trim();
     return raw.length > 0 ? raw : null;
   } catch {
     return null;
@@ -169,8 +199,7 @@ function readMacBootSessionId(): string | null {
  * The residual, stated because it is the reason `incarnationMayAuthorizeSignal` refuses this platform: two
  * processes that hold the same pid *and* the same displayed start second *within one boot* are
  * indistinguishable. The boot session id closes the across-reboot half completely — a UUID minted per boot
- * that no reboot preserves. It does **not** close a clock change, and an earlier version of this comment
- * claimed it did. `ps -o lstart=` prints local time and `Date.parse` reads a zone-less string as local, so a
+ * that no reboot preserves. It does **not** close a clock change. `ps -o lstart=` prints local time and `Date.parse` reads a zone-less string as local, so a
  * backward step — an NTP correction, the autumn DST fallback — makes one displayed string name two instants.
  * The window is then an hour rather than a second, which is why equality here authorizes nothing.
  *
@@ -184,10 +213,7 @@ function probeMacProcessIncarnation(pid: number): ProcessIncarnation | null {
       return null;
     }
 
-    const raw = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], {
-      encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
+    const raw = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], PROBE_EXEC_OPTIONS).trim();
     if (!raw) {
       return null;
     }
@@ -201,10 +227,11 @@ function probeMacProcessIncarnation(pid: number): ProcessIncarnation | null {
 
 function probeWindowsProcessIncarnation(pid: number): ProcessIncarnation | null {
   try {
-    const raw = execFileSync('wmic', ['process', 'where', `ProcessId=${pid}`, 'get', 'CreationDate', '/value'], {
-      encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    });
+    const raw = execFileSync(
+      'wmic',
+      ['process', 'where', `ProcessId=${pid}`, 'get', 'CreationDate', '/value'],
+      PROBE_EXEC_OPTIONS,
+    );
     const match = raw.match(/CreationDate=(\d{14}\.\d+[+-]\d+)/) ?? raw.match(/CreationDate=(\d{14})/);
     const value = match?.[1];
     return value === undefined ? null : (`win32:${value}` as ProcessIncarnation);

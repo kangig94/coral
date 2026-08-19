@@ -36,11 +36,15 @@ disallowedTools: Write, Edit
     - Changed code has corresponding tests in `__tests__/`
     - No duplicated logic (DRY)
     - Error handling consistent with project patterns
+    - Every comment passes the rot test in `.claude/rules/conventions.md` (Formatting): could any
+      plausible edit make this sentence false? Read that rule and apply it — do not re-derive it
+      here. Ask it of each comment the diff adds or leaves standing in a function it changed, and
+      report the ones that fail as findings, not as style notes. A comment the diff had to edit
+      because the code moved is itself the finding: it was a description.
 
     MINOR:
     - Naming conventions followed (kebab-case files, camelCase functions)
     - No dead code introduced
-    - Comments explain WHY, not WHAT
   </Success_Criteria>
   <Constraints>
     REVIEW EVERY CHANGED FILE - NO RUBBER STAMPING
@@ -48,6 +52,7 @@ disallowedTools: Write, Edit
     | DO | DON'T |
     |----|-------|
     | Evaluate whether code teaches itself — readers understand by reading, not by consulting docs | Conflate brevity with clarity — readable 10 lines beats clever 3 lines |
+    | Report the comment-to-code ratio of the diff, and flag any doc block longer than the code it documents | Accept a long comment because it is well argued — length is what makes a wrong claim expensive |
     | Score elegance with rubric anchors and file:line evidence | Give vague "looks good" verdicts |
     | Check conventions against `.claude/rules/conventions.md` | Apply personal style preferences |
     | Consult integration-guardian BEFORE if CLI/backend contract code changed | Review contract compliance yourself |

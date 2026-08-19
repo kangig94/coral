@@ -302,7 +302,8 @@ argument-hint: "[existing|new]"
   ```
 
   Keep `CORAL_PROJECT_IGNORE_RESULT` for the Phase 6 report. A successful result
-  confirms that `.claude/.gitignore` contains a standalone `coral` entry before
+  confirms that `.claude/.gitignore` carries the entries Coral owns — a standalone
+  `coral` line, and `*.coral-*.tmp` for its own interrupted atomic writes — before
   any legacy protection is removed.
 
   ## Phase 6: Report
@@ -349,7 +350,7 @@ argument-hint: "[existing|new]"
   | Agents | `.claude/agents/test-critic.md` | Must exist | Rubric anchors (10/7/4/1) |
   | Template | `.claude/templates/AGENT.md` | Must NOT be created | Internal template — not deployed to user project |
   | Skills | `.claude/skills/tier-review/SKILL.md` | Must exist | `name: tier-review` in frontmatter |
-  | Ignore | `.claude/.gitignore` | Must exist | Standalone `coral` line |
+  | Ignore | `.claude/.gitignore` | Must exist | Standalone `coral` line, and a `*.coral-*.tmp` line |
   | Ignore | Git-root `.gitignore` | If it contained Coral's legacy project entry | Exact legacy entry absent; every other byte preserved |
   | Link | `.claude/coral` | Must exist as a symlink | Resolves to `CORAL_PROJECT` |
   | Agents | `.claude/agents/{domain-specific}.md` | Per plan | `<Agent_Prompt>` XML structure |

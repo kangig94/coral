@@ -92,14 +92,16 @@ record because a freshly probed start time disagreed with the recorded one → n
 stayed false → the gate at `coordinator/handoff.ts` threw. A token was needed to attempt, and the
 attempt was needed to excuse the missing token.
 
-The disagreement is not a clock going wrong. `probeProcessStartedAtSeconds` adds `/proc/stat` btime,
-**cached per process**, so two processes' values differ by the age gap between their first reads —
-measured at 168 seconds for a coordinator probing its own pid. The value is a process-local pid
-disambiguator, not a timestamp, and comparing it across a process boundary is meaningless.
+The disagreement is not a clock going wrong. The primitive, `probeProcessStartedAtSeconds`, added
+`/proc/stat` btime over a module-level cache, so two processes' values differed by the age gap between
+their first reads — measured at 168 seconds for a coordinator probing its own pid. The value was a
+process-local pid disambiguator, not a timestamp, and comparing it across a process boundary was
+meaningless.
 
-**Fixed**: `probeCoordinator` no longer compares it (liveness only), and the signal path anchors on a
-baseline the contender observed itself, which keeps the guarantee that matters — the pid must not have
-been recycled between handshake and signal — and drops the one that was never sound.
+**Fixed**: the primitive is gone (#324 replaced it with an opaque `ProcessIncarnation`), `probeCoordinator`
+no longer compares a start time at all (liveness only), and the signal path anchors on a baseline the
+contender observed itself, which keeps the guarantee that matters — the pid must not have been recycled
+between handshake and signal — and drops the one that was never sound.
 
 `proxy-set-acquisition.md` is the same defect at a different pair of processes. They were filed as two
 items and are one.

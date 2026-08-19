@@ -1,12 +1,18 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { TEST_CODEX_ACCESS } from '../../../helpers/provider-credentials.js';
 
 import type { DirentLike, StoragePort } from '#src/infra/port-types.js';
-import { codexAppServerLifecycle, codexRecoveryLifecycle } from '#src/providers/codex/provider-facets.js';
+import {
+  codexAppServerLifecycle,
+  codexPreflight,
+  codexRecoveryLifecycle,
+  resetCodexPreflightCachesForTest,
+} from '#src/providers/codex/provider-facets.js';
 import { buildCodexContinuity } from '#src/providers/codex/request-mapping.js';
 import { jsonValueSchema } from '#src/infra/json-value.js';
 import { codexArtifactCapability, locateCodexRolloutArtifact } from '#src/providers/codex/artifacts.js';
-import type { ArtifactCleanupRuntime, AppServerTransport } from '#src/providers/contract.js';
+import type { ArtifactCleanupRuntime, AppServerTransport, ProviderPreflightRuntime } from '#src/providers/contract.js';
+import type { CodexProviderAccess } from '#src/providers/codex/execution-plan.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
@@ -352,5 +358,208 @@ describe('codexArtifactCapability', () => {
         runtime,
       }),
     ).toBeNull();
+  });
+});
+
+// `codexPreflight` had no tests. Both of its checks answered every failure with the remedy for the one cause
+// they could name — "update the Codex CLI", "run codex login" — so a fork that lost to EAGAIN and an
+// `auth.json` this process may not open were reported as an outdated CLI and an unauthenticated account. Both
+// verdicts are also cached for a minute, so the wrong sentence is repeated without re-checking.
+describe('codexPreflight', () => {
+  const UPGRADE = /npm update -g @openai\/codex/u;
+  const LOGIN = /Run "codex login"/u;
+  const TOKENS = JSON.stringify({ tokens: { access_token: 'live-token' } });
+
+  // The module-level caches outlive each test. Isolation is the explicit reset below, not the clock advance:
+  // a test that forgot to preserve a 120s gap here used to fail on a sibling's cached verdict instead of its
+  // own assertion, for a reason nothing in its own body explained.
+  let clock = 1_700_000_000_000;
+  beforeEach(() => {
+    clock += 120_000;
+    resetCodexPreflightCachesForTest();
+  });
+
+  function errno(code: string): Error {
+    return Object.assign(new Error(code), { code });
+  }
+
+  function preflightRuntime(options: {
+    appServer?: { status?: number | null; error?: Error };
+    authFile?: string | Error;
+    home?: string;
+  }): ProviderPreflightRuntime<CodexProviderAccess> & { runExact: ReturnType<typeof vi.fn> } {
+    const appServer = options.appServer ?? { status: 0 };
+    const authFile = options.authFile ?? TOKENS;
+    return {
+      access: { home: options.home ?? TEST_CODEX_ACCESS.home },
+      cwd: '/workspace/project',
+      storage: {
+        readFileSync: () => {
+          if (authFile instanceof Error) throw authFile;
+          return authFile;
+        },
+      },
+      time: { now: () => clock },
+      runExact: vi.fn(async () => ({
+        stdout: '',
+        stderr: '',
+        status: appServer.status ?? null,
+        ...(appServer.error === undefined ? {} : { error: appServer.error }),
+      })),
+    } as unknown as ProviderPreflightRuntime<CodexProviderAccess> & { runExact: ReturnType<typeof vi.fn> };
+  }
+
+  it('accepts a Codex CLI that answers and a home that holds tokens', async () => {
+    await expect(codexPreflight(preflightRuntime({}))).resolves.toBeUndefined();
+  });
+
+  it.each([['EAGAIN'], ['ETIMEDOUT'], ['EMFILE']])(
+    'does not blame the installed CLI when the probe failed on %s',
+    async (code) => {
+      const runtime = preflightRuntime({ appServer: { error: errno(code), status: null } });
+
+      await expect(codexPreflight(runtime)).rejects.toThrow(/could not run/iu);
+      await expect(
+        codexPreflight(preflightRuntime({ appServer: { error: errno(code), status: null } })),
+      ).rejects.not.toThrow(UPGRADE);
+    },
+  );
+
+  it('does not blame the installed CLI when the probe was killed before it answered', async () => {
+    await expect(codexPreflight(preflightRuntime({ appServer: { status: null } }))).rejects.toThrow(/killed/iu);
+  });
+
+  it.each([
+    ['ENOENT', 'the binary is not installed'],
+    ['EACCES', 'this process may not execute it'],
+  ])('reports %s as an unusable CLI, because %s is a fact about this machine', async (code) => {
+    await expect(codexPreflight(preflightRuntime({ appServer: { error: errno(code), status: null } }))).rejects.toThrow(
+      UPGRADE,
+    );
+  });
+
+  it('reports a CLI without the subcommand as one to update', async () => {
+    await expect(codexPreflight(preflightRuntime({ appServer: { status: 1 } }))).rejects.toThrow(UPGRADE);
+  });
+
+  // The cache has no tenant key, so anything it holds decides for every later job. An answer may do that; an
+  // unobserved cause may not — each job asks again and is refused, or not, on evidence of its own.
+  it('never caches an undetermined verdict, so every preflight re-probes', async () => {
+    const runtime = preflightRuntime({ appServer: { error: errno('EAGAIN'), status: null } });
+
+    await expect(codexPreflight(runtime)).rejects.toThrow(/could not run/iu);
+    await expect(codexPreflight(runtime)).rejects.toThrow(/could not run/iu);
+    await expect(codexPreflight(runtime)).rejects.toThrow(/could not run/iu);
+
+    expect(runtime.runExact, 'one fork that lost to EAGAIN must not answer for two later jobs').toHaveBeenCalledTimes(
+      3,
+    );
+  });
+
+  it('still caches an answered verdict for the TTL', async () => {
+    const runtime = preflightRuntime({ appServer: { status: 1 } });
+
+    await expect(codexPreflight(runtime)).rejects.toThrow(UPGRADE);
+    await expect(codexPreflight(runtime)).rejects.toThrow(UPGRADE);
+
+    expect(runtime.runExact, 'the CLI answered; asking again inside the minute repeats it').toHaveBeenCalledTimes(1);
+  });
+
+  /** Like `preflightRuntime`, but the auth read is countable — that is the observable for its own cache. */
+  function countingAuthRuntime(authFile: string | Error, home: string) {
+    let reads = 0;
+    const runtime = preflightRuntime({ home });
+    return {
+      runtime: {
+        ...runtime,
+        storage: {
+          readFileSync: () => {
+            reads += 1;
+            if (authFile instanceof Error) throw authFile;
+            return authFile;
+          },
+        },
+      } as unknown as typeof runtime,
+      reads: () => reads,
+    };
+  }
+
+  // The twin of the app-server rule two tests up, and it was fixed without being asserted: disabling this
+  // guard let an unreadable `auth.json` be cached, so one EACCES answered for every later job on that home,
+  // and the whole suite stayed green. Keyed by home, so the blast radius is narrower than the app-server
+  // cache's — narrower is not absent.
+  it('never caches an undetermined auth verdict, so every preflight re-reads', async () => {
+    const { runtime, reads } = countingAuthRuntime(errno('EACCES'), `/home/user/.codex-uncached-${clock}`);
+
+    await expect(codexPreflight(runtime)).rejects.toThrow(/could not read/iu);
+    await expect(codexPreflight(runtime)).rejects.toThrow(/could not read/iu);
+    await expect(codexPreflight(runtime)).rejects.toThrow(/could not read/iu);
+
+    expect(reads(), 'one unreadable file must not answer for two later jobs').toBe(3);
+  });
+
+  it('still caches an answered auth verdict for the TTL', async () => {
+    const { runtime, reads } = countingAuthRuntime(JSON.stringify({ tokens: {} }), `/home/user/.codex-cached-${clock}`);
+
+    await expect(codexPreflight(runtime)).rejects.toThrow(LOGIN);
+    await expect(codexPreflight(runtime)).rejects.toThrow(LOGIN);
+
+    expect(reads(), 'the file answered; asking again inside the minute repeats it').toBe(1);
+  });
+
+  it('reports an absent auth.json as an unauthenticated account', async () => {
+    const runtime = preflightRuntime({ authFile: errno('ENOENT'), home: `/home/user/.codex-a-${clock}` });
+
+    await expect(codexPreflight(runtime)).rejects.toThrow(LOGIN);
+  });
+
+  it('reports a corrupt auth.json as unauthenticated, because logging in rewrites it', async () => {
+    const runtime = preflightRuntime({ authFile: '{not json', home: `/home/user/.codex-b-${clock}` });
+
+    await expect(codexPreflight(runtime)).rejects.toThrow(LOGIN);
+  });
+
+  it('does not tell an operator to log in when auth.json could not be read at all', async () => {
+    // `codex login` writes this file; it does not grant the daemon permission to read it afterwards, so the
+    // remedy does not apply and must not be offered.
+    const runtime = preflightRuntime({ authFile: errno('EACCES'), home: `/home/user/.codex-c-${clock}` });
+
+    await expect(codexPreflight(runtime)).rejects.toThrow(/could not read/iu);
+    await expect(
+      codexPreflight(preflightRuntime({ authFile: errno('EACCES'), home: `/home/user/.codex-d-${clock}` })),
+    ).rejects.not.toThrow(LOGIN);
+  });
+
+  // Both branches of the unreadable case have to leave the operator with something to do. Naming what was not
+  // established and stopping there is half a refusal — it closes the wrong door without opening one — and the
+  // deferred half (teaching the job to ask again instead of dying) is `docs/todo/preflight-cannot-defer.md`,
+  // so until then the retry is the operator's and has to be said.
+  it.each([
+    ['EACCES', /readable by the user running the Coral daemon/u],
+    ['EPERM', /readable by the user running the Coral daemon/u],
+    ['EIO', /Retry the command/u],
+  ])('names an action for an auth.json it could not read (%s)', async (code, remedy) => {
+    const runtime = preflightRuntime({ authFile: errno(code), home: `/home/user/.codex-remedy-${code}-${clock}` });
+
+    await expect(codexPreflight(runtime)).rejects.toThrow(remedy);
+  });
+
+  it('names the error as unknown when an auth.json read failure carries no code', async () => {
+    const runtime = preflightRuntime({
+      authFile: new Error('boom'),
+      home: `/home/user/.codex-remedy-codeless-${clock}`,
+    });
+
+    await expect(codexPreflight(runtime)).rejects.toThrow(/\(unknown error\)/u);
+    await expect(codexPreflight(runtime)).rejects.toThrow(/Retry the command/u);
+  });
+
+  it('reports a readable auth.json without tokens as unauthenticated', async () => {
+    const runtime = preflightRuntime({
+      authFile: JSON.stringify({ tokens: {} }),
+      home: `/home/user/.codex-e-${clock}`,
+    });
+
+    await expect(codexPreflight(runtime)).rejects.toThrow(LOGIN);
   });
 });

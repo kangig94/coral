@@ -21,12 +21,11 @@ function claudePreflightRuntime(
 ): ProviderPreflightRuntime<ClaudeProviderAccess> {
   const runExact = vi.fn(async (_command: string, args: string[]) =>
     args[0] === '--version'
-      ? { stdout: 'claude 1.0.0', stderr: '', status: 0, signal: null }
+      ? { stdout: 'claude 1.0.0', stderr: '', status: 0 }
       : {
           stdout: JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', subscriptionType: 'team' }),
           stderr: '',
           status: 0,
-          signal: null,
         },
   );
   return {
@@ -37,6 +36,21 @@ function claudePreflightRuntime(
       readFileSync: (path: string) => files[path] ?? '',
     },
     runExact,
+  } as unknown as ProviderPreflightRuntime<ClaudeProviderAccess>;
+}
+
+/** A preflight runtime whose `claude --version` never produces an answer. */
+function unanswerableVersionProbeRuntime(code: string): ProviderPreflightRuntime<ClaudeProviderAccess> {
+  return {
+    access: TEST_CLAUDE_ACCESS,
+    cwd: '/workspace/project',
+    storage: { existsSync: () => false, readFileSync: () => '' },
+    runExact: vi.fn(async () => ({
+      stdout: '',
+      stderr: '',
+      status: null,
+      error: Object.assign(new Error(code), { code }),
+    })),
   } as unknown as ProviderPreflightRuntime<ClaudeProviderAccess>;
 }
 
@@ -56,6 +70,23 @@ function storageForTree(tree: Record<string, DirentLike[]>): Pick<StoragePort, '
 }
 
 describe('claudePreflight', () => {
+  // Preflight refuses either way, and the two refusals must not read alike. Telling an operator whose machine
+  // ran out of process slots to install the Claude CLI sends them to fix something that was never broken.
+  it('does not report an unanswerable version probe as a missing CLI', async () => {
+    // The two refusals must not read alike, and the "unknown" one must not repeat the inner sentence's own
+    // opening — it composed to "could not be determined: could not run ...".
+    await expect(claudePreflight(unanswerableVersionProbeRuntime('EAGAIN'))).rejects.toThrow(
+      /availability is unknown/iu,
+    );
+    await expect(claudePreflight(unanswerableVersionProbeRuntime('EAGAIN'))).rejects.toThrow(/retry the command/iu);
+  });
+
+  it('still reports a genuinely missing CLI as missing', async () => {
+    await expect(claudePreflight(unanswerableVersionProbeRuntime('ENOENT'))).rejects.toThrow(
+      /Claude CLI not available/iu,
+    );
+  });
+
   it.each([
     {
       layer: 'selected-profile',
@@ -138,12 +169,11 @@ describe('claudePreflight', () => {
     const runtime = claudePreflightRuntime({});
     runtime.runExact = vi
       .fn()
-      .mockResolvedValueOnce({ stdout: 'claude 1.0.0', stderr: '', status: 0, signal: null })
+      .mockResolvedValueOnce({ stdout: 'claude 1.0.0', stderr: '', status: 0 })
       .mockResolvedValueOnce({
         stdout: JSON.stringify({ loggedIn: false }),
         stderr: '',
         status: 0,
-        signal: null,
       });
 
     await expect(claudePreflight(runtime)).rejects.toThrow(
@@ -158,12 +188,11 @@ describe('claudePreflight', () => {
     const runtime = claudePreflightRuntime({});
     runtime.runExact = vi
       .fn()
-      .mockResolvedValueOnce({ stdout: 'claude 1.0.0', stderr: '', status: 0, signal: null })
+      .mockResolvedValueOnce({ stdout: 'claude 1.0.0', stderr: '', status: 0 })
       .mockResolvedValueOnce({
         stdout: JSON.stringify(authOutput),
         stderr: '',
         status: 0,
-        signal: null,
       });
 
     await expect(claudePreflight(runtime)).resolves.toBeUndefined();

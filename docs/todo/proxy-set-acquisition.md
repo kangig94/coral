@@ -36,8 +36,8 @@ Two things survive from that version and remain true:
   earlier `routeFor(identityKey) !== null` short-circuit at `:341`. That is still a reporting gap worth
   closing, and it is why the real cause took a second incident to surface.
 - `ProviderProxySetLifecycleSnapshot` already computes `startupDiscoveryCompleted`, `represented`,
-  `available` and `states` (`src/coordinator/services/provider-proxy-set/index.ts:140`, produced by
-  `snapshot()` at `:577`), and has **no production consumer** — its only readers are in
+  `available` and `states` (`src/coordinator/services/provider-proxy-set/index.ts:150`, produced by
+  `snapshot()` at `:593`), and has **no production consumer** — its only readers are in
   `tests/unit/coordinator/services/provider-proxy-set-lifecycle.test.ts`, a unit test, not an
   integration test as an earlier revision said. The observability this needs is already built and
   unpublished.
@@ -51,20 +51,32 @@ filesystem — makes them disagree, and the acquisition fails.
 
 ### Confirmed: the same defect as the upgrade takeover, and it is not the spawn
 
-**Root cause established 2026-08-15 and fixed for the coordinator's own paths.** `probeProcessStartedAtSeconds`
-(`src/infra/node-process.ts:74-99`) returns `/proc/stat` btime plus the process's start ticks, and btime
-is **cached per process** (`:16`, module-level). Every value a process derives is therefore consistent
-with its own other values forever, and inconsistent with another process's by roughly the age gap
-between their first reads.
+**Root cause established 2026-08-15, and the primitive is fixed everywhere it was read — including at
+this acquisition's own comparison.** The primitive was `probeProcessStartedAtSeconds`, which returned
+`/proc/stat` btime plus the process's start ticks, over a module-level btime cache. Every value a process
+derived was therefore consistent with its own other values forever, and inconsistent with another
+process's by roughly the age gap between their first reads. It no longer exists: #324 deleted it
+repo-wide, and `src/infra/node-process.ts` now carries an opaque `ProcessIncarnation` that is comparable
+only against a value derived in the same process — the paragraph below is why. #324 renamed the field at
+this acquisition's own `expectedIdentity` site too (`acquisition-steps.ts:354`, compared at
+`role-control.ts:173`), so the disagreement quoted above — one that grows with the incumbent's age —
+cannot recur there on any supported platform: no probe caches a clock reading across calls anymore, which
+is what made one process's derived value drift from another's fresh one. Past tense in the rest of this
+section is deliberate; nothing else here describes code that is still in the tree.
 
-So the number is not a timestamp. It is a **process-local pid disambiguator rendered in seconds**, and
-its only sound operation is equality against a value derived in the same process. That is exactly what
-`assertIdentityFieldsAgree` does not do: the acquisition issues a value it derived, and the spawned role
-reports one it derived.
+So the number is not a timestamp. It was a **process-local pid disambiguator rendered in seconds**, and
+its only sound operation was equality against a value derived in the same process. That is exactly what
+`assertIdentityFieldsAgree` did not do: the acquisition issued a value it derived, and the spawned role
+reported one it derived. What #324 did not change is that shape of comparison — it still checks a value
+the acquisition derived by probing the spawned pid against a value the role separately derives and
+self-reports at open time. That is sound on Linux, where the token is boot-relative; the narrower,
+already-tracked exception is Darwin, where the token is wall-clock-based
+(`docs/todo/darwin-signal-authority.md`). Whether to keep that cross-process shape at all is taken up
+under "What has to be decided" below — a design question the fix left standing, not the clock-drift bug.
 
 **Measured, not inferred — and the earlier framing here was wrong.** btime is not cached by the kernel;
-it is recomputed on every read as `realtime_now - boottime_now`. The per-process constancy is entirely
-Coral's own module-level cache (`node-process.ts:16`). On this host `CLOCK_BOOTTIME` runs slow against
+it is recomputed on every read as `realtime_now - boottime_now`. The per-process constancy was entirely
+Coral's own module-level cache. On this host `CLOCK_BOOTTIME` runs slow against
 `CLOCK_REALTIME`, so btime climbs: **3 seconds in 23 seconds of wall time, 13.5%**. A four-hour-old
 daemon is therefore ~1900 seconds away from a fresh reader.
 
@@ -81,16 +93,16 @@ half is fixed under `build-identity-and-upgrade.md`. The remaining pairs, enumer
 | --------------------------------------------------------------------- | ------------------------------------------------------------ |
 | parent's probe at spawn vs guardian self-report                       | `acquisition-steps.ts:354` compared at `role-control.ts:173` |
 | proxy self-report vs guardian-observed containment held by the reaper | `acquisition-steps.ts:385` vs `reaper.ts:191`                |
-| guardian-reported containment vs proxy self-report during inheritance | `inheritance.ts:491`                                         |
-| successor coordinator's probe vs role-reported durable identity       | `inheritance.ts:291`, then `process-containment.ts:150`      |
-| predecessor coordinator's durable CLI evidence vs successor's probe   | `durable-transport.ts:81` vs `carrier-observation.ts:79`     |
+| guardian-reported containment vs proxy self-report during inheritance | `inheritance.ts:564`                                         |
+| successor coordinator's probe vs role-reported durable identity       | `inheritance.ts:371`, then `process-containment.ts:151`      |
+| predecessor coordinator's durable CLI evidence vs successor's probe   | `durable-transport.ts:81` vs `coordinator/composition/carrier-observation.ts:79` |
 
 The last three **fail open**: a readable mismatch is interpreted as absence, so a live process group is
 declared gone, never signalled, and can be issued a disappearance receipt while it is still running.
 That is the more dangerous direction and it is not what the measured acquisition failures show — those
 fail closed. Both come from the same primitive.
 
-**One of them is fixed**: `inheritance.ts:295` no longer requires an exact match to conclude an enforcer
+**One of them is fixed**: `inheritance.ts:369` no longer requires an exact match to conclude an enforcer
 might be live — a readable start time already proves the pid exists, and whether it is still _ours_ is
 what a successor cannot tell. Reproduced first: without the fix that function returns a disappearance
 receipt for a set whose enforcers are alive.
@@ -120,10 +132,15 @@ group that nothing will ever signal.
 
 ### Shipped: the primitive is now an opaque token
 
-`processStartedAtSeconds` is gone. `ProcessIncarnation` is a branded string — `linux:<boot_id>:<startTicks>`
-on Linux, and the kernel-stored creation stamps macOS and Windows already expose — with no clock term, no
-`HZ` division and no `Math.floor`. Every comparison in the table above is now sound, because both sides
-name the same kernel fact instead of each adding its own reading of a moving clock.
+`processStartedAtSeconds` is gone. `ProcessIncarnation` is a branded string: `linux:<boot_id>:<startTicks>`
+on Linux, with no clock term, no `HZ` division and no `Math.floor` — boot-relative and, per
+`incarnationMayAuthorizeSignal`, collision-safe. macOS and Windows instead brand a creation timestamp read at
+probe time (`ps -o lstart=` parsed by `Date.parse`, and WMI's `CreationDate`, respectively) together with a
+boot-session identifier. That closes the across-reboot half on every platform and closes the drift-with-age
+bug quoted at the top of this entry everywhere too, because no probe caches a reading across calls anymore —
+but it does not make every comparison in the table above sound on every platform: Darwin's token is still a
+moving-clock reading, and the DST/NTP collision window that leaves open is tracked separately
+(`docs/todo/darwin-signal-authority.md`).
 
 The brand is the enforcement, and it earned that on the first compile: `process-containment.ts` was
 found doing `identity.incarnation < 0`, an ordering on an identity, which a string simply cannot express.
@@ -154,11 +171,11 @@ kernel-stored creation stamps those platforms already expose. `startTicks` alone
 reboot a durable `pid=1234, ticks=500` can genuinely match a fresh low-pid process, a false _match_ at
 exactly the pids reused earliest in boot. `boot_id` closes that structurally.
 
-Then every site above becomes sound at once, `inheritance.ts:491` becomes a real cross-check, and the
+Then every site above becomes sound at once, `inheritance.ts:564` becomes a real cross-check, and the
 `enforcerMayStillBeLive` softening shipped alongside this entry can be deleted in favour of the stronger
 comparison it replaced.
 
-**The build gate makes the wire half atomic.** `assertNamedCoordinatorBuild` (`protocol.ts:370`) requires
+**The build gate makes the wire half atomic.** `assertNamedCoordinatorBuild` (`protocol.ts:373`) requires
 `buildSetId` equality and gates handoff-redeem on guardian, proxy and reaper, so a new build can never
 redeem an old build's live set. No negotiation and no compatibility window is needed for the control
 protocol — only for the two surfaces that genuinely span builds: the journal's `durable_cli_process.v1`
@@ -176,10 +193,10 @@ subprocess, the `CORAL_DISCOVERY_PROBE_CLK_TCK` environment variable and its row
 `docs/configuration.md`, and the floor that made 1-second aliasing possible.
 
 The redeem path's three `establishControl` calls pass `expectedIdentity: {}`
-(`inheritance.ts:390,415,445`) and compare nothing, because the capsule secret is the authority — that is
+(`inheritance.ts:464,489,519`) and compare nothing, because the capsule secret is the authority — that is
 the pattern the fresh acquisition path should have copied.
 
-The comparison forty lines later (`inheritance.ts:491`, guardian-observed containment against proxy
+The comparison forty-five lines later (`inheritance.ts:564`, guardian-observed containment against proxy
 self-report) is a **different thing, and it is correct in intent**: an independent cross-check between
 two views of one containment. An earlier revision of this entry called it "the defect again". It is not.
 The check is sound; the primitive underneath it is not, and under a comparable primitive the check
@@ -193,7 +210,7 @@ seconds** — a snapshot taken 2026-08-15, not a bound. The same daemon later re
 called spawn latency the cause. Two seconds is a spawn crossing a boundary. **Six hundred is not.**
 
 A spread that reaches eleven minutes points at the two sides deriving the value from different clock
-bases rather than at either side being slow. `probeProcessStartedAtSeconds` converts a per-process tick
+bases rather than at either side being slow. The primitive converted a per-process tick
 count into an absolute time using a boot reference; if that reference moves — WSL2 suspend/resume is the
 obvious local candidate, and this host is WSL2 — every process started before the move reports a start
 time in a different frame from one computed after it. That would produce exactly this: a roughly
@@ -208,10 +225,14 @@ environment weirdness: a fast machine acquires, a slow one does not, on the same
 
 ## What has to be decided
 
-1. **What identity a spawned role actually has.** If `processStartedAtSeconds` is meant to prove
-   "this is the process I spawned, not a recycled pid", then it must be _read from the process_ on both
-   sides rather than _issued_ by one side and checked against the other. Compare what the acquisition
-   issues against how the reaper and guardian obtain the same field.
+1. **Whether the acquisition should keep comparing a value it derived against one the role separately
+   derives and self-reports.** The disagreement this entry was opened for cannot recur on any platform,
+   because `ProcessIncarnation` no longer accumulates drift across a process's own age the way
+   `processStartedAtSeconds` did (see "Confirmed" above) — but the shape is still cross-process, and the
+   alternative is to read the identity
+   the same way on both sides: re-probe the connected pid itself once open, and drop the self-report, the
+   pattern the redeem path already uses (`expectedIdentity: {}`, `inheritance.ts:464,489,519`). This is a
+   design choice now, not a bug fix.
 2. **Whether disagreement should fail the acquisition at all**, or retire the attempt and retry. A
    failed acquisition currently costs the coordinator its proxy for the rest of its uptime unless
    something else triggers `ensureProxySetFor` again.
@@ -225,16 +246,20 @@ This does not change the local-authorized fallback, the control protocol, the co
 
 ## Start condition
 
-Reproduce the disagreement deliberately before changing the comparison. The document has already been
-wrong twice about this cause — once inferring silent abandonment from an absent log, once generalising
-spawn latency from a single sample — so a reproduction is the entry price, not a formality.
+The reproduction this section used to ask for is no longer obtainable, and that is a resolution, not a
+gap: the disagreement quoted at the top of this entry was two values derived from the same moving clock
+at different moments, and #324 removed that moving-clock primitive from both sides of the comparison,
+repo-wide, including at this acquisition's own `expectedIdentity` site. On Linux — the platform the
+quoted disagreement was observed on — neither side reads a clock at all anymore, so there is no
+clock-base divergence left to produce there. Darwin's token is still a clock reading taken at probe time
+(see "Shipped" above), which is the DST/NTP collision window `docs/todo/darwin-signal-authority.md`
+tracks separately, not the bug this entry is about. Sending an engineer to reproduce "two live processes
+reading different clock bases" against current code is chasing a symptom the fix already closed on the
+platform it was observed on.
 
-That start condition is **partly** met: the mechanism is established from source, and the coordinator
-half is fixed and regression-tested. What is still missing is a reproduction of two live processes
-reading different clock bases — the tests injected the offset rather than producing it. The two sides do not share a clock base, and a
-reproduction is a clock read in a second process, not a slow spawn.
-
-What remains is to apply the same rule here that the coordinator paths now follow: **compare a process
-start time only against a value observed in the same process**. For an acquisition, the value the parent
-observed at spawn is the one that matters, because the parent is the process that will reap. The role's
-self-report was never the authority — the bootstrap nonce is.
+What is left to decide is item 1 above, and its entry price is reading `assertIdentityFieldsAgree` and
+the two probes that feed it (`acquisition-steps.ts:354`, `role-main.ts:173`), not reproducing a failure.
+The role's self-report is checked against the acquisition's own probe rather than trusted outright, which
+is sound on Linux; whether that is the shape to keep, or whether the acquisition should re-probe the
+connected pid itself the way the redeem path does, is the open question — not whether the two sides can
+still disagree by minutes.

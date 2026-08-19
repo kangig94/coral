@@ -191,6 +191,7 @@ describe('entity graph merge driver', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
     for (const root of roots.splice(0)) {
       rmSync(root, { recursive: true, force: true });
     }
@@ -334,6 +335,11 @@ describe('entity graph merge driver', () => {
     const root = mkdtempSync(join(tmpdir(), 'coral-entity-graph-config-'));
     const pluginRoot = join(root, 'plugin root');
     roots.push(root);
+    // `resolvePluginRoot()` checks the esbuild-injected `__PLUGIN_ROOT__` global first, and `vitest/setup.ts`
+    // pins that to this repo's own `clients/` for every test — unstubbed, the driver command below would be
+    // built from the real bundle path regardless of what `envPort` returns, and the assertion further down
+    // would pass either way.
+    vi.stubGlobal('__PLUGIN_ROOT__', undefined);
     const runtime = createRealRuntime('prod');
     const gitCalls: string[][] = [];
     const execSync = vi.fn((command: string, args: string[]) => {
@@ -370,6 +376,9 @@ describe('entity graph merge driver', () => {
     expect(gitCalls).toContainEqual(['config', 'rebase.backend', 'merge']);
     const driverCall = gitCalls.find((args) => args[0] === 'config' && args[1] === 'merge.coral-entity-graph.driver');
     expect(driverCall?.[2]).toContain('kb merge-entity-graph "%O" "%A" "%B"');
+    // Asserts `pluginRoot` itself, not just the `bridge/coral-cli.cjs` suffix every plugin root shares — that
+    // weaker check would pass even if `resolvePluginRoot()` ignored `envPort` and used the real bundle path.
+    expect(driverCall?.[2]).toContain(pluginRoot);
     expect(driverCall?.[2]).toContain(join('bridge', 'coral-cli.cjs'));
   });
 

@@ -44,8 +44,9 @@ Environment variables, plugin metadata, hooks, and flavor-aware runtime state fo
 Project ignore migration is independent of `CORAL_AUTO_SYMLINK`. On a valid project
 SessionStart, Coral checks the Git-root `.gitignore` for the exact legacy entry that
 older Coral versions generated (`.claude/coral` at the root, or the project-relative
-equivalent for a nested project). When found, Coral first establishes a standalone
-`coral` entry in `.claude/.gitignore`, then atomically removes only the legacy line.
+equivalent for a nested project). When found, Coral first establishes its own entries in
+`.claude/.gitignore` — see [Hooks](./hooks.md) for which — then atomically removes only the
+legacy line.
 The one-time migration is reported in SessionStart context. Unsafe or concurrently
 changed paths retain the legacy entry and fail open without blocking the session.
 
@@ -300,7 +301,7 @@ coral-cli backend store-reset report --target <legacy|current> <incident-id>
 - `kb-commit quarantine` accepts the exact safe single-segment commit ID from `kb_commit_corrupt_or_unsupported` and moves only that commit plus matching index evidence.
 - `store-reset list` performs bounded local discovery for the selected generation. `store-reset report` validates one canonical incident ID, verifies retained evidence, and produces public-safe Markdown.
 
-Run `store-reset discard` and `kb-commit quarantine` only after `coral-cli backend shutdown`; they prove exclusivity by holding the coordinator socket and generation locks. List and report are read-only and work whether the daemon is stopped, unhealthy, or running. Reports are accepted only when the incident and the embedded/adjacent identities and hashes of the backend, CLI, and Claude helper belong to the exact current build set. Upgrading may therefore make an older retained incident unreadable by design.
+Run `store-reset discard` and `kb-commit quarantine` only once `coral-cli backend shutdown` exits `0`; no other exit is a guarantee the coordinator stopped, and the two destructive commands are safe regardless because they prove exclusivity themselves by holding the coordinator socket and generation locks, not because this run observed a stop. A non-zero exit is not uniformly safe to proceed past: `75` means this run could not observe whether a coordinator stopped — treat that as "do not proceed", not as a failure — and it is not uniformly a promise that retrying resolves it either: `unreadable_record` keeps producing the identical `75` until a human fixes the discovery record's permissions or deletes it, so only the other `75` reasons are worth a bounded retry. `1` covers more than one outcome, some safe to proceed past and some not, distinguishable only by reading the refusal text `backend shutdown` prints, not by the exit code alone. See [CLI Errors](./cli-errors.md#exit-codes) for the exhaustive breakdown of which is which before running either command under a refusal. The rule for an unattended script: exit `0` proceeds, and anything else — `75` included — aborts for an operator to read; `75` means only "not observed", not "retry and it resolves". List and report are read-only and work whether the daemon is stopped, unhealthy, or running. Reports are accepted only when the incident and the embedded/adjacent identities and hashes of the backend, CLI, and Claude helper belong to the exact current build set. Upgrading may therefore make an older retained incident unreadable by design.
 
 The generated Markdown contains only allowlisted build/reset metadata, recorded file sizes and hashes, fixed verification states, and a fixed SQLite integrity state. It excludes paths, namespace and process identifiers, rows, prompts, event bodies, environment values, credentials, account/workspace identifiers, child output, and raw exception or SQLite text. If a report cannot be generated, the fixed CLI error includes a public-safe next step and the issue form accepts that complete error output instead. Never attach DB/WAL/SHM files, `.env` or settings files, credentials, tokens, or unredacted logs.
 

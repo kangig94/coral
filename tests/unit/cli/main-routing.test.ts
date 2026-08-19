@@ -2,7 +2,7 @@ import { currentCoralStoreFormat } from '#src/store-format.js';
 import { mkdtempSync, rmSync, writeFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import type { Command } from 'commander';
+import { Command } from 'commander';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as CommandClientMod from '#src/cli/dispatch.js';
 import type * as CommandOutputMod from '#src/cli/emit.js';
@@ -30,6 +30,9 @@ import { IpcRpcError } from '#src/transport/ipc/client.js';
 import { ProviderHostUnserviceableError } from '#src/providers/host-admission.js';
 import { encodeHostRef } from '#src/providers/host-ref-codec.js';
 import type { HostRef } from '#src/providers/contract.js';
+import { registerBackendCommands, type BackendStatusCommandOperations } from '#src/cli/commands/backend.js';
+import { assertNever } from '#src/infra/error-format.js';
+import type { ShutdownReason, ShutdownResult } from '#src/transport/http/backend/shutdown.js';
 
 const genericInstallMethod = 'shell' satisfies InstallMethod;
 
@@ -41,7 +44,7 @@ const mockState = vi.hoisted(() => ({
   abortJobs: vi.fn(),
   launchAndFollow: vi.fn(),
   getBackendStatusFull: vi.fn(),
-  shutdownBackend: vi.fn(),
+  shutdownBackend: vi.fn<(pluginRoot: string) => Promise<ShutdownResult>>(),
   streamWait: vi.fn(),
   discussSeed: vi.fn(),
   discussStart: vi.fn(),
@@ -445,20 +448,142 @@ describe('cli main routing', () => {
   it('surfaces child lifecycle denial from backend shutdown without reporting success', async () => {
     const { buildProgram } = await loadMainModule();
     const program = buildProgram();
-    mockState.shutdownBackend.mockResolvedValueOnce({
-      ok: false,
-      reason:
-        "this nested Coral process cannot shut down its parent coordinator; return to the top-level Coral session and run 'coral-cli backend shutdown' there",
-    });
+    mockState.shutdownBackend.mockResolvedValueOnce({ ok: false, reason: 'nested_child' });
 
     await program.parseAsync(['node', 'coral-cli', 'backend', 'shutdown']);
 
     expect(mockState.shutdownBackend).toHaveBeenCalledTimes(1);
     expect(stdout).toBe('');
-    expect(stderr).toContain(
-      "Shutdown failed: this nested Coral process cannot shut down its parent coordinator; return to the top-level Coral session and run 'coral-cli backend shutdown' there",
-    );
+    expect(stderr).toMatch(/cannot shut down its parent coordinator/u);
+    expect(stderr, 'the remedy is the point of this refusal').toMatch(/top-level Coral session/u);
+    // 1, not 75: this run established the refusal. The undetermined reasons are the ones that exit 75.
     expect(process.exitCode).toBe(1);
+  });
+
+  // The exit code is the only machine-readable channel this command has, and `docs/configuration.md` tells
+  // operators to run it before `store-reset discard`. Every failure exited 1 alike, so a script could not tell
+  // "it is stopped, proceed" from "I could not tell" — the disposition the type had just gained, discarded at
+  // the boundary that carries it out of the process.
+  //
+  // 75 rather than 2, which an earlier revision used: 2 is `invalid_usage` across this CLI, so "you called
+  // this wrong" and "I could not observe the daemon" would have shared a code.
+  // `socket_refused` exits `75`, not `1`: a refused connection never establishes the recorded pid absent (an
+  // absent pid is excluded before any request is sent), so it cannot join the observed-absence/observed-refusal
+  // rows above it — see the production table's own comment for the deterministic mid-drain window this guards.
+  const SHUTDOWN_EXIT_EXPECTATIONS = [
+    ['no_record', 1],
+    ['recorded_process_absent', 1],
+    ['nested_child', 1],
+    ['capability_rejected', 1],
+    ['unreadable_record', 75],
+    ['socket_refused', 75],
+    ['refused_by_response', 75],
+    ['no_response', 75],
+    ['no_record_socket_present', 75],
+  ] as const;
+
+  // A full `ShutdownResult` per reason, not a bare `{ ok: false, reason }` — that shape is a value the
+  // discriminated union makes impossible for every reason that carries `detail`/`pidLiveness`, and it passed
+  // here only because the mock was untyped. Typing `mockState.shutdownBackend` (above) now makes an incomplete
+  // fixture a compile error; this is what supplies the fields it demands.
+  function shutdownRefusal(reason: ShutdownReason): ShutdownResult {
+    switch (reason) {
+      case 'nested_child':
+      case 'no_record':
+      case 'no_record_socket_present':
+        return { ok: false, reason };
+      case 'recorded_process_absent':
+        return { ok: false, reason, detail: '4242' };
+      case 'unreadable_record':
+        return { ok: false, reason, detail: 'corrupt-json' };
+      case 'refused_by_response':
+        return { ok: false, reason, detail: '500 Internal Server Error' };
+      case 'no_response':
+        return { ok: false, reason, detail: 'ETIMEDOUT' };
+      case 'socket_refused':
+        return { ok: false, reason, pidLiveness: 'alive', pid: 4242, recordPath: '/run/coral/coordinator.json' };
+      case 'capability_rejected':
+        return { ok: false, reason, detail: '4242', pidLiveness: 'alive' };
+      default:
+        return assertNever(reason);
+    }
+  }
+
+  it.each(SHUTDOWN_EXIT_EXPECTATIONS)('exits %s with %s', async (reason, expected) => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+    mockState.shutdownBackend.mockResolvedValueOnce(shutdownRefusal(reason));
+
+    await program.parseAsync(['node', 'coral-cli', 'backend', 'shutdown']);
+
+    expect(process.exitCode, 'observed refusals exit 1; unobserved state exits 75').toBe(expected);
+  });
+
+  // The rows above are written out by hand so they are an independent statement of the mapping rather than a
+  // read of it. This is what keeps them a *complete* statement: a new `ShutdownReason` gets an exit code in
+  // the production table and no row here, and that is the shape of every "the list is exhaustive" claim this
+  // branch found to be stale.
+  it('has a row for every refusal the command can produce', async () => {
+    const { SHUTDOWN_REFUSAL_EXIT_CODES } = await import('#src/cli/commands/backend.js');
+
+    expect(SHUTDOWN_EXIT_EXPECTATIONS.map(([reason]) => reason).sort()).toEqual(
+      Object.keys(SHUTDOWN_REFUSAL_EXIT_CODES).sort(),
+    );
+  });
+
+  describe('backend status exit codes', () => {
+    // Unlike `backend shutdown` above, this registers a standalone program instead of driving `buildProgram()`:
+    // the default `backendStatus.inspectReadiness()` reads real local generation state, which this suite has no
+    // fixture for and no reason to depend on. Injecting operations directly is the same pattern
+    // `tests/unit/cli/backend-status.test.ts` already uses for this exact command.
+    function statusProgram(getStatus: BackendStatusCommandOperations['getStatus']): Command {
+      const program = new Command();
+      program.exitOverride();
+      registerBackendCommands(program, {
+        backendStatus: { inspectReadiness: () => ({ kind: 'no-legacy' }), getStatus },
+      });
+      return program;
+    }
+
+    // `backend status` never set an exit code before this, so `backend status && <destructive op>` read every
+    // outcome — including "state is unknown" — as permission to proceed. Only the two statuses that mean the
+    // state genuinely could not be determined get a non-zero exit; every confidently observed answer, even bad
+    // news like `not_running`, stays exit 0. Two rows only: `ok` needs a full `BackendHealth` fixture that adds
+    // nothing here — the lookup is a plain object index, so proving the wiring works for one exit-0 and one
+    // exit-75 status is what the completeness test below cannot itself prove.
+    it.each([
+      [{ status: 'not_running' }, 0],
+      [{ status: 'unreachable', detail: 'ECONNRESET', cause: 'no_response' }, 75],
+    ] as const)('exits %j with %s', async (status, expected) => {
+      const program = statusProgram(async () => status);
+
+      await program.parseAsync(['node', 'coral-cli', 'backend', 'status']);
+
+      expect(process.exitCode).toBe(expected);
+    });
+
+    // The rows above only cover two of the seven `BackendStatusFull['status']` values — this is the complete
+    // statement, independent of the it.each rows, mirroring `SHUTDOWN_REFUSAL_EXIT_CODES`'s own completeness
+    // test: a new status gets an exit code in the production table and no row here, and that is the shape of
+    // every "the list is exhaustive" claim this branch found to be stale.
+    const BACKEND_STATUS_EXIT_EXPECTATIONS = [
+      ['ok', 0],
+      ['not_running', 0],
+      ['shutting_down', 0],
+      ['unauthorized', 0],
+      ['recent_failure', 0],
+      ['undecodable_record', 75],
+      ['unreachable', 75],
+      ['no_record_socket_present', 75],
+    ] as const;
+
+    it('has a row for every status the command can produce', async () => {
+      const { BACKEND_STATUS_EXIT_CODES } = await import('#src/cli/commands/backend.js');
+
+      expect(BACKEND_STATUS_EXIT_EXPECTATIONS.map(([status]) => status).sort()).toEqual(
+        Object.keys(BACKEND_STATUS_EXIT_CODES).sort(),
+      );
+    });
   });
 
   it('preserves top-level help output via snapshot', async () => {

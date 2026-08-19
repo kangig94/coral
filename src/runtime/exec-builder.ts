@@ -1,6 +1,6 @@
-import { SIGTERM_GRACE_MS } from '../infra/process-constants.js';
-import type { ChildProcessLike, TimerHandle } from '../infra/port-types.js';
-import type { ExecResult, RuntimeSpawnOptions } from './ports.js';
+import { EXEC_MAXBUFFER_CODE, EXEC_TIMEOUT_CODE, SIGTERM_GRACE_MS } from '../infra/process-constants.js';
+import type { ChildProcessLike, ExecResult, TimerHandle } from '../infra/port-types.js';
+import type { RuntimeSpawnOptions } from './ports.js';
 
 export interface BuildExecPromiseOptions {
   command: string;
@@ -165,9 +165,9 @@ export function buildExecPromise(options: BuildExecPromiseOptions): Promise<Exec
     child.on('close', (status) => {
       let error: Error | undefined;
       if (wrapperKilled === 'timeout') {
-        error = new Error(`timeout: ${command}`);
+        error = Object.assign(new Error(`timeout: ${command}`), { code: EXEC_TIMEOUT_CODE });
       } else if (wrapperKilled === 'maxBuffer') {
-        error = new Error(`maxBuffer exceeded: ${command}`);
+        error = Object.assign(new Error(`maxBuffer exceeded: ${command}`), { code: EXEC_MAXBUFFER_CODE });
       }
       finish({
         stdout,

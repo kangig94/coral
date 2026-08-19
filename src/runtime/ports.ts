@@ -1,7 +1,7 @@
 import type { ProcessIncarnation, ProcessLiveness } from '../infra/node-process.js';
 import type { BuildFlavor } from '../infra/build-flavor.js';
 import type { CoralPaths } from '../infra/path/index.js';
-import type { ChildProcessLike, EnvPort, StoragePort, TimePort } from '../infra/port-types.js';
+import type { ChildProcessLike, EnvPort, ExecResult, StoragePort, TimePort } from '../infra/port-types.js';
 import type { DurableCliRuntimeRecord, DurableProcessExit } from './durable-runtime.js';
 
 export interface RuntimePaths {
@@ -80,13 +80,6 @@ export type RuntimeExecOptions = {
   maxBuffer?: number;
   inheritEnv?: boolean;
   shell?: boolean;
-};
-
-export type ExecResult = {
-  stdout: string;
-  stderr: string;
-  status: number | null;
-  error?: Error;
 };
 
 export interface ProcessPort {

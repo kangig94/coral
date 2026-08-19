@@ -19,7 +19,8 @@ import { currentCoralStoreFormat } from '../../store-format.js';
 import { classifyStoreFile, type Database } from '../../store/db.js';
 import { openReadOnlyStoreDatabase } from '../../store/read-port.js';
 import { getBackendStatusFull, type BackendStatusFull } from '../../transport/http/backend/status.js';
-import { shutdownBackend } from '../../transport/http/backend/shutdown.js';
+import { shutdownBackend, type ShutdownReason } from '../../transport/http/backend/shutdown.js';
+
 import { TOOL_TIMEOUT_MS } from '../../transport/http/sse.js';
 import { childPrincipalAuthFromEnv, childPrincipalAuthOptions } from '../../transport/ipc/child-principal-auth.js';
 import { IpcRpcError } from '../../transport/ipc/client.js';
@@ -51,6 +52,75 @@ import {
   RECOVERY_REVISION_UNTIL_CLEARED,
 } from '../format/backend.js';
 import { formatStoreResetList, formatStoreResetReport } from '../format/store-reset.js';
+
+/**
+ * What each `backend shutdown` refusal means to a script, as an exit code.
+ *
+ * `docs/configuration.md` tells operators to run `backend shutdown` before `store-reset discard` and
+ * `kb-commit quarantine`, so the question this code answers is "may I proceed to destroy state?" — and there
+ * are three answers, not two. Exit `0` is "it is stopping". Exit `1` is a refusal this run *observed*: the
+ * daemon was seen to be absent, or seen to be alive and unwilling. Exit `75` is the third — this run could not
+ * tell, so a caller must neither proceed nor read the outcome as failure. Every refusal exited `1` alike
+ * before, discarding at the boundary the disposition `ShutdownReason` had just gained.
+ *
+ * `75` rather than `2`, which an earlier revision used: `2` is `invalid_usage` (`docs/cli-errors.md`), so a
+ * script could not tell "you called this wrong" from "I could not observe the daemon". `75` is already this
+ * CLI's "not concluded, resume or retry" across `wait jobs` and every transient code, which is what both
+ * members below are.
+ *
+ * A `Record` rather than a set of the undetermined ones. A set answers only for its members and defaults the
+ * rest, so a new `ShutdownReason` silently inherits "observed" — the exact shape of the collapse this table
+ * exists to prevent. Here it fails to compile until someone decides, which is the same mechanism
+ * `formatShutdown`'s `assertNever` provides for the message.
+ */
+export const SHUTDOWN_REFUSAL_EXIT_CODES: Readonly<Record<ShutdownReason, 1 | 75>> = {
+  // Observed: nothing recorded itself, or the recorded process is decisively gone.
+  no_record: 1,
+  recorded_process_absent: 1,
+  // Observed: the coordinator answered and declined. It is running, and this run knows it.
+  capability_rejected: 1,
+  // Observed: this process refused to act, before asking anything. Retrying from the same child repeats it.
+  nested_child: 1,
+  // Not observed: a refused connection proves nothing was listening on that exact socket at that moment, but
+  // the recorded pid was never established absent before this request was sent (an absent pid short-circuits
+  // to `recorded_process_absent` first) — so this is not the same "observed absence" as the two rows above.
+  // The deterministic window it must not claim: a coordinator's HTTP listener closes at the top of its drain
+  // while its process, confirmed alive, keeps running.
+  socket_refused: 75,
+  // Not observed: the record could not be read, the request never completed, or a response arrived but did not
+  // resolve the question either way. A coordinator may be serving.
+  unreadable_record: 75,
+  refused_by_response: 75,
+  no_response: 75,
+  // Not observed: the coordinator's own IPC socket file exists with no record written yet, which a coordinator
+  // mid-boot and a stale socket a killed one left behind both produce, indistinguishably.
+  no_record_socket_present: 75,
+};
+
+/**
+ * `backend status` never set an exit code before this, so `backend status && <destructive op>` read every
+ * outcome — including "state is unknown" — as permission to proceed. The three `BackendStatusFull` statuses
+ * named `undecodable_record`, `unreachable`, and `no_record_socket_present` are exactly that: `getBackendStatusFull`
+ * itself refuses to call any of them `ok` or `not_running` because it could not tell. Every other status is a
+ * confidently observed answer — the backend genuinely is running, stopped, draining, or unauthorized — and this
+ * command succeeding at determining that stays exit `0` even when the answer itself is bad news.
+ *
+ * `75`, not `1`: matches `SHUTDOWN_REFUSAL_EXIT_CODES`'s "not observed, retry" code above rather than a
+ * `backend shutdown`-style observed refusal, since none of the three is a refusal at all — this is a read-only
+ * inspection, and all three mean only "ask again". A `Record` over the full `BackendStatusFull['status']` union for
+ * the same reason as `SHUTDOWN_REFUSAL_EXIT_CODES`: a new status fails to compile here until someone decides
+ * its exit code, instead of silently inheriting `0`.
+ */
+export const BACKEND_STATUS_EXIT_CODES: Readonly<Record<BackendStatusFull['status'], 0 | 75>> = {
+  ok: 0,
+  not_running: 0,
+  shutting_down: 0,
+  unauthorized: 0,
+  recent_failure: 0,
+  undecodable_record: 75,
+  unreachable: 75,
+  no_record_socket_present: 75,
+};
 import { renderHandoffNotice } from '../handoff-notice.js';
 import { quarantineKbCommitLocal } from '../kb-commit-quarantine.js';
 import type { StoreResetTarget } from '../../store/operator-store-reset.js';
@@ -204,6 +274,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
       }
       const status = await backendStatus.getStatus();
       process.stdout.write(formatBackendStatus(status) + '\n');
+      process.exitCode = BACKEND_STATUS_EXIT_CODES[status.status];
     } catch (error) {
       emitError(error);
     }
@@ -221,7 +292,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
       }
 
       process.stderr.write(text + '\n');
-      process.exitCode = 1;
+      process.exitCode = SHUTDOWN_REFUSAL_EXIT_CODES[result.reason];
     } catch (error) {
       emitError(error);
     }
@@ -455,7 +526,8 @@ function parseKbCommitId(value: string): string {
  *
  * `list` renders each field with `JSON.stringify`, so a subject key containing a character JSON escapes
  * reaches the terminal as an escape sequence — and `session-retention-work` joins its two identifiers
- * with a NUL (`retention-work-item-recovery-source.ts:63`), which argv cannot carry at all. Passing the
+ * with a NUL (see `workKey` in `src/sessions/retention-work-item-recovery-source.ts`), which argv cannot
+ * carry at all. Passing the
  * printed text through verbatim therefore never matched the stored key, and no other input could:
  * copying gave a literal backslash-u, and the real byte cannot survive a command line. Those rows were
  * unreachable by the one command documented to reach them.

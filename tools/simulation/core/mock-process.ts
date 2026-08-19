@@ -22,10 +22,10 @@ import type {
   DurableExecutionTransport,
   DurableLaunchOptions,
   DurableLaunchResult,
-  ExecResult,
   RuntimeExecOptions,
   RuntimeSpawnOptions,
 } from '../../../src/runtime/ports.js';
+import type { ExecResult } from '../../../src/infra/port-types.js';
 import { createDeferred, type Deferred } from '../../testing/deferred.js';
 import { toError } from './constants.js';
 import type { InMemoryStorage } from './memory-storage.js';

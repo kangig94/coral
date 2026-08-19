@@ -607,6 +607,148 @@ describe('cli format', () => {
   });
 
   describe('backend formatters', () => {
+    // The one operator-facing sentence on this branch that had no test. The load-bearing line is the caveat:
+    // an unreadable record must not read as a stopped daemon.
+    it.each([['corrupt-json'], ['shape-rejected']] as const)(
+      'reports a %s discovery record as unknown state, not as not-running',
+      (reason) => {
+        const text = formatBackendStatus({ status: 'undecodable_record', reason, path: '/run/coral/coordinator.json' });
+
+        expect(text).toContain('could not be read');
+        expect(text, 'the caveat is the whole point of the variant').toContain('may still be running');
+        expect(text, 'the remedy is "delete this file", so it must name the file').toContain(
+          '/run/coral/coordinator.json',
+        );
+        expect(text).not.toMatch(/Backend not running/u);
+      },
+    );
+
+    // Each row is a full `ShutdownResult`, not a bare `reason` token: `refused_by_response` and
+    // `recorded_process_absent` require `detail`, and `socket_refused` requires `pidLiveness` — a shared
+    // generic `detail` fallback (as this table used to build) no longer type-checks against the discriminated
+    // union, which is itself part of what F3 fixed.
+    //
+    // Every row used to also assert `.not.toMatch(/Shutdown failed: <reason>$/)` — a raw-token render that no
+    // path in `src/` produces any more (the string exists only in comments), so that assertion was vacuous
+    // before this rewrite: it could never fail regardless of what `formatShutdown` actually returned.
+    const SHUTDOWN_REFUSAL_SENTENCES: ReadonlyArray<readonly [Extract<ShutdownResult, { ok: false }>, RegExp]> = [
+      [{ ok: false, reason: 'unreadable_record', detail: 'corrupt-json' }, /may still be running/u],
+      [
+        { ok: false, reason: 'refused_by_response', detail: '500 Internal Server Error' },
+        /coordinator responded but did not accept/u,
+      ],
+      [{ ok: false, reason: 'no_response', detail: 'ETIMEDOUT' }, /did not complete/u],
+      [{ ok: false, reason: 'no_record' }, /no coordinator has recorded itself/u],
+      [{ ok: false, reason: 'no_record_socket_present' }, /no discovery record has been written yet/u],
+      [{ ok: false, reason: 'recorded_process_absent', detail: '4242' }, /recorded coordinator process/u],
+      [
+        {
+          ok: false,
+          reason: 'socket_refused',
+          pidLiveness: 'alive',
+          pid: 4242,
+          recordPath: '/run/coral/coordinator.json',
+        },
+        /socket refused the connection/u,
+      ],
+      [{ ok: false, reason: 'nested_child' }, /cannot shut down its parent coordinator/u],
+    ];
+
+    it.each(SHUTDOWN_REFUSAL_SENTENCES)(
+      'renders a shutdown refusal as a sentence, not as a token (%j)',
+      (result, expected) => {
+        expect(formatShutdown(result)).toMatch(expected);
+      },
+    );
+
+    // `capability_rejected` is deliberately not a row above — its own tests further down assert the pid-hedging
+    // language directly — so this drives completeness off the production exit-code table rather than off
+    // `SHUTDOWN_REFUSAL_SENTENCES` alone, the way `errorCodeToExit`'s own completeness test does.
+    it('renders a sentence for every ShutdownReason the production table knows about', async () => {
+      const { SHUTDOWN_REFUSAL_EXIT_CODES } = await import('#src/cli/commands/backend.js');
+
+      const testedElsewhere = ['capability_rejected'];
+      const coveredReasons = [...SHUTDOWN_REFUSAL_SENTENCES.map(([result]) => result.reason), ...testedElsewhere];
+
+      expect(coveredReasons.sort()).toEqual(Object.keys(SHUTDOWN_REFUSAL_EXIT_CODES).sort());
+    });
+
+    // `refused_by_response` proves something is listening (a response arrived); `no_response` proves neither
+    // way. Neither may claim the backend stopped — that split is what F2 fixed, replacing a single `unreachable`
+    // reason that rendered "did not complete" even when a response had, in fact, arrived.
+    it('does not claim the backend stopped when a response arrived but was not accepted', () => {
+      const text = formatShutdown({ ok: false, reason: 'refused_by_response', detail: '500 Internal Server Error' });
+
+      expect(text).not.toMatch(/did not complete/u);
+      expect(text).not.toMatch(/Backend not running/u);
+    });
+
+    // `socket_refused` never claims "not running" (see F1): a refused connection cannot prove absence, because
+    // an absent pid is excluded before this request is ever sent. Both liveness values must render a hedge,
+    // not a claim that the backend stopped.
+    it.each([['alive'], ['unknown']] as const)(
+      'does not claim the backend stopped on a refused connection when pidLiveness is %s',
+      (pidLiveness) => {
+        const text = formatShutdown({
+          ok: false,
+          reason: 'socket_refused',
+          pidLiveness,
+          pid: 4242,
+          recordPath: '/run/coral/coordinator.json',
+        });
+
+        expect(text).not.toMatch(/^Backend not running/mu);
+      },
+    );
+
+    // Pins both arms of the ternary: inverting it (always rendering the `'alive'` text) leaves every existing
+    // assertion in this file green, since both arms match `/socket refused the connection/u` and neither
+    // matches `/^Backend not running/mu`. Only a direct check that `'unknown'` does NOT claim a prior
+    // confirmation catches that inversion.
+    it('says the pid still belongs to a process only when pidLiveness is alive, not unknown', () => {
+      const aliveText = formatShutdown({
+        ok: false,
+        reason: 'socket_refused',
+        pidLiveness: 'alive',
+        pid: 4242,
+        recordPath: '/run/coral/coordinator.json',
+      });
+      const unknownText = formatShutdown({
+        ok: false,
+        reason: 'socket_refused',
+        pidLiveness: 'unknown',
+        pid: 4242,
+        recordPath: '/run/coral/coordinator.json',
+      });
+
+      expect(aliveText, 'alive observed a process holding that pid').toMatch(
+        /pid 4242 still belongs to a running process/u,
+      );
+      expect(unknownText, 'unknown observed neither').not.toMatch(/still belongs to a running process/u);
+      // The remedy names both things it asks the operator to act on; a sentence telling them to check a pid
+      // it does not print, and delete a file whose path it does not give, is a next step only in form.
+      expect(aliveText, 'the pid the operator is told to check').toMatch(/ps -p 4242/u);
+      expect(aliveText, 'the record the operator is told to delete').toMatch(/\/run\/coral\/coordinator\.json/u);
+      // `observeProcessLiveness` is a bare `kill(pid, 0)`, so the sentence may not upgrade "some process holds
+      // this number" into "Coral's coordinator is running" — the overclaim this arm shipped with.
+      expect(aliveText, 'a bare pid probe cannot identify the program holding the pid').not.toMatch(
+        /coordinator process was confirmed running/u,
+      );
+    });
+
+    // Three separate observations used to share one sentence, and that sentence named a socket dial only the
+    // third of them performs. Each must say what was actually looked at.
+    it('does not claim a socket dial for no_record, which never made one', () => {
+      const text = formatShutdown({ ok: false, reason: 'no_record' });
+
+      expect(text, 'only socket_refused observed the socket').not.toMatch(/socket refused|listening/u);
+    });
+
+    it('does not claim a socket dial for recorded_process_absent, which never made one', () => {
+      const text = formatShutdown({ ok: false, reason: 'recorded_process_absent', detail: '4242' });
+
+      expect(text, 'only socket_refused observed the socket').not.toMatch(/socket refused|listening/u);
+    });
     const baseHealth = {
       status: 'ok' as const,
       version: '1.2.3',
@@ -813,6 +955,89 @@ describe('cli format', () => {
       );
     });
 
+    // `formatBackendStatus`'s `unreachable` case had no test anywhere. The load-bearing part is that the
+    // "something is listening" claim is conditional: it is true only when an HTTP response was actually
+    // received (`cause: 'responded'`), and must not be printed for a refusal or a request that never completed.
+    it('claims something is listening only when a response was actually received', () => {
+      const text = formatBackendStatus({
+        status: 'unreachable',
+        detail: '500 Internal Server Error',
+        cause: 'responded',
+      });
+
+      expect(text).toContain('did not give a usable answer (500 Internal Server Error)');
+      expect(text, 'a response proves something is listening').toMatch(/is listening at the recorded address/u);
+      expect(text).not.toMatch(/Backend not running/u);
+    });
+
+    it('does not claim anything is listening when the request never completed', () => {
+      const text = formatBackendStatus({ status: 'unreachable', detail: 'ECONNRESET', cause: 'no_response' });
+
+      expect(text).toContain('did not give a usable answer (ECONNRESET)');
+      // The false claim this guards against: nothing here proves a socket is open, let alone that anything
+      // answers on it.
+      expect(text, 'no response was received, so nothing here proves anything is listening').not.toMatch(
+        /is listening at the recorded address/u,
+      );
+      expect(text).not.toMatch(/Backend not running/u);
+    });
+
+    // A refusal proves the opposite of `responded`: nothing was listening on that exact socket at that moment.
+    // But that is not the same as a confirmed-absent backend, since a coordinator's HTTP listener can close
+    // mid-drain while its process, already confirmed alive, keeps running — hence the `pidLiveness` hedge.
+    it.each([
+      ['alive', /pid still belongs to a running process/u],
+      ['unknown', /could not be independently confirmed alive or gone/u],
+    ] as const)('claims nothing is listening on a refusal, hedged by pidLiveness %s', (pidLiveness, expected) => {
+      const text = formatBackendStatus({
+        status: 'unreachable',
+        detail: 'ECONNREFUSED',
+        cause: 'refused',
+        pidLiveness,
+        pid: 4242,
+        recordPath: '/run/coral/coordinator.json',
+      });
+
+      expect(text).toContain('did not give a usable answer (ECONNREFUSED)');
+      expect(text, 'a refusal proves nothing is listening at that moment').toMatch(
+        /Nothing is listening at the recorded address/u,
+      );
+      expect(text).toMatch(expected);
+      expect(text).not.toMatch(/is listening at the recorded address; this is not a report/u);
+      expect(text).not.toMatch(/Backend not running/u);
+    });
+
+    // `backend shutdown` already resolves the identical evidence (a reused pid never clears by retrying) with
+    // a check-and-clear remedy; a refused `backend status` probe used to end at "check the coordinator logs",
+    // a hold with no exit for the one case that cannot end by retrying.
+    it('names the same check-and-clear remedy backend shutdown offers for a refused connection', () => {
+      const text = formatBackendStatus({
+        status: 'unreachable',
+        detail: 'ECONNREFUSED',
+        cause: 'refused',
+        pidLiveness: 'alive',
+        pid: 4242,
+        recordPath: '/run/coral/coordinator.json',
+      });
+
+      expect(text).toMatch(/ps -p 4242/u);
+      expect(text).toContain('/run/coral/coordinator.json');
+      expect(text).toMatch(/coral-cli mutating command to relaunch/u);
+    });
+
+    // Not "not running": the coordinator's own IPC socket exists with no record written yet, so a boot in
+    // progress and a stale leftover socket read the same and neither may claim the backend is running or gone.
+    it('formats a no_record_socket_present status without claiming the backend is running or stopped', () => {
+      const text = formatBackendStatus({
+        status: 'no_record_socket_present',
+        socketPath: '/run/coral/coordinator.sock',
+      });
+
+      expect(text).toContain('/run/coral/coordinator.sock');
+      expect(text).toMatch(/no discovery record has been written yet/u);
+      expect(text).not.toMatch(/Backend not running/u);
+    });
+
     it('formats a recent coordinator failure with its phase and log guidance', () => {
       expect(
         formatBackendStatus({
@@ -866,9 +1091,71 @@ describe('cli format', () => {
       expect(formatShutdown(result)).toBe('Backend shutdown initiated');
     });
 
-    it('formats a failed shutdown result', () => {
-      const result = { ok: false, reason: 'unauthorized' } satisfies ShutdownResult;
-      expect(formatShutdown(result)).toBe('Shutdown failed: unauthorized');
+    // `alreadyDraining` was produced by `shutdownBackend` and asserted in its own test, but `formatShutdown`
+    // rendered it identically to a fresh shutdown it had just initiated — telling an operator this request
+    // started a drain that was, in fact, already under way before it was sent.
+    it('formats an already-draining shutdown result distinctly from a freshly initiated one', () => {
+      const result = { ok: true, alreadyDraining: true } satisfies ShutdownResult;
+      expect(formatShutdown(result)).toBe('Backend shutdown already in progress');
+      expect(formatShutdown(result)).not.toBe('Backend shutdown initiated');
+    });
+
+    // Was `reason: 'unauthorized'` — a token no producer emits, pinning the raw-token render that the closed
+    // union and the exhaustive switch now make impossible to reach.
+    it('formats a rejected shutdown capability as a refusal that names an exit', () => {
+      const result = {
+        ok: false,
+        reason: 'capability_rejected',
+        detail: '4242',
+        pidLiveness: 'alive',
+      } satisfies ShutdownResult;
+      expect(formatShutdown(result)).toMatch(/rejected the boot token/u);
+      expect(formatShutdown(result), 'the coordinator is up; this is not a report that it stopped').toMatch(
+        /did not accept the request/u,
+      );
+      // A refusal with nothing an operator can do is the shape §11 forbids, and this one said "needs manual
+      // intervention" while naming neither the process nor a command. The pid comes from our own record, and
+      // it is the only handle on a coordinator that will not accept our token.
+      expect(formatShutdown(result), 'the live coordinator is identified').toMatch(/pid 4242/u);
+      expect(formatShutdown(result), 'and the next step is a command that exists').toMatch(/coral-cli backend status/u);
+      expect(formatShutdown(result), 'retrying is the one thing that cannot work here').toMatch(/no retry/u);
+    });
+
+    // The 401 proves a coordinator answers at the address; it does not itself prove the recorded pid is that
+    // coordinator. `pidLiveness: 'unknown'` is what `observeCoordinator` had already found before this request
+    // was ever sent, and the sentence must not promise more certainty about the pid than that.
+    it('hedges the pid claim when its liveness was never independently confirmed', () => {
+      const result = {
+        ok: false,
+        reason: 'capability_rejected',
+        detail: '4242',
+        pidLiveness: 'unknown',
+      } satisfies ShutdownResult;
+      const text = formatShutdown(result);
+
+      expect(text).toMatch(/rejected the boot token/u);
+      expect(text, 'the pid is still named').toMatch(/4242/u);
+      expect(text, 'but confirmed liveness is not claimed for it').not.toMatch(/^It is running \(pid/mu);
+      expect(text, 'the hedge itself is present').toMatch(/not independently confirmed alive/u);
+      expect(text, 'and the next step is a command that exists').toMatch(/coral-cli backend status/u);
+    });
+
+    // Neither remedy is reachable through a coral-cli command: `shutdownBackend` refuses on an unreadable
+    // record before it ever dials, since host/port/bootToken all live in the record it could not read.
+    it('does not tell the operator to run a coral-cli command that cannot reach an unreadable record', () => {
+      const statusText = formatBackendStatus({
+        status: 'undecodable_record',
+        reason: 'corrupt-json',
+        path: '/run/coral/coordinator.json',
+      });
+      const shutdownText = formatShutdown({ ok: false, reason: 'unreadable_record', detail: 'corrupt-json' });
+
+      for (const text of [statusText, shutdownText]) {
+        expect(text, 'no invented command is offered').not.toMatch(/stop any running coordinator/u);
+        expect(text, 'the only reachable exit is stopping the process by hand').toMatch(
+          /find and stop that process yourself|stop a coordinator whose own record/u,
+        );
+      }
     });
   });
 

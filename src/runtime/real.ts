@@ -41,7 +41,13 @@ import type {
   RuntimePaths,
 } from './ports.js';
 import { errorMessage } from '../infra/error-format.js';
-import { MAX_BUFFER } from '../infra/process-constants.js';
+import {
+  DEFAULT_SYNC_EXEC_TIMEOUT_MS,
+  EXEC_MAXBUFFER_CODE,
+  EXEC_TIMEOUT_CODE,
+  SPAWN_SYNC_MAXBUFFER_ERRNO,
+  MAX_BUFFER,
+} from '../infra/process-constants.js';
 import { composeChildEnv, parsePassthrough, resolveEnvBudgetBytes } from '../infra/env-sanitize.js';
 import { isDurableCliRuntime, type DurableCliRuntimeRecord, type DurableProcessExit } from './durable-runtime.js';
 import { buildExecPromise } from './exec-builder.js';
@@ -387,6 +393,19 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
   runtimeProcess.execSync = (command, args, options = {}) => {
     const execOptions: RuntimeExecOptions = { ...options };
     execOptions.maxBuffer ??= MAX_BUFFER;
+    // Bounded for the same reason `maxBuffer` is, and only on the synchronous variant. Abandoning `exec`'s
+    // promise does not stop its child either — what differs is that the event loop keeps running while it
+    // finishes, so an `AbortSignal` or a shutdown budget still gets its turn. This one blocks until the child
+    // decides otherwise, and nothing in this process gets a turn at all. `RuntimeExecOptions.timeout` stays
+    // optional so a caller may widen or tighten it, but omission must not mean unbounded — and `0`, which
+    // `spawnSync` reads as no bound, is not a tightening, so it is corrected rather than honoured.
+    //
+    // `tests/invariants/sync-subprocess-timeout.test.ts` excludes port callers from its literal-requiring scan
+    // on the stated grounds that this port owns their bound. Until this line, nothing here had taken that
+    // ownership up — the exclusion named a successor that had not accepted.
+    if (execOptions.timeout === undefined || execOptions.timeout <= 0) {
+      execOptions.timeout = DEFAULT_SYNC_EXEC_TIMEOUT_MS;
+    }
     const encoding = execOptions.encoding ?? 'utf-8';
     const maxBuffer = execOptions.maxBuffer;
     const spawnOptions = {
@@ -417,23 +436,29 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
     const stdout = normalizeSpawnSyncOutput(result.stdout, encoding);
     const stderr = normalizeSpawnSyncOutput(result.stderr, encoding);
 
+    // The two branches below substitute a `code` for whatever `spawnSync` put on `result.error`, so what a
+    // caller sees names which non-answer this was instead of an error with no code at all.
     if (result.error) {
-      const hasOutput = stdout.length > 0 || stderr.length > 0;
-      const errorCode = (result.error as NodeJS.ErrnoException).code;
-      if (errorCode === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' || (hasOutput && result.signal === null)) {
+      // Sorted on `spawnSync`'s own code, not on the shape around it. A `maxBuffer` overflow arrives as
+      // `ENOBUFS` either way, but its shape depends on whether the child finished writing before Node killed
+      // it — `signal: null` when it did, `signal: 'SIGTERM'` when it did not — and a timeout arrives in that
+      // same second shape. So reading the shape puts a loaded machine's overflow on the timeout side, while
+      // the code separates every case `spawnSync` produces here: `ENOBUFS`, `ETIMEDOUT`, and a launch errno.
+      const code = (result.error as NodeJS.ErrnoException).code;
+      if (code === SPAWN_SYNC_MAXBUFFER_ERRNO) {
         return {
           stdout,
           stderr,
           status: null,
-          error: new Error(`maxBuffer exceeded: ${command}`),
+          error: Object.assign(new Error(`maxBuffer exceeded: ${command}`), { code: EXEC_MAXBUFFER_CODE }),
         };
       }
-      if (result.signal) {
+      if (code === EXEC_TIMEOUT_CODE || result.signal) {
         return {
           stdout,
           stderr,
           status: null,
-          error: new Error(`timeout: ${command}`),
+          error: Object.assign(new Error(`timeout: ${command}`), { code: EXEC_TIMEOUT_CODE }),
         };
       }
       return {
@@ -449,7 +474,7 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
         stdout,
         stderr,
         status: null,
-        error: new Error(`timeout: ${command}`),
+        error: Object.assign(new Error(`timeout: ${command}`), { code: EXEC_TIMEOUT_CODE }),
       };
     }
 
@@ -687,7 +712,7 @@ function isSpawnFailure(error: unknown): error is Error & { code?: string } {
   return (
     error instanceof Error &&
     (error as NodeJS.ErrnoException).code !== undefined &&
-    (error as NodeJS.ErrnoException).code !== 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'
+    (error as NodeJS.ErrnoException).code !== EXEC_MAXBUFFER_CODE
   );
 }
 

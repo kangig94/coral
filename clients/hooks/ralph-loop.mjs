@@ -113,7 +113,11 @@ try {
   // Defer the next iteration while any background work (subagent or backgrounded
   // Bash/Monitor) is still running; the loop resumes when its completion wakes the
   // session and this Stop reruns.
-  if (hasLiveWork(projectDir, sessionId, input.transcript_path)) process.exit(0);
+  const liveWork = hasLiveWork(projectDir, sessionId, input.transcript_path);
+  if (liveWork.live) {
+    if (liveWork.notice) writeHookOutput({ systemMessage: `Ralph is deferring: ${liveWork.notice}` });
+    process.exit(0);
+  }
 
   const nextState = { ...state, iteration: state.iteration + 1 };
   atomicWriteJson(statePath, nextState);

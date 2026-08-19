@@ -7,6 +7,22 @@
 // compiler and this is the one hole the compiler cannot see.
 //
 // The rule is therefore syntactic and narrow: a call to a liveness probe must be compared, not coerced.
+//
+// It stays narrow deliberately. A companion rule banning `!== 'alive'` was written and deleted, because the
+// syntax does not carry the defect. `!== 'alive'` is true for `'unknown'` too, so *concluding absence* from it
+// promotes "could not observe" into "is gone" — but *refusing* on it is the conservative direction and is what
+// `.claude/rules/validation.md` requires of every signal ("only `alive` may authorize SIGKILL. A target that
+// could not be observed is refused, not escalated"). Across the three roots this file scans there are two
+// occurrences and both are the refusing kind: `tools/simulation/adversarial.ts` guarding a kill — the very fix
+// this file's paragraph above describes — and `tests/e2e/cli/lifecycle/mutate-via-ipc.test.ts` guarding a
+// shutdown of a bare recorded pid. A ban would have flagged both and nothing else: no true positive, and two
+// false positives, one of them a documented fix. (The count was written as one before it was measured on all
+// three roots rather than two, which is the kind of claim this file exists to distrust.)
+//
+// What separates the two is the consequent, not the comparison, and a scanner cannot read a consequent without
+// becoming a heuristic that the next writer routes around. Absence-from-`unknown` is held instead where it is
+// decidable: by the three-variant return types (`CoordinatorProbe`, `DiscoveryRead`) and by the tests that
+// assert what each variant does, not by a grep over how the variant was spelled.
 
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, relative } from 'node:path';

@@ -14,7 +14,7 @@ Nothing prunes `~/.coral/exports/jobs/<id>/`. Ever.
 
 The export tree is `runtime.paths.coral.exports.jobsRoot`, a different root. A repository-wide search
 found no removal targeting it. The only prune that exists is
-`STALE_ARTIFACT_PRUNE_OBLIGATION` (`src/coordinator/lifecycle.ts:380-412`), and it removes exactly
+`STALE_ARTIFACT_PRUNE_OBLIGATION` (`src/coordinator/lifecycle.ts:502-536`), and it removes exactly
 `progressStore.jobDir(jobId)` and the `meta` row — never the export.
 
 **The source itself states the false belief.** `resolveJobRetentionMs`'s doc comment
@@ -27,7 +27,7 @@ the next reader re-derives the same wrong fact.
 It recorded that the archive is pruned on the first boot after any version change, giving a restore
 window of "until the next upgrade", and built a blocking design question on that. The earlier merge
 dismissed this as a constraint that does not exist. **It exists — for a different directory.** The
-prune's eligibility test is `fromOldBundle || agedOut` (`lifecycle.ts:387-389`), so a scratch artifact
+prune's eligibility test is `fromOldBundle || agedOut` (`lifecycle.ts:511-513`), so a scratch artifact
 carrying a previous `bundleHash` is removed regardless of age. That is precisely "pruned on the first
 boot after any version change", and it is true of `progressStore.jobDir`.
 

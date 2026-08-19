@@ -34,6 +34,47 @@ import { isKbEnabled } from './lib/kb-toggle.mjs';
 
 const LOG_ROTATE_THRESHOLD_BYTES = 2 * 1024 * 1024;
 const PROJECT_IGNORE_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), 'project-ignore.mjs');
+/**
+ * What the child is allowed, and why it is not the sum of what the child spends.
+ *
+ * `project-ignore.mjs` pays two bounded git forks on its ordinary path: `git rev-parse --show-toplevel`
+ * (1500ms, to find the ignore root) and `git remote get-url origin` (2000ms, to derive the project directory
+ * the symlink must point at). That is 3500ms of child work before its own Node startup. A budget equal to the
+ * work it bounds is not a budget: a child doing nothing wrong, on a slow mount, would be SIGTERMed while its
+ * own bounds were still running.
+ *
+ * The margin goes here rather than into shrinking either probe, because shortening those trades a correct
+ * answer for headroom that belongs to the caller: a probe cut short reports "could not tell" for a machine
+ * that was merely slow. This budget is not the only cost charged against the hook's registered timeout —
+ * `renderInject` runs its own bounded git fork in this process rather than the child (see
+ * `resolveProjectSource` in `clients/hooks/lib/hook-utils.mjs`) — so what is left for this file's own work is
+ * well under half of that timeout, not half of it.
+ *
+ * `tests/unit/hooks/project-ignore-symlink.test.ts` pins the child's 3500ms sum by reading both mocks' actual
+ * options, and separately asserts this constant is strictly greater than that sum; if either bound moves, one
+ * of those tests fails and the number here has to be re-derived rather than guessed.
+ */
+const PROJECT_IGNORE_SPAWN_TIMEOUT_MS = 5000;
+/**
+ * What each non-`ok` maintenance outcome is told to the session as, keyed by the outcome itself.
+ *
+ * Splitting the outcomes apart only moves the defect if nobody reads the split: a child SIGTERMed on a slow
+ * mount, a child that never launched, and a child that ran to completion but reported it could not finish
+ * safely all leave `.claude/.gitignore` and the coral symlink exactly as they were, and silence is what made
+ * that read as "there was nothing to do". Every outcome `runProjectIgnoreMaintenance` can return other than
+ * `ok` has an entry here, and `tests/unit/hooks/project-ignore-symlink.test.ts` fails if a new one is added
+ * without one.
+ *
+ * `no-project-dir` is absent deliberately — no project directory means there was no maintenance to attempt,
+ * which is not a refusal to report.
+ */
+const PROJECT_IGNORE_OUTCOME_NOTICES = {
+  killed: 'ran out of its time budget and was terminated',
+  'not-spawned': 'could not be started',
+  'no-output': 'exited without reporting a result',
+  'unparseable-output': 'reported a result Coral could not read',
+  failed: 'ran and reported it could not complete safely',
+};
 // Long enough to still catch the failure when a session starts minutes after the
 // user's last attempt, short enough that a cured problem stops being reported.
 const STARTUP_FAILURE_NOTICE_WINDOW_MS = 10 * 60 * 1000;
@@ -145,9 +186,9 @@ try {
 
   const projectDir = process.env.CLAUDE_PROJECT_DIR;
   ensureCliPermission();
-  const ignoreMaintenance = projectDir
+  const ignoreOutcome = projectDir
     ? runProjectIgnoreMaintenance(projectDir, process.env.CORAL_AUTO_SYMLINK === '1')
-    : null;
+    : { outcome: 'no-project-dir', maintenance: null };
 
   const kbEnabled = isKbEnabled();
   const injectContent = renderInject({
@@ -163,11 +204,20 @@ try {
 
   const projectSlug = projectDir ? resolveProjectSource(projectDir).replace(/\//g, '-') : undefined;
   const wakeUpPayload = kbEnabled && projectSlug ? readProjectScopedWakeUp(resolveKbRoot(), projectSlug) : null;
-  const migrationNotice = ignoreMaintenance?.migrated
+  const migrationNotice = ignoreOutcome.maintenance?.migrated
     ? '\n\nCoral migration: moved the generated coral ignore rule from the Git-root .gitignore into .claude/.gitignore.'
     : '';
+  const ignoreFailure = PROJECT_IGNORE_OUTCOME_NOTICES[ignoreOutcome.outcome];
+  // The reason travels when the child got far enough to have one. Without it a notice that repeats every
+  // session says only that maintenance failed, which is the same sentence for a project directory that could
+  // not be resolved and a symlink that could not be placed.
+  const ignoreReason =
+    typeof ignoreOutcome.maintenance?.reason === 'string' ? ` (${ignoreOutcome.maintenance.reason})` : '';
+  const ignoreNotice = ignoreFailure
+    ? `\n\nCoral project-ignore maintenance ${ignoreFailure}${ignoreReason}; .claude/.gitignore and the coral symlink were left as they are. It is attempted again at the next session start.`
+    : '';
   const startupFailureNotice = readRecentStartupFailureNotice(coordinatorRunDir());
-  const head = `SessionStart:session_id=${sessionId}\nCurrent host: ${host}\nClaude config dir: ${claudeConfigDir()}\n\n${injectContent}${migrationNotice}`;
+  const head = `SessionStart:session_id=${sessionId}\nCurrent host: ${host}\nClaude config dir: ${claudeConfigDir()}\n\n${injectContent}${migrationNotice}${ignoreNotice}`;
   const body = wakeUpPayload === null ? head : `${head}\n\n${wakeUpPayload}`;
   const additionalContext = startupFailureNotice === null ? body : `${startupFailureNotice}\n\n${body}`;
 
@@ -181,6 +231,12 @@ try {
   process.exit(0);
 }
 
+// A launch failure and a timeout kill both leave `result.status` null and set `result.error`, and `result.signal`
+// does not separate them either: this call also sets `maxBuffer`, and a buffer overflow can arrive with a signal
+// set or left null depending on a race this code does not control, so a signal by itself proves nothing about
+// which of the three happened. `result.error.code` is what `spawnSync` itself reports the reason as —
+// `'ETIMEDOUT'` for the timeout kill, whatever launch errno the OS gave otherwise — so the code is sorted on
+// below, not the signal.
 function runProjectIgnoreMaintenance(projectDir, createSymlink) {
   try {
     const args = [PROJECT_IGNORE_SCRIPT, '--project-dir', projectDir];
@@ -188,14 +244,26 @@ function runProjectIgnoreMaintenance(projectDir, createSymlink) {
     const result = spawnSync(process.execPath, args, {
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 3500,
+      timeout: PROJECT_IGNORE_SPAWN_TIMEOUT_MS,
       maxBuffer: 16 * 1024,
     });
-    if (result.error || !result.stdout) return null;
+    if (result.error) {
+      if (result.error.code === 'ETIMEDOUT') return { outcome: 'killed', maintenance: null };
+      return { outcome: 'not-spawned', maintenance: null };
+    }
+    if (!result.stdout) return { outcome: 'no-output', maintenance: null };
+    // A parse that succeeds is not the same as a result Coral can act on: `maintainProjectIgnore`'s contract is
+    // an object carrying a boolean `ok`, and anything else reaching here — `null`, an array, a bare primitive, or
+    // an object whose `ok` is missing or not a boolean — is exactly as unusable as a parse failure, so it is
+    // reported the same way rather than silently passed through as a successful `ok` outcome with no data.
     const parsed = JSON.parse(result.stdout);
-    return parsed && typeof parsed === 'object' ? parsed : null;
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed) || typeof parsed.ok !== 'boolean') {
+      return { outcome: 'unparseable-output', maintenance: null };
+    }
+    if (!parsed.ok) return { outcome: 'failed', maintenance: parsed };
+    return { outcome: 'ok', maintenance: parsed };
   } catch {
-    return null;
+    return { outcome: 'unparseable-output', maintenance: null };
   }
 }
 

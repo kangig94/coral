@@ -1,7 +1,7 @@
-import { readBackendInfo } from '../../../infra/backend-discovery.js';
+import { observeCoordinator } from './coordinator-observation.js';
 import { readBuildFlavor } from '../../../infra/bundle-manifest.js';
+import { errorMessage, thrownErrnoCode } from '../../../infra/error-format.js';
 import { isRecord } from '../../../infra/json.js';
-import { observeProcessLiveness } from '../../../infra/node-process.js';
 import type { StoragePort } from '../../../infra/port-types.js';
 import { parseIsoTimestamp } from '../../../infra/time.js';
 import { isSerializedCoralSetupError } from '../../../runtime/errors.js';
@@ -59,6 +59,43 @@ export type PublicSetupErrorSummary = {
 export type BackendStatusFull =
   | { status: 'ok'; health: Extract<BackendStatus, { status: 'ok' }> }
   | { status: 'shutting_down' | 'unauthorized' | 'not_running' }
+  /**
+   * The discovery record exists and could not be read, so whether a coordinator is running is unknown. Kept
+   * distinct from `not_running` because that is a claim, and this reader has not earned it: a truncated write
+   * or a record shaped by a build this one rejects both produce it while a coordinator may be serving.
+   */
+  | { status: 'undecodable_record'; reason: 'corrupt-json' | 'shape-rejected'; path: string }
+  /**
+   * Something answers at the recorded address and did not give a usable answer — a non-2xx that is not a
+   * drain, a request that never completed, or a 200 whose body this build cannot decode (shape rejection).
+   * Distinct from `not_running`, which is reserved for an observed absence and for a peer whose *decoded*
+   * namespace or flavor says it is somebody else's coordinator, not ours — a shape rejection proves neither.
+   *
+   * `cause` is the one thing that decides what may be claimed about the address: `'responded'` is an actual
+   * HTTP response (any status, any body) — the one thing that proves something is listening. `'refused'` is a
+   * TCP-level refusal at the moment of the attempt — it proves nothing was listening on that exact socket at
+   * that moment, but not that the coordinator process itself is gone, so it carries `pidLiveness`, the prior
+   * observation of that specific question, plus the `pid` and `recordPath` a reader needs to settle it — a
+   * refusal that keeps refusing is a record naming a pid something else now holds, and neither checking that
+   * pid nor clearing that record is possible from a status that names neither. `'no_response'` is everything else that keeps a
+   * request from completing (timeout, DNS failure, ...), which proves neither way.
+   */
+  | { status: 'unreachable'; detail: string; cause: 'responded' }
+  | {
+      status: 'unreachable';
+      detail: string;
+      cause: 'refused';
+      pidLiveness: 'alive' | 'unknown';
+      pid: number;
+      recordPath: string;
+    }
+  | { status: 'unreachable'; detail: string; cause: 'no_response' }
+  /**
+   * The coordinator's own IPC socket file exists but no discovery record has been written — see
+   * `CoordinatorObservation`'s `no-record-socket-present` (`coordinator-observation.ts`) for what produces it.
+   * Neither a boot in progress nor a stale leftover socket may fold into `not_running`.
+   */
+  | { status: 'no_record_socket_present'; socketPath: string }
   | { status: 'recent_failure'; phase: PublicDiagnosticPhase; setupError?: PublicSetupErrorSummary };
 
 type RecentFailureStatus = Extract<BackendStatusFull, { status: 'recent_failure' }>;
@@ -113,6 +150,24 @@ export function statusFromStartupDiagnostic(
   };
 }
 
+/** A decoded, in-scope startup diagnostic, or `null` if none applies — the shared read behind both
+ *  `noDaemonStatus`'s decisive absence and `no-record-socket-present`'s unresolved one, which differ only in
+ *  what they fall back to when no diagnostic applies. */
+function readRecentFailureDiagnostic(
+  storage: Pick<StoragePort, 'readFileSync'>,
+  diagnosticFile: string,
+  now: number,
+  earliestRecordedAt?: number,
+  expectedPid?: number,
+): RecentFailureStatus | null {
+  try {
+    const value: unknown = JSON.parse(storage.readFileSync(diagnosticFile, 'utf-8'));
+    return statusFromStartupDiagnostic(value, now, earliestRecordedAt, expectedPid);
+  } catch {
+    return null;
+  }
+}
+
 function noDaemonStatus(
   storage: Pick<StoragePort, 'readFileSync'>,
   diagnosticFile: string,
@@ -120,33 +175,132 @@ function noDaemonStatus(
   earliestRecordedAt?: number,
   expectedPid?: number,
 ): BackendStatusFull {
-  try {
-    const value: unknown = JSON.parse(storage.readFileSync(diagnosticFile, 'utf-8'));
-    return statusFromStartupDiagnostic(value, now, earliestRecordedAt, expectedPid) ?? { status: 'not_running' };
-  } catch {
-    return { status: 'not_running' };
+  return (
+    readRecentFailureDiagnostic(storage, diagnosticFile, now, earliestRecordedAt, expectedPid) ?? {
+      status: 'not_running',
+    }
+  );
+}
+
+/**
+ * The unauthenticated `/health` ping. Returns a terminal status, or `null` to mean "this said nothing that
+ * ends the question — go on to the detailed probe".
+ *
+ * Split out because the two probes are structurally the same shape (fetch, parse, check identity, check drain)
+ * and reading them inline meant holding both in view at once to see that only one of them can return `ok`.
+ */
+async function probeUnauthenticatedPing(
+  info: Readonly<{ host: string; port: number; namespace: string; flavor: string }>,
+  notOurCoordinator: () => BackendStatusFull,
+  unreachable: (detail: string) => BackendStatusFull,
+): Promise<BackendStatusFull | null> {
+  const response = await fetch(`http://${info.host}:${info.port}/health`, {
+    method: 'GET',
+    signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
+  });
+  const body = await parseJsonResponse(response);
+  if (response.status === 200) {
+    // A body this build cannot decode is a shape rejection, not a namespace/flavor mismatch — it proves
+    // nothing about whose coordinator answered, so it must not fall into `notOurCoordinator`'s `not_running`.
+    if (!isBackendPing(body)) {
+      return unreachable('health responded 200 with a body this build could not decode');
+    }
+    if (body.namespace !== info.namespace || body.flavor !== info.flavor) {
+      return notOurCoordinator();
+    }
+    return body.status === 'draining' ? { status: 'shutting_down' } : null;
   }
+  if (response.status === 503 || TransientHttpError.isTransientStatus(response.status)) {
+    return { status: 'shutting_down' };
+  }
+  return unreachable(`health responded ${response.status}`);
+}
+
+/** The authenticated `/health?detailed=1` probe. Always terminal: it is the last thing asked. */
+async function probeDetailedHealth(
+  info: Readonly<{ host: string; port: number; namespace: string; flavor: string; bootToken: string }>,
+  notOurCoordinator: () => BackendStatusFull,
+  unreachable: (detail: string) => BackendStatusFull,
+): Promise<BackendStatusFull> {
+  const response = await fetch(`http://${info.host}:${info.port}/health?detailed=1`, {
+    method: 'GET',
+    headers: { 'X-Coral-Boot-Token': info.bootToken },
+    signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
+  });
+  const body = await parseJsonResponse(response);
+  if (response.status === 200) {
+    // Same split as the unauthenticated ping: a shape rejection says nothing about whose coordinator this is.
+    if (!isBackendHealth(body)) {
+      return unreachable('detailed health responded 200 with a body this build could not decode');
+    }
+    if (body.namespace !== info.namespace || body.flavor !== info.flavor) {
+      return notOurCoordinator();
+    }
+    if (body.status === 'draining') {
+      return { status: 'shutting_down' };
+    }
+    const { namespace: _namespace, status: _status, ...rest } = body;
+    return { status: 'ok', health: { ...rest, status: 'ok' as const } };
+  }
+  if (response.status === 503 || TransientHttpError.isTransientStatus(response.status)) {
+    return { status: 'shutting_down' };
+  }
+  if (response.status === 401) return { status: 'unauthorized' };
+  return unreachable(`detailed health responded ${response.status}`);
 }
 
 export async function getBackendStatusFull(pluginRoot: string): Promise<BackendStatusFull> {
   const runtime = createRealRuntime(readBuildFlavor(pluginRoot));
-  const info = readBackendInfo({
+  const observed = observeCoordinator({
     storage: runtime.storage,
     env: runtime.env,
     paths: runtime.paths,
   });
-  // Only an observed absence reports not-running; an unanswerable probe is not that observation.
-  if (!info || observeProcessLiveness(info.pid) === 'absent') {
-    return noDaemonStatus(
-      runtime.storage,
-      runtime.paths.coral.coordinator.startupDiagnosticFile,
-      runtime.time.now(),
-      info?.startedAt,
-      info?.pid,
-    );
-  }
 
-  const unreachableStatus = (): BackendStatusFull =>
+  switch (observed.kind) {
+    case 'unreadable-record':
+      return { status: 'undecodable_record', reason: observed.reason, path: observed.path };
+    case 'no-record':
+      return noDaemonStatus(runtime.storage, runtime.paths.coral.coordinator.startupDiagnosticFile, runtime.time.now());
+    case 'no-record-socket-present':
+      // A crash can remove the discovery record and leave the socket file behind before the diagnostic write
+      // that explains the crash lands, so this arm reads the same diagnostic `noDaemonStatus` reads for
+      // `no-record` and falls back to the vague evidence only when no diagnostic applies — never to
+      // `not_running`, which the surviving socket file already rules out.
+      return (
+        readRecentFailureDiagnostic(
+          runtime.storage,
+          runtime.paths.coral.coordinator.startupDiagnosticFile,
+          runtime.time.now(),
+        ) ?? { status: 'no_record_socket_present', socketPath: observed.socketPath }
+      );
+    case 'process-absent':
+      // Absence is established, so the startup diagnostic may explain it — scoped to both halves of the dead
+      // coordinator's identity, because either alone admits a diagnostic that is not this run's. A pid is
+      // reused, so an old diagnostic naming the same number passes a pid-only check; a `startedAt` floor alone
+      // admits any later run's. `notOurCoordinator` below passes the same pair for the same reason.
+      return noDaemonStatus(
+        runtime.storage,
+        runtime.paths.coral.coordinator.startupDiagnosticFile,
+        runtime.time.now(),
+        observed.startedAt,
+        observed.pid,
+      );
+    case 'addressed':
+      break;
+  }
+  const info = observed.coordinator;
+
+  // `observed.pidLiveness` is deliberately not read here, unlike `shutdownBackend`'s `socket_refused` case
+  // (`shutdown.ts`). There the *only* evidence is the prior liveness snapshot — no response ever arrives — so
+  // ignoring it lets a stale "not running" claim override the one fact that run has. Here a response DID
+  // arrive and decode: it names a namespace/flavor that is not ours, direct proof that whatever answers at
+  // `info.host`:`info.port` is not the coordinator this record described. A live `info.pid` does not contradict
+  // that — pid liveness only says some process holds that OS pid number, not that it is the process serving
+  // this address, and a pid is reused (see the `process-absent` case above). `not_running` here claims only
+  // that *this* recorded coordinator is not the one answering, which the decoded mismatch already establishes
+  // regardless of what `info.pid` is doing.
+  const notOurCoordinator = (): BackendStatusFull =>
     noDaemonStatus(
       runtime.storage,
       runtime.paths.coral.coordinator.startupDiagnosticFile,
@@ -154,48 +308,33 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
       info.startedAt,
       info.pid,
     );
+  // Both probes only ever call this after `fetch` resolved a response, so `cause` is unconditionally
+  // `'responded'` here; the `catch` below is the one place a request never completed, and builds its own
+  // `'refused'`/`'no_response'` cause instead.
+  const unreachable = (detail: string): BackendStatusFull => ({ status: 'unreachable', detail, cause: 'responded' });
 
   try {
-    const pingResponse = await fetch(`http://${info.host}:${info.port}/health`, {
-      method: 'GET',
-      signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
-    });
-    const pingBody = await parseJsonResponse(pingResponse);
-    if (pingResponse.status === 200) {
-      if (!isBackendPing(pingBody) || pingBody.namespace !== info.namespace || pingBody.flavor !== info.flavor) {
-        return unreachableStatus();
-      }
-      if (pingBody.status === 'draining') {
-        return { status: 'shutting_down' };
-      }
-    } else if (pingResponse.status === 503 || TransientHttpError.isTransientStatus(pingResponse.status)) {
-      return { status: 'shutting_down' };
-    } else {
-      return unreachableStatus();
+    const ping = await probeUnauthenticatedPing(info, notOurCoordinator, unreachable);
+    if (ping !== null) return ping;
+    return await probeDetailedHealth(info, notOurCoordinator, unreachable);
+  } catch (error: unknown) {
+    // Same measurement as `shutdownBackend`'s catch (`shutdown.ts`): Node's `fetch` rejects a refused
+    // connection with a `TypeError` whose own `.message` is the generic "fetch failed", while the errno travels
+    // on `.cause`. Reporting the bare message here told an operator "fetch failed" for the same `ECONNREFUSED`
+    // that `backend shutdown` already reports by its actual errno — and, like that catch, a refusal proves
+    // nothing was listening on the exact socket at that moment without proving the coordinator process is gone,
+    // so it carries the prior `pidLiveness` observation rather than a fresh claim.
+    const code = thrownErrnoCode(error);
+    if (code === 'ECONNREFUSED') {
+      return {
+        status: 'unreachable',
+        detail: code,
+        cause: 'refused',
+        pidLiveness: observed.pidLiveness,
+        pid: info.pid,
+        recordPath: runtime.paths.coral.coordinator.infoFile,
+      };
     }
-
-    const healthResponse = await fetch(`http://${info.host}:${info.port}/health?detailed=1`, {
-      method: 'GET',
-      headers: { 'X-Coral-Boot-Token': info.bootToken },
-      signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
-    });
-    const body = await parseJsonResponse(healthResponse);
-    if (healthResponse.status === 200) {
-      if (!isBackendHealth(body) || body.namespace !== info.namespace || body.flavor !== info.flavor) {
-        return unreachableStatus();
-      }
-      if (body.status === 'draining') {
-        return { status: 'shutting_down' };
-      }
-      const { namespace: _namespace, status: _status, ...rest } = body;
-      return { status: 'ok', health: { ...rest, status: 'ok' as const } };
-    }
-    if (healthResponse.status === 503 || TransientHttpError.isTransientStatus(healthResponse.status)) {
-      return { status: 'shutting_down' };
-    }
-    if (healthResponse.status === 401) return { status: 'unauthorized' };
-    return unreachableStatus();
-  } catch {
-    return unreachableStatus();
+    return { status: 'unreachable', detail: code ?? errorMessage(error), cause: 'no_response' };
   }
 }

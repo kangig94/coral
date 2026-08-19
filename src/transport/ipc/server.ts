@@ -430,11 +430,10 @@ export async function listenIpcServer(listener: IpcListener, socketPath: string)
 
 /**
  * Ownership-safe close: destroy tracked sockets, close the server, and forget
- * the listener's socket path. Path-based cleanup belongs to the next binder's
- * `clearStaleSocket` (which probes for liveness before unlinking). This
- * deliberately leaves a stale socket file after graceful shutdown until the
- * next bind attempt clears it — preferable to deleting a path that may now
- * belong to a replacement daemon.
+ * the listener's socket path. Node unlinks a listening unix socket's path
+ * when `server.close()` completes, so a clean run of this function leaves no
+ * socket file behind; a leftover one is evidence this function never ran —
+ * a SIGKILL or OOM kill skipped it, not a graceful shutdown that reached it.
  */
 export async function closeIpcServer(listener: IpcListener): Promise<void> {
   for (const socket of listener.sockets) {

@@ -6,7 +6,7 @@ import { BackendUnreachableError, TransientHttpError } from '../infra/http-error
 import { isRecord } from '../infra/json.js';
 import { DiscussWatchReadError } from '../discuss/watch.js';
 import { HandoffGuardError } from '../coordinator/handoff-runner.js';
-import { serializeCoralSetupError } from '../runtime/errors.js';
+import { NOT_OBSERVED_CORAL_SETUP_ERROR_CODES, serializeCoralSetupError } from '../runtime/errors.js';
 import { ChildPrincipalBindingError } from '../transport/ipc/child-principal-auth.js';
 import { IpcRpcError } from '../transport/ipc/client.js';
 
@@ -154,6 +154,13 @@ export function errorCodeToExit(code: string, httpStatus?: number): number {
     code === 'kb_initializing' ||
     code === 'kb_offline' ||
     code === 'provider_host_inventory_unavailable' ||
+    // "Could not observe", not "decided no" — see `NOT_OBSERVED_CORAL_SETUP_ERROR_CODES` for why this checks a
+    // shared list instead of naming codes here; `code` is a bare `string`, not `DocumentedCoralSetupErrorCode`,
+    // because it also carries raw wire codes from `IpcRpcError`/`BackendToolHttpError` bodies. Both of the
+    // set's current members are constructed only in `cli/expansion/index.ts`, whose own exit code always comes
+    // from `expansionExitCode` (`cli/commands/expansion.ts`) checking the same set independently — this branch
+    // is forward defense for any future caller that routes one of them through `buildErrorEnvelope` instead.
+    NOT_OBSERVED_CORAL_SETUP_ERROR_CODES.has(code) ||
     httpStatus === 503
   ) {
     return 75;

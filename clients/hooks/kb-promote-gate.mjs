@@ -85,7 +85,11 @@ try {
     // Defer while any background work (subagent or backgrounded Bash/Monitor) is
     // still running — keep the flag and memos intact so the reminder fires once
     // the session truly winds down.
-    if (hasLiveWork(projectDir, sessionId, input.transcript_path)) process.exit(0);
+    const liveWork = hasLiveWork(projectDir, sessionId, input.transcript_path);
+    if (liveWork.live) {
+      if (liveWork.notice) writeHookOutput({ systemMessage: `KB memo review is deferring: ${liveWork.notice}` });
+      process.exit(0);
+    }
     const flag = sessionId && join(flagDir, `${FLAG_PREFIX}${sessionId}`);
     const hasFlag = flag && existsSync(flag);
     if (hasFlag) {

@@ -82,12 +82,15 @@ async function runDelegatedOperation(tracePath: string, exitCode: number): Promi
   const target = createTarget(tracePath, exitCode);
   const socketPath = join(tmpdir(), 'coral-handoff-notice.sock');
   mockState.probeCoordinator.mockReturnValue({
-    socketPath,
-    pid: 4242,
-    bundleHash: target.manifest.bundleHash,
-    flavor: 'prod',
-    namespace: 'handoff-notice',
-    bootToken: 'boot-token',
+    kind: 'live',
+    record: {
+      socketPath,
+      pid: 4242,
+      bundleHash: target.manifest.bundleHash,
+      flavor: 'prod',
+      namespace: 'handoff-notice',
+      bootToken: 'boot-token',
+    },
   });
   mockState.health.mockResolvedValue({
     status: 'ok',

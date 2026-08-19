@@ -1,8 +1,21 @@
 import type { EnvPort } from '../infra/port-types.js';
+import { classifyExecOutcome } from '../infra/port-types.js';
 import type { ProcessPort } from '../runtime/ports.js';
 
+/**
+ * Three answers about the binary, not two. `not-found` is a probe that ran and settled the question; the CLI
+ * is absent, or present and unable to report a version. `undetermined` is a probe that never got an answer —
+ * the 10s bound elapsed, or the system had no process slot to fork with — which says nothing about whether the
+ * CLI is installed.
+ *
+ * The split is in the type rather than only in the caching because this value becomes a sentence an operator
+ * reads. Collapsed, a timeout under load surfaced the configured `notFoundMessage`, which by its nature tells
+ * someone to install the binary — instructing them to fix software they already have, and naming a cause that
+ * was never observed. `authState` had modelled its own third answer from the beginning; availability had not.
+ */
 export type CliInfo =
-  | { available: false; error: string }
+  | { available: false; reason: 'not-found'; error: string }
+  | { available: false; reason: 'undetermined'; error: string }
   | { available: true; version: string; authState: 'authenticated' }
   | { available: true; version: string; authState: 'unknown' }
   | { available: true; version: string; authState: 'unauthenticated'; authError: string };
@@ -31,6 +44,16 @@ export function createCliDetector(
   envPort: CliDetectorEnvPort,
   config: CliDetectorConfig,
 ): { detect: () => Promise<CliInfo>; resetCache: () => void } {
+  /**
+   * Answers only. A probe that could not be answered is not remembered at all, and deliberately so.
+   *
+   * A hold with an expiry was written here and removed. It could not fire: the only production caller builds
+   * its port objects as fresh literals per call, so the memoiser that hands out detectors never hits and every
+   * preflight gets an empty instance — including this field. Keying that memoiser by value instead of by object
+   * identity would have made the hold live, and would also have merged the detectors that
+   * `keeps detector caches isolated by process port` exists to keep apart. Rather than ship a mechanism that
+   * runs only in tests, the non-answer is simply re-asked, which is what happened before the split too.
+   */
   let cachedCli: CliInfo | null = null;
   let inFlightProbe: Promise<CliInfo> | null = null;
   let confirmedAuth = false;
@@ -54,6 +77,9 @@ export function createCliDetector(
 
   async function runProbe(): Promise<CliInfo> {
     const cli = cachedCli ?? (await queryCliVersion());
+    // A non-answer is returned and forgotten: caching it would let one unobserved fork failure answer for
+    // every later call, which is the collapse the `reason` split above exists to end.
+    if (!cli.available && cli.reason === 'undetermined') return cli;
     cachedCli = cli;
     if (!cli.available) return cli;
 
@@ -78,10 +104,27 @@ export function createCliDetector(
       timeout: 10_000,
       encoding: 'utf-8',
     });
-    if (result.error || (result.status !== null && result.status !== 0)) {
-      return { available: false, error: config.notFoundMessage };
+
+    const command = `${config.binaryName} ${config.versionArgs.join(' ')}`;
+    const outcome = classifyExecOutcome(result);
+    switch (outcome.kind) {
+      case 'no-answer':
+        return {
+          available: false,
+          reason: 'undetermined',
+          error: `could not run \`${command}\` to check (${outcome.detail}); this does not mean ${config.binaryName} is missing — retry the command in a moment`,
+        };
+      case 'launch-refused':
+        // The launch failed for a reason that will not change under a running daemon, so the configured
+        // "install it" message is the right one and is worth caching.
+        return { available: false, reason: 'not-found', error: config.notFoundMessage };
+      case 'answered':
+        // A non-zero exit is the binary answering that it cannot report a version, which is as settled as an
+        // absent one and is cached the same way.
+        return outcome.status === 0
+          ? { available: true, version: result.stdout.trim(), authState: 'unknown' }
+          : { available: false, reason: 'not-found', error: config.notFoundMessage };
     }
-    return { available: true, version: result.stdout.trim(), authState: 'unknown' };
   }
 
   async function queryAuthState(): Promise<AuthProbeResult> {

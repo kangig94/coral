@@ -53,6 +53,8 @@ export type DocumentedCoralSetupErrorCode =
   | 'recovery_quarantine_retry_in_progress'
   | 'expansion_binary_corrupt'
   | 'installer_payload_invalid'
+  | 'coordinator_record_unreadable'
+  | 'coordinator_unreachable'
   | 'unknown_expansion'
   | 'expansion_bundled_immutable'
   | 'expansion_runtime_unavailable'
@@ -366,6 +368,34 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
     remediation:
       'Retry the command. If this persists, report the code because the installer response failed internal validation.',
   },
+  /**
+   * Documented rather than left to `unknown_error`, whose remediation is "retry once" — advice this code's own
+   * remediation replaces with the record path and its actual clearing step. Exit 75, not 1: a coordinator can
+   * be running fine behind a discovery record this build simply cannot read (wrong permissions, a truncated
+   * write), so this run has not observed whether one exists — the same axis `coordinator_unreachable` sits on,
+   * and the reason both belong in `NOT_OBSERVED_CORAL_SETUP_ERROR_CODES` together.
+   */
+  coordinator_record_unreadable: {
+    userMessage: (context) =>
+      `Coral cannot report ${stringContextValue(context, 'subject', 'expansion status')}: the coordinator discovery record at ${stringContextValue(context, 'path', '<record-path>')} could not be read (${stringContextValue(context, 'detail', 'unknown')}). This does not mean no coordinator is running.`,
+    remediation: (context) =>
+      `Fix the permissions on ${stringContextValue(context, 'path', '<record-path>')}, or delete it if its content is corrupt — a running coordinator never rewrites it, and a fresh one recreates it safely. Then run any coral-cli mutating command (or start a Claude Code session) to relaunch. Retrying this exact command re-reads the same file and will not resolve on its own.`,
+  },
+  /**
+   * Reached only once a record decoded — a coordinator claimed this socket at some point, and wrote that
+   * record only after its own IPC listener was already bound — and its recorded pid was not observed absent.
+   * That ordering is why a stale, crashed, or namespace-hidden coordinator is the likely cause rather than a
+   * boot race; it stays exit 75 rather than 1 because a live coordinator that is merely too busy to answer one
+   * connection attempt produces the identical evidence, and this code cannot tell the two apart. The
+   * remediation therefore names its own exit — check the pid, then clear the record file directly — instead
+   * of only "retry", which is the hold this split exists to close.
+   */
+  coordinator_unreachable: {
+    userMessage: (context) =>
+      `Coral cannot report ${stringContextValue(context, 'subject', 'expansion status')}: the coordinator recorded itself at ${stringContextValue(context, 'path', '<record-path>')} but did not answer (${stringContextValue(context, 'detail', 'unknown')}).`,
+    remediation: (context) =>
+      `Retry shortly in case the coordinator is only busy. If it persists, run 'ps -p ${stringContextValue(context, 'pid', '<pid>')}' or check your process manager to see whether that process is actually Coral's coordinator; if it is not, or you cannot tell, delete ${stringContextValue(context, 'path', '<record-path>')} yourself and run any coral-cli mutating command (or start a Claude Code session) to relaunch.`,
+  },
   unknown_expansion: {
     userMessage: (context) =>
       `The expansion ${stringContextValue(context, 'name', 'this expansion')} is not registered in the Coral catalog.`,
@@ -611,6 +641,27 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
     },
   },
 } satisfies Record<DocumentedCoralSetupErrorCode, DocumentedCoralSetupErrorSpec>;
+
+/**
+ * Codes that mean "this run could not observe the answer", not "the answer is no" — the same distinction
+ * `SHUTDOWN_REFUSAL_EXIT_CODES` (`cli/commands/backend.ts`) draws for `ShutdownReason`. `errorCodeToExit`
+ * (`cli/errors.ts`) and `expansionExitCode` (`cli/commands/expansion.ts`) each map a code to a CLI exit status
+ * independently; a code added to one list and not the other exits "observed/decided" 1 in the list that
+ * missed it, by accident rather than by decision. Listed here, once, so both read the same membership rather
+ * than repeating it. `Set<string>` rather than
+ * `Set<DocumentedCoralSetupErrorCode>` at the export boundary: both consumers hold a plain `string` by the
+ * time they check membership — `CoralSetupError.code` is `string`, not this union, because domains outside
+ * this registry (`jobs/events.ts`, `sessions/events.ts`, and others) construct `CoralSetupError` with codes of
+ * their own that never enter `DocumentedCoralSetupErrorCode`.
+ *
+ * `coordinator_record_unreadable` is a member alongside `coordinator_unreachable`: an unreadable record says
+ * nothing about whether the coordinator it would have named is running, so this run has not observed the
+ * answer either way — the same axis, not "will retrying help" (see that code's doc comment above).
+ */
+export const NOT_OBSERVED_CORAL_SETUP_ERROR_CODES: ReadonlySet<string> = new Set<DocumentedCoralSetupErrorCode>([
+  'coordinator_unreachable',
+  'coordinator_record_unreadable',
+]);
 
 function renderDocumentedSpec(
   value: string | ((context?: CoralSetupErrorContext) => string),

@@ -1,4 +1,5 @@
-import type { ExecResult, Runtime } from './ports.js';
+import type { Runtime } from './ports.js';
+import type { ExecResult } from '../infra/port-types.js';
 
 /** Locate an executable on PATH using the platform's `which`/`where` shim. */
 export async function findCommand(runtime: Runtime, command: string): Promise<string | null> {

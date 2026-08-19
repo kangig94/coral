@@ -2,7 +2,8 @@ import { basename, delimiter, extname, isAbsolute, join, resolve } from 'node:pa
 import { writeAuditEvent } from '../../../infra/audit-log.js';
 import { nowIsoString } from '../../../infra/time.js';
 import { throwIfAborted } from '../../../runtime/abort.js';
-import type { EnvPort, StoragePort, TimePort } from '../../../infra/port-types.js';
+import { classifyExecOutcome, type EnvPort, type StoragePort, type TimePort } from '../../../infra/port-types.js';
+import { EXEC_MAXBUFFER_CODE, EXEC_TIMEOUT_CODE, STANDING_PROBE_ERRNOS } from '../../../infra/process-constants.js';
 import type { ResourceBinding } from '../../../security/principal.js';
 import type { IdPort, ProcessPort } from '../../../runtime/ports.js';
 import { FRONTMATTER_BLOCK, serializeSourceFrontmatter } from '../../corpus/frontmatter.js';
@@ -88,10 +89,75 @@ export type SourceImportReadPolicy =
 export type ResolvedSourceImportFile = { path: string };
 
 // CLI-only source import converters. Keep npm conversion dependencies isolated here.
+/**
+ * Whether a converter's tooling is installed — three answers, because `install()` is what the negative one
+ * triggers and installing is a finalization.
+ *
+ * `undetermined` is the probe that never ran: `which`/`where` killed by its bound, or no process slot to fork.
+ * Collapsed into `absent`, that answer downloads and installs uv and marker-pdf over a machine that already
+ * has them, on evidence nobody produced. The same collapse in `cli-detection.ts` told operators to install a
+ * CLI they had; here it does not merely say so, it acts.
+ */
+type ConverterAvailability =
+  | Readonly<{ kind: 'available' }>
+  | Readonly<{ kind: 'absent' }>
+  | Readonly<{ kind: 'undetermined'; detail: string }>;
+
 interface Converter {
-  isAvailable(ctx: SourceImportContext): Promise<boolean>;
+  isAvailable(ctx: SourceImportContext): Promise<ConverterAvailability>;
   install(log: (msg: string) => void, ctx: SourceImportContext): Promise<void>;
   convert(filePath: string, ctx: SourceImportContext): Promise<ConversionResult>;
+}
+
+/**
+ * What ends the hold, for a probe or a command that produced no answer.
+ *
+ * Not one sentence for all of them, because only one of the three exits is a retry. A standing errno — no such
+ * binary, not executable, not a directory — fails identically next time, and output that overran the buffer
+ * overruns it again. Telling an operator to retry either is a refusal naming an exit that cannot be reached,
+ * which is the defect this module's three-answer split exists to stop; writing it into the sentence instead of
+ * the branch is the same defect one layer out.
+ *
+ * Each branch names what *does* end it, not only what does not. "A retry will not help" is half a refusal: it
+ * closes the wrong door without opening one, which leaves the operator exactly where the collapsed version
+ * did. The errno itself is printed by the caller, so this supplies the action rather than repeating the code.
+ */
+function nonAnswerExit(detail: string): string {
+  if (STANDING_PROBE_ERRNOS.has(detail)) {
+    return 'A retry will fail the same way: it could not be launched at all. Check that the command is installed and executable on this PATH.';
+  }
+  if (detail === EXEC_MAXBUFFER_CODE) {
+    return 'A retry produces the same overflow; import a smaller source instead.';
+  }
+  return 'Retry the import.';
+}
+
+/** Where a command lives, or which of the two reasons this run does not have a path for it. */
+type CommandLocation =
+  | Readonly<{ kind: 'found'; path: string }>
+  | Readonly<{ kind: 'absent' }>
+  | Readonly<{ kind: 'undetermined'; detail: string }>;
+
+/**
+ * `.path` from a `CommandLocation`, or the refusal for whichever of the other two it is not.
+ *
+ * `absentMessage` and `undeterminedMessage` are per call, not shared, because "absent" is a different fact at
+ * each of this module's checkpoints — a converter never installed, a re-check right after installing it, and a
+ * race between an earlier check and this use — and a shared sentence for all three is exactly the collapse
+ * this helper replaces.
+ */
+function requireCommandPath(
+  location: CommandLocation,
+  absentMessage: string,
+  undeterminedMessage: (detail: string) => string,
+): string {
+  if (location.kind === 'absent') {
+    throw new Error(absentMessage);
+  }
+  if (location.kind === 'undetermined') {
+    throw new Error(undeterminedMessage(location.detail));
+  }
+  return location.path;
 }
 
 type MarkerDevice = 'auto' | 'cpu' | 'cuda' | 'mps';
@@ -300,33 +366,55 @@ async function resolveMarkerCommandOptions(
   };
 }
 
-async function resolveCommandPath(command: string, ctx: SourceImportContext): Promise<string | undefined> {
+/**
+ * `which`/`where`, read for what it actually reported.
+ *
+ * A non-zero exit is the locator answering "not on this PATH" and is `absent`. A probe that never produced an
+ * exit — its own 10s bound, or a fork that failed — is `undetermined`, and it used to be `undefined` alongside
+ * the answer: indistinguishable at every call site, where it authorized a network install, a "not found after
+ * installation" error naming a cause nobody saw, and a refusal to convert.
+ */
+async function resolveCommandPath(command: string, ctx: SourceImportContext): Promise<CommandLocation> {
   const locator = ctx.runtime.env.platform() === 'win32' ? 'where' : 'which';
 
+  let result;
   try {
-    const result = await ctx.runtime.process.exec(locator, [command], {
+    result = await ctx.runtime.process.exec(locator, [command], {
       encoding: 'utf-8',
       env: commandEnv(ctx.runtime),
       inheritEnv: false,
       timeout: 10_000,
     });
-    if (result.status !== 0) {
-      return undefined;
-    }
-    for (const rawLine of result.stdout.split(/\r?\n/)) {
-      const line = rawLine.trim();
-      if (line.length > 0) {
-        return line;
-      }
-    }
-    return undefined;
-  } catch {
-    return undefined;
+  } catch (error: unknown) {
+    // The port resolves rather than rejecting for a failed child, so reaching here means the call itself
+    // failed — which is also not an answer about `command`.
+    return { kind: 'undetermined', detail: (error as Error | null)?.message ?? 'unknown error' };
   }
-}
 
-async function commandExists(command: string, ctx: SourceImportContext): Promise<boolean> {
-  return (await resolveCommandPath(command, ctx)) !== undefined;
+  const outcome = classifyExecOutcome(result);
+  switch (outcome.kind) {
+    case 'no-answer':
+      return { kind: 'undetermined', detail: outcome.detail };
+    case 'launch-refused':
+      // `which` itself could not be launched, and for a reason that will not change under this daemon. That
+      // says nothing about `command`, so it is not an absence either — it is a machine this check cannot run
+      // on.
+      return { kind: 'undetermined', detail: outcome.code };
+    case 'answered':
+      break;
+  }
+  // The exit code decides, not the output. GNU `which` prints nothing when it fails, so on this machine
+  // reading stdout regardless would reach the same answer — but that is a property of one implementation.
+  // BusyBox and several shell builtins print `<name> not found` on stdout and still exit non-zero, and the
+  // loop below would take that line as a path and hand it to `runCommand` as the binary to execute.
+  if (outcome.status !== 0) return { kind: 'absent' };
+
+  for (const rawLine of result.stdout.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (line.length > 0) return { kind: 'found', path: line };
+  }
+  // Exit 0 with no path is the locator contradicting itself; treat it as the answer it gave, not as a hold.
+  return { kind: 'absent' };
 }
 
 async function runCommand(
@@ -344,10 +432,14 @@ async function runCommand(
     maxBuffer: 20 * 1024 * 1024,
     timeout: timeoutMs,
   });
-  if (result.status === 0) {
+  const outcome = classifyExecOutcome(result);
+  if (outcome.kind === 'answered' && outcome.status === 0) {
     return;
   }
-  if (result.status === null && result.error?.message.startsWith('timeout:')) {
+  // The port's own timeout, read from the `code` it stamps rather than from the prose of its message. The
+  // message prefix this used to match is set in three places in `runtime/`; matching it coupled this module to
+  // a sentence, and a sentence is not where a disposition lives.
+  if (outcome.kind === 'no-answer' && outcome.detail === EXEC_TIMEOUT_CODE) {
     const remediation = options.timeoutRemediation === undefined ? '' : ` ${options.timeoutRemediation}`;
     writeAuditEvent(
       'source_import_command_timeout',
@@ -361,6 +453,15 @@ async function runCommand(
     );
     throw new Error(`${displayName} timed out after ${formatDuration(timeoutMs)}.${remediation}`);
   }
+  // Everything else that is not an exit: the child could not be launched, or was killed before it exited.
+  // Reported as itself rather than folded into the failure text below, which reads as the tool having run and
+  // rejected the input — a claim about a command nobody observed run.
+  if (outcome.kind !== 'answered') {
+    const detail = outcome.kind === 'launch-refused' ? outcome.code : outcome.detail;
+    throw new Error(
+      `${displayName} could not be run (${detail}); this is not a report that it failed. ${nonAnswerExit(detail)}`,
+    );
+  }
 
   const outputLines: string[] = [];
   const stderr = result.stderr.trim();
@@ -371,12 +472,12 @@ async function runCommand(
   if (stdout.length > 0) {
     outputLines.push(stdout);
   }
-  if (result.error !== undefined && result.error.message.length > 0) {
-    outputLines.push(result.error.message);
-  }
+  // No `result.error` line here: reaching this point means `classifyExecOutcome` answered, and it only does
+  // that when the port reported no error at all. The async port makes the two mutually exclusive by
+  // construction (`status: error ? null : status` in `runtime/exec-builder.ts`), so a branch reading both was
+  // describing a result shape that cannot arrive.
   const output = outputLines.join('\n');
-  const code = result.status === null ? 'unknown' : String(result.status);
-  throw new Error(output ? `${displayName} failed: ${output}` : `${displayName} exited with code ${code}`);
+  throw new Error(output ? `${displayName} failed: ${output}` : `${displayName} exited with code ${outcome.status}`);
 }
 
 function createPdfOutputDir(ctx: SourceImportContext): string {
@@ -714,9 +815,16 @@ export async function prepareSourceImport(
 
   if (signal !== undefined) throwIfAborted(signal, 'convert');
   log(`Converting ${sourceFilePath}`);
-  if (!(await converter.isAvailable(ctx))) {
+  const availability = await converter.isAvailable(ctx);
+  if (availability.kind === 'absent') {
     log(`Installing converter dependencies for ${ext || 'source'} import`);
     await converter.install(log, ctx);
+  } else if (availability.kind === 'undetermined') {
+    // Installing is the finalization here — it downloads and writes tooling — and nothing observed that it was
+    // needed. So the refusal has to name what ends it, which is not always the same action.
+    throw new Error(
+      `Could not check whether the ${ext || 'source'} converter is installed (${availability.detail}), so Coral did not install one. ${nonAnswerExit(availability.detail)}`,
+    );
   }
 
   const converted = await converter.convert(sourceFilePath, ctx);
@@ -742,8 +850,8 @@ export async function prepareSourceImport(
 }
 
 class MarkdownCopyConverter implements Converter {
-  async isAvailable(_ctx: SourceImportContext): Promise<boolean> {
-    return true;
+  async isAvailable(_ctx: SourceImportContext): Promise<ConverterAvailability> {
+    return { kind: 'available' };
   }
 
   async install(log: (msg: string) => void, _ctx: SourceImportContext): Promise<void> {
@@ -765,8 +873,9 @@ class MarkdownCopyConverter implements Converter {
 }
 
 class HtmlTurndownConverter implements Converter {
-  async isAvailable(_ctx: SourceImportContext): Promise<boolean> {
-    return missingPackages(['turndown']).length === 0;
+  async isAvailable(_ctx: SourceImportContext): Promise<ConverterAvailability> {
+    // A bundled dependency: present or not, with nothing to fail to observe.
+    return missingPackages(['turndown']).length === 0 ? { kind: 'available' } : { kind: 'absent' };
   }
 
   async install(log: (msg: string) => void, _ctx: SourceImportContext): Promise<void> {
@@ -788,8 +897,8 @@ class HtmlTurndownConverter implements Converter {
 }
 
 class DocxMammothConverter implements Converter {
-  async isAvailable(_ctx: SourceImportContext): Promise<boolean> {
-    return missingPackages(['mammoth', 'turndown']).length === 0;
+  async isAvailable(_ctx: SourceImportContext): Promise<ConverterAvailability> {
+    return missingPackages(['mammoth', 'turndown']).length === 0 ? { kind: 'available' } : { kind: 'absent' };
   }
 
   async install(log: (msg: string) => void, _ctx: SourceImportContext): Promise<void> {
@@ -817,14 +926,32 @@ class DocxMammothConverter implements Converter {
 }
 
 export class PdfMarkerConverter implements Converter {
-  async isAvailable(ctx: SourceImportContext): Promise<boolean> {
-    return commandExists('marker_single', ctx);
+  async isAvailable(ctx: SourceImportContext): Promise<ConverterAvailability> {
+    const located = await resolveCommandPath('marker_single', ctx);
+    switch (located.kind) {
+      case 'found':
+        return { kind: 'available' };
+      case 'absent':
+        return { kind: 'absent' };
+      case 'undetermined':
+        // The reason travels with the answer: it is what separates "retry" from "this machine cannot run the
+        // lookup", and the caller has no other way to tell those apart.
+        return { kind: 'undetermined', detail: located.detail };
+    }
   }
 
   async install(log: (msg: string) => void, ctx: SourceImportContext): Promise<void> {
-    let uvCommand = await resolveCommandPath('uv', ctx);
+    const uv = await resolveCommandPath('uv', ctx);
+    if (uv.kind === 'undetermined') {
+      throw new Error(
+        `Could not check whether uv is installed (${uv.detail}); Coral will not install over an unknown state. ${nonAnswerExit(uv.detail)}`,
+      );
+    }
 
-    if (!uvCommand) {
+    let uvCommand: string;
+    if (uv.kind === 'found') {
+      uvCommand = uv.path;
+    } else {
       log('Installing uv...');
       if (ctx.runtime.env.platform() === 'win32') {
         await runCommand('powershell', ['-c', 'irm https://astral.sh/uv/install.ps1 | iex'], 'uv installer', ctx);
@@ -832,10 +959,11 @@ export class PdfMarkerConverter implements Converter {
         await runCommand('sh', ['-c', 'curl -LsSf https://astral.sh/uv/install.sh | sh'], 'uv installer', ctx);
       }
 
-      uvCommand = await resolveCommandPath('uv', ctx);
-      if (!uvCommand) {
-        throw new Error('uv was not found after installation');
-      }
+      uvCommand = requireCommandPath(
+        await resolveCommandPath('uv', ctx),
+        'uv was not found on PATH after its installer ran. That usually means the installer wrote it to a directory this process does not have on PATH — check where it placed `uv`, add that directory to PATH, and retry the import.',
+        (detail) => `uv was installed, but checking for it did not answer (${detail}). ${nonAnswerExit(detail)}`,
+      );
     }
 
     log('Installing Python 3.12 + Marker...');
@@ -855,9 +983,12 @@ export class PdfMarkerConverter implements Converter {
       },
     );
 
-    if (!(await commandExists('marker_single', ctx))) {
-      throw new Error('marker_single was not found after installing marker-pdf');
-    }
+    requireCommandPath(
+      await resolveCommandPath('marker_single', ctx),
+      "marker_single was not found on PATH after installing marker-pdf. Add uv's tool bin directory to PATH (run `uv tool update-shell`, or add the directory `uv tool dir --bin` reports) and retry the import.",
+      (detail) =>
+        `marker-pdf was installed, but checking for marker_single did not answer (${detail}). ${nonAnswerExit(detail)}`,
+    );
   }
 
   async convert(filePath: string, ctx: SourceImportContext): Promise<ConversionResult> {
@@ -867,10 +998,14 @@ export class PdfMarkerConverter implements Converter {
       ctx.fileSizeLimitBytes,
       'KB source import PDF file',
     );
-    const markerCommand = await resolveCommandPath('marker_single', ctx);
-    if (!markerCommand) {
-      throw new Error('marker_single is not available');
-    }
+    // Something found marker_single moments ago — the availability check or the install step this run just
+    // completed — so its absence here is a race with this conversion, not evidence it was never installed.
+    const markerCommand = requireCommandPath(
+      await resolveCommandPath('marker_single', ctx),
+      'marker_single is not available; it was found moments ago before this conversion started. Retry the import.',
+      (detail) =>
+        `Could not check for marker_single (${detail}); this is not a report that it is missing. ${nonAnswerExit(detail)}`,
+    );
 
     const outputDir = createPdfOutputDir(ctx);
 

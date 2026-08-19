@@ -286,9 +286,33 @@ describe('cli errors', () => {
       ['audit_requires_ended_session', 409, 1],
       ['invalid_request', 400, 1],
       ['backend_recovering', 503, 75],
+      // Both are "could not observe", not "decided no" — members of `NOT_OBSERVED_CORAL_SETUP_ERROR_CODES`. See
+      // both codes' doc comments in `runtime/errors.ts`.
+      ['coordinator_record_unreadable', undefined, 75],
+      ['coordinator_unreachable', undefined, 75],
       ['unexpected_code', undefined, 1],
     ])('maps %s / %s to %i', (code, httpStatus, exitCode) => {
       expect(errorCodeToExit(code, httpStatus)).toBe(exitCode);
+    });
+
+    // The mechanism `NOT_OBSERVED_CORAL_SETUP_ERROR_CODES` exists to prevent — a code added to one consumer's
+    // exit-code list and not the other's — was previously asserted only in a JSDoc comment, never a test. This
+    // drives both `errorCodeToExit` (this file) and `expansionExitCode` (`cli/commands/expansion.ts`) from the
+    // real exported set, so a future member that either consumer stops honoring fails here instead of shipping
+    // silently. `EXPECTED_NOT_OBSERVED_CODES` is an independent, hand-written statement of the set's current
+    // membership — mirroring `main-routing.test.ts`'s "has a row for every refusal" pattern — so a code
+    // silently added to or removed from the real set is caught here too, not just a drift between consumers.
+    it('gives every NOT_OBSERVED_CORAL_SETUP_ERROR_CODES member exit 75 in both errorCodeToExit and expansionExitCode', async () => {
+      const EXPECTED_NOT_OBSERVED_CODES = ['coordinator_unreachable', 'coordinator_record_unreadable'];
+      const { NOT_OBSERVED_CORAL_SETUP_ERROR_CODES } = await import('#src/runtime/errors.js');
+      const { expansionExitCode } = await import('#src/cli/commands/expansion.js');
+
+      expect([...NOT_OBSERVED_CORAL_SETUP_ERROR_CODES].sort()).toEqual(EXPECTED_NOT_OBSERVED_CODES.sort());
+
+      for (const code of NOT_OBSERVED_CORAL_SETUP_ERROR_CODES) {
+        expect(errorCodeToExit(code)).toBe(75);
+        expect(expansionExitCode({ status: 'error', code, userMessage: 'unused', remediation: 'unused' })).toBe(75);
+      }
     });
   });
 });

@@ -51,6 +51,26 @@ different `TMPDIR`. Sandboxes, CI containers, and tools that set their own `TMPD
 places that produce it. The failure is not loud when it happens: both coordinators work, and the damage
 is whatever two independent owners do to one journal.
 
+## Reproduced 2026-08-19, and there is a second failure this entry did not describe
+
+Produced by accident while exercising `backend status` against an isolated `HOME`/`TMPDIR` under this
+project's own sandbox scratch root. `composeCoralPaths('prod')` returned a socket path of **134 bytes**
+against the Linux limit of 108, and `net.Server#listen` on it failed `EINVAL`.
+
+That is not the two-coordinator case. When the *fallback itself* overflows — a long `TMPDIR`, which is
+the same condition that makes the fallback get taken at all — there is no second coordinator, because
+there is no coordinator: `socketPathForRunDir` returns a path nothing can bind, and the operator gets
+`listen EINVAL` naming no limit, no byte count, and no variable to change. The entry above reads as
+though the overflow branch always ends in two owners; it can equally end in none.
+
+This half is separable and much cheaper than the identity decision. `providerEndpoint`
+(`src/infra/path/provider-proxy.ts:141-146`) already refuses with `proxy_endpoint_too_long`, carrying
+`observedBytes`, `limit` and `platform`; the coordinator can raise the same shape without settling where
+the fallback should live. Copying it costs nothing that the identity fix would have to undo, and it
+turns an undiagnosable startup failure into one that names its own remedy. The existing coverage does
+not catch it: `tests/unit/infra/coordinator-paths.test.ts` asserts at 107/108/109 bytes that the
+fallback is *taken*, never that what it returns *fits*.
+
 ## What has to be decided
 
 The fallback needs an identity derived from the same thing the primary path is derived from. Options:
@@ -73,6 +93,8 @@ is only the socket path's dependence on ambient environment.
 ## Start condition
 
 Write the failing case first: two `socketPathForRunDir` calls with the same deep `runDir` and different
-`env.tempDirectory`, asserting they agree. It fails today. Write the matching case for
+`env.tempDirectory`, asserting they agree. It fails today. Write the overflowing-fallback case beside it
+— a `tempDirectory` long enough that the fallback exceeds the limit too — asserting it refuses rather
+than returns; that one is independently landable if the identity question stays open. Write the matching case for
 `providerEndpoint` in the same commit — same identity, same overflow, different `env.tempDirectory` —
 so the invariant is stated once for both callers rather than discovered twice.
