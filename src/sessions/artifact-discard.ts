@@ -3,10 +3,6 @@ import type { BoundProvider } from '../providers/bound-provider-contract.js';
 import type { ProviderSession } from './entry.js';
 
 /**
- * Resolve the provider native-artifact handles to discard for a session: the
- * in-run recorded handles (optionally narrowed to one job), falling back to a
- * conversationRef-based locate when no handle was captured at run time.
- *
  * Returns handles only; invoking `discardArtifacts` is reserved for the
  * lifecycle reactor (see `tests/invariants/cleanup-discipline.test.ts`).
  */

@@ -105,6 +105,71 @@ listener to `JobStore` when the actual listener is `WaitCoordinator` in `shell/w
 delete under the rot test's own "factually wrong is a certain delete" rule, not a ledger-worthy defect, since
 the code itself was correct.
 
+## Sector 5 — `src/sessions`, `src/discuss`, `src/workflow`
+
+- **What is wrong**: A JSDoc block on `releaseSessionJobClaim` states a layering rule — "coordinator/services may
+  import from sessions contracts but not from sessions shell implementations" — that the tree already violates.
+  `src/coordinator/services/provider-event-application.ts` imports `SessionManager` (the sessions-domain shell
+  class) directly from `sessions/shell.js` and constructs it via `SessionManager.forProduction(...)` inside
+  `sessionManagerWithinTx`, bypassing the wrapper the comment describes. `src/coordinator/execution-service.ts`
+  does the same one directory up. The comment itself is not wrong — it correctly describes why the wrapper
+  exists and matches how `releaseSessionJobClaim` is written — but the discipline it asserts for
+  `coordinator/services` is not what the two importing files do.
+- **Where**: `releaseSessionJobClaim` in `src/sessions/job-release.ts` (states the rule); `sessionManagerWithinTx`
+  in `src/coordinator/services/provider-event-application.ts` and the module-level import in
+  `src/coordinator/execution-service.ts` (break it).
+- **Evidence**: `grep -n "sessions/shell" src/coordinator/execution-service.ts src/coordinator/services/provider-event-application.ts`
+  shows both importing `SessionManager` from `../sessions/shell.js` / `../../sessions/shell.js`; read directly,
+  `provider-event-application.ts:95` calls `SessionManager.forProduction(...)`. Cross-checked against
+  `docs/design-rationale.md` §9's cross-domain-contract policy, which this local rule is a stricter instance of.
+- **Why it was not fixed**: Comment-only sweep scope; routing these two call sites through
+  `releaseSessionJobClaim` (or an equivalent contract) instead of constructing `SessionManager` directly is a
+  structural change, not a comment edit.
+- **Severity, as observed**: No test failure hit this — both files compile and pass today, since nothing enforces
+  the narrower rule the comment states (unlike the directory-level policy in `docs/design-rationale.md`, which
+  has no invariant test scoped to `coordinator/services` specifically). Reachability is a future contributor
+  reading `job-release.ts`'s doc comment as the actual boundary and being surprised by the existing bypasses, or
+  extending the bypass pattern to a third call site on the assumption it is already established practice.
+
+- **What is wrong**: A comment on the outer `catch` in `finalizeSynthesizedSession` claimed "the wired reactor
+  implementation already logs and swallows its own discard failures; this catch is a defensive guard for the
+  callback itself" (now deleted as part of this sweep — see the sector's diff). The reactor implementation,
+  `SessionLifecycleReactor.discardSessionArtifacts`, does not swallow all of its own failures: its catch block
+  re-throws `ProviderArtifactArchiveInvariantError` and `ProviderArtifactProtocolInvariantError` rather than
+  logging them, and the same file's retention-work recovery path (the `onFault` handler passed to
+  `RecoveryContainment`) classifies those exact two error types as `{ kind: 'fatal' }` — i.e. meant to escalate,
+  not to be routine cleanup noise. `finalizeSynthesizedSession`'s `catch (error)` has no type discrimination, so
+  an invariant error surfacing from the on-demand discard path is caught there and downgraded to an ordinary
+  `backendLog.warn`, silently absorbing what the reactor's own re-throw and the recovery path's `fatal`
+  classification both treat as something that should not be swallowed.
+- **Where**: `finalizeSynthesizedSession` in `src/discuss/shell/flow/synthesis.ts`; `discardSessionArtifacts` and
+  the retention-work `onFault` handler in `src/sessions/lifecycle-reactor.ts`.
+- **Evidence**: Read directly. `discardSessionArtifacts`'s catch block rethrows
+  `error instanceof ProviderArtifactArchiveInvariantError || error instanceof ProviderArtifactProtocolInvariantError`
+  and otherwise logs-and-continues; the retention-work `onFault` handler in the same file returns
+  `{ kind: 'fatal', error: fault.error }` for the identical two types. `finalizeSynthesizedSession`'s
+  `try { await ctx.discardSessionArtifacts?.(...) } catch (error) { backendLog.warn(...) }` has no such
+  discrimination. `ctx.discardSessionArtifacts` is confirmed wired to this exact reactor method in
+  `src/coordinator/index.ts` (`discardSessionArtifacts: (sessionId) => lifecycleReactor.discardSessionArtifacts(sessionId)`).
+- **Why it was not fixed**: Comment-only sweep scope; the fix requires a design decision about what the discuss
+  on-demand discard flow should do when it hits one of these two invariant conditions (propagate, quarantine, or
+  something else), not just a comment edit.
+- **Severity, as observed**: Unproven reachability — this requires the reactor's discard path to hit a malformed
+  provider-artifact protocol record or an archived handle that fails hash verification / changes during
+  publication, specifically during the on-demand discard triggered at discuss synthesis finalization. Not hit by
+  any test failure; inferred from reading both files, not observed via a failing test.
+
+Two additional observations, not ledgered as defects: (1) `src/workflow/wait.ts`, `src/workflow/recover.ts`, and
+`src/discuss/session-types.ts` each had a comment trimmed of a change-history or wrong-terminology clause under
+the rot test (see the sector's diff) — none were factually wrong claims about current code, so they were excised
+rather than ledgered. (2) This sector's tree also carries an internal, undocumented phase-numbering shorthand —
+`P4`, `P6`, `P7`, `AC1`, `AC3` (`grep -rhoE '\bP[0-9]\b|\bAC[0-9]\b' --include='*.ts' src/` finds them in
+`src/sessions/startup-recovery.ts`, `src/sessions/retention-work-item-recovery-source.ts`,
+`src/workflow/startup-recovery.ts`) — that resolves to nothing in `docs/`, the same shape as the cross-sector
+"comments cite documents this repository does not contain" finding below but not covered by that finding's
+enumeration regex. Left untouched for the same reason that finding gives: deciding whether to bring in, restate,
+or drop the reference is not a keep-or-delete call this sweep is authorized to make.
+
 ## Spans every sector — comments cite documents this repository does not contain
 
 Recorded once here rather than per sector, because it is one finding with 48 sites and every sector meets it.

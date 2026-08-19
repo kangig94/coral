@@ -15,9 +15,6 @@ import {
 import { describeTerminalFailure } from './command.js';
 
 // Atom-progress formatters live next to the wait loop that consumes them.
-// Originally split into `workflow/internal/format.ts` alongside two unused
-// exports (`atomTagName`, `atomDiagnosticLabel`); both dead-on-arrival, both
-// removed. `stale-recovery.ts` is the only sibling consumer.
 function stripElapsedPrefix(message: string): string {
   if (!message.startsWith('[')) return message;
   const closeBracket = message.indexOf('] ');
