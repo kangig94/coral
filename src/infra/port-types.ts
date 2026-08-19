@@ -144,12 +144,6 @@ export type ExecResult = {
  * system had no process slot, a signal arrived from outside — and it leaves the question exactly as open as it
  * was before the command ran.
  *
- * This exists because the derivation was written four times against the same four fields, in modules that do
- * not own them, and the copies disagreed. Two of the copies had to explain themselves by pointing at a third
- * module's opposite default, which is what a missing owner looks like. The disagreement was real and reachable:
- * on the version that read a codeless error as "it answered", a KB whose disk was busy silently stopped being
- * version-controlled for the daemon's lifetime.
- *
  * The unrecognised shape lands on `no-answer` deliberately. A wrong `no-answer` costs a repeated command; a
  * wrong `answered` is a durable claim nobody observed.
  */

@@ -17,7 +17,7 @@ export type BoundedFileReadStorage = Readonly<{
 }>;
 
 /** The raw `node:fs` bindings, satisfying `BoundedFileReadStorage` for a caller with no `StoragePort` of its
- *  own yet — `bundle-manifest.ts`'s own pre-runtime adjacent-manifest read being exactly that caller. */
+ *  own yet. */
 export const nodeFsBoundedReadStorage: BoundedFileReadStorage = {
   lstatSync,
   statSync,

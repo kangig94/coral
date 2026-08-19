@@ -48,8 +48,7 @@ function parseRemoteUrlPath(remote: string): string | null {
  *
  * Exported for one reason: `clients/hooks/lib/hook-utils.mjs` must spell this rule again — hooks may not
  * import from `src/` — and both spellings name the same `~/.coral/projects[-dev]/<slug>` directory. A single
- * table in `tests/unit/hooks/hook-project-source.test.ts` drives both, because the two had already diverged
- * on five of nineteen remotes underneath a comment saying they must agree.
+ * table in `tests/unit/hooks/hook-project-source.test.ts` drives both.
  */
 export function parseRemoteSource(remote: string): string | null {
   const normalized = remote
@@ -74,10 +73,6 @@ function rememberIndecisiveProbe(projectRoot: string, detail: string): void {
   // name a later read will not look for. Every other site that declines on a non-answer either throws or
   // returns a verdict its caller renders; this one returned a plausible string and said nothing. At most once
   // per interval per root, since the hold below suppresses the re-probe.
-  //
-  // An earlier revision put a count here — "the one site of five" — and it went stale the next time a site
-  // was converted, which is the whole lesson of this branch applied to its own comments: a number in prose is
-  // a claim, and this one had nothing checking it.
   backendLog.warn(
     `Could not derive the project source for ${projectRoot} (${detail}); using the local fallback for now, which is not a statement that this project has no git remote.`,
   );
@@ -121,7 +116,7 @@ function rememberProjectSource(projectRoot: string, source: string): void {
  * provider preflights use. This file reads a thrown error rather than an `ExecResult` only because it sits
  * below the runtime composition (`runtime/real.ts` imports it to build `paths.projectSource`) and so has no
  * port to read a result from; that is why the owner has two entry points rather than this file having its own
- * predicate, which is what it had until the rule was given one home.
+ * predicate.
  *
  * Two things this does not do. It does not make the two meanings distinguishable to a caller — the return is
  * one `string`, and a caller inside the window still gets the local name. And because the fallback now expires,

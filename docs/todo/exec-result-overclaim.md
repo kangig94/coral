@@ -36,7 +36,7 @@ the identical outcome and is still there.
 
 ## Member 2 — the synchronous port reports a foreign signal as its own timeout
 
-`classifyExecOutcome` (`src/infra/port-types.ts:197`) has a branch for a child killed by a signal this
+`classifyExecOutcome` (`src/infra/port-types.ts`) has a branch for a child killed by a signal this
 process did not ask for, and states its premise in place:
 
 > A null status is a child killed by a signal this process did not ask for (both ports report their own

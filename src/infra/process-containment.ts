@@ -191,8 +191,7 @@ function observeContainment<Scope extends symbol>(
 
   // Three answers, and only two of them may decide. A group observed absent is absent; one observed alive is
   // present and may be signalled. A group that could not be observed authorizes nothing — reading it as
-  // present would deliver SIGTERM and then SIGKILL to a numeric group nobody saw, which is what the boolean
-  // primitive threw to prevent and what `!== 'absent'` quietly reinstated.
+  // present would deliver SIGTERM and then SIGKILL to a numeric group nobody saw.
   const groupLiveness = environment.process.observeLiveness(-containment.processGroupId);
   if (groupLiveness === 'unknown') {
     throw new ProcessContainmentError(

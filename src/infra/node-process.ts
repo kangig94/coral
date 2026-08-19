@@ -36,13 +36,9 @@ const PROBE_EXEC_OPTIONS: ExecFileSyncOptionsWithStringEncoding = {
 };
 
 /**
- * What a liveness probe can actually report — three outcomes, because there are three.
- *
- * This was a `boolean` that threw on the third, and the type is the whole point of the change. A signature
- * saying `boolean` hides the third outcome from the compiler, so every caller looks total while a third of the
- * behaviour is invisible; four successive hand audits of the same eighteen call sites each missed different
- * ones, and two of the misses were a coordinator that exits and a job terminalized as failed. Naming the third
- * outcome moves that audit from a person to `tsc`: a caller must now say which of the three it means.
+ * A signature saying `boolean` hides a third outcome from the compiler, so every caller looks total while a
+ * third of the behaviour is invisible. Naming the third outcome moves that audit from a person to `tsc`: a
+ * caller must now say which of the three it means.
  *
  * `unknown` is not a weaker `absent` and must never be read as one. It is "the question could not be asked" —
  * `EPERM` is a process this caller may not signal, which is still a process, and an unexpected errno is a probe
@@ -65,14 +61,6 @@ export function observeProcessLiveness(pid: number): ProcessLiveness {
 /**
  * A process incarnation: opaque, and comparable only by equality.
  *
- * The previous primitive returned `/proc/stat` btime plus the process's start ticks, floored to seconds.
- * btime is not a constant — the kernel recomputes it on every read as `realtime_now - boottime_now`, and
- * where those two clocks advance at different rates it climbs (measured: 3 seconds per 23 seconds of wall
- * time on a WSL2 host). So that value was the process's identity *plus a noise sample taken at probe
- * time*, with no record of which sample was used. Two processes comparing it disagreed by roughly the
- * age gap between their first probes, which made a live process look like a different one — or, on the
- * paths that read a mismatch as absence, like no process at all.
- *
  * What the kernel actually stores is "this process began at boot-tick N", and that is what this carries.
  * `boot_id` is not decoration: start ticks alone are comparable within one boot, but after a reboot a
  * recorded `pid=1234, ticks=500` can genuinely *match* a fresh low-pid process — a false match at exactly
@@ -83,8 +71,7 @@ export function observeProcessLiveness(pid: number): ProcessLiveness {
  * string cannot stand in for one, so a value can only enter through a probe or a parse. What it does *not*
  * stop is `<` and `+`, which TypeScript allows on any string. Ordering two of these is meaningless rather
  * than ill-typed, and `tests/invariants/process-incarnation-opacity.test.ts` is what guards the shape the
- * brand cannot: rebuilding an identity from a clock. Prose alone could not hold this — the previous shape
- * spread because a comment named an unsound site as the canonical pattern.
+ * brand cannot: rebuilding an identity from a clock.
  */
 export type ProcessIncarnation = string & { readonly __processIncarnation: 'process-incarnation' };
 
@@ -148,9 +135,7 @@ function probeLinuxProcessIncarnation(pid: number): ProcessIncarnation | null {
  * frame a wall-clock start time, because both sides shift together and a later process can land on an earlier
  * one's coordinates. The session UUID is minted once per boot and never moves.
  *
- * Read fresh every time, exactly as `readLinuxBootId` is — but be exact about why, because an earlier version
- * of this comment gave a reason that does not hold. It claimed remembering a value would assert across a
- * boundary this function cannot see. There is no such boundary: the only thing that changes a boot session id
+ * Read fresh every time, exactly as `readLinuxBootId` is. The only thing that changes a boot session id
  * is a reboot, and no process survives one, so a successful read is constant for as long as anything can ask.
  * Caching it would be sound.
  *
