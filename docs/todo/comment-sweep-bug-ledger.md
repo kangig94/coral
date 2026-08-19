@@ -49,3 +49,48 @@ Do not fix anything while adding an entry. Do not soften a finding to make it fi
   `incarnationMayAuthorizeSignal` expecting the block directly above it to be its own doc, or who looks for
   `readMacBootSessionId`'s rationale immediately above that function and finds nothing, is the reachable
   confusion. Not hit by any test failure — reachability is as a human-readability defect, not a runtime one.
+
+## Sector 3 — `src/runtime`, `src/store`
+
+- **What is wrong**: The same orphaned-JSDoc shape as the Sector 1 finding above. A JSDoc block beginning
+  "Every row under `prefix`, the bare prefix itself included …" describes the inclusive-first-page pagination
+  contract of `forEachRowUnderPrefix` — it talks about "subsequent pages" advancing past a cursor, which is
+  that function's own loop. But it sits directly above a _second_, unrelated JSDoc block ("The first key that
+  is _not_ under `prefix` …") that correctly documents `keyPrefixUpperBound`, the function immediately below
+  both blocks. `forEachRowUnderPrefix` itself is declared later in the file with no doc comment of its own
+  immediately preceding it.
+- **Where**: `forEachRowUnderPrefix` and `keyPrefixUpperBound`, both in `src/store/provider-operation-journal.ts`.
+- **Evidence**: Read directly — the first block's content (bare-prefix inclusion, "subsequent pages advance
+  strictly past the cursor") matches only `forEachRowUnderPrefix`'s pagination loop (the `inclusive`/cursor
+  logic), not `keyPrefixUpperBound` (which takes no cursor and runs once). The second block's content (BINARY
+  collation, incrementing the last character) matches only `keyPrefixUpperBound`'s body. Not inferred — the
+  mismatch is legible from the text of both blocks against both function bodies.
+- **Why it was not fixed**: Comment-only sweep scope is keep-or-delete per the rot test; relocating a comment
+  block to sit above a different symbol is a structural edit beyond that mandate, so it was left in place
+  rather than moved. (Both blocks were separately trimmed of change-history narration under the rot test —
+  see the sector's diff — but neither was moved.)
+- **Severity, as observed**: Documentation-only; no behavior is affected. A reader who edits
+  `keyPrefixUpperBound` expecting the block directly above it to be its own doc, or who looks for
+  `forEachRowUnderPrefix`'s pagination rationale immediately above that function and finds nothing, is the
+  reachable confusion. Not hit by any test failure — reachability is as a human-readability defect, not a
+  runtime one.
+
+- **What is wrong**: Two unrelated functions in different directories share the exact name `sameFileIdentity`
+  but compare different fields, so the name alone no longer says what a match means. `src/infra/bounded-file-
+read.ts` exports `sameFileIdentity(left, right)` comparing `dev`, `ino`, `mode`, `uid`, `size`, and
+  `mtimeNs`. `src/runtime/real.ts` separately declares an unexported, module-private `sameFileIdentity(left,
+right)` comparing only `dev` and `ino`. This was found while checking a now-deleted comment in
+  `src/store/backend-store-reset.ts` that tried to explain why _its own_ differently-named comparison function
+  (`sameEvidenceFileStat`) was "deliberately not" the `infra` one — that comment cited the wrong home file for
+  the `infra` export (see the sector's diff) but the underlying "keep names distinct" concern it was raising
+  turns out to already be violated one file over, by `real.ts` reusing the same name privately.
+- **Where**: `sameFileIdentity` in `src/infra/bounded-file-read.ts` (exported) and `sameFileIdentity` in
+  `src/runtime/real.ts` (module-private, used only by that file's `findPathByIdentity`).
+- **Evidence**: `grep -n "function sameFileIdentity"` in both files; read both bodies directly to confirm the
+  field lists differ (`bounded-file-read.ts` checks six fields including `uid`; `real.ts` checks only `dev`
+  and `ino`).
+- **Why it was not fixed**: A rename is a code change, out of scope for a comment-only sweep.
+- **Severity, as observed**: Naming-ambiguity only; `real.ts`'s copy is module-private so there is no import
+  collision and no runtime defect. Reachability is a future reader searching for `sameFileIdentity` and finding
+  two same-named-but-different comparisons, or grep-driven refactoring assuming the two are interchangeable.
+  Not hit by any test failure.

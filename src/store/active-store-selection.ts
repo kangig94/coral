@@ -261,10 +261,10 @@ export function classifyActiveStoreSelection(
   }
 
   const precedence = compareProductVersions(selected.manifest.version, current.manifest.version);
-  // Every non-exact, non-newer precedence (behind or equal) is handled identically by the sole caller: it
-  // republishes the current build's own selection. Whether the recorded selection names an older version or
-  // the same version under a different build carries no separate consequence today, so both collapse here
-  // rather than certifying a distinction no caller observes.
+  // Every non-exact, non-newer precedence (behind or equal) is handled identically: it republishes the
+  // current build's own selection. Whether the recorded selection names an older version or the same version
+  // under a different build carries no separate consequence today, so both collapse here rather than
+  // certifying a distinction no caller observes.
   return precedence > 0 ? 'selected-newer' : 'advance';
 }
 
