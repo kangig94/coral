@@ -13,8 +13,7 @@ import { applyBundledStoreSchema } from '#src/store/db.js';
 // Type-level claims (cursor-expansion is structurally unrepresentable through
 // `ExpansionHost.registerConsumer`) live at
 // tests/types/expansion-registration-unrepresentable.test-d.ts and are
-// typechecked by `tsc -p tests/types/tsconfig.json` and
-// `tsc -p tsconfig.test.json` during `npm test`.
+// typechecked by `tsc -p tests/types/tsconfig.json`.
 
 const REPO_ROOT = process.cwd();
 function createDb(): Database {

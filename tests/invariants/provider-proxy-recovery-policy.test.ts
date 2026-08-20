@@ -969,7 +969,7 @@ function diagnosticsFor(program: ts.Program, path: string): string[] {
  * Every adversarial case below builds its own TypeScript program over production sources and takes ~21-27s on
  * the slower supported Node major, so each one needs its own `}, 45_000)` budget — the file-wide default is
  * 15s (`vitest/default.ts`). Vitest attaches that argument to the case it CLOSES, not the one it precedes, and
- * because it renders directly above the next `it(` it reads as though it covers it. Three cases here have
+ * because it renders directly above the next `it(` it reads as though it covers it. Cases here have
  * timed out in CI for exactly that misreading, each fixed one at a time. When adding a case, give it its own
  * budget rather than assuming the line above yours applies to you.
  */

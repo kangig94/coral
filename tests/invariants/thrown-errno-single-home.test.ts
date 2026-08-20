@@ -7,9 +7,8 @@
 //
 //   1. Nobody defines a function or const named `thrownErrnoCode` or its private helper `errnoCode` outside
 //      the canonical file — the literal-name duplication a copy/paste produces.
-//   2. The two call sites this walk exists for — `backend/status.ts` and `backend/shutdown.ts`, both of
-//      which need it for the same reason, a `fetch` rejection that hides `ECONNREFUSED` behind `.cause` —
-//      still import and call the canonical function rather than answering the question locally.
+//   2. The call sites this walk exists for still import and call the canonical function rather than
+//      answering the question locally.
 //   3. A bounded, best-effort sweep of the rest of `src/`: inside a `catch` block or a function parameter
 //      typed exactly `unknown`, either (a) a chain reading `.cause` off that value with a `.code` at its end,
 //      paired with a second, independent read of `.code` off the same identifier (direct, or through an `as`
@@ -21,9 +20,7 @@
 // `unknown`, so a real re-implementation narrows it through an `as` cast or a type-guard helper before
 // reading `.code`; widening the match to survive every narrowing shape also starts matching unrelated code —
 // a domain type with its own `.cause` field (a control directive's abort cause) and its own unrelated
-// `.code` field, or a local variable whose name merely contains the substring "cause". Scoping to a single
-// `catch`/`unknown`-parameter block (rather than the whole file) was what took the measured hits on this
-// repo's own `.cause`-adjacent code from three false positives to zero; the "historical duplicate" and
+// `.code` field, or a local variable whose name merely contains the substring "cause". The "historical duplicate" and
 // "idiomatic inline form" cases below reproduce, respectively, this walk's own past duplicate
 // (`git show 3bf6bb95:src/transport/http/backend/shutdown.ts`, around line 146) and an `as`-cast rewrite of
 // it, and assert the scoped match still catches both.

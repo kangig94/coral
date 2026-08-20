@@ -8,10 +8,10 @@
 // startup. The hook lane has the harder deadline of the two: a 5-second budget with no event loop to poll a
 // clock against while a synchronous call blocks it.
 //
-// It is enforced here rather than left to review because the three `src/` sites disagreed for a long time and
-// nothing said so. `env-sanitize.ts` bounded its `getconf` from the start; `node-process.ts` shipped three
+// It is enforced here rather than left to review because the `src/` sites disagreed for a long time and
+// nothing said so. `env-sanitize.ts` bounded its `getconf` from the start; `node-process.ts` shipped
 // unbounded probes; `project-source.ts` shipped an unbounded `git remote get-url` in the v0.6.0 rewrite
-// (`618c95d1`) that was still unbounded four minor versions later, on the coordinator startup path the whole
+// that was still unbounded four minor versions later, on the coordinator startup path the whole
 // time. Nothing failed, because a bounded site does not argue with an unbounded one. A scan does. The hook
 // lane's own sync-subprocess sites were bounded from the start but were never in this scan's reach — this
 // file scanned `src/` only, exactly the blind spot `clients/hooks/lib/hook-utils.mjs` diagnoses for its

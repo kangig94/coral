@@ -521,3 +521,55 @@ anywhere in the tree uses those names — the real checkpoints on this path are 
 `serializeKnowledgeBlocks` with only seeing recognized structure, but `extractKnowledgeLinks` lives in a
 different file (`wiki-links.ts`) with independent parsing logic and never consumes this function's output —
 that half of the claim was cut, the same-file half about `serializeKnowledgeBlocks` was kept.
+
+## Sector 12 — `tests/invariants/`
+
+- **What is wrong**: The `engineIds` allowlist in the "engine-blind domains carry no engine-id string
+  literals (AC7.2)" check does not match the codebase's actual set of engine identities. It is missing
+  `'kiwi'`, a real, registered engine — `BUNDLED_ENGINES` in `src/expansion/bundled.ts` declares `id: 'kiwi'`
+  alongside `'orama'`, `'gemini'`, and `'onnx'`, and the same test file's sibling AC7.1 check
+  (`allowedEngineImporters`) explicitly allowlists `src/kb-daemon/expansion/kiwi-boot.ts` as an engine
+  importer — so the codebase already treats `kiwi` as a fourth engine identity everywhere except this one
+  literal-ban list. A bare string literal `'kiwi'` leaking into `src/kb/`, `src/coordinator/`,
+  `src/cli/expansion/`, `src/infra/`, or `src/runtime/` code would therefore not be caught, unlike a leak of
+  `'orama'`, `'gemini'`, or `'onnx'`. The set also contains `'kb-scann'`, a token that does not correspond to
+  any engine, file, symbol, or other reference anywhere in the tree (a repo-wide grep for `kb-scann` finds
+  only this one line) — its origin is unclear and it does not fire the check for anything real.
+- **Where**: the `engineIds` constant inside the `'engine-blind domains carry no engine-id string literals
+(AC7.2)'` test, in `tests/invariants/architecture-boundary.test.ts`.
+- **Evidence**: `grep -n "id: 'kiwi'" src/expansion/bundled.ts` and `grep -n "kiwi-boot" tests/invariants/architecture-boundary.test.ts`
+  both hit; `grep -rn "kb-scann" src/ tests/ docs/` returns only the `engineIds` declaration itself. Traced via
+  `git log --all -S "kb-scann"` to `78285643` ("test: remove redundant engine acceptance scan (#279)"), the
+  commit that introduced the current four-entry set — `'kb-scann'` was already present and `'kiwi'` already
+  absent at that point, so this is not drift from a later rename; it was incomplete from that commit onward.
+- **Why it was not fixed**: Comment-only sweep scope; correcting `engineIds` is a code change (editing a
+  `Set` literal), not a comment edit.
+- **Severity, as observed**: Not hit by any test failure — nothing in the current tree leaks a `'kiwi'`
+  string literal into an engine-blind scope, so the gap is latent. Reachability is a future edit that
+  references the engine by its literal id (rather than through the existing capability-vocabulary slot/
+  authority names the check already allows) inside one of the five engine-blind roots; AC7.2 would pass
+  regardless, silently certifying the same engine-blindness violation this check exists to catch.
+
+- **What is wrong**: The commit-time-reducer-vs-`rebuildProjections` parity test's discuss-event fixture
+  (`session-store-golden.events.jsonl`) exercises only 10 of the 16 `discussEventKinds` the discuss reducer
+  registry actually handles. `participants.expelled`, `speech.timed_out`, `epoch.summary.recorded`,
+  `must_answer.carry_forward.set`, `follow_up.queue.set`, and `follow_up.answered` never appear in the
+  fixture, so a divergence between the production commit-time reducer and the test-side `rebuildProjections`
+  helper for any of those six event kinds would not be caught by this parity invariant, contrary to the
+  file's own header claim that the test proves the two paths stay byte-identical for all four base
+  consumers. A now-deleted inline comment on this same fixture separately and incorrectly claimed it "covers
+  every discuss event kind the production reducer handles."
+- **Where**: the discuss branch of `it('commit-time reducer state == rebuildProjections state, row by row,
+for jobs/sessions/discuss/workflow')` in `tests/invariants/projection-rebuild-parity.test.ts`; fixture at
+  `tests/unit/discuss/fixtures/session-store-golden.events.jsonl`; full kind list in `discussEventKinds`,
+  `src/discuss/events.ts`.
+- **Evidence**: `discussEventKinds` in `src/discuss/events.ts` lists 16 kinds. Parsing the fixture (`python3
+-c "import json; ..."` over each JSONL line's `kind`) yields 18 events across only 10 distinct kinds
+  (`session.created`, `bidding.opened`, `agent.run.bound`, `agent.job.started`, `agent.job.finished`,
+  `bid.submitted`, `bid.round.closed`, `speech.recorded`, `session.ended`, `session.synthesized`). Diffing
+  against the full 16-kind list leaves the six named above uncovered.
+- **Why it was not fixed**: Comment-only sweep scope; extending the fixture (or the test) to cover the
+  remaining six kinds is a test-content change.
+- **Severity, as observed**: Not hit by any test failure. Reachability is a future reducer or
+  `rebuildProjections`-helper change to one of the six uncovered discuss event kinds shipping a byte-level
+  divergence that this invariant would not catch, despite its stated purpose.

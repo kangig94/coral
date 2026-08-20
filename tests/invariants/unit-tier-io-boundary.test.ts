@@ -7,12 +7,10 @@ Binding an ephemeral TCP port (`listen(0, '127.0.0.1', …)`) is allowed: a sand
 tests legitimately use it to exercise an HTTP surface. The distinction this guard draws is therefore the first
 argument to `listen` — a port number is fine, a filesystem path is not.
 
-Relocated precedents guarded here (all previously failed a sandboxed run with `listen EPERM`, 101 assertions
-across 11 files):
+Relocated precedents guarded here (all previously failed a sandboxed run with `listen EPERM`):
 - transport/ipc/{bind-socket,client,handoff,server,subscription-carriage,subscription-primitive}.test.ts
 - transport/http/server.test.ts, transport/{coral-setup-error-parity,http-ipc-parity}.test.ts
 - coordinator/startup-ordering.test.ts
-- invariants/ipc-auth-metadata.test.ts
 */
 import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';

@@ -73,9 +73,9 @@ const SKIPPED_DIRECTORIES = new Set(['node_modules', 'build', 'bridge', 'dist', 
  * The two spellings the tree uses: a backticked symbol followed by its file in parentheses, or followed by
  * "in" and its file.
  *
- * The path must contain a directory separator. A bare basename cannot be resolved soundly — `session-store.ts`
- * names no single file — and resolving it by first match would let this test assert something it did not
- * check. Citations written that way are simply out of scope rather than silently graded.
+ * The path must contain a directory separator. A bare basename cannot be resolved soundly, and resolving it
+ * by first match would let this test assert something it did not check. Citations written that way are simply
+ * out of scope rather than silently graded.
  */
 const SYMBOL_HOME = /`([A-Za-z_][A-Za-z0-9_]*)`\s*(?:\(|in\s+)`([A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+\.(?:ts|mjs))`/g;
 
@@ -262,9 +262,7 @@ describe('a prose citation carries no line number', () => {
   it('finds none in the tree', () => {
     const offenders = collectLineCitations(new Map<string, string>()).map((citation) => {
       const span =
-        citation.startLine === citation.endLine
-          ? `${citation.startLine}`
-          : `${citation.startLine}-${citation.endLine}`;
+        citation.startLine === citation.endLine ? `${citation.startLine}` : `${citation.startLine}-${citation.endLine}`;
       return `${citation.file}:${citation.line} — \`${citation.citedPath}:${span}\``;
     });
 

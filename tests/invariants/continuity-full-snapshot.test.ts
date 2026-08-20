@@ -26,7 +26,7 @@ describe('Invariant #9 — continuity bodies are full snapshots', () => {
   it('continuitySnapshotSchema rejects partial/patch shapes', () => {
     const patch = { delta: { conversationRef: 'conv-1' } };
     const opList = { ops: [{ op: 'set', path: 'conversationRef', value: 'conv-1' }] };
-    const partial = { conversationRef: 'conv-1' }; // missing resumable + providerContinuity
+    const partial = { conversationRef: 'conv-1' };
     expect(continuitySnapshotSchema.safeParse(patch).success).toBe(false);
     expect(continuitySnapshotSchema.safeParse(opList).success).toBe(false);
     expect(continuitySnapshotSchema.safeParse(partial).success).toBe(false);
