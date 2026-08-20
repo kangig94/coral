@@ -275,7 +275,6 @@ describe('JobStore', () => {
     const sessionId = 'session-crashed-workflow';
 
     initProviderJob(store, workflowJobId, sessionId);
-    // Exactly what crash terminalization commits: no content, and a fault that describes itself.
     commitJobTerminal(store, workflowJobId, sessionId, {
       content: '',
       outcome: { kind: 'job_fault', fault: { kind: 'wrapper_crashed', cause: { message: 'Backend shutting down' } } },
@@ -284,8 +283,6 @@ describe('JobStore', () => {
 
     const resultPath = store.ensureResultArtifact(workflowJobId);
 
-    // Before, crash terminalization wrote '' here first. The file then existed, so this read returned it
-    // unchanged and the operator was handed a path to nothing for a failure Coral could describe exactly.
     expect(runtime.storage.readFileSync(resultPath, 'utf-8')).toContain('Backend shutting down');
     expect(runtime.storage.readFileSync(resultPath, 'utf-8').trim().length).toBeGreaterThan(0);
   });

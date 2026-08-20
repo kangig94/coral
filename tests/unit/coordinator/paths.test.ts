@@ -24,7 +24,6 @@ describe('composeCoralPaths', () => {
     expect(p.generation.adoptionLock).toContain('.coral/gen2/.adoption-data.lock');
     expect(p.store.dbFile).toContain('.coral/gen2/data/store/store.db');
     expect(p.corpus.kbRoot).toContain('.coral/kb');
-    // Sibling of gen2/data/store and gen2/data/engines, and distinct from corpus.kbRoot (the Markdown vault).
     expect(p.kbRuntime.root).toContain('.coral/gen2/data/kb');
     expect(p.coordinator.socketPath).toMatch(
       /\.coral\/gen2\/run\/coordinator\.sock$|^\/.*\/coral-prod-[0-9a-f]{8}\.sock$/,
@@ -104,7 +103,6 @@ describe('composeCoralPaths', () => {
   it('projectsPaths accepts an explicit baseDir and slugifies the source into dataDir', () => {
     const prod = projectsPaths('prod', { baseDir: '/tmp/coral-root' });
     expect(prod.root).toBe(join('/tmp/coral-root', 'projects'));
-    // `owner/repo` and `local/basename` sources collapse their slash into the dir slug.
     expect(prod.dataDir('owner/repo')).toBe(join('/tmp/coral-root', 'projects', 'owner-repo'));
     expect(prod.dataDir('local/my-project')).toBe(join('/tmp/coral-root', 'projects', 'local-my-project'));
 

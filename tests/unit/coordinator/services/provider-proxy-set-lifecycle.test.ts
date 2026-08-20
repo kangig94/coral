@@ -1751,8 +1751,6 @@ describe('ProviderProxySetLifecycle', () => {
     const decisionObservations: Array<
       Readonly<{ severity: 'info' | 'warn'; message: string; route: boolean; stopped: boolean }>
     > = [];
-    // The observer reads the very lifecycle it is passed into, so the reference is published after
-    // construction through a holder rather than forward-declared.
     const constructed: { lifecycle: ProviderProxySetLifecycle | null } = { lifecycle: null };
     const lifecycle = lifecycleFor({
       claims,

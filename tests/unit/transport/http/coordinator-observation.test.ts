@@ -81,7 +81,7 @@ describe('observeCoordinator', () => {
   });
 
   // A coordinator binds its socket before it writes its record, so a missing record alone does not place one
-  // absent. The socket is the earlier evidence, and holding it is what the two absences below do not need: it
+  // absent. The socket is the earlier evidence, and holding it is what the absences below do not need: it
   // is the only thing separating "nothing started" from "something started and has not recorded itself yet".
   it('refuses to call a missing record an absence while the socket is still there', () => {
     mockState.read = { kind: 'missing' };

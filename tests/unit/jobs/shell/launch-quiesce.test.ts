@@ -271,8 +271,6 @@ async function buildOrchestratorAroundProviderStream(
   } as unknown as JobProgressStore;
 
   const writeResultArtifactWatcher = writeArtifactSpy;
-  // The orchestrator calls `writeResultArtifact` directly with runtime.storage;
-  // we observe via runtime.storage.writeAtomicSync as a proxy:
   const runtime = fakeRuntime();
   (runtime.storage as unknown as { writeAtomicSync: ReturnType<typeof vi.fn> }).writeAtomicSync =
     writeResultArtifactWatcher;
@@ -405,7 +403,6 @@ async function buildOrchestratorAroundProviderStream(
     await providerStream.started;
   };
 
-  // Suppress unused locals after tests reference them.
   void writeResultArtifactWatcher;
   void openedServerSpecs;
 
@@ -501,7 +498,6 @@ describe('LaunchOrchestrator handoff quiesce', () => {
     const harness = await buildOrchestratorAroundProviderStream();
     await harness.attachServer();
 
-    // Continuity checkpoint pre-quiesce: must reach the session manager.
     await harness.providerStream.emit({
       kind: 'continuity',
       conversationRef: 'thread-1',

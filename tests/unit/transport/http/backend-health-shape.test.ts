@@ -270,7 +270,6 @@ describe('/health typed shape (AC10a)', () => {
   });
 
   it('rejects the retired `components.kb.kind` object shape (clean-slate cost)', () => {
-    // Pre-AC10a responses returned `components` as a record with `kb.kind`.
     // The validator must fail-loud on that shape so the contract change
     // surfaces rather than silently parsing as a degenerate structure.
     const retired = {

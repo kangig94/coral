@@ -624,3 +624,66 @@ delete" rule (comment wrong, code correct — not ledger-worthy per the same pre
   further down, building a `prepare-pending` store row from a locally constructed `operation`/`locator` that
   never references `FIXTURE_BUILD_SET_ID` — confirmed by reading both call sites. The unsupported claim was
   deleted.
+
+## Sector 12 — tests/unit (part 1)
+
+Scope: `tests/unit/coordinator/`, `tests/unit/provider-proxy/`, `tests/unit/transport/`, `tests/unit/jobs/`,
+`tests/unit/store/`, `tests/unit/runtime/` — 189 files. Nothing met this ledger's bar (comment right, code
+wrong) in any of the six directories. Nine comments were found and corrected as factually wrong under the
+"certain delete" rule (comment wrong, code correct — not ledger-worthy per the sector 7 precedent):
+
+- `tests/unit/coordinator/discovery.test.ts` carried a 6-line block describing incarnation derivation as
+  "`/proc/stat` btime plus start ticks, btime cached per process" and citing a specific measured value. The
+  live mechanism in `src/infra/node-process.ts` is `boot_id` (a per-boot UUID) plus raw `/proc/<pid>/stat`
+  start ticks — btime-based derivation was the retired mechanism this exact rewrite replaced; git history
+  (`74106797`, `359bb90a5`) confirms the replacement, and `tests/invariants/process-incarnation-opacity.test.ts`
+  now bans the string "btime" from `src/`. Only the still-accurate first sentence was kept.
+- `tests/unit/coordinator/shutdown-budget.test.ts` carried `// Default: hangs forever. Tests override per
+case.` on the harness's default `onShutdown`. Read directly: when `hooksOnShutdown` is omitted the async
+  body does nothing and resolves immediately — it does not hang. Both call sites that omit it never rely on a
+  hang. The comment was simply wrong; deleted.
+- `tests/unit/coordinator/live/provider-hosts/pool.test.ts` carried a vacuity-warning claiming "the only
+  assertion touching [`routeAppServerOperation`] elsewhere in this file checks the negative case." False:
+  later tests in the same file (added after this comment was written) assert the positive case too, which
+  would also catch the mutation the comment worried about. The vacuity claim was accurate when written and
+  was invalidated by later test additions that nobody updated it for.
+- `tests/unit/provider-proxy/bootstrap-capsule.test.ts` and `tests/unit/provider-proxy/handoff-capsule.test.ts`
+  both cited `readBoundedFileAtIdentity` as living in `infra/bundle-manifest.ts`. It is defined in
+  `src/infra/bounded-file-read.ts`, confirmed by grep. The wrong citation was excised from the first file
+  (leaving the accurate remainder standalone); the second file's block needed its citation as its own
+  antecedent and was deleted in full rather than rewritten with invented wording.
+- `tests/unit/provider-proxy/protocol.test.ts` carried a block describing "these four request schemas" with a
+  per-schema sender breakdown and a reference to "bug 3's missing `jointContainmentReceipt`" as a mutation
+  exercised below. The describe block it sits above has three tests, none of which omits that field (which
+  only exists on a different schema entirely) — a leftover from a since-pruned fourth test. Deleted along with
+  its two now-orphaned inline narration lines.
+- `tests/unit/jobs/shell/launch-quiesce.test.ts` carried a comment claiming "the orchestrator calls
+  `writeResultArtifact` directly with `runtime.storage`; we observe via `runtime.storage.writeAtomicSync` as a
+  proxy." Traced the call chain: `LaunchOrchestrator` calls `progressStore.ensureResultArtifact`, which this
+  harness stubs to a total no-op — the described proxy wiring can never fire, and the spy it names is never
+  asserted on anywhere in the file. Deleted.
+- `tests/unit/jobs/reconcile/lifecycle-recovery.test.ts` cited "(`src/workflow/recover.ts` uses the same
+  `getEvent`)." `src/workflow/recover.ts` never imports or calls `getEvent`; it resolves causes via
+  `deps.eventsBySeq.get(...)`, a different mechanism — confirmed by reading the file. Only the wrong
+  parenthetical was excised; the surrounding constraint (resolve the causeRef, don't trust the terminal alone)
+  was kept.
+- `tests/unit/runtime/classify-exec-outcome.test.ts`'s file header claimed `classifyExecOutcome` was written
+  four times across "three modules" before consolidation. Tracing actual callers found four real call sites
+  (`src/kb/ops/source/import.ts`, `src/kb/curate/git-sync.ts`, `src/providers/cli-detection.ts`,
+  `src/providers/codex/provider-facets.ts`), not three — the count was wrong in addition to being change
+  history. The historical narrative and all counts were deleted; the standing architectural facts (a shared
+  rule now backs multiple call sites, a wrong classification is wrong everywhere at once, hand-built
+  `ExecResult` fixtures are only trustworthy while this file's rows match real Node behavior) were kept.
+
+One further claim was investigated and found not to hold, so it was not ledgered. A worker sweeping
+`tests/unit/store/` flagged `src/store/backend-store-reset.ts`'s `openOrResetBackendStoreDb` as a "third,
+independent inline copy" of the generation-readiness switch, with no test coverage of its `legacy-ignored`
+branch in this repository's test tree (the worker grepped `tests/unit/store/open-or-reset.test.ts` for
+`inspectGenerationReadiness`/`legacy-ignored` and found nothing). Direct verification shows
+`openOrResetBackendStoreDb` calls the shared `inspectGenerationReadiness` function directly (not a duplicated
+copy of the readiness computation), and its `legacy-ignored` branch — including the `backendLog.warn` call —
+is exercised by three tests in the sibling file `tests/unit/store/generation-readiness.test.ts` (`'boots
+beside readable legacy history without importing it'`, `'boots beside a foreign legacy generation...'`,
+`'boots beside an unreadable legacy store...'`), each of which calls `openOrResetBackendStoreDb` through the
+`openGeneratedStore` helper after spying on `backendLog.warn`. The worker's coverage check simply grepped the
+wrong file in the same scope.

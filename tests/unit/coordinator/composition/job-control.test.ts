@@ -47,8 +47,7 @@ describe('createCoordinatorControl.abortJobs', () => {
 });
 
 describe('createCoordinatorControl.scopeCheckJobs', () => {
-  // Converted, not deleted: this case used to assert that a job from another build's namespace was reported
-  // missing. Namespace is no longer work tenancy, so the same job — same project root, still recorded under a
+  // Namespace is no longer work tenancy, so the same job — same project root, still recorded under a
   // different `backendNamespace` — is now simply in scope. The status deliberately keeps the foreign namespace
   // so the assertion fails again if namespace ever re-enters scoping.
   it('keeps a job recorded under another build namespace in scope when the project root matches', () => {
@@ -87,7 +86,6 @@ describe('createCoordinatorControl.scopeCheckJobs', () => {
       internalJobAbortRegistry,
     });
 
-    // cwd is a third project that owns neither job.
     const result = control.scopeCheckJobs(['kb-job', 'provider-job'], '/current/project');
 
     expect(result.valid).toContain('kb-job');

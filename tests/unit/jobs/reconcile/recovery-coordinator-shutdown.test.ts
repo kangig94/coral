@@ -178,7 +178,6 @@ function createRuntimeStateMock() {
   let lifecycle = 'starting';
   let startedAt = 0;
   let launchFenceActive = false;
-  // Stub component registry. KB-routed handlers are not exercised here.
   const components = {
     register: vi.fn(),
     initAll: vi.fn(),

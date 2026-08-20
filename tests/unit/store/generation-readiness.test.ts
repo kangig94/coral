@@ -98,7 +98,6 @@ function createSameGenerationLegacyStore(runtime: Runtime): string {
   return paths.legacyFlavorRoot;
 }
 
-/** Reads the legacy sentinel row, or null when the table does not exist. */
 function legacyHistoryValue(dbFile: string): string | null {
   const db = new DatabaseSync(dbFile, { readOnly: true });
   try {
@@ -236,11 +235,6 @@ describe('generation readiness', () => {
   });
 
   it('grants the generation coordination lease beside legacy history', async () => {
-    // `acquireGenerationAdoptionLease` carries its own copy of the readiness
-    // switch and gates `store-reset`, `kb-commit quarantine`, and `expansion
-    // install` — not the daemon boot path the tests above cover. It used to reject
-    // with `legacy_adoption_required` here too, so a regression in only this copy
-    // would reproduce the same lockout for those three commands.
     const { runtime } = harness();
     createSameGenerationLegacyStore(runtime);
     vi.spyOn(backendLog, 'warn').mockImplementation(() => {});

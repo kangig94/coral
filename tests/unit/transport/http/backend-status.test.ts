@@ -75,8 +75,7 @@ describe('getBackendStatusFull record disposition', () => {
 
   // `vi.stubGlobal` replaces a process-wide binding, so cleanup cannot live at the tail of each test: an
   // assertion that throws skips it, and a test that stubs without a tail call leaks its `fetch` into whatever
-  // runs next. Three of the stubs here did exactly that until a reviewer reproduced the resulting flake. This
-  // is the pattern `tests/unit/infra/http-retry.test.ts` already uses.
+  // runs next.
   afterEach(() => {
     vi.unstubAllGlobals();
   });
@@ -132,13 +131,12 @@ describe('getBackendStatusFull record disposition', () => {
     // for this record and the function short-circuited to a not-running report without dialling anything.
     expect(fetchMock, 'the record carries host, port and bootToken, so the daemon can be asked').toHaveBeenCalled();
     // And the answer is now `unreachable` rather than `not_running`: the 500 came from something listening at
-    // the recorded address. An earlier revision of this test pinned `not_running` here and called the
-    // difference out of scope; the sweep that enumerated the class reached it, so it is in scope after all.
+    // the recorded address.
     expect(result.status).toBe('unreachable');
   });
 
-  // Five call sites answered "not running" for three different things. A peer identifying as another namespace
-  // really is not this backend; a bad response and a dead request are not absence at all.
+  // A peer identifying as another namespace really is not this backend; a bad response and a dead request are
+  // not absence at all.
   it('reports a coordinator that answers badly as unreachable, not as stopped', async () => {
     mockState.observed = { kind: 'addressed', coordinator: backendInfo(), pidLiveness: 'alive' };
     vi.stubGlobal(
@@ -239,8 +237,6 @@ function startupDiagnostic(recordedAt: number, pid: number): string {
 // An absent coordinator is the one case where a diagnostic is allowed to explain the absence, so it is also
 // the one case where the wrong diagnostic becomes the reported cause. Two fields scope it and each admits
 // something alone: a pid is reused by the OS, and a `startedAt` floor without a pid admits any run after it.
-// The observation carried both, then carried only the pid for a while — under a comment that still said the
-// scoping held.
 describe('getBackendStatusFull scopes a startup diagnostic to the coordinator that died', () => {
   const STARTED_AT = NOW - 100_000;
   const PID = 12_345;
@@ -320,19 +316,14 @@ function stubProbes(...responses: readonly Response[]): ReturnType<typeof vi.fn>
   return mock;
 }
 
-// Everything past the first 200-OK ping was unasserted. Six guards in this file — the ping's drain/transient
-// branch, all four of the detailed probe's status branches, and the handoff that returns the ping's terminal
-// answer — could each be disabled with the whole 6291-test suite still green.
-//
-// That matters here more than it would elsewhere: `backend status` is the operator's primary diagnostic, and
-// this branch exists to stop it collapsing "stopped", "draining", "not ours" and "could not reach" into one
-// another. The vocabulary was reworked; which response produces which word was not pinned.
+// `backend status` is the operator's primary diagnostic, and this branch exists to stop it collapsing
+// "stopped", "draining", "not ours" and "could not reach" into one another.
 describe('getBackendStatusFull maps each answer to the word that describes it', () => {
   beforeEach(() => {
     mockState.observed = { kind: 'addressed', coordinator: backendInfo(), pidLiveness: 'alive' };
   });
 
-  // Unlike the first `describe` in this file, none of the seven tests below restored `fetch` on their own —
+  // Unlike the first `describe` in this file, none of the tests below restored `fetch` on their own —
   // `vi.stubGlobal` is a process-wide replacement, so a stub any of them left behind would leak into whatever
   // ran next. Same reasoning as the note on the first `describe`'s `afterEach`.
   afterEach(() => {

@@ -1,12 +1,9 @@
-// The rule three modules now delegate to, driven by real subprocesses through the real port.
+// The rule modules now delegate to, driven by real subprocesses through the real port.
 //
-// It exists because the same derivation was written four times against the same four `ExecResult` fields, in
-// modules that do not own them, and the copies disagreed — one read a codeless error as "the command answered"
-// and cached a KB out of version control for the daemon's lifetime. Consolidating it removed the disagreement
-// and created a new risk in its place: a single wrong classification is now wrong everywhere at once.
+// A single wrong classification is now wrong everywhere at once.
 //
 // So this file asks the operating system rather than a fixture. Every hand-built `ExecResult` elsewhere in the
-// suite is only trustworthy while these four rows keep matching what Node actually produces.
+// suite is only trustworthy while these rows keep matching what Node actually produces.
 
 import { describe, expect, it } from 'vitest';
 

@@ -277,10 +277,9 @@ describe('provider bootstrap capsules', () => {
     expect(resolveStrictIdentity).not.toHaveBeenCalled();
   });
 
-  // `readClaimedCapsule` now reads through `readBoundedFileAtIdentity` (`infra/bundle-manifest.ts`), the same
-  // shared primitive `handoff-capsule.ts` reads through — these two mirror that file's own
-  // same-length-twin/symlink-mid-read tests, extended here now that this reader is on the shared primitive
-  // too rather than its own weaker hand-rolled sequence.
+  // `readClaimedCapsule` reads through `readBoundedFileAtIdentity`, the same shared primitive
+  // `handoff-capsule.ts` reads through — these two mirror that file's own same-length-twin/symlink-mid-read
+  // tests.
   it('refuses a capsule swapped for a same-length twin between the claim and the open', () => {
     createProviderBootstrapCapsule(capsulePath, capsule, env);
     const claimedPath = `${capsulePath}${'.consuming'}`;

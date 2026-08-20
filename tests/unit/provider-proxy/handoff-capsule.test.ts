@@ -435,11 +435,6 @@ describe('provider-proxy handoff capsule file I/O', () => {
     expect(readCapsuleFailure(capsulePath, { ...env, uid: env.uid + 1 }).code).toBe('handoff_capsule_not_private');
   });
 
-  // A prior implementation compared only `opened.size !== stat.size` between the ownership check and the
-  // read, with no device/inode check and no re-verification after the read completed — a capsule swapped for
-  // a same-length twin between those two points would pass silently. `readBoundedFileAtIdentity`
-  // (`infra/bundle-manifest.ts`) closes that: swapping the underlying inode is caught even when the byte
-  // count never moves.
   it('refuses a capsule swapped for a same-length twin between the ownership check and the open', () => {
     const capsuleA = capsuleV3For();
     const capsuleB: HandoffCapsuleV3 = { ...capsuleA, grantId: '99999999-9999-4999-8999-999999999999' };

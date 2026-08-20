@@ -1179,7 +1179,7 @@ describe('ExecutionService', () => {
       expect(updatedSession?.state).toBe('non_resumable');
       expect(updatedSession?.conversationRef).toBeUndefined();
     });
-  }); // end queue admission
+  });
 
   it('persists successful workflow results before exposing the terminal event', async () => {
     const { provider } = makeProvider({
@@ -2129,7 +2129,6 @@ describe('ExecutionService', () => {
           backendNamespace: 'old-backend-ns',
         });
         progressStore.appendLaunchRequested(jobId, launchRecord);
-        // Existing progress no longer requires a per-job counter hydration step.
         const firstProgressSeq = progressStore.appendProgress(jobId, sessionId, 'step-1');
         const secondProgressSeq = progressStore.appendProgress(jobId, sessionId, 'step-2');
 
@@ -2177,14 +2176,11 @@ describe('ExecutionService', () => {
 
         expect(queueDepth()).toBeGreaterThanOrEqual(1);
 
-        // Release an occupied slot to trigger queue drain
         const releasedJob = occupyIds[0];
         releaseLaunch(releasedJob);
 
-        // Give the async drain a tick to process
         await new Promise((resolve) => setTimeout(resolve, 50));
 
-        // The recovered job should have been dequeued (queue depth should decrease)
         expect(queueDepth()).toBe(0);
       });
     });
@@ -2233,7 +2229,6 @@ describe('ExecutionService', () => {
         expect(typeof cleanup).toBe('function');
         expect(getActiveJobIds()).toContain(jobId);
 
-        // Cleanup should release the resources
         cleanup();
         expect(getActiveJobIds()).not.toContain(jobId);
       });
@@ -2479,7 +2474,6 @@ describe('ExecutionService', () => {
           }),
         );
 
-        // Simulate a running job being adopted: register active launch + claim session
         restoreActiveLaunch(jobId, 'codex');
         service.completeRecoveredJob(
           jobId,

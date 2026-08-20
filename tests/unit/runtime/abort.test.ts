@@ -125,7 +125,7 @@ describe('isUserAbort (user_abort vs mutation_deadline vs unrelated)', () => {
   it('`shutdown` and other non-user reasons NEVER map to user-abort outcome', () => {
     expect(isUserAbort(new AbortError({ stage: 'apply', reason: 'shutdown' }))).toBe(false);
     expect(isUserAbort(new AbortError({ stage: 'finalize' }))).toBe(false);
-    expect(isUserAbort(new AbortError({ stage: 'apply' }))).toBe(false); // undefined reason
+    expect(isUserAbort(new AbortError({ stage: 'apply' }))).toBe(false);
   });
 
   it('non-AbortError values NEVER map to user-abort outcome', () => {

@@ -47,13 +47,10 @@ describe('ControlLeaseEvidence', () => {
     const earlyCeiling = fake.clock.shiftMilliseconds(issuedAt, 2_000);
     const lateCeiling = fake.clock.shiftMilliseconds(issuedAt, 9_000);
 
-    // A ceiling earlier than the lease wins.
     ceiling.setCeiling(earlyCeiling);
     expect(fake.clock.compare(evidence.challengeExpiresAt()!, earlyCeiling)).toBe(0);
-    // A ceiling later than the lease never pushes expiry out past the lease itself.
     ceiling.setCeiling(lateCeiling);
     expect(fake.clock.compare(evidence.challengeExpiresAt()!, leaseExpiry)).toBe(0);
-    // No ceiling at all is the plain lease expiry.
     ceiling.setCeiling(null);
     expect(fake.clock.compare(evidence.challengeExpiresAt()!, leaseExpiry)).toBe(0);
   });

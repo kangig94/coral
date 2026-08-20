@@ -1,10 +1,5 @@
 import type { ProcessIncarnation } from '#src/infra/node-process.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
-// CLI-side `ensure()` coverage. The coordinator socket is the live authority:
-//   - Healthy incumbent of any build → reuse summary client
-//   - Healthy + starting → wait for `coordinator.json` then return
-//   - Draining → wait for socket release, spawn fresh
-//   - Health unreachable + no `coordinator.json` → spawn fresh
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -586,7 +581,6 @@ describe('ipc ensure', () => {
     mockState.health.mockImplementation(async () => {
       healthCalls += 1;
       if (healthCalls === 1) {
-        // initial probe: still starting, no discovery yet
         return {
           status: 'starting',
           version: '0.5.2',
@@ -596,7 +590,6 @@ describe('ipc ensure', () => {
           namespace: pluginRootNamespace(root),
         };
       }
-      // subsequent waitForBackendReady probes find the daemon ready
       return {
         status: 'ok',
         version: '0.5.2',
@@ -607,7 +600,6 @@ describe('ipc ensure', () => {
       };
     });
 
-    // After the first probe sees 'starting', the daemon writes discovery.
     setTimeout(() => {
       writeDiscovery(root, { port: 4220, token: 'ready-token', instanceId: 'ready-coordinator' });
     }, 100);
@@ -645,7 +637,6 @@ describe('ipc ensure', () => {
           namespace: pluginRootNamespace(root),
         };
       }
-      // After spawn: replacement is ready
       return {
         status: 'ok',
         version: '0.5.2',
@@ -656,8 +647,6 @@ describe('ipc ensure', () => {
       };
     });
 
-    // First bind probe: socket still owned by draining incumbent.
-    // Second probe: released.
     let bindCalls = 0;
     mockState.bindSocket.mockImplementation(async () => {
       bindCalls += 1;
@@ -788,7 +777,6 @@ describe('ipc ensure', () => {
       if (currentSocketPath !== socketPath(root)) {
         throw new Error(`Unexpected socket path: ${currentSocketPath}`);
       }
-      // First two probes: connection refused; third probe (after spawn) succeeds.
       if (mockState.health.mock.calls.length < 3) {
         throw createErrnoError('ECONNREFUSED');
       }

@@ -38,11 +38,8 @@ function buildHarness(opts: {
   const callLog: CallLog = [];
   const logLines: string[] = [];
 
-  // Minimal runtime — only `time` is read by `runShutdownSequence`.
   const runtime = { time } as unknown as Runtime;
 
-  // Stub server: `close` and `closeAllConnections` are called synchronously;
-  // we do not need to simulate the HTTP wire.
   const server = {
     closeAllConnections: () => {
       callLog.push('server.closeAllConnections');
@@ -122,7 +119,6 @@ function buildHarness(opts: {
     },
     hooks: {
       onShutdown: async (_mode, signal) => {
-        // Default: hangs forever. Tests override per case.
         if (opts.hooksOnShutdown) {
           await opts.hooksOnShutdown(signal);
         }
@@ -295,10 +291,8 @@ describe('runShutdownSequence drain budget', () => {
       hooksOnShutdown: () => new Promise<void>(() => {}),
     });
 
-    // Spy on the finalizer/socket-close ordering.
     const order: string[] = [];
     const wrap = <K extends keyof typeof harness.ctx>(key: K): void => {
-      // no-op marker function for ordering
       void key;
     };
     void wrap;
@@ -308,7 +302,7 @@ describe('runShutdownSequence drain budget', () => {
       onShutdown: async (_mode, signal) => {
         order.push('hooks:start');
         await origHooks('hard', signal);
-        order.push('hooks:resolved'); // unreachable — hangs
+        order.push('hooks:resolved');
       },
     };
     const origDrain = harness.ctx.providerHostManager.drainForHandoff;
@@ -382,7 +376,6 @@ describe('runShutdownSequence drain budget', () => {
     const lifecyclePath = fileURLToPath(new URL('../../../src/coordinator/lifecycle.ts', import.meta.url));
     const source = readFileSync(lifecyclePath, 'utf-8');
 
-    // Locate the `.finally` block that follows the `runShutdownSequence` call.
     const finallyMatch = source.match(/\.finally\(\(\)\s*=>\s*{([\s\S]*?)}\)/);
     expect(finallyMatch, 'shutdown .finally block must exist').toBeTruthy();
     const finallyBody = finallyMatch![1];

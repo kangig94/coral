@@ -1,4 +1,3 @@
-// Covers LaunchCoordinator, provider host manager, provider-server transport, and durable transport concurrency.
 import { describe, expect, it, vi } from 'vitest';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { DefaultProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';

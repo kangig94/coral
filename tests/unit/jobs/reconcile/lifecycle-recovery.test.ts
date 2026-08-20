@@ -278,8 +278,6 @@ function createRuntimeStateMock(registerRuntimeComponentFn?: (component: Runtime
   let lifecycle = 'starting';
   let startedAt = 0;
   let launchFenceActive = false;
-  // Stub component registry: tests in this file don't exercise KB-routed
-  // calls; an always-initializing registry is sufficient.
   const components = {
     register: vi.fn((component: RuntimeComponent) => registerRuntimeComponentFn?.(component)),
     initAll: vi.fn(),
@@ -936,8 +934,8 @@ async function stopLifecycleController(controller: {
 /**
  * A `recovery_parse_failed` terminal records its reason on the job's own progress
  * stream and points at it with a causeRef, so asserting the terminal alone proves
- * nothing about the reason. Resolve the ref the way production does
- * (`src/workflow/recover.ts` uses the same `getEvent`) and assert the real message.
+ * nothing about the reason. Resolve the ref the way production does and assert the
+ * real message.
  */
 function expectRecordedRecoveryFault(progressStore: JobStore, jobId: string, expectedMessage: string): void {
   const status = progressStore.readStatus(jobId);
@@ -963,9 +961,6 @@ describe('lifecycle recovery', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
-    // vi.resetModules() removed: loadModules() resets before each fresh
-    // import; the afterEach copy was redundant cache invalidation across
-    // 24 tests.
     if (mockState.tmpRoot) {
       rmSync(mockState.tmpRoot, { recursive: true, force: true });
     }
@@ -3785,8 +3780,7 @@ describe('lifecycle recovery', () => {
     appendQueuedEvent(progressStore, jobId, sessionId, namespace, projectRoot);
 
     // `readStatus` decodes the persisted projection, so a malformed row makes it
-    // throw for exactly the job whose recovery already failed. That read used to
-    // sit outside the containment frame, so it abandoned the whole batch.
+    // throw for exactly the job whose recovery already failed.
     const readStatusDirect = progressStore.readStatus.bind(progressStore);
     const readStatus = vi.spyOn(progressStore, 'readStatus').mockImplementation((id: string) => {
       if (id === jobId) {
