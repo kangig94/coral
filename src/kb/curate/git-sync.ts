@@ -241,7 +241,7 @@ export function createGitSyncController({
 
   function gitCommit(message: string): void {
     // Stamp the daemon build version so KB git history records which build
-    // produced each commit. `kb.version` is threaded from the composed identity.
+    // produced each commit.
     const stamped = `${message}\n\nCoral-Version: ${kb.version}`;
     try {
       git(['commit', '-m', stamped], 10000);
@@ -257,7 +257,7 @@ export function createGitSyncController({
    * `false` for the lifetime of the daemon.
    *
    * So only an answer is cached. A non-answer is remembered with an expiry instead — long enough that a wedged
-   * environment is not re-probed on each of the seven call sites, short enough that a recovered one heals
+   * environment is not re-probed on each of the call sites, short enough that a recovered one heals
    * without a restart. Within the window the operations are skipped, which is the same conservative direction
    * as before; the difference is that it ends.
    */
@@ -274,9 +274,7 @@ export function createGitSyncController({
 
     // Classified from the raw result rather than from a caught error. `git()` rethrows, and by the time an
     // exception reaches a `catch` here it has lost which of the two it is: a non-zero exit `git()` synthesised
-    // (an answer) or an error `real.ts` passed through (not one). An earlier fix did read the caught error and
-    // defaulted an unrecognised shape to "git answered" — the one place on this branch where an unknown shape
-    // produced the permanent wrong answer instead of a repeated command.
+    // (an answer) or an error `real.ts` passed through (not one).
     const outcome = classifyExecOutcome(gitRaw(processPort, root, ['rev-parse', '--is-inside-work-tree'], 5000));
 
     // `launch-refused` folds in here rather than being read as "answered, and non-zero, so no": it means git
@@ -304,19 +302,8 @@ export function createGitSyncController({
   }
 
   /**
-   * Every git-sync operation gates on this, so a wrong `false` is not a degraded mode — it is the KB silently
-   * ceasing to be version-controlled, with no commit, no push, and nothing said. That is what caching every
-   * failure produced: one `EAGAIN` under fork pressure, or one 5s timeout on a busy disk, and the answer was
-   * `false` for the lifetime of the daemon.
-   *
-   * So only an answer is cached. A non-answer is remembered with an expiry instead — long enough that a wedged
-   * environment is not re-probed on each of the seven call sites, short enough that a recovered one heals
-   * without a restart. Within the window the operations are skipped, which is the same conservative direction
-   * as before; the difference is that it ends.
-   *
-   * This is `probeIsGitRepo` collapsed to the boolean its six other call sites need — `'no'` and `'unanswered'`
-   * are the same "skip this operation" to them. `gitSync` below is the one caller that needs the third answer
-   * kept apart, so it reads `probeIsGitRepo` directly instead of this wrapper.
+   * This is `probeIsGitRepo` collapsed to the boolean its other call sites need — `'no'` and `'unanswered'`
+   * are the same "skip this operation" to them.
    */
   function isGitRepo(): boolean {
     return probeIsGitRepo() === 'yes';
@@ -844,10 +831,6 @@ export function createGitSyncController({
    * `'recovered'` means the state was read and every conflicted path also got a queryable quarantine row;
    * `'recovered-unaccounted'` means the state was read but at least one path has no KB entry to key a row on;
    * `'recovered-blind'` means the state could not be read at all, so nothing was inspected or quarantined.
-   * Every caller today routes all three to the same recovered outcome, and the difference reaches an operator
-   * through `logRecoveryOutcome`'s text rather than through this status — which is decided before the status
-   * is returned. So the split buys nothing yet beyond naming which of the three happened; a caller that needs
-   * to act differently on them has to read it, and none does.
    */
   type RebaseRecoveryOutcome =
     | { status: 'recovered' }
@@ -1058,9 +1041,6 @@ export function createGitSyncController({
   }
 
   async function gitSync(signal?: AbortSignal): Promise<GitSyncResult> {
-    // `isGitRepo`/`isGitSyncEnabled` collapse "no" and "could not tell" to the same `false` — fine for a
-    // gate that only skips this operation, wrong here: `{ kind: 'no-change' }` tells the Corpus authority
-    // nothing changed, and a probe that could not be answered observed nothing about that at all.
     const repoProbe = probeIsGitRepo();
     if (repoProbe === 'unanswered') {
       return { kind: 'ambiguous' };

@@ -6,10 +6,10 @@ import type { EnvPort } from '../../../infra/port-types.js';
 import { noteEntryId, parseKbEntryId, sourceEntryId, type KbEntryId } from '../../entry-types.js';
 
 /**
- * Curate timing operator knobs (see §16(d) triage rule). Defaults match the
- * historical hardcoded values; operators tune via the matching `CORAL_KB_CURATE_*`
- * env vars. Reducers below stay pure — they receive the resolved timings as
- * parameters; the env read happens at the scheduler/operations boundary.
+ * Curate timing operator knobs (see §16(d) triage rule). Operators tune via
+ * the matching `CORAL_KB_CURATE_*` env vars. Reducers below stay pure — they
+ * receive the resolved timings as parameters; the env read happens at the
+ * scheduler/operations boundary.
  */
 export const DEFAULT_CLAIM_STALE_MS = 15 * 60 * 1000;
 export const DEFAULT_CURATE_TRANSIENT_RETRY_MS = 30 * 60 * 1000;
@@ -42,11 +42,6 @@ function parsePositiveIntMs(raw: string | undefined, fallback: number): number {
   return parsed;
 }
 
-/**
- * Resolve curate timings from env. Each key independently honours its env
- * override when set to a positive integer; falls back to the default for
- * unset, blank, or malformed values.
- */
 export function resolveCurateTimings(env: Pick<EnvPort, 'get'>): CurateTimings {
   return {
     claimStaleMs: parsePositiveIntMs(env.get(CORAL_KB_CURATE_CLAIM_STALE_MS_ENV), DEFAULT_CLAIM_STALE_MS),
@@ -63,8 +58,7 @@ export function resolveCurateTimings(env: Pick<EnvPort, 'get'>): CurateTimings {
 }
 
 /**
- * See `kb/curate/scheduler.ts` for the rationale narrative. Lives here
- * because the persisted `consecutive_*_failures` columns and the
+ * Lives here because the persisted `consecutive_*_failures` columns and the
  * `*_lane_disabled_at` stamps are part of the curate state model — the
  * cap is the policy that links the two, and pure reducers below need
  * the value to stamp `disabledAt` on the cap-trip.
@@ -72,10 +66,6 @@ export function resolveCurateTimings(env: Pick<EnvPort, 'get'>): CurateTimings {
  * Design invariant — see spec §16 #54 and §3.1: this is part of the lane-disable
  * policy contract, NOT an operator knob. Changing it changes user-visible
  * behavior and invalidates the spec's reasoning about lane recovery.
- *
- * Exposed under the `INVARIANT.<name>` namespace per §16 #54 to mark it visually
- * distinct from operator knobs (which live alongside in the same file with
- * `CORAL_*` env override).
  */
 export const INVARIANT = {
   MAX_CONSECUTIVE_FAILURES: 10,
@@ -126,7 +116,7 @@ export type CurateState = {
   communitySummaryTopologyHash?: string;
   consecutiveClaimFailures: number;
   consecutiveCommunityBatchFailures: number;
-  /** ISO-8601 stamp when the claim lane first crossed `INVARIANT.MAX_CONSECUTIVE_FAILURES`; `null` while healthy. Cleared by `applyClearCurateRetryState`. */
+  /** ISO-8601 stamp when the claim lane first crossed `INVARIANT.MAX_CONSECUTIVE_FAILURES`; `null` while healthy. */
   claimLaneDisabledAt: string | null;
   /** ISO-8601 stamp when the community-batch lane first crossed `INVARIANT.MAX_CONSECUTIVE_FAILURES`; `null` while healthy. Cleared by `applyClearCurateRetryState`. */
   communityBatchLaneDisabledAt: string | null;

@@ -401,7 +401,7 @@ Recorded once here rather than per sector, because it is one finding with 48 sit
 - **Severity, as observed**: No runtime effect — the branch is simply unreached. A future caller that routes
   either code through `buildErrorEnvelope` instead of `encodeInstallError` would depend on it; today none does.
 
-## Sector 10 — `src/kb-daemon`
+## Sector 10 — `src/kb`, `src/kb-daemon`
 
 Nothing found. Every cross-file and cross-symbol claim in the sector's surviving comments checked out against
 the graph and the source: the `initPromise`/corpus-mutation-lock/`ConsumerHandle.stop()` trio in
@@ -422,3 +422,56 @@ registry," naming the export in `src/expansion/bundled.ts`. The actual default, 
 (`applyBundledFallback`'s `this.options.bundledLoaders ?? LIFECYCLE_BUNDLED_LOADERS`), is
 `LIFECYCLE_BUNDLED_LOADERS` from `src/kb-daemon/expansion/bundled-loaders.ts` — a different, daemon-local
 registry. No code changed; the wrong doc comment was removed.
+
+### `src/kb/curate`
+
+Scope: everything under `src/kb/curate/` not already covered by the `community/` and `classification/`
+sweeps folded into Sector 10. Two comments were factually wrong and were deleted rather than ledgered, since
+the defect was in the comment, not the code: `RunCommunitySummaryJob`'s JSDoc in `scheduler.ts` claimed its
+implementation "composes" the scheduler's abort signal with "the job's own (`coral-cli abort`) signal" — no
+implementation ever did this (see the second finding below) — and `INVARIANT`'s JSDoc in `state/model.ts`
+pointed to "`kb/curate/scheduler.ts` for the rationale narrative," but `scheduler.ts` only _uses_
+`INVARIANT.MAX_CONSECUTIVE_FAILURES`; it carries no narrative to point to.
+
+- **What is wrong**: `initializeCurateStateIfNeeded` in `src/kb/curate/state/bootstrap.ts` re-implements the
+  same retry-queue-sweep rule as `syncRetryQueueAgainstIncidents` in `src/kb/corpus/rescan/index.ts` — both
+  compute the current incident set, build a set of currently-detected entry IDs, and delete any
+  `readCurateRetryQueue` row whose `canonicalIncident` is defined but whose entry is no longer in that set.
+  The two are independent implementations of one rule with nothing tying them together.
+- **Where**: the closing block of `initializeCurateStateIfNeeded` in `src/kb/curate/state/bootstrap.ts` (the
+  `postRewriteIncidents`/`stillDetected` loop immediately before `persistState`); `syncRetryQueueAgainstIncidents`
+  in `src/kb/corpus/rescan/index.ts`.
+- **Evidence**: Observed. Both bodies apply the exact same predicate —
+  `queued.canonicalIncident !== undefined && !stillDetected.has(queued.entryId)` — each against its own
+  locally built `stillDetected` set derived from `projectIncidents(buildCorpusScanView(kb))`. Confirmed by
+  reading both bodies side by side. The comment this sweep removed from the bootstrap copy (pure narration
+  under this sector's rules) had claimed it "mirrors the rebuild pipeline's post-rebuild cleanup," which the
+  comparison bears out.
+- **Why it was not fixed**: Comment-only sweep; extracting a shared helper is a code change.
+- **Severity, as observed**: No known divergence today — both copies currently apply the identical predicate.
+  The risk is future maintenance drift: an edit to one copy (e.g. widening or narrowing which rows get swept)
+  has no mechanism forcing the other to follow.
+
+- **What is wrong**: `RunCommunitySummaryJob`'s JSDoc in `src/kb/curate/scheduler.ts` described the runtime
+  host as choosing between two strategies — "wrap this as an observable `kb.community_summary` job, or call
+  the agent directly" — and asserted that the implementation "composes [the scheduler's `runSignal`] with the
+  job's own (`coral-cli abort`) signal so a scheduler stop cancels the in-flight agent turn rather than
+  blocking `stop()` on it." The only implementation that has ever existed forwards the bare signal straight
+  through with no composition, and the "wrap as an observable job" branch has no implementation anywhere:
+  `'kb.community_summary'` is declared as a `KbJobOperation` but the literal is never constructed as a launch
+  argument anywhere in `src/`.
+- **Where**: `RunCommunitySummaryJob` in `src/kb/curate/scheduler.ts`; the sole implementation,
+  `runCommunitySummaryJob`, in `src/kb-daemon/runtime-host.ts`; the operation vocabulary in
+  `src/jobs/launch.ts`, `src/jobs/records.ts`, `src/jobs/event-bodies.ts`, and `src/jobs/read-queries.ts`.
+  `search_graph` for `runCommunitySummaryJob` returns exactly two nodes: the type in `scheduler.ts` and the
+  one implementation in `runtime-host.ts`, which is `(signal) => runCommunitySummaryAgent(kb, curateAssistant,
+signal)` — a direct pass-through. `git log -S"runCommunitySummaryJob" -- src/kb-daemon/runtime-host.ts`
+  shows that line was introduced once and never changed since. `grep -rn "'kb.community_summary'" src/` finds
+  the literal only inside schema/type declarations and two read-side `!==` guards (`jobs/read-queries.ts`,
+  `jobs/store.ts`); no call site anywhere constructs it to launch a job.
+- **Why it was not fixed**: Comment-only sweep; the JSDoc's inaccurate paragraph was deleted rather than
+  fixed, since fixing the underlying gap — building the job-wrapped path, or removing the unused operation
+  vocabulary — is a code change and a product decision outside this sweep's mandate.
+- **Severity, as observed**: No runtime effect — the one real implementation is correct for the "call
+  directly" branch it actually takes. The exposure is a documented extensibility path, and a job-operation
+  enum member, that nothing has ever built or reached.
