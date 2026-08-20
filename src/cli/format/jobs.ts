@@ -256,9 +256,9 @@ const JOBS_TABLE_HEADERS = ['JOB ID', 'PHASE', 'PROVIDER', 'AGE'];
 const JOBS_TABLE_HEADERS_WITH_SLOT = ['JOB ID', 'SLOT', 'PHASE', 'PROVIDER', 'AGE'];
 
 /**
- * The slot column appears only when some row actually occupies a slot. A workflow child's job id is a UUID
- * that says nothing about which atom it ran, so the slot has to be visible — but most jobs are not workflow
- * children, and a column of dashes on every ordinary listing is a cost paid by everyone to inform no one.
+ * A workflow child's job id is a UUID that says nothing about which atom it ran, so the slot has to be
+ * visible — but most jobs are not workflow children, and a column of dashes on every ordinary listing is a
+ * cost paid by everyone to inform no one.
  */
 function jobsTable(rows: JobsListItem[]): string {
   const hasSlot = rows.some((row) => row.workflowSlot !== JOBS_TABLE_NO_SLOT);
@@ -274,10 +274,8 @@ function jobsTable(rows: JobsListItem[]): string {
 }
 
 /**
- * Renders every live job across all projects, grouped so the current directory's
- * jobs lead, shared KB jobs follow, and any remaining projects appear as a
- * directory-keyed map. KB jobs are global (they run against the shared corpus),
- * so they list here regardless of which directory `coral jobs` runs from.
+ * KB jobs are global (they run against the shared corpus), so they list here regardless of which directory
+ * `coral jobs` runs from.
  */
 export function renderJobsList(rows: JobsListItem[], filters: JobsListDisplayFilters = {}): string {
   if (rows.length === 0) {

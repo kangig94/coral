@@ -333,3 +333,70 @@ Recorded once here rather than per sector, because it is one finding with 48 sit
 - **Severity, as observed**: No runtime effect. The cost is that 48 comments cannot be verified by any reader
   or reviewer, which is the same cost the rot rule exists to remove — so this is unfinished business of the
   sweep rather than a defect it found in passing.
+
+## Sector 9 — `src/cli`, `src/transport`
+
+- **What is wrong**: `BackendHealth` in `src/transport/http/backend/health.ts` is a hand-maintained second copy
+  of the producer-side `HealthSnapshot` in `src/transport/server-ports.ts`. The duplication is deliberate and
+  correct — the layering invariant forbids transport importing coordinator internals such as the branded
+  `RuntimeComponentId` — but nothing holds the two shapes together. Their JSDoc asserted that "the two are kept
+  in sync structurally", and no test, type-level `satisfies`, or invariant enforces that sentence, so a field
+  added to the producer type can silently fail to reach the `/health` wire shape that external consumers
+  validate against.
+- **Where**: `BackendHealth` in `src/transport/http/backend/health.ts` and `HealthSnapshot` in
+  `src/transport/server-ports.ts`.
+- **Evidence**: Observed, not inferred. `tests/unit/transport/http/backend-health-shape.test.ts` pins
+  `BackendHealth` alone through `isBackendHealth` and never imports `HealthSnapshot`; no file in `tests/`
+  imports both types; and `grep` for `satisfies HealthSnapshot` / `: HealthSnapshot` across `src/transport/`
+  returns only `HealthSnapshotPort.read()`'s return annotation, never an assertion against the transport copy.
+  Both greps were validated against a known-positive control (`HealthSnapshot` does appear in
+  `tests/unit/cli/backend-status.test.ts`), so the negative is not vacuous.
+- **Why it was not fixed**: Comment-only sweep. The fix is a new type-level or test-level assertion tying the
+  two shapes, which is a code change; and the honest version of it has a design question inside it, because the
+  two types are _deliberately_ not identical (the transport copy carries `id: string` where the producer carries
+  the branded id), so "in sync" needs a definition before it can be enforced.
+- **Severity, as observed**: Reachability unproven — no drift is known to have occurred, and nothing failed. The
+  sentence claiming the sync was removed by this sweep as an unenforceable claim, which removes the misleading
+  assurance but not the underlying exposure.
+
+- **What is wrong**: `IpcRpcError` (`src/transport/ipc/client.ts`) computes and stores a `code` field in its
+  constructor by reading `error.data.code`, and its own class doc says this exists "for CLI error rendering".
+  No caller reads it. `cli/errors.ts`'s `transportErrorEnvelope` branch for `IpcRpcError` passes `error.data` —
+  not `error.code` — into `structuredBodyError`, which re-derives the identical `body.code` value from that raw
+  data independently. The other two catch sites (`cli/expansion/contract.ts`'s `cliBoundaryInstallError`,
+  `cli/commands/backend.ts`'s recovery-quarantine catch) only test `instanceof IpcRpcError` and never read
+  `.code` either.
+- **Where**: `IpcRpcError` in `src/transport/ipc/client.ts`; the unused read is at `transportErrorEnvelope` in
+  `src/cli/errors.ts`.
+- **Evidence**: Observed. `grep -rn "instanceof IpcRpcError"` across `src/` (excluding tests) returns exactly the
+  three sites above; none accesses `.code` on the matched value. `structuredBodyError` in `cli/errors.ts` derives
+  `code` from `body.code` where `body` is the passed-in `value` (here `error.data`), which is the same source
+  `IpcRpcError`'s constructor already reads — confirmed by reading both implementations side by side.
+- **Why it was not fixed**: Comment-only sweep; removing a public class field or its doc is a code change.
+- **Severity, as observed**: No runtime effect — the duplicate derivation produces the same value.
+  Reachability of a divergence is unproven (the two derivations could disagree only if one were edited without
+  the other), so the risk is future maintenance drift between two copies of the same logic, not an active bug.
+
+- **What is wrong**: `errorCodeToExit` (`src/cli/errors.ts`) branches on
+  `NOT_OBSERVED_CORAL_SETUP_ERROR_CODES.has(code)`, but the set's only two members
+  (`coordinator_record_unreadable`, `coordinator_unreachable`) are constructed exclusively in
+  `assertDaemonViewObserved` in `src/cli/expansion/index.ts`. Every call site that can throw one of them
+  (`list`/`info` in `createCliExpansionActivation`) wraps the call in a `try`/`catch` that hands the error to
+  `encodeInstallError` in the same file, whose `findStructuredSetupError` branch returns before
+  `buildErrorEnvelope` (and therefore `errorCodeToExit`) is ever reached. The expansion command's own exit code
+  comes from the independent `expansionExitCode` in `src/cli/commands/expansion.ts`. So this branch of
+  `errorCodeToExit` has no reachable production caller today.
+- **Where**: `errorCodeToExit` in `src/cli/errors.ts`; the codes originate in `assertDaemonViewObserved` in
+  `src/cli/expansion/index.ts`.
+- **Evidence**: Observed via `trace_path`/`grep`, not merely inferred. `grep` for both code string literals
+  across `src/` finds construction only in `expansion/index.ts` (plus the shared-list declaration in
+  `runtime/errors.ts`). `encodeInstallError` (`cli/expansion/contract.ts`) calls `findStructuredSetupError`
+  before any path that reaches `buildErrorEnvelope`, and returns directly from that branch for a
+  `CoralSetupError` match — `buildErrorEnvelope` is never called for these two codes from the only two call
+  sites that construct them. `trace_path` on `buildErrorEnvelope` lists callers in every `cli/commands/*.ts`
+  registration plus `emit.ts` and `run.ts`, none of which is on the path from `assertDaemonViewObserved`'s
+  throw to a handled catch.
+- **Why it was not fixed**: Comment-only sweep; the branch is defensive code, not a defect to remove, and
+  deciding whether to delete unreachable defensive branches is a design decision outside this sweep's mandate.
+- **Severity, as observed**: No runtime effect — the branch is simply unreached. A future caller that routes
+  either code through `buildErrorEnvelope` instead of `encodeInstallError` would depend on it; today none does.

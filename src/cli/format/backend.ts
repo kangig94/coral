@@ -92,8 +92,8 @@ function formatUnreachableNextStep(result: Extract<BackendStatusFull, { status: 
 }
 
 // Not "not running": the coordinator's own IPC socket file exists, which a coordinator mid-boot and a stale
-// socket a killed one left behind both produce, indistinguishably — see `CoordinatorObservation`'s
-// `no-record-socket-present` for the mechanism.
+// socket a killed one left behind both produce, indistinguishably — see CoordinatorObservation in
+// src/transport/http/backend/coordinator-observation.ts.
 function formatNoRecordSocketPresentStatus(
   result: Extract<BackendStatusFull, { status: 'no_record_socket_present' }>,
 ): string {
@@ -120,14 +120,6 @@ function formatRecentFailureStatus(result: Extract<BackendStatusFull, { status: 
   return lines.join('\n');
 }
 
-/**
- * The mirror of `formatBackendStatus`'s `undecodable_record` case, and it exists because it did not.
- *
- * `shutdownBackend` computes the same three-way disposition as `getBackendStatusFull`, and this function used
- * to render whatever token came back — so an operator who ran `backend shutdown` against an unreadable record
- * was told `Shutdown failed: discovery_record_corrupt_json`, while `backend status` explained the identical
- * condition in three lines. The disposition was split and then flattened one call before it reached a person.
- */
 export function formatShutdown(result: ShutdownResult): string {
   if (result.ok) {
     return result.alreadyDraining ? 'Backend shutdown already in progress' : 'Backend shutdown initiated';
@@ -139,9 +131,6 @@ export function formatShutdown(result: ShutdownResult): string {
       return formatRefusedByResponse(result.detail);
     case 'no_response':
       return formatNoResponse(result.detail);
-    // Three separate observations, and the sentence has to be the one that was made. An earlier version of
-    // this branch rendered them all as "nothing was listening on the coordinator socket", which was a claim
-    // about a dial that only `socket_refused` performs.
     case 'no_record':
       return 'Backend not running: no coordinator has recorded itself.';
     case 'recorded_process_absent':
@@ -158,8 +147,6 @@ export function formatShutdown(result: ShutdownResult): string {
     case 'no_record_socket_present':
       return formatNoRecordSocketPresentShutdown();
     default:
-      // The mechanism `formatBackendStatus` has and this function could not have while `reason` was `string`.
-      // A new token now fails to compile here instead of falling through to a raw-token render.
       return assertNever(result);
   }
 }
@@ -175,8 +162,7 @@ function formatUnreadableRecordShutdown(detail: string): string {
   ].join('\n');
 }
 
-// A response arrived — the mirror of `formatUnreachableStatus`'s `'responded'` cause, and the same
-// observation `getBackendStatusFull` makes of the identical HTTP exchange: something is listening.
+// A response arrived — the mirror of `formatUnreachableStatus`'s `'responded'` cause: something is listening.
 function formatRefusedByResponse(detail: string): string {
   return [
     `Shutdown not confirmed: the coordinator responded but did not accept the request (${detail}).`,
@@ -208,7 +194,7 @@ function formatNoRecordSocketPresentShutdown(): string {
 }
 
 // A refused connection is never grounds for "not running" here: an absent pid is excluded before this request
-// is ever sent (see `ShutdownResult`'s doc in shutdown.ts), so `pidLiveness` is always `'alive'` or `'unknown'`
+// is ever sent (see ShutdownResult in src/transport/http/backend/shutdown.ts), so `pidLiveness` is always `'alive'` or `'unknown'`
 // — and `'alive'` is the deterministic mid-drain window where the coordinator's HTTP listener has closed while
 // the process keeps running. Neither case may claim the backend stopped.
 //

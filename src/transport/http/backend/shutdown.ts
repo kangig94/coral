@@ -44,8 +44,8 @@ type PidLiveness = 'alive' | 'unknown';
  *   `src/coordinator/shutdown.ts` for the drain ordering that opens this window.
  *
  * A member split on a *subset* of `reason`'s literals does not defeat exhaustiveness narrowing: `formatShutdown`
- * calls `assertNever(result)` — the whole, already-narrowed result, as `formatBackendStatus` already does five
- * lines above it — not `assertNever(result.reason)`. Verified against this repo's own `tsc --strict`:
+ * calls `assertNever(result)` — the whole, already-narrowed result — not `assertNever(result.reason)`. Verified
+ * against this repo's own `tsc --strict`:
  * `assertNever(result.reason)` fails to compile in the `default` arm with `TS2339: Property 'reason' does not
  * exist on type 'never'` — narrowing already collapsed `result` itself to `never` there, so reading `.reason`
  * off it is the error, not a live exhaustiveness gap. `assertNever(result)` compiles clean today and still
@@ -104,8 +104,6 @@ function classifyShutdownResponse(
     // own prior finding: the 401 confirms the address, not that pid specifically.
     return { ok: false, reason: 'capability_rejected', detail: String(info.pid), pidLiveness };
   }
-  // Something answered at the address our own record names and did not accept the shutdown. That is the same
-  // observation `getBackendStatusFull` reports as `unreachable` for a resolved response.
   return { ok: false, reason: 'refused_by_response', detail: `${response.status} ${response.statusText}` };
 }
 

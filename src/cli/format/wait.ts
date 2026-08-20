@@ -70,12 +70,7 @@ export function formatWaitQueued(event: WaitQueuedEvent, label?: string): string
 
 /**
  * Rule for the continuation line in both branches below: it appears exactly when the caller must act, and
- * never when this process keeps waiting on its own. `followJobs` reconnects by itself, in the same
- * process, whenever a terminal event's exit code is `0` and jobs remain — telling the caller to re-run the
- * command they're already inside of would be a no-op instruction. Any other exit code returns control to
- * the caller immediately even with siblings still live, which is exactly when the caller needs to know
- * which jobs to keep watching, so both branches print it then. `remainingJobIds.length === 0` is a third
- * case — nothing to continue, so `formatWaitContinuation` reports that instead of staying silent.
+ * never when this process keeps waiting on its own — see followJobs in src/cli/follow.ts.
  */
 export function formatWaitTerminal(
   event: WaitTerminalEvent,

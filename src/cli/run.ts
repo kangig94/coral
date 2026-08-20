@@ -5,8 +5,6 @@ import { isStoreResetReportInvocation } from './store-reset-signal.js';
 import { resolveStrictBundleIdentity } from '../infra/bundle-manifest.js';
 
 /**
- * Runs one CLI invocation against the current `process.argv`.
- *
  * Deliberately separate from `bootstrap.ts`, which is the esbuild entrypoint and invokes this at module
  * load. Keeping the invocation out of this module is what makes the CLI testable: a self-executing entry
  * forces tests to re-import it through `vi.resetModules()` to get a fresh run, which charges a cold

@@ -119,7 +119,6 @@ export type ProviderHostListResponse = z.output<typeof providerHostListResponseS
 export type ProviderHostInspectResponse = z.output<typeof providerHostInspectResponseSchema>;
 export type ProviderHostEvictResponse = z.output<typeof providerHostEvictResponseSchema>;
 
-/** Catalog declaration for the canonical-coordinator recovery retry operation. */
 export const recoveryQuarantineClearRpcSpec = {
   name: 'coordinator.recovery_quarantine.clear',
   kind: 'unary',

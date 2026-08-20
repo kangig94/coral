@@ -19,8 +19,8 @@ export type AddressedCoordinator = CoordinatorDiscoveryRecord & { host: string }
  * is what holds one observation to one vocabulary: two spellings of it drift apart a correction at a time,
  * because a fix lands on whichever command surfaced the defect and not on its twin.
  *
- * Each command still owns what it does *with* the answer: `status` folds absence into a startup-diagnostic
- * read, `shutdown` refuses before it ever dials. This type is the shared evidence, not the shared decision.
+ * Each command still owns what it does *with* the answer. This type is the shared evidence, not the shared
+ * decision.
  */
 export type CoordinatorObservation =
   /**
@@ -50,9 +50,7 @@ export type CoordinatorObservation =
    *
    * It carries both halves of the dead coordinator's identity because absence is where they are needed:
    * `status` reads a startup diagnostic to explain the absence, and a diagnostic is only this coordinator's if
-   * it names this pid *and* was recorded no earlier than this run began. Dropping `startedAt` here left the pid
-   * as the sole scope, and a pid is reused — so the recycled-pid case this pairing exists to exclude came back
-   * silently, under a comment still claiming it was excluded.
+   * it names this pid *and* was recorded no earlier than this run began.
    */
   | Readonly<{ kind: 'process-absent'; pid: number; startedAt: number }>;
 
@@ -75,11 +73,10 @@ export function observeCoordinator(
 
   // The decoded record rather than `readBackendInfo`: that helper also answers `null` when `version` or
   // `instanceId` is absent, and neither command reads either — between them they use `startedAt`, `pid`,
-  // `host`, `port`, `namespace`, `flavor` and `bootToken`, all of which the record itself carries. Routing
-  // through it reported a coordinator old enough to omit two unused fields as not running while it served.
+  // `host`, `port`, `namespace`, `flavor` and `bootToken`, all of which the record itself carries.
   const record = read.record;
   // Only an observed absence is an absence. `unknown` keeps the record and lets the caller try, which is the
-  // safe direction for both of them: status goes on to ask health, shutdown goes on to send the request.
+  // safe direction for both of them.
   const liveness = observeProcessLiveness(record.pid);
   if (liveness === 'absent') {
     return { kind: 'process-absent', pid: record.pid, startedAt: record.startedAt };

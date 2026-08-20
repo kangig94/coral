@@ -5,14 +5,9 @@ import { isSerializedCoralSetupError, type SerializedCoralSetupError } from '../
 /**
  * Health metadata exposed by the Coral backend over HTTP.
  *
- * `components` is an array of per-component status entries (4-phase tagged
- * union). `mutationBlocked` and `consumerStuck` live under top-level
- * `diagnostics` and are omitted entirely when healthy.
- *
- * This shape mirrors `HealthSnapshot` in `src/transport/server-ports.ts` —
- * the producer-side type. The two are kept in sync structurally; transport
- * keeps a local copy because layering forbids importing coordinator
- * internals like the branded `RuntimeComponentId`.
+ * Transport keeps a local copy because layering forbids importing coordinator
+ * internals like the branded `RuntimeComponentId` — see HealthSnapshot in
+ * src/transport/server-ports.ts.
  */
 type TransportRuntimeComponentStatus =
   | { id: string; phase: 'initializing'; attempt: number }
@@ -95,7 +90,7 @@ export interface BackendHealth {
   namespace: string;
   uptimeMs: number;
   active: number;
-  /** Jobs whose local carrier is live or unresolved; build namespace is provenance, not ownership scope. */
+  /** Build namespace is provenance, not ownership scope. */
   activeJobs: number;
   inflightRequests: number;
   queueDepth: number;

@@ -44,7 +44,7 @@ export function sendJson(res: ServerResponse, statusCode: number, body: unknown)
   res.end(payload);
 }
 
-const MAX_BODY_SIZE = 10 * 1024 * 1024; // 10 MB
+const MAX_BODY_SIZE = 10 * 1024 * 1024;
 export const HTTP_MAX_CONCURRENT_BODY_READS = 32;
 export const HTTP_BODY_READ_TIMEOUT_MS = 15_000;
 const INVALID_JSON_RESPONSE = {

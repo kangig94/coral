@@ -151,8 +151,7 @@ function assertDaemonViewObserved(passive: ExpansionStatus, subject: string): vo
       // A documented setup error rather than a bare `Error`. `encodeInstallError` maps anything else to
       // `unknown_error`, whose remediation is "retry once, then report it" — advice that is wrong here in the
       // specific way §11 warns about: the retry reads the same unreadable file and reaches the same refusal, so
-      // the hold names no exit. The sentence naming the real exit was already written; it was landing in
-      // `userMessage` while the `remediation` field contradicted it.
+      // the hold names no exit.
       throw documentedCoralSetupError({
         code: 'coordinator_record_unreadable',
         subject,
@@ -323,9 +322,7 @@ export function createCliExpansionActivation(): CliExpansionActivation {
       try {
         read = readDiscoveryRecordDisposition(discoveryRuntime);
       } catch (error: unknown) {
-        // The read itself failing (`EACCES`, `EIO`) is not an absent coordinator either. This used to be a
-        // blanket `catch` to `null`, which is also why `backend-discovery.ts` could claim that letting these
-        // throw was safe because every CLI path renders them — this path swallowed them.
+        // The read itself failing (`EACCES`, `EIO`) is not an absent coordinator either.
         return { status: 'unreadable', detail: errorMessage(error), path: recordPath };
       }
       if (read.kind === 'undecodable') {

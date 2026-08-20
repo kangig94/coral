@@ -1,5 +1,4 @@
 /**
- * 10 MB cap matches the HTTP body cap (`src/transport/http/handler.ts`).
  * A buggy IPC client writing without a newline would otherwise grow the
  * framer buffer until coordinator memory is exhausted.
  */

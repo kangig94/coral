@@ -243,9 +243,7 @@ function parseRawCoordinatorHealth(value: unknown): RawCoordinatorHealth | null 
 
 /**
  * Treat both coarse `'ok'` and lifecycle phases (`'kernel-ready'`,
- * `'running'`) as "the daemon is ready to serve requests". Some composition
- * layers map kernel-ready/running to `'ok'`; others report the lifecycle phase
- * directly.
+ * `'running'`) as "the daemon is ready to serve requests".
  */
 function isReadyStatus(status: RawCoordinatorHealth['status']): boolean {
   return status === 'ok' || status === 'kernel-ready' || status === 'running';
@@ -520,11 +518,8 @@ function spawnCoordinator(backendBin: string, paths: CoordinatorPaths): SpawnedC
 }
 
 /**
- * Probe whether `socketPath` is currently bound by a live listener. Uses the
- * same primitive as daemon-side bind: open a probe `net` server, attempt
- * `bindSocket`, and if it succeeds, immediately close it (path-cleanup is the
- * next binder's job per `bindSocket` contract). Returns true when the path is
- * unbound (either truly absent or a stale orphan that the probe cleared).
+ * Uses the same primitive as daemon-side bind (path-cleanup is the next
+ * binder's job per `bindSocket` contract).
  */
 async function probeSocketReleased(socketPath: string): Promise<boolean> {
   const probe = createServer();
@@ -791,16 +786,6 @@ async function ensureTopLevelCoordinator(
  * Ensure a Coral coordinator daemon is running. The kernel's exclusive-bind
  * semantics on the IPC socket remain the single arbiter of the canonical
  * incumbent.
- *
- * Decision tree:
- *   1. Probe existing socket via unauthenticated `transport.ping`.
- *      - Child-shaped invocation → reuse only the exact observed incumbent;
- *                                   never hand off or spawn.
- *      - Healthy → return it regardless of build (or wait for
- *                  `coordinator.json` if `starting` or discovery is missing).
- *      - Draining → wait for socket release, then spawn.
- *      - Unreachable or identity-invalid → spawn.
- *   2. Spawn the coordinator and wait for it to bind + write discovery.
  */
 export async function ensure(pluginRoot?: string, timePort?: TimePort): Promise<EnsuredIpcClient> {
   const root = resolvePluginRoot(pluginRoot);

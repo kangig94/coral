@@ -131,7 +131,6 @@ async function connectSocket(socketPath: string, deadlineMs: number | null, time
           socket.destroy(new Error(`IPC connection timed out after ${stepBudget}ms`));
         }, stepBudget);
       } else if (typeof stepBudget === 'number' && stepBudget === 0) {
-        // Deadline already exceeded — fail fast without waiting on the kernel.
         queueMicrotask(() => {
           socket.destroy(new Error('IPC connection deadline already exceeded'));
         });
@@ -147,7 +146,6 @@ async function connectSocket(socketPath: string, deadlineMs: number | null, time
   }
 
   if (deadlineMs !== null && timePort.now() >= deadlineMs) {
-    // Deadline already exceeded — do not start a fresh retry attempt.
     throw setupError(socketPath, new Error('IPC connection deadline exceeded before retry'));
   }
   await timePort.sleep(IPC_RETRY_BACKOFF_MS);
@@ -194,7 +192,6 @@ export async function requestIpcMethod<TResult>(
   const auth = resolveAuthMetadata(options?.auth);
   const requestId = nextRequestId++;
   const timeoutMs = options?.timeoutMs;
-  // Convert to absolute deadline at call entry so connect+request share one budget.
   const deadlineMs = typeof timeoutMs === 'number' && timeoutMs > 0 ? timePort.now() + timeoutMs : null;
   const socket = await connectSocket(socketPath, deadlineMs, timePort);
 
@@ -270,7 +267,6 @@ export async function requestIpcMethod<TResult>(
         socket.destroy(new Error(`IPC request timed out after ${responseBudget}ms`));
       }, responseBudget);
     } else if (typeof responseBudget === 'number' && responseBudget === 0) {
-      // Deadline already past — bail out before sending the request.
       queueMicrotask(() => {
         socket.destroy(new Error('IPC request deadline already exceeded'));
       });

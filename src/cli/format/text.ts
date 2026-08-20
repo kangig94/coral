@@ -1,7 +1,3 @@
-// CLI-only multi-line and table builders. Domain code uses `infra/text.ts`
-// for single-line shape helpers (truncate, ensureSentence); these helpers
-// shape multi-line CLI output and are not used outside cli/format.
-
 export function joinLines(lines: Array<string | undefined>): string {
   const present: string[] = [];
   for (const line of lines) {

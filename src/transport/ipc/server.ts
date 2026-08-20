@@ -379,7 +379,6 @@ export async function bindSocket(server: NetServer, socketPath: string): Promise
     }
   }
 
-  // EADDRINUSE — distinguish stale-orphan from live-listener.
   const releaseLock = await acquireDirectoryLock(staleSocketClearLockDir(socketPath));
   try {
     try {
@@ -412,11 +411,6 @@ export async function bindSocket(server: NetServer, socketPath: string): Promise
   }
 }
 
-/**
- * Phase-B-compatible signature: throws synthetic `EADDRINUSE` when an
- * incumbent owns the socket. Phase C upgrades the public shape to a tagged
- * `ListenIpcServerResult`; this thin wrapper keeps existing callers green.
- */
 export async function listenIpcServer(listener: IpcListener, socketPath: string): Promise<{ socketPath: string }> {
   const result = await bindSocket(listener.server, socketPath);
   if (result.kind === 'incumbent') {
