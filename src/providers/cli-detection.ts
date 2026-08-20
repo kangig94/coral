@@ -46,13 +46,6 @@ export function createCliDetector(
 ): { detect: () => Promise<CliInfo>; resetCache: () => void } {
   /**
    * Answers only. A probe that could not be answered is not remembered at all, and deliberately so.
-   *
-   * A hold with an expiry was written here and removed. It could not fire: the only production caller builds
-   * its port objects as fresh literals per call, so the memoiser that hands out detectors never hits and every
-   * preflight gets an empty instance — including this field. Keying that memoiser by value instead of by object
-   * identity would have made the hold live, and would also have merged the detectors that
-   * `keeps detector caches isolated by process port` exists to keep apart. Rather than ship a mechanism that
-   * runs only in tests, the non-answer is simply re-asked, which is what happened before the split too.
    */
   let cachedCli: CliInfo | null = null;
   let inFlightProbe: Promise<CliInfo> | null = null;

@@ -43,11 +43,9 @@ import { DEFAULT_TURN_RECOVERY_BUDGET } from './turn-recovery-budget.js';
 const DEFAULT_OUTPUT_RING_LIMIT = 16_384;
 const CHILD_SHUTDOWN_GRACE_MS = 1_000;
 const CHILD_SHUTDOWN_TIMEOUT_MS = 2_500;
-// Adaptive readiness window: once Claude emits the bracketed-paste-enable
-// marker, the child is ready when its output stays quiet this long (the TUI
-// has finished mounting the input box). A prompt pasted too soon is silently
-// dropped by Claude Code 2.1.x; quiescing avoids both a dropped prompt and a
-// fixed worst-case wait, and the resend net recovers any too-early send.
+// A prompt pasted too soon is silently dropped by Claude Code 2.1.x; quiescing
+// avoids both a dropped prompt and a fixed worst-case wait, and the resend net
+// recovers any too-early send.
 const CHILD_READY_QUIET_MS = 400;
 const BRACKETED_PASTE_ENABLED = '\x1b[?2004h';
 const TRANSCRIPT_POLL_MS = 100;
@@ -498,9 +496,6 @@ export class SingleSessionController {
       }
       resolveReady();
     };
-    // After the marker, (re)arm a quiet timer on every chunk; readiness fires
-    // once output has been idle for the quiet window — adaptive, so a fast or
-    // warm child proceeds early instead of waiting a fixed worst case.
     const armQuietTimer = (): void => {
       if (readyResolved) {
         return;

@@ -227,10 +227,6 @@ export interface ProviderCurationCapability<Access extends ProviderAccess> {
 // canonical shape; this type is its compile-time mirror via z.infer.
 export type ProviderTerminalOutcome = z.infer<typeof providerTerminalOutcomeSchema>;
 
-/** Provider's raw terminal output shape — what an exec/app-server kernel returns
- * before the coordinator materializer translates it into a journal-recorded
- * `ProviderTerminal` (in `jobs/terminal/result.ts`). Distinct types, distinct names
- * per §10.3. */
 export interface ProviderTerminal {
   content: string;
   model?: string;
@@ -801,9 +797,7 @@ export function compose<Plan extends ProviderExecutionPlan, ExecutionRuntime ext
       if (!naturalCompletion && typeof iterator.return === 'function') {
         await iterator.return().catch(() => undefined);
       }
-      // Synthesize wrapper_lost only when the inner iterator returned of its
-      // own accord without a terminal or suspension. Consumer-driven .return()
-      // and propagating exceptions are intentional close signals.
+      // Consumer-driven .return() and propagating exceptions are intentional close signals.
       if (naturalCompletion && !seenFinal) {
         yield {
           kind: 'terminal',

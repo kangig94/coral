@@ -283,7 +283,36 @@ across `docs/` and `src/`, plus a filename search) found no such document anywhe
 unlocatable citation rather than a protected external-spec reference, and deleted under the same rule as any
 other unverifiable claim.
 
-## Spans every sector — comments cite documents this repository does not contain
+## Sector 8 — `src/providers/`
+
+Nothing found that meets this ledger's bar (a comment right, code wrong). Of the 32 files carrying any
+comment at all, every claim naming a symbol, a file, a caller, a citation, or an "only" was checked against
+the graph, a targeted grep, or a direct read of both sides, and every one held up except one, which was a
+certain delete rather than a ledger entry (comment wrong, code correct — not ledger-worthy per the sector 7
+precedent): `contract.ts`'s JSDoc on `ProviderTerminal` claimed the type is later translated into "a
+journal-recorded `ProviderTerminal` (in `jobs/terminal/result.ts`)" and cited "§10.3" for why the two carry
+distinct names. Neither survives a check. `jobs/terminal/result.ts` imports and journal-records `JobTerminal`
+(from `records.js`), not `ProviderTerminal` — the only `ProviderTerminal` anywhere in the tree is this same
+interface, so the sentence is internally self-defeating (it asserts "distinct types, distinct names" while
+naming both sides identically). And `docs/design-rationale.md` §10.3 is "Why CLI fail-fast deadlines on Eras I
+and II only," unrelated to type-naming discipline. The neighboring `ProviderJobDiagnostics` doc two
+declarations below makes the same kind of claim correctly (cites `JobTerminalDiagnostics`, confirmed present in
+`jobs/terminal/result.ts`), which is what exposed the mismatch by contrast. The block was deleted outright
+rather than corrected to say `JobTerminal`, since supplying the right name would be introducing a new claim,
+not excising a false one.
+
+Every other cross-file claim checked out: `aggregateWorkflowUsage` (jobs/workflow-usage.ts), `TerminalOutcome`
+and its `causeRef`/fault-registry shape (jobs/outcome.ts), `jobTerminalSchema` (jobs/terminal/result.ts), the
+`ProviderCurationCapability` "exposed only through a bound provider" claim (traced — every consumer outside
+`internal/bound-provider.ts` and `internal/definition-boundary.ts` reaches it through `BoundProviderCuration`,
+never the raw capability), `ProviderHostManager` "pools shared hosts by executable identity"
+(`provider-proxy/provider-root-authority.ts`), the architecture-boundary invariant on constructing `AbortError`
+locally (`tests/invariants/architecture-boundary.test.ts` §16 #53), the `permissiveProviderLookupPort`
+(`tests/helpers/append-context.ts`) test counterpart to `noProviderLookupPort`, the single production call site of
+`createCliDetector` (only `claude/cli-detection.ts:detectClaudeCli`, confirmed by grep — the other hit in
+`codex/provider-facets.ts` only _mentions_ `resetCache` in a comment), and the exact test name
+`'keeps detector caches isolated by process port'` (`tests/unit/providers/claude/cli-detection.test.ts`) quoted
+in `cli-detection.ts`.
 
 Recorded once here rather than per sector, because it is one finding with 48 sites and every sector meets it.
 

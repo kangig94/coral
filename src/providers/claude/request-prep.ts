@@ -49,7 +49,6 @@ function resolveClaudeModelCap(env: Record<string, string>): string {
     : DEFAULT_CLAUDE_MODEL_CAP;
 }
 
-/** SHA-256 hash of sorted env entries (excluding ephemeral child-boundary credentials). Shared by adapter and broker. */
 export function hashSortedEnv(env: Record<string, string>): string {
   const sortedEntries: [string, string][] = [];
   for (const [key, value] of Object.entries(env)) {
@@ -151,8 +150,6 @@ function resolveClaudeEffort(request: Pick<ProviderRequest, 'effort' | 'model' |
 }
 
 /**
- * Assemble the Claude system/user payloads.
- *
  * The inject bundle is applied provider-agnostically by `applyInjectBundle` at the job shell
  * boundary and arrives pre-merged into `request.systemPrompt` (guidelines first,
  * caller systemPrompt appended). This function must not re-resolve the inject bundle.
