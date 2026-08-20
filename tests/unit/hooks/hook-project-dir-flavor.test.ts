@@ -1,15 +1,5 @@
-// The hook lane and the daemon must name the same project directory on the same build flavor.
-//
-// They did not. `projectsPaths` separates flavors — prod under `projects`, dev under `projects-dev`, so a dev
-// build never shares a project's memo tree with prod — and the hook lane hard-coded `projects` for both. On a
-// dev build every skill's `CORAL_PROJECT` therefore named the prod directory while the daemon wrote memos to
-// `projects-dev`: a split that reports nothing, because both are legitimate directory names and each lane is
-// internally consistent.
-//
-// It survived because the invariant that enforces the separation "uniformly"
-// (`tests/invariants/flavor-path-separation.test.ts`) scans `src/` only, and because the same file's
-// `resolveKbRoot` *did* flavor its path — so the lane looked flavor-aware to a reader checking one function.
-// This drives the actual pair, on both flavors, against the daemon's own path function.
+// The hook lane and the daemon must name the same project directory on the same build flavor. This drives
+// the actual pair, on both flavors, against the daemon's own path function.
 
 import type * as NodeFs from 'node:fs';
 import type * as NodeOs from 'node:os';

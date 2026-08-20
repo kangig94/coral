@@ -2,15 +2,11 @@
 //
 // `coralProjectDir` turns this string into `~/.coral/projects[-dev]/<slug>` with the same rule `sourceToSlug`
 // (`src/infra/path/index.ts`) uses, and that directory holds memos and is exported to every skill as
-// `CORAL_PROJECT` (`clients/hooks/coral-skill-vars.mjs`). So a probe that could not run must not be allowed to
-// name it: every failure used to be cached as `local/<basename>` permanently and silently, which pinned a whole
-// session to a directory later reads do not look in.
+// `CORAL_PROJECT`. A probe that could not run must not be allowed to name it.
 //
 // Hooks may not import from `src/`, so this rule is spelled twice rather than shared. That is the reason this
-// file exists — and the reason the agreement is *driven* here rather than asserted. It was asserted, in a
-// comment above each spelling, while the two disagreed on five of the nineteen remotes below and while one
-// lane hard-coded `projects` for both build flavors. A claim that two implementations agree is worth exactly
-// the table that runs both of them.
+// file exists — and the reason the agreement is *driven* here rather than asserted. A claim that two
+// implementations agree is worth exactly the table that runs both of them.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -119,9 +115,8 @@ describe('hook lane project source', () => {
  * One table, both implementations. `null` is "this names no owner/repo", which each lane turns into its own
  * `local/<basename>` fallback.
  *
- * Every row that is not a plain `https` or `scp`-style remote is here because it separated the two before:
- * the trailing slash after `.git`, the query string, the fragment, and the two scheme-less paths. Adding a
- * case to this list is how a future divergence gets found; adding it to only one lane is how this started.
+ * Adding a case to this list is how a future divergence gets found; adding it to only one lane is how this
+ * started.
  */
 const REMOTE_TABLE: ReadonlyArray<readonly [remote: string, expected: string | null]> = [
   ['git@github.com:owner/repo.git', 'owner/repo'],
@@ -167,8 +162,7 @@ describe('both lanes parse a remote the same way', () => {
 
 describe('both lanes enumerate the same standing errnos', () => {
   // Which errnos mean "answered" decides what gets cached durably, so the two lanes disagreeing means one of
-  // them remembers a wrong project identity that the other never would. The set is small and the claim that
-  // they match was, until now, a comment above each copy.
+  // them remembers a wrong project identity that the other never would.
   it('matches, so a new errno cannot be added to one lane alone', () => {
     expect([...(STANDING_PROBE_ERRNOS_IN_HOOK as Set<string>)].sort()).toEqual(
       [...STANDING_PROBE_ERRNOS_IN_DAEMON].sort(),
@@ -177,8 +171,7 @@ describe('both lanes enumerate the same standing errnos', () => {
 });
 
 describe('both lanes hold a non-answer for the same interval', () => {
-  // Same reasoning as the errno set above, applied to the other number a non-answer is cached against: the
-  // claim that the two copies match was a comment, not a check.
+  // Same reasoning as the errno set above, applied to the other number a non-answer is cached against.
   it('matches, so a new interval cannot be set on one lane alone', () => {
     expect(UNANSWERED_REPROBE_INTERVAL_MS_IN_HOOK).toBe(INDECISIVE_PROBE_REPROBE_INTERVAL_MS_IN_DAEMON);
   });

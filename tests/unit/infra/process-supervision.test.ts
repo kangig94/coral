@@ -15,8 +15,7 @@ class FakeChild extends EventEmitter implements ChildProcessLike {
   readonly killedSignals: NodeJS.Signals[] = [];
   private throwOnSignal: NodeJS.Signals | null = null;
 
-  /** Makes the next `kill(signal)` call for the given signal throw instead of recording it — models the
-   *  "child is already gone" race `safeKill`'s try/catch exists to absorb. */
+  /** Models the "child is already gone" race `safeKill`'s try/catch exists to absorb. */
   throwOnNextKill(signal: NodeJS.Signals): void {
     this.throwOnSignal = signal;
   }

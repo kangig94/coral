@@ -27,7 +27,6 @@ describe('workflow consumer-driver notify', () => {
   it('projects the workflow after a coordinator-bound append', async () => {
     const db = createDb();
     const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: realConsumerDriverNow });
-    // Cursor-only base consumer; commit-time reducer writes projection_workflows.
     driver.register({
       id: 'workflow',
       authority: 'journal',

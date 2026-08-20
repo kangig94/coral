@@ -9,7 +9,7 @@ describe('orama search-channels large-body regression', () => {
   // "RangeError: Maximum call stack size exceeded" during KB index build —
   // surfacing as an apparent infinite recursion. ~80k Hangul chars yields
   // ~160k 2/3-grams, comfortably past the ~125k limit.
-  const longHangulBody = '가나다라마바사아자차'.repeat(8_000); // 80_000 chars
+  const longHangulBody = '가나다라마바사아자차'.repeat(8_000);
 
   it('builds channel fields for a very long Hangul body without overflowing the stack', () => {
     let fields: ReturnType<typeof buildOramaSearchChannelFields> | undefined;

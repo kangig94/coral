@@ -985,7 +985,7 @@ describe('a converter command that cannot be launched, after `which` found it', 
   });
 });
 
-// `install()` and `convert()` decide between "not there" and "could not tell" at four more points, and only
+// `install()` and `convert()` decide between "not there" and "could not tell" at more points, and only
 // the `undetermined` ones were pinned. The `absent` branches are what make the failure legible — "uv was not
 // found on PATH after its installer ran" is a different problem from a machine that cannot answer — and
 // disabling any of them left the suite green.

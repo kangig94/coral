@@ -52,7 +52,6 @@ describe('sessions consumer-driver notify', () => {
   it('projects the appended session after SessionManager uses the coordinator-bound appender', async () => {
     const db = createDb();
     const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: realConsumerDriverNow });
-    // Cursor-only base consumer; commit-time reducer writes projection_sessions.
     driver.register({
       id: 'sessions',
       authority: 'journal',

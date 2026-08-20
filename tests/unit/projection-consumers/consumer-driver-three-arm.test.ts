@@ -1,11 +1,7 @@
 import { currentCoralStoreFormat } from '#src/store-format.js';
 // Phase 7 of apply-contract-reform plan.
 //
-// Hardens the cross-arm narrowing introduced by AC3:
-//   journal-cursor + corpus-apply + stateless lifecycle on a single
-//   ConsumerDriver, with explicit checks on `statusFor()`, `waitFreshUntil()`
-//   error codes, `stuckConsumers()` exclusion, and stateless stop/unregister
-//   idempotency. The two-axis discriminator union (`'authority' in status`
+// The two-axis discriminator union (`'authority' in status`
 //   for journal/corpus; `status.kind === 'stateless'` for stateless) is the
 //   most fragile new invariant in the contract reform — `authority?: never`
 //   on stateless does not always produce a useful TS error in caller
@@ -177,9 +173,6 @@ describe('ConsumerDriver three-arm discriminator contract (Phase 7)', () => {
       driver.notify('journal', 5);
       await applyStarted.promise;
 
-      // Initiate stop on both: the stuck apply blocks; stateless settles
-      // immediately. `stuckConsumers()` must show the apply id but never
-      // the stateless id.
       const stuckStop = stuckApply.stop();
       await statelessHandle.stop();
 
@@ -194,8 +187,6 @@ describe('ConsumerDriver three-arm discriminator contract (Phase 7)', () => {
         cursor: 0,
       });
 
-      // Drain to clean shutdown — release the stuck apply so the test exits
-      // cleanly.
       releaseApply.resolve();
       await stuckStop;
     } finally {

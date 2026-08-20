@@ -191,8 +191,8 @@ describe('expansionExitCode', () => {
   });
 
   // `coordinator_unreachable` and `coordinator_record_unreadable` are this file's live examples of
-  // `NOT_OBSERVED_CORAL_SETUP_ERROR_CODES` members reaching `expansionExitCode` — the errors.test.ts suite in
-  // tests/unit/cli asserts the general case by iterating the real exported set against both consumers.
+  // `NOT_OBSERVED_CORAL_SETUP_ERROR_CODES` members reaching `expansionExitCode` — see tests/unit/cli/errors.test.ts
+  // for the general case.
   it.each(['coordinator_unreachable', 'coordinator_record_unreadable'] as const)('exits 75 for %s', (code) => {
     expect(
       expansionExitCode({

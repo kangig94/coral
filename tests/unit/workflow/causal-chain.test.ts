@@ -181,7 +181,6 @@ function setup(): {
   const db = newRawDatabase(':memory:');
   applyBundledStoreSchema(db, currentCoralStoreFormat());
   const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: () => NOW });
-  // Cursor-only base consumers; commit-time reducer writes projections.
   driver.register({ id: 'jobs', authority: 'journal', kind: 'cursor', registrationKind: 'base' });
   driver.register({ id: 'workflow', authority: 'journal', kind: 'cursor', registrationKind: 'base' });
   const readCtx: StoreReadContext = createDefaultStoreReadContext();
@@ -208,7 +207,6 @@ async function runChain(db: Database, driver: ConsumerDriver): Promise<number> {
     return result.at(-1)?.seq ?? 0;
   };
 
-  // Transaction 1 — workflow plan declared + workflow job launched.
   append([
     {
       type: 'workflow.plan.declared',
@@ -219,7 +217,6 @@ async function runChain(db: Database, driver: ConsumerDriver): Promise<number> {
     ...workflowLaunchAndStart(),
   ]);
 
-  // Transaction 2 — slot A launched and completed.
   append([
     ...transactionLaunchAndStart({
       jobId: 'a-1',
@@ -242,7 +239,6 @@ async function runChain(db: Database, driver: ConsumerDriver): Promise<number> {
     },
   ]);
 
-  // Transaction 3 — slots B and C launched.
   append([
     ...transactionLaunchAndStart({
       jobId: 'b-1',
@@ -260,7 +256,6 @@ async function runChain(db: Database, driver: ConsumerDriver): Promise<number> {
     }),
   ]);
 
-  // Transaction 4 — slot B completes.
   append([
     {
       type: 'job.terminal.recorded',
@@ -276,8 +271,6 @@ async function runChain(db: Database, driver: ConsumerDriver): Promise<number> {
     },
   ]);
 
-  // Transaction 5 — C fails, workflow fails, workflow-job fails.
-  // All three events commit atomically (BEGIN IMMEDIATE..COMMIT).
   const cTerminalSeq =
     commitInputs(
       db,
@@ -411,7 +404,6 @@ describe('worked example — [A] | [B, C] where C fails', () => {
       });
       expect(view?.plan.slots.map((slot) => slot.slotId)).toEqual([SLOT_A, SLOT_B, SLOT_C]);
 
-      // Children are derived from the projection, not embedded in the view.
       expect(view?.slotOutcomes[SLOT_A]).toMatchObject({ jobId: 'a-1', phase: 'completed', causeRef: null });
       expect(view?.slotOutcomes[SLOT_B]).toMatchObject({ jobId: 'b-1', phase: 'completed', causeRef: null });
       // c-1 ended via provider_exit, not failed-with-causeRef, so slot causeRef is null.
@@ -449,8 +441,6 @@ describe('worked example — [A] | [B, C] where C fails', () => {
     try {
       const finalSeq = await runChain(db, driver);
 
-      // Transaction 5 produced exactly: c-1 terminal → workflow.completed →
-      // wf-1 terminal, in three contiguous seqs.
       const tx5 = db
         .prepare(
           `SELECT seq, type, stream_kind, stream_id

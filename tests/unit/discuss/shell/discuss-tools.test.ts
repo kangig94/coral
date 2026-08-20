@@ -873,7 +873,6 @@ describe('execution discuss tools', () => {
       );
       await persistSession({ ...harness, context }, { sessionId: 'sess-err' });
 
-      // Make getSession throw a plain Error (simulates unexpected failure inside the operation)
       vi.spyOn(await import('#src/discuss/shell/registry.js'), 'getSession').mockImplementationOnce(() => {
         throw new Error('disk full');
       });

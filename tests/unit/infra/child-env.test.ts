@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-// Mock backendLog before importing the module under test
 vi.mock('#src/infra/backend-log.js', () => ({
   backendLog: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), raw: vi.fn() },
 }));
@@ -18,7 +17,6 @@ import {
 } from '#src/infra/env-sanitize.js';
 import { backendLog } from '#src/infra/backend-log.js';
 
-/** Fill env with vars of given size until total exceeds budget. Track size incrementally. */
 function fillUntilOverBudget(env: Record<string, string>, prefix: string, valueSize: number): void {
   const budgetBytes = envBudgetBytes();
   let size = measureEnv(env);
@@ -111,7 +109,6 @@ describe('buildChildEnv', () => {
     process.env = env;
     const result = buildChildEnv();
 
-    // Small vars preserved, some bloat vars shed
     expect(result.PATH).toBe('/usr/bin');
     expect(result.SMALL_VAR).toBe('x');
     const keptBloat = Object.keys(result).filter((k) => k.startsWith('BLOAT_')).length;
@@ -146,7 +143,6 @@ describe('buildChildEnv', () => {
   it('should respect CORAL_ENV_PASSTHROUGH to protect specific vars', () => {
     const env: Record<string, string> = {
       PATH: '/usr/bin',
-      // A large var that would normally be shed first
       CRITICAL_BUILD_FLAGS: 'x'.repeat(8192),
       CORAL_ENV_PASSTHROUGH: 'CRITICAL_BUILD_FLAGS',
     };
@@ -155,7 +151,6 @@ describe('buildChildEnv', () => {
     process.env = env;
     const result = buildChildEnv();
 
-    // Protected var survives despite being large
     expect(result.CRITICAL_BUILD_FLAGS).toBe('x'.repeat(8192));
     expect(result.PATH).toBe('/usr/bin');
     expect(backendLog.warn).toHaveBeenCalled();

@@ -1,15 +1,6 @@
-// The liveness primitive, which had four divergent copies, then one that threw, and now answers three values.
+// The liveness primitive answers three values.
 //
-// The copies did not merely duplicate — they disagreed, and each disagreement was a bug pointed a different
-// way. The KB daemon's read any unexpected error as "parent dead"; the IPC one read even `EPERM` as dead, so a
-// live coordinator's startup sentinel could be cleared out from under it; the runtime port's collapsed
-// everything unexpected to `false`, which is how "could not tell" became "gone" on paths whose whole job is
-// proving absence.
-//
-// Making the merged primitive *throw* on the third outcome fixed the reading and broke the callers: a
-// `boolean` signature hides that outcome from the compiler, so four successive hand audits of the same
-// eighteen call sites each missed different ones — including a coordinator that exits from a timer callback
-// and a job terminalized as failed because its probe could not answer. The type says three now, and `tsc`
+// A `boolean` signature hides the third outcome from the compiler. The type says three now, and `tsc`
 // does the audit.
 //
 // `unknown` is not a weaker `absent`. Only `absent` may finalize anything.

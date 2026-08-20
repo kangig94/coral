@@ -81,8 +81,6 @@ describe('infra namespace isolation', () => {
     expect(pluginRootNamespace(pluginRoot)).toBe(createHash('sha256').update(testPath).digest('hex').slice(0, 12));
   });
 
-  // ── pluginRootNamespace edge cases (from algorithm-parity) ────────────────
-
   it('pluginRootNamespace resolves symlinks before hashing (symlink and target share namespace)', () => {
     const target = createPluginRoot('coral-symlink-target');
     const link = join(tmpdir(), `coral-symlink-link-${Date.now()}`);

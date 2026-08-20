@@ -135,7 +135,6 @@ describe('KbRuntime.ensureCorpusFreshness', () => {
     const gate = installGatedRescan();
     const kb = makeRuntime();
 
-    // Kick a background rebuild first.
     await kb.ensureCorpusFreshness({ wait: false });
     await waitForGateInvocation(gate);
     expect(gate.callCount()).toBe(1);
@@ -150,7 +149,6 @@ describe('KbRuntime.ensureCorpusFreshness', () => {
       await Promise.resolve();
     }
     expect(waitResolved).toBe(false);
-    // Still only one rebuild in flight (dedup).
     expect(gate.callCount()).toBe(1);
 
     gate.release();
@@ -165,7 +163,6 @@ describe('KbRuntime.ensureCorpusFreshness', () => {
     const controller = new AbortController();
     controller.abort();
 
-    // Aborted read returns the empty index without kicking a rebuild.
     const index = await kb.ensureCorpusFreshness({ wait: false, signal: controller.signal });
     expect(index).toBeDefined();
     await Promise.resolve();
@@ -206,7 +203,6 @@ describe('KbRuntime.ensureCorpusFreshness', () => {
     await Promise.all(reads);
     await Promise.resolve();
 
-    // All 5 reads have already returned; only one rebuild was ever dispatched.
     expect(gate.callCount()).toBe(1);
 
     // Readiness still blocks because the rebuild has not yet released.

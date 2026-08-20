@@ -157,7 +157,6 @@ describe('compose() terminalOnce guard', () => {
 
     const returned = await iterator.return!();
     expect(returned.done).toBe(true);
-    // No terminal value should be yielded by .return() — consumer opted out.
     expect(returned.value).toBeUndefined();
     expect(yieldedAfterReturn).toBe(false);
   });

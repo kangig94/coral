@@ -687,3 +687,37 @@ beside readable legacy history without importing it'`, `'boots beside a foreign 
 `'boots beside an unreadable legacy store...'`), each of which calls `openOrResetBackendStoreDb` through the
 `openGeneratedStore` helper after spying on `backendLog.warn`. The worker's coverage check simply grepped the
 wrong file in the same scope.
+
+## Sector 12 — tests/unit (part 2)
+
+Scope: everything under `tests/unit/` that part 1 did not take — `causality/`, `cli/`, `discuss/`, `engines/`,
+`expansion/`, `hooks/`, `infra/`, `kb/`, `kb-daemon/`, `lint/`, `projection-consumers/`, `providers/`,
+`read-model/`, `recovery/`, `security/`, `sessions/`, `support/`, `testing/`, `tools/`, `workflow/` — 314
+files. Nothing met this ledger's bar (comment right, code wrong) in any of them. Two comments were found and
+corrected as factually wrong under the "certain delete" rule (comment wrong, code correct — not ledger-worthy
+per the sector 7 precedent):
+
+- `tests/unit/infra/process-liveness.test.ts`'s file header claimed four successive hand audits had covered
+  "the same eighteen call sites" of the liveness primitive. `observeProcessLiveness` has seven call sites in
+  `src/` (`carrier-observation.ts`, `cli/expansion/index.ts`, `transport/ipc/ensure.ts`,
+  `infra/backend-discovery.ts`, `transport/http/backend/coordinator-observation.ts`, and twice in
+  `runtime/real.ts`), confirmed by `trace_path` (seven callers) and by grep, with a known-positive control
+  (nineteen total symbol mentions across `src/`, so the narrower query is not vacuous). The count was wrong in
+  addition to being a bare tally of code artifacts and change history; the whole historical narrative and its
+  three counts were deleted, and the standing constraints — a `boolean` signature hides the third outcome from
+  the compiler, `tsc` does the audit, and `unknown` is not a weaker `absent` so only `absent` may finalize
+  anything — were kept.
+- `tests/unit/kb/git-sync-repo-probe.test.ts` cited `gitSync` as a further call site of `isGitRepo`. `gitSync`
+  never calls `isGitRepo`; its first statement calls `probeIsGitRepo` directly, and `isGitRepo` is a
+  boolean wrapper (`probeIsGitRepo() === 'yes'`) with six callers, all of them inside
+  `src/kb/curate/git-sync.ts` — confirmed by `trace_path` and by reading the function. Only the wrong
+  attribution was excised; the surrounding constraint (collapsing "not a repository" and "could not tell" into
+  one `false` is correct only for call sites that need to skip an operation, and `gitSync` reporting
+  `no-change` would assert something an unanswered probe never established) was kept.
+
+One claim from a worker was checked and not carried into the ledger. A worker reported that
+`src/coordinator/composition/carrier-observation.ts` tests process liveness with `!== 'absent'`, the exact
+expression design-philosophy.md §11 names as the recurring defect ("`!== absent` is not `=== alive`"). Reading
+the call site shows the comparison runs in the safe direction: alive-or-unknown both fall through to
+`{ kind: 'uncaptured' }` and only a confirmed `absent` produces a `recorded` disposition, which is what the
+principle requires. The inline comment there already says so. No defect, so no entry.

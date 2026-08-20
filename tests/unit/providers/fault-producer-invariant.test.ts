@@ -28,10 +28,8 @@ const RULES: FaultAuthorityRule[] = [
 ];
 
 /** Every canonical `src/...` path that exists, and the runtime import edges between them — used by the
- *  self-checks below. An `allowed` entry naming a builder call that a file merely *contains* is not the same
- *  as that file being reachable from production: `adapterOutputUnparseable`'s sole allowed producer,
- *  `src/providers/middleware/adapter-parse-guard.ts`, called the builder but was never wired into any
- *  provider's middleware chain, so this file blessed a dead producer until both were deleted. */
+ *  self-checks below. An `allowed` entry naming a builder call that a file merely *contains* is not the
+ *  same as that file being reachable from production. */
 const PRODUCTION_FILE_PATHS = listProductionSourceFiles(join(REPO_ROOT, 'src'));
 const IMPORT_EDGES = parseProductionImportEdges(REPO_ROOT, PRODUCTION_FILE_PATHS);
 const CANONICAL_FILES = new Set(PRODUCTION_FILE_PATHS.map((filePath) => toCanonicalSrcPath(REPO_ROOT, filePath)));
@@ -88,10 +86,9 @@ describe('provider fault producer authority invariants', () => {
   });
 
   // An allowlist certifies who *may* call a builder, never that anyone does. The check above already confirms
-  // each allowed file's text calls the builder, but a file can do that and still be dead — `adapter-parse-guard.ts`
-  // called `adapterOutputUnparseable` on every line the check above wanted, while no provider ever wired it into
-  // a middleware chain. The two checks below catch that shape: an allowed entry naming nothing on disk, or
-  // naming a real file nothing in production ever imports.
+  // each allowed file's text calls the builder, but a file can do that and still be dead. The two checks below
+  // catch that shape: an allowed entry naming nothing on disk, or naming a real file nothing in production ever
+  // imports.
   it.each(RULES.map((rule) => [rule.builder, rule] as const))(
     '%s: every allowed producer resolves to a real file',
     (_builder, rule) => {

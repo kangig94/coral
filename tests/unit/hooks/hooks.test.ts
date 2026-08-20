@@ -428,8 +428,6 @@ describe('session-start.mjs', () => {
       );
     }
 
-    // For projectDir = fixture.projectRoot with origin acme/repo, the
-    // current-project slug (dash form) is 'acme-repo'.
     const PROJECT_SLUG = 'acme-repo';
 
     it('injects the current-project wiki into additionalContext', () => {
@@ -510,7 +508,6 @@ describe('session-start.mjs', () => {
 
       expect(result.status).toBe(0);
       const output = expectHookOutput(result);
-      // Malformed file produces no wake-up block; identity absent → no "## " heading appears.
       expect(output.hookSpecificOutput.additionalContext).not.toMatch(/inject content[\s\S]*\n## /u);
     });
   });
@@ -639,7 +636,7 @@ describe('kb-promote-gate.mjs', () => {
     const fixture = createFixture();
     const memoDir = join(coralProjectDir(fixture.root, `local/${basename(fixture.projectRoot)}`), 'memo');
     mkdirSync(memoDir, { recursive: true });
-    // Gate threshold is 10 — create enough memos to trigger block
+    // Gate threshold is 10.
     for (let i = 0; i < 10; i++) {
       writeFileSync(join(memoDir, `20260321-hooks-note-${i}.md`), 'memo', 'utf-8');
     }
@@ -868,14 +865,11 @@ describe('codex.json', () => {
       expect(raw).not.toContain(script);
     }
     const hooksJson = JSON.parse(raw) as HooksFile;
-    // Subagent events are dropped entirely (their only hooks were the excluded scripts).
     expect(hooksJson.hooks.SubagentStart).toBeUndefined();
     expect(hooksJson.hooks.SubagentStop).toBeUndefined();
-    // SessionStart "*" keeps only session-start (hud-auto-update removed).
     const wildcard = hooksJson.hooks.SessionStart.find((entry) => entry.matcher === '*');
     expect(wildcard!.hooks).toHaveLength(1);
     expect(wildcard!.hooks[0].command).toContain('session-start.mjs');
-    // PreToolUse loses only the Monitor matcher; Skill and Bash remain.
     const preMatchers = hooksJson.hooks.PreToolUse.map((entry) => entry.matcher);
     expect(preMatchers).not.toContain('Monitor');
     expect(preMatchers).toEqual(expect.arrayContaining(['Skill', 'Bash']));
@@ -1553,9 +1547,9 @@ describe('ralph-loop hook subagent gate', () => {
     );
 
     expect(result.status).toBe(0);
-    expect(result.stdout.trim()).toBe(''); // deferred: no block emitted
+    expect(result.stdout.trim()).toBe('');
     const state = JSON.parse(readFileSync(join(fixture.snapshotDir, `ralph-state-${sessionId}.json`), 'utf-8'));
-    expect(state.iteration).toBe(1); // iteration not advanced
+    expect(state.iteration).toBe(1);
   });
 
   it('drives the next iteration when no subagent is live', () => {
@@ -1578,7 +1572,7 @@ describe('ralph-loop hook subagent gate', () => {
     expect(result.status).toBe(0);
     expect(expectStopOutput(result).decision).toBe('block');
     const state = JSON.parse(readFileSync(join(fixture.snapshotDir, `ralph-state-${sessionId}.json`), 'utf-8'));
-    expect(state.iteration).toBe(2); // iteration advanced
+    expect(state.iteration).toBe(2);
   });
 });
 
@@ -1592,7 +1586,6 @@ describe('kb-promote-gate hook subagent gate', () => {
       writeFileSync(join(memoDir, `20260321-note-${i}.md`), 'memo', 'utf-8');
     }
 
-    // live subagent marker + fresh transcript for the gated session
     const liveSubagents = liveWorkSubagentsDir(fixture, sessionId);
     mkdirSync(liveSubagents, { recursive: true });
     writeFileSync(join(liveSubagents, 'agentK'), '');
@@ -1613,7 +1606,7 @@ describe('kb-promote-gate hook subagent gate', () => {
       },
     );
     expect(deferred.status).toBe(0);
-    expect(deferred.stdout.trim()).toBe(''); // deferred: no block
+    expect(deferred.stdout.trim()).toBe('');
 
     // a session with no live subagent still gets the block (memos are owner-less)
     const fired = runHook(

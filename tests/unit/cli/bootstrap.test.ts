@@ -69,7 +69,6 @@ describe('cli bootstrap', () => {
       new CommanderError(2, 'commander.missingArgument', "error: missing required argument 'jobIds'"),
     );
     emitError.mockImplementation((_error: unknown) => {
-      // Simulate real emitError setting exit code for CommanderError → 2.
       process.exitCode = 2;
     });
 

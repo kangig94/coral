@@ -138,7 +138,6 @@ describe('waitForCorpusReadiness', () => {
       },
     });
 
-    // Resolve only fts first; the wait must not return until vector also resolves.
     ftsArrived.resolve();
     await new Promise((resolve) => setImmediate(resolve));
     expect(completedConsumerIds).toEqual(['fts-consumer']);

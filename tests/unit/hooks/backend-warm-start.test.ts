@@ -17,8 +17,7 @@ afterEach(cleanupFixtures);
 const WARM_START_TIMEOUT_MS = 15_000;
 
 /**
- * The session-start hook absorbs the daemon spawn (previously a separate
- * `backend-warm-start.mjs`). The same staleness/incumbent contract still
+ * The staleness/incumbent contract
  * lives entirely in the daemon's `bindWithHandoff`: a healthy same-bundle
  * peer makes the new daemon throw `BackendAlreadyRunningError` and exit;
  * a mismatching peer triggers IPC `transport.shutdown`. The hook stays

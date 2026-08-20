@@ -1,6 +1,5 @@
 // The Windows probe is defensive — win32 is not a supported host — but it is the only coverage this function
-// has, and one of the three synchronous subprocess call sites that must carry a timeout. The subprocess is
-// mocked, so this test is platform-independent and never invokes wmic.
+// has. The subprocess is mocked, so this test is platform-independent and never invokes wmic.
 //
 // There is deliberately no "returns null when the probe times out" test here. The probe's `catch` is bare, so
 // such a test passes whether or not the timeout option is present and proves nothing about the bound. The

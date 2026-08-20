@@ -44,8 +44,8 @@ describe('monitor-track.mjs', () => {
     });
 
     const rewritten = expectBashRewriteOutput(result).hookSpecificOutput.updatedInput.command;
-    expect(rewritten).toContain('coral-work'); // wrapper injected
-    expect(rewritten.endsWith('tail -f app.log | grep ERROR')).toBe(true); // original command preserved as the tail
+    expect(rewritten).toContain('coral-work');
+    expect(rewritten.endsWith('tail -f app.log | grep ERROR')).toBe(true);
     expect(readdirSync(bgDir(fixture)).some((name) => name.endsWith('.launched'))).toBe(true);
   });
 
@@ -54,7 +54,7 @@ describe('monitor-track.mjs', () => {
     const result = runMonitor(fixture, { command: 'tail -f app.log', description: 'log', persistent: true });
 
     expect(result.status).toBe(0);
-    expect(result.stdout.trim()).toBe(''); // not wrapped
+    expect(result.stdout.trim()).toBe('');
   });
 
   it('skips the ws-variant monitor (no command to wrap)', () => {

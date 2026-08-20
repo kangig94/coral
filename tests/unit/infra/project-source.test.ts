@@ -235,9 +235,8 @@ describe('resolveProjectSource', () => {
     ).toHaveBeenCalledTimes(callsAtCap);
   });
 
-  // §11: "Tolerance is not silence." This was the one of five declining sites that said nothing, and it is the
-  // one whose value lands on disk — `projectData` derives a directory from the fallback, so a memo written now
-  // is filed under a name a later read will not look for.
+  // §11: "Tolerance is not silence." This is the one whose value lands on disk — `projectData` derives a
+  // directory from the fallback, so a memo written now is filed under a name a later read will not look for.
   it('says so when it could not derive the source, rather than falling back in silence', async () => {
     // Loaded first: `loadProjectSourceModule` calls `vi.resetModules()`, so a `backendLog` imported before it
     // is a different module instance from the one the subject captured, and the spy would never fire.
@@ -274,7 +273,7 @@ describe('resolveProjectSource', () => {
 
   // `GIT_REMOTE_PROBE_TIMEOUT_MS`'s JSDoc is asserted as source text elsewhere, but that only proves a
   // `timeout:` literal exists somewhere in the file — not that it reaches `execFileSync`. This inspects the
-  // actual call options, the way `tests/unit/hooks/live-work-registry-lock.test.ts` pins its own probe timeout.
+  // actual call options.
   it('passes the documented probe timeout through to execFileSync', async () => {
     const { resolveProjectSource } = await loadProjectSourceModule();
     execFileSyncMock.mockImplementation(() => remoteForProjectRoot('/tmp/timeout-wiring'));

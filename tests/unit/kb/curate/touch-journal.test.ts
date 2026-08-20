@@ -124,7 +124,6 @@ describe('touch-journal', () => {
     expect(existsSync(touchJournalTombstonePath(runtimeDir))).toBe(false);
     expect(existsSync(touchJournalProgressPath(runtimeDir))).toBe(false);
 
-    // Idempotent — second call does not throw.
     truncateTouchJournal(runtimeDir, { storage: realStorage });
     expect(existsSync(touchJournalTombstonePath(runtimeDir))).toBe(false);
     expect(existsSync(touchJournalProgressPath(runtimeDir))).toBe(false);
@@ -233,7 +232,6 @@ describe('touch-journal', () => {
     appendTouchEvent(runtimeDir, noteEntryId('alpha'), 'evt-1', { storage: realStorage, now: STATIC_NOW });
     // Force the canonical → tombstone rotation so the tombstone holds evt-1.
     renameSync(touchJournalPath(runtimeDir), touchJournalTombstonePath(runtimeDir));
-    // Orphan with the same eventId should be dropped after dedupe.
     const targetB = noteEntryId('beta');
     const orphanPath = join(runtimeDir, 'wiki-touches.orphan.evt-1.jsonl');
     writeFileSync(
@@ -287,7 +285,6 @@ describe('touch-journal', () => {
     const index = indexWithWikis({ 'wiki-one': ['alpha'], 'wiki-two': ['beta'] });
     const result = drainTouchJournal(runtimeDir, index, { storage: wrapped });
 
-    // Re-read absorbed evt-2, so both wikis appear.
     expect([...result.keys()].sort()).toEqual(['wiki-one', 'wiki-two']);
   });
 

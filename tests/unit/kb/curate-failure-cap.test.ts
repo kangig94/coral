@@ -66,7 +66,6 @@ describe('curate scheduler failure cap (S2)', () => {
   });
 
   it('disables both lanes once consecutive failures reach the cap', async () => {
-    // Seed scheduler state at the cap so the next run is a permanent skip.
     const trippedAt = '2026-04-29T12:00:00.000Z';
     await runtime.withMutationLock(() => {
       writeCurateState(curateDb(runtime), {

@@ -41,13 +41,9 @@ function saidNo(): ExecResult {
  * How the port reports that git never ran, or ran and was killed. `code` is what separates a standing fact
  * from this moment.
  *
- * This is still hand-assembled, and that is worth saying because assembling it is how this file was briefly
- * wrong: it asserted `{ code: 'ETIMEDOUT' }` on a timeout while the port was rewriting `spawnSync`'s coded
- * error into a bare one, so every case here passed against a shape production never produced and `gitAnswered`
- * read real timeouts as answers. Nothing in this file could have caught that — both sides of the boundary were
- * written here. What holds it now is elsewhere: `tests/unit/runtime/exec-sync-timeout.test.ts` drives the real
- * `spawnSync` against a real slow child and pins `error.code` to `EXEC_TIMEOUT_CODE`. If that test is ever
- * relaxed, these rows go back to describing a boundary that does not exist.
+ * This is still hand-assembled. What holds it now is elsewhere: `tests/unit/runtime/exec-sync-timeout.test.ts`
+ * drives the real `spawnSync` against a real slow child and pins `error.code` to `EXEC_TIMEOUT_CODE`. If that
+ * test is ever relaxed, these rows go back to describing a boundary that does not exist.
  */
 function couldNotRun(code: string): ExecResult {
   return {
@@ -292,8 +288,8 @@ describe('git sync says so when it cannot tell whether a remote exists', () => {
 });
 
 // The work-tree probe has the same shape of bug: `isGitRepo` collapses "not a repository" and "could not tell"
-// into the same `false`, which is correct for the six call sites that only need to skip an operation. `gitSync`
-// is the seventh, and reporting `no-change` here means the same thing `inbound-sync-service.ts` reads
+// into the same `false`, which is correct for call sites that only need to skip an operation. `gitSync`
+// reporting `no-change` here means the same thing `inbound-sync-service.ts` reads
 // `no-change` to mean everywhere else — safe to skip a rebuild — which an unanswered probe never established.
 describe('gitSync does not report no-change for a work-tree probe it could not answer', () => {
   function controllerWithWorkTreeProbe(probeResult: ExecResult) {

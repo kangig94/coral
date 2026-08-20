@@ -88,8 +88,6 @@ describe('Discuss synthesis', () => {
       .mockResolvedValue({ kind: 'provider-session', status: 'running', jobId: 'job-r', sessionId: 'alpha-session' });
     const waitStreamOnce = vi.fn().mockResolvedValue({ content: 'Final synthesis.', continuity: null });
     const harness = createDiscussHarness(createExecutionServiceStub({ start, resume, waitStreamOnce }));
-    // Unit shim for the lifecycle-reactor.discardSessionArtifacts that
-    // createCoordinatorCore wires into the context in production.
     const discardSessionArtifacts = vi.fn().mockResolvedValue(undefined);
     harness.context.discardSessionArtifacts = discardSessionArtifacts;
     await persistSession(harness, {

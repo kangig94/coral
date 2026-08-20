@@ -81,7 +81,6 @@ describe('resolveEquippedTools', () => {
   it('does not surface a like-named directory (binary must be a regular file)', () => {
     tmpHome();
     const dir = codebaseMemoryBinDir();
-    // Create `codebase-memory-mcp` as a DIRECTORY, not a file.
     mkdirSync(join(dir, 'codebase-memory-mcp'), { recursive: true });
     expect(resolveEquippedTools()).toEqual([]);
   });

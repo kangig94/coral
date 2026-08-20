@@ -1,11 +1,3 @@
-// `<projectDir>/.claude/coral` is Coral's own convenience link into the project's data directory, and
-// `ensureCoralSymlink` returned on "a symlink is there" without ever asking where it went.
-//
-// That was invisible until `coralProjectDir` learned the build flavor. On a dev install that had already run
-// the hook once, the link kept pointing into `~/.coral/projects/` while `CORAL_PROJECT` moved to
-// `~/.coral/projects-dev/` — the same two-directory split the flavor fix was closing, reopened one path over,
-// and reported as `ok: true` because a symlink did exist.
-//
 // The correction is scoped to links Coral itself placed. A link an operator pointed somewhere of their own is
 // left alone: recognising our own artifact is not licence to overwrite someone else's.
 

@@ -83,8 +83,6 @@ describe('bash-rewrite.mjs', () => {
 
     // -f json stays before codex so Commander rejects the unknown top-level flag.
     expect(rewritten).toContain('-f json codex');
-    // The hook bails out of inline rewriting when a non-KB leading flag is present,
-    // so the raw -i text stays in the command. Commander will surface the parse error.
     expect(rewritten).toContain('text with $HOME and `backticks`');
   });
 
@@ -303,7 +301,7 @@ describe('bash-rewrite.mjs', () => {
     // Fixed Bash ceiling; wait CLI emits its final event at 590s so the
     // process flushes and exits before the 600_000ms kill.
     expect(updatedInput.timeout).toBe(600_000);
-    expect(updatedInput.run_in_background).toBeUndefined(); // no longer forced foreground
+    expect(updatedInput.run_in_background).toBeUndefined();
   });
 
   it('does not force timeout on non-wait commands', () => {
@@ -399,7 +397,6 @@ describe('bash-rewrite.mjs', () => {
       tool_input: { command: `node "${external}" kb principles` },
     });
 
-    // Outside the coral cache prefix → no rewrite, no wait policy → silent pass-through.
     expect(result.status).toBe(0);
     expect(parseJsonOutput<unknown>(result.stdout)).toBeNull();
   });
@@ -434,7 +431,7 @@ describe('bash-rewrite.mjs', () => {
     const output = expectBashRewriteOutput(result);
     const updatedInput = output.hookSpecificOutput.updatedInput as Record<string, unknown>;
     expect(updatedInput.timeout).toBe(600_000);
-    expect(updatedInput.run_in_background).toBeUndefined(); // no longer forced foreground
+    expect(updatedInput.run_in_background).toBeUndefined();
   });
 
   it('injects Bash timeout when wait is part of a compound command with $? expansion', () => {
@@ -449,7 +446,7 @@ describe('bash-rewrite.mjs', () => {
     const output = expectBashRewriteOutput(result);
     const updatedInput = output.hookSpecificOutput.updatedInput as Record<string, unknown>;
     expect(updatedInput.timeout).toBe(600_000);
-    expect(updatedInput.run_in_background).toBeUndefined(); // no longer forced foreground
+    expect(updatedInput.run_in_background).toBeUndefined();
   });
 });
 
@@ -480,9 +477,9 @@ describe('bash-rewrite.mjs: background-task wrapping', () => {
     const result = runBg(fixture, { command: 'npm run build', run_in_background: true });
 
     const rewritten = expectBashRewriteOutput(result).hookSpecificOutput.updatedInput.command;
-    expect(rewritten).toContain('coral-work'); // registry path baked into the wrapper
+    expect(rewritten).toContain('coral-work');
     expect(rewritten).toContain('.lock');
-    expect(rewritten.endsWith('npm run build')).toBe(true); // original command preserved as the tail
+    expect(rewritten.endsWith('npm run build')).toBe(true);
     expect(readdirSync(bgDir(fixture)).some((name) => name.endsWith('.launched'))).toBe(true);
   });
 
@@ -491,7 +488,7 @@ describe('bash-rewrite.mjs: background-task wrapping', () => {
     const result = runBg(fixture, { command: 'npm run build', run_in_background: false });
 
     expect(result.status).toBe(0);
-    expect(result.stdout.trim()).toBe(''); // no rewrite emitted
+    expect(result.stdout.trim()).toBe('');
   });
 
   it('tracks a backgrounded coral-cli wait like any other background command', () => {
@@ -499,9 +496,9 @@ describe('bash-rewrite.mjs: background-task wrapping', () => {
     const result = runBg(fixture, { command: 'coral-cli wait --jobs abc123', run_in_background: true });
 
     const updatedInput = expectBashRewriteOutput(result).hookSpecificOutput.updatedInput as Record<string, unknown>;
-    expect(updatedInput.run_in_background).toBe(true); // no longer forced foreground
-    expect(updatedInput.timeout).toBe(600_000); // wait still gets the extended timeout
-    expect(updatedInput.command).toContain('coral-work'); // and is tracked/wrapped
+    expect(updatedInput.run_in_background).toBe(true);
+    expect(updatedInput.timeout).toBe(600_000);
+    expect(updatedInput.command).toContain('coral-work');
   });
 
   it('both resolves coral-cli and wraps when backgrounded', () => {
@@ -509,9 +506,9 @@ describe('bash-rewrite.mjs: background-task wrapping', () => {
     const result = runBg(fixture, { command: 'coral-cli kb search q', run_in_background: true });
 
     const rewritten = expectBashRewriteOutput(result).hookSpecificOutput.updatedInput.command;
-    expect(rewritten).toContain(`node "${cliBundle}" kb search q`); // coral resolved
-    expect(rewritten).toContain('coral-work'); // and wrapped
-    expect(rewritten.endsWith(`node "${cliBundle}" kb search q`)).toBe(true); // resolved command is the tail
+    expect(rewritten).toContain(`node "${cliBundle}" kb search q`);
+    expect(rewritten).toContain('coral-work');
+    expect(rewritten.endsWith(`node "${cliBundle}" kb search q`)).toBe(true);
   });
 
   it('leaves a backgrounded command unwrapped when session_id is absent', () => {
@@ -528,7 +525,7 @@ describe('bash-rewrite.mjs: background-task wrapping', () => {
     );
 
     expect(result.status).toBe(0);
-    expect(result.stdout.trim()).toBe(''); // no session ⇒ no wrap; no coral change ⇒ no output
+    expect(result.stdout.trim()).toBe('');
   });
 
   it('resolves coral-cli but does not wrap when session_id is absent', () => {
@@ -545,8 +542,8 @@ describe('bash-rewrite.mjs: background-task wrapping', () => {
     );
 
     const updatedInput = expectBashRewriteOutput(result).hookSpecificOutput.updatedInput as Record<string, unknown>;
-    expect(updatedInput.command).toContain(`node "${cliBundle}" kb search q`); // coral resolved
-    expect(updatedInput.command).not.toContain('coral-work'); // not wrapped (no session)
-    expect(updatedInput.run_in_background).toBe(true); // preserved
+    expect(updatedInput.command).toContain(`node "${cliBundle}" kb search q`);
+    expect(updatedInput.command).not.toContain('coral-work');
+    expect(updatedInput.run_in_background).toBe(true);
   });
 });

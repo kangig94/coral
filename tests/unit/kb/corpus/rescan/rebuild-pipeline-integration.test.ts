@@ -256,7 +256,6 @@ describe('performRescan failure semantics', () => {
       'utf-8',
     );
 
-    // First rescan succeeds — establishes the prior on-disk state we will compare against.
     await reindex(kb);
     const indexBefore = kb.readIndex();
     expect(indexBefore?.entries['note:rescan-baseline']).toBeDefined();
@@ -282,7 +281,6 @@ describe('performRescan failure semantics', () => {
     expect(queueBefore).toHaveLength(1);
     expect(queueBefore[0].entryId).toBe('note:synthetic-prior');
 
-    // Add a malformed note that would normally enqueue an incident on the second rescan.
     writeFileSync(
       join(root, 'notes', 'rescan-malformed.md'),
       ['---', 'tags: [test', 'principles: []', '---', '# Broken', '', 'body', ''].join('\n'),
@@ -299,7 +297,6 @@ describe('performRescan failure semantics', () => {
     stageSpy.mockRestore();
 
     expect(kb.readIndex()).toEqual(indexBefore);
-    // Synthetic prior row still present; no new row from the malformed entry was added.
     const queueAfter = readCurateRetryQueue(curateDb(kb));
     expect(queueAfter).toEqual(queueBefore);
     expect(queueAfter.find((entry) => entry.entryId === 'note:rescan-malformed')).toBeUndefined();

@@ -54,7 +54,6 @@ let parentTranscript: string;
 beforeEach(() => {
   realTmp = tmpdir();
   sandbox = mkdtempSync(join(realTmp, 'coral-work-'));
-  // Redirect the sandbox-writable registry root to an isolated temp dir.
   process.env.CORAL_WORK_ROOT_OVERRIDE = sandbox;
   projectDir = join(sandbox, 'project-root');
   mkdirSync(projectDir, { recursive: true });
@@ -112,7 +111,6 @@ function markerCount(sessionId: string): number {
   }
 }
 
-// Write a background-task marker (e.g. `taskA.started`), optionally aged.
 function writeBgMarker(sessionId: string, name: string, ageMs = 0): void {
   const dir = bgDirFor(sessionId);
   mkdirSync(dir, { recursive: true });
@@ -163,10 +161,10 @@ describe('live-work-registry: subagents', () => {
 
   it('prunes a stale marker whose transcript has not moved within the window', () => {
     recordSubagentStart(projectDir, SESSION, 'agentA');
-    writeSubagentTranscript(parentTranscript, 'agentA', 2 * 60 * 60_000); // 2h idle
+    writeSubagentTranscript(parentTranscript, 'agentA', 2 * 60 * 60_000);
 
     expect(hasLiveWork(projectDir, SESSION, parentTranscript).live).toBe(false);
-    expect(markerCount(SESSION)).toBe(0); // dead marker pruned
+    expect(markerCount(SESSION)).toBe(0);
   });
 
   it('falls back to the marker mtime when the transcript cannot be resolved', () => {
@@ -181,7 +179,7 @@ describe('live-work-registry: subagents', () => {
     writeSubagentTranscript(parentTranscript, 'dead1', 2 * 60 * 60_000);
 
     expect(hasLiveWork(projectDir, SESSION, parentTranscript).live).toBe(true);
-    expect(markerCount(SESSION)).toBe(1); // only the live one remains
+    expect(markerCount(SESSION)).toBe(1);
   });
 
   it('does not bleed markers between sessions whose ids share a hyphen prefix', () => {
@@ -240,13 +238,13 @@ describe('live-work-registry: background tasks', () => {
     writeBgMarker(SESSION, 'taskA.started', BG_PAST_TTL_MS);
 
     expect(hasLiveWork(projectDir, SESSION, parentTranscript).live).toBe(false);
-    expect(bgMarkerCount(SESSION)).toBe(0); // swept
+    expect(bgMarkerCount(SESSION)).toBe(0);
   });
 
   it('keeps a recent terminal record around for exit-code reads', () => {
-    writeBgMarker(SESSION, 'taskA.exited.0'); // fresh
+    writeBgMarker(SESSION, 'taskA.exited.0');
     expect(hasLiveWork(projectDir, SESSION, parentTranscript).live).toBe(false);
-    expect(bgMarkerCount(SESSION)).toBe(1); // not swept yet
+    expect(bgMarkerCount(SESSION)).toBe(1);
   });
 
   it('recognizes a negative exit code as a terminal record', () => {
@@ -257,12 +255,12 @@ describe('live-work-registry: background tasks', () => {
   });
 
   it('keeps a live bg task while pruning a dead sibling past the TTL', () => {
-    writeBgMarker(SESSION, 'liveTask.started'); // fresh ⇒ live
+    writeBgMarker(SESSION, 'liveTask.started');
     writeBgMarker(SESSION, 'deadTask.launched', BG_PAST_TTL_MS);
     writeBgMarker(SESSION, 'deadTask.started', BG_PAST_TTL_MS);
 
     expect(hasLiveWork(projectDir, SESSION, parentTranscript).live).toBe(true);
-    expect(bgMarkerCount(SESSION)).toBe(1); // only the live task's marker remains
+    expect(bgMarkerCount(SESSION)).toBe(1);
   });
 
   it.skipIf(!HAS_FLOCK)('treats a free lock as not live even with a fresh heartbeat', () => {
@@ -276,8 +274,8 @@ describe('live-work-registry: background tasks', () => {
 
   it('reports live when a subagent is idle-dead but a bg task is fresh', () => {
     recordSubagentStart(projectDir, SESSION, 'agentA');
-    writeSubagentTranscript(parentTranscript, 'agentA', 2 * 60 * 60_000); // dead
-    writeBgMarker(SESSION, 'taskA.started'); // fresh ⇒ live
+    writeSubagentTranscript(parentTranscript, 'agentA', 2 * 60 * 60_000);
+    writeBgMarker(SESSION, 'taskA.started');
 
     expect(hasLiveWork(projectDir, SESSION, parentTranscript).live).toBe(true);
     expect(markerCount(SESSION)).toBe(0); // dead subagent still pruned
@@ -286,7 +284,6 @@ describe('live-work-registry: background tasks', () => {
 
 describe('live-work-registry: an unreadable registry directory is unobserved, not empty', () => {
   it('still reports no live work when a registry directory was simply never created (ENOENT stays decisive)', () => {
-    // Neither writeBgMarker nor recordSubagentStart has run, so neither directory exists yet.
     const result = hasLiveWork(projectDir, SESSION, parentTranscript);
     expect(result.live).toBe(false);
     expect(result.notice, 'a decisive absence carries nothing to say').toBeNull();
@@ -352,7 +349,7 @@ describe('live-work-registry: bg task wrapper (beginBgTask)', () => {
   it('records a .launched marker and reports the fresh task as live', () => {
     const task = beginBgTask(projectDir, SESSION);
     expect(task).not.toBeNull();
-    expect(bgMarkerCount(SESSION)).toBe(1); // <id>.launched
+    expect(bgMarkerCount(SESSION)).toBe(1);
     expect(hasLiveWork(projectDir, SESSION, parentTranscript).live).toBe(true);
   });
 
@@ -394,7 +391,7 @@ describe('live-work-registry: bg task wrapper (beginBgTask)', () => {
       status = (err as { status?: number }).status ?? -1;
     }
 
-    expect(existsSync(sentinel)).toBe(true); // user command ran despite the registry failure
-    expect(status).toBe(4); // and kept its own exit code
+    expect(existsSync(sentinel)).toBe(true);
+    expect(status).toBe(4);
   });
 });
