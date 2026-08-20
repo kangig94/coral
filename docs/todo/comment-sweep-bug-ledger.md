@@ -400,3 +400,25 @@ Recorded once here rather than per sector, because it is one finding with 48 sit
   deciding whether to delete unreachable defensive branches is a design decision outside this sweep's mandate.
 - **Severity, as observed**: No runtime effect — the branch is simply unreached. A future caller that routes
   either code through `buildErrorEnvelope` instead of `encodeInstallError` would depend on it; today none does.
+
+## Sector 10 — `src/kb-daemon`
+
+Nothing found. Every cross-file and cross-symbol claim in the sector's surviving comments checked out against
+the graph and the source: the `initPromise`/corpus-mutation-lock/`ConsumerHandle.stop()` trio in
+`daemon-main.ts`'s `KbDaemonTerminalWindow` doc (`disposeExpansionScope` in `src/expansion/host.ts` does call
+`handle.stop()` without covering the await with the abort signal, confirming the join finishes on its own
+schedule); the `SIGKILL_GRACE_MS` semantics cited in the same file's dispose-timing comment (confirmed against
+`src/infra/process-containment.ts`, which spends that constant waiting for absence _after_ sending SIGKILL, not
+before); `runtime-host.ts`'s claim that the coordinator reads daemon corpus mutations from a persisted
+corpus-state row rather than a direct call (`src/coordinator/composition/index.ts` does import `readCorpusState`
+from `kb/state/corpus-state.js`); and the two `engine-blind` wiring-point claims in `bundled-loaders.ts` and
+`projection-reconcile.ts` (grep over `src/kb-daemon/` confirms `runtime-host.ts` and the coordinator import
+`ORAMA_BASE_CONSUMER_ID`/Kiwi engine types only through those two files, never directly from `src/engines/**`).
+
+One comment was factually wrong and was deleted rather than ledgered, since the defect was in the comment, not
+the code it described: `ExpansionLifecycleServiceOptions.bundledLoaders`'s JSDoc in
+`src/kb-daemon/expansion/lifecycle.ts` claimed the field "defaults to the production `BUNDLED_LOADERS`
+registry," naming the export in `src/expansion/bundled.ts`. The actual default, at the only call site
+(`applyBundledFallback`'s `this.options.bundledLoaders ?? LIFECYCLE_BUNDLED_LOADERS`), is
+`LIFECYCLE_BUNDLED_LOADERS` from `src/kb-daemon/expansion/bundled-loaders.ts` — a different, daemon-local
+registry. No code changed; the wrong doc comment was removed.

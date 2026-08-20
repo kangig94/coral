@@ -1,10 +1,7 @@
 /**
  * KB daemon-side wiring for the expansion RPC port.
  *
- * Schemas, types, and the `ExpansionRequestPort` interface live in the
- * domain contract at `src/expansion/rpc-contract.ts`; transport, CLI, and
- * tests import directly from there. This file holds only the bindings
- * that wrap `ExpansionLifecycleService`.
+ * see ExpansionRequestPort in src/expansion/rpc-contract.ts
  */
 import {
   type EquipExpansionRequest,

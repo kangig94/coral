@@ -248,20 +248,14 @@ export type KbDaemonTerminalWindowAuthority = Readonly<{
 }>;
 
 /**
- * The authority over the window within which this process must cease to exist.
- *
- * A stop request used to be five triggers sharing one latch: whichever arrived first ran the cleanup, and the
- * other four became no-ops. Cleanup that never finished was therefore never escalated by anything — five
- * detectors, no enforcer. This window is the missing half. It is opened by the first trigger and is not itself
- * a trigger, so no later arrival can disarm it and none is needed to enforce it.
+ * The authority over the window within which this process must cease to exist. It is opened by the first
+ * trigger and is not itself a trigger, so no later arrival can disarm it and none is needed to enforce it.
  *
  * The deadline is never cleared. A teardown that finishes cleanly usually reaches exit before the window
  * closes — though not always, since a daemon whose parent pipe is still open has nothing else that ends it,
  * and this timer is then what does.
  *
  * What this buys: an enforcement point that is reached on any stop where the event loop keeps making progress.
- * That covers the case that stranded a daemon in production, whose SIGTERM handler did run, found the stop
- * already latched, and returned.
  *
  * What it is not: a wall-clock bound. A timer fires when it becomes *eligible*, so a long synchronous stretch
  * inside disposal, or heavy timer starvation, delays the exit by however long that stretch lasts — and a loop

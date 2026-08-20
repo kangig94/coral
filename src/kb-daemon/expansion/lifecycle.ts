@@ -61,12 +61,6 @@ export interface ExpansionLifecycleServiceOptions {
   readonly state: ExpansionStateStore;
   readonly manifest?: readonly EngineManifest[];
   readonly manifestCatalog?: ExpansionManifestCatalog;
-  /**
-   * Override map for `tier: 'bundled'` engine loaders. Defaults to the
-   * production `BUNDLED_LOADERS` registry. Tests inject custom `Expansion`
-   * functions here to exercise failure / partial-bind / success paths
-   * without going through the dynamic-import surface.
-   */
   readonly bundledLoaders?: Readonly<Record<string, Expansion>>;
   readonly now: () => string;
   readonly resolveKbRuntime?: () => KbRuntime | null;
@@ -137,10 +131,6 @@ export class ExpansionLifecycleService {
     }
     assertExpansionPackageId(entry.id);
 
-    // Phase fence BEFORE any async work — refuse new equips while the
-    // coordinator is draining or stopped. Past the fence, the equip runs to
-    // completion under its `engineMutex` slot; `shutdownActiveExpansions`
-    // queues behind that slot and observes the published scope.
     this.assertNotDraining(entry.id);
 
     const scope = createScope();
@@ -194,7 +184,6 @@ export class ExpansionLifecycleService {
     this.assertNoActiveDependents(entry);
 
     if (scopes && scopes.length > 0) {
-      // LIFO disposal of chained scopes for this engine.
       for (let index = scopes.length - 1; index >= 0; index -= 1) {
         await disposeExpansionScope(scopes[index]);
       }
@@ -528,7 +517,6 @@ export class ExpansionLifecycleService {
             return;
           }
           this.scopes.delete(id);
-          // LIFO disposal of chained scopes for this engine.
           for (let index = scopes.length - 1; index >= 0; index -= 1) {
             await disposeExpansionScope(scopes[index], signal === undefined ? {} : { signal });
           }
