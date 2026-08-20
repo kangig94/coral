@@ -2,7 +2,6 @@
 
 /**
  * UserPromptSubmit hook — reminds Claude to write memos for non-obvious discoveries.
- * Throttled: once per 30 minutes per session via flag file mtime check.
  * Fail-open: any error exits silently.
  */
 

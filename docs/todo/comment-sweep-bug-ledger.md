@@ -721,3 +721,52 @@ expression design-philosophy.md §11 names as the recurring defect ("`!== absent
 the call site shows the comparison runs in the safe direction: alive-or-unknown both fall through to
 `{ kind: 'uncaptured' }` and only a confirmed `absent` produces a `recorded` disposition, which is what the
 principle requires. The inline comment there already says so. No defect, so no entry.
+
+## Sector 13 — clients/hooks, tools, scripts
+
+- **What is wrong**: `InMemoryStorage#nextStamps`'s `subTickCounter` branch — meant to increment when two
+  stamps land in the same millisecond tick — can never execute. `previousMs` is captured before
+  `this.lastStamp = Math.max(candidate, previousMs + 1)` runs, and that assignment is bounded below by
+  `previousMs + 1`, so the post-assignment `this.lastStamp` is always strictly greater than the pre-assignment
+  `previousMs`. The `if (this.lastStamp === previousMs)` guard is therefore always false, `subTickCounter` is
+  reset to `0n` on every call, and the field never contributes to the `mtimeNs` it is computed into. The
+  ordering property the function exists for still holds regardless, because the monotonic `+1` bump already
+  guarantees a strictly increasing `mtimeMs` on every call — this is a dead branch, not a wrong answer.
+- **Where**: `nextStamps` in `tools/simulation/core/memory-storage.ts` (private method of `InMemoryStorage`).
+- **Evidence**: Traced, then confirmed empirically. Given `previousMs = this.lastStamp` and
+  `this.lastStamp = Math.max(candidate, previousMs + 1)`, the assignment is `>= previousMs + 1 > previousMs`
+  for every value of `candidate`, so `this.lastStamp !== previousMs` unconditionally. A short Node script
+  driving the same two-line update across a mixed sequence of advancing, repeated, and regressing `candidate`
+  values confirmed `same` (the guard's condition) is `false` on every call. The comment beside the branch
+  (deleted as part of this sweep's diff, since it is exactly the "comment justifying an unreachable branch"
+  shape the sweep's own rules reject) already knew the branch was not reachable today — it justified keeping
+  the dead branch "if a same-tick path is added later" — but read the non-firing as merely the "ordinarily"
+  case rather than the unconditional one this trace establishes.
+- **Why it was not fixed**: Comment-only sweep scope; deleting or reworking a dead branch is a code change.
+  This sweep deletes only the comment that described the branch, per the sector 7 precedent for this exact
+  shape.
+- **Severity, as observed**: No behavioral defect — `mtimeNs` stays correctly ordered because the millisecond
+  component alone is already strictly increasing on every call. Reachability is a future edit that leans on
+  `subTickCounter` actually incrementing (for example, sub-millisecond ordering among calls sharing one
+  `mtimeMs`), which this implementation cannot deliver as written.
+
+Two comments were found and corrected as factually wrong under the "certain delete" rule (comment wrong, code
+correct — not ledger-worthy per the sector 7 precedent), both outside the bug this sector ledgers:
+`clients/hooks/kb-memo-reminder.mjs`'s file header claimed the memo reminder is "Throttled: once per 30
+minutes per session via flag file mtime check," but the code's own `THROTTLE_MIN` constant is `60`; the false
+sentence was deleted rather than corrected to `60`, per the sector 8 precedent that supplying the right number
+is introducing a new claim, not excising a false one. `tools/simulation/core/mock-process.ts`'s JSDoc on
+`simulatedIncarnation` cited a parenthetical symbol, `MockScriptedPid`, as the mechanism by which a script can
+retire and reallocate a pid within one virtual instant; no such symbol exists anywhere in the repository (the
+actual mechanism is the optional `pid` field on `MockSpawnScript`/`MockDurableScript` in
+`tools/simulation/core/mock-script-types.ts`) — only the fabricated parenthetical was excised, the surrounding
+claim about pid reuse and the containment doctrine was kept and independently verified.
+
+Nothing else met this ledger's bar across the 60-file scope (`clients/hooks/` — 27 files, `tools/` — 21 files,
+`scripts/` — 12 files). Every comment naming a symbol, a file, a test, a measured `flock`/`spawnSync`/Node
+behavior, a timeout budget, or an "only"/exclusivity claim was checked against the graph, a targeted grep, or a
+direct read of both sides, including the full set of hooks/`src/` duplicate-constant pairs this directory
+carries by design (`STANDING_PROBE_ERRNOS`, `UNANSWERED_REPROBE_INTERVAL_MS`, `parseRemoteSource`,
+`isKbEnabled`/`resolveKbEnabled`, the `coordinator.log` rotation path, the `gen2/<data|data-dev>/engines`
+layout, and the `store.db` path authority) — all of them still hold and are all still asserted equal by the
+test each comment cites.

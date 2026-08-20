@@ -64,8 +64,7 @@ function bgPath(projectDir, sessionId) {
 
 // === Subagent recording (SubagentStart / SubagentStop hooks) ===
 
-// Record that a subagent is running. Unconditional — any session may become a
-// ralph/kb reader by the time it stops.
+// Unconditional — any session may become a ralph/kb reader by the time it stops.
 export function recordSubagentStart(projectDir, sessionId, agentId) {
   if (!isValidSessionId(sessionId) || !isValidSessionId(agentId)) return;
   const dir = subagentsPath(projectDir, sessionId);
@@ -73,8 +72,7 @@ export function recordSubagentStart(projectDir, sessionId, agentId) {
   writeFileSync(join(dir, agentId), '');
 }
 
-// Clear the marker. Idempotent and unconditional — a loop that ended mid-subagent
-// still gets its marker removed. Drops now-empty registry dirs.
+// Idempotent and unconditional — a loop that ended mid-subagent still gets its marker removed.
 export function recordSubagentStop(projectDir, sessionId, agentId) {
   if (!isValidSessionId(sessionId) || !isValidSessionId(agentId)) return;
   try {
@@ -199,8 +197,7 @@ function tryReaddir(dir) {
 /**
  * Text for a registry directory this process could not read at all, naming the subdirectory name(s) it covers.
  *
- * `true` is the conservative liveness answer and stays — un-gating ralph and kb on an unobserved state is what
- * this pair was just fixed to stop doing. Every `readdirSync` failure reaching this function is already
+ * `true` is the conservative liveness answer and stays. Every `readdirSync` failure reaching this function is already
  * abnormal (its `ENOENT` case is handled by the caller before this is reached), so there is no errno worth
  * filtering on: whatever the code, the same two facts are true and this says both — the gate holds for now,
  * and if the same code keeps appearing across sessions, nothing here will clear it on its own.
@@ -296,10 +293,6 @@ function hasLiveBg(projectDir, sessionId) {
   }
 
   const now = Date.now();
-  // Reserves one probe's worth of headroom: a probe that has already started when the deadline is reached
-  // still runs to completion, up to LOCK_PROBE_TIMEOUT_MS more. Checking against the raw budget would let a
-  // probe start right at the edge and carry the sweep's own wall time past LOCK_PROBE_SWEEP_BUDGET_MS by up to
-  // a full timeout; stopping new probes this much early keeps the total inside the budget instead.
   const probeDeadline = now + LOCK_PROBE_SWEEP_BUDGET_MS - LOCK_PROBE_TIMEOUT_MS;
   let live = false;
   const uncertain = new Set(); // subset of {'budget', 'probe'}: which way this sweep left a task unobserved

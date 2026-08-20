@@ -286,11 +286,6 @@ function ensureScopedIgnore(projectDir, token) {
  * Only a link pointing into `~/.coral/projects*` qualifies. Anything else — a link an operator made to a
  * directory of their own — is left exactly where it is; correcting our own artifact is not licence to
  * overwrite someone's.
- *
- * This exists because the flavor fix in `coralProjectDir` moved the target on dev builds, and this function
- * returned on "a symlink is there" without asking where it went. That left a link into the prod tree on every
- * dev install that already had one, while `CORAL_PROJECT` moved to `projects-dev` — the two-directory split
- * the flavor fix was closing, reopened one path over.
  */
 function isOutgrownCoralLink(link, target) {
   let current;

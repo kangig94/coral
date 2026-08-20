@@ -53,9 +53,7 @@ function pinnedCopilotSource(releaseVersion) {
   return { source: 'github', repo, ref: `v${releaseVersion}`, path: 'clients' };
 }
 
-// Sync manifest versions (single source of truth: package.json). The plugin
-// manifests live under clients/ (the plugin root); marketplace manifests stay
-// at the repo root and point back at ./clients. Each client reads a different
+// Sync manifest versions (single source of truth: package.json). Each client reads a different
 // manifest path, so all of them are kept in lockstep here:
 //   Claude Code — clients/.claude-plugin/plugin.json + .claude-plugin/marketplace.json
 //   Codex       — clients/.codex-plugin/plugin.json
@@ -181,7 +179,6 @@ const claudeAppserverBuild = await esbuild.build({
 });
 console.log('Built clients/build/coral-claude-appserver.cjs');
 
-// Write bundle manifest with content hash for version-independent change detection
 const backendHash = createHash('sha256').update(backendBundle).digest('hex').slice(0, 16);
 const cliHash = createHash('sha256').update(readFileSync('clients/build/coral-cli.cjs')).digest('hex').slice(0, 16);
 const claudeAppserverHash = createHash('sha256')
@@ -286,9 +283,7 @@ if (release) {
   const bridgeDir = 'clients/bridge';
   mkdirSync(bridgeDir, { recursive: true });
   const bridgeFiles = ['coral-backend.cjs', 'coral-cli.cjs', 'coral-claude-appserver.cjs', 'manifest.json'];
-  // Sweep stale leftovers from prior releases (e.g., bridge/store/schemas/
-  // from the pre-flatten era) so bridge contains only the current bundle
-  // surface. Anything not in `bridgeFiles` is removed.
+  // Sweep stale leftovers from prior releases so bridge contains only the current bundle surface.
   const expected = new Set(bridgeFiles);
   for (const entry of readdirSync(bridgeDir)) {
     if (!expected.has(entry)) {
