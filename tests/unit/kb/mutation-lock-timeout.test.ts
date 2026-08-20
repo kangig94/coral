@@ -147,7 +147,6 @@ describe('createKbMutationLock', () => {
     await flushMicrotasks();
     expect(nextRan).toBe(false);
 
-    // Settle fn; the lock releases, diagnostics clear, queued caller runs.
     releaseHang();
     expect(await stuckPromise).toBe('done');
     expect(await nextPromise).toBe('second');
@@ -174,9 +173,9 @@ describe('createKbMutationLock', () => {
     });
 
     await flushMicrotasks();
-    time.tick(1100); // past deadline
+    time.tick(1100);
     await flushMicrotasks();
-    time.tick(150); // past grace
+    time.tick(150);
     await flushMicrotasks();
 
     const blocked = controller.diagnostics();
@@ -198,11 +197,10 @@ describe('createKbMutationLock', () => {
     });
 
     const result = await controller.withMutationLock(async (_lockCtx, { signal }) => {
-      // Simulate a cooperative path that aborts immediately on signal.
       const aborted = new Promise<never>((_, reject) => {
         signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
       });
-      time.tick(1100); // fire the deadline
+      time.tick(1100);
       try {
         await aborted;
       } catch {
@@ -225,7 +223,6 @@ describe('createKbMutationLock', () => {
 
     const result = await controller.withMutationLock(
       async () => {
-        // Simulate work that fits inside the override but exceeds the default.
         await new Promise((resolve) => setTimeout(resolve, 5));
         return 'ok' as const;
       },

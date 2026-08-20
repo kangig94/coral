@@ -188,8 +188,7 @@ type WorkflowRecoveryContinuation = {
     /**
      * What the session's version was when this recovery hydrated, and nothing more. It has no reader:
      * the close compares job identity, never versions, because recovery's own work legitimately moves a
-     * session's version between hydration and close. Do not revive a comparison against it — one used to
-     * exist, and it rejected releases that had already succeeded.
+     * session's version between hydration and close. Do not revive a comparison against it.
      */
     readonly version: number;
     readonly activeJobId: string | null;
@@ -1630,7 +1629,6 @@ function createWorkflowRecoveryPolicy(
   };
 }
 
-/** Returns the exact-subject workflow retry plan owned by workflow recovery. */
 export function createWorkflowRecoveryRetryPlan(
   db: Database,
   subject: RecoverySubject,

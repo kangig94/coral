@@ -68,7 +68,6 @@ function staleJobCleanupSubject(raw: RawStaleJobCleanupRow) {
   };
 }
 
-/** Creates the raw row-granular terminal-job artifact cleanup source. */
 export function staleJobCleanupSource(db: Database, subject?: RecoverySubject): RecoverySource<RawStaleJobCleanupRow> {
   return defineRecoverySource({
     boundary: 'stale-job-cleanup',

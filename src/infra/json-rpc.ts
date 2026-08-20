@@ -1,7 +1,5 @@
 // Standard JSON-RPC 2.0 vocabulary. Shared by every coral consumer that
-// speaks JSON-RPC over the wire — internal IPC (`transport/json-rpc.ts`,
-// which adds a coral-internal `kind` discriminator on top of these shapes)
-// and external app-server protocols (`providers/claude/appserver/protocol.ts`).
+// speaks JSON-RPC over the wire — internal IPC and external app-server protocols.
 //
 // The `id` union follows the JSON-RPC 2.0 spec: `string | number | null`.
 // `null` is the spec-mandated value for error responses where the server

@@ -273,8 +273,6 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
             .some(
               (root) => root.pid === request.providerRoot.pid && root.incarnation === request.providerRoot.incarnation,
             );
-          // Confirms the same thing the old activation authorization proved: the reaper is still alive and
-          // still holding this exact root at this instant, without authorizing an operation it never held.
           if (!isRecorded) {
             throw new ProxyControlProtocolError('invalid_state', 'This reaper never recorded the named provider root.');
           }
@@ -390,7 +388,7 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
             fields: reaperHandoffRotateFieldsSchema.parse({
               // A wire result describing what this call did, not a deadline-model state — the deadline
               // machine this endpoint shares with the guardian has exactly one enum, and this is not a
-              // member of it (see `orphan-deadline.ts`'s own "one enforcer state machine, not two").
+              // member of it.
               state: 'successor-rotated',
               reaperRotationReceipt: mintReceipt(),
               operations: recordedRedemption.operations,

@@ -67,7 +67,6 @@ describe('createRuntimeComponentRegistry', () => {
       id: KB_COMPONENT_ID,
       initialPhase: runtimeComponentPhase.online(KB_COMPONENT_ID),
     });
-    // Override the stub's init to observe invocation.
     (sub as unknown as { init: typeof initSpy }).init = initSpy;
     registry.register(sub);
 

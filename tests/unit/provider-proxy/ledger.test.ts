@@ -156,9 +156,6 @@ describe('provider-proxy operation ledger', () => {
     const ledger = createOperationLedger();
     executing(ledger);
 
-    // Formerly two assertions — a wrong id and a wrong nonce — because the entry carried two values and
-    // `activate` compared both while `renew` compared only the first. One value cannot half-match, so the
-    // asymmetry that made that possible is gone along with the second field.
     expect(() => ledger.beginActivation(KEY, asReservation('other-reservation'), 0, 'f'.repeat(64))).toThrow(
       /different reservation/u,
     );

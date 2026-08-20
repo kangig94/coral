@@ -52,8 +52,7 @@ export type JobEventBusEvents = {
   };
 };
 
-// JobStore listens for session releases to drive wait-stream completion. The
-// event itself is owned by the sessions domain; the bus surface accepts the
+// The event itself is owned by the sessions domain; the bus surface accepts the
 // union of slices that jobs subscribers actually observe.
 type JobObservedEvents = JobEventBusEvents & Pick<SessionEventBusEvents, 'session:released'>;
 

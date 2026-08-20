@@ -3,11 +3,9 @@
  * write surface, kept where `tsc -p tsconfig/typecheck.json` (via `npm run typecheck:tests`) runs it in CI
  * rather than only in a mutation somebody performed once and reverted.
  *
- * `KbReadPort` and its wrapper module `src/kb/read-port.ts` are gone — `src/kb/runtime-contract.ts` and
- * `src/kb/queries.ts` now import `ReadonlyDatabase` directly — but the guarantee these types existed to hold
- * still matters: nothing about `ReadonlyDatabase` as declared today stops a future edit from adding `exec`
- * (or another write/native-code primitive) back onto it, and vitest does not typecheck, so only this file
- * would ever notice.
+ * Nothing about `ReadonlyDatabase` as declared today stops a future edit from adding `exec` (or another
+ * write/native-code primitive) back onto it, and vitest does not typecheck, so only this file would ever
+ * notice.
  */
 
 import type { Database } from '#src/store/db.js';

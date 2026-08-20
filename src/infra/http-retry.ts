@@ -1,6 +1,3 @@
-// Shared HTTP retry + record predicate for callers that need the same
-// transient-retry policy (HTTP 408/425/429/5xx with bounded exponential backoff).
-
 const TRANSIENT_RETRY_LIMIT = 2;
 const TRANSIENT_RETRY_BASE_MS = 1_000;
 const TRANSIENT_RETRY_STATUSES = [408, 425, 429, 500, 502, 503, 504];

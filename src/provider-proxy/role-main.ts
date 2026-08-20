@@ -293,8 +293,6 @@ async function signalAndConfirmAbsence<Scope extends symbol>(
   return environment.process.observeLiveness(target);
 }
 
-/** Reaps one signal target — SIGTERM, escalating to SIGKILL after the standard grace period, absence
- *  confirmed after each — throwing only once both have failed to produce a confirmed exit. */
 async function reapUnheldTarget<Scope extends symbol>(
   target: number,
   targetLabel: string,
@@ -329,8 +327,7 @@ async function reapUnheldTarget<Scope extends symbol>(
  * absent *before* ever signalling it — correct for a containment that may be reaped long after it was
  * recorded, but wrong here, where the target is a process this very construction attempt spawned moments ago
  * and is expected to still be alive. Skipping straight to "already absent" on an unrelated liveness-probe gap
- * (this module's `environment.process.isAlive` has no reason to know about a role process before it is ever
- * recorded as a live containment) would silently abandon a real cleanup. This reuses that function's
+ * would silently abandon a real cleanup. This reuses that function's
  * monotonic-clock, confirm-after-signal discipline directly instead of its observe-first entry point.
  */
 async function reapUnheldProcessGroup<Scope extends symbol>(
@@ -706,8 +703,7 @@ const registerProviderRootResultSchema = z
 
 /** What `createProxyGuardianContainment` needs to talk to the guardian on the kernel's behalf, with every
  *  dependency that would otherwise force a real provider spawn or a real spawned guardian process taken as a
- *  parameter: `stageProviderRoot` in particular is captured from `semantic-operation.ts` in production, but a
- *  test can supply a canned root instead. */
+ *  parameter. */
 export type ProxyGuardianContainmentDeps = Readonly<{
   identity: ProxyIdentity;
   guardianChannel: Pick<ControlClient, 'call'>;
@@ -724,8 +720,7 @@ export type ProxyGuardianContainmentDeps = Readonly<{
  * Takes no ledger access of any kind: `stageProviderRoot`'s `reservation` parameter is exactly what
  * `ledger.prepare()` already returned to `proxy.ts`'s own caller, passed straight through rather than fetched
  * here a second time. A seam that could independently ask the ledger for "the" reservation is a seam that can
- * be asked before one exists — and minting a fresh one to answer anyway is exactly how this bug shipped; a
- * seam with no such question to ask cannot make that mistake.
+ * be asked before one exists — a seam with no such question to ask cannot make that mistake.
  *
  */
 export function createProxyGuardianContainment(
@@ -814,12 +809,9 @@ export function createProxyGuardianContainment(
 }
 
 /**
- * Runs the proxy: consumes its capsule, pairs with the guardian over the channel `guardian.register-provider-
- * root.v1` requires, and starts listening. The semantic carrier itself — reconstructing the bound provider,
- * running its kernel, and pumping `ProviderEventBody`s into `proxy.emitProviderEvent` — is
- * `semantic-operation.ts`'s `SemanticOperationHost`; this role main owns the process topology, endpoint and
- * guardian-authentication surface, and the containment closures that talk to the guardian on the kernel's
- * behalf (`Proxy`'s own `containment.stageProviderRoot`/`confirmActivation`).
+ * This role main owns the process topology, endpoint and guardian-authentication surface, and the
+ * containment closures that talk to the guardian on the kernel's behalf (`Proxy`'s own
+ * `containment.stageProviderRoot`/`confirmActivation`).
  */
 export async function startProviderProxyRole(
   capsulePath: string,

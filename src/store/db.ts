@@ -94,13 +94,6 @@ export type JournalPragmaMode =
   | { kind: 'readonly'; busyTimeoutMs?: number }
   | { kind: 'rebuild'; busyTimeoutMs?: number };
 
-/**
- * Apply the canonical journal pragma surface to a SQLite handle.
- *
- * This is the single configuration site for `journal_mode`, `synchronous`,
- * `foreign_keys`, and `busy_timeout`. `openStoreDatabase` calls this helper;
- * no other site issues these pragmas.
- */
 export function applyJournalPragmas(db: Database, mode: JournalPragmaMode): void {
   const busyTimeoutMs = mode.busyTimeoutMs ?? 5000;
   db.exec('PRAGMA foreign_keys = ON');
@@ -394,14 +387,12 @@ export function openWritableStoreDbNoReset(
 
 /**
  * Per-database cache of prepared statements keyed by SQL source. Re-preparing
- * the same statement is wasted work — node:sqlite plans on each `prepare`,
- * and better-sqlite3's contract was the same. The cache keeps statement reuse
- * cheap without requiring every call site to thread a class instance.
+ * the same statement is wasted work — node:sqlite plans on each `prepare`.
+ * The cache keeps statement reuse cheap without requiring every call site to
+ * thread a class instance.
  *
- * The overloads narrow the return type by the handle's read/write capability:
- * passing a `Database` returns a full `Statement` (run/get/all/iterate),
- * passing a `ReadonlyDatabase` returns a `ReadonlyStatement` (get/all/iterate
- * only) — preventing accidental writes through a read-only handle.
+ * The overloads narrow the return type by the handle's read/write
+ * capability — preventing accidental writes through a read-only handle.
  */
 type AnySqliteHandle = Database | ReadonlyDatabase;
 const statementCache = new WeakMap<AnySqliteHandle, Map<string, unknown>>();
@@ -433,12 +424,9 @@ export function prepareCached<TParams extends unknown[] = unknown[], TRow = unkn
 }
 
 /**
- * Run `fn` inside a `BEGIN IMMEDIATE` ... `COMMIT` transaction. On any thrown
- * error the transaction is rolled back and the error re-thrown.
- *
- * IMMEDIATE is the only transaction mode coral uses: every commit path locks
- * for write up front, so no read-then-upgrade race exists. If a future call
- * site needs DEFERRED or savepoint nesting, add the helper at that moment.
+ * Every commit path locks for write up front, so no read-then-upgrade race
+ * exists. If a future call site needs DEFERRED or savepoint nesting, add the
+ * helper at that moment.
  */
 export function withImmediate<T>(db: Database, fn: () => T): T {
   db.exec('BEGIN IMMEDIATE');

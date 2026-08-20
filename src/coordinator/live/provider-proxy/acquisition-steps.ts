@@ -211,7 +211,7 @@ export function createProviderProxyAcquisitionSteps(
         storage: runtime.storage,
         uid,
       };
-      // Every capsule in a set shares this same 7-field identity; only its own bootstrap nonce and endpoint
+      // Every capsule in a set shares this same identity; only its own bootstrap nonce and endpoint
       // fields differ per role. Named once here, mirroring `bootstrap-capsule.ts`'s own
       // `commonBootstrapCapsuleShape` precedent for the identical shape at the schema level.
       const capsuleIdentityFields = { ...setIdentity, guardianInstanceId, reaperInstanceId, proxyInstanceId };

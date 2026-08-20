@@ -25,10 +25,6 @@ function fileTimestamp(iso: string): string {
   return match ? `${match[1]}${match[2]}${match[3]}-${match[4]}${match[5]}${match[6]}` : 'unknown-time';
 }
 
-/**
- * Path of the completed-discussion record under the project data dir:
- * `<projectDataDir>/discuss/<YYYYMMDD-HHMMSS>-<topic-slug>.md`.
- */
 export function discussRecordPath(projectDataDir: string, snapshot: PersistedDiscussSnapshot): string {
   const filename = `${fileTimestamp(snapshot.state.created_at)}-${slugifyTopic(snapshot.state.topic)}.md`;
   return join(projectDataDir, 'discuss', filename);
@@ -69,10 +65,8 @@ function extractSynthesis(state: DiscussState): string | null {
 }
 
 /**
- * Render a completed discuss session as a standalone markdown record: header,
- * participants, the full transcript (speeches, follow-ups, epoch summaries), and
- * the final synthesis. Pure projection of the discuss journal stream — the
- * authoritative events stay in the store; this is a rebuildable export.
+ * Pure projection of the discuss journal stream — the authoritative events stay in
+ * the store; this is a rebuildable export.
  */
 export function renderDiscussRecordMarkdown(snapshot: PersistedDiscussSnapshot): string {
   const { state } = snapshot;
@@ -103,8 +97,7 @@ export function renderDiscussRecordMarkdown(snapshot: PersistedDiscussSnapshot):
 }
 
 /**
- * Write the completed-discussion record to the project data dir and return its
- * path. Best-effort export — callers isolate failures so a write error never
+ * Best-effort export — callers isolate failures so a write error never
  * breaks the discussion itself; the authoritative record stays in the journal.
  */
 export function writeDiscussRecord(

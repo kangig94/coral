@@ -51,8 +51,7 @@ describe('ts-import-scanner subpath completeness', () => {
 
   it('lets a layering check built on these edges catch a forbidden import in either spelling', () => {
     // Mirrors the `collectViolations` shape every real layering invariant
-    // uses (architecture-layering.test.ts, coordinator-topology.test.ts,
-    // ...): filter edges whose source/target cross a forbidden boundary.
+    // uses: filter edges whose source/target cross a forbidden boundary.
     const files = listProductionSourceFiles(join(repoRoot, 'src'));
     const edges = parseProductionImportEdges(repoRoot, files);
     const forbiddenImportsOf = (sourceRoot: string) =>

@@ -102,7 +102,6 @@ export class LedgerError extends Error {
  */
 export type ReplayEvent = Readonly<{ providerSeq: number; frame: string }>;
 
-/** The frame's cost against both the per-operation and proxy-wide budgets. */
 function frameBytes(event: ReplayEvent): number {
   return Buffer.byteLength(event.frame, 'utf8');
 }

@@ -7,15 +7,15 @@ decision about how much evidence this observation is worth taking.
 
 ## What exists
 
-`observeCoordinator` (`src/transport/http/backend/coordinator-observation.ts:59-92`), which `backend status`
+`observeCoordinator` (`src/transport/http/backend/coordinator-observation.ts`), which `backend status`
 and `backend shutdown` share, now answers a missing record in two ways: `no-record` when the coordinator's
 IPC socket path does not exist either, and `no-record-socket-present` when it does. The second is not an
-absence — a coordinator binds its socket (`src/coordinator/lifecycle.ts:930`) before it writes its record
-(`:1073`), so a record missing while the socket exists is a coordinator mid-boot as readily as a socket a
+absence — a coordinator binds its socket (`src/coordinator/lifecycle.ts`) before it writes its record,
+so a record missing while the socket exists is a coordinator mid-boot as readily as a socket a
 killed one left behind. Both commands exit 75 for it and say they could not tell.
 
 `coral-cli expansion` reads the record on its own path and does not make that distinction
-(`src/cli/expansion/index.ts:334`):
+(`src/cli/expansion/index.ts`):
 
 ```ts
 if (read.kind === 'missing') {
@@ -23,7 +23,7 @@ if (read.kind === 'missing') {
 }
 ```
 
-`unavailable` is documented one screen up (`src/cli/expansion/index.ts:53-55`) as an observed absence, and
+`unavailable` is documented one screen up (`src/cli/expansion/index.ts`) as an observed absence, and
 renders as a catalog with nothing equipped. So during a coordinator's own boot window, `backend status` says
 the state is unknown and `expansion list` says, positively, that nothing is equipped — from the same file
 system, in the same second, on the same evidence.
@@ -37,9 +37,9 @@ It decides on `runtime.storage.existsSync(socketPath)` alone. A socket file's ex
 ever started" from "something did", and nothing more — which is why the answer is 75 rather than an absence.
 But this repository already owns two probes that would turn most of these into an **observed** answer:
 
-- `probeSocketReleased` (`src/transport/ipc/ensure.ts:529-535`) binds the path and closes it; a successful
+- `probeSocketReleased` (`src/transport/ipc/ensure.ts`) binds the path and closes it; a successful
   bind means nothing is listening.
-- `clearStaleSocket` (`src/transport/ipc/server.ts:316-334`) dials the path; `ECONNREFUSED` or `ENOENT` means
+- `clearStaleSocket` (`src/transport/ipc/server.ts`) dials the path; `ECONNREFUSED` or `ENOENT` means
   nothing is listening, and it then unlinks the file.
 
 Either would separate a coordinator mid-boot (something answers) from a socket a SIGKILL left behind (nothing

@@ -1307,8 +1307,7 @@ describe('provider-proxy guardian and reaper', () => {
 
   it('refuses a teardown that names a different reaper than this one', async () => {
     const set = await startSet();
-    // Reach the reaper directly so its own identity check is the one under test — its own comment used to
-    // claim `assertRecordedSetAgreement` alone already covered this; it did not.
+    // Reach the reaper directly so its own identity check is the one under test.
     const reaperControl = await connectControlClient(set.reaperIdentity.canonicalControlEndpoint, timer, 5_000);
     cleanups.push(() => reaperControl.close());
     const opened = (await reaperControl.call(
@@ -2285,7 +2284,7 @@ describe('provider-proxy guardian and reaper', () => {
 });
 
 describe('provider-proxy/set-authority: stopAndReap against a real guardian', () => {
-  /** `stopAndReap`'s own `proxyClient`/`reaperClient` are never touched by it — only `guardianClient` is. */
+  /** `stopAndReap`'s own `proxyClient` is never touched by it. */
   function unreachableClient(): ControlClient {
     return {
       call: () => Promise.reject(new Error('unreachable: this client was not expected to be called')),

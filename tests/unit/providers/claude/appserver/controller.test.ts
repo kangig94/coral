@@ -409,7 +409,6 @@ describe('SingleSessionController PTY lifecycle', () => {
     await waitFor(() => !controller.hasActiveTurn());
 
     expect(controller.hasActiveTurn()).toBe(false);
-    // initial send + MAX_PROMPT_RESENDS (3) = 4 deliveries
     expect(child.writes.filter((w) => w === paste)).toHaveLength(4);
     expect(notifications).toContainEqual(
       expect.objectContaining({

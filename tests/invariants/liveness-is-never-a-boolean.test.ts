@@ -12,12 +12,7 @@
 // syntax does not carry the defect. `!== 'alive'` is true for `'unknown'` too, so *concluding absence* from it
 // promotes "could not observe" into "is gone" — but *refusing* on it is the conservative direction and is what
 // `.claude/rules/validation.md` requires of every signal ("only `alive` may authorize SIGKILL. A target that
-// could not be observed is refused, not escalated"). Across the three roots this file scans there are two
-// occurrences and both are the refusing kind: `tools/simulation/adversarial.ts` guarding a kill — the very fix
-// this file's paragraph above describes — and `tests/e2e/cli/lifecycle/mutate-via-ipc.test.ts` guarding a
-// shutdown of a bare recorded pid. A ban would have flagged both and nothing else: no true positive, and two
-// false positives, one of them a documented fix. (The count was written as one before it was measured on all
-// three roots rather than two, which is the kind of claim this file exists to distrust.)
+// could not be observed is refused, not escalated").
 //
 // What separates the two is the consequent, not the comparison, and a scanner cannot read a consequent without
 // becoming a heuristic that the next writer routes around. Absence-from-`unknown` is held instead where it is
@@ -30,8 +25,8 @@ import { describe, expect, it } from 'vitest';
 import ts from 'typescript';
 
 const REPO_ROOT = join(__dirname, '..', '..');
-// `tests` is scanned too: a double that answers a boolean behind a cast is how the conversion's first three
-// bugs stayed green, and a test that coerces a liveness value is asserting nothing.
+// `tests` is scanned too: a double that answers a boolean behind a cast is how the conversion's bugs stayed
+// green, and a test that coerces a liveness value is asserting nothing.
 const SCANNED_ROOTS = ['src', 'tools', 'tests'] as const;
 const LIVENESS_PROBE = /^(observeProcessLiveness|observeLiveness)$/;
 

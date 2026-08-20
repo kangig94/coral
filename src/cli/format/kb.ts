@@ -31,7 +31,7 @@ const MAX_RENDERED_EVIDENCE = 3;
  * Hide on-disk paths from LLM-visible CLI output. A leaked path teaches the
  * LLM the storage layout, after which a raw `Read /home/.../kb/wiki/X.md`
  * bypasses kb tools — losing touch-journal signal, frontmatter parsing,
- * cascade resolution, and invariant checks. CLI text identifies entries by
+ * and invariant checks. CLI text identifies entries by
  * their canonical slug; JSON responses still carry the path field for
  * internal tests/scripts.
  */

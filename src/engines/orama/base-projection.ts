@@ -171,7 +171,6 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
     ).readAuthoritativeFreshness(target);
   }
 
-  /** Builds a complete projection from KB-materialized corpus input. */
   async prepareFullSnapshot(input: KbProjectionInput): Promise<PreparedOramaProjection> {
     return this.prepareFullSnapshotFromDocuments(
       this.prepareCurrentDocumentMap(input),
@@ -346,7 +345,6 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
       }
       return null;
     } catch {
-      // A missing or unreadable persisted artifact is handled by the normal write path.
       return null;
     }
   }
@@ -665,7 +663,6 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
   }
 }
 
-/** Creates the shared Orama projection wrapper for a KB runtime. */
 export function createOramaBaseProjection(
   runtime: KbEngineRuntimeBase,
   snapshotStore: OramaSnapshotStore = new OramaSnapshotStore(

@@ -174,11 +174,6 @@ function derivedInterruptionContinuity(
 }
 
 /**
- * Builds the real store-backed `ProviderEventEffectPort` — the production implementation of the seam
- * `applyProviderEventAtSeq` was built against, with no production caller until this module and its RPC
- * adapter below are wired into a live proxy control connection.
- */
-/**
  * Serializes provider-event transactions **per database connection**, keyed by the connection itself.
  *
  * The connection is what `BEGIN IMMEDIATE` is exclusive on, so the connection is what the chain has to be
@@ -190,7 +185,7 @@ function derivedInterruptionContinuity(
  * `void serveInboundRequest(...)` rather than awaiting it. Across proxies, `buildProviderEventHandler` is
  * called once per set — and two sets is the ordinary case, since Claude and Codex are distinct executable
  * identities — so a per-handler chain would leave each set serialized against itself and against nothing
- * else, on one shared connection. That is the shape this used to have.
+ * else, on one shared connection.
  *
  * The failure it prevents is worse than a lost event: the refusal is neither an ack nor a replay, so the
  * proxy's drain loop stops on a reply it cannot read, and that operation's events sit buffered until
@@ -369,7 +364,6 @@ export function createStoreProviderEventEffectPort(
         return;
       }
 
-      // disposition.kind === 'interrupted'
       const trigger = tx.pendingInterruption;
       if (trigger === undefined) {
         throw new Error(

@@ -335,8 +335,7 @@ export class DefaultProviderHostManager
     const config = this.proxySetAcquisitionConfig;
     const lifecycle = this.providerProxyLifecycleRef?.get();
     if (config === undefined || lifecycle === null || lifecycle === undefined) return;
-    // The executable identity, so every job-exclusive entry of the same spec shares one set. See the
-    // `liveProxySets` field comment for why a per-entry key would be both wrong and unbounded.
+    // The executable identity, so every job-exclusive entry of the same spec shares one set.
     const identityKey = entry.identityKey;
     if (lifecycle.routeFor(identityKey) !== null) return;
     const admission = lifecycle.beginFreshAcquisition(identityKey, {

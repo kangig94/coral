@@ -288,7 +288,6 @@ export function parseMemoFrontmatter(content: string): { source: string[]; owner
   return { source: parsedSource, owner };
 }
 
-/** Serialize memo frontmatter (source + owner) using YAML output for safety. */
 export function serializeMemoFrontmatter(fields: { source: string; owner: string }): string {
   const serialized = yaml
     .stringify(
@@ -490,8 +489,6 @@ export function parseWikiBody(body: string): WikiBodySections {
 }
 
 /**
- * One Knowledge entry: a top-level `- [[link]]` line plus any indented
- * sub-bullet lines that follow it (each carrying date + evidence text).
  * Knowledge owns its evidence physically — removing the block removes
  * its evidence in the same write, no separate sync.
  */
@@ -531,8 +528,8 @@ export function parseKnowledgeBlocks(knowledge: string): KnowledgeBlock[] {
       continue;
     }
     // Unrecognized line under a block (e.g. malformed indentation or stray
-    // text between blocks). Strict parser: skip silently — extractKnowledgeLinks
-    // and serializeKnowledgeBlocks operate on the recognized structure only.
+    // text between blocks). Strict parser: skip silently — serializeKnowledgeBlocks
+    // operates on the recognized structure only.
   }
 
   return blocks;

@@ -122,9 +122,6 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
         const parsed = jobsOptionsSchema.parse(opts);
         const projectRoot = process.cwd();
         const client = makeClient(projectRoot, jobsCommand);
-        // List every live job across all projects (allProjects bypasses the
-        // dispatch-level cwd default), then group by directory at render time
-        // with the current project surfaced first.
         const result = await client.listJobs({
           allProjects: true,
           ...(parsed.phase !== undefined ? { phase: parsed.phase } : {}),
@@ -200,8 +197,6 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
       },
       connect: async ({ jobIds: activeJobIds, cursor, timeoutSeconds, signal }) => ({
         kind: 'subscription',
-        // Wire boundary: the IPC transport hands back an unvalidated `unknown` per event. `followJobs`
-        // validates each one through `parseWaitStreamEventValue` before it becomes a `WaitStreamEvent`.
         subscription: await client.subscribe<unknown>(
           'jobs.wait',
           {

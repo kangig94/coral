@@ -96,7 +96,6 @@ class ReciprocalRankFusion implements HybridFusion {
   }
 }
 
-/** Creates the project-standard ranker that blends retrieval-role evidence. */
 export function createHybridFusion(): HybridFusion {
   return new ReciprocalRankFusion();
 }

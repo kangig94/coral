@@ -220,10 +220,6 @@ export function hashStableAdjacentBundle(activeBundleDir: string, fileName: stri
   return closeFailed ? null : (digest ?? null);
 }
 
-/**
- * Validate the executing three-artifact bundle set against its adjacent
- * manifest, including embedded identity and stable content hashes.
- */
 export function resolveStrictBundleIdentity(options?: {
   readonly bundleDir?: string;
   readonly embedded?: EmbeddedBundleIdentity;

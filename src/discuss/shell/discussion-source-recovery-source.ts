@@ -37,7 +37,6 @@ function scanDiscussionSourceRows(db: Database, subjectKey?: string): readonly R
     .all();
 }
 
-/** Creates the raw row-granular source used for discussion source discovery. */
 export function discussionSourceRecoverySource(
   db: Database,
   subject?: RecoverySubject,

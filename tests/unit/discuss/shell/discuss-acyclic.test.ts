@@ -69,9 +69,6 @@ const ALLOWED_PROVIDER_SESSION_RUNTIME_EDGES = new Set([
   'src/sessions/entry.ts -> src/providers/contract.ts',
   'src/sessions/event-bodies.ts -> src/providers/artifact-identity.ts',
   'src/sessions/event-describers.ts -> src/providers/proxy-failure.ts',
-  // AC10 gave provider artifact discard a versioned protocol with a stable action identity, so the
-  // three retention writers reach the same artifact/contract vocabulary `entry.ts` and
-  // `event-bodies.ts` already use.
   'src/sessions/lifecycle-reactor.ts -> src/providers/contract.ts',
   'src/sessions/provider-artifact-archive.ts -> src/providers/artifact-identity.ts',
   'src/sessions/retention-work.ts -> src/providers/artifact-identity.ts',

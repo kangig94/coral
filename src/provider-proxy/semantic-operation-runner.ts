@@ -63,7 +63,7 @@ function isSameHostRef(left: HostRef, right: HostRef): boolean {
  * module is where that data turns back into a running `BoundProvider` — the proxy-local mirror of what
  * `src/jobs/shell/launch.ts` does in-process, minus everything that only makes sense with store/journal access.
  *
- * Judgement call (see the task report): a proxy-local `DefaultProviderHostManager`
+ * Judgement call: a proxy-local `DefaultProviderHostManager`
  * (`src/coordinator/live/provider-hosts/index.ts`) is not legitimate here — it lives under `src/coordinator/live/`,
  * which `tests/invariants/architecture-layering.test.ts`'s `PROVIDER_PROXY_FORBIDDEN` list and
  * `tests/invariants/provider-proxy-no-store.test.ts`'s transitive reachability check both forbid
@@ -244,8 +244,8 @@ function executionInput(
  *  `run`, and that middleware constructs and injects its *own* bridge into the wrapped runtime before the
  *  inner provider ever reads this one. `src/jobs/shell/launch.ts`'s in-process `NOOP_CONTINUITY_BRIDGE` is the
  *  exact same placeholder for the exact same reason; this is that same precedent, reimplemented here because
- *  `src/jobs/` is forbidden to this domain. See the task report for why the ack-gated checkpoint property the
- *  plan describes is not implementable through this seam at all — it is a property of who calls
+ *  `src/jobs/` is forbidden to this domain. The ack-gated checkpoint property the plan describes is not
+ *  implementable through this seam at all — it is a property of who calls
  *  `commitContinuityEvent`/`rejectContinuityEvent` on the *yielded* continuity events, not of this bridge. */
 function missingContinuityBridge(method: string): never {
   throw new Error(`runtime.continuityBridge.${method}() called without sessionContinuity() middleware.`);
@@ -284,8 +284,8 @@ function buildExecutionRuntime(
         }
       : {}),
     // `equippedTools` is intentionally omitted: it is job-specific expansion state
-    // (`src/expansion/equipped-tools.ts`) that `ProxyPreparedAppServerOperationV1` does not carry, and this
-    // proxy has no store to resolve it from independently. Reported gap, not a silent truncation.
+    // (`src/expansion/equipped-tools.ts`), and this proxy has no store to resolve it from independently.
+    // Reported gap, not a silent truncation.
     onAppServerWaiting: () => {},
     onHostRef,
     onProviderTurnTerminal,
@@ -672,8 +672,8 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
         return;
       }
       // Nobody asked this operation to stop; the kernel unwound on its own. A terminal must still reach the
-      // coordinator (see the task report's "kernel throws mid-stream" judgement) — synthesize one rather than
-      // leaving the ledger entry executing forever with nothing to end it.
+      // coordinator — synthesize one rather than leaving the ledger entry executing forever with nothing to
+      // end it.
       synthesizeAndEmitFailure(key, provider, error);
     } finally {
       if (!entry.startCommitted) {

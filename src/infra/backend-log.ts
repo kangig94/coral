@@ -1,22 +1,9 @@
 /**
- * Centralized backend logger.
- *
- * Every line is prefixed with ISO timestamp and optional identity tag.
  * Output goes to stderr so backend logs stay separate from stdout responses.
- *
- * Usage:
- *   import { backendLog } from './backend-log.js';
- *   backendLog.init({ version: '0.4.12', bundleHash: 'abc123' });
- *   backendLog.info('Server started');
- *   backendLog.warn('Session file corrupt, skipping');
- *   backendLog.error('Fatal startup error', error);
  */
 
 let _tag = '';
 
-// Per-prefix capture of the most recent message starting with `[<prefix>...]`.
-// Runtime Components (e.g. KB) populate `lastLogLine` on `offline` status by reading
-// the slot for their bracket prefix — avoids a 21MB log grep at status time.
 const _lastByPrefix = new Map<string, string>();
 
 function ts(): string {
@@ -61,7 +48,6 @@ export const backendLog = {
     write('ERROR', `${message}${suffix}`);
   },
 
-  /** Raw write without prefix — for startup banner, fatal exit, etc. */
   raw(message: string): void {
     process.stderr.write(message);
   },

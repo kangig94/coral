@@ -47,8 +47,6 @@ async function finalizeSynthesizedSession(
       continue;
     }
     try {
-      // The wired reactor implementation already logs and swallows its own
-      // discard failures; this catch is a defensive guard for the callback itself.
       await ctx.discardSessionArtifacts?.(run.executionSessionId);
     } catch (error) {
       backendLog.warn(`Discuss artifact cleanup failed for session ${run.executionSessionId}: ${errorMessage(error)}`);

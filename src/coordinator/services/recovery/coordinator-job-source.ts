@@ -156,7 +156,6 @@ function coordinatorJobRecoverySubject(raw: RawCoordinatorJobRecoveryEnvelope) {
   };
 }
 
-/** Creates the raw item-granular coordinator job recovery source. */
 export function coordinatorJobRecoverySource(
   db: Database,
   options: Readonly<{ subjectKey?: string; subject?: RecoverySubject }> = {},

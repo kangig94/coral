@@ -45,7 +45,7 @@ export class AbortRegistry implements JobAbortRegistryPort {
     return { aborted, notFound };
   }
 
-  /** Remove a completed job. Call after terminal phase is persisted. */
+  /** Call after terminal phase is persisted. */
   remove(jobId: string): void {
     this.controllers.delete(jobId);
   }

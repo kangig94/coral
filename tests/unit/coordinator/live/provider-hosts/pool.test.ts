@@ -1102,9 +1102,6 @@ describe('provider host pool proxy set registry', () => {
   });
 
   it('routes to the exact live authority for a matching spec once acquisition settles', async () => {
-    // `routeAppServerOperation` is the entry point of the W2.3 publication path — the only assertion touching
-    // it elsewhere in this file checks the negative case (no live set yet). Replacing its body with
-    // `return null;` would fail nothing else here.
     const server = createFakeProviderServerHandle();
     const manager = new StubbedContainmentProviderHostManager({
       carrierBlocksRetirement: noCarrierBlocksRetirement,

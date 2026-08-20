@@ -130,11 +130,7 @@ describe('coordinator discovery', () => {
   });
 
   // A record whose `incarnation` disagrees with a fresh probe of the same live pid must still be
-  // returned. The value is `/proc/stat` btime plus start ticks, and btime is cached per process, so the
-  // writer's value and this reader's disagree by roughly the age gap between their first probes — 168
-  // seconds, measured on a WSL2 host, for a coordinator probing its own pid. Rejecting on that basis
-  // discarded the `bootToken` beside it, leaving a newer build unable to ask the incumbent to stand
-  // down; it died on every session start while the older daemon served on.
+  // returned.
   it('probeCoordinator returns a live record whose recorded incarnation disagrees with a fresh probe', async () => {
     makeHome();
     const { probeCoordinator, writeDiscoveryRecord } = await importDiscovery();

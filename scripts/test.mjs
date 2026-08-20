@@ -12,9 +12,7 @@ function runAsync(cmd) {
 }
 
 // Vitest reports `success: true` even when a worker dies and its test file is
-// reclassified as a "pending suite". The pipe-executor OOM (commit e769228d)
-// hid 28 broken tests behind this. Run with the JSON reporter and fail
-// explicitly if any test suite was left pending.
+// reclassified as a "pending suite".
 async function runVitestStrict(cmd) {
   const tmp = mkdtempSync(join(tmpdir(), 'coral-vitest-'));
   const reportPath = join(tmp, 'report.json');
@@ -45,13 +43,13 @@ async function runVitestStrict(cmd) {
   }
 }
 
-// Parallelize typecheck and vitest. tsc is mostly single-threaded (1 core);
-// vitest spawns N workers (5-6 cores). They don't contend on the same
-// resources, so wall-clock drops to max(tsc, vitest) instead of sum.
+// tsc is mostly single-threaded (1 core); vitest spawns N workers (5-6 cores).
+// They don't contend on the same resources, so wall-clock drops to max(tsc, vitest)
+// instead of sum.
 //
-// `tests/types/tsconfig.json` (4 .test-d.ts files) is a strict subset of
-// `tsconfig/typecheck.json` (whole repo) — running both is redundant.
-// The comprehensive typecheck covers the .test-d.ts assertions too.
+// `tests/types/tsconfig.json` is a strict subset of `tsconfig/typecheck.json`
+// (whole repo) — running both is redundant. The comprehensive typecheck covers
+// the .test-d.ts assertions too.
 const tasks = [
   runAsync('npx tsc -p tsconfig/typecheck.json'),
   runVitestStrict('npx vitest run --config vitest/default.ts'),

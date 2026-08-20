@@ -1,11 +1,10 @@
 /**
- * A retained host log rides an operator response, and that response has to fit one IPC frame. Sizing this at
- * `MAX_BUFFER` made the two equal, so a host that filled its log left no room for the JSON around it — the
- * frame overflowed by roughly the envelope. The budget is therefore set on its own merits and kept well under
- * the frame, which `tests/invariants/diagnostics-fit-one-frame.test.ts` holds in place.
+ * A retained host log rides an operator response, and that response has to fit one IPC frame. The budget is
+ * set on its own merits and kept well under the frame, which
+ * `tests/invariants/diagnostics-fit-one-frame.test.ts` holds in place.
  *
- * One mebibyte is thousands of stderr lines. This is a tail for diagnosis, not an archive: a host that has
- * said more than this has already said enough to explain itself.
+ * This is a tail for diagnosis, not an archive: a host that has said more than this has already said enough to
+ * explain itself.
  */
 export const PROVIDER_HOST_LOG_MAX_BYTES = 1024 * 1024;
 export const PROVIDER_HOST_COMPLETED_OBSERVATION_LIMIT = 256;

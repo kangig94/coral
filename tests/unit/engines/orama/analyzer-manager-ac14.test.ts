@@ -208,7 +208,6 @@ describe('Orama AC14 analyzer manager integration', () => {
     seedNote(kb);
     const snapshot = kb.captureCorpusSnapshot();
 
-    // The persisted index was built on the Intl baseline (Kiwi not yet available).
     const intlBaselineManager: OramaAnalyzerManager = {
       withAnalyzerLease: async (_runtime, _declared, run) => run({ analyzer: null, activeAnalyzers: [] }),
       effectiveDeclaredAnalyzers: () => [],

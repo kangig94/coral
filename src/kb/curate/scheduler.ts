@@ -130,10 +130,6 @@ function warnPermanentlyDisabledLanes(lanes: PermanentlyDisabledLanes): void {
  * agent directly. Returns whether the agent wrote summaries (so the scheduler
  * knows to commit). When omitted (e.g. tests that exercise topology only), the
  * summary pass is skipped.
- *
- * `runSignal` is the scheduler's run abort signal: the implementation composes
- * it with the job's own (`coral-cli abort`) signal so a scheduler stop cancels
- * the in-flight agent turn rather than blocking `stop()` on it.
  */
 export type RunCommunitySummaryJob = (runSignal: AbortSignal) => Promise<boolean>;
 
@@ -226,8 +222,6 @@ export function createCurateScheduler({
         shouldStop: () => stopped,
         onFreshnessMismatch: schedule,
       });
-      // Topology is materialized; now fill stale summaries via the recorded
-      // agent (one turn, no-op when the work-list is already empty).
       let wroteSummaries = false;
       if (runCommunitySummaryJob !== undefined && !stopped && !signal.aborted) {
         wroteSummaries = await runCommunitySummaryJob(signal);

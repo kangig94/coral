@@ -258,11 +258,7 @@ function storedFingerprint(classification: BackendStoreResetClassification): str
 /**
  * True when two stats of a store-reset evidence path (a file, or the containing directory checkpoints this
  * module re-verifies the same way) describe the same on-disk entry: device, inode, mode, size, mtime, and
- * file-vs-directory kind. Deliberately not `infra/bundle-manifest.ts`'s exported `sameFileIdentity` — that
- * one also compares owning uid, a check this module's own evidence never needed since every path it verifies
- * is one this same process already created or is about to remove, never a credential another uid could have
- * swapped in. Keep the two functions distinct by name as well as signature: a caller reaching for "compare
- * two file stats" here should find this one, not silently start comparing uid too.
+ * file-vs-directory kind.
  */
 function sameEvidenceFileStat(left: StorageBigIntStat, right: StorageBigIntStat): boolean {
   return (
@@ -1159,7 +1155,7 @@ export function acquireBackendStoreResetLock(
   let releaseDirectoryLock: () => void;
   try {
     // Threaded deps, not the ambient-fs default overload: the composed Runtime is already the caller's only
-    // I/O authority (Single Runtime World), and both call sites already hold `time` alongside `storage`.
+    // I/O authority (Single Runtime World).
     releaseDirectoryLock = acquireDirectoryLockSync(lockPath, { storage: runtime.storage, time: runtime.time }, 250);
   } catch (error: unknown) {
     if (isDirectoryLockTimeoutError(error)) {
@@ -1277,9 +1273,7 @@ export function openOrResetBackendStoreDb(
       case 'no-legacy':
         break;
       case 'legacy-ignored':
-        // Startup never depends on a previous generation. Refusing here made the
-        // old tree a precondition for booting, which is the coupling the
-        // generation boundary exists to remove.
+        // Startup never depends on a previous generation.
         backendLog.warn(formatLegacyGenerationIgnoredNotice(readiness));
         break;
       default:

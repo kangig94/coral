@@ -596,7 +596,6 @@ describe('semantic-operation runtime: stop() racing a still-draining emit', () =
     });
     expect(ledger.get(key)?.state).toBe('terminal-awaiting-settlement');
 
-    // No event was emitted after stop() resolved.
     expect(emittedEvents).toHaveLength(2);
 
     // The synthesized abort already carried this operation to `terminal-awaiting-settlement`; the control

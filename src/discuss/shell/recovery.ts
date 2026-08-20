@@ -868,7 +868,6 @@ function discussionPolicyContext(
   return { runtime, quarantine, resolveContext, resolveInvocationContext };
 }
 
-/** Returns the exact-subject discussion-source retry plan. */
 export function createDiscussionSourceRetryPlan(
   deps: DiscussStartupDeps,
   subject: RecoverySubject,
@@ -880,7 +879,6 @@ export function createDiscussionSourceRetryPlan(
   };
 }
 
-/** Returns the exact-subject discussion-candidate retry plan. */
 export function createDiscussionCandidateRetryPlan(
   deps: DiscussStartupDeps,
   subject: RecoverySubject,

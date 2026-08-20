@@ -340,7 +340,7 @@ describe('provider.event.v1 vocabulary', () => {
     expect(providerEventBodySchema.safeParse({ kind: 'suspended', reason: 'interrupt_unconfirmed' }).success).toBe(
       true,
     );
-    expect(providerEventBodySchema.safeParse({ kind: 'terminal' }).success).toBe(false); // missing required fields
+    expect(providerEventBodySchema.safeParse({ kind: 'terminal' }).success).toBe(false);
     expect(providerEventBodySchema.safeParse({ kind: 'unknown-kind' }).success).toBe(false);
   });
 
@@ -418,16 +418,6 @@ describe('provider.event.v1 vocabulary', () => {
   });
 });
 
-/**
- * These four request schemas moved here from `guardian.ts` so their one coordinator sender
- * (`provider-proxy-operation-activation.ts` for the first two, `set-authority.ts`'s `stopAndReap` for the
- * third; the fourth's sender is `role-main.ts`) parses the identical schema the guardian itself parses on
- * receipt, before the frame is ever written. Mutation, not assertion: each test below removes a field the
- * real branch fix required (bug 3's missing `jointContainmentReceipt`) or adds one no `.strict()` schema has
- * a place for (bug 1's shape, pointed at a guardian method instead of the proxy's), and observes the schema
- * itself refuse it — proving the sender-side parse this domain now performs would catch the exact mistake
- * that used to reach the wire unvalidated.
- */
 describe('guardian control-method request schemas, shared with their one coordinator or proxy sender', () => {
   const operation = { jobId: UUID_A, operationId: UUID_B, proxyInstanceId: UUID_C, buildSetId: UUID_D };
   const providerRoot = { pid: 7_001, incarnation: testIncarnation(800) };
@@ -441,7 +431,6 @@ describe('guardian control-method request schemas, shared with their one coordin
     };
     expect(guardianOperationActivateParamsSchema.safeParse(valid).success).toBe(true);
 
-    // Remove a required field.
     const { providerRoot: _omitted, ...missingProviderRoot } = valid;
     const missing = guardianOperationActivateParamsSchema.safeParse(missingProviderRoot);
     expect(missing.success).toBe(false);
@@ -451,7 +440,6 @@ describe('guardian control-method request schemas, shared with their one coordin
       );
     }
 
-    // Add a field this `.strict()` schema has no place for — bug (1)'s exact shape.
     const extra = guardianOperationActivateParamsSchema.safeParse({ ...valid, committedThroughProviderSeq: 0 });
     expect(extra.success).toBe(false);
     if (!extra.success) {
@@ -712,9 +700,6 @@ describe('assertRecordedSetAgreement', () => {
     const claimed = registry.providerRootsFor(identity.proxyInstanceId);
     expect(claimed).toEqual([]);
 
-    // Before this fix, `assertRecordedSetAgreement`'s exact-equality check made this throw `identity_mismatch`
-    // for `[]` vs `[ROOT_A]` — a settled operation's own honest claim, refused as though it were a caller
-    // reasoning about a different containment.
     expect(() => assertRecordedSetAgreement('guardian', claimed, [ROOT_A])).not.toThrow();
   });
 });

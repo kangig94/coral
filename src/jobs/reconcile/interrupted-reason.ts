@@ -1,8 +1,7 @@
 // Domain-neutral recovery vocabulary. Lives in jobs/reconcile because the
 // reason is a property of *recovery* (jobs/reconcile owns the recovery state
-// machine); coordinator and the recovery service consume it. Promoted out of
-// `coordinator/services/execution-policies.ts` so jobs/ does not have to
-// import upward from coordinator/.
+// machine); coordinator and the recovery service consume it. jobs/ does not
+// have to import upward from coordinator/.
 
 /**
  * Why startup recovery is finalizing app-server jobs:

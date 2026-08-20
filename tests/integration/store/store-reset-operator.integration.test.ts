@@ -278,7 +278,6 @@ describe('store-reset operator socket exclusion', () => {
       validateSelectedTarget: createForeignTargetValidator(),
     });
 
-    // Both arms now carry `kind`, so narrow on its value rather than on the property's presence.
     expect(result.kind).toBe('discarded');
     if (result.kind !== 'discarded') return;
     expect(result.incident).toMatchObject({ schemaVersion: 3, resetPolicyCause: 'newer-incompatible-invalid-target' });

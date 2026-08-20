@@ -186,7 +186,6 @@ import { providerOperationRecord } from '#tests/unit/store/provider-operation-fi
 import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 import { CURRENT_HANDOFF_CAPSULE_VERSION } from '#src/provider-proxy/handoff-capsule.js';
 
-/** The build this fixture lifecycle belongs to — the same one `providerOperationRecord` stamps on its identities, so a discovered capsule is inheritable rather than foreign. */
 const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
 
 /**
@@ -261,9 +260,8 @@ type FakeRoleEnvironment = Readonly<{
   killLog: Array<{ pid: number; signal: string }>;
   nestedErrors: unknown[];
   handles: { guardian?: GuardianRoleHandle; reaper?: ReaperRoleHandle; proxy?: ProxyRoleHandle };
-  /** One entry per `listen()`-vs-spawn event this environment can observe, appended in the order it actually
-   *  happened — so an ordering claim can be checked against the recorded sequence rather than against an
-   *  assertion that would hold regardless of which order ran. */
+  /** So an ordering claim can be checked against the recorded sequence rather than against an assertion
+   *  that would hold regardless of which order ran. */
   sequenceLog: string[];
   /** Every code a role passed to `exitProcess` — real teardowns driven through this fake environment (e.g.
    *  `stopAndReap`) reach `containment-absent` for real, and letting the default `process.exit` fire would
@@ -425,11 +423,6 @@ function scopedTempDir(prefix: string): string {
   return dir;
 }
 
-/**
- * Writes one guardian bootstrap capsule directly (bypassing the coordinator's own acquisition steps, which
- * hide their minted paths behind an opaque `AcquisitionUndo`) so a test driving `startProviderGuardianRole`
- * on its own has a real file to consume and knows every identity it minted.
- */
 /**
  * Writes all three bootstrap capsules directly (bypassing the coordinator's own acquisition steps, which
  * hide their minted paths behind an opaque `AcquisitionUndo`) so a test driving `startProviderGuardianRole`
@@ -881,9 +874,7 @@ describe('provider-proxy process topology: guardian role main', () => {
     const handle = await startProviderGuardianRole(guardianCapsulePath, environment.topLevelPorts());
     environment.handles.guardian = handle;
 
-    // Exactly two nested spawns, reaper first, then proxy.
     expect(environment.spawnLog.map((entry) => entry.role)).toEqual(['reaper', 'proxy']);
-    // The reaper is an ordinary child; the proxy is a new process-group leader.
     expect(environment.spawnLog[0]?.detached).toBe(false);
     expect(environment.spawnLog[1]?.detached).toBe(true);
 
@@ -893,8 +884,7 @@ describe('provider-proxy process topology: guardian role main', () => {
     expect(environment.handles.reaper).toBeDefined();
     // Unlike the reaper, the proxy role now pairs with the guardian (`guardian.pair.v1`) before it ever calls
     // `proxy.listen()` — a real round trip over its own socket connection, not settled by the time the
-    // guardian's own `recordContainment` awaits only the reaper's ACK. `vi.waitFor` is this file's own existing
-    // idiom for exactly this shape of gap (see the `exitLog` wait below).
+    // guardian's own `recordContainment` awaits only the reaper's ACK.
     await vi.waitFor(() => expect(environment.handles.proxy).toBeDefined(), { timeout: 5_000 });
 
     // The guardian's own control endpoint was already listening before the proxy spawn call was made: a
@@ -920,7 +910,7 @@ describe('provider-proxy process topology: guardian role main', () => {
       baseDir,
       resolveStrictIdentity: () => strictIdentity(shared.buildSetId),
       // A pid alone is not an identity — it is recycled — so a spawn whose incarnation cannot be read must
-      // fail rather than record a bare pid. Only the proxy's incarnation is made unreadable.
+      // fail rather than record a bare pid.
       incarnationFor: (role, pid) => (role === 'proxy' ? null : testIncarnation(`base-${pid}`)),
     });
     cleanups.push(() => closeHandles(environment));
@@ -940,8 +930,7 @@ describe('provider-proxy process topology: guardian role main', () => {
     expect(environment.handles.proxy).toBeUndefined();
 
     // BLOCKING 2: an unarmed reaper is not a held one — the guardian created it, and a guardian that failed
-    // partway through must reap what it created rather than leave a live, unaccounted-for child behind. The
-    // old code left exactly this reaper running forever with nothing pointed at it.
+    // partway through must reap what it created rather than leave a live, unaccounted-for child behind.
     const reaperPid = environment.spawnLog.find((entry) => entry.role === 'reaper')?.pid;
     expect(reaperPid).toBeDefined();
     expect(environment.killLog).toContainEqual({ pid: reaperPid, signal: 'SIGTERM' });
@@ -1309,15 +1298,14 @@ describe('provider-proxy process topology: acquisition', () => {
     // disappear leaving the detached, out-of-group proxy held by no one. `exitProcess` is only ever called
     // with `0` for a settled `containment-absent` outcome (`ROLE_ENFORCEMENT_FAILURE_EXIT_CODE` otherwise) —
     // a plain `close()` never reaches it at all — so this is proof enforcement actually ran, not merely that
-    // a signal was sent. The old `handle.close()` shutdown left this unset, stranding the proxy forever.
+    // a signal was sent.
     await vi.waitFor(() => expect(environment.exitLog).toContain(0), { timeout: 5_000 });
 
-    // Unwinds the capsules: the three capsule paths this acquisition itself minted were all handed to
+    // Unwinds the capsules: the capsule paths this acquisition itself minted were all handed to
     // `rmSync` with `force: true`, regardless of whether the underlying process had already consumed them.
     expect(rmSyncCalls).toHaveLength(3);
     expect(rmSyncCalls.every((call) => call.force === true)).toBe(true);
 
-    // And no capsule debris is left behind on disk either way.
     const runDir = join(baseDir, GENERATION, 'run');
     if (existsSync(runDir)) {
       const remaining = readdirSync(runDir).filter((name) => name.endsWith('.bootstrap.json'));

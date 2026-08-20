@@ -53,7 +53,6 @@ function scanTerminalRetentionOutcomeRows(
     .all();
 }
 
-/** Creates the row-granular terminal retention-outcome source. */
 export function terminalRetentionOutcomeRecoverySource(
   db: Database,
   subject?: RecoverySubject,

@@ -22,13 +22,6 @@ type SharedReadStoreOptions = {
   announceMissing?: boolean;
 };
 
-/**
- * Per-process registry for the shared read-only Coral store. CLI runs as a
- * one-shot process; reopening the SQLite handle for sequential reads is
- * wasted work, so this caches at most one open handle per (pluginRoot,
- * projectRoot, flavor) tuple. Accumulates a single "missing store" note
- * that the CLI flushes at the end of text output.
- */
 class ReadCoralStoreRegistry {
   private cached: CachedReadStore | null = null;
   private cleanupRegistered = false;

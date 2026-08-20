@@ -46,7 +46,7 @@ function collectTsFiles(absoluteDir: string): string[] {
 
 describe('KB daemon CORAL_* env prefix convention', () => {
   it('every CORAL_* var referenced under src/kb and src/kb-daemon is CORAL_KB_ prefixed or allowlisted', () => {
-    const offenders = new Map<string, string>(); // token -> first file it appeared in
+    const offenders = new Map<string, string>();
 
     for (const root of SCANNED_ROOTS) {
       for (const file of collectTsFiles(join(REPO_ROOT, root))) {

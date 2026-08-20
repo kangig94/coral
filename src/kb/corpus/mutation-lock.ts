@@ -178,10 +178,6 @@ export function createKbMutationLock<
       };
       runner.setActiveContext(lockContext);
 
-      // Compose caller-supplied signal + internal deadline timer onto a single
-      // signal handed to `fn`. Aborting either source aborts the composed
-      // signal; reasons stay distinguishable (caller reason vs deadline reason)
-      // because the deadline only aborts when the caller hasn't already.
       const callerSignal = options.signal;
       const composedController = new AbortController();
       const onCallerAbort = (): void => {
@@ -205,11 +201,6 @@ export function createKbMutationLock<
         }
         const signaledAtMs = time.now();
         graceHandle = time.setTimeout(() => {
-          // Owner is captured at grace-end time, not deadline time, so a
-          // cooperative `fn` that settles inside the grace window never
-          // surfaces on `/health.diagnostics.mutationBlocked`. The
-          // `'unknown'` sentinel means the deadline fired before any write
-          // committed `pendingMutationReason` — see JSDoc on the field.
           blockedState = {
             owner: lockContext.pendingMutationReason ?? 'unknown',
             signaledAtMs,
@@ -231,10 +222,6 @@ export function createKbMutationLock<
           try {
             if (succeeded) {
               await runner.finalizePendingMutation(lockContext);
-              // One-way flip — never reset within the same lock. Subsequent
-              // attempts to queue mutation effects (e.g. manifest authority
-              // deltas from postFinalize) must throw rather than silently
-              // accumulate state that will never be applied.
               lockContext.finalized = true;
               if (options.postFinalize !== undefined) {
                 await options.postFinalize(lockContext);

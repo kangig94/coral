@@ -5,8 +5,6 @@ import { throwIfAborted } from '../../runtime/abort.js';
 
 const MAX_REINDEX_COMMIT_ATTEMPTS = 2;
 
-/** `signal` is the caller's AbortSignal — threaded from the KB job's
- * coordinator-owned AbortRegistry into derive/stage/post-commit checkpoints. */
 export async function reindex(kb: KbRuntime, options?: { signal?: AbortSignal }): Promise<ReindexResult> {
   const startedAt = kb.time.now();
   const signal = options?.signal;

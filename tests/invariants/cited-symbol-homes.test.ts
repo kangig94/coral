@@ -73,9 +73,9 @@ const SKIPPED_DIRECTORIES = new Set(['node_modules', 'build', 'bridge', 'dist', 
  * The two spellings the tree uses: a backticked symbol followed by its file in parentheses, or followed by
  * "in" and its file.
  *
- * The path must contain a directory separator. A bare basename cannot be resolved soundly — `session-store.ts`
- * names no single file — and resolving it by first match would let this test assert something it did not
- * check. Citations written that way are simply out of scope rather than silently graded.
+ * The path must contain a directory separator. A bare basename cannot be resolved soundly, and resolving it
+ * by first match would let this test assert something it did not check. Citations written that way are simply
+ * out of scope rather than silently graded.
  */
 const SYMBOL_HOME = /`([A-Za-z_][A-Za-z0-9_]*)`\s*(?:\(|in\s+)`([A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+\.(?:ts|mjs))`/g;
 
@@ -241,37 +241,31 @@ describe('a cited symbol lives where the citation says it does', () => {
   });
 });
 
-describe('a path:line citation points inside the file it names', () => {
-  const cache = new Map<string, string>();
-  const lineCitations = collectLineCitations(cache);
+/**
+ * A cited line number is stale the next time anything above it moves, and the edit that invalidates it is not
+ * the edit that notices — so a citation may carry a symbol and a path and nothing else, and this asserts the
+ * absence rather than chasing the decay.
+ *
+ * An emptiness claim is only worth what its detector is worth: a pattern that matched nothing would pass this
+ * exactly as a clean tree does. The detector is therefore held to a literal before the tree is judged by it.
+ */
+describe('a prose citation carries no line number', () => {
+  it('detects a line-numbered citation, so an empty result cannot pass as compliance', () => {
+    const bait = 'see `src/bait/one.ts:42` and `src/bait/two.mjs:10-20` here';
 
-  it('finds line citations to check, so a broken pattern cannot pass as compliance', () => {
-    expect(lineCitations.length).toBeGreaterThan(20);
+    expect([...bait.matchAll(PATH_LINE_CITATION)].map((match) => match[1])).toEqual([
+      'src/bait/one.ts',
+      'src/bait/two.mjs',
+    ]);
   });
 
-  it('names an unambiguous file whose cited line or range is inside it', () => {
-    const broken = lineCitations
-      .map((citation) => ({ citation, resolution: resolveCited(citation.citedPath) }))
-      .filter(({ citation, resolution }) => {
-        if (resolution.kind === 'none') return true;
-        if (resolution.kind === 'ambiguous') return true;
-        const totalLines = readCached(resolution.file, cache).split('\n').length;
-        return citation.endLine > totalLines || citation.startLine < 1;
-      })
-      .map(({ citation, resolution }) => {
-        const span =
-          citation.startLine === citation.endLine
-            ? `${citation.startLine}`
-            : `${citation.startLine}-${citation.endLine}`;
-        if (resolution.kind === 'none')
-          return `${citation.file}:${citation.line} — \`${citation.citedPath}:${span}\` (no such file)`;
-        if (resolution.kind === 'ambiguous') {
-          return `${citation.file}:${citation.line} — \`${citation.citedPath}:${span}\` (ambiguous: matches ${resolution.files.join(', ')})`;
-        }
-        const totalLines = readCached(resolution.file, cache).split('\n').length;
-        return `${citation.file}:${citation.line} — \`${citation.citedPath}:${span}\` is outside the file's ${totalLines} lines`;
-      });
+  it('finds none in the tree', () => {
+    const offenders = collectLineCitations(new Map<string, string>()).map((citation) => {
+      const span =
+        citation.startLine === citation.endLine ? `${citation.startLine}` : `${citation.startLine}-${citation.endLine}`;
+      return `${citation.file}:${citation.line} — \`${citation.citedPath}:${span}\``;
+    });
 
-    expect(broken, 'the cited line moved past the file it names; update the citation').toEqual([]);
+    expect(offenders, 'cite the symbol and the path, and drop the line number').toEqual([]);
   });
 });

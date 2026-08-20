@@ -1,6 +1,5 @@
 import { isProcessIncarnation, type ProcessIncarnation } from '../../infra/node-process.js';
-// Transport-owned IPC handoff helper. Shared by both daemon-side
-// `bindWithHandoff` (`src/coordinator/handoff.ts`) and CLI-side `ensure()`.
+// Transport-owned IPC handoff helper.
 // Carries no coordinator vocabulary: any caller that wants to ask a peer
 // daemon to step down uses this helper. Lives in transport because the
 // shutdown contract is exactly two IPC methods (`transport.ping`
@@ -88,11 +87,10 @@ export class IpcDeadlineExceededError extends Error {
  * True when the live incumbent already covers everything the contender's own
  * build would provide, so evicting it would trade a healthy coordinator for
  * one that is not an upgrade. This is the daemon-side half of the precedence
- * rule V1.1 already applies on the CLI path (`resolveLiveIncumbentRouting` /
- * `routeLiveIncumbent` in `src/infra/backend-routing.ts`): a version
- * difference alone is never a replacement reason, and there is no arbitrary
- * tie-break at equal version — the incumbent keeps the socket. `bundleHash`
- * therefore no longer gates this decision; it identifies a build, it does
+ * rule V1.1 already applies on the CLI path (`routeLiveIncumbent` in
+ * `src/infra/backend-routing.ts`): a version difference alone is never a
+ * replacement reason, and there is no arbitrary tie-break at equal version —
+ * the incumbent keeps the socket. `bundleHash` identifies a build, it does
  * not order one.
  *
  * Total by construction: `compareProductVersions` cannot make both

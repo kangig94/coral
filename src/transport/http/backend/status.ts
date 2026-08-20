@@ -320,10 +320,9 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
   } catch (error: unknown) {
     // Same measurement as `shutdownBackend`'s catch (`shutdown.ts`): Node's `fetch` rejects a refused
     // connection with a `TypeError` whose own `.message` is the generic "fetch failed", while the errno travels
-    // on `.cause`. Reporting the bare message here told an operator "fetch failed" for the same `ECONNREFUSED`
-    // that `backend shutdown` already reports by its actual errno — and, like that catch, a refusal proves
-    // nothing was listening on the exact socket at that moment without proving the coordinator process is gone,
-    // so it carries the prior `pidLiveness` observation rather than a fresh claim.
+    // on `.cause`. A refusal proves nothing was listening on the exact socket at that moment without proving
+    // the coordinator process is gone, so it carries the prior `pidLiveness` observation rather than a fresh
+    // claim.
     const code = thrownErrnoCode(error);
     if (code === 'ECONNREFUSED') {
       return {

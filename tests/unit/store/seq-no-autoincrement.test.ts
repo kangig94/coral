@@ -15,7 +15,6 @@ import { applyBundledStoreSchema } from '#src/store/db.js';
 describe('events.seq schema (S3)', () => {
   it('declares INTEGER PRIMARY KEY without AUTOINCREMENT in schema.sql', () => {
     const sql = fs.readFileSync(join(process.cwd(), 'src/store/schema.sql'), 'utf-8');
-    // Locate the seq column declaration line specifically.
     const seqLine = sql
       .split('\n')
       .find((line) => line.includes('seq') && line.toUpperCase().includes('INTEGER PRIMARY KEY'));

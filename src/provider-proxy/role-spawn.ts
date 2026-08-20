@@ -15,9 +15,9 @@ import { PROVIDER_ROLE_FLAGS, type ProviderRole } from './role-argv.js';
 
 /**
  * The shared mechanics every role-spawning caller needs: launching one role process from the existing
- * backend artifact, and reaching the control endpoint it will eventually bind. Both the coordinator (spawning
- * the guardian) and the guardian's own role main (spawning the reaper, then the proxy) go through this file
- * rather than each re-deriving the artifact path or re-implementing a connect retry loop.
+ * backend artifact, and reaching the control endpoint it will eventually bind. Both the coordinator and the
+ * guardian's own role main go through this file rather than each re-deriving the artifact path or
+ * re-implementing a connect retry loop.
  */
 
 /** Reverse of `PROVIDER_ROLE_FLAGS`, derived rather than hand-copied so a role added to the flag table stays spawnable. */
@@ -51,15 +51,14 @@ export type RoleSpawnPorts = Readonly<{
    *  a grace period. */
   runtime: Runtime;
   platform: NodeJS.Platform;
-  /** Injected so a test can fake a spawned pid's incarnation without a real process existing. Defaults to
-   *  the real cross-platform `/proc` or `ps` probe. */
+  /** Injected so a test can fake a spawned pid's incarnation without a real process existing. */
   readProcessIncarnation?(pid: number, platform: NodeJS.Platform): ProcessIncarnation | null;
 }>;
 
 export type RoleSpawnOptions = Readonly<{
   pluginRoot: string;
-  /** `true` makes the child a new process-group leader (the future proxy containment); `false` for an
-   *  ordinary child that inherits its parent's group. */
+  /** `true` makes the child a new process-group leader; `false` for an ordinary child that inherits its
+   *  parent's group. */
   detached: boolean;
   envAdditions?: Record<string, string>;
   /** Overrides "am I already running as the backend artifact"; defaults to `process.argv[1]`. */

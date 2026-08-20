@@ -6,7 +6,7 @@ needs a type this branch does not own.
 
 ## What exists
 
-`KB_GIT_DIFF_PATHS` (`src/kb/curate/git-sync.ts:34`) is the conflict scope — seven entries:
+`KB_GIT_DIFF_PATHS` (`src/kb/curate/git-sync.ts`) is the conflict scope — seven entries:
 
 ```
 notes/  sources/  principles/  communities/  wiki/  .entity-graph.json  .gitattributes
@@ -14,21 +14,21 @@ notes/  sources/  principles/  communities/  wiki/  .entity-graph.json  .gitattr
 
 `entryForConflictPath` matches `^(notes|sources|communities|wiki)/(.+)\.md$` and returns `null` for anything
 else, so **`principles/`, `.entity-graph.json` and `.gitattributes` can never key a quarantine row**. The
-constraint is not the regex; it is `KbEntryId` (`src/kb/entry-types.ts:66`):
+constraint is not the regex; it is `KbEntryId` (`src/kb/entry-types.ts`):
 
 ```ts
 export type KbEntryId = `note:${string}` | `source:${string}` | `community:${string}` | `wiki:${string}`;
 ```
 
 Everything downstream is keyed on it — `ConflictQuarantineKind`, and `KbDiagnoseIncident.entry_id`
-(`src/kb/entry-types.ts:246`, populated at `src/kb/diagnose.ts:36,48`). Principles have no `KbEntryId` at
-all: they are addressed by slug through `paths.principlePath(slug)` (`src/kb/read.ts:38,233`), never through
+(`src/kb/entry-types.ts`, populated at `src/kb/diagnose.ts`). Principles have no `KbEntryId` at
+all: they are addressed by slug through `paths.principlePath(slug)` (`src/kb/read.ts`), never through
 `KbIndex.entries`. `.entity-graph.json` and `.gitattributes` are repository files, not entries.
 
 `.entity-graph.json` is why this matters rather than being a tidy-up. It carries the second registered merge
-driver (`GITATTRIBUTES_ENTRIES`, `git-sync.ts:19`), and that driver refuses by throwing —
-`runEntityGraphMergeDriver` (`src/kb/curate/entity-graph-merge-driver.ts:97`) reads both sides through
-`readEntityGraphPathFromHost` (`:86`), which is a bare `JSON.parse`, and `src/cli/commands/kb.ts:538` routes
+driver (`GITATTRIBUTES_ENTRIES`, `src/kb/curate/git-sync.ts`), and that driver refuses by throwing —
+`runEntityGraphMergeDriver` (`src/kb/curate/entity-graph-merge-driver.ts`) reads both sides through
+`readEntityGraphPathFromHost`, which is a bare `JSON.parse`, and `src/cli/commands/kb.ts` routes
 any throw to `emitError`, which exits non-zero and leaves git holding the path unmerged with no conflict
 markers. So the file most likely to reach the markerless-unmerged recovery path is one of
 the three that cannot be recorded.
@@ -57,8 +57,8 @@ refusal is not a silent skip" half.
 ## What is still missing
 
 **The durable half.** §11 asks for "a current status an operator can read, keyed by the identity it can be
-acted on with". An unrecordable path still has only a log line: `kb diagnose` (`src/kb/tool-handlers.ts:453`,
-`src/kb/queries.ts:111`) reads the quarantine table, and there is no row to read. The operator's own exit is
+acted on with". An unrecordable path still has only a log line: `kb diagnose` (`src/kb/tool-handlers.ts`,
+`src/kb/queries.ts`) reads the quarantine table, and there is no row to read. The operator's own exit is
 real — the recovery ref, through `git` — but nothing in Coral will remind them it is outstanding.
 
 **The behavioral distinction dies at the boundary.** `gitSync` maps every recovered status to the same

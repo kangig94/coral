@@ -107,7 +107,6 @@ describe('orama coalescing burst', () => {
       new OramaSnapshotStore({ files: kb.projectionArtifacts.files }, kb.projectionArtifacts.runtimeDir),
     );
 
-    // First apply: install snapshotV1 from scratch.
     await projection.apply(makeContext(snapshotV1, snapshotV1, createKbProjectionInput(kb)));
     const fullInstallSpy = vi.spyOn(projection, 'installFullSnapshot');
     const deltaSpy = vi.spyOn(
@@ -117,7 +116,6 @@ describe('orama coalescing burst', () => {
       'applyDeltaFromManifest',
     );
 
-    // Three rapid metadata-lane bursts each producing a new snapshot id.
     seedNote(kb, 'alpha-note', 'Body alpha v2.', 2);
     const snapshotV2 = kb.captureCorpusSnapshot();
     seedNote(kb, 'alpha-note', 'Body alpha v3.', 3);
@@ -132,7 +130,6 @@ describe('orama coalescing burst', () => {
     expect(fullInstallSpy).not.toHaveBeenCalled();
     expect(deltaSpy).toHaveBeenCalledTimes(1);
 
-    // The installed snapshot must match the latest known snapshot, not V2/V3.
     const loaded = await projection.ensureLoaded();
     expect(loaded.db).toBeDefined();
     expect(snapshotV4.contentSeq).toBeGreaterThan(snapshotV2.contentSeq);

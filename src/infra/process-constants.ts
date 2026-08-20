@@ -23,13 +23,6 @@ export const DEFAULT_SYNC_EXEC_TIMEOUT_MS = 30_000;
 /**
  * The `code` the runtime's exec ports stamp on the failures they synthesize themselves.
  *
- * These restore something rather than adding it. `spawnSync` does report a timeout with `code: 'ETIMEDOUT'`
- * (alongside `signal: 'SIGTERM'`) — the port then replaced that error with a bare `new Error('timeout: git')`
- * to carry a friendlier message, and the code went with it. A caught error with no `code` is
- * indistinguishable from a child that ran and exited non-zero, so every caller sorting "the command answered"
- * from "the command could not be run" put the timeout on the wrong side — including `isGitRepo`, which cached
- * it and disabled KB git sync until the daemon restarted.
- *
  * So the value is `spawnSync`'s own, deliberately: one condition should not acquire a second name on its way
  * through a port. The asynchronous path kills on its own timer and never sees `spawnSync`, and uses the same
  * code for the same reason. Both are absent from `STANDING_PROBE_ERRNOS` below — neither says anything about
@@ -63,18 +56,11 @@ export const SPAWN_SYNC_MAXBUFFER_ERRNO = 'ENOBUFS';
  * a remote, asks a domain question that `ENOENT` on `git` never touches — the binary being absent says nothing
  * about the repository. A `launch-refused` outcome (`ExecOutcome`, `infra/port-types.ts`) is therefore not
  * `answered` for a caller asking a domain question, and must be treated exactly like `no-answer`: indecisive,
- * remembered only for `INDECISIVE_PROBE_REPROBE_INTERVAL_MS`. Conflating the two is how a missing `git` binary
- * became a cached, durably wrong "not a repository" — the caller's whole domain question, decided by evidence
- * that never addressed it.
+ * remembered only for `INDECISIVE_PROBE_REPROBE_INTERVAL_MS`.
  *
  * Because the failure is standing rather than transient, that reprobe never resolves on a permanently broken
  * host — but it stays a flat, cheap cost (one probe per interval, forever) rather than a wrong answer cached
  * for the daemon's life, which is the trade this set exists to make affordable.
- *
- * A caller whose own question IS "can this binary be launched at all" is different, and reads this set
- * directly rather than going through `ExecOutcome`: `live-work-registry.mjs`'s flock probe asks exactly that —
- * not anything about the lock it would take — so for it a launch failure in this set is itself the decisive
- * answer, routed to its own designed fallback (an mtime window) rather than a re-probe.
  *
  * The enumeration is on this side deliberately, and the reason is which mistake it makes cheap. Listing the
  * *transient* errnos instead puts the dangerous outcome on the default: every errno nobody thought of becomes

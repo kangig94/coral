@@ -191,7 +191,6 @@ function rowToRecord(row: RecoveryQuarantineRow): RecoveryQuarantineRecord {
   };
 }
 
-/** SQLite-backed persistence for the recovery containment quarantine. */
 export class RecoveryQuarantineStore implements RecoveryQuarantinePort {
   private readonly db: Database;
   private readonly time: RecoveryQuarantineClock;

@@ -481,8 +481,7 @@ export interface PersistedDiscussSnapshot {
 /**
  * Pure live-boundary predicate over a persisted snapshot. Lives next to
  * `PersistedDiscussSnapshot` because it is a derivation of that type with
- * no shell dependency — the previous `discuss/recovery-contract.ts` split
- * was over-decomposition.
+ * no shell dependency.
  */
 export function isWithinLiveSessionBoundary(snapshot: PersistedDiscussSnapshot): boolean {
   return snapshot.state.status !== 'ended' || snapshot.runtime.controlPhase !== 'idle';

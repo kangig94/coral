@@ -167,9 +167,8 @@ export function assertRegisteredEventStream(
 
 /**
  * Dispatch a journal event to its registered reducer. The event's body is
- * already schema-parsed by the upstream caller (append, rebuild, or projection
- * consumer) — reducers can rely on the body shape matching its registered
- * schema without re-parsing.
+ * already schema-parsed by the upstream caller — reducers can rely on the
+ * body shape matching its registered schema without re-parsing.
  */
 export function applyReducer(db: Database, event: CoralEvent, reducers: ComposedReducers): void {
   assertRegisteredEventStream(event, reducers);

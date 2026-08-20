@@ -740,8 +740,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
       );
     }
 
-    // Every cleanup is deliberately idempotent: successful terminalization has
-    // already performed the first three, while a failed terminal write has not.
+    // Every cleanup is deliberately idempotent.
     this.deps.abortRegistry.remove(jobId);
     this.deps.jobPools.delete(jobId);
     try {

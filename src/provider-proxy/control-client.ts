@@ -206,12 +206,6 @@ export async function connectControlClient(
     );
   };
 
-  /**
-   * Serves the one inbound method this client ever answers. Every other inbound method — and
-   * `provider.event.v1` itself with no `onProviderEvent` installed — is refused with the protocol's own
-   * closed-set vocabulary instead of silently dropped, so a peer sending something out of protocol gets a
-   * diagnosable reply rather than a connection that mysteriously never answers.
-   */
   const serveInboundRequest = async (
     request: Extract<ProxyControlJsonRpcMessage, { method: string }>,
   ): Promise<void> => {

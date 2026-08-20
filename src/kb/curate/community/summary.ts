@@ -262,11 +262,10 @@ export function computeCommunitySummaryInputFingerprintForCommunity(
 }
 
 /**
- * Build the LLM input context for (re)summarizing one community — the same
- * instructions + entity/excerpt (leaf) or child-summary (parent) blocks the
- * curate scheduler would have sent. Mirrors the branching of
- * {@link computeCommunitySummaryInputFingerprintForCommunity} so the fingerprint
- * and the agent-visible input describe the same inputs.
+ * Build the LLM input context for (re)summarizing one community — instructions
+ * + entity/excerpt (leaf) or child-summary (parent) blocks. Mirrors the
+ * branching of {@link computeCommunitySummaryInputFingerprintForCommunity} so
+ * the fingerprint and the agent-visible input describe the same inputs.
  */
 export function buildCommunitySummaryInput(
   community: SummaryCommunity,

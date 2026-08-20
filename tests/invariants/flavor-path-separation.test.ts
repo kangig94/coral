@@ -209,7 +209,6 @@ describe('flavor path separation', () => {
       const prodVal = prodMap.get(key)!;
       const devVal = devMap.get(key)!;
       expect(devVal).not.toBe(prodVal);
-      // Neither is a prefix of the other
       expect(devVal.startsWith(prodVal + '/')).toBe(false);
       expect(prodVal.startsWith(devVal + '/')).toBe(false);
     }

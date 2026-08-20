@@ -462,7 +462,6 @@ Shared retrieval patterns.
       );
     };
 
-    // First reindex establishes an empty index; the next pass indexes the authored community.
     await reindex(kb);
     writeCommunityFile();
 
@@ -821,7 +820,6 @@ Make the contract explicit first.
     mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
     mkdirSync(paths.principlesDir(process.env.CORAL_KB_PATH!), { recursive: true });
 
-    // Valid note
     writeFileSync(
       join(paths.notesDir(process.env.CORAL_KB_PATH!), 'valid-note.md'),
       `---
@@ -839,7 +837,6 @@ Content here.
       'utf-8',
     );
 
-    // Malformed note: source is a bare string instead of an array
     writeFileSync(
       join(paths.notesDir(process.env.CORAL_KB_PATH!), 'bad-source.md'),
       `---
@@ -859,7 +856,7 @@ This note has source as a bare string.
     const result = await reindex(kb);
     stderrSpy.mockRestore();
 
-    expect(result.notes).toBe(1); // only the valid note indexed
+    expect(result.notes).toBe(1);
     const index = kb.readIndex();
     expect(index?.entries[noteEntryId('valid-note')]).toBeDefined();
     expect(index?.entries[noteEntryId('bad-source')]).toBeUndefined();

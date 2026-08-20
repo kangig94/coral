@@ -68,9 +68,8 @@ import { PROXY_TEARDOWN_RESERVE_MS, type EnforcerDeadlineStateMachine } from './
 /**
  * Evidence that the reaper recorded one exact provider root, carrying the root it is evidence about.
  *
- * The joint containment receipt may be minted only after both authorities have recorded the same identity —
- * a rule that was true but positional, held by the order of statements in one handler and by a comment saying
- * so. This makes it structural: the value below cannot be constructed except by `acknowledgeReaperRoot`,
+ * The joint containment receipt may be minted only after both authorities have recorded the same identity.
+ * This makes it structural: the value below cannot be constructed except by `acknowledgeReaperRoot`,
  * which is the only code that checks the reaper's reply, and `mintJointContainmentReceipt` will not mint
  * without one. Reordering the two calls stops compiling rather than silently issuing a receipt for a root the
  * reaper never confirmed.
@@ -104,8 +103,7 @@ function acknowledgeReaperRoot(
  * The guardian's own half of the same fact: its enforcer has recorded this root and will contain it. Separate
  * from the reaper's acknowledgement because they are separate authorities — the whole point of the joint
  * receipt is that neither can be talked into containing something the other never recorded, and a token that
- * proved only one of them would leave half of that rule enforced by statement order, which is what it was
- * before.
+ * proved only one of them would leave half of that rule enforced by statement order.
  */
 declare const guardianRecorded: unique symbol;
 type GuardianRootRecord = Readonly<{
@@ -171,10 +169,9 @@ function assertNamedGuardianIdentity(
 }
 
 /** No `operations` field: the set is bound at install and returned by redemption, never presented by a
- *  redeemer to be checked against — see `GrantRegistry.redeem`'s own doc for why. */
+ *  redeemer to be checked against — see `GrantRegistry.redeem` in src/provider-proxy/handoff-capsule.ts for why. */
 /**
- * Both authorities must ACK the same identity before a root may execute, so the receipt names both — the
- * reaper's own ACK is no longer a separate receipt, because the reaper holds nothing to revise it against.
+ * Both authorities must ACK the same identity before a root may execute, so the receipt names both.
  * The reservation tuple is recorded, not just parsed, so a caller presenting a different one for a known
  * operation is a disagreement this membership can detect rather than silently accept.
  */

@@ -179,8 +179,8 @@ describe('git sync conflict recovery', () => {
   });
 
   // F6: `.gitattributes` names `merge=coral-frontmatter`/`coral-entity-graph`; the `git config` calls in the
-  // same function are what make those names resolve to anything. If the attributes file were written first (as
-  // it used to be) and a `git config` call then failed, `.gitattributes` would be left naming a driver git had
+  // same function are what make those names resolve to anything. If the attributes file were written first and
+  // a `git config` call then failed, `.gitattributes` would be left naming a driver git had
   // never registered — git falls back to its built-in text merge for every later conflict on that path, and for
   // `.entity-graph.json` that means raw `<<<<<<<` markers written straight into the file. This pins the
   // ordering: a failed config attempt must not leave the attributes file claiming a driver.

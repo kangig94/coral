@@ -4,10 +4,7 @@ import type { KbProjectionInput } from '../kb/projection-input-contract.js';
 import type { CorpusSnapshot } from '../kb/corpus/snapshot.js';
 
 /**
- * Lifecycle/storage axis. Persisted in `consumer_cursors.registration_kind`
- * (see `src/store/schemas/001_initial.sql:103-116`). Distinct from the
- * behavior axis `kind` ('cursor' | 'apply' | 'stateless'). Two-axis
- * invariant enforced compile-time on every arm of `ConsumerRegistration`:
+ * Two-axis invariant enforced compile-time on every arm of `ConsumerRegistration`:
  *   `kind: 'stateless' ⟺ registrationKind: 'stateless'`
  *   `kind: 'cursor' | 'apply' ⟹ registrationKind: 'base' | 'expansion'`
  */
@@ -51,8 +48,7 @@ export interface ConsumerHandle {
   readonly id: string;
   readonly registrationKind: ConsumerRegistrationKind;
   /**
-   * Retained as `null` for stateless handles — removing it would be a wider
-   * type change and is explicitly out of scope. Stateless handles never
+   * Retained as `null` for stateless handles. Stateless handles never
    * accumulate apply errors; this field is dead state for that arm.
    */
   readonly lastApplyError: ConsumerApplyError | null;
@@ -73,9 +69,9 @@ export interface JournalApplyContext {
 }
 
 /**
- * Cursor-only journal consumer. Used by base 4 projections (jobs/sessions/
- * discuss/workflow) that are written by the commit-time reducer per spec
- * §3.3. The driver advances the cursor directly on `notify`; no `apply` runs.
+ * Cursor-only journal consumer. Used by base projections that are written
+ * by the commit-time reducer per spec §3.3. The driver advances the cursor
+ * directly on `notify`; no `apply` runs.
  */
 export interface JournalCursorRegistration {
   readonly id: string;
@@ -141,9 +137,7 @@ export type CorpusAuthoritativeFreshness =
          * history this authority no longer has, which is what a store reset leaves behind.
          *
          * Stale, not unavailable, because the consumer is a rebuildable cache: an artifact from a history that
-         * no longer exists is worth exactly what a missing one is worth, and rebuilding costs only CPU. It was
-         * classified `unavailable` — a hard apply error — which meant the cursor could never advance past it.
-         * Nothing about retrying changed that, so the retry ran forever.
+         * no longer exists is worth exactly what a missing one is worth, and rebuilding costs only CPU.
          */
         | 'ahead-of-authority';
     }

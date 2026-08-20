@@ -15,8 +15,7 @@ void snapshotMissingProviderRoots;
 const snapshotWithProviderRoots: ProviderProxyOperationSnapshot = fullSnapshot;
 void snapshotWithProviderRoots;
 
-// @ts-expect-error the inheritance path's own dependency contract requires the same capability — this is
-// the exact hole `?? []` used to paper over.
+// @ts-expect-error the inheritance path's own dependency contract requires the same capability.
 const inheritanceDepsRegistry: ProviderProxySetInheritanceDeps['operationRegistry'] = operationsOnly;
 void inheritanceDepsRegistry;
 

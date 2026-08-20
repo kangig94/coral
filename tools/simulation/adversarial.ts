@@ -159,9 +159,7 @@ export class SimulationWorld {
     this.assertUsable();
     this.elapsedOffsetMs = this.getVirtualElapsedMs();
     const carryOver = options?.preserveWorld === true ? this.current.backend.carryOver : undefined;
-    // A restart that keeps its world is a replacement, not a crash: `shutdownModeFromReason` only
-    // treats 'replaced' and 'sigterm' as a handoff, and a hard stop terminalizes the very jobs the
-    // next generation is supposed to adopt.
+    // A restart that keeps its world is a replacement, not a crash.
     await this.current.backend.backend.shutdown(carryOver === undefined ? 'cycle' : 'replaced');
     await this.current.backend.backend.waitForShutdown();
     this.generationIndex += 1;

@@ -259,12 +259,10 @@ async function readLiveCoordinatorHealth(
   time: TimePort,
 ): Promise<LiveIncumbentReading> {
   const probe = probeCoordinator({ storage: runtime.storage, env: runtime.env, paths: runtime.paths });
-  // Switched rather than tested for a `record` field. The `in` check this replaced was not wrong — deleting it
-  // does not even compile, because `probe.record` is then read on a variant that has none — but it silently
-  // absorbs whatever comes next: a fifth `CoordinatorProbe` shape without a record joins the `null` that means
-  // "nobody is there", and one with a record joins the branch that asks health, neither on purpose. Definite
-  // assignment is what the switch buys: a new shape leaves `discovery` unassigned and fails the build here
-  // until someone says which of the two answers below it is.
+  // A fifth `CoordinatorProbe` shape without a record joins the `null` that means "nobody is there", and one
+  // with a record joins the branch that asks health, neither on purpose. Definite assignment is what the
+  // switch buys: a new shape leaves `discovery` unassigned and fails the build here until someone says which
+  // of the two answers below it is.
   let discovery: CoordinatorDiscoveryRecord;
   switch (probe.kind) {
     case 'absent':

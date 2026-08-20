@@ -34,7 +34,6 @@ import { workflowRegistry } from './workflow/events.js';
 import { workflowLifecycleSchema } from './workflow/lifecycle.js';
 import { workflowPlanSchema } from './workflow/plan.js';
 
-/** Describe the SQL contract contributed by one complete provider registry. */
 export function describeCoralStoreFormat(providerRegistry: ProviderRegistry): StoreFormatDescription {
   const format = createCurrentStoreFormat(
     composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry),

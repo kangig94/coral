@@ -1,4 +1,3 @@
-// Covers CorpusInboundSyncService and KB mutation/directory lock ordering.
 import { describe, expect, it } from 'vitest';
 
 import { CorpusInboundSyncService, type CorpusInboundSyncServiceOptions } from '#src/kb/corpus/inbound-sync-service.js';

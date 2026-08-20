@@ -1297,7 +1297,6 @@ function retryReactor(db: Database): LifecycleReactor {
   return reactor;
 }
 
-/** Returns the exact-subject session-projection retry plan. */
 export function createSessionProjectionRetryPlan(
   db: Database,
   subject: RecoverySubject,
@@ -1310,7 +1309,6 @@ export function createSessionProjectionRetryPlan(
   };
 }
 
-/** Returns the exact-subject continuation-lease retry plan. */
 export function createSessionContinuationLeaseRetryPlan(
   db: Database,
   subject: RecoverySubject,
@@ -1323,7 +1321,6 @@ export function createSessionContinuationLeaseRetryPlan(
   };
 }
 
-/** Returns the exact-subject terminal-outcome retry plan. */
 export function createTerminalRetentionOutcomeRetryPlan(
   db: Database,
   subject: RecoverySubject,
@@ -1336,7 +1333,6 @@ export function createTerminalRetentionOutcomeRetryPlan(
   };
 }
 
-/** Returns the exact-subject release/terminal-component retry plan. */
 export function createRetentionReleasePairRetryPlan(
   db: Database,
   subject: RecoverySubject,
@@ -1386,7 +1382,6 @@ function hasRetentionWorkInputs(db: Database, pair: Readonly<{ sessionId: string
   return session !== undefined && release !== undefined && terminal !== undefined;
 }
 
-/** Returns the exact-subject composite retention-work retry plan. */
 export async function createRetentionWorkRetryPlan(
   db: Database,
   subject: RecoverySubject,

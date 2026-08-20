@@ -111,8 +111,8 @@ const proxyGrantSetShape = {
   proxyInstanceId: canonicalUuidSchema,
 } as const;
 
-/** `handoff.install.v1`'s request — the proxy's own, and the last send in this protocol that was validated
- *  only on receipt. Distinct from the guardian/reaper message above, not a drifted copy of it. */
+/** `handoff.install.v1`'s request — the proxy's own. Distinct from the guardian/reaper message above, not a
+ *  drifted copy of it. */
 export const proxyHandoffInstallParamsSchema = z
   .object({
     grantId: canonicalUuidSchema,
@@ -440,9 +440,9 @@ function assertPrivateHandoffCapsuleFile(path: string, env: HandoffCapsuleFileEn
 
 /**
  * Writes the successor half of a grant durably: one strict mode-0600, at-most-64-KiB capsule per proxy,
- * atomically renamed into place and fsynced (`StoragePort.writeAtomicDurableSync`) — the same durable-publish
- * primitive `kb/ops/promote-marker.ts` uses. A grant with no durable capsule is unredeemable no matter how
- * many authorities acknowledge it, so this is the one write in the install sequence that must survive a
+ * atomically renamed into place and fsynced (`StoragePort.writeAtomicDurableSync`). A grant with no durable
+ * capsule is unredeemable no matter how many authorities acknowledge it, so this is the one write in the
+ * install sequence that must survive a
  * `SIGKILL` landing the instant after it returns.
  *
  * V3 only, at the type and again at runtime. The union stays readable so older capsules can be recognised
@@ -547,8 +547,8 @@ export type GrantBinding = Pick<
 /**
  * The set identity a grant is bound to, read from any role's own bootstrap capsule — every role's capsule
  * shares this exact field shape (`bootstrap-capsule.ts`'s `commonBootstrapCapsuleShape`), so a coordinator
- * can never install or redeem a grant for a set it does not belong to. Freezing a fresh 7-field object,
- * rather than freezing the capsule itself, is what keeps a grant's binding from also freezing (or leaking
+ * can never install or redeem a grant for a set it does not belong to. Freezing a fresh object, rather than
+ * freezing the capsule itself, is what keeps a grant's binding from also freezing (or leaking
  * into log output alongside) the capsule's own secrets and endpoints.
  */
 export function grantBindingFromCapsule(capsule: GrantBinding): GrantBinding {

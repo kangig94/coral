@@ -6,16 +6,16 @@ instead of an inaccurate one. Closing it is a change to a contract every provide
 
 ## What exists
 
-`BoundProvider.preflight` returns `Promise<void>` (`src/providers/bound-provider-contract.ts:155`, declared on
-the implementation-input side as `ProviderImplementationCommon.preflight`, `src/providers/contract.ts:725`).
+`BoundProvider.preflight` returns `Promise<void>` (`src/providers/bound-provider-contract.ts`, declared on
+the implementation-input side as `ProviderImplementationCommon.preflight`, `src/providers/contract.ts`).
 `ProviderDefinition` itself is an opaque branded type with no such field — an earlier revision cited it, which
 named a shape that does not carry the method the entry is about. It has exactly two
 outcomes a caller can see: it resolves, or it rejects. Downstream:
 
-- `runProviderPreflight` (`src/coordinator/services/execution-policies.ts:244-254`) catches any rejection and
+- `runProviderPreflight` (`src/coordinator/services/execution-policies.ts`) catches any rejection and
   returns `errorMessage(error)` — a `string | null`. The message survives; which _kind_ of failure it was does
   not, because there was never a kind to lose.
-- `job-launch.ts:139` and `:383` turn any non-null string into `rejectLaunch('provider_preflight_failed', …)`,
+- Both call sites in `src/coordinator/services/job-launch.ts` turn any non-null string into `rejectLaunch('provider_preflight_failed', …)`,
   which is terminal.
 
 So three answers become two, and both of the two that are not "proceed" are the same one.
@@ -72,7 +72,7 @@ question this becomes two.
 ## Explicitly out of scope
 
 - The provider-side classification. It is done and correct.
-- `PROVIDER_PREFLIGHT_TIMEOUT_MS` (declared at `execution-policies.ts:204`). A preflight that overruns its own bound is a
+- `PROVIDER_PREFLIGHT_TIMEOUT_MS` (declared in `src/coordinator/services/execution-policies.ts`). A preflight that overruns its own bound is a
   different question from one that completed and could not conclude, and folding them together is how this
   entry would get the wrong fix.
 

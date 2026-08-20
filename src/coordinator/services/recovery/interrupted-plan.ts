@@ -108,7 +108,6 @@ export function planInterruptedAppServerRecovery(
   });
 }
 
-/** Selects one immutable durable recovery route from already-persisted observations and captured capabilities. */
 export function planInterruptedDurableRecovery(
   authority: ProviderRecoveryAuthority,
   runtimeRecord: DurableCliRuntimeRecord,

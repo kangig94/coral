@@ -36,16 +36,10 @@ function withReadonlyStore<T>(read: (db: ReturnType<typeof openStoreDatabase>) =
   }
 }
 
-/**
- * Reads and parses a persisted job status record.
- */
 export function readStatusRecord(jobId: string): JobStatus | null {
   return withReadonlyStore((db) => loadJobProjectionDetail(db, jobId, createDefaultStoreReadContext()).status, null);
 }
 
-/**
- * Reads and parses all persisted progress records for a job.
- */
 export function readProgressLog(jobId: string): JobEvent[] {
   return withReadonlyStore((db) => readJobEvents(db, jobId, createDefaultStoreReadContext()), []);
 }

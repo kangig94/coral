@@ -1,7 +1,5 @@
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 // R6: cross-version handoff. The new daemon must:
-//   HAPPY: handle a pre-PR running incumbent that writes valid coordinator.json
-//          (with pid+incarnation) and answers transport.ping/shutdown.
 //   DEGRADED: handle a journal that already contains a terminal record
 //             (pre-PR daemon crashed mid-finalizer) — finalizeInterruptedAppServerJob
 //             must early-return with a backendLog.warn rather than re-finalizing.
@@ -94,8 +92,6 @@ describe('pre-PR running incumbent (R6)', () => {
         shutdownReceived = true;
         expect(req.auth).toEqual({ kind: 'boot', token: 'boot-token' });
         expect(req.params).toEqual({});
-        // Schedule socket close on next tick — emulates daemon entering drain
-        // and releasing the socket within budget.
         queueMicrotask(() => {
           server?.close();
         });
@@ -125,7 +121,6 @@ describe('pre-PR running incumbent (R6)', () => {
       desired: { version: '0.9.1', bundleHash: 'new', flavor: 'prod', namespace: 'ns' },
       bindAttempt: async () => {
         bindCallCount += 1;
-        // Bind succeeds only after the incumbent's socket has actually released.
         return socketReleased ? { kind: 'bound' as const } : { kind: 'incumbent' as const, reason: 'live-listener' };
       },
       runStartupRecovery: async () => [],
@@ -142,7 +137,6 @@ describe('pre-PR running incumbent (R6)', () => {
       totalBudgetMs: 5_000,
     });
 
-    // Tick virtual time forward; bindAttempt poll fires every 200ms.
     for (let i = 0; i < 30; i += 1) {
       await new Promise((resolve) => setTimeout(resolve, 10));
       time.tick(200);
@@ -281,7 +275,6 @@ describe('pre-PR running incumbent (R6)', () => {
     try {
       const { RecoveryService } = await import('#src/coordinator/services/recovery/service.js');
 
-      // Build the smallest stub that supports the early-return path.
       const progressStore = {
         readStatus: () => ({ jobId: 'j1', phase: 'completed' as const }),
       };

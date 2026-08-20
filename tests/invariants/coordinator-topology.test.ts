@@ -93,7 +93,7 @@ const COORDINATOR_GLUE_SOURCES = new Set([
   'src/coordinator/live/kb-daemon-supervisor.ts',
 ]);
 
-// `src/coordinator/runtime-components/` is deliberately not here: every one of its four files imports only
+// `src/coordinator/runtime-components/` is deliberately not here: every one of its files imports only
 // coordinator/store/infra targets `isAlwaysPermittedTarget` already allows unconditionally, so a broad-import
 // exemption for the prefix would authorize nothing it does not already have — exactly the "permission nobody
 // exercises" shape the self-check below exists to catch, the same failure `carrier-observer.ts`'s deletion

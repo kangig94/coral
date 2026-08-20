@@ -24,9 +24,9 @@ const FORBIDDEN_COORDINATOR_ROOT_EXPORTS = new Set([
  * entry would.
  */
 const ASPIRATIONAL_CONTRACT_IMPORTS = new Set<string>([
-  // `src/coordinator/control.ts` held the pre-rewrite RPC control surface (added in e4d25f42) and was deleted,
-  // along with the rest of the old architecture, in the 618c95d1 rewrite. `contracts.ts` must stay a leaf;
-  // this entry keeps the retired path on record so RPC control logic cannot quietly reappear behind it.
+  // `src/coordinator/control.ts` held the pre-rewrite RPC control surface and was deleted, along with the
+  // rest of the old architecture, in the rewrite. `contracts.ts` must stay a leaf; this entry keeps the
+  // retired path on record so RPC control logic cannot quietly reappear behind it.
   './control.js',
 ]);
 

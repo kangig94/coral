@@ -70,7 +70,7 @@ function asChunks(value: string | ChildOutputChunk[] | undefined): ChildOutputCh
  * value is opaque to every consumer — only equality is ever asked of it.
  *
  * A sequence, not the clock. A script can retire a pid and allocate the same number again within one
- * virtual instant (`MockScriptedPid`), and a clock-derived value would hand both incarnations the same
+ * virtual instant, and a clock-derived value would hand both incarnations the same
  * token — a false *match* on a reused pid, which is the single outcome the containment doctrine
  * forbids. The counter lives on the spawner, which a preserved-world restart carries over
  * (`createSimulationBackend` reuses `inherited.runtime`), so it stays monotonic across that restart.

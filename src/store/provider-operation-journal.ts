@@ -113,7 +113,6 @@ const PROVIDER_OPERATION_RECORD_KEY_PATTERN = new RegExp(
   `^${escapeKeyPrefix(PROVIDER_OPERATION_RECORD_PREFIX)}${IDENTITY_KEY_SOURCE}$`,
   'u',
 );
-/** Every generation's canonical record key, each capturing the job id it names. */
 /** Every generation's canonical record key, capturing job, operation, proxy instance and build set in order. */
 const RECORD_KEY_PATTERNS: readonly RegExp[] = [
   PROVIDER_OPERATION_RECORD_PREFIX,
@@ -574,19 +573,15 @@ function claimedOperationIdentities(value: string | undefined): Readonly<{
 /**
  * Every row under `prefix`, the bare prefix itself included.
  *
- * The inclusive first page is the whole reason this is spelled out. A key that is *exactly* the prefix is
- * malformed — it names no operation — and starting the walk at `key > prefix` skipped it silently. That made
- * it invisible to the scan, and a row invisible to the scan cannot fence anything, which is precisely the
- * opposite of what an unaddressable key is supposed to do. Subsequent pages advance strictly past the cursor,
- * or the last row of each page would be visited forever.
+ * A key that is *exactly* the prefix is malformed — it names no operation — and a row invisible to the scan
+ * cannot fence anything, which is precisely the opposite of what an unaddressable key is supposed to do.
+ * Subsequent pages advance strictly past the cursor, or the last row of each page would be visited forever.
  */
 /**
  * The first key that is *not* under `prefix`, in SQLite's BINARY collation.
  *
- * `${prefix}\uffff` is not that bound and reads as if it were. SQLite compares TEXT as UTF-8 bytes, and U+FFFF
- * encodes as `EF BF BF` while anything above the BMP starts at `F0` — so a key like `<prefix>\u{1F600}` sorts
- * *above* it and fell outside every range query here. A row nothing scans cannot be reported, cannot fence and
- * cannot be retired: it is invisible, which is the one state a malformed row must not be in.
+ * A row nothing scans cannot be reported, cannot fence and cannot be retired: it is invisible, which is the one
+ * state a malformed row must not be in.
  *
  * Incrementing the last character is the actual successor, and these prefixes end in ASCII by construction.
  */

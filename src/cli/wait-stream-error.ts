@@ -18,14 +18,10 @@ function waitSubscriptionStatusCode(body: Record<string, unknown>): number {
 }
 
 /**
- * Translate a `jobs.wait` subscription error into a renderable CLI error.
- *
  * The IPC subscribe layer surfaces a backend rejection as an `Error` whose
  * `cause` carries the structured `{ code, message }` body. Without this
  * mapping the error falls through to the generic `internal` envelope, so a
  * `jobs_not_found` (404) would be mislabeled as an internal failure (exit 70).
- * Both the `wait` command and the launch-and-follow loop subscribe to
- * `jobs.wait`, so the mapping lives here rather than in either consumer.
  *
  * 503-family codes are wrapped as `TransientHttpError` so the follow-loop
  * retry guard (`isTransientStreamError`) recognizes them as retryable.

@@ -9,8 +9,7 @@ import { currentCoralStoreFormat } from '#src/store-format.js';
 //
 // The compile-time half lives in
 // `tests/types/consumer-registration-axes.test-d.ts`, typechecked by
-// `tsc -p tests/types/tsconfig.json` (and now also by
-// `tsc -p tsconfig.test.json` as the broader gate).
+// `tsc -p tests/types/tsconfig.json`.
 //
 // This file holds the *runtime* half: `ConsumerDriver.register()` must accept
 // every type-valid two-axis combination.

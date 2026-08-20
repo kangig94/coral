@@ -1,12 +1,6 @@
 /**
  * Type-level half of `tests/invariants/expansion-registration-unrepresentable.test.ts`.
  *
- * The runtime invariant uses AST grep to catch source files that declare a
- * cursor-expansion registration. This file binds the *structural* claim:
- * `JournalCursorRegistration` is not assignable to `ExpansionConsumerRegistration`,
- * and `registrationKind` is not assignable through the public boundary.
- *
- * Typechecked by `tsc -p tests/types/tsconfig.json` (run from `npm test`).
  * Vitest does not typecheck, so `@ts-expect-error` directives outside this
  * directory are dead text — keep type-level assertions here.
  */
@@ -19,8 +13,7 @@ declare const _scope: ExpansionHost['scope'];
 // The load-bearing claim of AC2.3 is that the public boundary
 // `ExpansionHost.registerConsumer` rejects cursor-shaped registrations at
 // compile time. Object-literal excess-property checking enforces this even
-// for arguments whose declared union shape is `ExpansionConsumerRegistration`
-// (`HostDerivedRegistrationKind<JournalApplyRegistration | CorpusConsumerRegistration | StatelessProviderLifecycleRegistration>`).
+// for arguments whose declared union shape is `ExpansionConsumerRegistration`.
 
 _host.registerConsumer(
   // @ts-expect-error host.registerConsumer rejects kind:'cursor' at the public boundary.

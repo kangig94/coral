@@ -71,7 +71,6 @@ function buildEscalationHarness(opts: {
   let bindCount = 0;
   const bindAttempt = vi.fn(async () => {
     bindCount += 1;
-    // Bind succeeds only after the incumbent exits.
     if (opts.incumbentExitsAt === null) {
       return { kind: 'incumbent' as const, reason: 'live-listener' };
     }
@@ -112,15 +111,12 @@ describe('handoff escalation (AC7)', () => {
       shutdownToken: 'shutdown-token',
     };
     const totalBudgetMs = 1_000;
-    // Incumbent exits at T=12000 (after SIGTERM grace+SIGKILL grace fully elapse).
     const incumbentExitsAt = totalBudgetMs + SIGTERM_GRACE_MS + 2_000;
     const harness = buildEscalationHarness({ incumbentExitsAt, totalBudgetMs, identity });
     mockedShutdown.mockResolvedValue({ health: null, verifiedIdentity: identity });
-    // Probe matches identity until the incumbent "exits" — after that, probe returns null.
     mockedProbe.mockImplementation(() => (harness.elapsedMs() < incumbentExitsAt ? identity.incarnation : null));
 
     const promise = bindWithHandoff(harness.options);
-    // Drive virtual time forward.
     for (let i = 0; i < 100; i += 1) {
       await flush();
       harness.time.tick(200);
@@ -147,7 +143,6 @@ describe('handoff escalation (AC7)', () => {
       totalBudgetMs,
       identity: null,
     });
-    // No verified identity from health or discovery.
     mockedShutdown.mockResolvedValue({ health: null, verifiedIdentity: null });
 
     const promise = bindWithHandoff(harness.options).catch((e: Error) => e);
@@ -179,7 +174,6 @@ describe('handoff escalation (AC7)', () => {
       identity,
     });
     mockedShutdown.mockResolvedValue({ health: null, verifiedIdentity: identity });
-    // Probe returns null after incumbent exits → 'gone'.
     mockedProbe.mockImplementation(() => (harness.elapsedMs() < 600 ? identity.incarnation : null));
 
     const promise = bindWithHandoff(harness.options);
@@ -223,7 +217,6 @@ describe('handoff escalation (AC7)', () => {
     const promise = bindWithHandoff(harness.options).then(() => {
       runStartupRecoveryCalled = true;
     });
-    // Tick past exit time.
     for (let i = 0; i < 30; i += 1) {
       await flush();
       harness.time.tick(100);

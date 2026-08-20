@@ -45,12 +45,7 @@ const PROXY_OWNER = 'src/provider-proxy/provider-root-authority.ts';
  * Carrier observation's authority, and who may hold it.
  *
  * The classifier is pure and local, so asking it costs nothing and health/idle may ask it freely — what they
- * may not do is let the answer authorize a mutation. There is deliberately no network-observer authority
- * alongside it: the bounded network observer that once paired with this classifier
- * (`src/coordinator/live/carrier-observer.ts`) was deleted for having no importer anywhere in `src/` — both
- * of its intended callers never wired it in. A coordinator that probed the network to decide whether hard
- * retirement is safe would have made a remote process the authority over local durable state, which is why,
- * if a network observer returns, it belongs on this list from the moment it gains its first importer.
+ * may not do is let the answer authorize a mutation.
  */
 type ObservationAuthority = {
   readonly module: string;

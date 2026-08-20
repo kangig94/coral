@@ -37,12 +37,7 @@ import {
  *
  * That is the only thing the suffix means. Nothing parses it; a peer that does not implement a method answers
  * `method_not_found` (`control-endpoint.ts`), which is what callers actually branch on. So a number may only be
- * raised once a build carrying the lower one has shipped. Four methods here once read `.v2` against a `.v1`
- * that had never existed in any commit and never shipped — a rewrite-iteration fossil claiming a predecessor
- * it did not have. They were corrected to `.v1` while no release contained this domain at all.
- *
- * `handoff-capsule.ts` shows the shape this is reserved for: `handoffCapsuleV1Schema` and
- * `handoffCapsuleV2Schema` both exist, discriminated on `version`, because both are genuinely readable.
+ * raised once a build carrying the lower one has shipped.
  */
 export const MAX_PROXY_CONTROL_FRAME_BYTES = 17 * 1024 * 1024;
 export const PROXY_CONTROL_RPC_TIMEOUT_MS = 5_000;
@@ -127,10 +122,7 @@ export type ProxyOperationStatusNonce = z.infer<typeof proxyOperationStatusNonce
 
 /**
  * One reservation, naming one prepared operation for the whole window between `operation.prepare.v1` and
- * `operation.activate.v1`. Formerly two fields — a `reservationId` and an `activationNonce` — minted together,
- * sent together, and destroyed together, with no path that ever rotated one without the other. The second was
- * not a nonce: nothing spent it, and it was compared with `!==` where every real credential in this domain
- * uses `timingSafeEqual`. Two fields were two chances to fabricate one value, and one of them was taken.
+ * `operation.activate.v1`.
  */
 export const reservationSchema = canonicalUuidSchema.brand<'Reservation'>();
 export type Reservation = z.infer<typeof reservationSchema>;
@@ -501,9 +493,7 @@ export function assertNamedTeardownReserve(claimedMs: number, expectedMs: number
  * kept private to the role that receives it. `guardian.ts`/`proxy.ts` still parse every one of these on
  * receipt — a sender that validates does not make a receiver that trusts safe — but a coordinator sender now
  * parses the identical schema object before writing the frame, so an omitted or misspelled field fails at
- * the sender with a clear error instead of travelling to a strict receiver that refuses it. Two of the four
- * One incident this section closes had exactly this shape: `operation.activate.v1` was sent to the proxy
- * with a field this `.strict()` schema has no place for.
+ * the sender with a clear error instead of travelling to a strict receiver that refuses it.
  */
 
 /** `guardian.register-provider-root.v1`'s request. The proxy (`role-main.ts`) is this method's one sender. */
@@ -581,13 +571,6 @@ export const guardianStopAndReapResultSchema = z
 export const reaperStopAndReapResultSchema = z
   .object({ state: z.literal('containment-absent'), disappearanceReceipt: z.string().min(1) })
   .strict();
-
-/**
- * The open direction. Every role's first message, and the last request family each role parsed on receipt
- * against a schema its one sender could not name — `RoleControlPlan.openParams` was `Record<string, unknown>`
- * while `openResultSchema` sat one field below it, so the reply was schema-checked at the seam and the request
- * was not. Shared here, the seam requires the schema and an unvalidated open stops being expressible.
- */
 
 /** The process-group containment a `reaper.open.v1` claims, and the one the reaper then holds for its whole
  *  life. Here rather than in `reaper.ts` because a coordinator must name this shape to send it. */

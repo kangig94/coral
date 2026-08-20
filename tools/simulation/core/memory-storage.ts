@@ -906,10 +906,6 @@ export class InMemoryStorage implements StoragePort {
     const candidate = this.time.now();
     const previousMs = this.lastStamp;
     this.lastStamp = Math.max(candidate, previousMs + 1);
-    // subTickCounter increments only when nextStamps is invoked twice within the
-    // same `lastStamp` ms tick; the surrounding monotonic-bump above ordinarily
-    // advances mtimeMs by ≥1, so the counter resets — but the formula keeps
-    // sub-millisecond ordering correct if a same-tick path is added later.
     if (this.lastStamp === previousMs) {
       this.subTickCounter += 1n;
     } else {

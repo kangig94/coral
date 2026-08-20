@@ -361,9 +361,8 @@ describe('expansion activation', () => {
   });
 
   // `readDiscoveryRecordDisposition` throwing (`EACCES`, `EIO`) used to be swallowed by a blanket `catch` to
-  // `null`, which is also why `backend-discovery.ts` could claim every CLI path renders these throws — this
-  // path silently absorbed them instead. Every mock elsewhere in this file sets a *return* value; none throws,
-  // so deleting the `try`/`catch` this test covers fails nothing else here.
+  // `null` — this path silently absorbed them instead. Every mock elsewhere in this file sets a *return*
+  // value; none throws, so deleting the `try`/`catch` this test covers fails nothing else here.
   it('reports a thrown read failure (EACCES) as unreadable, not an uncaught rejection', async () => {
     const activation = createCliExpansionActivation();
     process.env.CORAL_FLAVOR = 'dev';

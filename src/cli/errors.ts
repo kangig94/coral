@@ -106,12 +106,6 @@ export class WaitResumeError extends Error {
   }
 }
 
-/**
- * Collapses a ZodError from CLI argument validation into a UsageError whose
- * message reads as flag guidance (issue messages already phrased as `--flag ...`
- * pass through; others get their field path prefixed). Non-Zod errors pass
- * through untouched.
- */
 export function normalizeUsageError(error: unknown): unknown {
   if (!(error instanceof ZodError)) {
     return error;
@@ -156,10 +150,7 @@ export function errorCodeToExit(code: string, httpStatus?: number): number {
     code === 'provider_host_inventory_unavailable' ||
     // "Could not observe", not "decided no" — see `NOT_OBSERVED_CORAL_SETUP_ERROR_CODES` for why this checks a
     // shared list instead of naming codes here; `code` is a bare `string`, not `DocumentedCoralSetupErrorCode`,
-    // because it also carries raw wire codes from `IpcRpcError`/`BackendToolHttpError` bodies. Both of the
-    // set's current members are constructed only in `cli/expansion/index.ts`, whose own exit code always comes
-    // from `expansionExitCode` (`cli/commands/expansion.ts`) checking the same set independently — this branch
-    // is forward defense for any future caller that routes one of them through `buildErrorEnvelope` instead.
+    // because it also carries raw wire codes from `IpcRpcError`/`BackendToolHttpError` bodies.
     NOT_OBSERVED_CORAL_SETUP_ERROR_CODES.has(code) ||
     httpStatus === 503
   ) {

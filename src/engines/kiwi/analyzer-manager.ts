@@ -44,7 +44,6 @@ export type KiwiAnalyzerLeaseContext = {
   readonly activeAnalyzers: readonly KbDeclaredAnalyzer[];
 };
 
-/** Current Kiwi analyzer lifecycle state for health/status reporting. */
 export type KiwiAnalyzerManagerStatus =
   | {
       readonly state: 'unloaded';

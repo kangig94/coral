@@ -27,7 +27,7 @@ and while the main thread sits in `spawnSync`, no watchdog tick, no stdin `end`,
 An enforcer that is not the coordinator and not the daemon. Both candidate owners share one failure mode:
 whoever owns the guarantee can die first. Parent-local escalation dies with the parent —
 `gracefulKill` schedules its SIGKILL in the coordinator's own event loop
-(`src/infra/process-supervision.ts:13-23`), so a coordinator that exits destroys the escalation before it
+(`src/infra/process-supervision.ts`), so a coordinator that exits destroys the escalation before it
 fires. Child-local escalation, which is what shipped, fails when the child's loop is what wedged.
 
 Coral already runs this pattern correctly once. The provider guardian/reaper hold a deadline that survives
@@ -58,7 +58,7 @@ Each is real and independently verified from source; none is a survival bug once
 teardown, which is why they were left out rather than folded in.
 
 - **Detached grandchildren are not covered by anything.** `runtime.process.exec` spawns each child into its own
-  process group (`src/runtime/real.ts:364-382`, `src/runtime/exec-builder.ts:88-96`) with no containment
+  process group (`src/runtime/real.ts`, `src/runtime/exec-builder.ts`) with no containment
   recorded, so uv, Marker and curl/wget children can be stranded — and a daemon that now exits _faster_ makes
   stranding more reachable, not less. Covering them means the containment authority must own or gate the spawn
   through the runtime process port; a wrapper that registers after `spawn` still has an execution race. Until

@@ -625,12 +625,7 @@ describe('cli format', () => {
 
     // Each row is a full `ShutdownResult`, not a bare `reason` token: `refused_by_response` and
     // `recorded_process_absent` require `detail`, and `socket_refused` requires `pidLiveness` — a shared
-    // generic `detail` fallback (as this table used to build) no longer type-checks against the discriminated
-    // union, which is itself part of what F3 fixed.
-    //
-    // Every row used to also assert `.not.toMatch(/Shutdown failed: <reason>$/)` — a raw-token render that no
-    // path in `src/` produces any more (the string exists only in comments), so that assertion was vacuous
-    // before this rewrite: it could never fail regardless of what `formatShutdown` actually returned.
+    // generic `detail` fallback no longer type-checks against the discriminated union.
     const SHUTDOWN_REFUSAL_SENTENCES: ReadonlyArray<readonly [Extract<ShutdownResult, { ok: false }>, RegExp]> = [
       [{ ok: false, reason: 'unreadable_record', detail: 'corrupt-json' }, /may still be running/u],
       [
@@ -674,8 +669,7 @@ describe('cli format', () => {
     });
 
     // `refused_by_response` proves something is listening (a response arrived); `no_response` proves neither
-    // way. Neither may claim the backend stopped — that split is what F2 fixed, replacing a single `unreachable`
-    // reason that rendered "did not complete" even when a response had, in fact, arrived.
+    // way. Neither may claim the backend stopped.
     it('does not claim the backend stopped when a response arrived but was not accepted', () => {
       const text = formatShutdown({ ok: false, reason: 'refused_by_response', detail: '500 Internal Server Error' });
 
@@ -683,7 +677,7 @@ describe('cli format', () => {
       expect(text).not.toMatch(/Backend not running/u);
     });
 
-    // `socket_refused` never claims "not running" (see F1): a refused connection cannot prove absence, because
+    // `socket_refused` never claims "not running": a refused connection cannot prove absence, because
     // an absent pid is excluded before this request is ever sent. Both liveness values must render a hedge,
     // not a claim that the backend stopped.
     it.each([['alive'], ['unknown']] as const)(
@@ -736,8 +730,7 @@ describe('cli format', () => {
       );
     });
 
-    // Three separate observations used to share one sentence, and that sentence named a socket dial only the
-    // third of them performs. Each must say what was actually looked at.
+    // Each must say what was actually looked at.
     it('does not claim a socket dial for no_record, which never made one', () => {
       const text = formatShutdown({ ok: false, reason: 'no_record' });
 
@@ -1906,12 +1899,9 @@ describe('renderJobsList grouping', () => {
     expect(rendered).toContain('Current project (/work/coral)');
     expect(rendered).toContain('KB jobs (shared corpus)');
     expect(rendered).toContain('Other projects');
-    // Section order: current → KB → other.
     expect(rendered.indexOf('Current project')).toBeLessThan(rendered.indexOf('KB jobs'));
     expect(rendered.indexOf('KB jobs')).toBeLessThan(rendered.indexOf('Other projects'));
-    // The KB job lists under the KB section even though its projectRoot is /work/other.
     expect(rendered).toContain('kb-1');
-    // Other projects are directory-keyed and sorted.
     expect(rendered.indexOf('/work/alpha')).toBeLessThan(rendered.indexOf('/work/beta'));
   });
 

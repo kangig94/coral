@@ -9,12 +9,12 @@ the comparison.
 
 One launch request carries two answers to "which project is this job for".
 
-`src/transport/dispatch.ts:310-343` already splits them: `projectRoot` is the CLI's cwd, and
+`src/transport/dispatch.ts` already splits them: `projectRoot` is the CLI's cwd, and
 `authorizationRoot` is the `workDir` when one was given. The **capability decision is made against
 `authorizationRoot`** — the directory the provider will actually run in. That value is then bound as the
-session's `cwd` (`src/coordinator/services/job-launch.ts:119`).
+session's `cwd` (`src/coordinator/services/job-launch.ts`).
 
-But the durable job record takes the other one. `job-launch.ts:175` passes `projectRoot: ctx.projectRoot`
+But the durable job record takes the other one. `src/coordinator/services/job-launch.ts`'s `start` method passes `projectRoot: ctx.projectRoot`
 into the launch record, and that becomes `projection_jobs.project_root`. So authorization says the job
 belongs to where the work happens, and the record says it belongs to where the shell happened to be.
 
@@ -22,18 +22,18 @@ They differ exactly when `--work-dir` names something other than the caller's cw
 usage in `docs/skills.md` and the `ralph` skill instructs precisely that, then instructs a `wait` that
 cannot find the job it just created.
 
-### `:175` is one of three
+### The initial launch record is one of three
 
-All three launch paths reach the same builder, `buildProviderLaunch` (`src/jobs/shell/launch.ts:463`),
+All three launch paths reach the same builder, `buildProviderLaunch` (`src/jobs/shell/launch.ts`),
 and all three pass `ctx.projectRoot` into it:
 
-| Launch path          | Call site           | Orchestrator entry                   |
-| -------------------- | ------------------- | ------------------------------------ |
-| initial provider job | `job-launch.ts:175` | `launchInitialProviderJob` (`:363`)  |
-| workflow replacement | `job-launch.ts:419` | `launchWorkflowReplacement` (`:596`) |
-| resumed provider job | `job-launch.ts:433` | `launchResumedProviderJob` (`:512`)  |
+| Launch path          | Call site                                                   | Orchestrator entry                                       |
+| -------------------- | ----------------------------------------------------------- | -------------------------------------------------------- |
+| initial provider job | `src/coordinator/services/job-launch.ts`'s `start`          | `launchInitialProviderJob` (`src/jobs/shell/launch.ts`)  |
+| workflow replacement | `src/coordinator/services/job-launch.ts`'s `resumeResolved` | `launchWorkflowReplacement` (`src/jobs/shell/launch.ts`) |
+| resumed provider job | `src/coordinator/services/job-launch.ts`'s `resumeResolved` | `launchResumedProviderJob` (`src/jobs/shell/launch.ts`)  |
 
-An earlier revision named only `:175`. A fix applied there alone would leave every resumed and every
+An earlier revision named only the initial-launch call site above. A fix applied there alone would leave every resumed and every
 workflow-replacement job still recorded against the shell's cwd — the same defect on two of three
 paths, and the two a long-running workflow spends most of its life on.
 
@@ -44,29 +44,30 @@ paths, and the two a long-running workflow spends most of its life on.
 no store reset.
 
 The builder already wants the right value. `buildProviderLaunch` computes
-`opts.projectRoot ?? request.cwd ?? ''` (`src/jobs/shell/launch.ts:465`) — `request.cwd` **is** the work
+`opts.projectRoot ?? request.cwd ?? ''` (`src/jobs/shell/launch.ts`) — `request.cwd` **is** the work
 directory, and it is already second in that chain. The fallback never fires only because all three
 callers supply `opts.projectRoot` explicitly, and `launchWorkflowReplacement` types it as required
-(`launch.ts:607`) so it cannot even be omitted. Decide deliberately between dropping the argument and
+(`src/jobs/shell/launch.ts`) so it cannot even be omitted. Decide deliberately between dropping the argument and
 letting the existing fallback carry it, or passing `cwd` at each call site; the first is smaller but
 makes an implicit chain load-bearing.
 
-Do **not** change the other five `ctx.projectRoot` uses in `job-launch.ts`. Enumerated, because the
+Do **not** change the other five `ctx.projectRoot` uses in `src/coordinator/services/job-launch.ts`. Enumerated, because the
 earlier revision counted three and there are eight in total:
 
-| Line   | Use                                            | Verdict                                                  |
-| ------ | ---------------------------------------------- | -------------------------------------------------------- |
-| `:107` | agent profile resolution                       | leave — wants the operator's configuration root          |
-| `:119` | `const cwd = input.cwd ?? ctx.projectRoot`     | leave — this is the fallback that _defines_ the work dir |
-| `:146` | session record                                 | leave until something forces it                          |
-| `:175` | **initial launch record**                      | **change**                                               |
-| `:217` | agent profile resolution                       | leave — same as `:107`                                   |
-| `:335` | base for `canonicalizeWorkDir(session.cwd, …)` | leave — a resolution base, not a recorded value          |
-| `:419` | **workflow-replacement launch record**         | **change**                                               |
-| `:433` | **resumed launch record**                      | **change**                                               |
+| Method                     | Use                                            | Verdict                                                  |
+| -------------------------- | ---------------------------------------------- | -------------------------------------------------------- |
+| `start`                    | agent profile resolution                       | leave — wants the operator's configuration root          |
+| `start`                    | `const cwd = input.cwd ?? ctx.projectRoot`     | leave — this is the fallback that _defines_ the work dir |
+| `start`                    | session record                                 | leave until something forces it                          |
+| `start`                    | **initial launch record**                      | **change**                                               |
+| `resume`                   | agent profile resolution                       | leave — same as `start`, above                           |
+| `buildContinuationProfile` | base for `canonicalizeWorkDir(session.cwd, …)` | leave — a resolution base, not a recorded value          |
+| `resumeResolved`           | **workflow-replacement launch record**         | **change**                                               |
+| `resumeResolved`           | **resumed launch record**                      | **change**                                               |
 
-While in there: `launch.ts` reads the value back inconsistently for event metadata — `:389` and `:534`
-use the builder's result, `:622` uses `opts.projectRoot` directly. They agree today only because the
+While in there: `launch.ts` reads the value back inconsistently for event metadata — the calls inside
+`launchInitialProviderJob` and `launchResumedProviderJob` use the builder's result, the one inside
+`launchWorkflowReplacement` uses `opts.projectRoot` directly. They agree today only because the
 argument is always supplied. Whichever branch fix 1 takes, make all three read the same source.
 
 Do **not** rename the column. `project_root` is misnamed — it is a work root — but a column rename moves
@@ -74,9 +75,9 @@ the store format fingerprint and becomes a destructive reset. That debt is cheap
 to pay.
 
 **2. Compare by containment, not equality.** `scopeCheckJobs`
-(`src/coordinator/composition/job-control.ts:96`) tests `status.projectRoot !== projectRoot`. The
+(`src/coordinator/composition/job-control.ts`) tests `status.projectRoot !== projectRoot`. The
 predicate it should use already exists and is already used for exactly this question on the
-child-principal path: `containsProjectRoot` (`src/security/policy/authorize.ts:98`).
+child-principal path: `containsProjectRoot` (`src/security/policy/authorize.ts`).
 
 That predicate is **module-private** — `authorize.ts` does not export it. Reusing it means exporting it
 or moving it to a lower owner; do not copy it, since a second containment predicate is exactly the
@@ -109,12 +110,12 @@ Both are artifacts of equality. Under containment:
 ## Explicitly out of scope
 
 The capability model, the child-principal binding rules, `scopeCheck` as a mechanism, and the
-provider-host `--work-dir` resolver (`src/cli/commands/backend.ts:408-420`), which is a different
+provider-host `--work-dir` resolver (`src/cli/commands/backend.ts`), which is a different
 selector over a live inventory and is correctly documented.
 
 ## Also fix here
 
-`docs/skills.md:42` and the `ralph` skill instruct `--work-dir "<project root>"` followed by a `wait`.
+`docs/skills.md` and the `ralph` skill instruct `--work-dir "<project root>"` followed by a `wait`.
 Following that from another directory produces a job the same skill cannot wait on. Whatever lands, the
 skill text must stop implying `--work-dir` selects the project. `jobs detail` also prints `Project:`
 without ever showing the directory the provider ran in, so nothing on screen explains a mismatch.

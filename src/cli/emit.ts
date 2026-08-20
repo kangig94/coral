@@ -14,8 +14,7 @@ import { type AbortCapableClient, getPluginRoot } from './dispatch.js';
 type CliOutputFormat = 'text' | 'json';
 
 /**
- * Build the `-f, --output-format <text|json>` Option. Register it ONLY on
- * commands whose response is meant for machine consumption (search, list,
+ * Register it ONLY on commands whose response is meant for machine consumption (search, list,
  * read, diagnose). Mutate commands intentionally omit it so future agents
  * cannot "discover" a JSON affordance and propagate it across write ops —
  * a leaky JSON response would expose internal `path` fields the text

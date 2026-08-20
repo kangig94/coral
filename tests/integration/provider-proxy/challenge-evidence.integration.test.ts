@@ -367,7 +367,7 @@ describe('control heartbeats reach the deadline machine', () => {
 
     // The refused socket never reached frame parsing, so nothing downstream of accept() could have run —
     // this checks that an accept-time refusal really is a no-op on deadline state, not that a challenge was
-    // evaluated and found stale (`orphan-deadline.test.ts` already proves that at the unit level).
+    // evaluated and found stale (see tests/unit/provider-proxy/orphan-deadline.test.ts).
     expect(clock.compare(deadlines.bounds().adoptionDeadline, afterFirst.adoptionDeadline)).toBe(0);
   });
 });

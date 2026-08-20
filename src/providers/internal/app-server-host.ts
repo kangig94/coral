@@ -11,7 +11,6 @@ export type AppServerHostExpectation = Readonly<{
   jobId: string;
 }>;
 
-/** Coordinator-private process authority captured below the bound provider capability. */
 export interface AppServerHostAuthority {
   openSession(
     spec: ProviderServerSpec,

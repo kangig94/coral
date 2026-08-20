@@ -1,9 +1,7 @@
 // Discuss-owned watch surface — type contracts plus the projection-aware
 // builder that materializes them. `WatchEvent` and `WatchState` describe the
 // shape of watch data produced by projections and consumed by the execution
-// runtime; `buildDiscussWatchState` is the canonical construction. Runtime-
-// only watch machinery (WatchBuffer, WatchSubscriber, LiveDiscussSession
-// internals) stays in `src/discuss/shell/context.ts`.
+// runtime; `buildDiscussWatchState` is the canonical construction.
 
 import type { DiscussDomainEvent, PersistedDiscussSnapshot } from './events.js';
 

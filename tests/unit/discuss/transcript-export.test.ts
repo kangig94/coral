@@ -100,7 +100,6 @@ describe('renderDiscussRecordMarkdown', () => {
 
   it('does not duplicate the synthesis inside the transcript section', () => {
     const md = renderDiscussRecordMarkdown(snapshot({ transcript: [SPEECH_A, SYNTHESIS] }));
-    // The synthesis text appears exactly once — in its own section, not also as a transcript entry.
     expect(md.split('Adopt with a migration plan.').length - 1).toBe(1);
   });
 

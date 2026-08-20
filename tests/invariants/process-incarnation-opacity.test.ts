@@ -7,7 +7,7 @@
 // fresh absolute timestamp and calling it an identity. Those are what this test owns.
 //
 // It is worth an invariant rather than a comment because prose demonstrably failed here. The previous
-// primitive spread to a dozen comparison sites carried by a comment that named an unsound one as
+// primitive spread to comparison sites carried by a comment that named an unsound one as
 // "Canonical pattern: src/infra/backend-discovery.ts:127,162". A comment can be wrong in the direction of
 // the bug; a scan cannot.
 //
@@ -82,8 +82,7 @@ function walk(node: ts.Node, visit: (node: ts.Node) => void): void {
 }
 
 /**
- * Literals, via the parser, rather than a text scan of the file. A raw scan reads the explanation in
- * `infra/node-process.ts`'s own doc comment as a violation, and the shared `codeTextOnly` helper is the
+ * Literals, via the parser, rather than a text scan of the file. The shared `codeTextOnly` helper is the
  * opposite tool — it *blanks* literals so identifier scans do not trip on quoted names, which would hide
  * exactly the path this rule is about.
  */

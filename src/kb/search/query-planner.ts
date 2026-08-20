@@ -1,11 +1,6 @@
 import type { KbSearchMode } from '../entry-types.js';
 import type { RegisteredRetrievalRole, RoleExecutionRegistryView, RoleQueryContext } from './contract.js';
 
-// Stage 1 simplification: fallback invocations are a flat optional list.
-// The plan originally proposed a discriminated `RoleFallbackInvocation`
-// with explicit `trigger`/`primaryRoleId`. That is reserved for Stage 2
-// when reranker phase introduces a second trigger. Until then, the
-// runner detects fallback condition from the failure rule (Rule 2).
 export type KbSearchIntent = KbSearchMode | 'auto';
 
 export type RoleInvocation = {

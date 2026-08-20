@@ -38,9 +38,7 @@ export interface ExportsPaths {
 }
 
 export interface ProjectsPaths {
-  /** Root of the per-project data tree (`<coralRoot>/projects`). */
   readonly root: string;
-  /** Per-project data directory for an already-resolved project source. */
   dataDir(source: string): string;
 }
 

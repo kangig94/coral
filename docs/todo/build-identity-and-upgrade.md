@@ -73,9 +73,9 @@ carried `…/coral/0.10.8/bin` on `PATH`.
 ### Correction, again — it is triggered, and it died at one gate
 
 **The section below was wrong, and this is the third time this document has been wrong about this
-subject.** The trigger exists and fires on every session start: `clients/hooks/session-start.mjs:144`
+subject.** The trigger exists and fires on every session start: `clients/hooks/session-start.mjs`
 calls `spawnBackend` unconditionally, and `bindWithHandoff` lets a strictly newer contender evict an
-older incumbent (`incumbentOutranksContender`, `src/transport/ipc/handoff.ts:100-105`).
+older incumbent (`incumbentOutranksContender`, `src/transport/ipc/handoff.ts`).
 
 It fired, and it died. From the coordinator log, 2026-08-15:
 
@@ -114,7 +114,7 @@ none of the release's fixes in effect, and the operator's report was that the to
 Nothing was wrong with the fixes. They had never run.
 
 The intended behaviour exists: `createReplacementBackendOwnershipChecker`
-(`src/coordinator/ownership-checker.ts:27-47`) polls the discovery record every 30s and, on seeing a
+(`src/coordinator/ownership-checker.ts`) polls the discovery record every 30s and, on seeing a
 **different `instanceId`**, calls `idleTimer.requestDrain('replaced')`, which `shutdownModeFromReason`
 routes to a handoff-mode drain. An incumbent yielding to a successor is a solved problem.
 
@@ -124,7 +124,7 @@ build identity:
 | Entry point                                              | What it decides on                                                 |
 | -------------------------------------------------------- | ------------------------------------------------------------------ |
 | `clients/hooks/session-start.mjs` (`isCoordinatorAlive`) | pid liveness only — no version, no bundle hash                     |
-| `routeLiveIncumbent` (`src/infra/backend-routing.ts:40`) | a newer invoking CLI is told to **use the incumbent**              |
+| `routeLiveIncumbent` (`src/infra/backend-routing.ts`)    | a newer invoking CLI is told to **use the incumbent**              |
 | `src/transport/ipc/ensure.ts`                            | discovery-record ↔ health self-consistency, not "is this my build" |
 
 So the incumbent can only learn it has been replaced by seeing a successor's `instanceId`; a successor
@@ -192,7 +192,7 @@ the continuity defect — it is fixed, and this document is not its home.
 ## What the preflight actually does, since it keeps being assumed
 
 `runCliHandoffPreflight` runs on every invocation and does reach a build comparison. The decision is
-`routeLiveIncumbent` (`src/infra/backend-routing.ts:33-49`): same build set → use the incumbent; then
+`routeLiveIncumbent` (`src/infra/backend-routing.ts`): same build set → use the incumbent; then
 `compareProductVersions`, and **a newer or equal invoker also uses the incumbent**. Only an older
 invoker hands off, to the newer bundle. Confirmed live against a machine in the window: the `0.10.8`
 CLI ran against the `0.10.6` daemon, exited 0, and reported `Version: 0.10.6` with no notice.
@@ -200,11 +200,11 @@ CLI ran against the `0.10.6` daemon, exited 0, and reported `Version: 0.10.6` wi
 `useLiveIncumbent()` returns `createUseCurrentBackendRouting()` — literally the same value the preflight
 returns when no coordinator is running at all. Three gates fall back to it with no trace:
 
-| Fallback                                                           | Site                        |
-| ------------------------------------------------------------------ | --------------------------- |
-| incumbent omits `manifest`/`bundleDir` (older or non-strict build) | `handoff-runner.ts:214-221` |
-| invoking bundle's strict identity does not resolve                 | `handoff-runner.ts:218-221` |
-| foreign-target validation rejects the incumbent's bundle           | `backend-routing.ts:44-47`  |
+| Fallback                                                           | Site                                |
+| ------------------------------------------------------------------ | ----------------------------------- |
+| incumbent omits `manifest`/`bundleDir` (older or non-strict build) | `src/coordinator/handoff-runner.ts` |
+| invoking bundle's strict identity does not resolve                 | `src/coordinator/handoff-runner.ts` |
+| foreign-target validation rejects the incumbent's bundle           | `src/infra/backend-routing.ts`      |
 
 So a process can be in the mixed window for four different reasons and nothing distinguishes them.
 Observed and unresolved: a `0.10.5` CLI against the `0.10.6` daemon should hand off by that code and

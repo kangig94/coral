@@ -68,7 +68,6 @@ describe('workflow.plan.declared duplicate validator (M3)', () => {
         ),
       ).toThrow(/workflow_plan_declared_duplicate|already present/);
 
-      // The original plan must still be the one stored.
       const row = db.prepare(`SELECT plan FROM projection_workflows WHERE workflow_id = ?`).get('workflow-1') as {
         plan: string;
       };

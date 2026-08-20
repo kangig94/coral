@@ -286,7 +286,6 @@ function terminalRecordOptions<Scope>(
   };
 }
 
-/** Materializes provider terminal evidence inside an existing atomic Journal commit. */
 export function appendProviderTerminalInCommit<Scope>(
   c: CommitContext<Scope>,
   terminal: ProviderTerminalEventBody,
@@ -339,7 +338,6 @@ function appendTerminalWithOutcomePlan<Scope>(
   );
 }
 
-/** Appends interruption cause and terminal records to an existing atomic Journal commit. */
 export function appendSessionInterruptedTerminalInCommit<Scope>(
   c: CommitContext<Scope>,
   fault: SessionInterruptedFault,
@@ -353,7 +351,6 @@ export function appendSessionInterruptedTerminalInCommit<Scope>(
   appendTerminalWithOutcomePlan(c, planSessionInterrupted(fault, options), options, record);
 }
 
-/** Appends a recovery fault and its terminal record to an existing atomic Journal commit. */
 export function appendJobRecoveryFaultTerminalInCommit<Scope>(
   c: CommitContext<Scope>,
   fault: JobRecoveryFault,

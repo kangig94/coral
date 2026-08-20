@@ -87,8 +87,6 @@ export async function commitCorpusProjection(
 }
 
 /**
- * Single-attempt corpus projection rebuild: derive and stage off-lock, then
- * attempt a short seq+generated-generation CAS commit under the mutation lock.
  * Discarded candidates perform no retry-queue, curate-state, or incident-fix
  * side effects.
  */
@@ -161,8 +159,8 @@ async function applyDetectedIncidentFixForCommittedProjection(
 }
 
 /**
- * Sweeps stale typed-incident rows: a queue entry whose entryId no longer appears in
- * the current incident set means the underlying file has been repaired since enqueue.
+ * A queue entry whose entryId no longer appears in the current incident set means
+ * the underlying file has been repaired since enqueue.
  */
 function syncRetryQueueAgainstIncidents(kb: KbRuntime, incidents: readonly DetectedIncident[]): void {
   const stillDetected = new Set<string>();

@@ -63,8 +63,7 @@ describe('shutdownBackend', () => {
 
   // `vi.stubGlobal` replaces a process-wide binding, so cleanup cannot live at the tail of each test: an
   // assertion that throws skips it, and a test that stubs without a tail call leaks its `fetch` into whatever
-  // runs next. Three of the stubs here did exactly that until a reviewer reproduced the resulting flake. This
-  // is the pattern `tests/unit/infra/http-retry.test.ts` already uses.
+  // runs next.
   afterEach(() => {
     vi.unstubAllGlobals();
   });
@@ -165,8 +164,8 @@ describe('shutdownBackend', () => {
     },
   );
 
-  // Found by sweeping for the pattern rather than by review: the same collapse sat one function below the
-  // record split, where every way a request can fail to complete answered `not_running`.
+  // The same collapse sat one function below the record split, where every way a request can fail to complete
+  // answered `not_running`.
   it('does not report not_running when the shutdown request never completed', async () => {
     mockState.observed = { kind: 'addressed', coordinator: backendInfo(), pidLiveness: 'alive' };
     vi.stubGlobal(

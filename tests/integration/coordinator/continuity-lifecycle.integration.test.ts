@@ -636,7 +636,7 @@ describe('coordinator continuity lifecycle integration', () => {
       startTime: new Date(runtime.time.now()).toISOString(),
     });
     // The separately captured identity `spawnDurableJobTransport` would have written at launch — see
-    // `onDurableProcessIdentity` in `providers/cli-runner.ts` and `jobs/shell/launch.ts`.
+    // `onDurableProcessIdentity` in `providers/cli-runner.ts`.
     writeDurableCliProcessRuntimeMeta(progressStore.getDb(), {
       version: 1,
       jobId,

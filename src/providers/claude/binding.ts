@@ -52,7 +52,6 @@ export type ClaudeSelection = z.infer<typeof claudeSelectionSchema>;
 export const claudeCredentialProfileSchema = createClaudeCredentialProfileSchema();
 export type ClaudeCredentialProfile = z.infer<typeof claudeCredentialProfileSchema>;
 
-/** Capture one invocation's explicit or caller-local default Claude profile selector. */
 export function captureClaudeSelection(
   env: Readonly<Record<string, string | undefined>>,
   homeDir: string,

@@ -8,17 +8,17 @@ the merge exists so that cannot happen again.
 
 Nothing prunes `~/.coral/exports/jobs/<id>/`. Ever.
 
-`CORAL_JOBS_RETENTION_DAYS` prunes `progressStore.jobDir(id)`, which `src/jobs/paths.ts:9-11` defines as
+`CORAL_JOBS_RETENTION_DAYS` prunes `progressStore.jobDir(id)`, which `src/jobs/paths.ts` defines as
 `<tmpdir>/coral-jobs/<id>` — temporary scratch — plus the job's durable CLI-process metadata row
 (`src/coordinator/lifecycle.ts` → `src/jobs/runtime-meta-store.ts`, a `DELETE FROM meta`).
 
 The export tree is `runtime.paths.coral.exports.jobsRoot`, a different root. A repository-wide search
 found no removal targeting it. The only prune that exists is
-`STALE_ARTIFACT_PRUNE_OBLIGATION` (`src/coordinator/lifecycle.ts:502-536`), and it removes exactly
+`STALE_ARTIFACT_PRUNE_OBLIGATION` (`src/coordinator/lifecycle.ts`), and it removes exactly
 `progressStore.jobDir(jobId)` and the `meta` row — never the export.
 
 **The source itself states the false belief.** `resolveJobRetentionMs`'s doc comment
-(`src/coordinator/lifecycle.ts:235-238`) calls it "the terminal-job **export** retention window", for a
+(`src/coordinator/lifecycle.ts`) calls it "the terminal-job **export** retention window", for a
 setting whose prune touches only scratch. Correcting that comment belongs in Part 1; leaving it is how
 the next reader re-derives the same wrong fact.
 
@@ -27,7 +27,7 @@ the next reader re-derives the same wrong fact.
 It recorded that the archive is pruned on the first boot after any version change, giving a restore
 window of "until the next upgrade", and built a blocking design question on that. The earlier merge
 dismissed this as a constraint that does not exist. **It exists — for a different directory.** The
-prune's eligibility test is `fromOldBundle || agedOut` (`lifecycle.ts:511-513`), so a scratch artifact
+prune's eligibility test is `fromOldBundle || agedOut` (`src/coordinator/lifecycle.ts`), so a scratch artifact
 carrying a previous `bundleHash` is removed regardless of age. That is precisely "pruned on the first
 boot after any version change", and it is true of `progressStore.jobDir`.
 
@@ -38,7 +38,7 @@ root every time it makes a claim.
 
 The preserved provider artifacts live **inside** the export tree —
 `exports.jobsRoot/<jobId>/artifacts/<provider>/actions/<archiveActionId>/`
-(`src/sessions/provider-artifact-archive.ts:190-202`) — so they inherit its absent lifetime exactly,
+(`src/sessions/provider-artifact-archive.ts`) — so they inherit its absent lifetime exactly,
 and no separate decision covers them.
 
 ## What follows from getting the fact right

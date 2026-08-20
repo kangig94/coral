@@ -316,12 +316,6 @@ async function detectStructuredTextDrift(
   return mergeMutationLane(mergeMutationLane(noteLane, sourceLane), wikiLane);
 }
 
-/**
- * Pure projection: returns a `MutationLane` when the incident retry queue and the
- * current scan disagree (a row whose entryId no longer matches a current incident,
- * a current incident with no row, or a content-hash drift on a matched row). Folds
- * what was previously a separate retry-queue freshness gate into the corpus-scan freshness gate.
- */
 export function detectIncidentRetryDrift(
   retryQueue: ReadonlyArray<PendingRepair>,
   incidents: ReadonlyArray<DetectedIncident>,
@@ -546,12 +540,6 @@ export async function detectRescanInfo(kb: KbRuntime, scan: CorpusScanView): Pro
   }
 }
 
-/**
- * Pure projection: returns `'metadata'` when the scanned `.entity-graph.json`
- * disagrees with the entity slice projected into `currentIndex`. Folds the
- * previous standalone mtime-based branch into the unified MutationLane emitter,
- * eliminating the false-positive of a touch-without-content-change rebuild.
- */
 export function detectEntityGraphDrift(
   scanned: CorpusEntityGraphScan | null,
   currentIndex: Pick<KbIndex, 'entityMeta' | 'relationships'>,

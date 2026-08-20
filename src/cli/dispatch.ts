@@ -108,12 +108,6 @@ type JobsListOptions = {
   phase?: JobStatus['phase'];
   all?: boolean;
   provider?: string;
-  /**
-   * List across every project instead of scoping to the caller's cwd. When set,
-   * no `projectRoot` filter is sent, so the backend returns all projects' jobs
-   * (KB jobs included). Used by `coral jobs`; the abort selector leaves it unset
-   * to keep bulk aborts project-scoped.
-   */
   allProjects?: boolean;
 };
 

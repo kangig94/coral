@@ -63,12 +63,6 @@ export function buildCodexPrompt(
 const CODEX_DEFAULT_EFFORT: EffortLevel = 'high';
 /** Terra/Luna get a higher reasoning floor — smaller sizes compensate with more effort. */
 const CODEX_TERRA_LUNA_MIN_EFFORT: EffortLevel = 'xhigh';
-/**
- * Effort ceilings by Codex model line:
- * - Sol/Terra (GPT-5.6): up to `ultra`
- * - Luna (GPT-5.6): up to `max` (no ultra)
- * - older lines (e.g. gpt-5.5): up to `xhigh`
- */
 const CODEX_GPT56_EFFORT_CEILING: EffortLevel = 'ultra';
 const CODEX_LUNA_EFFORT_CEILING: EffortLevel = 'max';
 const CODEX_LEGACY_EFFORT_CEILING: EffortLevel = 'xhigh';
@@ -116,14 +110,6 @@ function clampEffort(level: EffortLevel, min: EffortLevel | undefined, max: Effo
   return result;
 }
 
-/**
- * Precedence: explicit request effort > CORAL_CODEX_EFFORT > CORAL_EFFORT >
- * Coral default (`high`). Then clamp:
- * - Terra/Luna floor: `xhigh`
- * - Sol/Terra ceiling: `ultra`
- * - Luna ceiling: `max` (no ultra)
- * - older lines (e.g. gpt-5.5) ceiling: `xhigh`
- */
 function resolveCodexEffort(request: ProviderRequest, model: string): EffortLevel {
   const resolved = resolveProviderEffort(request, 'CORAL_CODEX_EFFORT', request.coralEnv) ?? CODEX_DEFAULT_EFFORT;
   const floor = isCodexTerraOrLuna(model) ? CODEX_TERRA_LUNA_MIN_EFFORT : undefined;
@@ -329,7 +315,6 @@ const CODEX_ABSTRACT_MODEL: Record<string, string> = {
   haiku: GPT56_SIZE_MODEL.luna,
 };
 
-/** True when `model` is a GPT-5.6 generation id (or bare sol/terra/luna alias). */
 function isCodexGpt56Family(model: string): boolean {
   const normalized = model.trim().toLowerCase();
   if (normalized.includes('gpt-5.6')) return true;
@@ -348,9 +333,7 @@ function normalizeServiceTierEnv(value: string | undefined): CodexServiceTier | 
 }
 
 /**
- * Read `service_tier` from the top level of the selected Codex account's config.toml.
- * Profile-scoped values under `[profiles.xxx]` are intentionally ignored —
- * the scan halts at the first section header.
+ * Profile-scoped values under `[profiles.xxx]` are intentionally ignored.
  */
 function readCodexConfigServiceTier(
   runtime: Pick<ProviderRuntime<CodexExecutionPlan>, 'executionPlan' | 'storage'>,
@@ -421,17 +404,6 @@ export function resolveCodexServiceTier(
 }
 
 /**
- * Resolve the model id sent on Codex wire params.
- *
- * Precedence:
- * 1. Abstract tier (`opus`/`sonnet`/`haiku`):
- *    - GPT-5.6 baseline → map to `gpt-5.6-sol`/`-terra`/`-luna`
- *    - otherwise → collapse to the baseline as-is (no size split)
- * 2. Bare GPT-5.6 size alias (`sol`/`terra`/`luna`) → canonical `gpt-5.6-<size>`
- * 3. Concrete request.model (pass-through)
- * 4. CORAL_CODEX_MODEL
- * 5. DEFAULT_CODEX_MODEL
- *
  * Baseline = CORAL_CODEX_MODEL ?? DEFAULT. Abstract tiers must resolve here —
  * `resolveModelTier` returns undefined for them so Claude can defer to CLI
  * aliases; Codex has no equivalent for those Claude-style names.

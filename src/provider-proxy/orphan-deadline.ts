@@ -162,11 +162,6 @@ export type ProviderProxyEnforcerBounds<Scope extends symbol> = Readonly<{
   firstChallengeExpiresAt: MonotonicInstant<Scope> | null;
 }>;
 
-/**
- * Both enforcers hold the same states. The reaper's `armed` was `accepting-control` under another name, and
- * its `successor-rotated` encoded a credential's one-shot in the deadline model — that belongs to the
- * credential owner, so it is gone and the two machines are one.
- */
 export type EnforcerDeadlineState = 'accepting-control' | 'teardown-latched' | 'containment-absent' | 'exited';
 
 export type DeadlineDispatchResult =
@@ -344,9 +339,7 @@ export function createEnforcerDeadlineStateMachine<Scope extends symbol>(
       const now = sampleBeforeQueuedWork();
       if (now === null) return;
       // Earliest wins, matching `observeEof`: a second report of the same loss cannot walk the collapse
-      // back out. In practice this is the only report that can ever land — the moment it is recorded,
-      // `adoptionDeadline` itself collapses to `now`, so any later call already sees itself latched out by
-      // `sampleBeforeQueuedWork` above.
+      // back out.
       pairingLossAt = pairingLossAt === null ? now : clock.earlier(pairingLossAt, now);
     },
     admitSuccessor: (): DeadlineChallengeIssueResult => {

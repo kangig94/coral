@@ -11,12 +11,12 @@ prerequisites for the work, not work this batch authorized.
 ## What G3 accepts, stated so the acceptance is not mistaken for an oversight
 
 Retirement runs on a new `foreign-capsule-retirement` consumer seam over the existing `capsule-retirement`
-producer (`src/coordinator/services/provider-proxy-recovery-policy.ts:50-58`). Every producer rejection and
+producer (`src/coordinator/services/provider-proxy-recovery-policy.ts`). Every producer rejection and
 every malformed fulfillment on that seam becomes an owner-local `unavailable` incident instead of reaching the
 global fatal sink — `classifyRejection` takes the seam for exactly that
-(`src/coordinator/services/provider-proxy-recovery-policy.ts:390`). Attempts 1 to 4 wait on the existing
-`retryDelayMs` schedule (`src/coordinator/services/provider-proxy-set/index.ts:301`) — 1s, 2s, 4s, 8s — and
-`FOREIGN_CAPSULE_RETIREMENT_ATTEMPT_LIMIT` (`:314`) is the named end: one warning carrying the path, the
+(`src/coordinator/services/provider-proxy-recovery-policy.ts`). Attempts 1 to 4 wait on the existing
+`retryDelayMs` schedule (`src/coordinator/services/provider-proxy-set/index.ts`) — 1s, 2s, 4s, 8s — and
+`FOREIGN_CAPSULE_RETIREMENT_ATTEMPT_LIMIT` is the named end: one warning carrying the path, the
 attempt count and the incident, then the owner is removed and no sixth attempt is made.
 
 Bounding a hold that way is only sound because the owner holds nothing else. It holds a path whose file is
@@ -27,9 +27,9 @@ deliberately unbounded for the opposite reason — its evidence is the only thin
 
 ## The one reachable residue, and why it is not an obligation
 
-`retireProviderHandoffCapsule` (`src/coordinator/services/provider-proxy-capsule-discovery.ts:74`) unlinks the
-capsule, swallows `ENOENT` on a repeat (`:81`), and reports `retired` only when the directory sync succeeds
-(`:83-88`). So the interesting case is an unlink that succeeded and a directory sync that did not, followed by
+`retireProviderHandoffCapsule` (`src/coordinator/services/provider-proxy-capsule-discovery.ts`) unlinks the
+capsule, swallows `ENOENT` on a repeat, and reports `retired` only when the directory sync succeeds.
+So the interesting case is an unlink that succeeded and a directory sync that did not, followed by
 a crash: the entry can come back readable.
 
 Nothing durable was told the capsule was retired, which is what makes that a rescan rather than a
@@ -53,28 +53,28 @@ Four, and none is discretionary. Each is a fact about the tree measured while G3
 1. **The `complete(expectedRetry) === false` successor state is undecided.** `complete(expectedRetry)` names
    the shape, not a symbol: a claimed retry completes through a compare-and-set — `delete` and `upsert` take
    `expectedRetry` (`src/recovery/quarantine.ts`) — and when it answers `false` the retry no longer owns the
-   row. `deleteCompletedRetry` (`src/recovery/containment.ts:670`) and `completeAbsentRetry` (`:629`) both
-   answer that with a thrown `Error` (`:656`, `:685`) and nothing else, so there is no named state the row is
+   row. `deleteCompletedRetry` and `completeAbsentRetry` (both `src/recovery/containment.ts`) both
+   answer that with a thrown `Error` and nothing else, so there is no named state the row is
    in afterwards. For a subject keyed by a capsule path the question is not academic: `generationRunDir`
-   (`src/infra/path/coordinator.ts:32`) is scoped by flavor and generation only, so the run directory is
+   (`src/infra/path/coordinator.ts`) is scoped by flavor and generation only, so the run directory is
    shared across builds and the key is not build-scoped. This decision is recorded as unresolved; the plan
    that produced this entry carries no answer to it.
 2. **The narrow facet must be constructible before the thing it settles exists.**
-   `assertRecoverySourceRegistryComplete` (`src/recovery/source-registry.ts:105`) runs at
-   `src/coordinator/composition/index.ts:534`, so every `register` call precedes it —
-   while `createExecutionServices`, which constructs `ProviderProxySetLifecycle`, is called at `:561`. A
+   `assertRecoverySourceRegistryComplete` (`src/recovery/source-registry.ts`) runs at
+   `src/coordinator/composition/index.ts`, so every `register` call precedes it —
+   while `createExecutionServices`, which constructs `ProviderProxySetLifecycle`, is called after it. A
    foreign-retirement source therefore cannot close over the lifecycle object. It needs a narrow facet built
    synchronously ahead of it and resolved at retry time, in the shape the existing factories already use.
 3. **Three literal lists restate the boundary manifest.**
-   `tests/unit/recovery/retry-service.test.ts:162-240` writes the eleven boundary ids out again as an expected
+   `tests/unit/recovery/retry-service.test.ts` writes the eleven boundary ids out again as an expected
    array, then a second time as an array of real source constructors, then a third time as a
    runtime-registration block. A new boundary is an edit to the manifest
-   (`src/recovery/source-registry.ts:13-25`) and to all three, and the test fails until the four agree.
+   (`src/recovery/source-registry.ts`) and to all three, and the test fails until the four agree.
 4. **The composition suite needs a boundary-specific `until-cleared` fixture.**
-   `tests/unit/coordinator/recovery-quarantine-composition.test.ts:45-84` drives every registered boundary
+   `tests/unit/coordinator/recovery-quarantine-composition.test.ts` drives every registered boundary
    through one `it.each` that builds its subject with a `fingerprint` revision. A capsule path has no content
    fingerprint, so this boundary's revision is `until-cleared`, which `clearSubject`
-   (`src/recovery/source-registry.ts:268`) produces from a `null` wire revision. The generic row would
+   (`src/recovery/source-registry.ts`) produces from a `null` wire revision. The generic row would
    exercise the wrong revision kind, so the fixture has to grow a case rather than a parameter.
 
 ## What the review rounds demolished

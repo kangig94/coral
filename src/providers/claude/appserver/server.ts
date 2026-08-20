@@ -201,7 +201,7 @@ export function createNodeClaudeChildFactory(
       pty = await loadPty();
     } catch (error) {
       // No prebuilt PTY binary on this platform (e.g. musl/Alpine or 32-bit
-      // ARM). Surface an actionable provider error rather than crash.
+      // ARM).
       throw new Error(
         `Claude provider unavailable: could not load its PTY backend (@lydell/node-pty) on ${process.platform}/${process.arch}. ` +
           'No prebuilt native binary is available for this platform — use the Codex provider here. ' +

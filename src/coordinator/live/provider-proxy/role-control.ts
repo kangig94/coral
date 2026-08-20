@@ -197,9 +197,7 @@ export type RoleControlPlan<
      *  site, so the schema below decides the shape instead of being inferred from whatever payload was written.
      *  Inferring the other way is how a `paramsSchema` argument ends up accepting any schema at all. */
     openParams: z.output<TOpenParams>;
-    /** Required, which is the whole point: `openParams` used to be `Record<string, unknown>` while the reply
-     *  right below it was schema-checked, so every role parsed its own open request against a declaration its
-     *  one sender could not name. An open that skips validation no longer type-checks. */
+    /** Required, which is the whole point: an open that skips validation no longer type-checks. */
     openParamsSchema: TOpenParams;
     openResultSchema: z.ZodType<TOpened>;
     identity: (opened: TOpened) => Record<string, unknown>;

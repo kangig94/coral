@@ -43,21 +43,21 @@ containment; they are [`durable-cli-signal-authority.md`](./durable-cli-signal-a
 
 ## What is open
 
-`reapRecordedContainment` (`src/infra/process-containment.ts:382`) still signals on Darwin against the same
+`reapRecordedContainment` (`src/infra/process-containment.ts`) still signals on Darwin against the same
 token, from four call sites:
 
-| Call site                                                        | Reaps                                                   |
-| ---------------------------------------------------------------- | ------------------------------------------------------- |
-| `src/coordinator/live/provider-hosts/drain.ts:46`                | a provider host this coordinator spawned                |
-| `src/coordinator/services/recovery/interrupted-performer.ts:105` | a previous coordinator process's work                   |
-| `src/coordinator/services/provider-proxy-set/inheritance.ts`     | another build's proxy set                               |
-| `src/provider-proxy/enforcement.ts:133`                          | the detached set group, from the guardian or the reaper |
+| Call site                                                    | Reaps                                                   |
+| ------------------------------------------------------------ | ------------------------------------------------------- |
+| `src/coordinator/live/provider-hosts/drain.ts`               | a provider host this coordinator spawned                |
+| `src/coordinator/services/recovery/interrupted-performer.ts` | a previous coordinator process's work                   |
+| `src/coordinator/services/provider-proxy-set/inheritance.ts` | another build's proxy set                               |
+| `src/provider-proxy/enforcement.ts`                          | the detached set group, from the guardian or the reaper |
 
 ## Why the guard cannot simply be added — measured, not reasoned
 
 Putting the refusal inside `reapRecordedContainment` fails
 `tests/unit/coordinator/live/admission.test.ts > aligns coordinator-local host admission with darwin platform
-capabilities`, through `provider-hosts/drain.ts:46` → `shutdownHandle` → `closeProviderServerEntry`.
+capabilities`, through `src/coordinator/live/provider-hosts/drain.ts` → `shutdownHandle` → `closeProviderServerEntry`.
 
 That path is **coordinator-local provider-host teardown**, and unlike a proxy set it has no orphan deadline
 behind it. A proxy set's guardian and reaper self-terminate when their deadline passes; a provider host does
@@ -70,11 +70,11 @@ An earlier revision of this document said `drain.ts` is the one caller that hold
 holding the handle is itself proof the pid was not recycled, and the split is therefore per call site. **Two
 reviewers falsified that independently and the correction is the useful part**, so it is kept in place:
 
-- `drain.ts:174` reaps with `handle === null`. When a spawn fails after containment was recorded,
-  `provider-hosts/recovery.ts:71` closes an entry that has no handle at all, and the same call site then reaps
+- `src/coordinator/live/provider-hosts/drain.ts` reaps with `handle === null`. When a spawn fails after containment was recorded,
+  `src/coordinator/live/provider-hosts/recovery.ts` closes an entry that has no handle at all, and the same call site then reaps
   from the recorded identity alone.
 - Even when a handle exists it may name an already-exited child. `shutdownHandle` reaps _after_ graceful
-  shutdown, and `app-server-transport.ts:359` resolves that path from the child's own close event. Node reaps
+  shutdown, and `src/providers/app-server-transport.ts` resolves that path from the child's own close event. Node reaps
   on exit; a reaped pid is free. Retaining the JavaScript object proves nothing about the pid.
 - And the signal targets the **group**, not the leader, which is a _narrower_ hazard than an earlier revision
   claimed. POSIX reserves a process-group id for the lifetime of the group, and that lifetime ends only when
@@ -83,7 +83,7 @@ reviewers falsified that independently and the correction is the useful part**, 
   looked" does not establish that the group is still ours at the moment the signal lands.
 
 The real predicate is therefore _"has this child exited yet"_, evaluated at the moment of the signal — and
-`ChildProcessLike` (`src/infra/port-types.ts:119`) cannot answer it: it exposes `pid`, `kill`, and a `'close'`
+`ChildProcessLike` (`src/infra/port-types.ts`) cannot answer it: it exposes `pid`, `kill`, and a `'close'`
 event, with no synchronous exit state. Adding one touches every fake in the suite, which is why this is a
 change rather than a guard.
 

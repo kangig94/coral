@@ -90,7 +90,6 @@ function sessionProjectionSubject(raw: RawSessionProjectionEnvelope): RecoverySu
   return { key: raw.row.session_id, revision: canonicalRecoveryRevision(fields) };
 }
 
-/** Creates the raw row-granular session projection source. */
 export function sessionProjectionRecoverySource(
   db: Database,
   subject?: RecoverySubject,

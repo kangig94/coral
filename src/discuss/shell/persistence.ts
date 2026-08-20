@@ -140,10 +140,9 @@ export async function commitDecision(
 // Bound on stale-seq retries. This must comfortably exceed the number of
 // same-session runtime-event appends that can contend at once — bounded by the
 // discuss worker ceiling (CORAL_DISCUSS_MAX_WORKERS, hard-clamped to 10) plus
-// stragglers from a prior round — so honest concurrency never exhausts it (the
-// former cap of 5 could, spuriously failing a healthy agent turn). It stays
-// bounded (unlike commitDecision) because a genuinely persistent append fault
-// must convert to a null → bid failure rather than spin forever.
+// stragglers from a prior round — so honest concurrency never exhausts it. It
+// stays bounded (unlike commitDecision) because a genuinely persistent append
+// fault must convert to a null → bid failure rather than spin forever.
 const MAX_STALE_RETRIES = 50;
 
 export async function appendRuntimeEvents(

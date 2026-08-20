@@ -1,7 +1,6 @@
-// Shared real-fs ConsumerDriver options for tests. Production code threads
-// these through the runtime port at composition (`coordinator/index.ts`);
-// tests opt into the same shape so the constructor can require them
-// without forcing every test site to re-spell ambient timers/clock.
+// Shared real-fs ConsumerDriver options for tests. Tests opt into the same
+// shape so the constructor can require them without forcing every test site
+// to re-spell ambient timers/clock.
 
 import type { TimePort, TimerHandle } from '#src/infra/port-types.js';
 

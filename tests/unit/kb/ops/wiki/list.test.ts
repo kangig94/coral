@@ -79,7 +79,6 @@ describe('listWikis', () => {
     const kb = createRuntime(paths);
     await createWiki(kb, { slug: 'only-wiki' });
 
-    // Inject a non-wiki entry directly into the index.
     const index = kb.readIndex()!;
     kb.writeIndex({
       ...index,

@@ -1,6 +1,5 @@
 /*
-Architectural boundary guard for seams established by:
-- e34d8d8: workflow/ may depend on provider discovery only through src/providers/catalog.ts, not provider implementations or provider internals.
+Architectural boundary guard for seams: workflow/ may depend on provider discovery only through src/providers/catalog.ts, not provider implementations or provider internals.
 This test enforces those boundaries with the TypeScript compiler API and treats import type, export ... from, typeof import('...'), and relative dynamic import('...') as boundary-crossing imports.
 Known non-goals: computed import(variableName) and relative require('...') are intentionally not covered.
 */
@@ -43,10 +42,6 @@ const DEBUG_SIMULATION_SCENARIOS_ROOT = ['tools', 'simulation', 'scenarios'].joi
 const RETIRED_PROVIDERS_CONTINUITY_MUTATION = ['src', 'providers', 'continuity-mutation.ts'].join('/');
 const RETIRED_STATUS_SCHEMA_FAULT = ['stale', 'status', 'schema'].join('_');
 const RETIRED_TEXT_ARTIFACT_LOCK_METHOD = ['ensureTextArtifacts', 'FreshUnderLock'].join('');
-// The snapshot-acknowledgement mechanism went with `87e7a72f`. Its field name was kept out by the wait
-// schemas' `.strict()` until those became `.passthrough()` so a newer coordinator's additive fields stop
-// killing an older CLI's wait. Tolerating an unknown field on the wire is not the same as letting the
-// mechanism back into `src/`, and this is where that second thing is now held.
 const RETIRED_SNAPSHOT_RENDER_FIELD = ['snapshot', 'RenderId'].join('');
 const RETIRED_KB_DAEMON_ARG = '--kb-daemon';
 const RETIRED_KB_DAEMON_PLAINTEXT_SHUTDOWN = 'Plain-text shutdown remains supported';
@@ -325,7 +320,6 @@ function collectKbOperationFailureWriters(): string[] {
 
 describe('architecture boundary guard', () => {
   it('workflow/ may only import from providers/catalog (allowlist of exactly one path)', () => {
-    // Established by e34d8d8.
     const violations = collectViolations(
       WORKFLOW_ROOT,
       'workflow/ may only import from providers/catalog (allowlist of exactly one path)',
@@ -424,10 +418,7 @@ describe('architecture boundary guard', () => {
     expect(coordinatorContracts).not.toContain('interface RecoveryCapableService');
   });
   it('discuss live-boundary predicate stays shell-free', () => {
-    // The `isWithinLiveSessionBoundary` predicate lives in `discuss/events.ts`
-    // alongside `PersistedDiscussSnapshot` (its only input). The earlier
-    // `discuss/recovery-contract.ts` split was over-decomposition; this
-    // invariant ensures the predicate's host file does not pull in shell
+    // This invariant ensures the predicate's host file does not pull in shell
     // types or shell-side helpers.
     const eventsPath = 'src/discuss/events.ts';
     const edges = PARSED_IMPORT_EDGES_BY_SOURCE.get(eventsPath) ?? [];
@@ -469,13 +460,6 @@ describe('architecture boundary guard', () => {
   });
   it('kb paths and read-model reads do not silently choose ambient roots', () => {
     const kbPathSource = readFileSync(resolve(REPO_ROOT, KB_PATHS_MODULE), 'utf8');
-    // kbRoot/kbRuntimeDir are *defined* in kb/paths.ts; what we forbid is
-    // *calling* them as ambient lookups — that is, binding their result without
-    // an explicit `baseDir` second argument. Both `= kbRoot()` (zero-arg) and
-    // `= kbRoot(flavor)` (flavor-only) fall back to env/homedir, so they count
-    // as ambient. Calls that pass a baseDir (`kbRoot(flavor, baseDir)`) are
-    // explicit and allowed. `kbRuntimeDir` accepts no baseDir at all, so any
-    // bound result is ambient.
     expect(kbPathSource).not.toMatch(/=\s*(?:kbRoot|kbRuntimeDir)\s*\(\s*[^,)]*\)/u);
     expect(kbPathSource).not.toContain('currentBuildFlavor');
     expect(collectReadModelAmbientRuntimeAccess()).toEqual([]);
@@ -486,8 +470,8 @@ describe('architecture boundary guard', () => {
   it('large coordinator transport and consumer-driver component stay split by responsibility', () => {
     expect(PRODUCTION_SOURCE_FILES).toContain(PROVIDER_SERVER_TRANSPORT_MODULE);
     expect(PRODUCTION_SOURCE_FILES).toContain(CONSUMER_DRIVER_MODULE);
-    // design-philosophy.md §9.6: cohesive components with enough sibling files
-    // should subdivide under a named directory instead of growing a root magnet.
+    // Cohesive components with enough sibling files should subdivide under a
+    // named directory instead of growing a root magnet.
     expect(PRODUCTION_SOURCE_FILES).toContain('src/projection-consumers/state.ts');
     expect(PRODUCTION_SOURCE_FILES).toContain('src/projection-consumers/persistence.ts');
     expect(PRODUCTION_SOURCE_FILES).toContain('src/projection-consumers/registration.ts');
@@ -658,9 +642,6 @@ describe('architecture boundary guard', () => {
     expect(existsSync(resolve(REPO_ROOT, DEBUG_SIMULATION_SCENARIOS_ROOT))).toBe(true);
   });
   it('test code and test support must stay out of src', () => {
-    // Raw scan that does NOT use `listProductionSourceFiles` (which deliberately
-    // hides `__tests__/`). The invariant must catch the very pattern that
-    // helper hides: every test file and test directory belongs in `tests/`.
     const violations: string[] = [];
 
     function scan(dirPath: string): void {
@@ -761,7 +742,7 @@ describe('architecture boundary guard', () => {
     // engine are private family builders. External src/ callers must go
     // through composeCoralPaths so that flavor-aware path resolution stays
     // funneled through one entry point. KB has a documented exception for
-    // root.ts (cycle-break primitive needed for kbRuntimeDir).
+    // root.ts.
     const COMPOSE_PUBLIC = 'src/infra/path/index.ts';
     const ALLOWED_INTERNAL_IMPORTERS: Record<string, ReadonlySet<string>> = {
       'src/infra/path/root.ts': new Set(['src/kb/paths.ts', 'src/kb/env.ts', 'src/infra/project-source.ts']),
@@ -812,8 +793,7 @@ describe('architecture boundary guard', () => {
     // `index.ts` and `types.ts` are intentionally NOT forbidden: both are valid
     // conventional names with clear semantics (entry point, type vocabulary).
     // Discipline is on *content*, not *name*: if either file grows large or
-    // loses cohesion, it MUST be split. Add a per-file size invariant when a
-    // specific file is at risk (see `providers/contract.ts` cap below).
+    // loses cohesion, it MUST be split.
     const FORBIDDEN_NAME_PATTERN = /\/(?:[\w-]*-)?(?:helper|helpers|shared|shared-utils|utils)\.ts$/u;
     const helperLikeFiles = PRODUCTION_SOURCE_FILES.filter((filePath) => FORBIDDEN_NAME_PATTERN.test(filePath));
     expect(helperLikeFiles).toEqual([]);
@@ -2323,9 +2303,6 @@ function collectRawAuthorityViolations(
   inspections: readonly RecoveryFactoryInspection[],
   violations: RecoveryAuthorityViolation[],
 ): void {
-  // Resolve every authority up front and key them by symbol, so the production tree is walked once
-  // instead of once per authority. Walking per authority meant 12 full passes over 655 files with a
-  // `getSymbolAtLocation` per identifier, which is what pushed this past the CI timeout.
   const authorities = new Map<
     ts.Symbol,
     {

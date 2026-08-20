@@ -1,8 +1,5 @@
 import type { ProcessLiveness } from '#src/infra/node-process.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
-// Unit coverage for the bind/escalation state machine in
-// `src/coordinator/handoff.ts`. All cases use VirtualTime + a stubbed
-// transport-side IPC helper; no real sockets, no real signals.
 
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import {
@@ -20,8 +17,6 @@ import type { Runtime } from '#src/runtime/ports.js';
 import { IncumbentMatchesError, type IncumbentHealth, type IncumbentIdentity } from '#src/transport/ipc/handoff.js';
 import { backendLog } from '#src/infra/backend-log.js';
 
-// We mock `requestIncumbentShutdown` so the handoff state machine sees
-// scripted health/verifiedIdentity outcomes without spinning real IPC.
 vi.mock('#src/transport/ipc/handoff.js', async (importOriginal) => {
   const original = await importOriginal<object>();
   return {
@@ -359,12 +354,10 @@ describe('bindWithHandoff', () => {
     mockedProbe.mockReturnValue(testIncarnation(555_000)); // matched
 
     const promise = bindWithHandoff(options).catch((e: Error) => e);
-    // Burn through the budget so escalation engages.
     for (let i = 0; i < 30; i += 1) {
       await flush();
       time.tick(200);
     }
-    // Allow SIGTERM grace and SIGKILL grace to elapse.
     for (let i = 0; i < (SIGTERM_GRACE_MS + SIGKILL_GRACE_MS) / 200 + 5; i += 1) {
       await flush();
       time.tick(200);
@@ -1009,8 +1002,6 @@ describe('bindWithHandoff', () => {
     }
     await promise;
 
-    // After the budget is exhausted, no further shutdown RPCs should be sent.
-    // The first call is allowed; subsequent ones (after deadline) are not.
     expect(mockedShutdown.mock.calls.length).toBeLessThanOrEqual(2);
   });
 });

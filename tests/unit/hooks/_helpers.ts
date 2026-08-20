@@ -87,7 +87,7 @@ export function createFixture(): HookFixture {
     snapshotDir: join(tmpRoot, 'coral', projectPathKey(projectRoot)),
     // Coral's sandbox-writable /tmp root. In tests it is the fixture's temp root;
     // runHook mirrors it into CORAL_WORK_ROOT_OVERRIDE for the hook subprocess, so
-    // projectTmpDir (now nested under sandboxTmpDir) resolves back to snapshotDir.
+    // projectTmpDir resolves back to snapshotDir.
     workRoot: tmpRoot,
   };
 
@@ -175,8 +175,6 @@ export async function runHookAsync(
   delete env.CORAL_KB_PATH;
   delete env.CLAUDE_CONFIG_DIR;
   delete env.CORAL_WORK_ROOT_OVERRIDE;
-  // Host detection reads these; an ambient value from the shell that launched
-  // vitest would otherwise decide which output shape every hook emits.
   delete env.COPILOT_PLUGIN_ROOT;
   delete env.AI_AGENT;
 
@@ -190,8 +188,6 @@ export async function runHookAsync(
   if (env.HOME !== undefined && !Object.hasOwn(envOverrides, 'USERPROFILE')) {
     env.USERPROFILE = env.HOME;
   }
-  // Coral's /tmp state root (sandboxTmpDir) follows the fixture's TMPDIR in tests
-  // unless a test sets CORAL_WORK_ROOT_OVERRIDE explicitly.
   if (env.TMPDIR !== undefined && !Object.hasOwn(envOverrides, 'CORAL_WORK_ROOT_OVERRIDE')) {
     env.CORAL_WORK_ROOT_OVERRIDE = env.TMPDIR;
   }

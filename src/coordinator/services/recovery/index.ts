@@ -166,7 +166,6 @@ const coordinatorJobRetryPolicies = new WeakMap<
   ) => RecoveryRetryPolicy<RawCoordinatorJobRecoveryEnvelope, CoordinatorRecoveryItem>
 >();
 
-/** Returns the exact-subject coordinator-job retry plan. */
 export function createCoordinatorJobRecoveryRetryPlan(
   db: Database,
   subject: RecoverySubject,
@@ -831,9 +830,7 @@ export function createRecoveryCoordinator(
           }
         };
 
-        // Only an observed absence finalizes. An unanswerable probe used to throw here and reach the walk's
-        // generic catch, which recorded `recovery_parse_failed` — "could not ask" terminalized as "job
-        // failed". It now adopts instead, and the poller below re-asks.
+        // Only an observed absence finalizes.
         if (runtime.process.observeLiveness(runtimeRecord.pid) === 'absent') {
           drainRecoveredProgress();
           await startTrackedFinalization(jobId, signal, (fence) =>
@@ -1233,8 +1230,7 @@ export function createRecoveryCoordinator(
     // Both names, not just the key's. `decodeCanonicalValue` rejects a row whose payload identity disagrees
     // with its key, so those are exactly the rows where the two differ — fencing the key's job alone would
     // hand the payload's job to generic recovery, which can terminalize it while its operation is live. This
-    // is the sibling of the proxy-set fence in `provider-proxy-set/inheritance.ts` and was left key-only when
-    // that one was fixed.
+    // is the sibling of the proxy-set fence in `provider-proxy-set/inheritance.ts`.
     const attributions = attributeUnreadableProviderOperations(progressStore.getDb(), scan.unreadableKeys);
     const unreadableJobIds = attributions.flatMap((attribution) =>
       attribution.jobs.kind === 'known' ? attribution.jobs.values : [],

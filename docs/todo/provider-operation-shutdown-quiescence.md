@@ -6,19 +6,19 @@ on this work and must not carry another partial version of it.
 
 ## The bug
 
-Shutdown calls `stopProviderOperationReconciler()` at `src/coordinator/lifecycle.ts:1226`, five lines
+Shutdown calls `stopProviderOperationReconciler()` at `src/coordinator/lifecycle.ts`, five lines
 before `runShutdownSequence` and therefore before the accepted-request drain begins. That stop unsubscribes
-`subscribeProviderOperationMutations` immediately (`src/coordinator/composition/execution-services.ts:375-380`),
+`subscribeProviderOperationMutations` immediately (`src/coordinator/composition/execution-services.ts`),
 while `ProviderOperationReconciler.stop()` only disables scheduled polling and removes its settlement listener
-(`src/coordinator/services/provider-operation-reconciler.ts:444-452`). It neither fences nor awaits an active
+(`src/coordinator/services/provider-operation-reconciler.ts`). It neither fences nor awaits an active
 serializer; those serializers remain represented only by the per-operation `inFlight` promise
-(`src/coordinator/services/provider-operation-reconciler.ts:732-771`).
+(`src/coordinator/services/provider-operation-reconciler.ts`).
 
 An already accepted drive can therefore commit its journal record to `executing` and publish the provider root
-after the claim-mirror subscription is gone (`src/coordinator/services/provider-operation-reconciler.ts:1581-1650`).
+after the claim-mirror subscription is gone (`src/coordinator/services/provider-operation-reconciler.ts`).
 If its subsequent attach hits a retry-safe failure, the preserve decision reads the stale mirror and can report
-`liveClaims=0` (`src/coordinator/services/provider-proxy-set/index.ts:435-461`). A concurrent retirement then
-uses the same zero-claim view to authorize stop-and-reap (`src/coordinator/services/provider-proxy-set/index.ts:883-893`),
+`liveClaims=0` (`src/coordinator/services/provider-proxy-set/index.ts`). A concurrent retirement then
+uses the same zero-claim view to authorize stop-and-reap (`src/coordinator/services/provider-proxy-set/index.ts`),
 killing an operation whose durable claim was committed but never reached the mirror.
 
 ## This is pre-existing
@@ -30,7 +30,7 @@ consumed `claimsFor(...).length === 0`. Removing the inline drain therefore rest
 does not regress the shutdown ordering or those retirement checks.
 
 This branch does add one more mirror reader: recovered `unclaimed_discovery` now checks `liveClaims === 0`
-before authorizing retirement (`src/coordinator/services/provider-proxy-set/index.ts:856-860`). At the merge
+before authorizing retirement (`src/coordinator/services/provider-proxy-set/index.ts`). At the merge
 base that path contained the discovered set unconditionally, so the new guard does not make that path more
 aggressive than the old behavior. It does, however, make the stale-mirror defect part of one more authority
 decision and must be included in the eventual regression matrix.
@@ -42,12 +42,12 @@ control-established reconciliation, `reconcile()`, and disappearance admission, 
 admission spans more than that class:
 
 - Provider-event application can write `settlement-pending` through `markSettlementPending`
-  (`src/coordinator/services/provider-event-application.ts:393-412`) without passing through the reconciler
+  (`src/coordinator/services/provider-event-application.ts`) without passing through the reconciler
   fence.
-- `requestStop()` enters `#requestControlIntent` (`src/coordinator/services/provider-operation-reconciler.ts:642-650`),
-  whose compare-and-swap writes (`:1849-1913`) were not fenced or tracked.
+- `requestStop()` enters `#requestControlIntent` (`src/coordinator/services/provider-operation-reconciler.ts`),
+  whose compare-and-swap writes were not fenced or tracked.
 - `withBudget` skips a task entirely when no drain budget remains
-  (`src/coordinator/shutdown.ts:86-97`), so the drain was not guaranteed to run at all.
+  (`src/coordinator/shutdown.ts`), so the drain was not guaranteed to run at all.
 - On budget expiry, the implementation aborted only each serializer's `activeAbort`. Disappearance delivery
   was tracked by a separate non-rejecting join and received no abort signal, so expiry could return while that
   mutation continued unsignalled.

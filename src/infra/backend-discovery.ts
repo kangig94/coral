@@ -48,7 +48,7 @@ export type DiscoveryRuntime = {
   paths: { readonly coral: CoralPaths };
 };
 
-/** Where a record that names no host is assumed to be listening. Exported because two readers now need it. */
+/** Where a record that names no host is assumed to be listening. */
 export const DEFAULT_DISCOVERY_HOST = '127.0.0.1';
 
 const nonEmptyStringSchema = z.string().min(1);
@@ -111,8 +111,7 @@ export function writeDiscoveryRecord(record: CoordinatorDiscoveryRecord, runtime
 }
 
 /**
- * What the discovery file says, in the three shapes it can say it. `null` used to serve for all three and
- * that is what `probeCoordinator` then turned into a false "nobody is there": only `missing` is a statement
+ * What the discovery file says, in the three shapes it can say it. Only `missing` is a statement
  * that no coordinator claimed this socket. `undecodable` is a file that exists and could not be read as a
  * record — truncated mid-write, or written by a build whose shape this one rejects — which says nothing about
  * whether a coordinator is running.
@@ -122,14 +121,9 @@ export function writeDiscoveryRecord(record: CoordinatorDiscoveryRecord, runtime
  * are not statements about the incumbent — they are this process being unable to read its own run directory —
  * and making them a variant would ask every caller to invent a policy for a condition none of them can act on.
  *
- * Throwing is not silence here, which is the usual objection — but the argument for that was written once
- * with a survey that missed a caller, so state it as an obligation rather than a fact. The coordinator paths
- * are on startup, where failing loudly beats continuing on an unread file. The CLI paths must each render it:
- * `backend status` and `backend shutdown` reach `src/cli/run.ts`'s top-level handler, and
- * `cli/expansion/index.ts` catches it into its own `unreadable` status. A future caller that wraps this in a
- * blanket `catch` reintroduces exactly the collapse this type exists to end — `cli/expansion` did, and the
- * previous version of this paragraph asserted the opposite because it enumerated two callers and there were
- * three.
+ * The coordinator paths are on startup, where failing loudly beats continuing on an unread file. The CLI
+ * paths must each render it. A future caller that wraps this in a blanket `catch` reintroduces exactly the
+ * collapse this type exists to end.
  */
 export type DiscoveryRead =
   | Readonly<{ kind: 'record'; record: CoordinatorDiscoveryRecord }>
@@ -158,13 +152,8 @@ export function readDiscoveryRecordDisposition(runtime: DiscoveryRuntime): Disco
 }
 
 /**
- * The record, or `null` for every reason there might not be one — deliberately not exported.
- *
- * Every caller that reached for it outside this file turned out to be deciding whether an incumbent exists,
- * and the flattening is exactly what made three of them report a confident absence from evidence they could
- * not read. The two remaining uses are below and neither decides that: `readBackendInfo` narrows a record it
- * already has, and `removeBackendInfoIfOwner` refuses on anything it cannot attribute. Anything else wants
- * `readDiscoveryRecordDisposition`, and keeping this private is what makes that the only door.
+ * The record, or `null` for every reason there might not be one — deliberately not exported. Anything else
+ * wants `readDiscoveryRecordDisposition`, and keeping this private is what makes that the only door.
  */
 function readDiscoveryRecord(runtime: DiscoveryRuntime): CoordinatorDiscoveryRecord | null {
   const read = readDiscoveryRecordDisposition(runtime);
@@ -172,41 +161,17 @@ function readDiscoveryRecord(runtime: DiscoveryRuntime): CoordinatorDiscoveryRec
 }
 
 /**
- * What a discovery probe can report about the recorded coordinator — three answers, because there are three,
- * and because there are two independent ways to fail to reach one. The pid can be unobservable; so can the
- * record itself. An earlier version split only the pid, and an undecodable file still reported a confident
- * absence.
+ * The pid can be unobservable; so can the record itself.
  *
- * Two other sites ask *this* question — whether an incumbent exists — without this type:
- * `transport/http/backend/coordinator-observation.ts`, which answers it once for `backend status` and
- * `backend shutdown` both, and `cli/expansion/index.ts`. Each keeps its own shape for a reason of its own:
- * the observation reports the absent case with the dead record's `pid` and `startedAt`, which `absent` does
- * not carry, and `cli/expansion` answers about expansions rather than about a coordinator. Both consult
- * `readDiscoveryRecordDisposition` and neither collapses an unreadable record into an absence.
- *
- * **Re-derive that list rather than trusting it.** `trace_path` over `readDiscoveryRecordDisposition` is the
- * check. This paragraph has been wrong three times: twice it undercounted, and each time the site it missed
- * was answering a confident absence from a file it could not read; the third time it overcounted, still
- * naming `status.ts` and `shutdown.ts` separately after they were merged into one observation — so the count
- * is evidence of nothing on its own, and only the trace settles it.
- *
- * `readBackendInfo`'s remaining callers ask something else, which is the distinction rather than an omission.
- * `coordinator/ownership-checker.ts` asks whether someone *replaced* it, and is the shape this type argues
- * for: it acts only on a positive observation (a record naming a different `instanceId`) and says out loud
- * that an absent record is a deleted file, not a takeover. `tools/simulation` is a harness.
- *
- * The rule those three follow, stated once because it is what the sites have in common rather than their
- * shape: the record axis and the process axis fail independently, and neither one failing is the other one
+ * The record axis and the process axis fail independently, and neither one failing is the other one
  * answering. `readBackendInfo`'s `null` covers a missing file, an undecodable one, *and* a record omitting
  * `version`/`instanceId`, so anything gating on it reports a confident `not_running` from evidence it could
- * not read — which is why none of the three uses it. It stays exported regardless: `ownership-checker.ts`'s
- * replacement check and the `tools/simulation` harness named above both call it directly, and
- * `coordinator/lifecycle.ts` imports it only to hand it to the ownership checker.
+ * not read.
  *
- * What binds all three is the rule rather than the shape: only an observed `'absent'` is an absence. There is
- * no invariant test behind that sentence and one was tried — see the rejection recorded in
- * `tests/invariants/liveness-is-never-a-boolean.test.ts`. The rule is held by these return types and by the
- * tests that assert what each variant does, so a fourth site adding itself is caught by review, not by a scan.
+ * Only an observed `'absent'` is an absence. There is no invariant test behind that sentence and one was
+ * tried — see the rejection recorded in `tests/invariants/liveness-is-never-a-boolean.test.ts`. The rule is
+ * held by these return types and by the tests that assert what each variant does, so a fourth site adding
+ * itself is caught by review, not by a scan.
  */
 export type CoordinatorProbe =
   /** A record exists and its pid names a live process. */
@@ -224,30 +189,18 @@ export type CoordinatorProbe =
   | Readonly<{ kind: 'unobservable'; reason: 'unreadable-process'; record: CoordinatorDiscoveryRecord }>;
 
 /**
- * The record's `incarnation` is not compared here, and the reason is narrower than it once was.
+ * The record's `incarnation` is not compared here.
  *
- * The old rationale — that the derived value carried a per-process clock term and so was not
- * comparable across processes — died with the token: two processes now derive the same bytes for the
- * same incarnation. What survives is the second half. Rejecting the record discards the `bootToken`
+ * Rejecting the record discards the `bootToken`
  * beside it, and a contender without that token cannot ask the incumbent to stand down, so this
  * function must keep returning a record whose pid it cannot vouch for.
  *
- * That makes this a read, not an authorization. Comparing the recorded token became possible with the
- * token and belongs at the sites that act on the pid, where a mismatch can refuse a signal without
- * also destroying the credential that makes a peaceful handoff possible.
+ * That makes this a read, not an authorization. Comparing the recorded token belongs at the sites
+ * that act on the pid, where a mismatch can refuse a signal without also destroying the credential
+ * that makes a peaceful handoff possible.
  *
- * Nothing here acts on `pid`. This returns a token and a socket path, and a record whose pid was recycled is
- * safe to return only because of what the *signalling* sites do with it: `verifySignalTarget`
- * (`coordinator/handoff.ts`) requires a published incarnation that matches a live probe, and refuses
- * otherwise. Health may fill that in when the record is silent, but only for the same pid
- * (`verifiedIncumbentFromDiscovery`) — the pid agreement is what ties two statements to one process. The IPC
- * side is not the guarantee: a connect can succeed and its shutdown still fail authentication, and ping is
- * unauthenticated. Do not read this paragraph as licence to relax either check.
- *
- * The probe is a cheap filter, and it reports rather than decides. An earlier version of this comment ended
- * "nothing downstream may treat it as proof" while the return type was `record | null` — which left a caller
- * no way to obey, because "no record" and "could not observe this pid" arrived as the same value. Do not
- * collapse it back for being three-shaped.
+ * The probe is a cheap filter, and it reports rather than decides. Do not collapse it back for being
+ * three-shaped.
  *
  * `observeProcessLiveness` rather than `probeProcessIncarnation`: liveness is the whole question here, it is
  * the answer this reader can reach alone, and it is one `kill(pid, 0)` where the incarnation probe would fork
@@ -308,12 +261,12 @@ export function readBackendInfo(runtime: DiscoveryRuntime): BackendInfo | null {
 export function removeBackendInfoIfOwner(owner: string, runtime: DiscoveryRuntime): void {
   const record = readDiscoveryRecord(runtime);
   if (!record) {
-    return; // unreadable or absent — not ours to remove
+    return;
   }
 
   if (record.instanceId !== undefined) {
     if (record.instanceId !== owner) {
-      return; // names another instance
+      return;
     }
   } else if (record.token !== owner) {
     return; // predates `instanceId`, and its token names another writer

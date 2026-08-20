@@ -548,7 +548,7 @@ describe('cli main routing', () => {
     // `backend status` never set an exit code before this, so `backend status && <destructive op>` read every
     // outcome — including "state is unknown" — as permission to proceed. Only the two statuses that mean the
     // state genuinely could not be determined get a non-zero exit; every confidently observed answer, even bad
-    // news like `not_running`, stays exit 0. Two rows only: `ok` needs a full `BackendHealth` fixture that adds
+    // news like `not_running`, stays exit 0. `ok` needs a full `BackendHealth` fixture that adds
     // nothing here — the lookup is a plain object index, so proving the wiring works for one exit-0 and one
     // exit-75 status is what the completeness test below cannot itself prove.
     it.each([
@@ -562,7 +562,7 @@ describe('cli main routing', () => {
       expect(process.exitCode).toBe(expected);
     });
 
-    // The rows above only cover two of the seven `BackendStatusFull['status']` values — this is the complete
+    // The rows above only cover two of the `BackendStatusFull['status']` values — this is the complete
     // statement, independent of the it.each rows, mirroring `SHUTDOWN_REFUSAL_EXIT_CODES`'s own completeness
     // test: a new status gets an exit code in the production table and no row here, and that is the shape of
     // every "the list is exhaustive" claim this branch found to be stale.

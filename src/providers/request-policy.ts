@@ -7,8 +7,8 @@ export const ABSTRACT_MODEL_TIERS: Record<string, number> = { haiku: 1, sonnet: 
 
 /**
  * Validate an effort string supplied directly on a request (a contract input).
- * Returns undefined when unset; throws on a non-empty invalid value so the
- * caller error surfaces at ingress/launch rather than mid-job.
+ * Throws on a non-empty invalid value so the caller error surfaces at
+ * ingress/launch rather than mid-job.
  */
 function parseEffortLevel(value: string | undefined, label: string): EffortLevel | undefined {
   if (value === undefined) return undefined;
@@ -21,7 +21,7 @@ function parseEffortLevel(value: string | undefined, label: string): EffortLevel
 /**
  * Validate an effort string read from forwarded CORAL_* env. Unlike the
  * request-body path, a typo in a provider-specific effort override in a caller's
- * settings) must not fail the provider turn — the value now travels per request,
+ * settings must not fail the provider turn — the value now travels per request,
  * so a mistake would otherwise kill every job. Warn once and ignore it so the
  * fallback chain reaches the provider default.
  */
@@ -34,11 +34,7 @@ function parseEnvEffortLevel(value: string | undefined, label: string): EffortLe
   return value as EffortLevel;
 }
 
-/**
- * Validate the effort level supplied directly on a request. Returns undefined
- * when the caller did not specify one — each provider adapter then applies
- * its own env-aware fallback chain at the boundary.
- */
+/** Each provider adapter then applies its own env-aware fallback chain at the boundary. */
 export function resolveEffort(requestEffort: string | undefined): EffortLevel | undefined {
   return parseEffortLevel(requestEffort, 'effort');
 }
@@ -55,7 +51,7 @@ export function resolveProviderEffort(
   );
 }
 
-/** Resolve abstract model tiers. Returns undefined for abstract tiers (provider decides). */
+/** Returns undefined for abstract tiers (provider decides). */
 export function resolveModelTier(
   model: string | undefined,
   cap?: string,

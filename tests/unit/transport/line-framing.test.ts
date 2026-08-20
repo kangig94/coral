@@ -17,9 +17,8 @@ describe('createLineFramer', () => {
   it('throws FrameTooLargeError when an unterminated frame exceeds MAX_FRAME_BYTES', () => {
     const framer = createLineFramer();
     const chunkSize = 1024 * 1024;
-    const chunk = Buffer.alloc(chunkSize, 0x61); // 'a' bytes, no newline
+    const chunk = Buffer.alloc(chunkSize, 0x61);
 
-    // First MAX_FRAME_BYTES / chunkSize chunks accumulate up to the cap.
     let cumulative = 0;
     for (let i = 0; i < MAX_FRAME_BYTES / chunkSize; i += 1) {
       framer.push(chunk);
@@ -27,7 +26,6 @@ describe('createLineFramer', () => {
     }
     expect(cumulative).toBe(MAX_FRAME_BYTES);
 
-    // The next byte without a newline must exceed the cap and throw.
     expect(() => framer.push('x')).toThrowError(FrameTooLargeError);
   });
 

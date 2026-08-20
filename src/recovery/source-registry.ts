@@ -60,7 +60,6 @@ export interface RecoverySourceRegistry {
   ): Promise<RecoveryReport<unknown>>;
 }
 
-/** Holds the runtime-owned, exact-subject factories used by operator retries. */
 export function createRecoverySourceRegistry(): RecoverySourceRegistry {
   const factories = new Map<RepeatableRecoveryBoundaryId, RegisteredRecoverySourceFactory>();
 

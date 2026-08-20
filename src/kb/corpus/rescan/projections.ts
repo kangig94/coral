@@ -64,9 +64,7 @@ export type KbReindexWikiRecord = KbWikiFrontmatter & {
 };
 
 /**
- * Aggregates detected incidents across every typed detector. Pure projection over
- * `CorpusScanView`; does not touch storage. Callers feed the result to
- * `applyDetectedIncidentFixesLocked` (under the mutation lock).
+ * Pure projection over `CorpusScanView`; does not touch storage.
  */
 export function projectIncidents(scan: CorpusScanView): DetectedIncident[] {
   const incidents: DetectedIncident[] = [];

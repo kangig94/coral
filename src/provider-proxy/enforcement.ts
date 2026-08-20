@@ -24,10 +24,7 @@ export type EnforcementOutcome =
   | Readonly<{ kind: 'containment-absent'; disappearanceReceipt: string }>
   | Readonly<{ kind: 'reap-failed'; reason: string }>;
 
-/**
- * How many distinct provider processes one containment may hold as teardown targets. It bounds a signal
- * sweep and a receipt — the only things that read it — rather than counting operations, which nothing does.
- */
+/** How many distinct provider processes one containment may hold as teardown targets. */
 export const MAX_PROXY_RECORDED_PROVIDER_ROOTS = 128;
 
 export type EnforcementErrorCode = 'provider_root_cap_exceeded';

@@ -182,7 +182,7 @@ type ResolveReason = (typeof resolveReasons)[number];
 
 /**
  * Sealed-bid design: individual bid scores are never returned to any caller.
- * The audit trail (all_bids) lives in transcript entries only.
+ * The audit trail lives in transcript entries only.
  */
 export type ResolveResult =
   | { winner: string; step?: never; speaker_type: SpeakerType }

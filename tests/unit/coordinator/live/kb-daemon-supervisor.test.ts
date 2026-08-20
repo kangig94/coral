@@ -271,7 +271,6 @@ describe('KB daemon supervisor', () => {
     void supervisor.start();
     await flushMicrotasks();
 
-    // First start → generation 1, not the stale inherited 999.
     expect(spawnCalls[0]?.envAdditions).toMatchObject({ CORAL_KB_DAEMON_GENERATION: '1' });
   });
 

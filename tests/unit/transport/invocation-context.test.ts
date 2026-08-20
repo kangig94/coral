@@ -84,7 +84,6 @@ describe('buildControllerEnv coralEnv forwarding', () => {
     );
 
     expect(env.CORAL_CODEX_MODEL).toBe('gpt-5.6-sol');
-    // Daemon flavor wins over the caller-supplied one; forged lineage is ignored.
     expect(env.CORAL_FLAVOR).toBe('prod');
     expect(env).not.toHaveProperty('CORAL_JOB_ID');
   });
@@ -109,7 +108,6 @@ describe('buildControllerEnv coralEnv forwarding', () => {
       { coralEnv: { CORAL_CODEX_MODEL: 'gpt-5.6-sol', CORAL_KB_ENABLE: '1' } },
       { CORAL_KB_ENABLE: '0' },
     );
-    // The daemon booted KB disabled; a forwarded CORAL_KB_ENABLE=1 must not flip it.
     expect(env.CORAL_KB_ENABLE).toBe('0');
     expect(env.CORAL_CODEX_MODEL).toBe('gpt-5.6-sol');
   });

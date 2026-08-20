@@ -222,7 +222,6 @@ describe('refs.workflowId producer invariant', () => {
     expect(plainEvent?.refs?.workflowId).toBeUndefined();
     expect(plainEvent?.refs?.parentJobId).toBeUndefined();
 
-    // Structural invariant: every launch with workflowSlotId carries workflowId.
     for (const event of events) {
       if (event.refs?.workflowSlotId !== undefined) {
         expect(event.refs.workflowId).toBeDefined();

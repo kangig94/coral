@@ -420,10 +420,6 @@ export async function initializeCurateStateIfNeeded(kb: KbRuntime): Promise<void
     syncIndex(kb, nextIndex, scannedNotes, scannedSources);
     reconcileSeqs(kb, indexState, highestAssignedEntrySeq);
 
-    // Sweep typed-incident rows that bootstrap's own rewrites resolved (e.g. assignEntrySeqs
-    // satisfying frontmatter-shape/missing-required-fields for entrySeq). Mirrors the rebuild
-    // pipeline's post-rebuild cleanup so persistState observes a queue that reflects the
-    // post-bootstrap corpus state.
     const postRewriteIncidents = projectIncidents(buildCorpusScanView(kb));
     const stillDetected = new Set<string>();
     for (const incident of postRewriteIncidents) {

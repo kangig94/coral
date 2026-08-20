@@ -810,7 +810,6 @@ export class SessionManager {
     return true;
   }
 
-  /** Release job claim: clear activeJobId. */
   releaseJob(sessionId: string, jobId: string): SessionJobClaimReleaseResult {
     const entry = this.readEntry(sessionId);
     if (!entry || entry.activeJobId === undefined) return 'already_absent';
@@ -851,7 +850,6 @@ export class SessionManager {
     return entry;
   }
 
-  /** List all sessions for a provider. */
   list(provider: string): ProviderSession[] {
     const entries = listProjectionSessionEntries(this.db, provider, this.scopeKey);
     this.knownSessionIds.clear();

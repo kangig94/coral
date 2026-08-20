@@ -5,10 +5,10 @@ import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 /**
  * `SemanticOperationRuntime.shutdown` (BLOCKING B6) coverage, kept in its own file rather than added to the
- * canonical `semantic-operation.test.ts`: that file is another agent's concurrent territory for the duration
- * of this fix. The mocking technique below (`#src/providers/bootstrap.js`'s `createBuiltInProviderRegistry`,
- * `#src/providers/app-server-transport.js`'s `spawnProviderServerTransport`) mirrors that file's own, proven
- * approach for driving `createSemanticOperationRuntime` without a real provider process.
+ * canonical `semantic-operation.test.ts`. The mocking technique below (`#src/providers/bootstrap.js`'s
+ * `createBuiltInProviderRegistry`, `#src/providers/app-server-transport.js`'s `spawnProviderServerTransport`)
+ * mirrors that file's own, proven approach for driving `createSemanticOperationRuntime` without a real
+ * provider process.
  */
 
 const providerRegistryDouble = vi.hoisted(() => ({
@@ -237,7 +237,6 @@ describe('semantic-operation runtime: shutdown (BLOCKING B6)', () => {
     const start = host.host.start({ key, prepared });
     await expect(start.result).resolves.toEqual({ kind: 'started', hostRef: fakeHostRef() });
 
-    // Still running: nothing has released the staged session yet.
     expect(closeStaged).not.toHaveBeenCalled();
 
     await host.shutdown('signal_abort');

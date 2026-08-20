@@ -11,19 +11,19 @@ protocols: `wait`'s exit integer, and the `jobs` table's column layout.
 
 ### Evidence that these are one problem, not two that resemble each other
 
-`toExitCode` (`src/cli/follow.ts:201-214`) maps a job's terminal outcome onto `wait`'s own exit code and
+`toExitCode` (`src/cli/follow.ts`) maps a job's terminal outcome onto `wait`'s own exit code and
 passes a provider's status through `normalizeExitCode` across the full 0–255 range. Coral separately
-reserves **75** for "still running" (`src/cli/errors.ts:98`).
+reserves **75** for "still running" (`src/cli/errors.ts`).
 
 A reserved code and a 0–255 passthrough cannot coexist — every value the reservation could take is a
 value a child can produce. This is not hypothetical: **six** skill documents already carry the
 workaround in prose.
 
-> `ralph/SKILL.md:176` — "classify each result from its rendered output, **not exit code `75` alone** …
+> `clients/skills/ralph/SKILL.md` — "classify each result from its rendered output, **not exit code `75` alone** …
 > even when a terminal `provider_exit` propagated code `75`."
 
-The same sentence appears in `analyze` (`:65`), `bugfix` (`:27`), `code-simplify` (`:69`, plus a second
-phrasing at `:75`), `preplan` (`:151`), `plan` (`:161`), and twice in `ralph` (`:176`, `:205`) — eight
+The same sentence appears in `analyze`, `bugfix`, `code-simplify` (plus a second
+phrasing), `preplan`, `plan`, and twice in `ralph` — eight
 sites across six documents. Six documents instructing agents to ignore the exit code is the system
 reporting that the channel is full.
 

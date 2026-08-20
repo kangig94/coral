@@ -2890,7 +2890,6 @@ describe('curate', () => {
       });
       expect(readCurateRetryQueue(curateDb(runtime)).map((repair) => repair.entryId)).toContain('note:coral-malformed');
 
-      // Topology materialized generated projection docs without summaries; stale communities await the agent.
       const communityDocs = generatedCommunityRecords();
       expect(communityDocs.length).toBeGreaterThan(0);
       expect(communityDocs.every((record) => !record.content.includes('## Summary'))).toBe(true);
@@ -2939,12 +2938,10 @@ describe('curate', () => {
       await runtime.writeEntityGraph({ entityMeta, relationships });
       writeCurateState(curateDb(runtime), createCurateState({ initialized: true }));
 
-      // Round 1: topology materializes community docs without summaries.
       useScheduler();
       await expect(internals.runCommunitySubphase()).resolves.toBe(true);
       expect(readCommunityFingerprints().every((fp) => fp === undefined)).toBe(true);
 
-      // Simulate the agent applying a summary (sets fingerprint server-side).
       const firstGenerated = generatedCommunityRecords()[0];
       if (firstGenerated === undefined) {
         throw new Error('Expected generated community projection records.');
@@ -2960,7 +2957,6 @@ describe('curate', () => {
       // freshness gate reopens and the agent re-summarizes unchanged work.
       expect(readCommunityFingerprints().every((fp) => fp !== undefined)).toBe(true);
 
-      // Round 2: topology rebuild carries the prior fingerprint; no LLM call.
       await expect(internals.runCommunitySubphase()).resolves.toBe(true);
       expect(readCommunityFingerprints().every((fp) => fp !== undefined)).toBe(true);
     });
@@ -3008,11 +3004,9 @@ describe('curate', () => {
       await runtime.writeEntityGraph({ entityMeta: metaA, relationships: relsA });
       writeCurateState(curateDb(runtime), createCurateState({ initialized: true }));
 
-      // Topology run materializes cluster A docs without summaries.
       useScheduler();
       await expect(internals.runCommunitySubphase()).resolves.toBe(true);
 
-      // Simulate the agent applying summaries to cluster A communities.
       const clusterARecords = generatedCommunityRecords();
       for (const record of clusterARecords) {
         await applyCommunitySummary(runtime, record.slug, 'Cluster A summary.');
@@ -3123,7 +3117,6 @@ describe('curate', () => {
       useScheduler();
       await expect(internals.runCommunitySubphase()).resolves.toBe(true);
 
-      // Topology only: no summary, no frontmatter fingerprint.
       const communityDocs = generatedCommunityRecords();
       expect(communityDocs.length).toBeGreaterThan(0);
       const generatedFrontmatter = generatedCommunityFrontmatters();
@@ -3176,7 +3169,6 @@ describe('curate', () => {
 
       useScheduler();
 
-      // Simulate a topology failure by making the mutation lock throw.
       const lockSpy = vi.spyOn(runtime, 'withMutationLock').mockRejectedValueOnce(new Error('topology failed'));
 
       await expect(internals.runCommunitySubphase()).rejects.toThrow('topology failed');
@@ -3195,7 +3187,6 @@ describe('curate', () => {
 
       const docsAfterRecovery = generatedCommunityRecords();
       expect(docsAfterRecovery.length).toBeGreaterThan(0);
-      // Topology only: docs are written without summaries.
       expect(docsAfterRecovery.every((record) => !record.content.includes('## Summary'))).toBe(true);
       expect(readCurateState(curateDb(runtime))).toMatchObject({
         consecutiveClaimFailures: 2,
@@ -3267,7 +3258,6 @@ describe('curate', () => {
       expect(captureSnapshotSpy.mock.calls.length).toBeGreaterThan(snapshotsAfterStart);
 
       await settleCurateRuntime(scheduler);
-      // Topology docs written by the generated projection lifecycle without summaries.
       expect(generatedCommunityRecords().length).toBeGreaterThan(0);
     });
 
@@ -3306,7 +3296,6 @@ describe('curate', () => {
       await runtime.writeEntityGraph({ entityMeta, relationships });
       writeCurateState(curateDb(runtime), createCurateState({ initialized: true }));
 
-      // The summary job runs after topology and reports it wrote summaries.
       let topologyExistedWhenCalled = false;
       const summaryJob = vi.fn<RunCommunitySummaryJob>(async () => {
         topologyExistedWhenCalled = generatedCommunityRecords().length > 0;
@@ -3336,10 +3325,8 @@ describe('curate', () => {
       await scheduler.start();
       await settleCurateRuntime(scheduler);
 
-      // Index rebuilt
       expect(runtime.readIndex()).not.toBeNull();
 
-      // Curate state initialized
       const state = readCurateState(curateDb(runtime));
       expect(state.initialized).toBe(true);
     });
@@ -3382,11 +3369,9 @@ describe('community summary agent surface', () => {
     await runtime.writeEntityGraph({ entityMeta, relationships });
     writeCurateState(curateDb(runtime), createCurateState({ initialized: true }));
 
-    // Materialize community topology docs (no summaries; subphase is topology-only).
     useScheduler();
     await expect(internals.runCommunitySubphase()).resolves.toBe(true);
 
-    // Apply a summary for each generated community via the surface so nothing is stale.
     const records = generatedCommunityRecords();
     expect(records.length).toBeGreaterThan(0);
     for (const record of records) {
@@ -3411,7 +3396,6 @@ describe('community summary agent surface', () => {
     });
     expect(listStaleCommunities(runtime).some((community) => community.slug === slug)).toBe(true);
 
-    // The agent reads the input context for that community.
     const input = readCommunitySummaryInput(runtime, slug);
     expect(input).not.toBeNull();
     expect(input?.input).toContain('graph-rag');

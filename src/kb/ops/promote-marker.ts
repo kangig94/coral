@@ -5,10 +5,6 @@ import { KB_RUNTIME_AUTHORITY } from '../../runtime/kb-runtime-authority.js';
 
 export const PROMOTE_MARKER_VERSION = 1 as const;
 
-/**
- * Promote-recovery marker phase. Recovery dispatches on this enum at startup
- * and either rolls forward or rolls back per the AC31 recovery semantics.
- */
 export type PromoteRecoveryPhase =
   | 'marker-created'
   | 'payloads-staged'
@@ -18,11 +14,7 @@ export type PromoteRecoveryPhase =
   | 'memo-removed'
   | 'cleanup-complete';
 
-/**
- * Versioned on-disk marker schema. Every transition is written via
- * tmp+fsync+rename+parent-fsync; recovery reads the latest marker plus the
- * staged payloads and backups to reconstruct the durable state.
- */
+/** Every transition is written via tmp+fsync+rename+parent-fsync. */
 export interface PromoteRecoveryMarker {
   version: typeof PROMOTE_MARKER_VERSION;
   promoteId: string;

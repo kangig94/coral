@@ -1,7 +1,4 @@
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
-// Unit coverage for the transport-owned `requestIncumbentShutdown` helper:
-// absolute deadline behavior across connect+ping+shutdown, compatible-incumbent
-// detection, and the IpcDeadlineExceededError surface.
 
 import { afterEach, describe, expect, it } from 'vitest';
 import { createServer, type Server as NetServer } from 'node:net';
@@ -274,7 +271,6 @@ describe('requestIncumbentShutdown', () => {
   it('absolute deadline: slow connect+hung-response does NOT receive a fresh full timeout', async () => {
     const socketPath = makeSocketPath('hung');
     await startScriptedServer(socketPath, async () => {
-      // Hang forever on every request.
       return null;
     });
 
@@ -292,7 +288,6 @@ describe('requestIncumbentShutdown', () => {
     // implementation bounds to a single budget multiple. Allow ample slack
     // for parallel-test event-loop contention.
     expect(elapsed).toBeLessThan(900);
-    // Health was unreachable; helper returns null health and null verifiedIdentity.
     expect(result.health).toBeNull();
     expect(result.verifiedIdentity).toBeNull();
   });

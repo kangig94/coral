@@ -1,15 +1,8 @@
 /**
- * Environment sanitization primitives.
- *
  * Prevents E2BIG (execve argument-list-too-long) in environments with large
  * env blocks — common in Kubernetes where service discovery, ConfigMaps, and
  * Secrets can push process.env to hundreds of KB while ARG_MAX may be as low
  * as 128KB.
- *
- * Strategy: size-budget with pure size-based shedding.
- * - If total env fits within budget → pass everything unchanged.
- * - If over budget → drop the largest vars first until it fits.
- * - Passthrough set protects specific vars from being shed.
  *
  * This module also owns the CORAL_* env vocabulary that crosses the child /
  * wire boundary: which keys the daemon strips from an inherited env
@@ -35,13 +28,6 @@ let cachedBudgetBytes: number | undefined;
 /**
  * Resolve the system's ARG_MAX and derive an env budget (80% of ARG_MAX,
  * leaving 20% headroom for argv, the executable path, and padding).
- *
- * Detection order:
- * 1. /proc/sys/kernel/argmax (Linux, no subprocess)
- * 2. `getconf ARG_MAX` (POSIX, cross-platform)
- * 3. Fallback: 2MB (standard Linux default)
- *
- * Result is computed lazily on first call and cached.
  */
 export function resolveEnvBudgetBytes(): number {
   if (cachedBudgetBytes !== undefined) return cachedBudgetBytes;
@@ -64,7 +50,6 @@ export function resolveEnvBudgetBytes(): number {
     }
   }
 
-  // 3. Fallback
   if (!argMax || Number.isNaN(argMax) || argMax <= 0) {
     argMax = ENV_BUDGET_FALLBACK_BYTES;
   }
@@ -73,7 +58,6 @@ export function resolveEnvBudgetBytes(): number {
   return cachedBudgetBytes;
 }
 
-/** Parse comma-separated CORAL_ENV_PASSTHROUGH value into a set of protected var names. */
 export function parsePassthrough(raw: string | undefined): Set<string> {
   if (!raw) return new Set<string>();
   const passthrough = new Set<string>();
@@ -95,11 +79,6 @@ export function measureEnv(env: Record<string, string>): number {
   return size;
 }
 
-/**
- * Drop the largest env vars until total size fits within budget.
- * Vars in the passthrough set are never dropped.
- * Returns the original object unchanged if already within budget.
- */
 function shedIfOverBudget(
   base: Record<string, string>,
   budget: number,
@@ -153,7 +132,6 @@ function stripInternalCoralKeys(env: Readonly<Record<string, string>>): Record<s
 /**
  * `CORAL_*` keys the daemon owns and a caller may never set through the
  * per-request `coralEnv` forwarding channel (see `filterForwardableCoralEnv`).
- * A key lands here for one of two reasons:
  *
  * - Identity / auth / lineage. `CORAL_CHILD_PRINCIPAL_HANDLE` is minted per
  *   child by the daemon, `CORAL_JOB_ID` / `CORAL_SESSION_ID` are set from the
@@ -193,15 +171,12 @@ export function invocationCoralEnvSnapshot(source: Readonly<Record<string, strin
   return snapshot;
 }
 
-/** True when `key` is a `CORAL_*` config key a caller may forward per request. */
 export function isForwardableCoralEnvKey(key: string): boolean {
   return key.startsWith('CORAL_') && !DAEMON_OWNED_CORAL_ENV_KEYS.has(key);
 }
 
 /**
- * Pick the caller's forwardable `CORAL_*` config from an env snapshot: keys that
- * pass {@link isForwardableCoralEnvKey}, with non-empty string values. Empty
- * values are dropped so an exported-but-empty var reads as "unset" (the daemon
+ * Empty values are dropped so an exported-but-empty var reads as "unset" (the daemon
  * then falls back to its code default) rather than masking that default.
  */
 export function filterForwardableCoralEnv(source: Record<string, string | undefined>): Record<string, string> {
@@ -238,10 +213,8 @@ export function readForwardedCoralEnv(value: unknown): Record<string, string> | 
 const RESERVED_CORAL_ENV_KEYS = [...DAEMON_OWNED_CORAL_ENV_KEYS].join(', ');
 
 /**
- * Request-body schema for the forwarded `CORAL_*` config map: non-reserved
- * `CORAL_*` keys, non-empty string values. The key refinement is the
- * reject-reserved-keys guard at RPC ingress; `buildControllerEnv` re-applies
- * {@link readForwardedCoralEnv} defensively on the raw body before use.
+ * The key refinement is the reject-reserved-keys guard at RPC ingress; `buildControllerEnv`
+ * re-applies {@link readForwardedCoralEnv} defensively on the raw body before use.
  */
 export const coralEnvForwardSchema = z.record(
   z
@@ -288,15 +261,6 @@ export function shedInheritedClaudeCodeEnv(env: NodeJS.ProcessEnv): void {
   }
 }
 
-/**
- * Compose the launch env for a child process from a captured inherited env snapshot.
- *
- * Applies the same production ordering everywhere:
- * 1. Strip internal CORAL_* keys from the inherited env snapshot
- * 2. Shed oversized inherited env entries against the provided budget
- * 3. Overlay launch-specific additions
- * 4. Mark the child boundary with CORAL_CHILD=1
- */
 export function composeChildEnv(
   baseEnv: Readonly<Record<string, string>>,
   envAdditions: Record<string, string>,
@@ -317,9 +281,7 @@ export function composeChildEnv(
 }
 
 /**
- * Convenience wrapper that reads the live `process.env` and applies the same
- * sanitization pipeline. Used at provider call sites that don't have an
- * explicit env captured by the runtime layer.
+ * Used at provider call sites that don't have an explicit env captured by the runtime layer.
  */
 export function buildChildEnv(extraEnv?: Record<string, string>): Record<string, string> {
   const base: Record<string, string> = {};

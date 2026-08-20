@@ -40,7 +40,6 @@ const BG_STALE_MS = 60_000; // > BG_MTIME_WINDOW_MS (30s)
 let sandbox: string;
 let projectDir: string;
 
-// execFileSync stand-ins for each `flock -n` outcome.
 function flockHeld(): void {
   // Busy ⇒ flock exits non-zero ⇒ execFileSync throws with a status, no `code`.
   execFileSyncMock.mockImplementation(() => {
@@ -50,7 +49,6 @@ function flockHeld(): void {
   });
 }
 function flockFree(): void {
-  // Acquired ⇒ the `-c true` command runs and execFileSync returns normally.
   execFileSyncMock.mockImplementation(() => Buffer.from(''));
 }
 function flockUnanswered(code: string): void {
@@ -160,7 +158,7 @@ describe('live-work-registry: bg lock liveness (flock mocked)', () => {
 
   it('falls back to the mtime window (fresh ⇒ live) when flock(1) is unavailable', () => {
     flockUnavailable();
-    writeBgMarker('taskA.started'); // fresh
+    writeBgMarker('taskA.started');
     writeBgMarker('taskA.lock');
 
     const result = hasLiveWork(projectDir, SESSION, undefined);
@@ -286,7 +284,6 @@ describe('live-work-registry: bg lock liveness (flock mocked)', () => {
     }
     expect(remainingLockIds()).toHaveLength(3);
 
-    // Baseline: every probe is cheap, so all three are asked and all three answer "free" ⇒ nothing is live.
     flockFree();
     const baseline = hasLiveWork(projectDir, SESSION);
     expect(baseline.live).toBe(false);

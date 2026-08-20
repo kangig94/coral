@@ -102,10 +102,9 @@ export type HealthSnapshot = {
    */
   status: 'starting' | 'ok' | 'draining';
   /**
-   * Authoritative kernel lifecycle. `phase` reports the full 5-state
-   * `LifecycleState`; `readyAt` is the wall-clock ms when the kernel started
-   * (set on the first non-`'starting'` transition) or `null` while still
-   * starting.
+   * Authoritative kernel lifecycle. `readyAt` is the wall-clock ms when the
+   * kernel started (set on the first non-`'starting'` transition) or `null`
+   * while still starting.
    */
   kernel: {
     phase: 'starting' | 'kernel-ready' | 'running' | 'draining' | 'stopped';

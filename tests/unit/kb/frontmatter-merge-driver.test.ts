@@ -21,7 +21,6 @@ import { createGitSyncController } from '#src/kb/curate/git-sync.js';
 import type { KbNoteFrontmatter } from '#src/kb/entry-types.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 
-/** The seed frontmatter shared by every git-facing test below that does not care about its own values. */
 const SEED_META: KbNoteFrontmatter = {
   tags: ['seed'],
   principles: [],

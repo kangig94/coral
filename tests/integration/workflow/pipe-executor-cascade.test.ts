@@ -54,10 +54,10 @@ describe('pipe executor coral cascade invariant', () => {
     const projectRoot = fixtureCanonicalWorkDir(mkdtempSync(join(tmpdir(), 'pipe-cascade-proj-')));
     const coralPluginRoot = mkdtempSync(join(tmpdir(), 'pipe-cascade-coral-'));
     // Isolate from the user's real ~/.coral state so stale-schema DBs created
-    // before unrelated rename commits (e.g. shard_dir → scope_key) don't poison
-    // this integration test. createRealRuntime() resolves coralRoot via
-    // homedir(); pointing HOME at a fresh tmp dir gives the runtime a clean
-    // store path that the schema loader will populate from current SQL.
+    // before unrelated rename commits don't poison this integration test.
+    // createRealRuntime() resolves coralRoot via homedir(); pointing HOME at a
+    // fresh tmp dir gives the runtime a clean store path that the schema
+    // loader will populate from current SQL.
     const isolatedHome = mkdtempSync(join(tmpdir(), 'pipe-cascade-home-'));
     const originalHome = process.env.HOME;
     const originalUserProfile = process.env.USERPROFILE;

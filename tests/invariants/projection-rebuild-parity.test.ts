@@ -227,12 +227,10 @@ describe('Phase 7: rebuildProjections parity for all 4 base journal consumers', 
       const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
       const bodyCodec = createEventBodyCodec();
 
-      // Workflow plan + drain + completion (3 events).
       const plan = buildWorkflowPlan('workflow-parity', parseExpression('architect -> resolver'), {
         defaultProvider: 'codex',
       });
 
-      // Sessions: open + claim + checkpoint (3 events).
       const sessionOpen = sessionEntry('session-parity');
       const parityClaim = sessionClaimInput(sessionOpen, 'job-parity-1');
       const sessionReady: ProviderSession = {
@@ -243,9 +241,6 @@ describe('Phase 7: rebuildProjections parity for all 4 base journal consumers', 
         version: parityClaim.entry.version + 1,
       };
 
-      // Jobs: launch + queue + admit + start + terminal (5 events).
-      // Discuss: replay the full golden fixture (16 events) — covers every
-      // discuss event kind the production reducer handles.
       const discussSessionOpen: ProviderSession = {
         ...sessionEntry(DISCUSS_EXECUTION_SESSION_ID),
         cwd: '<root>',
@@ -266,7 +261,6 @@ describe('Phase 7: rebuildProjections parity for all 4 base journal consumers', 
           },
         },
         parityClaim.input,
-        // Jobs
         {
           type: 'job.launch.requested' as const,
           stream: { kind: 'job' as const, id: 'job-parity-1' },
@@ -327,7 +321,6 @@ describe('Phase 7: rebuildProjections parity for all 4 base journal consumers', 
             },
           },
         },
-        // Session checkpoint
         {
           type: 'session.continuity.checkpointed' as const,
           stream: { kind: 'session' as const, id: 'session-parity' },
@@ -341,7 +334,6 @@ describe('Phase 7: rebuildProjections parity for all 4 base journal consumers', 
             },
           },
         },
-        // Workflow
         workflowPlanDeclaredEvent('workflow-parity', plan, TEST_PROVIDER_SCOPE),
         workflowDrainEnteredEvent('workflow-parity', {
           firstFailureSlotId: plan.slots[1].slotId,
@@ -362,7 +354,6 @@ describe('Phase 7: rebuildProjections parity for all 4 base journal consumers', 
             scope_key: 'parity-discuss-scope',
           },
         },
-        // Discuss (golden fixture replay).
         ...discussInputs,
       ];
 

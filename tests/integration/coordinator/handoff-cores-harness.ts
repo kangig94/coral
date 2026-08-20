@@ -1,21 +1,9 @@
 import { currentCoralStoreFormat } from '#src/store-format.js';
-// Sequential dual-core handoff harness for cross-domain integration tests.
+// Transport is stubbed (no IPC bind, no HTTP listener) so the harness exercises the lifecycle/recovery contract
+// end-to-end without process boundaries.
 //
-// Composes two `createCoordinatorCore` instances against a SHARED real-fs runtime
-// and a single SQLite store database. Transport is stubbed (no IPC bind, no HTTP
-// listener) so the harness exercises the lifecycle/recovery contract end-to-end
-// without process boundaries.
-//
-// Used by:
-//   - discuss-handoff.test.ts (Phase G cross-domain coverage)
-//   - workflow-handoff.test.ts (planned follow-up)
-//
-// Why a shared store: handoff semantics are about journal continuity. Core A
-// writes events, Core A shuts down with `mode=handoff`, Core B opens against the
-// same journal and its production-default recovery rebuilds in-memory state.
-// A single `Database` instance is reused across both cores — opening twice
-// against the same SQLite file in one process is fragile; the journal is
-// process-local already.
+// Why a shared store: A single `Database` instance is reused across both cores — opening twice against the same
+// SQLite file in one process is fragile; the journal is process-local already.
 
 import { createServer, type Server } from 'node:http';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -45,7 +33,6 @@ export interface HandoffCoresHarness {
   readonly runtime: Runtime;
   readonly db: Database;
   readonly homeDir: string;
-  /** Compose, start, and return a coordinator core sharing the harness's runtime + store. */
   bootCore(opts: BootCoreOptions): Promise<BootedCore>;
   cleanup(): Promise<void>;
 }

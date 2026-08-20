@@ -133,11 +133,6 @@ function replacementInput(
   };
 }
 
-/**
- * Performs bound-provider, host, and read-only artifact effects for an app-server recovery plan — plus, for a
- * `carrier-detached` plan, the process-containment effect that confirms its carrier is gone before it may
- * finalize like `waiting` below.
- */
 export async function performInterruptedAppServerRecovery(
   plan: AppServerInterruptedRecoveryPlan,
   boundProvider: BoundProvider,

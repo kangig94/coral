@@ -129,9 +129,8 @@ export type BoundProviderPreparedExecution =
       kind: 'app-server';
       /**
        * The compiled stable host specification this execution would run against — the same executable
-       * identity `ProviderHostManager` pools shared hosts by, computed eagerly here (rather than lazily
-       * inside `execute()`, as it was before) so a caller can identify whether a live provider-proxy set
-       * already owns that identity before ever starting local execution.
+       * identity `ProviderHostManager` pools shared hosts by, computed eagerly here so a caller can identify
+       * whether a live provider-proxy set already owns that identity before ever starting local execution.
        */
       hostSpec: ProviderServerSpec;
       execute(runtime: BoundProviderAppServerExecutionRuntime): AsyncIterable<ProviderEventBody>;

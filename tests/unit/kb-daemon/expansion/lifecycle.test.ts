@@ -739,7 +739,6 @@ describe('ExpansionLifecycleService', () => {
       code: 'binding_occupied',
       context: { binding: 'kb.embedding', heldBy: 'test-embedder' },
     });
-    // First embedder remains bound; the failed second equip rolled back its scope.
     expect(heldBy(kb, KB_EMBEDDING_CAPABILITY)).toBe('test-embedder');
   });
 

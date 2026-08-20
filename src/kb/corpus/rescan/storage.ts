@@ -1,7 +1,3 @@
-// Kb-corpus typed-iterator port: layered over the infra StoragePort to expose
-// the rescan-shaped scan(root) iterator. Domain vocabulary (CorpusMarkdownKind,
-// CorpusFileHandle) lives here so the infra port stays domain-free.
-
 import { join } from 'node:path';
 import { compareLocale } from '../../validation.js';
 import { isNoEntryError } from '../../../infra/fs-errors.js';
@@ -17,11 +13,7 @@ export interface CorpusFileHandle {
   mtimeNs(): bigint;
 }
 
-/**
- * Kb-corpus port surface: the infra primitives needed by rescan, plus the
- * typed `scan(root)` iterator that produces `CorpusFileHandle`s. The infra
- * `StoragePort` stays domain-free; this layer adds the corpus vocabulary.
- */
+/** The infra `StoragePort` stays domain-free; this layer adds the corpus vocabulary. */
 export type CorpusStorage = Pick<StoragePort, 'readFileSync' | 'statSync' | 'existsSync'> & {
   scan(root: string): Iterable<CorpusFileHandle>;
 };

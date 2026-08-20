@@ -185,7 +185,6 @@ export async function discardRecordedArtifacts(
   return { kind: 'discarded' };
 }
 
-/** Reconciles the built-in providers' idempotent unlink protocol against the external artifact oracle. */
 export function reconcileRecordedArtifactDiscard(
   handles: readonly ProviderArtifactHandle[],
   runtime: ArtifactCleanupRuntime,

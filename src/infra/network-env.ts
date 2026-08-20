@@ -32,8 +32,7 @@ export const FORWARDED_NETWORK_ENV_KEYS = [
 ] as const;
 
 /**
- * Pick the forwardable network env vars present in `source`, preserving values
- * verbatim. Empty values are dropped so an exported-but-empty var does not mask
+ * Empty values are dropped so an exported-but-empty var does not mask
  * the daemon's own setting.
  */
 export function collectForwardedNetworkEnv(source: Record<string, string | undefined>): Record<string, string> {
@@ -48,8 +47,7 @@ export function collectForwardedNetworkEnv(source: Record<string, string | undef
 }
 
 /**
- * Request-body schema for the forwarded network env map: known keys, non-empty
- * string values. The enum-key restriction is the reject-unknown-keys guard at
+ * The enum-key restriction is the reject-unknown-keys guard at
  * RPC ingress; `buildControllerEnv` re-applies the same allowlist defensively
  * on the untrusted body object before it builds the child env.
  */

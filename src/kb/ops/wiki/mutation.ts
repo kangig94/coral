@@ -88,11 +88,6 @@ function readCurrentWiki(rt: KbRuntime, slug: string): WikiRewriteCurrent {
   };
 }
 
-/**
- * Prepend new Knowledge entries to the front of the section. If a link is
- * already present, its existing block (header + evidence sub-bullets) is
- * moved to the front intact. New links are added with empty evidence lists.
- */
 function prependKnowledgeLinks(knowledge: string, entryIds: readonly KbEntryId[]): string {
   const seen = new Set<KbEntryId>();
   const ordered: KbEntryId[] = [];
@@ -125,15 +120,14 @@ function prependKnowledgeLinks(knowledge: string, entryIds: readonly KbEntryId[]
 }
 
 /**
- * Self-organizing list via the transposition heuristic (Rivest 1976,
- * Bitner 1979): each touch swaps the matched Knowledge block with its
- * immediate predecessor. The block carries its evidence sub-bullets, so
- * physical ordering and evidence stay grouped — no separate sync needed.
+ * Self-organizing list via the transposition heuristic (Rivest 1976, Bitner 1979).
  *
- * Per-event semantics: each entry in `entryIds` is one touch event and
- * causes at most one swap. Multiple events for the same link in one
- * batch each count as a separate swap (e.g. 5 touches = 5 positions up).
- * Touched links already at index 0, or absent from the list, no-op.
+ * The block carries its evidence sub-bullets, so physical ordering and
+ * evidence stay grouped — no separate sync needed.
+ *
+ * Each entry in `entryIds` is one touch event and causes at most one swap.
+ * Multiple events for the same link in one batch each count as a separate
+ * swap (e.g. 5 touches = 5 positions up).
  */
 function bubbleUpKnowledgeLinks(knowledge: string, entryIds: readonly KbEntryId[]): string {
   const blocks = parseKnowledgeBlocks(knowledge);

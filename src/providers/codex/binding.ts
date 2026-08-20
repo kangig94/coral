@@ -43,7 +43,6 @@ export type CodexSelection = z.infer<typeof codexSelectionSchema>;
 export const codexCredentialProfileSchema = createCodexCredentialProfileSchema();
 export type CodexCredentialProfile = z.infer<typeof codexCredentialProfileSchema>;
 
-/** Capture one invocation's explicit or caller-local default Codex profile selector. */
 export function captureCodexSelection(
   env: Readonly<Record<string, string | undefined>>,
   homeDir: string,

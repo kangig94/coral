@@ -63,15 +63,10 @@ export interface RetrievalEvidence {
 }
 
 export type RetrievalDiagnosticCode =
-  // Role execution observed the caller's abort signal before completion.
   | 'role_aborted'
-  // Graph-backed retrieval could not use graph data because it is stale.
   | 'graph_stale'
-  // A role required a KB runtime binding that was not available.
   | 'binding_missing'
-  // A role failed for a non-setup execution reason.
   | 'role_failed'
-  // Planner or executor referenced a descriptor that is not registered.
   | 'descriptor_unregistered';
 
 export interface RetrievalDiagnostic {
@@ -225,12 +220,10 @@ export interface FtsHit {
 export interface FtsSearchResult {
   readonly hits: readonly FtsHit[];
   /**
-   * `true` means widening cannot surface more results — the KB-tier widening
-   * loop (`kb/search/text-retrieval.ts`) stops and re-querying with a larger
-   * `topK` is pointless. Any path that returns early on a hard cap, an empty
-   * index, or a truncated scan MUST set this to `true`: reporting `false` with
-   * no hits invites the loop to double `topK` forever against a limit it cannot
-   * raise.
+   * `true` means widening cannot surface more results. Any path that returns
+   * early on a hard cap, an empty index, or a truncated scan MUST set this to
+   * `true`: reporting `false` with no hits invites the loop to double `topK`
+   * forever against a limit it cannot raise.
    */
   readonly exhausted: boolean;
 }

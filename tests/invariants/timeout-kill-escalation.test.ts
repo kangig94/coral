@@ -4,7 +4,7 @@
 // `safeKill(child, 'SIGTERM')` that leaks a wedged child when it ignores the
 // term signal. The rule itself is the BLOCKING "Timeout kills use SIGTERM then
 // SIGKILL after delay" check in `.claude/rules/validation.md`; this test is its
-// enforcement so the rule cannot silently regress (it did once: three bare
+// enforcement so the rule cannot silently regress (it did once: bare
 // SIGTERM kills shipped in the KB daemon supervisor before review caught them).
 //
 // `safeKill` is the low-level primitive. Its only legitimate homes are:
@@ -17,7 +17,7 @@
 //
 // A bare-`safeKill` scan alone is blind to a module that never mentions
 // `safeKill` at all and instead reimplements the SIGTERM→SIGKILL escalation
-// from scratch against the raw `.kill()` primitive (it happened twice: a
+// from scratch against the raw `.kill()` primitive (it happened: a
 // verbatim copy of `gracefulKill` in the provider proxy's role spawner, and a
 // second implementation of `reapRecordedContainment`'s discipline in its role
 // main). The second describe block below closes that gap: it flags a module

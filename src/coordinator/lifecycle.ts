@@ -207,15 +207,11 @@ export interface LifecycleHooks {
 /**
  * Which discovery record counts as the incumbent this contender is contending with.
  *
- * A named function rather than a closure because one line of it is load-bearing and was already reverted
- * once: **an incarnation is deliberately not required here**. A coordinator from a build that predates the
+ * **An incarnation is deliberately not required here.** A coordinator from a build that predates the
  * token writes no such field, and refusing its record would discard the `bootToken` beside it — leaving the
  * contender with no way to ask anyone to stand down, which is the exact deadlock the token exists to end,
  * reinstated for the one upgrade that introduces it. Whether the incumbent's identity is *sufficient to
  * signal* is a separate question, answered separately, in `verifySignalTarget`.
- *
- * Everything else here is agreement: the record must name the socket being contended, the same flavor and
- * namespace, and must not contradict health evidence already collected from that same socket.
  */
 export function verifiedIncumbentFromDiscovery(
   info: CoordinatorDiscoveryRecord | null,
@@ -267,11 +263,7 @@ export function verifiedIncumbentFromDiscovery(
  * The same question asked of a probe rather than a record: which of the probe's four outcomes still leaves an
  * incumbent to contend with.
  *
- * Named for the same reason as the function above, though not after the same failure — that one is the
- * sibling's own history, where an inline closure let the incarnation requirement be reverted with nothing
- * breaking, because there was no exported name for a test to reach. This mapping was the inline closure
- * beside it on the same bind path, carrying decisions of the same kind and equally unreachable. Two of the
- * four outcomes are only correct for a stated reason:
+ * Two of the four outcomes are only correct for a stated reason:
  *
  * - `unreadable-process` keeps its record. The probe not answering is not the incumbent not existing, and the
  *   record carries the `bootToken` a contender needs to ask it to stand down. `verifiedIncumbentFromDiscovery`
@@ -302,14 +294,6 @@ export function verifiedIncumbentFromProbe(
   return verifiedIncumbentFromDiscovery(record, evidence);
 }
 
-/**
- * The exact composition the bind path below runs: probe the runtime's own discovery record, then apply
- * `verifiedIncumbentFromProbe` to what it found. It existed only as the inline closure passed to
- * `bindWithHandoff` as `readVerifiedIncumbentFromDiscovery` until now — the same gap the two functions above
- * were pulled out of an inline closure to close, one call further out: `probeCoordinator` and
- * `verifiedIncumbentFromProbe` each have their own tests against hand-built inputs, but nothing drove a real
- * discovery read through both together the way the bind path actually does.
- */
 export function verifiedIncumbentFromRuntimeProbe(
   runtime: DiscoveryRuntime,
   evidence: Readonly<{ socketPath: string; desired: DesiredIncumbentIdentity; lastHealth: IncumbentHealth | null }>,
@@ -356,11 +340,6 @@ export function waitForInflightDrain(
 const DAY_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_JOB_RETENTION_DAYS = 14;
 
-/**
- * Resolve the terminal-job export retention window from `CORAL_JOBS_RETENTION_DAYS`
- * (default 14 days) to milliseconds. Invalid/non-positive values fall back to the
- * default.
- */
 export function resolveJobRetentionMs(raw: string | undefined): number {
   return parsePositiveInt(raw, DEFAULT_JOB_RETENTION_DAYS) * DAY_MS;
 }
@@ -595,7 +574,6 @@ function createCrashedJobTerminalizationPolicy(
   };
 }
 
-/** Returns the exact-subject stale-artifact retry plan owned by coordinator lifecycle. */
 export function createStaleJobCleanupRetryPlan(
   db: Database,
   subject: RecoverySubject,
@@ -621,7 +599,6 @@ export function createStaleJobCleanupRetryPlan(
   };
 }
 
-/** Returns the exact-subject crash-terminalization retry plan owned by coordinator lifecycle. */
 export function createCrashedJobTerminalizationRetryPlan(
   db: Database,
   subject: RecoverySubject,

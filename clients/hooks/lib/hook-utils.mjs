@@ -204,9 +204,8 @@ const _projectSourceUnanswered = new Map();
 // instead makes every unlisted errno a durable wrong answer nobody can see.
 //
 // The same enumeration as `STANDING_PROBE_ERRNOS` in `src/infra/process-constants.ts`, spelled again because
-// hooks may not import from `src/`, and asserted equal by `tests/unit/hooks/hook-project-source.test.ts` —
-// "kept in step" was the previous claim, and this branch found two other places where a sentence like that was
-// the only thing keeping two spellings together. It is the hook lane's one home for the set.
+// hooks may not import from `src/`, and asserted equal by `tests/unit/hooks/hook-project-source.test.ts`.
+// It is the hook lane's one home for the set.
 export const STANDING_PROBE_ERRNOS = new Set(['ENOENT', 'EACCES', 'EPERM', 'ENOTDIR']);
 // Same value as `INDECISIVE_PROBE_REPROBE_INTERVAL_MS` (`src/infra/process-constants.ts`), spelled again for
 // the reason `STANDING_PROBE_ERRNOS` above is, and asserted equal by the same test,
@@ -219,22 +218,15 @@ export const UNANSWERED_REPROBE_INTERVAL_MS = 60_000;
  * This string is an identity, not a label: `coralProjectDir` below turns it into
  * `~/.coral/projects[-dev]/<slug>` with the same rule the daemon uses (`sourceToSlug` in
  * `src/infra/path/index.ts`), and that directory holds memos and is exported to every skill as
- * `CORAL_PROJECT`. So the two lanes must agree — a sentence that was here while they did not, which is why
- * the agreement is now a table both implementations are driven over rather than a claim in a comment.
+ * `CORAL_PROJECT`. So the two lanes must agree.
  *
- * Every failure used to be cached under `local/<basename>` permanently and silently, which meant one timeout
- * or one lost fork at hook time pinned a whole session's `CORAL_PROJECT` to a directory later reads do not
- * look in. A non-answer is now held for `UNANSWERED_REPROBE_INTERVAL_MS`.
+ * A non-answer is held for `UNANSWERED_REPROBE_INTERVAL_MS`.
  *
  * That hold's value is scoped to a single hook invocation, not to a session: `_projectSourceUnanswered` is a
  * plain module-level Map, and every hook event is a fresh `node` process with its own empty one — nothing here
- * persists, or needs to, across separate hook calls. What it buys is real within one process, though: this
- * file alone reaches `resolveProjectSource`/`coralProjectDir` from three call sites (`coralProjectDir` here,
- * `session-start.mjs`, `inject-render.mjs`), all of which can fire during a single `SessionStart` invocation for
- * the same `projectDir`. Without the hold, a wedge on the first call site pays its 2s timeout again at the
- * second and third; with it, the first failure is remembered and the rest return the local fallback
- * immediately. The interval only has to outlast one hook's own timeout budget to do this — which it does by a
- * wide margin (60s against a process that lives a few seconds at most), not the other way around.
+ * persists, or needs to, across separate hook calls. The interval only has to outlast one hook's own timeout
+ * budget to do this — which it does by a wide margin (60s against a process that lives a few seconds at most),
+ * not the other way around.
  */
 export function resolveProjectSource(projectDir) {
   const cached = _projectSourceCache.get(projectDir);
@@ -289,17 +281,9 @@ function parseRemoteUrlPath(remote) {
  * A remote URL as `<owner>/<repo>`, or `null` when it names no such pair.
  *
  * Rule for rule the same as `parseRemoteSource` in `src/infra/project-source.ts`, because the two lanes name
- * the same directory. It was not: driven over nineteen remotes the two disagreed on five, and each
- * disagreement is a memo filed under a name the other lane never looks up. A trailing slash after `.git`
- * (`…/repo.git/`) gave `repo.git` here and `repo` there; a query string and a fragment survived into the slug
- * here and not there; and a scheme-less path — `some/deep/owner/repo`, `/abs/path/owner/repo` — was accepted
- * here as an identity and rejected there as unparseable.
- *
- * `new URL` rather than a chain of prefix strips is what closes three of those five, and stripping the
- * trailing slash *before* `.git` closes the fourth. Exported only so a single table in
+ * the same directory. Exported only so a single table in
  * `tests/unit/hooks/hook-project-source.test.ts` can drive both implementations: hooks may not import from
- * `src/`, so this rule has to be written twice, and a claim that two spellings agree stays true only while
- * something re-checks it. A comment asserting exactly that sat above this function while they diverged.
+ * `src/`, so this rule has to be written twice.
  */
 export function parseRemoteSource(remote) {
   const normalized = remote
@@ -321,10 +305,7 @@ export function parseRemoteSource(remote) {
 /**
  * `~/.coral/projects[-dev]/<slug>` — the same directory `projectsPaths` (`src/infra/path/index.ts`) derives.
  *
- * The flavor was missing here while `resolveKbRoot` below already carried it, so on a dev build every skill's
- * `CORAL_PROJECT` named the prod directory while the daemon wrote to `projects-dev` — a split nobody reports,
- * because both directories are legitimate names. `tests/invariants/flavor-path-separation.test.ts` enforces
- * this separation "uniformly" and scans `src/` only, which is how one lane kept a hard-coded name.
+ * `tests/invariants/flavor-path-separation.test.ts` enforces this separation "uniformly" and scans `src/` only.
  */
 export function coralProjectDir(projectDir) {
   const projectsRoot = buildFlavor() === 'dev' ? 'projects-dev' : 'projects';

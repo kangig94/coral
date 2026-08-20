@@ -88,15 +88,14 @@ export type SourceImportReadPolicy =
 
 export type ResolvedSourceImportFile = { path: string };
 
-// CLI-only source import converters. Keep npm conversion dependencies isolated here.
+// Keep npm conversion dependencies isolated here.
 /**
  * Whether a converter's tooling is installed — three answers, because `install()` is what the negative one
  * triggers and installing is a finalization.
  *
  * `undetermined` is the probe that never ran: `which`/`where` killed by its bound, or no process slot to fork.
  * Collapsed into `absent`, that answer downloads and installs uv and marker-pdf over a machine that already
- * has them, on evidence nobody produced. The same collapse in `cli-detection.ts` told operators to install a
- * CLI they had; here it does not merely say so, it acts.
+ * has them, on evidence nobody produced.
  */
 type ConverterAvailability =
   | Readonly<{ kind: 'available' }>
@@ -132,15 +131,12 @@ function nonAnswerExit(detail: string): string {
   return 'Retry the import.';
 }
 
-/** Where a command lives, or which of the two reasons this run does not have a path for it. */
 type CommandLocation =
   | Readonly<{ kind: 'found'; path: string }>
   | Readonly<{ kind: 'absent' }>
   | Readonly<{ kind: 'undetermined'; detail: string }>;
 
 /**
- * `.path` from a `CommandLocation`, or the refusal for whichever of the other two it is not.
- *
  * `absentMessage` and `undeterminedMessage` are per call, not shared, because "absent" is a different fact at
  * each of this module's checkpoints — a converter never installed, a re-check right after installing it, and a
  * race between an earlier check and this use — and a shared sentence for all three is exactly the collapse
@@ -370,9 +366,7 @@ async function resolveMarkerCommandOptions(
  * `which`/`where`, read for what it actually reported.
  *
  * A non-zero exit is the locator answering "not on this PATH" and is `absent`. A probe that never produced an
- * exit — its own 10s bound, or a fork that failed — is `undetermined`, and it used to be `undefined` alongside
- * the answer: indistinguishable at every call site, where it authorized a network install, a "not found after
- * installation" error naming a cause nobody saw, and a refusal to convert.
+ * exit — its own 10s bound, or a fork that failed — is `undetermined`.
  */
 async function resolveCommandPath(command: string, ctx: SourceImportContext): Promise<CommandLocation> {
   const locator = ctx.runtime.env.platform() === 'win32' ? 'where' : 'which';
@@ -436,9 +430,7 @@ async function runCommand(
   if (outcome.kind === 'answered' && outcome.status === 0) {
     return;
   }
-  // The port's own timeout, read from the `code` it stamps rather than from the prose of its message. The
-  // message prefix this used to match is set in three places in `runtime/`; matching it coupled this module to
-  // a sentence, and a sentence is not where a disposition lives.
+  // The port's own timeout, read from the `code` it stamps rather than from the prose of its message.
   if (outcome.kind === 'no-answer' && outcome.detail === EXEC_TIMEOUT_CODE) {
     const remediation = options.timeoutRemediation === undefined ? '' : ` ${options.timeoutRemediation}`;
     writeAuditEvent(
@@ -474,7 +466,7 @@ async function runCommand(
   }
   // No `result.error` line here: reaching this point means `classifyExecOutcome` answered, and it only does
   // that when the port reported no error at all. The async port makes the two mutually exclusive by
-  // construction (`status: error ? null : status` in `runtime/exec-builder.ts`), so a branch reading both was
+  // construction (see buildExecPromise in src/runtime/exec-builder.ts), so a branch reading both was
   // describing a result shape that cannot arrive.
   const output = outputLines.join('\n');
   throw new Error(output ? `${displayName} failed: ${output}` : `${displayName} exited with code ${outcome.status}`);
@@ -791,14 +783,10 @@ export async function prepareSourceImport(
   runtime: SourceImportRuntime,
   options: SourceImportOptions,
 ): Promise<PreparedSourceImport> {
-  // Honor the caller's AbortSignal at the two checkpoints that bound the
+  // Honor the caller's AbortSignal at the checkpoints that bound the
   // long-running phases of source import: `'convert'` (before invoking the
   // converter, which may shell out to pandoc/uv etc.) and `'persist'`
-  // (before staging the converted markdown to disk). The signal is threaded
-  // from the KB job's coordinator-owned AbortRegistry; on `coral-cli abort`
-  // the registry calls `controller.abort('user_abort')`, which this throw
-  // propagates up to the surrounding KB-job recorder where it maps to a
-  // `terminal { outcome: 'aborted', reason: 'user_abort' }`.
+  // (before staging the converted markdown to disk).
   const signal = options.signal;
   const sourceFilePath = sourceFile.path;
   const ext = extname(sourceFilePath).toLowerCase();

@@ -1,12 +1,10 @@
 import { z } from 'zod';
 
 /**
- * Turning a zod schema into a stable canonical value, and any value into canonical JSON.
- *
  * Pure: zod in, plain data out, no I/O and no store access of any kind. It lives here rather than under
- * `store/` — where it grew up beside the store-format fingerprint that is its biggest consumer — because
- * `providers/` depends on it to declare each provider's persisted-codec contract, and a provider reaching
- * into `store/` for a pure transform is a dependency that reads as store access without being any. The
+ * `store/` because `providers/` depends on it to declare each provider's persisted-codec contract, and a
+ * provider reaching into `store/` for a pure transform is a dependency that reads as store access without
+ * being any. The
  * provider-proxy roles must never touch `store/` at all (W2.8), and that ban is enforced by import
  * reachability, so a pure helper sitting under the banned path is indistinguishable from the real thing.
  *
@@ -289,8 +287,7 @@ function wrappedZodContract(
 }
 
 /**
- * Convert a Zod decoder into a stable persisted contract. Runtime callbacks
- * are represented by their effect kind plus an explicit semantic identity,
+ * Runtime callbacks are represented by their effect kind plus an explicit semantic identity,
  * never by Function#toString(): the shipped backend is minified, so executable
  * source text is not a stable serialization identity.
  */

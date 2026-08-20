@@ -30,7 +30,7 @@ import { createProxyProviderHostAdmission } from './provider-host-admission.js';
  * module is where that data turns back into a running `BoundProvider` — the proxy-local mirror of what
  * `src/jobs/shell/launch.ts` does in-process, minus everything that only makes sense with store/journal access.
  *
- * Judgement call (see the task report): a proxy-local `DefaultProviderHostManager`
+ * Judgement call: a proxy-local `DefaultProviderHostManager`
  * (`src/coordinator/live/provider-hosts/index.ts`) is not legitimate here — it lives under `src/coordinator/live/`,
  * which `tests/invariants/architecture-layering.test.ts`'s `PROVIDER_PROXY_FORBIDDEN` list and
  * `tests/invariants/provider-proxy-no-store.test.ts`'s transitive reachability check both forbid
@@ -55,8 +55,6 @@ export class ProxyProviderRootCapacityError extends Error {
     Object.setPrototypeOf(this, ProxyProviderRootCapacityError.prototype);
   }
 }
-
-// --- proxy-owned app-server host authority: pool over the shared transport -------------------------------
 
 /** This build's `ProviderServerSpec` as the shared transport's own spawn options. `spec.env` is always the
  *  *complete* launch environment a provider's own `planHost` computed, never additions to the inherited one
@@ -298,7 +296,6 @@ class ProxyProviderRootPool {
   private nextGeneration = 0;
   private liveRoots = 0;
   private spawningRoots = 0;
-  // Informational generation-local admission count; no serviceability decision reads it.
   private generationRootSlotsSpent = 0;
 
   constructor(runtime: Runtime, admission: HostAdmissionCollection) {
@@ -725,8 +722,7 @@ class ProxyProviderHostAdministration {
  * one process rather than spawning twice), ref-counts sessions, and closes a pool entry once its last
  * reference releases. Deliberately does not replicate the coordinator's idle-timer-based early retirement for
  * `idleRetirement: 'unleased-and-host-idle'` shared hosts — every host here stays open until its last referencing
- * operation stops, which is a reported simplification (see the task report), not an attempt to reproduce that
- * policy exactly.
+ * operation stops, which is a reported simplification, not an attempt to reproduce that policy exactly.
  */
 export function createProxyAppServerHostAuthority(
   runtime: Runtime,

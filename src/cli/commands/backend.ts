@@ -60,10 +60,9 @@ import { formatStoreResetList, formatStoreResetReport } from '../format/store-re
  * `kb-commit quarantine`, so the question this code answers is "may I proceed to destroy state?" — and there
  * are three answers, not two. Exit `0` is "it is stopping". Exit `1` is a refusal this run *observed*: the
  * daemon was seen to be absent, or seen to be alive and unwilling. Exit `75` is the third — this run could not
- * tell, so a caller must neither proceed nor read the outcome as failure. Every refusal exited `1` alike
- * before, discarding at the boundary the disposition `ShutdownReason` had just gained.
+ * tell, so a caller must neither proceed nor read the outcome as failure.
  *
- * `75` rather than `2`, which an earlier revision used: `2` is `invalid_usage` (`docs/cli-errors.md`), so a
+ * `75` rather than `2`: `2` is `invalid_usage` (`docs/cli-errors.md`), so a
  * script could not tell "you called this wrong" from "I could not observe the daemon". `75` is already this
  * CLI's "not concluded, resume or retry" across `wait jobs` and every transient code, which is what both
  * members below are.
@@ -98,8 +97,7 @@ export const SHUTDOWN_REFUSAL_EXIT_CODES: Readonly<Record<ShutdownReason, 1 | 75
 };
 
 /**
- * `backend status` never set an exit code before this, so `backend status && <destructive op>` read every
- * outcome — including "state is unknown" — as permission to proceed. The three `BackendStatusFull` statuses
+ * The three `BackendStatusFull` statuses
  * named `undecodable_record`, `unreachable`, and `no_record_socket_present` are exactly that: `getBackendStatusFull`
  * itself refuses to call any of them `ok` or `not_running` because it could not tell. Every other status is a
  * confidently observed answer — the backend genuinely is running, stopped, draining, or unauthorized — and this
@@ -175,7 +173,6 @@ export type BackendCommandOperations = Readonly<{
 
 type RecoveryQuarantineReadRuntime = Pick<Runtime, 'flavor' | 'paths' | 'storage'>;
 
-/** Reads retained recovery failures directly from the local store without coordinator transport. */
 export function listRecoveryQuarantineLocal(
   runtime: RecoveryQuarantineReadRuntime = createRecoveryQuarantineRuntime(),
 ): readonly RecoveryQuarantineEntry[] {
@@ -204,7 +201,6 @@ export function listRecoveryQuarantineLocal(
   }
 }
 
-/** Wires the local read and canonical-coordinator retry used by backend command registration. */
 export function createRecoveryQuarantineCommandOperations(signal?: AbortSignal): RecoveryQuarantineCommandOperations {
   return {
     list: () => listRecoveryQuarantineLocal(),

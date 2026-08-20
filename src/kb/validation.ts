@@ -1,6 +1,5 @@
 import { stripMdExt } from './paths.js';
 
-/** Lowercase-only slug (e.g. domain, memo topic). */
 const LOWERCASE_SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 /** Mixed-case slug for KB filenames that embed code identifiers (e.g. rendering-efficiency-CuMem). */
@@ -21,7 +20,6 @@ export function assertNonEmptyText(value: unknown, label: string): string {
   return normalized;
 }
 
-/** Assert lowercase-only slug (for domain, memo topic). */
 export function assertSlug(value: unknown, label: string): string {
   const normalized = assertNonEmptyText(value, label);
   if (!LOWERCASE_SLUG_PATTERN.test(normalized)) {

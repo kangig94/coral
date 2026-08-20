@@ -1,8 +1,6 @@
 // Workflow execution contract: the port + value types that coordinator
 // services consume to drive workflow runs. Lives at the workflow root next
-// to other contract surfaces (events.ts, plan.ts) — the previous
-// `workflow/internal/` directory implied private scope while the file was
-// imported from four coordinator locations.
+// to other contract surfaces (events.ts, plan.ts).
 import type { AbortResult } from '../jobs/contracts/abort-registry.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { LaunchReadiness } from '../jobs/records.js';

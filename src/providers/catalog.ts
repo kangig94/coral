@@ -8,7 +8,6 @@ import type {
 import type { BoundProvider } from './bound-provider-contract.js';
 import type { ProviderScope } from '../infra/provider-scope.js';
 
-/** Read-only view of the provider registry. */
 export interface ProviderCatalog {
   get(name: string): ProviderDefinition | undefined;
   getAll(): ProviderDefinition[];

@@ -31,11 +31,6 @@ Rules:
  * Run one community-summary agent turn when stale communities exist. Returns
  * `true` when an agent turn was spawned, `false` when the work-list was already
  * empty (a converged corpus — no token spend).
- *
- * The agent itself loops `list-stale` / `summary-input` / `set-summary` via the
- * Bash tool; this domain function only decides whether work exists and starts
- * the single turn. Concurrency is bounded by the assistant port's internal
- * permit pool, so this takes only the assistant + signal.
  */
 export async function runCommunitySummaryAgent(
   kb: KbRuntime,

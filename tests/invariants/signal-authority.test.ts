@@ -7,10 +7,8 @@
 // nothing revalidates it at the moment of the call, and the failure is silent: SIGKILL to a stranger.
 //
 // This is not hypothetical and it is not rare. `incarnationMayAuthorizeSignal` exists because a macOS
-// incarnation is wall-clock at one-second resolution and cannot carry this weight at all; the rule was written
-// once and, when this invariant was added, applied at two of the nine sites that needed it. Review found two
-// more. The remaining four were found by this scan — which is the argument for the scan: a rule enforced by
-// reading is a rule enforced at whatever rate people read.
+// incarnation is wall-clock at one-second resolution and cannot carry this weight at all.
+// A rule enforced by reading is a rule enforced at whatever rate people read.
 //
 // The scan is intentionally coarse — file-level, not call-level. Every file that signals a bare pid must
 // either consult `incarnationMayAuthorizeSignal`, or carry an entry below saying what makes its number safe.
@@ -22,8 +20,8 @@
 //
 // One limitation, stated because a scan that hides its blind spots is worse than none: a signal delivered
 // through a *helper* is attributed to the helper's file, not the caller's. `gracefulKillByPid` lives in
-// `infra/process-supervision.ts`, so its three callers (`live/durable-transport.ts` twice,
-// `services/recovery/actions.ts` once) are invisible here. Guarding one call inside an allowlisted file and
+// `infra/process-supervision.ts`, so its callers (`live/durable-transport.ts`,
+// `services/recovery/actions.ts`) are invisible here. Guarding one call inside an allowlisted file and
 // deleting its entry would therefore pass while its siblings stay unguarded. Until every pid signal goes
 // through one identity-bearing helper, the ALLOWLIST names modules, and
 // `docs/todo/durable-cli-signal-authority.md` names the behavioural paths.
@@ -38,7 +36,6 @@ import { codeTextOnly } from '../helpers/ts-code-text.js';
 const REPO_ROOT = join(__dirname, '..', '..');
 const SRC_ROOT = 'src';
 
-// The rule's own home, and the two liveness primitives whose whole body is a signal-0 probe.
 const AUTHORITY_OWNER_FILE = 'src/infra/node-process.ts';
 
 /**
@@ -84,7 +81,7 @@ const ALLOWLIST = new Map<string, string>([
   [
     'src/runtime/exec-builder.ts',
     // Signals the child it is at that moment awaiting, on timeout or maxBuffer, through an injected `kill`.
-    // The exposure is real but a different size from the durable four: the window is the single event-loop
+    // The exposure is real but a different size: the window is the single event-loop
     // turn between the child exiting and its 'close' reaching the `resolved` guard, not a pid recovered from
     // a record written before a restart. Recorded rather than waved through, and it is the site that proved
     // the scan's own blind spot.

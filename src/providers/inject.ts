@@ -15,11 +15,11 @@ interface InjectEquippedTool {
 export interface ResolveInjectBundleOptions {
   storage: Pick<StoragePort, 'readFileSync'>;
   ownerSessionId?: string;
-  /** Resolved KB markdown root — caller passes from `runtime.paths.coral.corpus.kbRoot`. */
+  /** Resolved KB markdown root. */
   kbRoot: string;
-  /** Resolved per-project data dir — caller passes from `runtime.paths.projectData(cwd)`; absent when no cwd. */
+  /** Resolved per-project data dir; absent when no cwd. */
   coralProjects?: string;
-  /** Resolved project source — caller passes from `runtime.paths.projectSource(cwd)`; absent when no cwd. */
+  /** Resolved project source; absent when no cwd. */
   projectSource?: string;
   /** When false, omit all KB fragments so no KB guidance reaches the provider. */
   kbEnabled?: boolean;
@@ -112,10 +112,7 @@ export function resolveInjectBundle(opts: ResolveInjectBundleOptions): string {
 }
 
 /**
- * Provider-agnostic inject bundle application.
- *
- * Prepends rendered guidelines onto `request.systemPrompt` (append-merge when a
- * caller systemPrompt already exists — never overwrite). Empty inject is a no-op.
+ * Append-merge when a caller systemPrompt already exists — never overwrite.
  * Applied once at the job shell boundary before any provider adapter runs so
  * Built-in and future providers share the same injection policy.
  */

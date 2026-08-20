@@ -1,9 +1,8 @@
 import ts from 'typescript';
 
 /**
- * Blanks a literal's span so a lexical scan cannot see inside it. Newlines
- * survive so line numbers — and the line-anchored comment pattern below —
- * keep matching the original source.
+ * Newlines survive so line numbers — and the line-anchored comment pattern
+ * below — keep matching the original source.
  */
 function blankSpan(text: string): string {
   return text.replace(/[^\n]/g, ' ');

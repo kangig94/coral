@@ -8,12 +8,11 @@ conversion too broad for a workflow-identity change.
 Jobs list/detail responses cross producer, RPC, CLI dispatch, and formatting boundaries without one runtime
 schema as their authority.
 
-The core vocabulary lives as TypeScript-first records in `src/jobs/records.ts:69,246-266`, while `jobs.list`
-and `jobs.detail` lack response schemas in `src/transport/rpc/catalog.ts:253-271` — the only methods in the
-catalog that carry a `responseSchema` are the three `coordinator.provider_host.*` ones (`:139`, `:151`,
-`:163`). Producer values pass through `executeJobsListCatalogRequest` / `executeJobsDetailCatalogRequest`
-(`src/transport/dispatch.ts:808-845`), both of which reach their input by `request as …` cast, and
-`src/cli/dispatch.ts:582-585` requests typed values rather than parsing `unknown`. Measured today, the type
+The core vocabulary lives as TypeScript-first records in `src/jobs/records.ts`, while `jobs.list`
+and `jobs.detail` lack response schemas in `src/transport/rpc/catalog.ts` — the only methods in the
+catalog that carry a `responseSchema` are the three `coordinator.provider_host.*` ones. Producer values pass through `executeJobsListCatalogRequest` / `executeJobsDetailCatalogRequest`
+(`src/transport/dispatch.ts`), both of which reach their input by `request as …` cast, and
+`src/cli/dispatch.ts` requests typed values rather than parsing `unknown`. Measured today, the type
 family (`JobStatus`, `JobEvent`, `JobExit`, `JobsListResponse`, `JobDetailResponse`) has **120 references
 across 24 files** in `src/`, so changing the source of those types is a cross-surface conversion, not a local
 annotation.
@@ -22,12 +21,12 @@ annotation.
 
 An earlier revision opened with "This PR added `workflowChildren` and `workflowLabel` along that unchecked
 path", written against PR #309. That PR was split and closed. What shipped instead (#312) derives children
-**client-side**: `src/cli/commands/session.ts:161-165` calls `listJobs` and filters on
+**client-side**: `src/cli/commands/session.ts` calls `listJobs` and filters on
 `parentWorkflowJobId`, and `WorkflowChildJob` is now defined as `JobsListResponse['jobs'][number]`
-(`src/cli/format/jobs.ts:30`). `workflowLabel` does not exist anywhere in `src/`.
+(`src/cli/format/jobs.ts`). `workflowLabel` does not exist anywhere in `src/`.
 
 So the concrete failure this document cited — a malformed response reaching `formatWorkflowChildren`, where
-`[...children]` throws instead of producing a controlled contract error (`src/cli/format/jobs.ts:194`) — is
+`[...children]` throws instead of producing a controlled contract error (`src/cli/format/jobs.ts`) — is
 still reachable, but through **`jobs.list`**, not `jobs.detail`. The unvalidated boundary is the same one;
 the field that crosses it is not.
 
@@ -43,7 +42,7 @@ Make the jobs read contract schema-first in `src/jobs/records.ts`, deriving Type
 - `jobDetailResponseSchema`.
 
 `workflowChildJobSummarySchema` describes a **list** row, not a detail field — see the correction above.
-`formatJobDetail` already defaults its `workflowChildren` parameter to `[]` (`src/cli/format/jobs.ts:218`)
+`formatJobDetail` already defaults its `workflowChildren` parameter to `[]` (`src/cli/format/jobs.ts`)
 because the CLI assembles that array itself; the schema's job is to make the `jobs.list` rows it is
 assembled from parsed rather than asserted.
 

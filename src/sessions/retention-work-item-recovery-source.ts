@@ -298,7 +298,6 @@ function scanRetentionWorkRows(
   return rows;
 }
 
-/** Creates the sole registered P4 composite from boundary-issued component receipts. */
 export function retentionWorkItemRecoverySource(
   receipts: readonly RecoveryReceipt<P4RetentionComponent>[],
   subject?: RecoverySubject,

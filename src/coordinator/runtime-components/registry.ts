@@ -34,7 +34,6 @@ export function createRuntimeComponentRegistry(): RuntimeComponentRegistry {
     },
     initAll(signal) {
       for (const component of components.values()) {
-        // Per-component catch ensures one component's throw doesn't crash the registry.
         void component.init(signal).catch(() => {
           // Runtime component captures its own failure into status; registry stays silent.
         });

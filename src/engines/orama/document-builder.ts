@@ -417,8 +417,7 @@ function tokenizeScriptRuns(
   for (const run of raw.matchAll(TOKEN_SCRIPT_RUN_PATTERN)) {
     const value = run[0];
     if (HANGUL_SCRIPT_PATTERN.test(value) && analyzer !== null) {
-      // Append without spread to avoid a call-stack overflow on very long runs
-      // (see search-channels.ts ngram note).
+      // Append without spread to avoid a call-stack overflow on very long runs.
       for (const token of tokenizeKiwiHangulRun(value, analyzer, normalizationCache, withCache)) {
         tokens.push(token);
       }
