@@ -1288,7 +1288,6 @@ describe('provider-proxy operation lifecycle', () => {
     const set = await startProxy();
     const opA = set.operationFor();
     const opB = set.operationFor();
-    // Deliberately descending: whichever of the two sorts later goes first.
     const [first, second] = opA.operationId < opB.operationId ? [opB, opA] : [opA, opB];
     const install = (operations: ReturnType<typeof set.operationFor>[]): Promise<unknown> =>
       set.control.call(

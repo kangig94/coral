@@ -101,7 +101,6 @@ async function waitForAccept(sockets: Socket[]): Promise<Socket> {
   return sockets[0];
 }
 
-/** Replies to the next request frame the server side receives, echoing back its id. */
 function respondToNextRequest(serverSocket: Socket, buildResponse: (id: number | string) => unknown): void {
   serverSocket.once('data', (chunk: Buffer) => {
     const request = JSON.parse(chunk.toString('utf8').split('\n')[0]) as { id: number | string };

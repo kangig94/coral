@@ -1,19 +1,3 @@
-// Cross-domain handoff coverage for discuss state across a daemon swap.
-// Composes two coordinator cores against a shared journal via the harness,
-// seeds a live discuss session on the incumbent, triggers handoff shutdown
-// (`reason='replaced'` ⇒ ShutdownMode='handoff'), and asserts:
-//
-//   1. The incumbent's hooks.onShutdown('handoff') aborts the in-memory
-//      session WITHOUT persisting an abort marker to the journal.
-//   2. The replacement core's startup recovery (`discussRecovery.runStartup`)
-//      reads the same journal, sees the session as live (no abort marker),
-//      and re-attaches it in its fresh discussRegistry.
-//
-// Unit-level coverage already exists for piece (1) in
-// `tests/unit/discuss/shell/discuss-manager-lifecycle.test.ts`. This file
-// adds end-to-end coverage of the lifecycle wiring + recovery composition,
-// closing the cross-domain integration gap left open by Phase A2.
-
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { decideSessionCreate } from '#src/discuss/state-machine.js';

@@ -18,8 +18,7 @@ declare const rawUuid: string;
 const ledger = createOperationLedger<{ readonly prepared: true }>();
 const key = { jobId: 'j', operationId: 'o' };
 
-// @ts-expect-error a reservation was two fields once, and activation compared both while renewal compared one.
-// One value cannot half-match, and the arity is what makes the old shape unwritable.
+// @ts-expect-error one value cannot half-match, and the arity is what makes the old shape unwritable.
 ledger.beginActivation(key, reservation, reservation, 0, 'f'.repeat(64));
 
 ledger.beginActivation(key, reservation, 0, 'f'.repeat(64));

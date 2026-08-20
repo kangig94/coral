@@ -26,11 +26,9 @@ export function toCanonicalSrcPath(repoRoot: string, filePath: string): string {
 }
 
 export function listProductionSourceFiles(dirPath: string): string[] {
-  // Test files and test directories are forbidden inside src; the
-  // architecture-boundary invariant 'test code and test support must stay
-  // out of src' is the canonical guard. This helper is therefore allowed
-  // to assume it walks production sources only — it does not need to skip
-  // any directory by name.
+  // Test files and test directories are forbidden inside src/, enforced by
+  // tests/invariants/architecture-boundary.test.ts. This helper does not
+  // need to skip any directory by name.
   const files: string[] = [];
 
   for (const entry of readdirSync(dirPath, { withFileTypes: true })) {
@@ -56,13 +54,10 @@ export function createProductionFileIndex(repoRoot: string, productionFilePaths:
 }
 
 /**
- * True for the two importable spellings that reach another production
- * src/ file: a relative path (`./foo.js`) or the project's `#src/*`
- * subpath alias (`#src/foo.js`, declared in package.json#imports as
- * `"#src/*.js": "./src/*.ts"`). Checked before the relative-path prefix so
- * a `#src/` specifier is never mistaken for the bare-package-name case
- * that `.`-prefix filtering exists to exclude. A specifier landing outside
- * src/ (a real package name, `#tests/*`, `#tools/*`) is not tracked.
+ * Checked before the relative-path prefix so a `#src/` specifier is never
+ * mistaken for the bare-package-name case that `.`-prefix filtering exists
+ * to exclude. A specifier landing outside src/ (a real package name,
+ * `#tests/*`, `#tools/*`) is not tracked.
  */
 function isTrackedSpecifierText(text: string): boolean {
   if (text.startsWith('#src/')) {
@@ -91,12 +86,6 @@ export function getTrackedImportTypeSpecifier(node: ts.ImportTypeNode): string |
   return isTrackedSpecifierText(node.argument.literal.text) ? node.argument.literal.text : null;
 }
 
-/**
- * Resolves a `#src/...` subpath specifier to the canonical `src/...` path
- * that the package.json#imports map points at. Mirrors the mapping
- * `#src/*.js → ./src/*.ts` and `#src/* → ./src/*` so `resolveTrackedSourcePath`
- * can hand back the same target shape that relative-path resolution produces.
- */
 export function resolveSubpathSourcePath(specifier: string): string {
   if (!specifier.startsWith('#src/')) {
     throw new Error(`Expected a #src/ specifier, got ${specifier}`);
@@ -134,14 +123,6 @@ export function resolveRelativeSourcePath(
   throw new Error(`Unable to resolve ${specifier} from ${sourceCanonicalPath} to a production src/*.ts file`);
 }
 
-/**
- * Resolves any specifier `isTrackedSpecifierText` accepts to its canonical
- * `src/...` target — the single resolution path `parseSourceImportEdges`
- * calls, so the edge list it produces is complete for both spellings
- * production code uses to reach another src/ file. A `#src/` specifier
- * resolves by direct package.json#imports mapping rather than by
- * directory-relative lookup, since it is not relative to `sourceFilePath`.
- */
 function resolveTrackedSourcePath(
   repoRoot: string,
   sourceFilePath: string,

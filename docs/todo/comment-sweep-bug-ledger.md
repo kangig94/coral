@@ -605,3 +605,22 @@ under the "certain delete" rule (comment wrong, code correct — not ledger-wort
   `coordinator/composition/world.ts` neither imports nor calls it — the actual composition site is
   `src/coordinator/index.ts` (three call sites). The wrong parenthetical was excised, keeping the accurate
   sentence about the function itself.
+
+**Continuation — the remaining 37 files in this sector.** The pass above covered 24 files before stopping
+without a report; this pass covers the rest of `tests/integration/`, `tests/e2e/`, `tests/helpers/`, and
+`tests/types/`. Nothing met this ledger's bar (comment right, code wrong) in any of the 37 files. Two comments
+in `process-topology.integration.test.ts` were found and corrected as factually wrong under the "certain
+delete" rule (comment wrong, code correct — not ledger-worthy per the same precedent):
+
+- A `/** Writes one guardian bootstrap capsule directly... */` docblock sat immediately before a second,
+  correct docblock for the same function, `writeCapsuleSet`. `writeCapsuleSet` writes all three bootstrap
+  capsules (guardian, reaper, proxy) in one call — confirmed by reading the function body at its call sites,
+  each of which destructures `guardianCapsulePath` alongside sibling capsule fields. The stale docblock was
+  deleted, keeping its accurate sibling.
+- The file-scope constant `FIXTURE_BUILD_SET_ID` carried a doc claiming it is "the same [build]
+  `providerOperationRecord` stamps on its identities, so a discovered capsule is inheritable rather than
+  foreign." `FIXTURE_BUILD_SET_ID` is used exactly once in the file, as the `buildSetId` passed to a
+  `ProviderProxySetLifecycle` fixture in one test; `providerOperationRecord` is called in an unrelated test
+  further down, building a `prepare-pending` store row from a locally constructed `operation`/`locator` that
+  never references `FIXTURE_BUILD_SET_ID` — confirmed by reading both call sites. The unsupported claim was
+  deleted.
