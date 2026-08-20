@@ -80,8 +80,7 @@ function makeWorld(): ServiceWorld {
   openDbs.push(storeDb);
   const kb = createTestKbRuntime({ markdownRoot, runtimeDir, db: storeDb });
 
-  // Curate scheduler is only consulted by KbSourceImportService — and only
-  // its `scheduleDeferredCommit` method. A no-op handle is sufficient.
+  // A no-op handle is sufficient.
   const curateScheduler = {
     start: async () => {},
     stop: async () => {},
@@ -94,7 +93,6 @@ function makeWorld(): ServiceWorld {
     curateScheduler,
   };
 
-  // JobStore + AbortRegistry composed against the same DB.
   const jobsDb = newRawDatabase(':memory:');
   openDbs.push(jobsDb);
   applyBundledStoreSchema(jobsDb, currentCoralStoreFormat());
@@ -185,7 +183,7 @@ describe('KB pipeline checkpoint honor (AC9) — reindex', () => {
 
   it('user_abort at the scan checkpoint records terminal aborted/user_abort', async () => {
     // Scan-stage coverage: pre-abort the controller so `reindex(...)`'s
-    // first signal-aware checkpoint inside `withMutationLock` rejects with
+    // first signal-aware checkpoint rejects with
     // `AbortError(reason='user_abort')`. The service catch arm maps that
     // to the user-abort terminal outcome.
     abortOnNextRegister(world.abortRegistry);
@@ -394,8 +392,7 @@ describe('KB pipeline checkpoint honor (AC9) — source-import', () => {
 
 /**
  * Wraps a real KbRuntime so `withMutationLock` fails with a deadline-shaped
- * AbortError, mimicking the cooperative deadline propagation. Other methods
- * delegate to the real kb so KbReindexService's other touches keep working.
+ * AbortError, mimicking the cooperative deadline propagation.
  */
 function withDeadlineThrowingMutationLock(real: KbRuntime): KbRuntime {
   return new Proxy(real, {

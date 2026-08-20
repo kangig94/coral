@@ -54,7 +54,6 @@ describe('bindSocket', () => {
 
   it('auto-clears a stale orphan socket file on next bind', async () => {
     const socketPath = makeSocketPath('orphan');
-    // Stale orphan: a file at the socket path with no live listener.
     writeFileSync(socketPath, '');
     expect(existsSync(socketPath)).toBe(true);
 
@@ -91,7 +90,6 @@ describe('closeIpcServer ownership-safe close', () => {
   it('does not unlink a replacement socket path after replacement bind', async () => {
     const socketPath = makeSocketPath('handoff');
 
-    // Old listener binds.
     const oldServer = createServer();
     const oldListener: IpcListener = {
       server: oldServer,
@@ -132,7 +130,6 @@ describe('closeIpcServer ownership-safe close', () => {
       onShutdownRequest: null,
     });
     expect(newServer.listening).toBe(true);
-    // Bind to the same path again should still see the live new listener.
     const probe = createServer();
     cleanupServers.push(probe);
     const probeResult = await bindSocket(probe, socketPath);

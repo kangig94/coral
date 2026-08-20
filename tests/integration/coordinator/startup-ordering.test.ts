@@ -103,7 +103,7 @@ describe('coordinator startup ordering', () => {
       expect(reconcileProviderOperations).toHaveBeenCalledTimes(1);
       expect(startProviderOperationReconciler).toHaveBeenCalledTimes(1);
       // Three-era boot: journal `waitFreshUntil` (Era II) resolves BEFORE
-      // `jobsReconcile.runStartup`; KB corpus replay no longer waits in boot.
+      // `jobsReconcile.runStartup`.
       const firstWaitResolved = order.indexOf('waitFreshUntil:resolved');
       expect(firstWaitResolved).toBeGreaterThanOrEqual(0);
       expect(order.indexOf('jobsReconcile.runStartup')).toBeGreaterThan(firstWaitResolved);
@@ -198,7 +198,6 @@ describe('coordinator startup ordering', () => {
     try {
       await coordinator.start();
       order.push("setLifecycle('running')");
-      // Wait for Era II Journal recovery waits before asserting full ordering.
       await waitFor(() => waitFreshUntil.mock.calls.length >= 4);
 
       const waitFreshOrder = [
@@ -225,7 +224,7 @@ describe('coordinator startup ordering', () => {
       expect(Math.max(...waitFreshOrder)).toBeLessThan(order.indexOf('jobsReconcile.runStartup'));
       expect(order.indexOf('jobsReconcile.runStartup')).toBeLessThan(order.indexOf('recoverPersistedDiscussFn'));
       expect(order.indexOf('recoverPersistedDiscussFn')).toBeLessThan(order.indexOf('workflowRecover.resumeAll'));
-      // writeBackendInfoFn now fires in Era I (BEFORE recovery), not after:
+      // writeBackendInfoFn fires in Era I (BEFORE recovery):
       expect(order.indexOf('writeBackendInfoFn')).toBeLessThan(order.indexOf('jobsReconcile.runStartup'));
       expect(writeBackendInfoFn).toHaveBeenCalledTimes(1);
       // Era II recovery work (jobsReconcile, recoverPersistedDiscuss,

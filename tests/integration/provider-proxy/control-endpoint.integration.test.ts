@@ -681,9 +681,7 @@ describe('provider-proxy control endpoint', () => {
 
   it('does not hang close() on a connection that was accepted but never claimed a slot', async () => {
     const { socketPath, endpoint } = await startEndpoint();
-    // Connects and sends nothing: never opens, never pairs. Before every accepted socket was tracked, close()
-    // awaited server.close()'s callback, which Node fires only once every existing connection has ended —
-    // and this one would never end on its own.
+    // Connects and sends nothing: never opens, never pairs.
     await connect(socketPath);
 
     const closed = await Promise.race([

@@ -136,11 +136,9 @@ describe('starting-incumbent transport.shutdown handoff', () => {
     await listenIpcServer(ipcServer, socketPath);
     liveListeners.push(ipcServer);
 
-    // Contender sends transport.shutdown.
     const client = createIpcClient(socketPath, undefined, { kind: 'boot', token: 'boot-token' });
     const result = await client.shutdown<{ status: string }>({ timeoutMs: 1_000 });
     expect(result).toMatchObject({ status: 'draining' });
-    // The callback ran synchronously alongside requestDrain.
     expect(onShutdownCalled).toBe(true);
     expect(drainCalled).toBe(true);
     expect(lifecycle).toBe('draining');

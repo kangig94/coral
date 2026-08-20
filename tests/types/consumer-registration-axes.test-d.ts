@@ -5,9 +5,6 @@
  * compiler stops rejecting any of these, the structural invariant is broken
  * and future drift can pair (e.g.) `kind: 'stateless'` with
  * `registrationKind: 'base'` without a build error.
- *
- * Typechecked by `tsc -p tests/types/tsconfig.json` (run from `npm test`)
- * and by `tsc -p tsconfig.test.json --noEmit` (the broader gate).
  */
 
 import type {

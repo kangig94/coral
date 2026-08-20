@@ -353,11 +353,8 @@ function composeProductionStartup(
   }> = {},
 ): ProductionStartupHarness {
   const db = createDb([record]);
-  // Wanting a clock and wanting the host's filesystem are different asks, and this used to conflate them:
-  // supplying a runtime for the clock also handed over real storage, so the one case that did read the
-  // developer's `gen2/run`, found a live daemon's handoff capsule, and attempted the redemption the fixture
-  // declares never happens. Only a case that stages capsules itself passes a runtime now; asking for a clock
-  // keeps the sandbox.
+  // Wanting a clock and wanting the host's filesystem are different asks. Only a case that stages capsules
+  // itself passes a runtime now; asking for a clock keeps the sandbox.
   const runtime = options.runtime ?? sandboxedRuntime(options.time ?? new VirtualTime());
   const { time } = runtime;
   const fatals = vi.fn();

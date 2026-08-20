@@ -1,7 +1,6 @@
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
-// AC2/AC3 happy-path handoff integration coverage. Drives the full bind-first
-// flow against a scripted incumbent that releases its socket within budget.
-// No real daemon spawn — uses VirtualTime + node:net listener fakes.
+// AC2/AC3 happy-path handoff integration coverage. No real daemon spawn —
+// uses VirtualTime + node:net listener fakes.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createServer, type Server as NetServer } from 'node:net';
@@ -93,7 +92,6 @@ describe('handoff integration (AC2 + AC3 happy path)', () => {
       if (req.method === 'transport.shutdown') {
         expect(req.auth).toEqual({ kind: 'boot', token: 'boot-token' });
         expect(req.params).toEqual({});
-        // Schedule incumbent socket close — emulates incumbent entering drain.
         queueMicrotask(() => {
           incumbentServer?.close();
         });
@@ -105,7 +103,6 @@ describe('handoff integration (AC2 + AC3 happy path)', () => {
       socketReleased = true;
     });
 
-    // Spy on backendLog.error to assert no `Fatal startup error: listen EADDRINUSE`.
     const errorSpy = vi.spyOn(backendLog, 'error').mockImplementation(() => undefined);
 
     try {
@@ -138,7 +135,6 @@ describe('handoff integration (AC2 + AC3 happy path)', () => {
         totalBudgetMs: 5_000,
       });
 
-      // Drive virtual time forward for the bind poll loop.
       for (let i = 0; i < 30; i += 1) {
         await new Promise((resolve) => setTimeout(resolve, 5));
         time.tick(200);

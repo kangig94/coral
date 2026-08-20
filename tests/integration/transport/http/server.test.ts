@@ -367,9 +367,7 @@ async function openHttpStream(
 }
 
 // Cache modules across tests: these are pure imports from the coordinator
-// graph (no module-level mutation per test). 7 call sites previously paid
-// the cost of vi.resetModules + re-resolving the coordinator graph each
-// time; the first call took ~700ms.
+// graph (no module-level mutation per test).
 let cachedExecutionModules: {
   serverModule: ServerModule;
   backendInfo: BackendInfoModule;
@@ -493,11 +491,8 @@ describe('execution backend server', () => {
     }
     createdJobIds.clear();
     vi.restoreAllMocks();
-    // vi.resetModules() removed: 116 tests × ~40ms = ~4.6s of pure cache
-    // invalidation. The few tests needing fresh modules call
-    // `loadExecutionModules()` (which resets internally). vi.mock at module
-    // scope is hoisted and persistent across tests; restoreAllMocks() undoes
-    // any vi.spyOn from individual tests.
+    // vi.mock at module scope is hoisted and persistent across tests;
+    // restoreAllMocks() undoes any vi.spyOn from individual tests.
     try {
       rmSync(mockState.tmpHome, { recursive: true, force: true });
     } catch {
@@ -1652,7 +1647,6 @@ describe('execution backend server', () => {
     const launchCoordinator = createLaunchCoordinator();
     const backend = await startBackendServer({ launchCoordinator });
 
-    // Simulate two active launches via restoreActiveLaunch
     launchCoordinator.restoreActiveLaunch('job-1', 'codex', { kind: 'provider-session', id: 'session-job-1' });
     launchCoordinator.restoreActiveLaunch('job-2', 'codex', { kind: 'provider-session', id: 'session-job-2' });
 
@@ -6503,7 +6497,6 @@ describe('execution backend server', () => {
         },
       });
 
-      // Session claim should be released
       const recoveredSession = createSessionManager(projectRoot).get('codex', session.sessionId);
       expect(recoveredSession?.activeJobId).toBeUndefined();
     });

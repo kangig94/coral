@@ -215,8 +215,6 @@ describe('bundled store-reset CLI', () => {
     expect(sha256(readFileSync(fixture.evidencePath))).toBe(fixture.evidenceHash);
   });
 
-  // Startup replaces an unsupported store under the reset lock, retains public-safe
-  // evidence, and boots without asking the user to run an operator command.
   it('automatically resets an unsupported store and retains its incident without operator action', async () => {
     const home = root('coral-store-reset-e2e-running-');
     const temp = join(home, 'tmp');

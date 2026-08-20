@@ -136,8 +136,7 @@ const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
 /**
  * Drives `createProxyGuardianContainment` — the containment closures `startProviderProxyRole` installs on a
  * real `Proxy` — against a *real* `createGuardian`/`createReaper` pair over real control sockets, following
- * the same setup `enforcer-roles.integration.test.ts` uses. Only `ensureProviderRoot` is faked (a canned root,
- * no child process); the reservation, the wire calls, and the guardian/reaper themselves are all real.
+ * the same setup `enforcer-roles.integration.test.ts` uses.
  *
  * This path needs its own seam test because the operation-lifecycle harness injects containment and an
  * end-to-end CLI invocation cannot observe the two guardian hops directly. Forwarding the ledger's own

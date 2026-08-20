@@ -573,3 +573,35 @@ for jobs/sessions/discuss/workflow')` in `tests/invariants/projection-rebuild-pa
 - **Severity, as observed**: Not hit by any test failure. Reachability is a future reducer or
   `rebuildProjections`-helper change to one of the six uncovered discuss event kinds shipping a byte-level
   divergence that this invariant would not catch, despite its stated purpose.
+
+## Sector 12 — tests/integration, e2e, helpers, types
+
+Nothing met this ledger's bar (a comment right, code wrong). Every comment naming a symbol, a file, a
+caller, a config, or an "only"/"mirrors"/"defaults to"/"already handles" claim was checked against the graph,
+a targeted grep, or a direct read of both sides. Four comments were found and corrected as factually wrong
+under the "certain delete" rule (comment wrong, code correct — not ledger-worthy per the sector 7 precedent):
+
+- `enforcer-roles.integration.test.ts`'s `unreachableClient()` doc claimed "`stopAndReap`'s own
+  `proxyClient`/`reaperClient` are never touched by it — only `guardianClient` is." The two tests in that
+  `describe` block wire `reaperClient: reaperControl` (a real, connected reaper) and only `proxyClient` to
+  `unreachableClient()`; production `stopAndReap`
+  (`src/coordinator/live/provider-proxy/set-authority.ts`) calls both `guardianClient.call('guardian.stop-and-reap.v1', ...)`
+  and `reaperClient.call('reaper.stop-and-reap.v1', ...)` in the same `Promise.all`. Only `proxyClient` is
+  ever left untouched. The false half (`/reaperClient` and "only `guardianClient` is") was excised, keeping
+  "`stopAndReap`'s own `proxyClient` is never touched by it."
+- The same file's "refuses a teardown that names a different reaper than this one" test carried a trailing
+  clause on its rationale comment — "its own comment used to claim `assertRecordedSetAgreement` alone already
+  covered this; it did not" — describing a prior state of a comment that no longer exists in the tree. Change
+  history the sweep's own rule rejects outright; excised, keeping "Reach the reaper directly so its own
+  identity check is the one under test."
+- `continuity-lifecycle.integration.test.ts` cited "see `onDurableProcessIdentity` in `providers/cli-runner.ts`
+  and `jobs/shell/launch.ts`." `onDurableProcessIdentity` appears in `src/providers/cli-runner.ts` and is
+  invoked in `src/coordinator/live/durable-transport.ts` (inside `spawnDurableJobTransport`, the function the
+  same sentence names) — never in `src/jobs/shell/launch.ts`, confirmed by grep. The wrong half of the
+  citation was excised rather than repointed to the correct file, per the sector 8 precedent that supplying
+  the right name is introducing a new claim, not excising a false one.
+- `append-context.ts`'s doc on `permissiveProviderLookupPort` cited "`providerLookupPortFromCatalog(...)` (see
+  `coordinator/composition/world.ts`)." The function is real (`src/providers/catalog.ts`), but
+  `coordinator/composition/world.ts` neither imports nor calls it — the actual composition site is
+  `src/coordinator/index.ts` (three call sites). The wrong parenthetical was excised, keeping the accurate
+  sentence about the function itself.

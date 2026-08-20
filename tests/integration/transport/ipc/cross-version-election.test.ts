@@ -80,7 +80,6 @@ function noSignalRuntime(): Pick<Runtime, 'time' | 'process' | 'env'> {
   };
 }
 
-/** A `bindAttempt` that performs a real socket bind against `socketPath`. */
 function realBindAttempt(socketPath: string): () => Promise<{ kind: 'bound' } | { kind: 'incumbent'; reason: string }> {
   return async () => {
     const probe = createServer();

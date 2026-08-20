@@ -1,9 +1,4 @@
 // Cross-domain handoff coverage for workflow recovery across a daemon swap.
-// Exercises the harness against an in-flight workflow projection: events
-// land on Core A's journal, Core A shuts down with handoff mode, Core B
-// composes against the shared store, and `workflowRecover.resumeAll`
-// (production default behavior) reads the same journal and dispatches the
-// in-progress slot.
 //
 // The second skipped scenario from the original stub ("does not finalize an
 // interrupted workflow child on the old daemon") is gated by
