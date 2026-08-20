@@ -19,7 +19,7 @@ export function kbRoot(flavor: BuildFlavor, customRoot?: string, baseDir?: strin
   });
 }
 
-/** Strip trailing `.md` extension if present. Idempotent. */
+/** Idempotent. */
 export function stripMdExt(name: string): string {
   return name.endsWith('.md') ? name.slice(0, -3) : name;
 }
@@ -58,7 +58,6 @@ export function communitiesDir(root: string): string {
   return join(root, 'communities');
 }
 
-// KB runtime artifacts belong to the one account-neutral daemon state tree.
 export function sourcesDir(root: string): string {
   return join(root, 'sources');
 }

@@ -563,7 +563,6 @@ export function isWikiEntry(entry: EntryRecord): entry is WikiEntry {
   return entry.kind === 'wiki';
 }
 
-/** Response shapes returned by KB hosted operations over IPC/HTTP. */
 export type KbMemoResponse = {
   filename: string;
   path: string;

@@ -134,8 +134,8 @@ function installResult(
 function artifactInstallError(error: unknown): KiwiInstallError {
   const causeName = error instanceof Error ? error.name : typeof error;
   const detail = errorMessage(error);
-  // `runtime/download.ts` rethrows a `fetch` rejection unchanged, and `fetch` hangs the errno off `.cause`, so
-  // reading only the top level reported an unreachable host as `detail: "fetch failed"` with no code at all.
+  // `fetch` hangs the errno off `.cause`, so reading only the top level reported an unreachable
+  // host as `detail: "fetch failed"` with no code at all.
   const causeCode = thrownErrnoCode(error);
 
   return kiwiInstallError('expansion_install_artifact_failed', {

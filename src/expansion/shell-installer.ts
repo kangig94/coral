@@ -16,9 +16,7 @@ const INSTALL_TIMEOUT_MS = 300_000;
  * engine data directory so `unequip` can remove it by deleting that tree.
  */
 export interface ShellInstallerSpec {
-  /** Exact package id that owns this installer and its data directory. */
   readonly packageId: string;
-  /** Shell pipeline that installs the binary into `binDir`. */
   readonly buildInstallCommand: (binDir: string) => string;
   /** Absolute path to the binary that must exist after a successful install. */
   readonly binaryPath: (binDir: string) => string;
@@ -35,7 +33,6 @@ export interface ShellInstallerSpec {
   readonly buildUninstallCommand?: (binary: string) => string;
 }
 
-// installExpansion re-validates installer errors against installResponseSchema.
 function toInstallError(
   code: Parameters<typeof documentedCoralSetupError>[0],
   context: CoralSetupErrorContext,
@@ -99,11 +96,6 @@ async function withInstallLock<T>(opts: EngineInstallerOptions, run: () => Promi
   }
 }
 
-/**
- * Build an {@link EngineInstaller} for an install-only package. Installation
- * runs a shell pipeline; installed state is detected by the binary's presence;
- * uninstallation removes the package's engine data directory.
- */
 export function createShellInstaller(spec: ShellInstallerSpec): EngineInstaller {
   const packageId = assertExpansionPackageId(spec.packageId);
   function assertInstallerIdentity(name: string): void {
@@ -143,8 +135,6 @@ export function createShellInstaller(spec: ShellInstallerSpec): EngineInstaller 
           return { status: 'already_installed', method: 'shell', version: opts.version, targetDir, command: binary };
         }
 
-        // Update the installed binary in place when it can update itself; otherwise
-        // (fresh install, or update with no self-update) run the full install pipeline.
         const selfUpdate = opts.update === true && alreadyInstalled ? spec.buildUpdateCommand : undefined;
         const command = selfUpdate ? selfUpdate(binary) : spec.buildInstallCommand(targetDir);
         opts.runtime.storage.mkdirSync(targetDir, { recursive: true });

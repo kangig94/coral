@@ -77,8 +77,7 @@ export class EngineArtifactRegistry {
       } catch (error: unknown) {
         // Per-port fault isolation: a single engine's artifact port must not
         // abort boot artifact repair or rescan info collection for the rest
-        // of the registry. Log the failure and continue with the remaining
-        // entries' descriptors.
+        // of the registry.
         const message = errorMessage(error);
         backendLog.warn(
           `EngineArtifactRegistry: port for consumers [${entry.targetConsumerIds.join(', ')}] threw during describeArtifacts(): ${message}`,

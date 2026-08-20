@@ -475,3 +475,49 @@ signal)` — a direct pass-through. `git log -S"runCommunitySummaryJob" -- src/k
 - **Severity, as observed**: No runtime effect — the one real implementation is correct for the "call
   directly" branch it actually takes. The exposure is a documented extensibility path, and a job-operation
   enum member, that nothing has ever built or reached.
+
+## Sector 11 — src/kb remainder, engines, expansion, recovery, read-model, causality
+
+- **What is wrong**: `manifest-types.ts`'s header comment (deleted from the file as part of this sweep, since
+  it no longer verifies) justified splitting the file out to break a `kb/contracts.ts ↔ manifest-authority.ts`
+  import cycle, on the claim that `manifest-authority.ts` "references `KbRuntime` in its implementations."
+  Neither half of the justification holds against the current tree: `manifest-authority.ts` has zero
+  references to `KbRuntime` today, and the cited file `kb/contracts.ts` (plural) does not exist — the current
+  file is `kb/contract.ts` (singular). The same claim, in the same words, is the canonical worked example in
+  `.claude/rules/design-philosophy.md` rule 7 ("Never split a single concept across two files unless a cycle
+  physically forces the split... e.g. `manifest-types.ts` exists only to break a `kb/contracts.ts ↔
+manifest-authority.ts` cycle"), so a governing project rule's running example no longer verifies against the
+  code it describes.
+- **Where**: `manifest-types.ts` header in `src/kb/corpus/manifest-types.ts` (now removed);
+  `.claude/rules/design-philosophy.md` rule 7 (cites the identical claim).
+- **Evidence**: `grep -n "KbRuntime" src/kb/corpus/manifest-authority.ts` returns no matches against the
+  current tree. `git show 618c95d1:src/kb/corpus/manifest-authority.ts` shows the file importing `KbRuntime`
+  from `../contract.js` at the comment's introduction (commit `618c95d1`), confirming the claim was true when
+  written and has since gone stale as that import was removed; the same commit already used the now-nonexistent
+  `kb/contracts.ts` filename. `find src/kb -maxdepth 1 -name 'contract*.ts'` shows only `kb/contract.ts`
+  (singular) in the current tree.
+- **Why it was not fixed**: Comment-only sweep scope; re-justifying or dissolving the file split is an
+  architectural decision, and `.claude/rules/design-philosophy.md` is outside this sweep's touched-file
+  allowlist (`src/` comments plus this ledger only).
+- **Severity, as observed**: No runtime effect — `manifest-types.ts` still compiles and is imported without
+  issue regardless of whether a cycle currently forces its existence. The exposure is documentation integrity:
+  a governing project rule cites an example that no longer checks out, which could mislead a future
+  contributor deciding whether a similar split is warranted elsewhere.
+
+Five comments were found and corrected as factually wrong under the "certain delete" rule (comment wrong, code
+correct — not ledger-worthy per the sector 7 precedent), spread across the batch: `causality/render.ts`'s
+layer-boundary header claimed domains "import `CauseRef` from this module," but every domain (`jobs/`,
+`sessions/`, `workflow/`, `discuss/`) imports `CauseRef` from `causality/cause-ref.js` — what they import from
+`render.js` is `typedDescriber`/`EventDescriber`/`EventDescriberMap`; only the false clause was excised, the
+true no-domain-import constraint was kept. `engines/orama/document-builder.ts` pointed to "search-channels.ts
+ngram note" to justify avoiding spread on long token runs, but `search-channels.ts`'s only comment is about
+lazy n-gram generation, and `pushUniqueTerm` never uses spread — the broken pointer was cut, the verified
+stack-overflow-avoidance constraint kept. `kb/validation.ts`'s `LOWERCASE_SLUG_PATTERN` and `assertSlug` docs
+both cited "memo topic" as an example use, but `assertSlug`'s only two callers pass label `'domain'`; memo
+topic is validated by the separate mixed-case `assertNoteSlug` instead. `kb/ops/reindex.ts`'s JSDoc claimed the
+caller's abort signal threads "into derive/stage/post-commit checkpoints," but no `throwIfAborted` call site
+anywhere in the tree uses those names — the real checkpoints on this path are `'scan'` and `'readiness'`.
+`kb/corpus/frontmatter.ts`'s strict-parser comment credited both `extractKnowledgeLinks` and
+`serializeKnowledgeBlocks` with only seeing recognized structure, but `extractKnowledgeLinks` lives in a
+different file (`wiki-links.ts`) with independent parsing logic and never consumes this function's output —
+that half of the claim was cut, the same-file half about `serializeKnowledgeBlocks` was kept.

@@ -3,8 +3,7 @@
  * interface. Owned by the `expansion` domain so transport and CLI can
  * import the contract without crossing into `coordinator/`.
  *
- * KB daemon-side wiring (factories that bind the port to
- * `ExpansionLifecycleService`) lives at `src/kb-daemon/expansion/rpc.ts`.
+ * See createExpansionRpc in src/kb-daemon/expansion/rpc.ts.
  */
 import { z } from 'zod';
 import { retrievalRoleDescriptorSchema } from '../kb/search/contract.js';

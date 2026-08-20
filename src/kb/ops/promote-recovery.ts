@@ -20,11 +20,7 @@ import {
   type PromoteRecoveryPhase,
 } from './promote-marker.js';
 
-/**
- * Subset of `KbRuntime` consumed by the promote-recovery worker. Mirrors the
- * surface the live promote path uses so the worker can reuse the same commit
- * primitives without pulling the full runtime contract through the boot path.
- */
+/** The worker can reuse the same commit primitives without pulling the full runtime contract through the boot path. */
 type PromoteRecoveryHost = Pick<
   KbRuntime,
   | 'storagePort'
@@ -101,11 +97,11 @@ async function recoverOne(rt: PromoteRecoveryHost, marker: PromoteRecoveryMarker
   switch (marker.phase) {
     case 'marker-created':
     case 'payloads-staged':
-      // No real-path file writes happened; just discard staged artifacts.
+      // No real-path file writes happened.
       cleanupArtifacts(rt, marker);
       return;
     case 'note-written':
-      // Note file written but wiki not yet touched → roll back the note.
+      // Note file written but wiki not yet touched.
       rollbackNote(rt, marker);
       cleanupArtifacts(rt, marker);
       return;
@@ -113,8 +109,6 @@ async function recoverOne(rt: PromoteRecoveryHost, marker: PromoteRecoveryMarker
       if (filesMatchExpectedHashes(rt, marker)) {
         await completeForward(rt, marker);
       } else {
-        // Hash mismatch — staged content does not agree with what is on disk.
-        // Restore wiki backup if we have one, remove note file, and abandon.
         rollbackWiki(rt, marker);
         rollbackNote(rt, marker);
         cleanupArtifacts(rt, marker);
@@ -122,7 +116,7 @@ async function recoverOne(rt: PromoteRecoveryHost, marker: PromoteRecoveryMarker
       return;
     case 'state-committed':
     case 'memo-removed':
-      // Corpus state already published; only memo removal + cleanup left.
+      // Corpus state already published.
       removeMemoIfPresent(rt, marker);
       cleanupArtifacts(rt, marker);
       return;

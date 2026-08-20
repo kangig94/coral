@@ -16,7 +16,6 @@ export interface CommitCorpusEntryLockedOptions {
 }
 
 /**
- * Clone the current index, apply the updater, and write it back.
  * If no index exists on disk, updater receives an empty index.
  * @precondition Caller already holds `rt.withMutationLock()`.
  */
@@ -30,8 +29,7 @@ export function commitIndexUpdate(
 }
 
 /**
- * Commit a single corpus markdown file create/update while the caller holds
- * the KB mutation lock.
+ * The caller holds the KB mutation lock.
  */
 export function commitCorpusEntryLocked(
   rt: Pick<KbRuntime, 'storagePort' | 'ids' | 'readIndex' | 'writeIndex' | 'recordMutationCommitted'>,

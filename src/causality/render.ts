@@ -2,7 +2,7 @@
 // vocabulary; per-event description is injected by the owning domain via an
 // `EventDescriberMap`. This file MUST NOT import from any domain
 // (`jobs/`, `sessions/`, `workflow/`, `discuss/`) — doing so would create
-// a cycle, since those domains import `CauseRef` from this module.
+// a cycle.
 
 import type { z } from 'zod';
 

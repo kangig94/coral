@@ -1,4 +1,4 @@
-// TEMPORARY KB MIGRATION — REMOVE AFTER ~2026-07 (≈1 month post-rollout). To remove: delete src/kb/migrations/ and the single call site in src/kb/curate/scheduler.ts. The version marker then becomes inert.
+// TEMPORARY KB MIGRATION — REMOVE AFTER ~2026-07 (≈1 month post-rollout). To remove: delete src/kb/migrations/ and the call site in src/kb/curate/scheduler.ts. The version marker then becomes inert.
 import { dirname, join } from 'node:path';
 
 import { backendLog } from '../../infra/backend-log.js';

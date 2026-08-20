@@ -106,9 +106,8 @@ export interface CreateKbRuntimeOptions {
   db: Database;
   corpusPublishCallbacks?: KbCorpusPublishCallbacks;
   /**
-   * Time port. `now()` drives the existing time fields; `setTimeout` /
-   * `clearTimeout` back the mutation-lock deadline (§16 #50: ports only, no
-   * ambient timers).
+   * `setTimeout` / `clearTimeout` back the mutation-lock deadline (§16 #50:
+   * ports only, no ambient timers).
    */
   time: Pick<TimePort, 'now' | 'setTimeout' | 'clearTimeout' | 'setInterval' | 'clearInterval'>;
   ids: Pick<IdPort, 'uuid'>;

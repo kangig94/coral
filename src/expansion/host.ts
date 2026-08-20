@@ -46,14 +46,6 @@ type ExpansionScope = Disposable & {
   [REGISTERED_ARTIFACT_PORTS]?: EngineArtifactRegistration[];
 };
 
-/**
- * Derives `registrationKind` from `(tier, reg.kind)`. Engine code declares
- * `kind` (`'cursor' | 'apply' | 'stateless'`) on the registration; the host
- * decides the lifecycle/storage tier:
- *  - stateless registrations               → 'stateless' (no cursor, no apply)
- *  - bundled tier (cursor or apply)        → 'base'      (auto-equips at boot, owns the cursor)
- *  - installed tier (cursor or apply)      → 'expansion' (projection consumer)
- */
 function deriveRegistrationKind(tier: ExpansionTier, reg: ExpansionConsumerRegistration): ConsumerRegistrationKind {
   if (reg.kind === 'stateless') {
     return 'stateless';
