@@ -115,8 +115,6 @@ const AUTO_FIX_HANDLERS: Readonly<
 };
 
 /**
- * Applies deterministic KB repair actions and queues manual follow-up when automation must stop.
- *
  * @precondition Caller already holds `kb.withMutationLock()` and supplies the `mutation` context
  * captured by that lock. The caller also constructs the `gitSync` controller from production ports
  * (KbRuntime carries `storagePort`/`processPort`/`envPort`/`curateAssistant`); auto-fix never reaches the
@@ -464,8 +462,6 @@ function enqueueManualRepairLocked(
   // typed-incident enqueues record it so a re-running rebuild does not re-fire the same incident.
   const observedContentHash = content === null ? undefined : createHash('sha256').update(content, 'utf8').digest('hex');
 
-  // Same incident already queued over identical content: nothing changed, so leave
-  // the row untouched and report it as already-queued instead of re-enqueuing.
   if (
     existing !== undefined &&
     observedContentHash !== undefined &&

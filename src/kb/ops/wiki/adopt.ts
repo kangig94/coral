@@ -30,10 +30,8 @@ import {
 import { prependWikiKnowledgeLinkInMutation } from './mutation.js';
 
 /**
- * Promote a memo into a note and link the new note at the front of the wiki's
- * Knowledge section as one atomic operation. The phase-recorded recovery
- * marker lets `runPromoteRecovery` roll forward (or back) on the next boot
- * if a crash interrupts the multi-file write.
+ * The phase-recorded recovery marker lets `runPromoteRecovery` roll forward
+ * (or back) on the next boot if a crash interrupts the multi-file write.
  */
 export async function adoptIntoWiki(
   rt: KbRuntime,

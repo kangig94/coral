@@ -5,7 +5,6 @@ import { computeCommunitySummaryInputFingerprints } from './summary.js';
 type CommunityFreshnessRuntime = Pick<KbRuntime, 'notePath' | 'sourcePath' | 'storagePort'>;
 
 export function areCommunityDocumentsFresh(kb: KbRuntime, index: KbIndex): boolean {
-  // Avoid touching curate state when there are no community entries.
   let hasCommunityEntries = false;
   for (const entry of Object.values(index.entries)) {
     if (isCommunityEntry(entry)) {

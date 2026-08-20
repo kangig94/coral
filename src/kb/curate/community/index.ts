@@ -121,9 +121,6 @@ async function prepareCommunityPayload(
     today,
   });
 
-  // Write every non-quarantined community carrying its prior summary + fingerprint.
-  // If a community is new or its members changed, it has no/stale fingerprint and
-  // will appear in listStaleCommunities() for the agent to fill.
   const generatedCommunityDocs: CommunityDocument[] = initialCommunityDocs
     .filter((d) => !quarantinedCommunitySlugs.has(d.slug))
     .sort((left, right) => compareLocale(left.slug, right.slug));
@@ -177,8 +174,7 @@ export async function runCommunitySubphase(kb: KbRuntime, options: RunCommunityS
       const nextState = {
         ...prepared.capturedBaselineState,
         consecutiveCommunityBatchFailures: 0,
-        // A successful community batch implicitly clears the lane-disabled stamp
-        // (the lane was unblocked); see scheduler.ts INVARIANT.MAX_CONSECUTIVE_FAILURES.
+        // see INVARIANT.MAX_CONSECUTIVE_FAILURES in src/kb/curate/scheduler.ts
         communityBatchLaneDisabledAt: null,
       };
       const shouldWriteState =
