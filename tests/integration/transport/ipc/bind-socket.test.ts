@@ -89,8 +89,14 @@ describe('bindSocket', () => {
     const server = createServer();
     cleanupServers.push(server);
 
+    // The operator sentence names the directory itself, so what the binder hands it is the observation and
+    // not the whole underlying message — which would put a second copy of the path and the requirement
+    // inside the first.
     await expect(bindSocket(server, join(socketFallbackDir(Number.NaN), 'relocated.sock'))).rejects.toThrow(
-      expect.objectContaining({ code: 'coordinator_socket_dir_unverified' }),
+      expect.objectContaining({
+        code: 'coordinator_socket_dir_unverified',
+        userMessage: expect.not.stringContaining('Socket directory'),
+      }),
     );
     expect(server.listening).toBe(false);
   });

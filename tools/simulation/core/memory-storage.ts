@@ -9,6 +9,9 @@ import type {
 } from '../../../src/infra/port-types.js';
 import { DEFAULT_CORAL_ROOT, DEFAULT_JOBS_DIR } from './constants.js';
 
+// This store models one process's own files.
+const SIMULATED_OWNER_UID = BigInt(process.getuid?.() ?? 0);
+
 type FileIdentity = {
   dev: number;
   ino: number;
@@ -432,15 +435,10 @@ export class InMemoryStorage implements StoragePort {
   lstatSync(path: string, options: { bigint: true }): StorageBigIntStat;
   lstatSync(path: string, options?: { bigint: true }): StorageEntryKind | StorageBigIntStat {
     const normalized = normalizePathForStorage(path);
-    // This store holds no symlinks, so the non-following observation is the following one; the file-type
-    // bits a caller reads out of `mode` still have to be there.
+    // This store holds no symlinks, so the non-following observation is the following one.
     if (options?.bigint === true) {
       const stat = this.statSync(normalized, { bigint: true });
-      return {
-        ...stat,
-        mode: (stat.isDirectory() ? 0o040000n : 0o100000n) | stat.mode,
-        uid: BigInt(process.getuid?.() ?? 0),
-      };
+      return { ...stat, mode: (stat.isDirectory() ? 0o040000n : 0o100000n) | stat.mode };
     }
     if (this.files.has(normalized)) {
       return {
@@ -468,32 +466,11 @@ export class InMemoryStorage implements StoragePort {
   }
 
   statSync(path: string): { size: number; mtimeMs: number; isDirectory(): boolean; isFile(): boolean };
-  statSync(
-    path: string,
-    options: { bigint: true },
-  ): {
-    dev: bigint;
-    ino: bigint;
-    mode: bigint;
-    size: bigint;
-    mtimeNs: bigint;
-    isDirectory(): boolean;
-    isFile(): boolean;
-  };
+  statSync(path: string, options: { bigint: true }): StorageBigIntStat;
   statSync(
     path: string,
     options?: { bigint: true },
-  ):
-    | { size: number; mtimeMs: number; isDirectory(): boolean; isFile(): boolean }
-    | {
-        dev: bigint;
-        ino: bigint;
-        mode: bigint;
-        size: bigint;
-        mtimeNs: bigint;
-        isDirectory(): boolean;
-        isFile(): boolean;
-      } {
+  ): { size: number; mtimeMs: number; isDirectory(): boolean; isFile(): boolean } | StorageBigIntStat {
     const normalized = normalizePathForStorage(path);
     const file = this.files.get(normalized);
     if (file) {
@@ -502,6 +479,7 @@ export class InMemoryStorage implements StoragePort {
           dev: BigInt(file.dev),
           ino: BigInt(file.ino),
           mode: BigInt(file.mode ?? 0o600),
+          uid: SIMULATED_OWNER_UID,
           size: BigInt(file.content.length),
           mtimeNs: file.mtimeNs,
           isDirectory: () => false,
@@ -524,6 +502,7 @@ export class InMemoryStorage implements StoragePort {
         dev: BigInt(directory.dev),
         ino: BigInt(directory.ino),
         mode: BigInt(directory.mode ?? 0o700),
+        uid: SIMULATED_OWNER_UID,
         size: 0n,
         mtimeNs: directory.mtimeNs,
         isDirectory: () => true,

@@ -18,8 +18,7 @@ export interface CoordinatorPathOptions {
   readonly baseDir?: string;
 }
 
-/** 64 bits, because under one shared fallback root every overflowing state root on the host draws from a
- *  single namespace rather than from this installation's own. */
+/** Every overflowing state root on the host draws from one namespace, not from this installation's own. */
 const FALLBACK_HASH_LENGTH = 16;
 
 interface SocketPathEnvironment {

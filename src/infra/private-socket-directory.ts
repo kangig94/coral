@@ -15,12 +15,7 @@ export type SocketDirectoryStorage = Pick<StoragePort, 'chmodSync' | 'mkdirSync'
   statSync(path: string, options: { bigint: true }): StorageBigIntStat;
 };
 
-/**
- * Four answers, and the operator's next step differs for each: `foreign` needs that owner or an
- * administrator, `unusable` needs the caller to clear their own entry, `unsecurable` cannot be resolved at
- * this path at all, and `unverified` decided nothing and must not be reported as though it had — an operator
- * told their permissions are wrong will go and change permissions.
- */
+/** `unverified` decided nothing: an operator told their permissions are wrong will go and change them. */
 export type SocketDirectoryRefusal = 'foreign' | 'unusable' | 'unsecurable' | 'unverified';
 
 export class SocketDirectoryError extends Error {
@@ -32,9 +27,7 @@ export class SocketDirectoryError extends Error {
 
   constructor(refusal: SocketDirectoryRefusal, directory: string, uid: number, cause?: unknown) {
     const requirement = `a directory owned by uid ${uid} with mode 0700`;
-    // `unsecurable` and `unverified` each cover several observations, and which one it was decides what the
-    // operator does next — so it travels in the message rather than as an enumeration a reader downstream
-    // has to keep complete.
+    // One refusal covers several observations, and no reader downstream may be left to enumerate them.
     const observed = cause instanceof Error ? cause.message : 'unknown cause';
     const reason =
       refusal === 'foreign'
@@ -63,26 +56,14 @@ function classifyEntry(entry: StorageBigIntStat, uid: number): EntryKind {
 }
 
 /**
- * Establishes that the parent of a relocated socket is private to `uid`, tightening its mode when the entry
- * is already this uid's and refusing when it is not.
+ * The entry's own owner and type must come from a non-following read: a following one describes whatever
+ * the path resolves to, and `bind` resolves it again afterwards.
  *
- * Ownership and type of the directory itself come from the non-following `lstat` and from nothing else. A
- * following `stat` describes whatever the entry currently resolves to rather than the entry, so under a
- * shared root it can report a victim-owned directory for an entry an attacker still controls — and the later
- * `bind` follows the same swapped link.
+ * Its enclosing directory must be read the following way round, because `/tmp` is a symlink on macOS and a
+ * link's own mode says nothing about who may write where it points.
  *
- * That observation only stays true while nobody but this uid can remove or rename the entry behind it, which
- * is a property of the parent and is established rather than assumed — an assumed premise is one nothing
- * fails on when it stops holding. It holds when the parent is writable by nobody else, or when it carries
- * the restricted-deletion bit *and* belongs to this uid or to root: that bit exempts the directory's own
- * owner as well as each entry's, so a sticky parent someone else owns protects nothing from them.
- *
- * The parent is read the other way round, with the following `stat`, because there the question is about a
- * location rather than an object: on a host where `/tmp` is a symlink, the link's own mode says nothing
- * about who may write in the directory it names.
- *
- * The mode is read back after `chmod` for the same reason the premise is checked: a filesystem may accept
- * the call and keep its own permissions, and `chmodSync` promises a return, not a postcondition.
+ * `chmod` succeeding is not the mode being set — a CIFS mount without unix extensions accepts the call and
+ * keeps its own permissions — so the result is read back.
  */
 export function ensurePrivateSocketDir(directory: string, uid: number, storage: SocketDirectoryStorage): void {
   if (!Number.isSafeInteger(uid) || uid < 0) {
@@ -96,8 +77,6 @@ export function ensurePrivateSocketDir(directory: string, uid: number, storage: 
       throw new SocketDirectoryError('unverified', directory, uid, error);
     }
   };
-  // Exhaustive so a new entry kind cannot inherit another one's disposition, and its own observation, by
-  // falling through a ternary.
   const REFUSALS = {
     unowned: { refusal: 'unverified', observed: 'the directory reported no owner' },
     foreign: { refusal: 'foreign', observed: undefined },

@@ -18,11 +18,7 @@ export function socketFallbackDir(uid: number): string {
   return join(SOCKET_FALLBACK_ROOT, `coral-${uid}`);
 }
 
-/**
- * Whether this socket is one this build relocated. The parent must be exactly the shared per-uid directory,
- * not merely somewhere under the shared root: a run directory lives inside the caller's own state root, and a
- * socket a test or an operator placed elsewhere under the root is not this build's to hold to a mode.
- */
+/** Exactly the shared per-uid directory, never merely somewhere under the shared root. */
 export function isRelocatedSocket(socketPath: string, uid: number): boolean {
   return dirname(socketPath) === socketFallbackDir(uid);
 }

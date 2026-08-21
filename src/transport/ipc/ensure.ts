@@ -521,10 +521,8 @@ function spawnCoordinator(backendBin: string, paths: CoordinatorPaths): SpawnedC
  * Uses the same primitive as daemon-side bind (path-cleanup is the next
  * binder's job per `bindSocket` contract).
  *
- * `false` says the incumbent still holds the address, so waiting is worth
- * something. A `CoralSetupError` says the bind was refused rather than lost to
- * an incumbent, which draining cannot change, so it is not a `false` — it
- * leaves through the channel that keeps its code and its remediation.
+ * `false` means an incumbent still holds the address. A refusal is not that,
+ * and draining cannot clear it.
  */
 async function probeSocketReleased(socketPath: string): Promise<boolean> {
   const probe = createServer();

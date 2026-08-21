@@ -364,9 +364,7 @@ function staleSocketClearLockDir(socketPath: string): string {
 }
 
 /**
- * The code, not a field beside it, carries which refusal this was: `errorCodeToExit` classifies by code
- * alone, so a code spanning both "decided" and "could not observe" exits one of them wrong. Exhaustive so a
- * new refusal cannot inherit another one's operator text by default.
+ * One code may not span both "decided" and "could not observe" — see errorCodeToExit in src/cli/errors.ts.
  */
 const SOCKET_DIRECTORY_REFUSAL_CODES = {
   foreign: 'coordinator_socket_dir_insecure',
