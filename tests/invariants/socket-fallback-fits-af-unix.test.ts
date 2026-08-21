@@ -15,7 +15,6 @@ import { socketFallbackDir, socketPathByteLimit } from '#src/infra/path/unix-soc
  */
 describe('a relocated socket path fits AF_UNIX on every platform', () => {
   const HEADROOM_RATIO = 0.75;
-  // The longest string a `number` produces, so the bound holds for any uid rather than any plausible one.
   const WIDEST_UID = -Number.MAX_VALUE;
   const PLATFORMS = ['darwin', 'linux'] as const;
   const DEEP_RUN_DIR = `/${'r'.repeat(200)}`;
@@ -50,7 +49,6 @@ describe('a relocated socket path fits AF_UNIX on every platform', () => {
   });
 
   it.each(PLATFORMS)('keeps a relocated provider endpoint under the %s limit, with margin', (platform) => {
-    // A safe-integer uid, because the resolver refuses one that is not.
     const uid = Number.MAX_SAFE_INTEGER;
     const relocated = providerProxyEndpoint(
       {

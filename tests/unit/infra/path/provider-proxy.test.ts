@@ -33,8 +33,6 @@ const identity: ProviderProxyEndpointIdentity = {
 const FALLBACK_DIRECTORY = socketFallbackDir(CURRENT_UID);
 const FALLBACK_ROOT = dirname(FALLBACK_DIRECTORY);
 
-// The assertion observes the fallback directory's parent as well, to establish that no other user can
-// replace what it is about to check. Only the directory's own stat varies per test.
 function secureStorage(mode = 0o40700n): ProviderProxyEndpointEnvironment['storage'] {
   let current = mode;
   const stat = (value: bigint) => ({

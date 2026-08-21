@@ -6,11 +6,13 @@ socket does.
 
 The shared question is the same at every site: on Linux with no `TMPDIR`, `os.tmpdir()` is `/tmp` —
 world-writable and world-listable, and conventionally but not necessarily carrying the restricted-deletion
-bit that stops one user removing another's entry. On macOS it is the per-user `/var/folders/…` at mode
-`0700`, which is why none of this shows up there. A path Coral puts under that root needs a name another
-user cannot usefully pre-empt, a mode, a check of that parent property rather than a reliance on it, and a
-decision about what happens when the entry is already someone else's. Only the socket path does any of
-this; `ensurePrivateSocketDir` (`src/infra/private-socket-directory.ts`) is what the others would reuse.
+bit that stops one user removing another's entry. On macOS the `os.tmpdir()`-derived sites instead use the
+per-user `/var/folders/…` at mode `0700`, so this class does not show up at sites 1–3 there. Site 4 does not
+use `os.tmpdir()`: without an override it still derives the literal `/tmp/claude-<uid>`, where a foreign
+pre-created entry remains reachable. A path Coral puts under a shared root needs a name another user cannot
+usefully pre-empt, a mode, a check of that parent property rather than a reliance on it, and a decision about
+what happens when the entry is already someone else's. Only the socket path does any of this;
+`ensurePrivateSocketDir` (`src/infra/private-socket-directory.ts`) is what the others would reuse.
 
 `socket-address-ownership.md` holds the namespace half of this question for the socket and has not answered
 it yet. The per-user naming below inherits that answer; the modes do not, and are worth doing alone.
@@ -30,9 +32,11 @@ wrapper opens the two streams with a bare `openSync(path, 'w')`, so all three la
 `0644` under the common default. The directories are the same: `initJob` and `appendLaunchRequested`
 (`src/jobs/store.ts`) both call `mkdirSync(dir, { recursive: true })` with no mode.
 
-A `jobId` is a UUID, so the leaf cannot be guessed. The parent can: `/tmp/coral-jobs` is a literal. Another
-user creates it first, owns it, and every id underneath becomes a directory listing. Owning the parent also
-lets them rename or unlink Coral's entries, and a recursive `rmSync` of a job directory (`src/jobs/store.ts`,
+A `jobId` is a UUID, so the leaf cannot be guessed. The parent can: `/tmp/coral-jobs` is a literal. If another
+user creates it first with an ordinary mode that excludes Coral, the nested `mkdirSync` fails with `EACCES`:
+the result is denial of service, not a directory full of disclosed ids. If the attacker instead permits Coral
+to create beneath the foreign-owned parent, they can list each UUID leaf Coral creates. The parent owner can
+also rename or unlink Coral's entries, and a recursive `rmSync` of a job directory (`src/jobs/store.ts`,
 `src/coordinator/services/recovery/actions.ts`) then deletes through a path whose resolution someone else
 controls.
 

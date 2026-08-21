@@ -18,7 +18,7 @@ export function socketFallbackDir(uid: number): string {
   return join(SOCKET_FALLBACK_ROOT, `coral-${uid}`);
 }
 
-/** Exactly the shared per-uid directory, never merely somewhere under the shared root. */
+/** Exactly the shared per-uid directory, never merely somewhere under the shared root or a spelling of it. */
 export function isRelocatedSocket(socketPath: string, uid: number): boolean {
   return resolve(dirname(socketPath)) === socketFallbackDir(uid);
 }

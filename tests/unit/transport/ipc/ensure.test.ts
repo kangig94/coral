@@ -1000,8 +1000,6 @@ describe('ipc ensure', () => {
       namespace: pluginRootNamespace(root),
     });
     const { ensure } = await importEnsure();
-    // From the post-reset registry, or `instanceof CoralSetupError` inside the freshly imported probe sees a
-    // different class and answers the refusal as "still held" — which is the very collapse under test.
     const { documentedCoralSetupError } = await import('#src/runtime/errors.js');
     mockState.bindSocket.mockRejectedValue(
       documentedCoralSetupError({

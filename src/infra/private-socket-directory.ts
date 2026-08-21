@@ -22,7 +22,6 @@ export class SocketDirectoryError extends Error {
   readonly refusal: SocketDirectoryRefusal;
   readonly directory: string;
   readonly uid: number;
-  /** The observation alone, for a caller that already names the directory in its own sentence. */
   readonly detail: string | undefined;
 
   constructor(refusal: SocketDirectoryRefusal, directory: string, uid: number, cause?: unknown) {
@@ -125,8 +124,8 @@ export function ensurePrivateSocketDir(directory: string, uid: number, storage: 
   try {
     storage.mkdirSync(directory, { recursive: true, mode: Number(PRIVATE_DIRECTORY_MODE) });
   } catch (error: unknown) {
-    // Something already occupies the path, which the observation below can name; every other create failure
-    // leaves this with nothing observed.
+    // Only an occupied path is an observation the read below can name; every other create failure leaves
+    // this having observed nothing.
     if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
       throw new SocketDirectoryError('unverified', directory, uid, error);
     }

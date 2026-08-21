@@ -387,8 +387,6 @@ function prepareSocketParent(socketPath: string): void {
   try {
     ensurePrivateSocketDir(directory, uid, { chmodSync, lstatSync, mkdirSync, statSync });
   } catch (error: unknown) {
-    // A refusal only the sentinel writer can serialise never reaches a terminal, and it serialises
-    // documented codes alone — see writeStartupErrorSentinel in src/coordinator/bootstrap-diagnostics.ts.
     if (!(error instanceof SocketDirectoryError)) throw error;
     throw documentedCoralSetupError({
       code: SOCKET_DIRECTORY_REFUSAL_CODES[error.refusal],
@@ -408,7 +406,7 @@ export async function bindSocket(server: NetServer, socketPath: string): Promise
       try {
         chmodSync(socketPath, 0o600);
       } catch {
-        // Best-effort.
+        // The listener is already bound; refusing here would abandon a working socket over its mode.
       }
     }
   };

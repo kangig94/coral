@@ -98,14 +98,10 @@ describe('bindSocket', () => {
   });
 
   it('reports a relocated directory it could not observe under its own code, not the ownership verdict', async () => {
-    // A uid no directory can be owned by, so the assertion refuses before it touches the filesystem.
     vi.spyOn(process, 'getuid').mockReturnValue(Number.NaN);
     const server = createServer();
     cleanupServers.push(server);
 
-    // The operator sentence names the directory itself, so what the binder hands it is the observation and
-    // not the whole underlying message — which would put a second copy of the path and the requirement
-    // inside the first.
     await expect(bindSocket(server, join(socketFallbackDir(Number.NaN), 'relocated.sock'))).rejects.toThrow(
       expect.objectContaining({
         code: 'coordinator_socket_dir_unverified',
@@ -115,10 +111,6 @@ describe('bindSocket', () => {
     expect(server.listening).toBe(false);
   });
 
-  // Which refusal the assertion reaches is `ensurePrivateSocketDir`'s own test's subject; this one is here
-  // for the wiring — that a refusal becomes the documented code and that no listen is attempted after it.
-  // The uid is synthetic so the shared per-uid directory named here cannot be one a coordinator on this host
-  // is bound in, and the entry it creates is removed only once creating it succeeded.
   it('turns a relocated-directory refusal into its documented code without listening', async () => {
     const uid = 9_000_000 + process.pid;
     vi.spyOn(process, 'getuid').mockReturnValue(uid);

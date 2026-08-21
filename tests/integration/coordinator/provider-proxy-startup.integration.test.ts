@@ -40,7 +40,7 @@ import type { ProviderOperationRecord } from '#src/store/provider-operation-reco
 import { createControlEndpoint, type ControlChallengeAuthority } from '#src/provider-proxy/control-endpoint.js';
 import { PROXY_CONTROL_RPC_TIMEOUT_MS, ProxyControlProtocolError } from '#src/provider-proxy/protocol.js';
 import { providerHandoffCapsulePath } from '#src/infra/path/index.js';
-import type { StorageBigIntStat, StoragePort, TimePort, TimerHandle } from '#src/infra/port-types.js';
+import type { StorageBigIntStat, StorageEntryKind, StoragePort, TimePort, TimerHandle } from '#src/infra/port-types.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { ProcessPort, Runtime } from '#src/runtime/ports.js';
 import { ProviderOperationTerminalizationUnavailableError } from '#src/jobs/provider-operation-terminalization.js';
@@ -426,13 +426,18 @@ function capsuleBackedStorage(
   const requirePresent = (): void => {
     if (!present) throw absent();
   };
+  function lstatCapsule(_path: string): StorageEntryKind;
+  function lstatCapsule(_path: string, options: { bigint: true }): StorageBigIntStat;
+  function lstatCapsule(_path: string, options?: { bigint: true }): StorageEntryKind | StorageBigIntStat {
+    requirePresent();
+    return options?.bigint === true
+      ? stat
+      : { isDirectory: () => false, isFile: () => true, isSymbolicLink: () => false };
+  }
   const storage = {
     ...base,
     readdirSync: (() => (options.discover && present ? [basename(path)] : [])) as unknown as StoragePort['readdirSync'],
-    lstatSync: (() => {
-      requirePresent();
-      return { isDirectory: () => false, isFile: () => true, isSymbolicLink: () => false };
-    }) as unknown as StoragePort['lstatSync'],
+    lstatSync: lstatCapsule,
     statSync: ((_path: string, statOptions?: { bigint: true }) => {
       requirePresent();
       return statOptions?.bigint === true

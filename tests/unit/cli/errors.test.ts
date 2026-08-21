@@ -289,20 +289,12 @@ describe('cli errors', () => {
       ['coordinator_record_unreadable', undefined, 75],
       ['coordinator_unreachable', undefined, 75],
       ['coordinator_socket_dir_unverified', undefined, 75],
-      // Its decided counterpart, which the split exists to keep off the retry axis.
       ['coordinator_socket_dir_insecure', undefined, 1],
       ['unexpected_code', undefined, 1],
     ])('maps %s / %s to %i', (code, httpStatus, exitCode) => {
       expect(errorCodeToExit(code, httpStatus)).toBe(exitCode);
     });
 
-    // The mechanism `NOT_OBSERVED_CORAL_SETUP_ERROR_CODES` exists to prevent — a code added to one consumer's
-    // exit-code list and not the other's — was previously asserted only in a JSDoc comment, never a test. This
-    // drives both `errorCodeToExit` (this file) and `expansionExitCode` (`cli/commands/expansion.ts`) from the
-    // real exported set, so a future member that either consumer stops honoring fails here instead of shipping
-    // silently. `EXPECTED_NOT_OBSERVED_CODES` is an independent, hand-written statement of the set's current
-    // membership — mirroring `main-routing.test.ts`'s "has a row for every refusal" pattern — so a code
-    // silently added to or removed from the real set is caught here too, not just a drift between consumers.
     it('gives every NOT_OBSERVED_CORAL_SETUP_ERROR_CODES member exit 75 in both errorCodeToExit and expansionExitCode', async () => {
       const EXPECTED_NOT_OBSERVED_CODES = [
         'coordinator_unreachable',

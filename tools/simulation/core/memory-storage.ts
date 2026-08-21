@@ -9,7 +9,6 @@ import type {
 } from '../../../src/infra/port-types.js';
 import { DEFAULT_CORAL_ROOT, DEFAULT_JOBS_DIR } from './constants.js';
 
-// This store models one process's own files.
 const SIMULATED_OWNER_UID = BigInt(process.getuid?.() ?? 0);
 
 type FileIdentity = {
@@ -435,7 +434,6 @@ export class InMemoryStorage implements StoragePort {
   lstatSync(path: string, options: { bigint: true }): StorageBigIntStat;
   lstatSync(path: string, options?: { bigint: true }): StorageEntryKind | StorageBigIntStat {
     const normalized = normalizePathForStorage(path);
-    // This store holds no symlinks, so the non-following observation is the following one.
     if (options?.bigint === true) {
       const stat = this.statSync(normalized, { bigint: true });
       return { ...stat, mode: (stat.isDirectory() ? 0o040000n : 0o100000n) | stat.mode };

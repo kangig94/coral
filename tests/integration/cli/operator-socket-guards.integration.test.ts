@@ -37,8 +37,6 @@ describe('operator coordinator socket bind failures', () => {
   // documented code carries its own remediation and its own exit class, and re-wrapping puts "could not
   // observe" back under the exit-1 verdict the split exists to separate it from.
   it('passes a documented bind refusal through instead of rewrapping it', async () => {
-    // A uid no directory can be owned by, so the relocated-parent assertion refuses before it touches the
-    // filesystem and the guard sees a documented refusal rather than an errno.
     vi.spyOn(process, 'getuid').mockReturnValue(Number.NaN);
 
     let refusal: unknown;
