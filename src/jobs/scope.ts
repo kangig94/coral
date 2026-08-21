@@ -1,11 +1,7 @@
 import { containsWorkDir, type CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 import type { JobKind } from './records.js';
 
-/**
- * How a caller's directory must relate to a job's work directory for the job to be in scope.
- * `contains` answers explicit addressing — naming a job id is deliberate, so an ancestor may reach it.
- * `exact` answers ambient selection, which nobody typed a job id for.
- */
+// Explicitly naming a job id permits containment; ambient selection requires equality.
 export type JobScopeRelation = 'contains' | 'exact';
 
 export type ScopeCheckResult = {

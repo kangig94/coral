@@ -58,7 +58,8 @@ function jobScopeMismatchResult(jobs: readonly string[]): ToolDomainResult {
     ok: false,
     code: 'scope_mismatch',
     message: "Jobs are outside the caller's work directory scope",
-    remediation: "Rerun from the job's work directory, or from a directory that contains it.",
+    remediation:
+      "Rerun from the job's work directory, or from a directory that contains it — `coral-cli jobs` groups every job under the work directory it ran in.",
     detail: { jobs: [...jobs] },
   };
 }

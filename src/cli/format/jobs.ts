@@ -21,7 +21,8 @@ export type JobsListDisplayFilters = {
   phase?: string;
   provider?: string;
   all?: boolean;
-  /** Current working directory, used to surface its jobs as the primary group. */
+  /** The caller's own directory. Jobs whose work directory equals it are the primary group,
+   * because that is the relation an ambient selector uses. */
   cwd?: string;
 };
 
@@ -161,7 +162,7 @@ export function formatJobsList(data: JobsListResponse, now = Date.now()): JobsLi
     jobId,
     phase: status.phase,
     provider: status.provider ?? status.jobKind,
-    cwd: status.projectRoot,
+    cwd: status.workDir ?? status.projectRoot,
     jobKind: status.jobKind,
     workflowSlot: formatWorkflowSlot(status) ?? JOBS_TABLE_NO_SLOT,
     age: formatRelativeAge(status.updatedAt, now),
@@ -291,7 +292,7 @@ export function renderJobsList(rows: JobsListItem[], filters: JobsListDisplayFil
   const sections: string[] = [];
 
   if (currentRows.length > 0) {
-    sections.push(joinLines([`Current project (${filters.cwd})`, jobsTable(currentRows)]));
+    sections.push(joinLines([`Current work directory (${filters.cwd})`, jobsTable(currentRows)]));
   }
 
   if (kbRows.length > 0) {
@@ -305,7 +306,7 @@ export function renderJobsList(rows: JobsListItem[], filters: JobsListDisplayFil
     otherByDir.set(row.cwd, group);
   }
   if (otherByDir.size > 0) {
-    const blocks: string[] = ['Other projects'];
+    const blocks: string[] = ['Other work directories'];
     for (const [dir, dirRows] of [...otherByDir.entries()].sort(([left], [right]) => left.localeCompare(right))) {
       blocks.push(joinLines([`  ${dir}`, jobsTable(dirRows)]));
     }

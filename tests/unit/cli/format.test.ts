@@ -1921,11 +1921,11 @@ describe('renderJobsList grouping', () => {
 
     const rendered = renderJobsList(rows, { cwd: '/work/coral' });
 
-    expect(rendered).toContain('Current project (/work/coral)');
+    expect(rendered).toContain('Current work directory (/work/coral)');
     expect(rendered).toContain('KB jobs (shared corpus)');
-    expect(rendered).toContain('Other projects');
-    expect(rendered.indexOf('Current project')).toBeLessThan(rendered.indexOf('KB jobs'));
-    expect(rendered.indexOf('KB jobs')).toBeLessThan(rendered.indexOf('Other projects'));
+    expect(rendered).toContain('Other work directories');
+    expect(rendered.indexOf('Current work directory')).toBeLessThan(rendered.indexOf('KB jobs'));
+    expect(rendered.indexOf('KB jobs')).toBeLessThan(rendered.indexOf('Other work directories'));
     expect(rendered).toContain('kb-1');
     expect(rendered.indexOf('/work/alpha')).toBeLessThan(rendered.indexOf('/work/beta'));
   });
