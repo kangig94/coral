@@ -315,13 +315,18 @@ describe('CoralSetupError', () => {
         reason: 'unusable',
         directory: '/tmp/coral-1000',
       });
+      const unsecurable = documentedCoralSetupError({
+        code: 'coordinator_socket_dir_insecure',
+        reason: 'unsecurable',
+        directory: '/tmp/coral-1000',
+      });
       const unverified = documentedCoralSetupError({
         code: 'coordinator_socket_dir_unverified',
         directory: '/tmp/coral-1000',
         cause: 'EIO: i/o error, lstat',
       });
 
-      for (const error of [foreign, unusable, unverified]) {
+      for (const error of [foreign, unusable, unsecurable, unverified]) {
         expect(error.userMessage).toContain('/tmp/coral-1000');
         expect(error.remediation).toContain('/tmp/coral-1000');
         expect(`${error.userMessage} ${error.remediation}`).not.toContain('<directory>');
@@ -330,6 +335,7 @@ describe('CoralSetupError', () => {
       expect(foreign.userMessage).toContain('belongs to another user');
       expect(foreign.remediation).not.toMatch(/^Remove/u);
       expect(unusable.remediation).toContain('Remove');
+      expect(unsecurable.remediation).not.toContain('Remove');
       expect(unverified.userMessage).toContain('EIO: i/o error, lstat');
       expect(unverified.userMessage).toContain('does not mean');
     });

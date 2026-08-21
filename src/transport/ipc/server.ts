@@ -1,6 +1,6 @@
 import type { ProcessIncarnation } from '../../infra/node-process.js';
 import { timingSafeEqual } from 'node:crypto';
-import { chmodSync, lstatSync, mkdirSync, unlinkSync } from 'node:fs';
+import { chmodSync, lstatSync, mkdirSync, statSync, unlinkSync } from 'node:fs';
 import { createConnection, createServer, type Server as NetServer, type Socket } from 'node:net';
 import { basename, dirname, join } from 'node:path';
 import * as timers from 'node:timers';
@@ -387,7 +387,7 @@ function prepareSocketParent(socketPath: string): void {
     return;
   }
   try {
-    ensurePrivateSocketDir(directory, uid, { chmodSync, lstatSync, mkdirSync });
+    ensurePrivateSocketDir(directory, uid, { chmodSync, lstatSync, mkdirSync, statSync });
   } catch (error: unknown) {
     // A refusal only the sentinel writer can serialise never reaches a terminal, and it serialises
     // documented codes alone — see writeStartupErrorSentinel in src/coordinator/bootstrap-diagnostics.ts.

@@ -11,6 +11,7 @@ const RESTRICTED_DELETION = 0o1000n;
 
 export type SocketDirectoryStorage = Pick<StoragePort, 'chmodSync' | 'mkdirSync'> & {
   lstatSync(path: string, options: { bigint: true }): StorageBigIntStat;
+  statSync(path: string, options: { bigint: true }): StorageBigIntStat;
 };
 
 /**
@@ -44,35 +45,52 @@ export class SocketDirectoryError extends Error {
   }
 }
 
-function observe(directory: string, uid: number, path: string, storage: SocketDirectoryStorage): StorageBigIntStat {
-  try {
-    return storage.lstatSync(path, { bigint: true });
-  } catch (error: unknown) {
-    throw new SocketDirectoryError('unverified', directory, uid, error);
-  }
+type EntryKind = 'unowned' | 'foreign' | 'not-a-directory' | 'loose' | 'private';
+
+function classifyEntry(entry: StorageBigIntStat, uid: number): EntryKind {
+  if (entry.uid === undefined) return 'unowned';
+  if (entry.uid !== BigInt(uid)) return 'foreign';
+  if ((entry.mode & FILE_TYPE_BITS) !== DIRECTORY_TYPE) return 'not-a-directory';
+  return (entry.mode & PERMISSION_BITS) === PRIVATE_DIRECTORY_MODE ? 'private' : 'loose';
 }
 
 /**
  * Establishes that the parent of a relocated socket is private to `uid`, tightening its mode when the entry
  * is already this uid's and refusing when it is not.
  *
- * Ownership and type come from the non-following `lstat` and from nothing else. A following `stat` describes
- * whatever the entry currently resolves to rather than the entry itself, so under a shared root it can report
- * a victim-owned directory for an entry an attacker still controls — and the later `bind` follows the same
- * swapped link.
+ * Ownership and type of the directory itself come from the non-following `lstat` and from nothing else. A
+ * following `stat` describes whatever the entry currently resolves to rather than the entry, so under a
+ * shared root it can report a victim-owned directory for an entry an attacker still controls — and the later
+ * `bind` follows the same swapped link.
  *
- * That observation only stays true while nobody else can replace the entry behind it, which is a property of
- * the *parent*: a world-writable parent without the restricted-deletion bit lets any user rename ours away.
- * The check is here rather than assumed, because an assumed premise is one nothing fails on when it stops
- * holding. For the same reason the mode is read back after `chmod`: a filesystem may accept the call and
- * keep its own permissions, and `chmodSync` promises a return, not a postcondition.
+ * Its own parent is read the other way round, with the following `stat`, because there the question is about
+ * a location rather than an object: on a host where `/tmp` is a symlink, the link's mode says nothing about
+ * who may write in the directory it names. That question is asked at all because the answer above only stays
+ * true while nobody else can replace the entry behind it — a world-writable parent without the
+ * restricted-deletion bit lets any user rename ours away — and an assumed premise is one nothing fails on
+ * when it stops holding. For the same reason the mode is read back after `chmod`: a filesystem may accept
+ * the call and keep its own permissions, and `chmodSync` promises a return, not a postcondition.
  */
 export function ensurePrivateSocketDir(directory: string, uid: number, storage: SocketDirectoryStorage): void {
   if (!Number.isSafeInteger(uid) || uid < 0) {
     throw new SocketDirectoryError('unverified', directory, uid, new Error('The current uid is not a usable owner.'));
   }
 
-  const parent = observe(directory, uid, dirname(directory), storage);
+  const observe = (read: () => StorageBigIntStat): StorageBigIntStat => {
+    try {
+      return read();
+    } catch (error: unknown) {
+      throw new SocketDirectoryError('unverified', directory, uid, error);
+    }
+  };
+  const refuse = (kind: EntryKind, refusal: SocketDirectoryRefusal): never => {
+    if (kind === 'unowned') {
+      throw new SocketDirectoryError('unverified', directory, uid, new Error('The directory reported no owner.'));
+    }
+    throw new SocketDirectoryError(refusal, directory, uid);
+  };
+
+  const parent = observe(() => storage.statSync(dirname(directory), { bigint: true }));
   if ((parent.mode & WORLD_WRITABLE) !== 0n && (parent.mode & RESTRICTED_DELETION) === 0n) {
     throw new SocketDirectoryError('unsecurable', directory, uid);
   }
@@ -87,30 +105,19 @@ export function ensurePrivateSocketDir(directory: string, uid: number, storage: 
     }
   }
 
-  const entry = observe(directory, uid, directory, storage);
-  if (entry.uid === undefined) {
-    throw new SocketDirectoryError('unverified', directory, uid, new Error('The directory reported no owner.'));
-  }
-  if (entry.uid !== BigInt(uid)) {
-    throw new SocketDirectoryError('foreign', directory, uid);
-  }
-  if ((entry.mode & FILE_TYPE_BITS) !== DIRECTORY_TYPE) {
-    throw new SocketDirectoryError('unusable', directory, uid);
-  }
-  if ((entry.mode & PERMISSION_BITS) === PRIVATE_DIRECTORY_MODE) return;
+  const entry = classifyEntry(
+    observe(() => storage.lstatSync(directory, { bigint: true })),
+    uid,
+  );
+  if (entry === 'private') return;
+  if (entry !== 'loose') refuse(entry, entry === 'foreign' ? 'foreign' : 'unusable');
 
-  try {
-    storage.chmodSync(directory, Number(PRIVATE_DIRECTORY_MODE));
-  } catch (error: unknown) {
-    throw new SocketDirectoryError('unverified', directory, uid, error);
-  }
-
-  const tightened = observe(directory, uid, directory, storage);
-  if (
-    tightened.uid !== BigInt(uid) ||
-    (tightened.mode & FILE_TYPE_BITS) !== DIRECTORY_TYPE ||
-    (tightened.mode & PERMISSION_BITS) !== PRIVATE_DIRECTORY_MODE
-  ) {
-    throw new SocketDirectoryError('unsecurable', directory, uid);
-  }
+  const tightened = classifyEntry(
+    observe(() => {
+      storage.chmodSync(directory, Number(PRIVATE_DIRECTORY_MODE));
+      return storage.lstatSync(directory, { bigint: true });
+    }),
+    uid,
+  );
+  if (tightened !== 'private') refuse(tightened, 'unsecurable');
 }

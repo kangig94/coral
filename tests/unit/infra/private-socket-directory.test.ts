@@ -1,4 +1,4 @@
-import { chmodSync, lstatSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -21,7 +21,7 @@ afterEach(() => {
   }
 });
 
-const realStorage = { chmodSync, lstatSync, mkdirSync };
+const realStorage = { chmodSync, lstatSync, mkdirSync, statSync };
 
 // `mkdtemp` gives 0700, and a parent that no other user can write to is the precondition the assertion
 // requires; a case that needs the opposite opens it explicitly.
@@ -129,6 +129,22 @@ describe('ensurePrivateSocketDir', () => {
     expect(() => ensurePrivateSocketDir(directory, CURRENT_UID, stubborn)).toThrowError(
       expect.objectContaining({ refusal: 'unsecurable' }),
     );
+  });
+
+  // `/tmp` is a symlink on macOS, and a link's own mode decides nothing about who may write in the directory
+  // it names — on Linux every symlink reads `0777`, which a non-following parent read would refuse outright.
+  it('reads the parent through the link rather than reading the link', () => {
+    const root = scratch();
+    const real = join(root, 'real-parent');
+    const link = join(root, 'linked-parent');
+    mkdirSync(real, { mode: 0o700 });
+    chmodSync(real, 0o700);
+    symlinkSync(real, link);
+    const directory = join(link, 'fallback');
+
+    ensurePrivateSocketDir(directory, CURRENT_UID, realStorage);
+
+    expect(lstatSync(directory).mode & 0o777).toBe(0o700);
   });
 
   it('refuses a uid it cannot use as an owner', () => {

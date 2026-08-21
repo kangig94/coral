@@ -20,20 +20,25 @@ describe('a relocated socket path fits AF_UNIX on every platform', () => {
   const PLATFORMS = ['darwin', 'linux'] as const;
   const DEEP_RUN_DIR = `/${'r'.repeat(200)}`;
 
+  function privateDirectory(uid: number) {
+    return {
+      dev: 1n,
+      ino: 1n,
+      mode: 0o40700n,
+      uid: BigInt(uid),
+      size: 0n,
+      mtimeNs: 0n,
+      isDirectory: () => true,
+      isFile: () => false,
+    };
+  }
+
   function secureStorage(uid: number): ProviderProxyEndpointEnvironment['storage'] {
     return {
       mkdirSync: () => undefined,
       chmodSync: () => undefined,
-      lstatSync: () => ({
-        dev: 1n,
-        ino: 1n,
-        mode: 0o40700n,
-        uid: BigInt(uid),
-        size: 0n,
-        mtimeNs: 0n,
-        isDirectory: () => true,
-        isFile: () => false,
-      }),
+      lstatSync: () => privateDirectory(uid),
+      statSync: () => privateDirectory(uid),
     };
   }
 

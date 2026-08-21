@@ -53,6 +53,7 @@ function secureStorage(mode = 0o40700n): ProviderProxyEndpointEnvironment['stora
       current = (current & 0o170000n) | BigInt(next);
     }),
     lstatSync: (path: string) => (path === FALLBACK_ROOT ? stat(0o41777n) : stat(current)),
+    statSync: (path: string) => (path === FALLBACK_ROOT ? stat(0o41777n) : stat(current)),
   };
 }
 
