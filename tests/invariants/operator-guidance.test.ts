@@ -22,7 +22,7 @@ describe('operator guidance', () => {
 
   it('classifies delegated preplan waits before reading a terminal artifact', () => {
     const skill = readProjectFile('clients/skills/preplan/SKILL.md');
-    const wait = skill.indexOf('terminal = Bash(`coral-cli wait jobs ${job} --embed`)');
+    const wait = skill.indexOf('terminal = Bash(`cd "<work_dir>" && coral-cli wait jobs ${job} --embed`)');
     const stillWaiting = skill.indexOf('if terminal begins `Still waiting`', wait);
     const remediation = skill.indexOf('if terminal prints `remediation: <command>`', wait);
     const resultPath = skill.indexOf('if terminal contains `Result path: <path>`', wait);

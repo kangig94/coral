@@ -1,9 +1,13 @@
 # TODO — a job's scope should be containment over the directory it worked in
 
-**Status**: open. **Rewritten 2026-08-15.** The previous version (`job-project-scope-from-work-dir.md`)
+**Status**: superseded by the two-coordinate implementation. **Rewritten 2026-08-15.** The previous version (`job-project-scope-from-work-dir.md`)
 identified the right value and then invented two blocking questions that a pioneer pass dissolved. Both
 are recorded below, because the mistake is instructive: the questions came from keeping _equality_ as
 the comparison.
+
+## Correction recorded after implementation
+
+Fix 1 below cannot preserve `project_root` while changing its value to the execution directory. The append validator requires the launch record's project root to match the owning session's project root; substituting `request.cwd` would reject every provider launch whose `--work-dir` differs with `job_binding_owner_mismatch`. The implemented model therefore keeps `project_root` as project identity and adds `projection_jobs.work_dir`, projected from `job.launch.requested.request.cwd`. Ambient reads compare `work_dir` by equality, while explicit wait, abort, and detail use one-directional containment from the caller directory to the job's work directory. That DDL and codec change moves the store-format fingerprint and uses the automatic reset path. The original argument remains below so the failed single-coordinate prescription is not edited clean.
 
 ## The defect
 
