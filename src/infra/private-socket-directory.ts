@@ -6,8 +6,9 @@ const FILE_TYPE_BITS = 0o170000n;
 const DIRECTORY_TYPE = 0o040000n;
 const PERMISSION_BITS = 0o777n;
 const PRIVATE_DIRECTORY_MODE = 0o700n;
-const WORLD_WRITABLE = 0o002n;
+const WRITABLE_BY_OTHERS = 0o022n;
 const RESTRICTED_DELETION = 0o1000n;
+const ROOT_UID = 0n;
 
 export type SocketDirectoryStorage = Pick<StoragePort, 'chmodSync' | 'mkdirSync'> & {
   lstatSync(path: string, options: { bigint: true }): StorageBigIntStat;
@@ -63,12 +64,17 @@ function classifyEntry(entry: StorageBigIntStat, uid: number): EntryKind {
  * shared root it can report a victim-owned directory for an entry an attacker still controls — and the later
  * `bind` follows the same swapped link.
  *
- * Its own parent is read the other way round, with the following `stat`, because there the question is about
- * a location rather than an object: on a host where `/tmp` is a symlink, the link's mode says nothing about
- * who may write in the directory it names. That question is asked at all because the answer above only stays
- * true while nobody else can replace the entry behind it — a world-writable parent without the
- * restricted-deletion bit lets any user rename ours away — and an assumed premise is one nothing fails on
- * when it stops holding. For the same reason the mode is read back after `chmod`: a filesystem may accept
+ * That observation only stays true while nobody but this uid can remove or rename the entry behind it, which
+ * is a property of the parent and is established rather than assumed — an assumed premise is one nothing
+ * fails on when it stops holding. It holds when the parent is writable by nobody else, or when it carries
+ * the restricted-deletion bit *and* belongs to this uid or to root: that bit exempts the directory's own
+ * owner as well as each entry's, so a sticky parent someone else owns protects nothing from them.
+ *
+ * The parent is read the other way round, with the following `stat`, because there the question is about a
+ * location rather than an object: on a host where `/tmp` is a symlink, the link's own mode says nothing
+ * about who may write in the directory it names.
+ *
+ * The mode is read back after `chmod` for the same reason the premise is checked: a filesystem may accept
  * the call and keep its own permissions, and `chmodSync` promises a return, not a postcondition.
  */
 export function ensurePrivateSocketDir(directory: string, uid: number, storage: SocketDirectoryStorage): void {
@@ -91,7 +97,12 @@ export function ensurePrivateSocketDir(directory: string, uid: number, storage: 
   };
 
   const parent = observe(() => storage.statSync(dirname(directory), { bigint: true }));
-  if ((parent.mode & WORLD_WRITABLE) !== 0n && (parent.mode & RESTRICTED_DELETION) === 0n) {
+  if (parent.uid === undefined) {
+    throw new SocketDirectoryError('unverified', directory, uid, new Error('The parent reported no owner.'));
+  }
+  const parentIsOurs = parent.uid === BigInt(uid) || parent.uid === ROOT_UID;
+  const parentGuardsEntries = (parent.mode & RESTRICTED_DELETION) !== 0n && parentIsOurs;
+  if ((parent.mode & WRITABLE_BY_OTHERS) !== 0n && !parentGuardsEntries) {
     throw new SocketDirectoryError('unsecurable', directory, uid);
   }
 

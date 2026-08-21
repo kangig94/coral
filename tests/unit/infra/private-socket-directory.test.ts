@@ -99,20 +99,40 @@ describe('ensurePrivateSocketDir', () => {
     }
   });
 
-  it('refuses a parent that lets any user replace the entry it just checked', () => {
-    const directory = scratchDirectory(0o777);
+  it.each([
+    ['world-writable', 0o777],
+    // A group another user belongs to can rename our entry exactly as `other` can; a check that reads only
+    // the `other` bits establishes a third of the property its refusal claims.
+    ['group-writable', 0o770],
+  ])('refuses a %s parent that lets another user replace the entry it just checked', (_label, mode) => {
+    const directory = scratchDirectory(mode);
 
     expect(() => ensurePrivateSocketDir(directory, CURRENT_UID, realStorage)).toThrowError(
       expect.objectContaining({ refusal: 'unsecurable' }),
     );
   });
 
-  it('accepts a world-writable parent that keeps the restricted-deletion bit', () => {
+  it('accepts a world-writable parent of its own that keeps the restricted-deletion bit', () => {
     const directory = scratchDirectory(0o1777);
 
     ensurePrivateSocketDir(directory, CURRENT_UID, realStorage);
 
     expect(lstatSync(directory).mode & 0o777).toBe(0o700);
+  });
+
+  it('refuses a restricted-deletion parent belonging to someone else, which that owner is exempt from', () => {
+    const directory = scratchDirectory(0o1777);
+    const foreignOwner = {
+      ...realStorage,
+      statSync: ((path: string, options?: { bigint: true }) =>
+        options?.bigint === true
+          ? { ...statSync(path, { bigint: true }), uid: BigInt(CURRENT_UID) + 1n }
+          : statSync(path)) as typeof statSync,
+    };
+
+    expect(() => ensurePrivateSocketDir(directory, CURRENT_UID, foreignOwner)).toThrowError(
+      expect.objectContaining({ refusal: 'unsecurable' }),
+    );
   });
 
   it('refuses a filesystem that accepts the mode change and keeps its own permissions', () => {
