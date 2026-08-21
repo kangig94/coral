@@ -155,11 +155,6 @@ function derivePersistedContinuity(prepared: ProxyPreparedAppServerOperation): D
   return raw as DerivedPersistedContinuity;
 }
 
-/**
- * Rebuilds the `BoundProvider` this operation names from its binding envelope. A fresh built-in registry per
- * call is cheap (pure registration, no I/O) and keeps this function free of shared mutable module state; the
- * host authority it connects is the one live thing every call shares.
- */
 type BoundProviderReconstruction =
   | Readonly<{ state: 'reconstructed'; bound: BoundProvider }>
   | ProviderOperationPreparePermanentRefusal;
@@ -183,6 +178,10 @@ function boundedRefusalReason(error: unknown, fallback: string): string {
   return (reason.length === 0 ? fallback : reason).slice(0, 4096);
 }
 
+/**
+ * A fresh built-in registry per call is cheap (pure registration, no I/O) and keeps this function free of
+ * shared mutable module state; the host authority it connects is the one live thing every call shares.
+ */
 function rebuildBoundProvider(
   prepared: ProxyPreparedAppServerOperation,
   authority: AppServerHostAuthority,

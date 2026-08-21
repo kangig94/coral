@@ -128,25 +128,6 @@ function probeLinuxProcessIncarnation(pid: number): ProcessIncarnation | null {
 }
 
 /**
- * This boot's identity on macOS — `kern.bootsessionuuid`, not `kern.boottime`.
- *
- * The two are not interchangeable and the difference is the whole point. `kern.boottime` is *derived* from
- * calendar time, so XNU adjusts it whenever the wall clock is set; a frame that moves with the clock cannot
- * frame a wall-clock start time, because both sides shift together and a later process can land on an earlier
- * one's coordinates. The session UUID is minted once per boot and never moves.
- *
- * Read fresh every time, exactly as `readLinuxBootId` is. The only thing that changes a boot session id
- * is a reboot, and no process survives one, so a successful read is constant for as long as anything can ask.
- * Caching it would be sound.
- *
- * It is not cached for two smaller reasons. Remembering a *failure* is genuinely wrong — a transient `sysctl`
- * error would blind every later probe until restart — so a cache here is a cache of successes only, which is
- * module-level state that outlives the test scripting a different boot around it. And the cost that made it
- * tempting is gone: the hot caller was the health response, which now reads this process's own incarnation
- * once at composition rather than per request. What remains are probes of *other* pids, where the `ps` call
- * has to happen anyway and saving one of two forks buys little.
- */
-/**
  * Whether an incarnation from this platform is strong enough to authorize a signal.
  *
  * Linux's is boot-relative. `startTicks` counts from boot, so no wall-clock change can move it, and two
@@ -166,6 +147,25 @@ export function incarnationMayAuthorizeSignal(platform: NodeJS.Platform): boolea
   return platform === 'linux';
 }
 
+/**
+ * This boot's identity on macOS — `kern.bootsessionuuid`, not `kern.boottime`.
+ *
+ * The two are not interchangeable and the difference is the whole point. `kern.boottime` is *derived* from
+ * calendar time, so XNU adjusts it whenever the wall clock is set; a frame that moves with the clock cannot
+ * frame a wall-clock start time, because both sides shift together and a later process can land on an earlier
+ * one's coordinates. The session UUID is minted once per boot and never moves.
+ *
+ * Read fresh every time, exactly as `readLinuxBootId` is. The only thing that changes a boot session id
+ * is a reboot, and no process survives one, so a successful read is constant for as long as anything can ask.
+ * Caching it would be sound.
+ *
+ * It is not cached for two smaller reasons. Remembering a *failure* is genuinely wrong — a transient `sysctl`
+ * error would blind every later probe until restart — so a cache here is a cache of successes only, which is
+ * module-level state that outlives the test scripting a different boot around it. And the cost that made it
+ * tempting is gone: the hot caller was the health response, which now reads this process's own incarnation
+ * once at composition rather than per request. What remains are probes of *other* pids, where the `ps` call
+ * has to happen anyway and saving one of two forks buys little.
+ */
 function readMacBootSessionId(): string | null {
   try {
     const raw = execFileSync('sysctl', ['-n', 'kern.bootsessionuuid'], PROBE_EXEC_OPTIONS).trim();
