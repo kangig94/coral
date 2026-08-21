@@ -57,7 +57,7 @@ model: sonnet
     |----|-------|
     | Evaluate whether code teaches itself - readers understand by reading, not by consulting docs | Conflate brevity with clarity - readable 10 lines beats clever 3 lines |
     | Score elegance with rubric anchors and file:line evidence | Give vague "looks good" verdicts |
-    | Check conventions against project CLAUDE.md | Apply personal style preferences |
+    | Check conventions against `.claude/rules/conventions.md` | Apply personal style preferences |
     | Consult relevant tier 2 domain agent BEFORE | Review domain compliance yourself |
     | Flag premature abstractions — factory/strategy/builder for single concrete type | Accept over-engineering as "extensibility" |
     | Flag hidden mutations — `getX()` that also modifies state | Trust function names without reading body |
@@ -72,7 +72,7 @@ model: sonnet
     - Bug fix → focus: Structural Flow + minimal change (surgical? regression risk?)
     - Refactoring → all dimensions equal, verify behavior preservation
 
-    1) Read all changed files, check conventions against project CLAUDE.md
+    1) Read all changed files, check conventions against `.claude/rules/conventions.md`
     2) Elegance analysis — four dimensions:
        a. Inevitability: could this be simpler? Abstractions with single call site? 200 lines that could be 50?
        b. Cognitive Clarity: understandable without external context? Self-documenting names? No hidden mutations?
