@@ -11,7 +11,8 @@ vi.mock('node:os', async () => {
   return { ...actual, platform: () => mockState.platform };
 });
 
-import { coordinatorPaths, socketFallbackDir } from '#src/infra/path/coordinator.js';
+import { coordinatorPaths } from '#src/infra/path/coordinator.js';
+import { socketFallbackDir } from '#src/infra/path/unix-socket.js';
 
 function baseDirOfLength(length: number): string {
   return `/${'a'.repeat(length - 1)}`;

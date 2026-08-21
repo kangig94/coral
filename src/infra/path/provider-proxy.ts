@@ -3,12 +3,11 @@ import { join } from 'node:path';
 import type { BuildFlavor } from '../build-flavor.js';
 import { hashToken } from '../hash.js';
 import type { StorageBigIntStat, StoragePort } from '../port-types.js';
-import { generationRunDir, socketPathByteLimit, socketFallbackDir } from './coordinator.js';
+import { generationRunDir } from './coordinator.js';
+import { ensurePrivateSocketDir, socketFallbackDir, socketPathByteLimit, SocketDirectoryError } from './unix-socket.js';
 
 const PROVIDER_PATH_IDENTITY_HASH_LENGTH = 24;
 const PROVIDER_ROLE_PREFIX = { guardian: '0', proxy: '1', reaper: '2' } as const;
-const PRIVATE_DIRECTORY_MODE = 0o700n;
-const PERMISSION_BITS = 0o777n;
 
 type ProviderEndpointStorage = Pick<StoragePort, 'lstatSync' | 'mkdirSync'> & {
   statSync(path: string, options: { bigint: true }): StorageBigIntStat;
@@ -98,26 +97,10 @@ function insecureEndpointError(
 }
 
 function ensurePrivateFallbackDirectory(fallbackDirectory: string, env: ProviderProxyEndpointEnvironment): void {
-  if (!Number.isSafeInteger(env.uid) || env.uid < 0) {
-    throw insecureEndpointError(fallbackDirectory, env);
-  }
-
   try {
-    env.storage.mkdirSync(fallbackDirectory, { recursive: true, mode: Number(PRIVATE_DIRECTORY_MODE) });
-    const link = env.storage.lstatSync(fallbackDirectory);
-    const stat = env.storage.statSync(fallbackDirectory, { bigint: true });
-    if (
-      !link.isDirectory() ||
-      link.isSymbolicLink() ||
-      !stat.isDirectory() ||
-      stat.uid === undefined ||
-      stat.uid !== BigInt(env.uid) ||
-      (stat.mode & PERMISSION_BITS) !== PRIVATE_DIRECTORY_MODE
-    ) {
-      throw insecureEndpointError(fallbackDirectory, env);
-    }
+    ensurePrivateSocketDir(fallbackDirectory, env.uid, env.storage);
   } catch (error: unknown) {
-    if (error instanceof ProviderProxyEndpointError) throw error;
+    if (error instanceof SocketDirectoryError) throw insecureEndpointError(fallbackDirectory, env, error.cause);
     throw insecureEndpointError(fallbackDirectory, env, error);
   }
 }

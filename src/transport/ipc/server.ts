@@ -1,6 +1,6 @@
 import type { ProcessIncarnation } from '../../infra/node-process.js';
 import { timingSafeEqual } from 'node:crypto';
-import { chmodSync, mkdirSync, unlinkSync } from 'node:fs';
+import { chmodSync, lstatSync, mkdirSync, statSync, unlinkSync } from 'node:fs';
 import { createConnection, createServer, type Server as NetServer, type Socket } from 'node:net';
 import { basename, dirname, join } from 'node:path';
 import * as timers from 'node:timers';
@@ -16,6 +16,7 @@ import {
   type JsonRpcRequestEnvelope,
   type JsonRpcResponseEnvelope,
 } from './json-rpc.js';
+import { ensurePrivateSocketDir, isRelocatedSocket } from '../../infra/path/index.js';
 import { createLineFramer, FrameTooLargeError } from '../line-framing.js';
 import { rpcCatalog, type RpcMethodSpec } from '../rpc/catalog.js';
 import { operationalRouteSpecs, type IpcOperationalSpec } from '../rpc/operational-catalog.js';
@@ -357,7 +358,14 @@ function staleSocketClearLockDir(socketPath: string): string {
 }
 
 export async function bindSocket(server: NetServer, socketPath: string): Promise<BindSocketResult> {
-  mkdirSync(dirname(socketPath), { recursive: true });
+  // A relocated socket shares one world-writable root with every other user on the host, so its parent is
+  // asserted rather than assumed. A run directory is not shared and must not be held to the same mode.
+  const uid = process.getuid?.() ?? 0;
+  if (isRelocatedSocket(socketPath, uid)) {
+    ensurePrivateSocketDir(dirname(socketPath), uid, { mkdirSync, lstatSync, statSync });
+  } else {
+    mkdirSync(dirname(socketPath), { recursive: true });
+  }
 
   const finalize = (): void => {
     if (process.platform !== 'win32') {

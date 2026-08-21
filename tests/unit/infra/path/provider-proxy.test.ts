@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { socketFallbackDir } from '#src/infra/path/coordinator.js';
+import { socketFallbackDir } from '#src/infra/path/unix-socket.js';
 import {
   providerGuardianBootstrapCapsulePath,
   providerGuardianEndpoint,

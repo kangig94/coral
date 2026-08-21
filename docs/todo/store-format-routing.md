@@ -6,7 +6,7 @@ conflict, and nobody has appetite for it. Split out of the containment-boundary 
 
 **Marked dormant 2026-08-15**, when a consolidation pass found a live defect buried at point 3 of the
 constraints list below — a real socket-identity bug blocked on a refactor that is not going to happen.
-It now lives in `coordinator-socket-identity.md` and is actionable on its own. Nothing else in this
+It was extracted, fixed, and its entry retired; the socket path no longer depends on ambient state. Nothing else in this
 document is a defect; read it as a design record, not as open work.
 
 **Why it is not part of containment**: routing shares coordinator election, cold start, and
@@ -206,7 +206,7 @@ unknown`, with only `absent` treated as an absence. The requirement this item st
    primitive that actually exists.
 3. **The socket is not an exclusion primitive today.** Two processes with the same state root but
    different `TMPDIR` compute different socket paths and both bind. **Extracted to
-   `coordinator-socket-identity.md`** — it is a live defect, it is independent of routing, and leaving it
+   its own entry** — it was a live defect, independent of routing, and leaving it
    here kept it blocked on work nobody has scheduled.
 4. **A different `HOME` is not a race, it is a different instance.** `coralStateRoot` derives from the home
    relative root, so a different `HOME` means a different journal, store, and run directory. Authority is one
