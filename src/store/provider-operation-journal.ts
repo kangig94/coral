@@ -571,13 +571,6 @@ function claimedOperationIdentities(value: string | undefined): Readonly<{
 }
 
 /**
- * Every row under `prefix`, the bare prefix itself included.
- *
- * A key that is *exactly* the prefix is malformed — it names no operation — and a row invisible to the scan
- * cannot fence anything, which is precisely the opposite of what an unaddressable key is supposed to do.
- * Subsequent pages advance strictly past the cursor, or the last row of each page would be visited forever.
- */
-/**
  * The first key that is *not* under `prefix`, in SQLite's BINARY collation.
  *
  * A row nothing scans cannot be reported, cannot fence and cannot be retired: it is invisible, which is the one
@@ -589,6 +582,13 @@ function keyPrefixUpperBound(prefix: string): string {
   return `${prefix.slice(0, -1)}${String.fromCharCode(prefix.charCodeAt(prefix.length - 1) + 1)}`;
 }
 
+/**
+ * Every row under `prefix`, the bare prefix itself included.
+ *
+ * A key that is *exactly* the prefix is malformed — it names no operation — and a row invisible to the scan
+ * cannot fence anything, which is precisely the opposite of what an unaddressable key is supposed to do.
+ * Subsequent pages advance strictly past the cursor, or the last row of each page would be visited forever.
+ */
 function forEachRowUnderPrefix(db: Database, prefix: string, visit: (row: MetaRow) => void): void {
   const page = db.prepare<[string, string, number], MetaRow>(
     `SELECT key, value FROM meta

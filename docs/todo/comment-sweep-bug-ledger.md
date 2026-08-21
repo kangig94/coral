@@ -172,25 +172,12 @@ or drop the reference is not a keep-or-delete call this sweep is authorized to m
 
 ## Sector 6 — `src/coordinator`
 
-- **What is wrong**: `registerRunningRecovery` settles (terminalizes) a job whose provider-binding capture
-  failed for an operator-repairable reason (`profile-unavailable`, `identity-unavailable`,
-  `subject-mismatch`) even when its durable carrier process may still be alive, instead of quarantining
-  with a live-carrier custody transfer. The comment at this site states the gap plainly and is the
-  ruling-7 case for this sector: a comment stating a rule the code currently violates, kept rather than
-  deleted.
-- **Where**: `registerRunningRecovery` in `src/coordinator/services/recovery/actions.ts`.
-- **Evidence**: Read directly. The comment cites `docs/todo/coordinator-process-disposition.md`, which
-  exists and already tracks this exact gap in full — including why an earlier quarantine attempt
-  (`0e59ac52`) was reverted for stranding process ownership, and the Principle 11 clause it violates
-  ("A boundary may release local ownership of a still-live or not-proven-absent obligation only after the
-  returned disposition names a successor owner..."). This sweep did not discover a new defect; it
-  confirmed the comment is accurate and correctly left in place per ruling 7.
-- **Why it was not fixed**: Comment-only sweep scope, and the fix (a two-part custody-transfer mechanism)
-  is already fully specified in `docs/todo/coordinator-process-disposition.md`. Recorded here only to
-  confirm the sweep found and preserved this ruling-7 case — not duplicated in full, since the linked
-  TODO is the authoritative record.
-- **Severity, as observed**: Already tracked as an open, current TODO with its own reproduction plan; no
-  new severity assessment needed from this sweep.
+Graduated to [`coordinator-process-disposition.md`](./coordinator-process-disposition.md), which already
+carried it. The sweep's finding — `registerRunningRecovery` settling a job whose carrier may still be alive
+after an operator-repairable binding failure — is that entry's own opening paragraph, down to the symbol, the
+file and the three refusal codes. Nothing was added there and the entry here is struck, because two homes for
+one finding is the shape this corpus exists to avoid. What the sweep contributed is the confirmation that the
+comment at that site is accurate and was correctly kept rather than deleted.
 
 Two comments were found and corrected as factually wrong under the "certain delete" rule (comment wrong,
 code correct — not ledger-worthy per that rule): `src/coordinator/live/kb-daemon-supervisor.ts`'s
@@ -250,6 +237,11 @@ deleted; the code itself was correct in both cases, so nothing else was ledgered
   depends on `clock.earlier(pairingLossAt, now)` ever running. Reachability is a future reader trusting the
   ternary's second arm as live logic (for example, while modifying it under the belief that pairing loss can
   be recorded more than once), or a coverage tool flagging it once the justifying comment is gone.
+- **Re-checked, and the disposition is now "keep"**: the unreachability argument above was re-derived
+  independently and holds. Deleting the arm anyway is refused, and the reason generalizes: `earliest wins`
+  is true today _whatever_ `adoptionDeadline` does, and true only _because of_ the latch argument once the
+  arm is gone. That trades a property for a proof, and the proof lives in another function. The arm stays;
+  this entry now records a deliberate keep rather than pending work.
 
 Nine comments were found and corrected as factually wrong under the "certain delete" rule (comment wrong,
 code correct — not ledger-worthy per that rule), spread across the sector: `handoff-capsule.ts`'s
@@ -400,6 +392,16 @@ Recorded once here rather than per sector, because it is one finding with 48 sit
   deciding whether to delete unreachable defensive branches is a design decision outside this sweep's mandate.
 - **Severity, as observed**: No runtime effect — the branch is simply unreached. A future caller that routes
   either code through `buildErrorEnvelope` instead of `encodeInstallError` would depend on it; today none does.
+- **Correction — this entry is wrong, and it is kept in place because how it was wrong is the lesson.** The
+  trace above enumerates where the two codes are _constructed in this process_, and concludes from that alone
+  that nothing reaches the branch. The comment sitting directly above the branch says otherwise, in the file
+  the entry is about: `code` is a bare `string` rather than a documented setup-error code precisely because it
+  "also carries raw wire codes from `IpcRpcError`/`BackendToolHttpError` bodies". A peer process is free to put
+  either string in an error body, and the branch is what maps it to exit 75. So the branch is reachable, the
+  disposition is keep, and there is no work here. The failure was scoping a reachability claim to local
+  construction while the value's own documented origin is remote — the same shape as the capsule-reachability
+  argument recorded in `.claude/rules/design-philosophy.md` §10, which also surveyed one end of a channel and
+  called the population empty.
 
 ## Sector 10 — `src/kb`, `src/kb-daemon`
 
@@ -749,6 +751,10 @@ principle requires. The inline comment there already says so. No defect, so no e
   component alone is already strictly increasing on every call. Reachability is a future edit that leans on
   `subTickCounter` actually incrementing (for example, sub-millisecond ordering among calls sharing one
   `mtimeMs`), which this implementation cannot deliver as written.
+- **Re-checked, and the fix is larger than the entry implies**: `subTickCounter` is not only a branch. It is a
+  field of the serialized snapshot type in the same file, so removing the dead arm without removing the field
+  leaves a counter nothing advances, and removing both changes the snapshot's shape. Whoever takes this decides
+  what the simulation's sub-millisecond ordering guarantee is first, and edits second.
 
 Two comments were found and corrected as factually wrong under the "certain delete" rule (comment wrong, code
 correct — not ledger-worthy per the sector 7 precedent), both outside the bug this sector ledgers:
