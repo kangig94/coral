@@ -17,8 +17,12 @@ import {
   type JsonRpcResponseEnvelope,
 } from './json-rpc.js';
 import { isRelocatedSocket } from '../../infra/path/index.js';
-import { ensurePrivateSocketDir, SocketDirectoryError } from '../../infra/private-socket-directory.js';
-import { documentedCoralSetupError } from '../../runtime/errors.js';
+import {
+  ensurePrivateSocketDir,
+  SocketDirectoryError,
+  type SocketDirectoryRefusal,
+} from '../../infra/private-socket-directory.js';
+import { documentedCoralSetupError, type DocumentedCoralSetupErrorCode } from '../../runtime/errors.js';
 import { createLineFramer, FrameTooLargeError } from '../line-framing.js';
 import { rpcCatalog, type RpcMethodSpec } from '../rpc/catalog.js';
 import { operationalRouteSpecs, type IpcOperationalSpec } from '../rpc/operational-catalog.js';
@@ -359,6 +363,17 @@ function staleSocketClearLockDir(socketPath: string): string {
   return join(dirname(socketPath), `${basename(socketPath)}.clear.lock`);
 }
 
+/**
+ * The code, not a field beside it, carries which refusal this was: `errorCodeToExit` classifies by code
+ * alone, so a code spanning both "decided" and "could not observe" exits one of them wrong. Exhaustive so a
+ * fourth refusal cannot inherit a third one's operator text by default.
+ */
+const SOCKET_DIRECTORY_REFUSAL_CODES = {
+  foreign: 'coordinator_socket_dir_insecure',
+  unusable: 'coordinator_socket_dir_insecure',
+  unverified: 'coordinator_socket_dir_unverified',
+} as const satisfies Record<SocketDirectoryRefusal, DocumentedCoralSetupErrorCode>;
+
 export async function bindSocket(server: NetServer, socketPath: string): Promise<BindSocketResult> {
   // A relocated socket shares one world-writable root with every other user on the host, so its parent is
   // asserted rather than assumed. A run directory is not shared and must not be held to the same mode.
@@ -370,11 +385,9 @@ export async function bindSocket(server: NetServer, socketPath: string): Promise
     } catch (error: unknown) {
       // A refusal only the sentinel writer can serialise never reaches a terminal, and it serialises
       // documented codes alone — see writeStartupErrorSentinel in src/coordinator/bootstrap-diagnostics.ts.
-      // The code, not a field beside it, carries which of the three this was: `errorCodeToExit` classifies
-      // by code alone, so one code spanning "decided" and "could not observe" is one of them exiting wrong.
       if (!(error instanceof SocketDirectoryError)) throw error;
       throw documentedCoralSetupError({
-        code: error.refusal === 'unverified' ? 'coordinator_socket_dir_unverified' : 'coordinator_socket_dir_insecure',
+        code: SOCKET_DIRECTORY_REFUSAL_CODES[error.refusal],
         reason: error.refusal,
         directory,
         socketPath,

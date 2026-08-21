@@ -73,7 +73,10 @@ export function ensurePrivateSocketDir(directory: string, uid: number, storage: 
     throw new SocketDirectoryError('unverified', directory, uid, error);
   }
 
-  if (entry.uid === undefined || entry.uid !== BigInt(uid)) {
+  if (entry.uid === undefined) {
+    throw new SocketDirectoryError('unverified', directory, uid, new Error('The directory reported no owner.'));
+  }
+  if (entry.uid !== BigInt(uid)) {
     throw new SocketDirectoryError('foreign', directory, uid);
   }
   if ((entry.mode & FILE_TYPE_BITS) !== DIRECTORY_TYPE) {

@@ -522,9 +522,9 @@ function spawnCoordinator(backendBin: string, paths: CoordinatorPaths): SpawnedC
  * binder's job per `bindSocket` contract).
  *
  * `false` says the incumbent still holds the address, so waiting is worth
- * something. A `CoralSetupError` says this address will not be bindable until
- * an operator acts, which no amount of waiting reaches, so it is not a `false`
- * — it leaves through the only channel that keeps its remediation.
+ * something. A `CoralSetupError` says the bind was refused rather than lost to
+ * an incumbent, which draining cannot change, so it is not a `false` — it
+ * leaves through the channel that keeps its code and its remediation.
  */
 async function probeSocketReleased(socketPath: string): Promise<boolean> {
   const probe = createServer();
