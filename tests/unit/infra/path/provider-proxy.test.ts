@@ -141,15 +141,7 @@ describe('provider proxy paths', () => {
   });
 
   it('tightens an existing fallback directory of its own whose mode is not 0700', () => {
-    const loose = secureStorage(0o40755n);
-    let mode = 0o40755n;
-    const storage: ProviderProxyEndpointEnvironment['storage'] = {
-      ...loose,
-      chmodSync: vi.fn((_path: string, next: number) => {
-        mode = 0o40000n | BigInt(next);
-      }),
-      lstatSync: (path) => ({ ...loose.lstatSync(path, { bigint: true }), mode }),
-    };
+    const storage = secureStorage(0o40755n);
 
     const endpoint = providerProxyEndpoint(identity, environment({ baseDir: pathOfLength(200), storage }));
 

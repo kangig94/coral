@@ -321,5 +321,20 @@ describe('cli errors', () => {
         expect(expansionExitCode({ status: 'error', code, userMessage: 'unused', remediation: 'unused' })).toBe(75);
       }
     });
+
+    // The exit-75 row spells the membership out in prose, and prose is where an exhaustive claim goes stale
+    // without anything failing. It already had: a third member landed in the set while the row still named two.
+    it('names every NOT_OBSERVED_CORAL_SETUP_ERROR_CODES member in the exit-75 catalog row', async () => {
+      const { NOT_OBSERVED_CORAL_SETUP_ERROR_CODES } = await import('#src/runtime/errors.js');
+      const { readFileSync } = await import('node:fs');
+      const row = readFileSync('docs/cli-errors.md', 'utf-8')
+        .split('\n')
+        .find((line) => line.startsWith('| `75` |'));
+
+      expect(row).toBeDefined();
+      for (const code of NOT_OBSERVED_CORAL_SETUP_ERROR_CODES) {
+        expect(row).toContain(`\`${code}\``);
+      }
+    });
   });
 });

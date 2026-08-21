@@ -299,4 +299,39 @@ describe('CoralSetupError', () => {
       remediation: "Run 'coral-cli expansion unequip <name>' before retrying 'coral-cli expansion equip <name>'.",
     });
   });
+
+  // What the operator is told is the deliverable of the socket-directory refusal, and it is assembled from
+  // context keys the thrower supplies by name: a key the renderer reads and nobody passes leaves a
+  // placeholder in the sentence rather than failing anywhere.
+  describe('the relocated socket directory refusals', () => {
+    it('separates an ownership verdict from an observation that was never made', () => {
+      const foreign = documentedCoralSetupError({
+        code: 'coordinator_socket_dir_insecure',
+        reason: 'foreign',
+        directory: '/tmp/coral-1000',
+      });
+      const unusable = documentedCoralSetupError({
+        code: 'coordinator_socket_dir_insecure',
+        reason: 'unusable',
+        directory: '/tmp/coral-1000',
+      });
+      const unverified = documentedCoralSetupError({
+        code: 'coordinator_socket_dir_unverified',
+        directory: '/tmp/coral-1000',
+        cause: 'EIO: i/o error, lstat',
+      });
+
+      for (const error of [foreign, unusable, unverified]) {
+        expect(error.userMessage).toContain('/tmp/coral-1000');
+        expect(error.remediation).toContain('/tmp/coral-1000');
+        expect(`${error.userMessage} ${error.remediation}`).not.toContain('<directory>');
+        expect(`${error.userMessage} ${error.remediation}`).not.toContain('cause unavailable');
+      }
+      expect(foreign.userMessage).toContain('belongs to another user');
+      expect(foreign.remediation).not.toMatch(/^Remove/u);
+      expect(unusable.remediation).toContain('Remove');
+      expect(unverified.userMessage).toContain('EIO: i/o error, lstat');
+      expect(unverified.userMessage).toContain('does not mean');
+    });
+  });
 });
