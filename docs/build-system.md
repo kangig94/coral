@@ -181,7 +181,7 @@ npm run test:e2e:store-reset:build
 ```
 
 `test:e2e:store-reset:build` narrows the suite to the store-reset file for a fast local loop. CI runs
-`npm run test:e2e:build`, which is the same lane with `--all`: every non-lifecycle `tests/e2e/**` file
+`npm run test:e2e:build`, the same lane without that flag: every non-lifecycle `tests/e2e/**` file
 against `clients/build`. The release workflow runs `npm run test:e2e:release`, the same set against the
 `clients/bridge` it just rebuilt — deliberately after `build:release`, since that is the only moment
 `clients/bridge` holds the build being tested. Locally it needs the same precondition: `clients/bridge`
