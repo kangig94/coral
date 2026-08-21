@@ -397,7 +397,7 @@ function prepareSocketParent(socketPath: string): void {
       reason: error.refusal,
       directory,
       socketPath,
-      cause: error.message,
+      cause: error.detail ?? error.message,
     });
   }
 }

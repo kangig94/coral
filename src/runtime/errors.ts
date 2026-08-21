@@ -191,14 +191,14 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
           ? 'that path belongs to another user'
           : context?.reason === 'unusable'
             ? 'that path is yours and is not a directory'
-            : 'that path cannot be held private to you on this filesystem'
+            : `Coral cannot keep that path private to you (${stringContextValue(context, 'cause', 'cause unavailable')})`
       }.`,
     remediation: (context) =>
       context?.reason === 'unusable'
         ? `Remove ${stringContextValue(context, 'directory', '<directory>')} and start Coral again. Coral will not bind its singleton socket where it cannot establish exclusive ownership.`
         : context?.reason === 'foreign'
           ? `Ask the owner of ${stringContextValue(context, 'directory', '<directory>')}, or this host's administrator, to remove it — do not try to remove or repair it yourself. Coral will not bind its singleton socket where it cannot establish exclusive ownership.`
-          : `Report this with the path ${stringContextValue(context, 'directory', '<directory>')}: its parent permits other users to replace it, or the filesystem does not keep the mode Coral set. Coral cannot place its singleton socket there and has no shorter address to fall back to.`,
+          : `Give this host's administrator the observation above for ${stringContextValue(context, 'directory', '<directory>')}: Coral relocates there only because the ordinary socket path is too long for this platform, and it has no shorter address to fall back to.`,
   },
   /**
    * Exit 75, not 1, and separate from `coordinator_socket_dir_insecure` for the reason

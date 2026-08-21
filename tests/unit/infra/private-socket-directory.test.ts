@@ -101,14 +101,14 @@ describe('ensurePrivateSocketDir', () => {
 
   it.each([
     ['world-writable', 0o777],
-    // A group another user belongs to can rename our entry exactly as `other` can; a check that reads only
-    // the `other` bits establishes a third of the property its refusal claims.
+    // A group another user belongs to can rename our entry exactly as `other` can, so a check that reads
+    // only the `other` bits does not establish the property its refusal claims.
     ['group-writable', 0o770],
   ])('refuses a %s parent that lets another user replace the entry it just checked', (_label, mode) => {
     const directory = scratchDirectory(mode);
 
     expect(() => ensurePrivateSocketDir(directory, CURRENT_UID, realStorage)).toThrowError(
-      expect.objectContaining({ refusal: 'unsecurable' }),
+      expect.objectContaining({ refusal: 'unsecurable', detail: expect.stringContaining('writable by other users') }),
     );
   });
 
@@ -131,7 +131,7 @@ describe('ensurePrivateSocketDir', () => {
     };
 
     expect(() => ensurePrivateSocketDir(directory, CURRENT_UID, foreignOwner)).toThrowError(
-      expect.objectContaining({ refusal: 'unsecurable' }),
+      expect.objectContaining({ refusal: 'unsecurable', detail: expect.stringContaining('belongs to uid') }),
     );
   });
 
@@ -147,7 +147,7 @@ describe('ensurePrivateSocketDir', () => {
     };
 
     expect(() => ensurePrivateSocketDir(directory, CURRENT_UID, stubborn)).toThrowError(
-      expect.objectContaining({ refusal: 'unsecurable' }),
+      expect.objectContaining({ refusal: 'unsecurable', detail: expect.stringContaining('kept its own permissions') }),
     );
   });
 

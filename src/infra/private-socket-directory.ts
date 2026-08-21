@@ -27,22 +27,29 @@ export class SocketDirectoryError extends Error {
   readonly refusal: SocketDirectoryRefusal;
   readonly directory: string;
   readonly uid: number;
+  /** The observation alone, for a caller that already names the directory in its own sentence. */
+  readonly detail: string | undefined;
 
   constructor(refusal: SocketDirectoryRefusal, directory: string, uid: number, cause?: unknown) {
     const requirement = `a directory owned by uid ${uid} with mode 0700`;
+    // `unsecurable` and `unverified` each cover several observations, and which one it was decides what the
+    // operator does next — so it travels in the message rather than as an enumeration a reader downstream
+    // has to keep complete.
+    const observed = cause instanceof Error ? cause.message : 'unknown cause';
     const reason =
       refusal === 'foreign'
         ? `belongs to another user, so it cannot be ${requirement}`
         : refusal === 'unusable'
           ? `is not ${requirement}`
           : refusal === 'unsecurable'
-            ? `cannot be held as ${requirement}`
-            : `could not be verified as ${requirement}: ${cause instanceof Error ? cause.message : 'unknown cause'}`;
+            ? `cannot be held as ${requirement}: ${observed}`
+            : `could not be verified as ${requirement}: ${observed}`;
     super(`Socket directory '${directory}' ${reason}.`, { cause });
     this.name = 'SocketDirectoryError';
     this.refusal = refusal;
     this.directory = directory;
     this.uid = uid;
+    this.detail = cause instanceof Error ? cause.message : undefined;
   }
 }
 
@@ -79,7 +86,7 @@ function classifyEntry(entry: StorageBigIntStat, uid: number): EntryKind {
  */
 export function ensurePrivateSocketDir(directory: string, uid: number, storage: SocketDirectoryStorage): void {
   if (!Number.isSafeInteger(uid) || uid < 0) {
-    throw new SocketDirectoryError('unverified', directory, uid, new Error('The current uid is not a usable owner.'));
+    throw new SocketDirectoryError('unverified', directory, uid, new Error('the current uid is not a usable owner'));
   }
 
   const observe = (read: () => StorageBigIntStat): StorageBigIntStat => {
@@ -89,21 +96,41 @@ export function ensurePrivateSocketDir(directory: string, uid: number, storage: 
       throw new SocketDirectoryError('unverified', directory, uid, error);
     }
   };
-  const refuse = (kind: EntryKind, refusal: SocketDirectoryRefusal): never => {
-    if (kind === 'unowned') {
-      throw new SocketDirectoryError('unverified', directory, uid, new Error('The directory reported no owner.'));
-    }
-    throw new SocketDirectoryError(refusal, directory, uid);
+  // Exhaustive so a new entry kind cannot inherit another one's disposition, and its own observation, by
+  // falling through a ternary.
+  const REFUSALS = {
+    unowned: { refusal: 'unverified', observed: 'the directory reported no owner' },
+    foreign: { refusal: 'foreign', observed: undefined },
+    'not-a-directory': { refusal: 'unusable', observed: undefined },
+  } as const satisfies Record<
+    Exclude<EntryKind, 'loose' | 'private'>,
+    { refusal: SocketDirectoryRefusal; observed: string | undefined }
+  >;
+  const refuse = (kind: Exclude<EntryKind, 'loose' | 'private'>): never => {
+    const { refusal, observed } = REFUSALS[kind];
+    throw new SocketDirectoryError(refusal, directory, uid, observed === undefined ? undefined : new Error(observed));
   };
 
   const parent = observe(() => storage.statSync(dirname(directory), { bigint: true }));
   if (parent.uid === undefined) {
-    throw new SocketDirectoryError('unverified', directory, uid, new Error('The parent reported no owner.'));
+    throw new SocketDirectoryError('unverified', directory, uid, new Error('the parent reported no owner'));
   }
   const parentIsOurs = parent.uid === BigInt(uid) || parent.uid === ROOT_UID;
-  const parentGuardsEntries = (parent.mode & RESTRICTED_DELETION) !== 0n && parentIsOurs;
-  if ((parent.mode & WRITABLE_BY_OTHERS) !== 0n && !parentGuardsEntries) {
-    throw new SocketDirectoryError('unsecurable', directory, uid);
+  const parentRestrictsDeletion = (parent.mode & RESTRICTED_DELETION) !== 0n;
+  if ((parent.mode & WRITABLE_BY_OTHERS) !== 0n && !(parentRestrictsDeletion && parentIsOurs)) {
+    const location = `its parent '${dirname(directory)}' is writable by other users`;
+    throw new SocketDirectoryError(
+      'unsecurable',
+      directory,
+      uid,
+      new Error(
+        parentRestrictsDeletion
+          ? `${location} and belongs to uid ${parent.uid}, whom its restricted-deletion bit exempts`
+          : parentIsOurs
+            ? `${location} and does not restrict deletion`
+            : `${location}, does not restrict deletion, and belongs to uid ${parent.uid}`,
+      ),
+    );
   }
 
   try {
@@ -121,7 +148,7 @@ export function ensurePrivateSocketDir(directory: string, uid: number, storage: 
     uid,
   );
   if (entry === 'private') return;
-  if (entry !== 'loose') refuse(entry, entry === 'foreign' ? 'foreign' : 'unusable');
+  if (entry !== 'loose') refuse(entry);
 
   const tightened = classifyEntry(
     observe(() => {
@@ -130,5 +157,14 @@ export function ensurePrivateSocketDir(directory: string, uid: number, storage: 
     }),
     uid,
   );
-  if (tightened !== 'private') refuse(tightened, 'unsecurable');
+  if (tightened === 'private') return;
+  if (tightened === 'loose') {
+    throw new SocketDirectoryError(
+      'unsecurable',
+      directory,
+      uid,
+      new Error('the filesystem accepted the mode change and kept its own permissions'),
+    );
+  }
+  refuse(tightened);
 }
