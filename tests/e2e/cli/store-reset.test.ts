@@ -21,9 +21,9 @@ import {
   serializeStoreResetIncidentManifest,
   type StoreResetIncidentManifestV2,
 } from '#src/store/reset-incident.js';
+import { e2eBundleDir } from '#tests/support/e2e-bundle-dir.js';
 
-const BUNDLE_DIR = process.env.CORAL_E2E_BUNDLE_DIR;
-if (!BUNDLE_DIR) throw new Error('CORAL_E2E_BUNDLE_DIR must identify the executing bundle directory.');
+const BUNDLE_DIR = e2eBundleDir();
 const CLI_BUNDLE = join(BUNDLE_DIR, 'coral-cli.cjs');
 const BACKEND_BUNDLE = join(BUNDLE_DIR, 'coral-backend.cjs');
 const CLAUDE_APPSERVER_BUNDLE = join(BUNDLE_DIR, 'coral-claude-appserver.cjs');

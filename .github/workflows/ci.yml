@@ -50,12 +50,13 @@ jobs:
       # `npm test` runs only tests/unit, tests/invariants and the simulation
       # suite. tests/integration was outside the gate entirely, so the
       # cross-version handoff, cold/warm start and IPC suites went unrun and two
-      # of them sat red. The focused store-reset step below stays because it
-      # gives that contract its own signal.
+      # of them sat red. `test:e2e:build` runs every non-lifecycle e2e file
+      # against `clients/build`. Narrowing it to one file leaves the CLI-surface
+      # and direct-read suites gated by nothing.
       - run: npm run test:integration
       - run: npm run test:store-reset:integration
       - run: npm run verify:store-reset-build
-      - run: npm run test:e2e:store-reset:build
+      - run: npm run test:e2e:build
       - run: npm run test:e2e:lifecycle
 
   network-test:

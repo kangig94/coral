@@ -180,6 +180,17 @@ npm run verify:store-reset-build
 npm run test:e2e:store-reset:build
 ```
 
+`test:e2e:store-reset:build` passes `--store-reset-only` to narrow the suite to that one file for a
+fast local loop. CI runs `npm run test:e2e:build`, the same lane without it: every non-lifecycle `tests/e2e/**` file
+against `clients/build`. The release workflow runs `npm run test:e2e:release`, the same set against the
+`clients/bridge` it just rebuilt — deliberately after `build:release`, since that is the only moment
+`clients/bridge` holds the build being tested. Locally it needs the same precondition: `clients/bridge`
+is rebuilt only by a release, so on `main` between releases it is the previous release and this lane
+fails against source-accurate assertions. Run `npm run build:release` first, or use
+`npm run test:e2e:build`. No e2e file resolves a bundle on its own — `CORAL_E2E_BUNDLE_DIR` is
+set by these scripts and required by `tests/support/e2e-bundle-dir.ts`, so a suite invoked without one
+refuses instead of testing whichever bundle it happened to find.
+
 Backend lifecycle end-to-end coverage is a separate suite again, unrelated to store-reset but also a CI step — it spawns long-lived backend subprocesses and waits through startup, the IPC handshake, and process death across namespace-isolation and child/no-handoff cold-start cases:
 
 ```bash

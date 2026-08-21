@@ -100,7 +100,7 @@ jobs:
           npm run test:store-reset:integration
           npm run test:e2e:lifecycle
           npm run verify:store-reset-release
-          npm run test:e2e:store-reset:release
+          npm run test:e2e:release
 
       - name: Resolve App committer identity
         id: committer
