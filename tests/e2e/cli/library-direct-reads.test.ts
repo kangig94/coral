@@ -25,9 +25,10 @@ import { storePaths } from '#src/infra/path/store.js';
 import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
 import { formatJobsList, renderJobsList } from '#src/cli/format/jobs.js';
 import { formatKbMemoList, formatKbPrinciples, formatKbRead, formatKbSourceList } from '#src/cli/format/kb.js';
+import { e2eBundleDir } from '#tests/support/e2e-bundle-dir.js';
 
 const REPO_ROOT = process.cwd();
-const SOURCE_BUNDLE_DIR = process.env.CORAL_E2E_BUNDLE_DIR ?? join(REPO_ROOT, 'clients', 'build');
+const SOURCE_BUNDLE_DIR = e2eBundleDir();
 const SOURCE_CLI_BUNDLE = join(SOURCE_BUNDLE_DIR, 'coral-cli.cjs');
 const SOURCE_MANIFEST = join(SOURCE_BUNDLE_DIR, 'manifest.json');
 const SOURCE_SQLITE3_DIR = join(REPO_ROOT, 'node_modules', 'better-sqlite3');

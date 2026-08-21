@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 
 const [bundleArgument, mode] = process.argv.slice(2);
 if (!bundleArgument || (mode !== undefined && mode !== '--all')) {
-  throw new Error('Usage: run-store-reset-e2e.mjs <bundle-dir> [--all]');
+  throw new Error('Usage: run-e2e.mjs <bundle-dir> [--all]');
 }
 
 const bundleDir = resolve(bundleArgument);
