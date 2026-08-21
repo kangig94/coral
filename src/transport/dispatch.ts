@@ -25,7 +25,8 @@ import {
   providerHostListResponseSchema,
   type ProviderHostSelectorRequest,
 } from './rpc/catalog.js';
-import type { JobListFilters, WorkflowPortInput } from './rpc/ports.js';
+import type { WorkflowPortInput } from './rpc/ports.js';
+import type { JobsListFilters } from '../jobs/read-queries.js';
 import { buildInvocationContext, buildInvocationContextFromQuery } from './invocation-context.js';
 import { callerProviderScopeSchema } from '../infra/provider-scope.js';
 import { encodeHostRef } from '../providers/host-ref-codec.js';
@@ -820,11 +821,13 @@ async function executeJobsAbortCatalogRequest({
 
 async function executeJobsListCatalogRequest({
   request,
+  canonicalRequest,
   rpcPorts,
 }: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
-  const parsed = request as JobListFilters & { provider?: string };
+  const parsed = request as Omit<JobsListFilters, 'projectRoot'> & { provider?: string };
+  const callerRoot = canonicalRequest.projectRoot;
   const jobs = rpcPorts.jobs.list({
-    ...(parsed.projectRoot === undefined ? {} : { projectRoot: parsed.projectRoot }),
+    ...(callerRoot === undefined ? {} : { projectRoot: callerRoot }),
     ...(parsed.phase === undefined ? {} : { phase: parsed.phase }),
     ...(parsed.provider === undefined ? {} : { provider: parsed.provider }),
     all: parsed.all === true,

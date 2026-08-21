@@ -29,6 +29,7 @@ import { storePaths } from '#src/infra/path/store.js';
 import { readProviderOperationForJob } from '#src/store/provider-operation-journal.js';
 import type { ProviderOperationRecord } from '#src/store/provider-operation-record.js';
 import { assertLifecycleBundleSetFresh } from '#tests/support/bundle-build-freshness.js';
+import { fixtureCanonicalWorkDir } from '../../../helpers/canonical-work-dir.js';
 
 const REPO_ROOT = process.cwd();
 const SOURCE_BACKEND_BUNDLE = join(REPO_ROOT, 'clients', 'build', 'coral-backend.cjs');
@@ -641,7 +642,7 @@ describe('mutating commands via IPC', () => {
 
       try {
         const store = new CoralStore(db, createDefaultStoreReadContext());
-        const jobs = store.jobs.list({ projectRoot: fixture.projectRoot, all: true });
+        const jobs = store.jobs.list({ projectRoot: fixtureCanonicalWorkDir(fixture.projectRoot), all: true });
         expect(jobs).toHaveLength(2);
 
         for (const jobId of [firstJobId, secondJobId]) {

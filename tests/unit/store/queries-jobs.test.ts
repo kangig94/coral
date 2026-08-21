@@ -13,6 +13,7 @@ import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { seedTestSessionProjection } from '#tests/helpers/session.js';
+import { fixtureCanonicalWorkDir } from '../../helpers/canonical-work-dir.js';
 
 describe('jobs queries', () => {
   let db: Database;
@@ -55,7 +56,7 @@ describe('jobs queries', () => {
           sessionId: 'session-completed',
           provider: 'codex',
           providerAction: 'resume',
-          projectRoot: '/workspace/coral',
+          projectRoot: fixtureCanonicalWorkDir('/workspace/coral'),
           backendNamespace: 'tests',
           bundleHash: 'bundle-completed',
           jobKind: 'provider',
@@ -126,7 +127,7 @@ describe('jobs queries', () => {
           sessionId: 'session-rejected',
           provider: 'codex',
           providerAction: 'exec',
-          projectRoot: '/workspace/coral',
+          projectRoot: fixtureCanonicalWorkDir('/workspace/coral'),
           backendNamespace: 'tests',
           jobKind: 'provider',
           pool: 'default',
@@ -161,7 +162,7 @@ describe('jobs queries', () => {
           sessionId: 'session-queued',
           provider: 'codex',
           providerAction: 'exec',
-          projectRoot: '/workspace/coral',
+          projectRoot: fixtureCanonicalWorkDir('/workspace/coral'),
           backendNamespace: 'tests',
           jobKind: 'provider',
           pool: 'default',
@@ -193,7 +194,7 @@ describe('jobs queries', () => {
           sessionId: 'session-descendant',
           provider: 'codex',
           providerAction: 'exec',
-          projectRoot: '/workspace/coral',
+          projectRoot: fixtureCanonicalWorkDir('/workspace/coral'),
           backendNamespace: 'tests',
           jobKind: 'provider',
           pool: 'default',
@@ -361,7 +362,7 @@ describe('jobs queries', () => {
     const jobs = listJobs(
       db,
       {
-        projectRoot: '/workspace/coral',
+        projectRoot: fixtureCanonicalWorkDir('/workspace/coral'),
         phase: 'queued',
         provider: 'codex',
       },
@@ -380,7 +381,7 @@ describe('jobs queries', () => {
   });
 
   it('keeps KB jobs visible from any project while scoping other projects out', () => {
-    const jobs = listJobs(db, { projectRoot: '/workspace/coral' }, readCtx);
+    const jobs = listJobs(db, { projectRoot: fixtureCanonicalWorkDir('/workspace/coral') }, readCtx);
     const ids = jobs.map((entry) => entry.jobId);
 
     // KB jobs run against the shared corpus, so they surface regardless of cwd...
@@ -394,7 +395,7 @@ describe('jobs queries', () => {
   });
 
   it('keeps the KB exception under the all-phases filter', () => {
-    const jobs = listJobs(db, { projectRoot: '/workspace/coral', all: true }, readCtx);
+    const jobs = listJobs(db, { projectRoot: fixtureCanonicalWorkDir('/workspace/coral'), all: true }, readCtx);
     const ids = jobs.map((entry) => entry.jobId);
 
     // `all` widens phases but does not change the project scope: KB stays global,

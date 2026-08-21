@@ -1,7 +1,6 @@
 import type { DiscussDetailResponse, DiscussSummaryDto, DiscussView } from '../../discuss/read-contract.js';
 import type { ExpansionRequestPort } from '../../expansion/rpc-contract.js';
 import type { JobLaunchRequest, ProviderSessionLaunchDecision, WorkflowLaunchDecision } from '../../jobs/launch.js';
-import type { JobPhase } from '../../jobs/phase.js';
 import type { JobDetailResponse, JobStatus } from '../../jobs/records.js';
 import type { WaitStreamEvent, WaitStreamRequest } from '../../jobs/wait.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
@@ -13,6 +12,8 @@ import type { RecoveryQuarantineClearRequest, RecoveryQuarantineClearResult } fr
 import type { CanonicalWorkDir } from '../../runtime/canonical-work-dir.js';
 import type { HostRef } from '../../providers/host-inventory-schema.js';
 import type { ProviderHostEvictResponse, ProviderHostInspectResponse, ProviderHostListResponse } from './catalog.js';
+import type { JobScopeRelation, ScopeCheckResult } from '../../jobs/scope.js';
+import type { JobsListFilters } from '../../jobs/read-queries.js';
 
 type SessionStartInput = Pick<
   JobLaunchRequest,
@@ -32,21 +33,6 @@ type WorkflowPortResult =
   | { kind: 'decision'; decision: WorkflowLaunchDecision }
   | { kind: 'invalid_request'; message: string; detail?: unknown };
 
-export type ScopeCheckResult = {
-  valid: string[];
-  missing: string[];
-  mismatch: string[];
-};
-
-export type JobScopeRelation = 'contains' | 'exact';
-
-export type JobListFilters = {
-  projectRoot?: string;
-  phase?: JobPhase;
-  all?: boolean;
-  provider?: string;
-};
-
 interface SessionRequestPort {
   start(providerName: string, input: SessionStartInput, ctx: InvocationContext): Promise<ProviderSessionLaunchDecision>;
 }
@@ -55,7 +41,7 @@ interface JobsRequestPort {
   scopeCheck(jobIds: string[], callerRoot: CanonicalWorkDir, relation: JobScopeRelation): ScopeCheckResult;
   abort(jobIds: string[]): AbortResult;
   waitStream(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent>;
-  list(filters: JobListFilters): Array<{ jobId: string; status: JobStatus }>;
+  list(filters: JobsListFilters): Array<{ jobId: string; status: JobStatus }>;
   detail(jobId: string): JobDetailResponse | null;
 }
 

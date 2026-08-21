@@ -4,8 +4,8 @@ import type { ProjectRequestPort } from '../contracts.js';
 import type { LifecycleController } from '../lifecycle.js';
 import type { JobStore } from '../../jobs/store.js';
 import type { CoordinatorWorld } from './world.js';
-import { containsWorkDir, type CanonicalWorkDir } from '../../runtime/canonical-work-dir.js';
-import type { JobScopeRelation, ScopeCheckResult } from '../../transport/rpc/ports.js';
+import type { CanonicalWorkDir } from '../../runtime/canonical-work-dir.js';
+import { jobInCallerScope, type JobScopeRelation, type ScopeCheckResult } from '../../jobs/scope.js';
 
 type CreateBackendControlDeps = {
   world: CoordinatorWorld;
@@ -96,11 +96,7 @@ export function createCoordinatorControl({
         continue;
       }
 
-      const matches =
-        status.jobKind === 'kb' ||
-        (status.workDir !== null &&
-          (relation === 'contains' ? containsWorkDir(callerRoot, status.workDir) : callerRoot === status.workDir));
-      if (!matches) {
+      if (!jobInCallerScope(status, callerRoot, relation)) {
         mismatch.push(jobId);
         continue;
       }

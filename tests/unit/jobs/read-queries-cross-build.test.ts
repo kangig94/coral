@@ -5,8 +5,9 @@ import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema, type Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
+import { fixtureCanonicalWorkDir } from '../../helpers/canonical-work-dir.js';
 
-const PROJECT_ROOT = '/workspace/coral';
+const PROJECT_ROOT = fixtureCanonicalWorkDir('/workspace/coral');
 
 function insertRunningJob(db: Database, jobId: string, namespace: string): void {
   db.prepare(

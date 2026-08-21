@@ -17,6 +17,8 @@ import {
   type JobTerminal,
   type JobTerminalDiagnostics,
 } from './records.js';
+import { jobInCallerScope } from './scope.js';
+import type { CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 import {
   decodeProjectionJobStoredRow,
   decodeProjectionJobExecutionOwner,
@@ -109,7 +111,7 @@ type DecodedTerminalRow = {
 };
 
 export type JobsListFilters = {
-  projectRoot?: string;
+  projectRoot?: CanonicalWorkDir;
   phase?: JobPhase;
   all?: boolean;
   provider?: string;
@@ -172,8 +174,10 @@ function readOrderedProjectionRows(db: Database, filters?: JobsListFilters): Pro
 
   return rows.filter((row) => {
     if (filters && filters.all !== true && !isLivePhase(row.phase)) return false;
-    // KB jobs belong to no single project and remain visible from every project.
-    if (filters?.projectRoot !== undefined && row.work_dir !== filters.projectRoot && row.job_kind !== 'kb') {
+    if (
+      filters?.projectRoot !== undefined &&
+      !jobInCallerScope({ jobKind: row.job_kind, workDir: row.work_dir }, filters.projectRoot, 'exact')
+    ) {
       return false;
     }
     if (filters?.phase !== undefined && row.phase !== filters.phase) return false;
