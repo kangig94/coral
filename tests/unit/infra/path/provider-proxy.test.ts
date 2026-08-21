@@ -157,19 +157,6 @@ describe('provider proxy paths', () => {
     expect(endpoint.startsWith(`${socketFallbackDir(CURRENT_UID)}/provider-`)).toBe(true);
   });
 
-  it('refuses a fallback directory whose mode cannot be tightened', () => {
-    const loose = secureStorage(0o40755n);
-
-    expect(() =>
-      providerProxyEndpoint(identity, environment({ baseDir: pathOfLength(200), storage: loose })),
-    ).toThrowError(
-      expect.objectContaining({
-        code: 'proxy_endpoint_insecure',
-        context: expect.objectContaining({ refusal: 'foreign' }),
-      }),
-    );
-  });
-
   it('refuses a fallback directory owned by another uid', () => {
     const loose = secureStorage();
     const storage: ProviderProxyEndpointEnvironment['storage'] = {
@@ -185,7 +172,7 @@ describe('provider proxy paths', () => {
     );
   });
 
-  it('refuses a fallback directory whose entry is a symlink, without following it', () => {
+  it('refuses a fallback directory whose entry is a symlink of its own, without following it', () => {
     const loose = secureStorage();
     const storage: ProviderProxyEndpointEnvironment['storage'] = {
       ...loose,
@@ -195,7 +182,7 @@ describe('provider proxy paths', () => {
     expect(() => providerProxyEndpoint(identity, environment({ baseDir: pathOfLength(200), storage }))).toThrowError(
       expect.objectContaining({
         code: 'proxy_endpoint_insecure',
-        context: expect.objectContaining({ refusal: 'foreign' }),
+        context: expect.objectContaining({ refusal: 'unusable' }),
       }),
     );
   });

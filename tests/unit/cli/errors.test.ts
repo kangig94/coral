@@ -286,10 +286,13 @@ describe('cli errors', () => {
       ['audit_requires_ended_session', 409, 1],
       ['invalid_request', 400, 1],
       ['backend_recovering', 503, 75],
-      // Both are "could not observe", not "decided no" — members of `NOT_OBSERVED_CORAL_SETUP_ERROR_CODES`. See
-      // both codes' doc comments in `runtime/errors.ts`.
+      // "Could not observe", not "decided no" — members of `NOT_OBSERVED_CORAL_SETUP_ERROR_CODES`. See each
+      // code's doc comment in `runtime/errors.ts`.
       ['coordinator_record_unreadable', undefined, 75],
       ['coordinator_unreachable', undefined, 75],
+      ['coordinator_socket_dir_unverified', undefined, 75],
+      // Its decided counterpart, which the split exists to keep off the retry axis.
+      ['coordinator_socket_dir_insecure', undefined, 1],
       ['unexpected_code', undefined, 1],
     ])('maps %s / %s to %i', (code, httpStatus, exitCode) => {
       expect(errorCodeToExit(code, httpStatus)).toBe(exitCode);
@@ -303,7 +306,11 @@ describe('cli errors', () => {
     // membership — mirroring `main-routing.test.ts`'s "has a row for every refusal" pattern — so a code
     // silently added to or removed from the real set is caught here too, not just a drift between consumers.
     it('gives every NOT_OBSERVED_CORAL_SETUP_ERROR_CODES member exit 75 in both errorCodeToExit and expansionExitCode', async () => {
-      const EXPECTED_NOT_OBSERVED_CODES = ['coordinator_unreachable', 'coordinator_record_unreadable'];
+      const EXPECTED_NOT_OBSERVED_CODES = [
+        'coordinator_unreachable',
+        'coordinator_record_unreadable',
+        'coordinator_socket_dir_unverified',
+      ];
       const { NOT_OBSERVED_CORAL_SETUP_ERROR_CODES } = await import('#src/runtime/errors.js');
       const { expansionExitCode } = await import('#src/cli/commands/expansion.js');
 

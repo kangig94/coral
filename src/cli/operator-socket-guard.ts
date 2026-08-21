@@ -1,7 +1,7 @@
 import { createServer, type Server } from 'node:net';
 
 import type { BuildFlavor } from '../infra/build-flavor.js';
-import { documentedCoralSetupError } from '../runtime/errors.js';
+import { CoralSetupError, documentedCoralSetupError } from '../runtime/errors.js';
 import { bindSocket } from '../transport/ipc/server.js';
 
 export interface OperatorSocketGuard {
@@ -26,6 +26,10 @@ export async function acquireOperatorSocketGuard({
   try {
     binding = await bindSocket(server, socketPath);
   } catch (error: unknown) {
+    // A bind failure this command cannot classify becomes the generic code below. One that already carries a
+    // documented code carries its own remediation and its own exit class with it, and re-wrapping would put
+    // "could not observe" and "observed and refused" back under one code and one exit.
+    if (error instanceof CoralSetupError) throw error;
     throw documentedCoralSetupError({
       code: 'coordinator_socket_bind_failed',
       socketPath,

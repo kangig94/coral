@@ -212,8 +212,8 @@ printed no handoff notice, and which fallback fired is not determinable from out
 
 At the far end, a `0.10.4` CLI reports **`Backend not running`** against a live daemon — it predates the
 strict-identity protocol entirely. Its own message then says a mutating command relaunches the backend,
-which points at two coordinators over one journal. Not tested, deliberately; see
-the socket-identity fix, which has since landed.
+which points at two coordinators over one journal. Not tested, deliberately: the address that made those
+two coordinators possible was fixed, and what remains of it is `socket-address-ownership.md`.
 
 ## Start condition
 

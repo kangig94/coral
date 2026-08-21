@@ -27,6 +27,7 @@ export type DocumentedCoralSetupErrorCode =
   | 'coordinator_socket_in_use'
   | 'coordinator_socket_bind_failed'
   | 'coordinator_socket_dir_insecure'
+  | 'coordinator_socket_dir_unverified'
   | 'store_schema_outdated'
   | 'legacy_foreign_generation'
   | 'legacy_source_not_quiescent'
@@ -187,13 +188,25 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
     userMessage: (context) =>
       `Coral relocated its coordinator socket into ${stringContextValue(context, 'directory', '<directory>')} because the path beside its run directory exceeds this platform's limit, and ${
         context?.reason === 'foreign'
-          ? 'that directory is not one this user owns'
-          : 'Coral could not establish who owns that directory'
+          ? 'that path belongs to another user'
+          : 'that path is not a directory Coral can keep private to you'
       }.`,
     remediation: (context) =>
       context?.reason === 'foreign'
-        ? `${stringContextValue(context, 'directory', '<directory>')} belongs to another user, so removing it needs its owner or root; a shorter Coral state root avoids relocating the socket at all. Coral will not bind its singleton socket in a directory it cannot establish as yours.`
-        : `Resolve the filesystem error reported for ${stringContextValue(context, 'directory', '<directory>')} (${stringContextValue(context, 'cause', 'cause unavailable')}), then start Coral again. Coral will not bind its singleton socket in a directory it could not verify.`,
+        ? `Only its owner or root can clear ${stringContextValue(context, 'directory', '<directory>')}; a Coral state root short enough that the socket does not relocate avoids the shared directory entirely. Coral will not bind its singleton socket where it cannot establish exclusive ownership.`
+        : `Remove ${stringContextValue(context, 'directory', '<directory>')} — it is yours, and it is not a directory — then start Coral again. Coral will not bind its singleton socket where it cannot establish exclusive ownership.`,
+  },
+  /**
+   * Exit 75, not 1, and separate from `coordinator_socket_dir_insecure` for the reason
+   * `coordinator_record_unreadable` is separate from `coordinator_unreachable`: a create or observation that
+   * failed says nothing about who owns the directory, and a caller that reads only the code would otherwise
+   * act on an ownership verdict this run never reached.
+   */
+  coordinator_socket_dir_unverified: {
+    userMessage: (context) =>
+      `Coral relocated its coordinator socket into ${stringContextValue(context, 'directory', '<directory>')} because the path beside its run directory exceeds this platform's limit, and could not establish whether that directory is private to you (${stringContextValue(context, 'cause', 'cause unavailable')}). This does not mean the directory is wrong.`,
+    remediation: (context) =>
+      `Resolve the filesystem error reported for ${stringContextValue(context, 'directory', '<directory>')}, then start Coral again. Coral will not bind its singleton socket in a directory it could not observe.`,
   },
   store_schema_outdated: {
     userMessage: 'Coral backend store format does not match this installation.',
@@ -674,6 +687,7 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
 export const NOT_OBSERVED_CORAL_SETUP_ERROR_CODES: ReadonlySet<string> = new Set<DocumentedCoralSetupErrorCode>([
   'coordinator_unreachable',
   'coordinator_record_unreadable',
+  'coordinator_socket_dir_unverified',
 ]);
 
 function renderDocumentedSpec(

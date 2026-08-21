@@ -1126,15 +1126,13 @@ describe('architecture boundary guard', () => {
   });
 
   it('engine-blind domains carry no engine-id string literals (AC7.2)', () => {
-    // Engine-id literals (`'orama'`, `'gemini'`, `'onnx'`, `'kiwi'`) leaking
-    // into KB, coordinator, CLI expansion, infra, or runtime code defeat
-    // engine-blindness regardless of whether the leak is wired through an
-    // import. Slot names
+    // A bundled expansion's own id, leaking into KB, coordinator, CLI expansion, infra, or runtime code,
+    // defeats engine-blindness regardless of whether the leak is wired through an import. Slot names
     // (`'kb.fts'`, `'kb.vector'`, `'kb.embedding'`) and authority/interest
     // names (`'corpus'`, `'content'`, `'metadata'`, `'journal'`) remain
-    // allowed — they are capability vocabulary, not engine identity.
+    // allowed — they are capability vocabulary, not implementation identity.
     const engineBlindScopes = ['src/kb/', 'src/coordinator/', 'src/cli/expansion/', 'src/infra/', 'src/runtime/'];
-    const engineIds = new Set(['orama', 'gemini', 'onnx', 'kiwi']);
+    const bundledExpansionIds = new Set(['orama', 'gemini', 'onnx', 'kiwi']);
 
     const violations: string[] = [];
 
@@ -1153,9 +1151,9 @@ describe('architecture boundary guard', () => {
       const sourceFile = ts.createSourceFile(filePath, sourceText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 
       function visit(node: ts.Node): void {
-        if (ts.isStringLiteral(node) && engineIds.has(node.text)) {
+        if (ts.isStringLiteral(node) && bundledExpansionIds.has(node.text)) {
           violations.push(`${canonical}:${node.getStart()}: literal '${node.text}'`);
-        } else if (ts.isNoSubstitutionTemplateLiteral(node) && engineIds.has(node.text)) {
+        } else if (ts.isNoSubstitutionTemplateLiteral(node) && bundledExpansionIds.has(node.text)) {
           violations.push(`${canonical}:${node.getStart()}: template-literal '${node.text}'`);
         }
         ts.forEachChild(node, visit);

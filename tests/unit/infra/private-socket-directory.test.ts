@@ -42,7 +42,7 @@ describe('ensurePrivateSocketDir', () => {
     expect(lstatSync(directory).mode & 0o777).toBe(0o700);
   });
 
-  it('refuses a symlink without following it', () => {
+  it('refuses a symlink to a directory that would otherwise pass, without following it', () => {
     const root = scratch();
     const target = join(root, 'target');
     const directory = join(root, 'link');
@@ -50,16 +50,16 @@ describe('ensurePrivateSocketDir', () => {
     symlinkSync(target, directory);
 
     expect(() => ensurePrivateSocketDir(directory, CURRENT_UID, realStorage)).toThrowError(
-      expect.objectContaining({ name: 'SocketDirectoryError', refusal: 'foreign' }),
+      expect.objectContaining({ name: 'SocketDirectoryError', refusal: 'unusable' }),
     );
   });
 
-  it('refuses a path it cannot create as a directory', () => {
+  it('refuses a path of its own that is not a directory', () => {
     const directory = join(scratch(), 'regular');
     writeFileSync(directory, '');
 
     expect(() => ensurePrivateSocketDir(directory, CURRENT_UID, realStorage)).toThrowError(
-      expect.objectContaining({ refusal: 'unverified' }),
+      expect.objectContaining({ refusal: 'unusable' }),
     );
   });
 

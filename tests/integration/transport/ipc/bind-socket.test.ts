@@ -87,6 +87,18 @@ describe('bindSocket', () => {
     return { directory, socketPath: join(directory, 'relocated.sock') };
   }
 
+  it('reports a relocated directory it could not observe under its own code, not the ownership verdict', async () => {
+    // A uid no directory can be owned by, so the assertion refuses before it touches the filesystem.
+    vi.spyOn(process, 'getuid').mockReturnValue(Number.NaN);
+    const server = createServer();
+    cleanupServers.push(server);
+
+    await expect(bindSocket(server, join(socketFallbackDir(Number.NaN), 'relocated.sock'))).rejects.toThrow(
+      expect.objectContaining({ code: 'coordinator_socket_dir_unverified' }),
+    );
+    expect(server.listening).toBe(false);
+  });
+
   it('refuses a relocated socket directory it cannot establish as its own, without listening', async () => {
     const { directory, socketPath } = relocatedSocketPath();
     const target = mkdtempSync(join(tmpdir(), 'coral-relocated-target-'));

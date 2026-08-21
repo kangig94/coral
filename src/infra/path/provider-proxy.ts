@@ -88,8 +88,10 @@ function insecureEndpointError(
   return new ProviderProxyEndpointError(
     'proxy_endpoint_insecure',
     refusal === 'foreign'
-      ? `Provider endpoint fallback directory is not ${requirement}.`
-      : `Provider endpoint fallback directory could not be verified as ${requirement}.`,
+      ? `Provider endpoint fallback directory belongs to another user, so it cannot be ${requirement}.`
+      : refusal === 'unusable'
+        ? `Provider endpoint fallback directory is not ${requirement}.`
+        : `Provider endpoint fallback directory could not be verified as ${requirement}.`,
     {
       fallbackDirectory,
       refusal,

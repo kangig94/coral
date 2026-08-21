@@ -11,9 +11,10 @@ Two halves. Both are about ownership of the address; neither is about its length
 ## Half 1 — the assertion holds at one binder out of four
 
 `ensurePrivateSocketDir` (`src/infra/private-socket-directory.ts`) creates the directory `0700`, tightens
-one that is already its own, and refuses one it observes as someone else's or cannot observe at all.
-Ownership and type come from a non-following `lstat`, because a following `stat` describes whatever the
-entry currently resolves to rather than the entry itself.
+one that is already its own, and otherwise returns one of three refusals — `foreign`, `unusable`,
+`unverified` — which the coordinator's binder turns into two documented codes so that the one that observed
+nothing does not exit as an ownership verdict. Ownership and type come from a non-following `lstat`, because
+a following `stat` describes whatever the entry currently resolves to rather than the entry itself.
 
 `bindSocket` (`src/transport/ipc/server.ts`) calls it before binding, in the process that will hold the
 socket. That is the coordinator, and it is enforcing.
@@ -37,7 +38,8 @@ child's stderr into a no-op listener. A refusal raised in a role binder therefor
 as an opaque connect failure unless this work also gives the role a structured startup-diagnostic channel
 back to its parent. `proxy_endpoint_insecure` moves with the check, and each role binder gains a refusal
 on its startup path that it does not have today — refusing to start is a hold, and
-`.claude/rules/design-philosophy.md` principle 11 asks what ends it.
+`.claude/rules/design-philosophy.md` principle 11 asks what ends it. It also has one disposition where the
+coordinator now has three, so the split the coordinator side just made has to reach it.
 
 ## Half 2 — the uid participates in installation identity, and nothing says so
 

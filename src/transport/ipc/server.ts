@@ -370,9 +370,11 @@ export async function bindSocket(server: NetServer, socketPath: string): Promise
     } catch (error: unknown) {
       // A refusal only the sentinel writer can serialise never reaches a terminal, and it serialises
       // documented codes alone — see writeStartupErrorSentinel in src/coordinator/bootstrap-diagnostics.ts.
+      // The code, not a field beside it, carries which of the three this was: `errorCodeToExit` classifies
+      // by code alone, so one code spanning "decided" and "could not observe" is one of them exiting wrong.
       if (!(error instanceof SocketDirectoryError)) throw error;
       throw documentedCoralSetupError({
-        code: 'coordinator_socket_dir_insecure',
+        code: error.refusal === 'unverified' ? 'coordinator_socket_dir_unverified' : 'coordinator_socket_dir_insecure',
         reason: error.refusal,
         directory,
         socketPath,

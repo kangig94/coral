@@ -5,9 +5,9 @@ multi-format routing this document proposes is designed far enough to know its s
 conflict, and nobody has appetite for it. Split out of the containment-boundary preplan on 2026-08-02.
 
 **Marked dormant 2026-08-15**, when a consolidation pass found a live defect buried at point 3 of the
-constraints list below — a real socket-identity bug blocked on a refactor that is not going to happen.
-It was extracted, fixed, and its entry retired; the socket path no longer depends on ambient state. Nothing else in this
-document is a defect; read it as a design record, not as open work.
+constraints list below — a real socket-identity bug blocked on a refactor that is not going to happen. It
+was extracted, fixed, and its entry retired. Nothing else in this document is a defect; read it as a design
+record, not as open work.
 
 **Why it is not part of containment**: routing shares coordinator election, cold start, and
 high-water identity with the cross-version continuity work — since landed, and described by
@@ -204,10 +204,11 @@ unknown`, with only `absent` treated as an absence. The requirement this item st
 2. **Node has no `flock`.** A round proposed a fixed-path kernel lease as the authority primitive; the `fs`
    API exposes no such operation, verified by runtime inspection. Any future authority argument must use a
    primitive that actually exists.
-3. **The socket is not an exclusion primitive today.** Two processes with the same state root but
-   different `TMPDIR` compute different socket paths and both bind. **Extracted to
-   its own entry** — it was a live defect, independent of routing, and leaving it
-   here kept it blocked on work nobody has scheduled.
+3. **The socket became an exclusion primitive, conditionally.** Two processes with the same state root but
+   different `TMPDIR` used to compute different socket paths and both bind. The path no longer reads the
+   environment, so that pair now collides on one address as intended. What remains is narrower and lives in
+   `socket-address-ownership.md`: a path long enough to overflow `sun_path` relocates into a per-uid
+   directory, so two uids over one state root are still two locks.
 4. **A different `HOME` is not a race, it is a different instance.** `coralStateRoot` derives from the home
    relative root, so a different `HOME` means a different journal, store, and run directory. Authority is one
    canonical absolute state root plus flavor; relative or unresolvable roots should fail closed.
