@@ -1,11 +1,14 @@
-import { isAbsolute, relative } from 'node:path';
-
 import type { DiscussSessionsListResponse } from '../discuss/read-contract.js';
 import type { JobLaunchRequest } from '../jobs/launch.js';
 import type { JobsListResponse } from '../jobs/records.js';
 import type { WaitStreamEvent, WaitStreamRequest } from '../jobs/wait.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
-import { canonicalizeWorkDir, type CanonicalWorkDir, WorkDirectoryError } from '../runtime/canonical-work-dir.js';
+import {
+  canonicalizeWorkDir,
+  containsWorkDir,
+  type CanonicalWorkDir,
+  WorkDirectoryError,
+} from '../runtime/canonical-work-dir.js';
 import { isCapability, type Capability } from '../security/capability.js';
 import type { Principal, ResourceBinding } from '../security/principal.js';
 import { authorizeCapability, authorizeResourceBinding, type Decision } from '../security/policy/authorize.js';
@@ -22,7 +25,8 @@ import {
   providerHostListResponseSchema,
   type ProviderHostSelectorRequest,
 } from './rpc/catalog.js';
-import type { JobListFilters, WorkflowPortInput } from './rpc/ports.js';
+import type { WorkflowPortInput } from './rpc/ports.js';
+import type { JobsListFilters } from '../jobs/read-queries.js';
 import { buildInvocationContext, buildInvocationContextFromQuery } from './invocation-context.js';
 import { callerProviderScopeSchema } from '../infra/provider-scope.js';
 import { encodeHostRef } from '../providers/host-ref-codec.js';
@@ -45,6 +49,19 @@ const BACKEND_RECOVERING_MESSAGE = 'recovering — retry after 500ms';
 
 function invalidRequestResult(message = 'invalid request', detail?: unknown): ToolDomainResult {
   return domainError('invalid_request', message, detail);
+}
+
+// The refused job's own work directory is deliberately not disclosed: the caller is outside the
+// scope that would authorize reading it.
+function jobScopeMismatchResult(jobs: readonly string[]): ToolDomainResult {
+  return {
+    ok: false,
+    code: 'scope_mismatch',
+    message: "Jobs are outside the caller's work directory scope",
+    remediation:
+      "Rerun from the job's work directory, or from a directory that contains it — `coral-cli jobs` groups every job under the work directory it ran in.",
+    detail: { jobs: [...jobs] },
+  };
 }
 
 function unary(body: unknown, statusCode?: number): CatalogRequestExecution {
@@ -276,8 +293,7 @@ function authorizeCatalogResourceBinding(
     return decision;
   }
 
-  const descendant = relative(principal.binding.root, requestedBinding.root);
-  if (descendant === '' || (!descendant.startsWith('..') && !isAbsolute(descendant))) {
+  if (containsWorkDir(principal.binding.root, requestedBinding.root)) {
     return decision;
   }
 
@@ -780,16 +796,15 @@ async function executeExpansionCatalogRequest({
 
 async function executeJobsAbortCatalogRequest({
   request,
+  canonicalRequest,
   rpcPorts,
 }: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
   const parsed = request as { jobs: string[]; projectRoot: string };
-  const scopeCheck = rpcPorts.jobs.scopeCheck(parsed.jobs, parsed.projectRoot);
+  const callerRoot = canonicalRequest.projectRoot;
+  if (callerRoot === undefined) return unaryHttp(domainResultToHttp(invalidRequestResult()));
+  const scopeCheck = rpcPorts.jobs.scopeCheck(parsed.jobs, callerRoot, 'contains');
   if (scopeCheck.mismatch.length > 0) {
-    return unaryHttp(
-      domainResultToHttp(
-        domainError('scope_mismatch', 'Jobs do not belong to this project', { jobs: scopeCheck.mismatch }),
-      ),
-    );
+    return unaryHttp(domainResultToHttp(jobScopeMismatchResult(scopeCheck.mismatch)));
   }
   if (scopeCheck.missing.length === parsed.jobs.length) {
     return unary(
@@ -807,11 +822,13 @@ async function executeJobsAbortCatalogRequest({
 
 async function executeJobsListCatalogRequest({
   request,
+  canonicalRequest,
   rpcPorts,
 }: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
-  const parsed = request as JobListFilters & { provider?: string };
+  const parsed = request as Omit<JobsListFilters, 'projectRoot'> & { provider?: string };
+  const callerRoot = canonicalRequest.projectRoot;
   const jobs = rpcPorts.jobs.list({
-    ...(parsed.projectRoot === undefined ? {} : { projectRoot: parsed.projectRoot }),
+    ...(callerRoot === undefined ? {} : { projectRoot: callerRoot }),
     ...(parsed.phase === undefined ? {} : { phase: parsed.phase }),
     ...(parsed.provider === undefined ? {} : { provider: parsed.provider }),
     all: parsed.all === true,
@@ -822,16 +839,15 @@ async function executeJobsListCatalogRequest({
 
 async function executeJobsDetailCatalogRequest({
   request,
+  canonicalRequest,
   rpcPorts,
 }: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
   const parsed = request as { jobId: string; projectRoot: string };
-  const scopeCheck = rpcPorts.jobs.scopeCheck([parsed.jobId], parsed.projectRoot);
+  const callerRoot = canonicalRequest.projectRoot;
+  if (callerRoot === undefined) return unaryHttp(domainResultToHttp(invalidRequestResult()));
+  const scopeCheck = rpcPorts.jobs.scopeCheck([parsed.jobId], callerRoot, 'contains');
   if (scopeCheck.mismatch.length > 0) {
-    return unaryHttp(
-      domainResultToHttp(
-        domainError('scope_mismatch', 'Jobs do not belong to this project', { jobs: scopeCheck.mismatch }),
-      ),
-    );
+    return unaryHttp(domainResultToHttp(jobScopeMismatchResult(scopeCheck.mismatch)));
   }
   if (scopeCheck.missing.length === 1) {
     return unary({ code: 'job_not_found', message: `Job not found: ${parsed.jobId}` }, 404);
@@ -846,6 +862,7 @@ async function executeJobsDetailCatalogRequest({
 
 async function executeJobsWaitCatalogRequest({
   request,
+  canonicalRequest,
   rpcPorts,
   abortSignal,
 }: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
@@ -856,13 +873,11 @@ async function executeJobsWaitCatalogRequest({
     cursor?: { afterSeq: number };
     supportsInterrupted?: boolean;
   };
-  const scopeCheck = rpcPorts.jobs.scopeCheck(parsed.jobIds, parsed.projectRoot);
+  const callerRoot = canonicalRequest.projectRoot;
+  if (callerRoot === undefined) return unaryHttp(domainResultToHttp(invalidRequestResult()));
+  const scopeCheck = rpcPorts.jobs.scopeCheck(parsed.jobIds, callerRoot, 'contains');
   if (scopeCheck.mismatch.length > 0) {
-    return unaryHttp(
-      domainResultToHttp(
-        domainError('scope_mismatch', 'Jobs do not belong to this project', { jobs: scopeCheck.mismatch }),
-      ),
-    );
+    return unaryHttp(domainResultToHttp(jobScopeMismatchResult(scopeCheck.mismatch)));
   }
   if (scopeCheck.missing.length === parsed.jobIds.length) {
     return unary(

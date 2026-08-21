@@ -76,9 +76,9 @@ function createDiscussionEnvelopeDb() {
   db.prepare(
     `INSERT INTO projection_jobs (
        job_id, execution_owner, phase, terminal, diagnostics, session_id, provider,
-       project_root, backend_namespace, bundle_hash, job_kind, parent_workflow_job_id,
+       project_root, work_dir, backend_namespace, bundle_hash, job_kind, parent_workflow_job_id,
        workflow_slot, workflow_slot_generation, replaces_workflow_job_id, created_at, last_seq
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     'revision-owned-job',
     JSON.stringify({ kind: 'discussion', id: 'revision-discussion' }),
@@ -87,6 +87,7 @@ function createDiscussionEnvelopeDb() {
     '{}',
     'revision-provider-session',
     'codex',
+    '/revision/project',
     '/revision/project',
     'revision-namespace',
     'revision-bundle',
@@ -328,9 +329,9 @@ function createCoordinatorRevisionDb() {
   db.prepare(
     `INSERT INTO projection_jobs (
        job_id, execution_owner, phase, terminal, diagnostics, session_id, provider,
-       project_root, backend_namespace, bundle_hash, job_kind, parent_workflow_job_id,
+       project_root, work_dir, backend_namespace, bundle_hash, job_kind, parent_workflow_job_id,
        workflow_slot, workflow_slot_generation, replaces_workflow_job_id, created_at, last_seq
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     jobId,
     JSON.stringify({ kind: 'provider-session', id: sessionId }),
@@ -339,6 +340,7 @@ function createCoordinatorRevisionDb() {
     '{"progressFaults":[]}',
     sessionId,
     'codex',
+    '/coordinator',
     '/coordinator',
     'coordinator-ns',
     'coordinator-bundle',
@@ -1468,9 +1470,9 @@ function createWorkflowRevisionDb() {
   db.prepare(
     `INSERT INTO projection_jobs (
        job_id, execution_owner, phase, terminal, diagnostics, session_id, provider,
-       project_root, backend_namespace, bundle_hash, job_kind, parent_workflow_job_id,
+       project_root, work_dir, backend_namespace, bundle_hash, job_kind, parent_workflow_job_id,
        workflow_slot, workflow_slot_generation, replaces_workflow_job_id, created_at, last_seq
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     'revision-workflow',
     JSON.stringify({ kind: 'workflow', id: 'revision-workflow' }),
@@ -1479,6 +1481,7 @@ function createWorkflowRevisionDb() {
     '{"progressFaults":[]}',
     null,
     null,
+    '/workflow',
     '/workflow',
     'workflow-ns',
     'workflow-bundle',
@@ -1493,9 +1496,9 @@ function createWorkflowRevisionDb() {
   db.prepare(
     `INSERT INTO projection_jobs (
        job_id, execution_owner, phase, terminal, diagnostics, session_id, provider,
-       project_root, backend_namespace, bundle_hash, job_kind, parent_workflow_job_id,
+       project_root, work_dir, backend_namespace, bundle_hash, job_kind, parent_workflow_job_id,
        workflow_slot, workflow_slot_generation, replaces_workflow_job_id, created_at, last_seq
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     'revision-workflow:slot:0',
     JSON.stringify({ kind: 'workflow', id: 'revision-workflow' }),
@@ -1504,6 +1507,7 @@ function createWorkflowRevisionDb() {
     '{"progressFaults":[]}',
     'revision-workflow-session',
     'codex',
+    '/workflow',
     '/workflow',
     'workflow-ns',
     'workflow-bundle',
@@ -1639,9 +1643,9 @@ describe('workflow recovery source revisions', () => {
           .prepare(
             `INSERT INTO projection_jobs (
                job_id, execution_owner, phase, terminal, diagnostics, session_id, provider,
-               project_root, backend_namespace, bundle_hash, job_kind, parent_workflow_job_id,
+               project_root, work_dir, backend_namespace, bundle_hash, job_kind, parent_workflow_job_id,
                workflow_slot, workflow_slot_generation, replaces_workflow_job_id, created_at, last_seq
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             'revision-workflow:slot:1',
@@ -1651,6 +1655,7 @@ describe('workflow recovery source revisions', () => {
             '{"progressFaults":[]}',
             null,
             null,
+            '/workflow',
             '/workflow',
             'workflow-ns',
             'workflow-bundle',
@@ -1805,9 +1810,9 @@ function createLifecycleRevisionDb() {
   const insertProjection = db.prepare(
     `INSERT INTO projection_jobs (
        job_id, execution_owner, phase, terminal, diagnostics, session_id, provider,
-       project_root, backend_namespace, bundle_hash, job_kind, parent_workflow_job_id,
+       project_root, work_dir, backend_namespace, bundle_hash, job_kind, parent_workflow_job_id,
        workflow_slot, workflow_slot_generation, replaces_workflow_job_id, created_at, last_seq
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   insertProjection.run(
     'revision-stale-job',
@@ -1817,6 +1822,7 @@ function createLifecycleRevisionDb() {
     '{"progressFaults":[]}',
     'revision-stale-session',
     'codex',
+    '/revision/stale',
     '/revision/stale',
     'revision-namespace',
     'old-bundle',
@@ -1836,6 +1842,7 @@ function createLifecycleRevisionDb() {
     '{"progressFaults":[]}',
     'revision-crashed-session',
     'codex',
+    '/revision/crashed',
     '/revision/crashed',
     'revision-namespace',
     'current-bundle',

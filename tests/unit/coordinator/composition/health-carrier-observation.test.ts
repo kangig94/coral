@@ -66,6 +66,7 @@ import { setStoreServicesForTest } from '#tools/testing/store-services.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 type ExecutingRecord = Extract<ProviderOperationRecord, { phase: 'executing' }>;
 
@@ -89,6 +90,7 @@ function acquiredDetail(jobId: string): JobProjectionDetail {
     sessionId: `session-${jobId}`,
     provider: 'codex',
     projectRoot: '/workspace',
+    workDir: fixtureCanonicalWorkDir('/workspace'),
     backendNamespace: 'health-carrier-test',
     jobKind: 'provider',
     phase: 'running',
@@ -256,16 +258,17 @@ describe('health local carrier observation', () => {
     const db = createDb();
     const insert = db.prepare(`
       INSERT INTO projection_jobs (
-        job_id, execution_owner, phase, terminal, diagnostics, session_id, provider, project_root,
+        job_id, execution_owner, phase, terminal, diagnostics, session_id, provider, project_root, work_dir,
         backend_namespace, bundle_hash, job_kind, parent_workflow_job_id, workflow_slot,
         workflow_slot_generation, replaces_workflow_job_id, created_at, last_seq
-      ) VALUES (?, ?, ?, NULL, ?, NULL, NULL, ?, ?, NULL, 'workflow', NULL, NULL, NULL, NULL, ?, ?)
+      ) VALUES (?, ?, ?, NULL, ?, NULL, NULL, ?, ?, ?, NULL, 'workflow', NULL, NULL, NULL, NULL, ?, ?)
     `);
     insert.run(
       'live-job',
       JSON.stringify({ kind: 'workflow', id: 'live-job' }),
       'running',
       '{}',
+      '/workspace',
       '/workspace',
       'ns',
       '2026-08-11T00:00:00.000Z',
@@ -276,6 +279,7 @@ describe('health local carrier observation', () => {
       JSON.stringify({ kind: 'workflow', id: 'historical-job' }),
       'completed',
       '{}',
+      '/workspace',
       '/workspace',
       'ns',
       '2026-08-11T00:00:00.000Z',

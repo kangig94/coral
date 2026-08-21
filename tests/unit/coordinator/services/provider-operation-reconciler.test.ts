@@ -450,6 +450,7 @@ function createHarness(
       sessionId: record.prepareSource.sessionId,
       provider: providerName,
       projectRoot: fixtureCanonicalWorkDir(process.cwd()),
+      workDir: fixtureCanonicalWorkDir(process.cwd()),
       backendNamespace: 'tests',
       jobKind: 'provider',
       phase: 'running',

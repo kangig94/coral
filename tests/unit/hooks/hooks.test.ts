@@ -969,16 +969,16 @@ describe('pre-compact.mjs', () => {
           job_id TEXT PRIMARY KEY,
           phase TEXT NOT NULL,
           project_root TEXT NOT NULL,
-          last_seq INTEGER NOT NULL
+          work_dir TEXT,
+          job_kind TEXT NOT NULL,
+          last_seq INTEGER NOT NULL,
+          CONSTRAINT projection_jobs_work_dir_authority CHECK ((job_kind = 'kb') = (work_dir IS NULL))
         );
       `);
       db.prepare('INSERT INTO meta (key, value) VALUES (?, ?)').run('store_format_fingerprint', fingerprint);
-      db.prepare('INSERT INTO projection_jobs (job_id, phase, project_root, last_seq) VALUES (?, ?, ?, ?)').run(
-        jobId,
-        'running',
-        projectRoot,
-        1,
-      );
+      db.prepare(
+        "INSERT INTO projection_jobs (job_id, phase, project_root, work_dir, job_kind, last_seq) VALUES (?, ?, ?, ?, 'provider', ?)",
+      ).run(jobId, 'running', projectRoot, projectRoot, 1);
     } finally {
       db.close();
     }

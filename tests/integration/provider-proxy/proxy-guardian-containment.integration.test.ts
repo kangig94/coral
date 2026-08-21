@@ -764,6 +764,7 @@ async function completeCapacityLocalHandoff(
         sessionId,
         provider: PREPARED.provider,
         projectRoot: '/project',
+        workDir: PREPARED.request.cwd,
         backendNamespace: 'tests',
         jobKind: 'provider',
         phase: 'running',

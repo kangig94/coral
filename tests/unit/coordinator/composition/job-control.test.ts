@@ -4,6 +4,7 @@ import { createCoordinatorControl } from '#src/coordinator/composition/job-contr
 import type { CoordinatorWorld } from '#src/coordinator/composition/world.js';
 import { AbortRegistry } from '#src/jobs/shell/abort-registry.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 function createControlHarness(): {
   control: ReturnType<typeof createCoordinatorControl>;
@@ -47,10 +48,9 @@ describe('createCoordinatorControl.abortJobs', () => {
 });
 
 describe('createCoordinatorControl.scopeCheckJobs', () => {
-  // Namespace is no longer work tenancy, so the same job — same project root, still recorded under a
-  // different `backendNamespace` — is now simply in scope. The status deliberately keeps the foreign namespace
-  // so the assertion fails again if namespace ever re-enters scoping.
-  it('keeps a job recorded under another build namespace in scope when the project root matches', () => {
+  // The status deliberately carries a foreign `backendNamespace`, so this assertion fails again if
+  // namespace ever re-enters scope judgement.
+  it('keeps a job recorded under another build namespace in scope when the work directory matches', () => {
     const runtime = new SimulationRuntime();
     const internalJobAbortRegistry = new AbortRegistry(runtime.ids);
     const world = { idleTimer: { requestDrain() {} } } as unknown as CoordinatorWorld;
@@ -60,12 +60,16 @@ describe('createCoordinatorControl.scopeCheckJobs', () => {
       getLifecycleController: () => null,
       getProgressStore: () =>
         ({
-          readStatus: () => ({ projectRoot: '/current/project', jobKind: 'provider', backendNamespace: 'other-ns' }),
+          readStatus: () => ({
+            workDir: fixtureCanonicalWorkDir('/current/project'),
+            jobKind: 'provider',
+            backendNamespace: 'other-ns',
+          }),
         }) as never,
       internalJobAbortRegistry,
     });
 
-    const result = control.scopeCheckJobs(['foreign-job'], '/current/project');
+    const result = control.scopeCheckJobs(['foreign-job'], fixtureCanonicalWorkDir('/current/project'), 'exact');
 
     expect(result).toEqual({ valid: ['foreign-job'], missing: [], mismatch: [] });
   });
@@ -73,23 +77,49 @@ describe('createCoordinatorControl.scopeCheckJobs', () => {
   it('keeps KB jobs in scope from any project but rejects foreign non-KB jobs', () => {
     const runtime = new SimulationRuntime();
     const internalJobAbortRegistry = new AbortRegistry(runtime.ids);
-    const statuses: Record<string, { projectRoot: string; jobKind: string; backendNamespace: string }> = {
-      'kb-job': { projectRoot: '/other/project', jobKind: 'kb', backendNamespace: 'test-ns' },
-      'provider-job': { projectRoot: '/other/project', jobKind: 'provider', backendNamespace: 'test-ns' },
+    const statuses = {
+      'kb-job': { workDir: null, jobKind: 'kb', backendNamespace: 'test-ns' },
+      'provider-job': {
+        workDir: fixtureCanonicalWorkDir('/other/project'),
+        jobKind: 'provider',
+        backendNamespace: 'test-ns',
+      },
     };
     const world = { idleTimer: { requestDrain() {} } } as unknown as CoordinatorWorld;
     const control = createCoordinatorControl({
       world,
       listExecutionServices: () => [],
       getLifecycleController: () => null,
-      getProgressStore: () => ({ readStatus: (id: string) => statuses[id] ?? null }) as never,
+      getProgressStore: () => ({ readStatus: (id: string) => statuses[id as keyof typeof statuses] ?? null }) as never,
       internalJobAbortRegistry,
     });
 
-    const result = control.scopeCheckJobs(['kb-job', 'provider-job'], '/current/project');
+    const result = control.scopeCheckJobs(
+      ['kb-job', 'provider-job'],
+      fixtureCanonicalWorkDir('/current/project'),
+      'contains',
+    );
 
     expect(result.valid).toContain('kb-job');
     expect(result.mismatch).toContain('provider-job');
     expect(result.mismatch).not.toContain('kb-job');
+  });
+
+  it('uses containment for explicit jobs and equality for ambient jobs', () => {
+    const runtime = new SimulationRuntime();
+    const internalJobAbortRegistry = new AbortRegistry(runtime.ids);
+    const world = { idleTimer: { requestDrain() {} } } as unknown as CoordinatorWorld;
+    const status = { workDir: fixtureCanonicalWorkDir('/repo/sub'), jobKind: 'provider' };
+    const control = createCoordinatorControl({
+      world,
+      listExecutionServices: () => [],
+      getLifecycleController: () => null,
+      getProgressStore: () => ({ readStatus: () => status }) as never,
+      internalJobAbortRegistry,
+    });
+    const callerRoot = fixtureCanonicalWorkDir('/repo');
+
+    expect(control.scopeCheckJobs(['job'], callerRoot, 'contains').mismatch).toEqual([]);
+    expect(control.scopeCheckJobs(['job'], callerRoot, 'exact').mismatch).toEqual(['job']);
   });
 });

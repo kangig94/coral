@@ -36,6 +36,7 @@ import type { JobProjectionDetail } from '#src/jobs/read-queries.js';
 import type { JobRuntime, JobStatus } from '#src/jobs/records.js';
 import { insertProviderOperation } from '#src/store/provider-operation-journal.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 const mockedIsAlive = vi.mocked(observeProcessLiveness);
 const mockedProbe = vi.mocked(probeProcessIncarnation);
@@ -55,6 +56,7 @@ function status(overrides: Partial<JobStatus> = {}): JobStatus {
     sessionId: 'session-1',
     provider: 'codex',
     projectRoot: '/tmp/project',
+    workDir: fixtureCanonicalWorkDir('/tmp/project'),
     backendNamespace: 'test-ns',
     jobKind: 'provider',
     phase: 'running',

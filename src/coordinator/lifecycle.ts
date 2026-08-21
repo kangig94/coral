@@ -428,10 +428,12 @@ function hydrateCrashedJob(raw: RawCrashedJobRow, progressStore: JobStore): Cras
     if (raw.launchEvent.stream_kind !== 'job' || raw.launchEvent.stream_id !== projection.job_id) {
       throw new TypeError(`Crash terminalization launch '${raw.launchEvent.seq}' names another job.`);
     }
+    const launchWorkDir = launch.jobKind === 'kb' ? null : launch.request.cwd;
     if (
       launch.jobKind !== projection.job_kind ||
       launch.backendNamespace !== projection.backend_namespace ||
       launch.projectRoot !== projection.project_root ||
+      launchWorkDir !== projection.work_dir ||
       JSON.stringify(launch.owner) !== JSON.stringify(owner)
     ) {
       throw new TypeError(`Crash terminalization launch for '${projection.job_id}' contradicts its projection.`);
@@ -448,6 +450,7 @@ function hydrateCrashedJob(raw: RawCrashedJobRow, progressStore: JobStore): Cras
       sessionId: projection.session_id,
       provider: projection.provider,
       projectRoot: projection.project_root,
+      workDir: projection.work_dir,
       backendNamespace: projection.backend_namespace,
       ...(projection.bundle_hash === null ? {} : { bundleHash: projection.bundle_hash }),
       jobKind: projection.job_kind,

@@ -52,7 +52,7 @@ const PROJECTION_TABLES: readonly ProjectionTable[] = [
   {
     name: 'projection_jobs',
     query: `SELECT job_id, execution_owner, phase, terminal, diagnostics, session_id, provider, project_root,
-                 backend_namespace, bundle_hash, job_kind, parent_workflow_job_id,
+                 work_dir, backend_namespace, bundle_hash, job_kind, parent_workflow_job_id,
                  workflow_slot, workflow_slot_generation, replaces_workflow_job_id,
                  created_at, last_seq
             FROM projection_jobs`,
@@ -149,7 +149,7 @@ function discussionJobLaunchInput(
       enqueueSequence: Number.parseInt(jobId.slice(-1), 10),
       request: {
         prompt: `golden discussion ${purpose}`,
-        cwd: '<root>',
+        cwd: '/workspace/discuss',
         bypassPermissions: false,
         coralEnv: {},
       },
@@ -335,6 +335,44 @@ describe('Phase 7: rebuildProjections parity for all 4 base journal consumers', 
           },
         },
         workflowPlanDeclaredEvent('workflow-parity', plan, TEST_PROVIDER_SCOPE),
+        {
+          type: 'job.launch.requested' as const,
+          stream: { kind: 'job' as const, id: 'workflow-parity' },
+          refs: { workflowId: 'workflow-parity' },
+          body: {
+            owner: { kind: 'workflow' as const, id: 'workflow-parity' },
+            projectRoot: '/workspace/coral',
+            backendNamespace: 'invariant-ns',
+            bundleHash: 'bundle-parity',
+            jobKind: 'workflow' as const,
+            pool: 'default',
+            enqueueSequence: 2,
+            request: {
+              prompt: 'run workflow',
+              cwd: '/workspace/coral/workflow',
+              bypassPermissions: false,
+              coralEnv: {},
+            },
+            createdAt: NOW.toISOString(),
+          },
+        },
+        {
+          type: 'job.launch.requested' as const,
+          stream: { kind: 'job' as const, id: 'kb-parity' },
+          refs: { jobId: 'kb-parity' },
+          body: {
+            owner: { kind: 'system-task' as const, id: 'kb.reindex:kb-parity' },
+            projectRoot: '/workspace/coral',
+            backendNamespace: 'invariant-ns',
+            bundleHash: 'bundle-parity',
+            jobKind: 'kb' as const,
+            operation: 'kb.reindex' as const,
+            pool: 'default',
+            enqueueSequence: 3,
+            request: {},
+            createdAt: NOW.toISOString(),
+          },
+        },
         workflowDrainEnteredEvent('workflow-parity', {
           firstFailureSlotId: plan.slots[1].slotId,
           drainDeadline: Date.parse('2026-04-29T00:00:15.000Z'),
@@ -366,6 +404,10 @@ describe('Phase 7: rebuildProjections parity for all 4 base journal consumers', 
       expect(appended.length).toBe(inputs.length);
 
       const before = snapshotProjections(db);
+      const jobRows = before.get('projection_jobs') as Array<{ job_id: string; work_dir: string | null }>;
+      expect(jobRows.find((row) => row.job_id === 'job-parity-1')?.work_dir).toBe('/workspace/coral');
+      expect(jobRows.find((row) => row.job_id === 'workflow-parity')?.work_dir).toBe('/workspace/coral/workflow');
+      expect(jobRows.find((row) => row.job_id === 'kb-parity')?.work_dir).toBeNull();
       // Sanity: all four projections received writes from commit().
       for (const table of PROJECTION_TABLES) {
         expect(before.get(table.name)?.length, `${table.name} populated by commit()`).toBeGreaterThan(0);

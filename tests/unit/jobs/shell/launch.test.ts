@@ -617,6 +617,7 @@ function _makeStatusRecord(
     sessionId: options.sessionId ?? `${jobId}-session`,
     provider: 'codex',
     projectRoot: ctx.projectRoot,
+    workDir: ctx.projectRoot,
     backendNamespace: TEST_BACKEND_NAMESPACE,
     jobKind: 'provider',
     phase,
@@ -702,6 +703,30 @@ describe('ExecutionService launch', () => {
       expect(decision.jobId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
       expect(decision.sessionId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
     }
+  });
+
+  it('persists project identity from the session and work directory from the provider request', async () => {
+    const workDir = fixtureCanonicalWorkDir(join(ctx.projectRoot, 'sub'));
+    mkdirSync(workDir);
+    const never = new Promise<ProviderTurnResult>(() => {});
+    const { provider } = makeProvider({ execute: () => never });
+    mockState.getNewProvider.mockReturnValue(provider);
+    const service = createService(ctx);
+
+    const decision = await service.start('codex', { prompt: 'hello', cwd: workDir }, ctx);
+
+    expect(decision.status).toBe('running');
+    if (decision.status !== 'running') throw new Error('expected running launch');
+    trackJob(decision.jobId);
+    const { progressStore } = getInternals(service);
+    expect(progressStore.readStatus(decision.jobId)).toMatchObject({
+      projectRoot: ctx.projectRoot,
+      workDir,
+    });
+    expect(progressStore.readLaunchProjection(decision.jobId)).toMatchObject({
+      projectRoot: ctx.projectRoot,
+      request: { cwd: workDir },
+    });
   });
 
   it('prepares and executes the same provider request after generic inject is applied', async () => {

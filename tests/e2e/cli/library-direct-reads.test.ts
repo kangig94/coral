@@ -208,6 +208,7 @@ function seedStore(fixture: Fixture): void {
          session_id,
          provider,
          project_root,
+         work_dir,
          backend_namespace,
          bundle_hash,
          job_kind,
@@ -215,13 +216,14 @@ function seedStore(fixture: Fixture): void {
          workflow_slot,
          created_at,
          last_seq
-       ) VALUES (?, ?, ?, NULL, '{"progressFaults":[]}', ?, ?, ?, ?, NULL, ?, NULL, NULL, ?, ?)`,
+       ) VALUES (?, ?, ?, NULL, '{"progressFaults":[]}', ?, ?, ?, ?, ?, NULL, ?, NULL, NULL, ?, ?)`,
     ).run(
       'job-library-read-1',
       JSON.stringify({ kind: 'provider-session', id: 'session-library-read-1' }),
       'running',
       'session-library-read-1',
       'codex',
+      fixture.projectRoot,
       fixture.projectRoot,
       pluginRootNamespace(fixture.root),
       'provider',

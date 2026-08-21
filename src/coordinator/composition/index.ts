@@ -118,6 +118,7 @@ import {
   createTerminalRetentionOutcomeRetryPlan,
 } from '../../sessions/lifecycle-reactor.js';
 import { createWorkflowRecoveryRetryPlan } from '../../workflow/recover.js';
+import { jobInCallerScope } from '../../jobs/scope.js';
 
 export const MAX_EVENT_STREAM_CONNECTIONS = 100;
 const KB_DAEMON_JOB_ABORT_PROXY_TTL_MS = 24 * 60 * 60 * 1000;
@@ -905,7 +906,7 @@ export function createCoordinatorCore(
           if (filters.all !== true && !isLivePhase(entry.status.phase)) {
             continue;
           }
-          if (filters.projectRoot !== undefined && entry.status.projectRoot !== filters.projectRoot) {
+          if (filters.projectRoot !== undefined && !jobInCallerScope(entry.status, filters.projectRoot, 'exact')) {
             continue;
           }
           if (filters.phase !== undefined && entry.status.phase !== filters.phase) {

@@ -28,6 +28,7 @@ const validProjectionJobRow = {
   session_id: 'session-1',
   provider: 'codex',
   project_root: '/workspace',
+  work_dir: fixtureCanonicalWorkDir('/workspace'),
   backend_namespace: 'tests',
   bundle_hash: null,
   job_kind: 'provider',
@@ -40,6 +41,56 @@ const validProjectionJobRow = {
 } as const;
 
 describe('persisted projection authority codecs', () => {
+  it.each([
+    ['KB job with a work directory', 'kb', '/workspace'],
+    ['provider job without a work directory', 'provider', null],
+  ] as const)('rejects a %s on raw insert', (_label, jobKind, workDir) => {
+    const db = newRawDatabase(':memory:');
+    try {
+      applyBundledStoreSchema(db, currentCoralStoreFormat());
+      const insert = db.prepare(
+        `INSERT INTO projection_jobs (
+           job_id, execution_owner, phase, diagnostics, project_root, work_dir,
+           backend_namespace, job_kind, created_at, last_seq
+         ) VALUES (?, '{}', 'running', '{"progressFaults":[]}', '/workspace', ?, 'tests', ?, ?, 1)`,
+      );
+
+      expect(() => insert.run(`invalid-${jobKind}`, workDir, jobKind, '2026-07-22T00:00:00.000Z')).toThrow(
+        /projection_jobs_work_dir_authority/,
+      );
+      expect(db.prepare('SELECT COUNT(*) AS count FROM projection_jobs').get()).toEqual({ count: 0 });
+    } finally {
+      db.close();
+    }
+  });
+
+  it.each([
+    ['KB job with a work directory', 'kb', null, '/workspace'],
+    ['provider job without a work directory', 'provider', '/workspace', null],
+  ] as const)('rejects a %s on raw update and preserves the original row', (_label, jobKind, original, invalid) => {
+    const db = newRawDatabase(':memory:');
+    try {
+      applyBundledStoreSchema(db, currentCoralStoreFormat());
+      const jobId = `valid-${jobKind}`;
+      db.prepare(
+        `INSERT INTO projection_jobs (
+           job_id, execution_owner, phase, diagnostics, project_root, work_dir,
+           backend_namespace, job_kind, created_at, last_seq
+         ) VALUES (?, '{}', 'running', '{"progressFaults":[]}', '/workspace', ?, 'tests', ?, ?, 1)`,
+      ).run(jobId, original, jobKind, '2026-07-22T00:00:00.000Z');
+
+      expect(() => db.prepare('UPDATE projection_jobs SET work_dir = ? WHERE job_id = ?').run(invalid, jobId)).toThrow(
+        /projection_jobs_work_dir_authority/,
+      );
+      expect(db.prepare('SELECT job_kind, work_dir FROM projection_jobs WHERE job_id = ?').get(jobId)).toEqual({
+        job_kind: jobKind,
+        work_dir: original,
+      });
+    } finally {
+      db.close();
+    }
+  });
+
   it.each([
     ['live terminal', { terminal: JSON.stringify({ content: '', outcome: { kind: 'completed' }, durationMs: 0 }) }],
     ['parent without slot', { parent_workflow_job_id: 'workflow-1' }],
@@ -122,14 +173,15 @@ describe('persisted projection authority codecs', () => {
       db.prepare(
         `INSERT INTO projection_jobs (
            job_id, execution_owner, phase, terminal, diagnostics, session_id, provider,
-           project_root, backend_namespace, bundle_hash, job_kind, parent_workflow_job_id,
+           project_root, work_dir, backend_namespace, bundle_hash, job_kind, parent_workflow_job_id,
            workflow_slot, workflow_slot_generation, replaces_workflow_job_id, created_at, last_seq
-         ) VALUES (?, ?, 'running', NULL, '{"progressFaults":[]}', ?, 'codex', ?, 'tests', NULL, 'provider',
+         ) VALUES (?, ?, 'running', NULL, '{"progressFaults":[]}', ?, 'codex', ?, ?, 'tests', NULL, 'provider',
                    NULL, NULL, NULL, NULL, ?, 1)`,
       ).run(
         'corrupted-owner-job',
         JSON.stringify({ kind: 'provider-session', id: '', extra: true }),
         'provider-session-1',
+        '/workspace',
         '/workspace',
         '2026-07-22T00:00:00.000Z',
       );
@@ -191,6 +243,7 @@ describe('persisted projection authority codecs', () => {
   it.each([
     ['phase', 'not-a-phase'],
     ['job_kind', 'not-a-kind'],
+    ['work_dir', 'relative/workspace'],
   ] as const)('rejects corrupted projection_jobs.%s on singular and bulk reads', (column, value) => {
     const db = newRawDatabase(':memory:');
     try {
@@ -198,14 +251,15 @@ describe('persisted projection authority codecs', () => {
       db.prepare(
         `INSERT INTO projection_jobs (
            job_id, execution_owner, phase, terminal, diagnostics, session_id, provider,
-           project_root, backend_namespace, bundle_hash, job_kind, parent_workflow_job_id,
+           project_root, work_dir, backend_namespace, bundle_hash, job_kind, parent_workflow_job_id,
            workflow_slot, workflow_slot_generation, replaces_workflow_job_id, created_at, last_seq
-         ) VALUES (?, ?, 'running', NULL, '{"progressFaults":[]}', ?, 'codex', ?, 'tests', NULL, 'provider',
+         ) VALUES (?, ?, 'running', NULL, '{"progressFaults":[]}', ?, 'codex', ?, ?, 'tests', NULL, 'provider',
                    NULL, NULL, NULL, NULL, ?, 1)`,
       ).run(
         'corrupted-scalar-job',
         JSON.stringify({ kind: 'provider-session', id: 'provider-session-1' }),
         'provider-session-1',
+        '/workspace',
         '/workspace',
         '2026-07-22T00:00:00.000Z',
       );
@@ -241,15 +295,16 @@ describe('persisted projection authority codecs', () => {
       db.prepare(
         `INSERT INTO projection_jobs (
            job_id, execution_owner, phase, terminal, diagnostics, session_id, provider,
-           project_root, backend_namespace, bundle_hash, job_kind, parent_workflow_job_id,
+           project_root, work_dir, backend_namespace, bundle_hash, job_kind, parent_workflow_job_id,
            workflow_slot, workflow_slot_generation, replaces_workflow_job_id, created_at, last_seq
-         ) VALUES (?, ?, ?, NULL, '{"progressFaults":[]}', ?, 'codex', ?, 'tests', NULL, 'provider',
+         ) VALUES (?, ?, ?, NULL, '{"progressFaults":[]}', ?, 'codex', ?, ?, 'tests', NULL, 'provider',
                    ?, ?, 0, NULL, ?, 2)`,
       ).run(
         'corrupted-child-job',
         JSON.stringify({ kind: 'workflow', id: workflowId }),
         'not-a-phase',
         'session-corrupted-child',
+        '/workspace',
         '/workspace',
         workflowId,
         slotId,
@@ -286,14 +341,15 @@ describe('persisted projection authority codecs', () => {
       db.prepare(
         `INSERT INTO projection_jobs (
            job_id, execution_owner, phase, terminal, diagnostics, session_id, provider,
-           project_root, backend_namespace, bundle_hash, job_kind, parent_workflow_job_id,
+           project_root, work_dir, backend_namespace, bundle_hash, job_kind, parent_workflow_job_id,
            workflow_slot, workflow_slot_generation, replaces_workflow_job_id, created_at, last_seq
-         ) VALUES (?, ?, 'completed', '{}', '{"progressFaults":[]}', ?, 'codex', ?, 'tests', NULL, 'provider',
+         ) VALUES (?, ?, 'completed', '{}', '{"progressFaults":[]}', ?, 'codex', ?, ?, 'tests', NULL, 'provider',
                    ?, ?, 0, NULL, ?, 2)`,
       ).run(
         'corrupted-terminal-job',
         JSON.stringify({ kind: 'workflow', id: workflowId }),
         'session-1',
+        '/workspace',
         '/workspace',
         workflowId,
         slotId,
@@ -419,6 +475,46 @@ describe('persisted projection authority codecs', () => {
           },
         }),
       ).toThrow();
+      expect(db.prepare('SELECT COUNT(*) AS count FROM projection_jobs').get()).toEqual({ count: 0 });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('rejects a launch projection whose derived work directory is absent before writing', () => {
+    const db = newRawDatabase(':memory:');
+    try {
+      applyBundledStoreSchema(db, currentCoralStoreFormat());
+
+      expect(() =>
+        reduceJobLaunchRequested(db, {
+          seq: 1,
+          ts: '2026-07-22T00:00:00.000Z',
+          type: 'job.launch.requested',
+          stream: { kind: 'job', id: 'missing-work-dir' },
+          namespace: 'tests',
+          project: '/workspace',
+          refs: { sessionId: 'session-1' },
+          body: {
+            owner: { kind: 'provider-session', id: 'session-1' },
+            sessionId: 'session-1',
+            provider: 'codex',
+            providerAction: 'exec',
+            projectRoot: '/workspace',
+            backendNamespace: 'tests',
+            jobKind: 'provider',
+            pool: 'default',
+            enqueueSequence: 1,
+            request: {
+              prompt: 'run',
+              cwd: undefined as never,
+              bypassPermissions: false,
+              coralEnv: {},
+            },
+            createdAt: '2026-07-22T00:00:00.000Z',
+          },
+        }),
+      ).toThrowError(expect.objectContaining({ code: 'projection_jobs_premature_event' }));
       expect(db.prepare('SELECT COUNT(*) AS count FROM projection_jobs').get()).toEqual({ count: 0 });
     } finally {
       db.close();

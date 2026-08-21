@@ -20,7 +20,6 @@ export interface ProviderJobLaunchPort {
       owner: ExecutionOwner;
       requestedJobId?: string;
       pool?: LaunchPool;
-      projectRoot?: string;
       parentWorkflowJobId?: string;
       workflowSlotId?: string;
       workflowSlotGeneration?: number;
@@ -41,7 +40,6 @@ export interface ProviderJobLaunchPort {
       sessionBusyMessage: string;
       requestedJobId?: string;
       pool?: LaunchPool;
-      projectRoot?: string;
       parentWorkflowJobId?: string;
       workflowSlotId?: string;
       workflowSlotGeneration?: number;
@@ -63,7 +61,6 @@ export interface ProviderJobLaunchPort {
       workflowSlotGeneration: number;
       replacesWorkflowJobId: string;
       pool?: LaunchPool;
-      projectRoot: string;
       mintProtectedEnv: (jobId: string) => ProviderOperationEnvironmentInput;
     },
   ): ProviderSessionLaunchDecision;

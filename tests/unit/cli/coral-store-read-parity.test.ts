@@ -82,6 +82,7 @@ function seedStore(projectRoot: string): void {
          session_id,
          provider,
          project_root,
+         work_dir,
          backend_namespace,
          bundle_hash,
          job_kind,
@@ -89,13 +90,14 @@ function seedStore(projectRoot: string): void {
          workflow_slot,
          created_at,
          last_seq
-       ) VALUES (?, ?, ?, NULL, '{"progressFaults":[]}', ?, ?, ?, ?, NULL, ?, NULL, NULL, ?, ?)`,
+       ) VALUES (?, ?, ?, NULL, '{"progressFaults":[]}', ?, ?, ?, ?, ?, NULL, ?, NULL, NULL, ?, ?)`,
     ).run(
       'job-store-read-1',
       JSON.stringify({ kind: 'provider-session', id: 'session-store-read-1' }),
       'running',
       'session-store-read-1',
       'codex',
+      projectRoot,
       projectRoot,
       pluginRootNamespace(join(REPO_ROOT, 'clients')),
       'provider',

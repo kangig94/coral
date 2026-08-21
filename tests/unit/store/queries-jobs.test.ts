@@ -13,6 +13,7 @@ import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { seedTestSessionProjection } from '#tests/helpers/session.js';
+import { fixtureCanonicalWorkDir } from '../../helpers/canonical-work-dir.js';
 
 describe('jobs queries', () => {
   let db: Database;
@@ -34,6 +35,7 @@ describe('jobs queries', () => {
       ['session-completed', '/workspace/coral'],
       ['session-rejected', '/workspace/coral'],
       ['session-queued', '/workspace/coral'],
+      ['session-descendant', '/workspace/coral'],
       ['session-other', '/workspace/other-project'],
     ] as const) {
       seedTestSessionProjection(db, {
@@ -54,7 +56,7 @@ describe('jobs queries', () => {
           sessionId: 'session-completed',
           provider: 'codex',
           providerAction: 'resume',
-          projectRoot: '/workspace/coral',
+          projectRoot: fixtureCanonicalWorkDir('/workspace/coral'),
           backendNamespace: 'tests',
           bundleHash: 'bundle-completed',
           jobKind: 'provider',
@@ -125,7 +127,7 @@ describe('jobs queries', () => {
           sessionId: 'session-rejected',
           provider: 'codex',
           providerAction: 'exec',
-          projectRoot: '/workspace/coral',
+          projectRoot: fixtureCanonicalWorkDir('/workspace/coral'),
           backendNamespace: 'tests',
           jobKind: 'provider',
           pool: 'default',
@@ -160,7 +162,7 @@ describe('jobs queries', () => {
           sessionId: 'session-queued',
           provider: 'codex',
           providerAction: 'exec',
-          projectRoot: '/workspace/coral',
+          projectRoot: fixtureCanonicalWorkDir('/workspace/coral'),
           backendNamespace: 'tests',
           jobKind: 'provider',
           pool: 'default',
@@ -181,6 +183,29 @@ describe('jobs queries', () => {
         body: {
           queuePosition: 1,
           runningJobIds: ['job-completed'],
+        },
+      },
+      {
+        type: 'job.launch.requested',
+        stream: { kind: 'job', id: 'job-descendant-work-dir' },
+        refs: { sessionId: 'session-descendant' },
+        body: {
+          owner: { kind: 'provider-session', id: 'session-descendant' },
+          sessionId: 'session-descendant',
+          provider: 'codex',
+          providerAction: 'exec',
+          projectRoot: fixtureCanonicalWorkDir('/workspace/coral'),
+          backendNamespace: 'tests',
+          jobKind: 'provider',
+          pool: 'default',
+          enqueueSequence: 4,
+          request: {
+            prompt: 'Run below the ambient work directory.',
+            cwd: '/workspace/coral/sub',
+            bypassPermissions: false,
+            coralEnv: {},
+          },
+          createdAt: '2026-04-20T00:02:20.000Z',
         },
       },
       {
@@ -306,14 +331,15 @@ describe('jobs queries', () => {
     db.prepare(
       `INSERT INTO projection_jobs (
          job_id, execution_owner, phase, terminal, diagnostics, session_id, provider,
-         project_root, backend_namespace, bundle_hash, job_kind, parent_workflow_job_id,
+         project_root, work_dir, backend_namespace, bundle_hash, job_kind, parent_workflow_job_id,
          workflow_slot, workflow_slot_generation, replaces_workflow_job_id, created_at, last_seq
-       ) VALUES (?, ?, 'running', NULL, ?, ?, 'codex', ?, 'tests', NULL, 'provider', ?, ?, 1, ?, ?, 0)`,
+       ) VALUES (?, ?, 'running', NULL, ?, ?, 'codex', ?, ?, 'tests', NULL, 'provider', ?, ?, 1, ?, ?, 0)`,
     ).run(
       childJobId,
       JSON.stringify({ kind: 'workflow', id: workflowJobId }),
       JSON.stringify({ progressFaults: [] }),
       'session-child',
+      '/workspace/coral',
       '/workspace/coral',
       workflowJobId,
       workflowSlotId,
@@ -336,7 +362,7 @@ describe('jobs queries', () => {
     const jobs = listJobs(
       db,
       {
-        projectRoot: '/workspace/coral',
+        projectRoot: fixtureCanonicalWorkDir('/workspace/coral'),
         phase: 'queued',
         provider: 'codex',
       },
@@ -355,25 +381,28 @@ describe('jobs queries', () => {
   });
 
   it('keeps KB jobs visible from any project while scoping other projects out', () => {
-    const jobs = listJobs(db, { projectRoot: '/workspace/coral' }, readCtx);
+    const jobs = listJobs(db, { projectRoot: fixtureCanonicalWorkDir('/workspace/coral') }, readCtx);
     const ids = jobs.map((entry) => entry.jobId);
 
     // KB jobs run against the shared corpus, so they surface regardless of cwd...
     expect(ids).toContain('job-kb-global');
     // ...the current project's own live job still lists...
     expect(ids).toContain('job-queued');
+    // Ambient selection is exact: a descendant work directory is not selected by its project identity.
+    expect(ids).not.toContain('job-descendant-work-dir');
     // ...but a different project's non-KB job stays scoped out.
     expect(ids).not.toContain('job-other-project');
   });
 
   it('keeps the KB exception under the all-phases filter', () => {
-    const jobs = listJobs(db, { projectRoot: '/workspace/coral', all: true }, readCtx);
+    const jobs = listJobs(db, { projectRoot: fixtureCanonicalWorkDir('/workspace/coral'), all: true }, readCtx);
     const ids = jobs.map((entry) => entry.jobId);
 
     // `all` widens phases but does not change the project scope: KB stays global,
     // the current project's terminal job now appears, the foreign non-KB stays out.
     expect(ids).toContain('job-kb-global');
     expect(ids).toContain('job-completed');
+    expect(ids).not.toContain('job-descendant-work-dir');
     expect(ids).not.toContain('job-other-project');
   });
 });

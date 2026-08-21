@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { Capability } from '../../../src/security/capability.js';
+import { CAPABILITIES, capabilityScope, type Capability } from '../../../src/security/capability.js';
 import type { Principal, ResourceBinding, Subject } from '../../../src/security/principal.js';
 import { authorize } from '../../../src/security/policy/authorize.js';
 import { fixtureCanonicalWorkDir } from '../../helpers/canonical-work-dir.js';
@@ -67,6 +67,22 @@ describe('authorize', () => {
         root: fixtureCanonicalWorkDir('/workspace/project/docs'),
       }),
     ).toEqual({ ok: true });
+  });
+
+  it('authorizes a separator-confusable child for every bound-project capability', () => {
+    const projectOperator = principal('operator', {
+      kind: 'project',
+      root: fixtureCanonicalWorkDir('/a'),
+    });
+    const requested = { kind: 'project', root: fixtureCanonicalWorkDir('/a/..b') } as const;
+    const boundProjectCapabilities = CAPABILITIES.filter(
+      (capability) => capabilityScope(capability) === 'bound-project',
+    );
+
+    expect(boundProjectCapabilities).not.toHaveLength(0);
+    for (const capability of boundProjectCapabilities) {
+      expect(authorize(projectOperator, capability, requested), capability).toEqual({ ok: true });
+    }
   });
 
   it('denies bound-project capabilities outside the principal project root or against unbound resources', () => {

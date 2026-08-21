@@ -10,6 +10,7 @@ import type { KbReadResult } from '#src/kb/entry-types.js';
 import type { JobDetailResponse } from '#src/jobs/records.js';
 import type { AbortResult } from '#src/jobs/contracts/abort-registry.js';
 import type { WaitStreamEvent } from '#src/jobs/wait.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { BackendUnreachableError, TransientHttpError } from '#src/infra/http-errors.js';
 import { buildErrorEnvelope, UsageError } from '#src/cli/errors.js';
 import { formatBackendStatus, formatShutdown } from '#src/cli/format/backend.js';
@@ -205,6 +206,7 @@ const jobDetailResponse = {
     sessionId: 'session-1',
     provider: 'codex',
     projectRoot: '/work/coral',
+    workDir: fixtureCanonicalWorkDir('/work/coral'),
     backendNamespace: 'default',
     jobKind: 'provider',
     phase: 'completed',
@@ -382,6 +384,7 @@ describe('cli format', () => {
         Owner: provider-session session-1
         Provider session: session-1
         Project: /work/coral
+        Work dir: /work/coral
         Updated: 2026-07-03T08:01:00.000Z
         Last seq: 5
         Exit: completed
@@ -427,6 +430,7 @@ describe('cli format', () => {
         Owner: provider-session session-1
         Provider session: session-1
         Project: /work/coral
+        Work dir: /work/coral
         Updated: 2026-07-03T08:01:00.000Z
         Last seq: 5
         Run coral-cli wait jobs job-1 to follow it."
@@ -511,6 +515,7 @@ describe('cli format', () => {
           owner: { kind: 'workflow' as const, id: 'job-1' },
           sessionId: null,
           provider: null,
+          workDir: fixtureCanonicalWorkDir('/work/coral/workflow'),
           jobKind: 'workflow' as const,
         },
       } satisfies JobDetailResponse;
@@ -520,6 +525,26 @@ describe('cli format', () => {
       expect(formatted).not.toContain('\nProvider:');
       expect(formatted).toContain('\nKind: workflow\n');
       expect(formatted).not.toContain('\nSession:');
+      expect(formatted).toContain('\nWork dir: /work/coral/workflow');
+    });
+
+    it('omits the Work dir line for a KB job', () => {
+      const kb = {
+        ...jobDetailResponse,
+        status: {
+          ...jobDetailResponse.status,
+          owner: { kind: 'system-task' as const, id: 'kb.reindex:job-1' },
+          sessionId: null,
+          provider: null,
+          workDir: null,
+          jobKind: 'kb' as const,
+        },
+      } satisfies JobDetailResponse;
+
+      const formatted = formatJobDetail(kb);
+
+      expect(formatted).toContain('\nProject: /work/coral');
+      expect(formatted).not.toContain('\nWork dir:');
     });
   });
 
@@ -1896,11 +1921,11 @@ describe('renderJobsList grouping', () => {
 
     const rendered = renderJobsList(rows, { cwd: '/work/coral' });
 
-    expect(rendered).toContain('Current project (/work/coral)');
+    expect(rendered).toContain('Current work directory (/work/coral)');
     expect(rendered).toContain('KB jobs (shared corpus)');
-    expect(rendered).toContain('Other projects');
-    expect(rendered.indexOf('Current project')).toBeLessThan(rendered.indexOf('KB jobs'));
-    expect(rendered.indexOf('KB jobs')).toBeLessThan(rendered.indexOf('Other projects'));
+    expect(rendered).toContain('Other work directories');
+    expect(rendered.indexOf('Current work directory')).toBeLessThan(rendered.indexOf('KB jobs'));
+    expect(rendered.indexOf('KB jobs')).toBeLessThan(rendered.indexOf('Other work directories'));
     expect(rendered).toContain('kb-1');
     expect(rendered.indexOf('/work/alpha')).toBeLessThan(rendered.indexOf('/work/beta'));
   });

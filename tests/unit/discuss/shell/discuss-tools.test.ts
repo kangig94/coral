@@ -22,6 +22,8 @@ import { getSession } from '#src/discuss/shell/registry.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import type { ExecutionService } from '#src/coordinator/execution-service.js';
 import type { ToolDomainResult } from '#src/transport/tool-result.js';
+import type { CanonicalWorkDir } from '#src/runtime/canonical-work-dir.js';
+import type { JobScopeRelation } from '#src/jobs/scope.js';
 import {
   DEFAULT_TOPIC,
   cleanupDiscussHarnesses,
@@ -54,7 +56,11 @@ function createHelpers(
       );
     },
     abortJobs: (_jobIds: string[]) => ({ aborted: [], notFound: [] }),
-    scopeCheckJobs: (_jobIds: string[], _projectRoot: string) => ({ valid: [], missing: [], mismatch: [] }),
+    scopeCheckJobs: (_jobIds: string[], _callerRoot: CanonicalWorkDir, _relation: JobScopeRelation) => ({
+      valid: [],
+      missing: [],
+      mismatch: [],
+    }),
   };
 }
 

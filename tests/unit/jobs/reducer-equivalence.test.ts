@@ -147,7 +147,7 @@ describe('jobs reducer equivalence', () => {
       const before = db
         .prepare(
           `SELECT job_id, execution_owner, phase, terminal, diagnostics,
-                session_id, provider, project_root, backend_namespace, bundle_hash, job_kind, created_at,
+                session_id, provider, project_root, work_dir, backend_namespace, bundle_hash, job_kind, created_at,
                 parent_workflow_job_id, workflow_slot, workflow_slot_generation,
                 replaces_workflow_job_id, last_seq
            FROM projection_jobs
@@ -171,6 +171,7 @@ describe('jobs reducer equivalence', () => {
         session_id: 'session-1',
         provider: 'codex',
         project_root: '/workspace/coral',
+        work_dir: '/workspace/coral',
         backend_namespace: 'namespace-1',
         bundle_hash: 'bundle-1',
         job_kind: 'provider',
@@ -192,7 +193,7 @@ describe('jobs reducer equivalence', () => {
       const after = db
         .prepare(
           `SELECT job_id, execution_owner, phase, terminal, diagnostics,
-                session_id, provider, project_root, backend_namespace, bundle_hash, job_kind, created_at,
+                session_id, provider, project_root, work_dir, backend_namespace, bundle_hash, job_kind, created_at,
                 parent_workflow_job_id, workflow_slot, workflow_slot_generation,
                 replaces_workflow_job_id, last_seq
            FROM projection_jobs
@@ -270,7 +271,7 @@ describe('jobs reducer equivalence', () => {
       const before = db
         .prepare(
           `SELECT job_id, execution_owner, phase, terminal, diagnostics,
-                session_id, provider, project_root, backend_namespace, bundle_hash, job_kind, created_at,
+                session_id, provider, project_root, work_dir, backend_namespace, bundle_hash, job_kind, created_at,
                 parent_workflow_job_id, workflow_slot, workflow_slot_generation,
                 replaces_workflow_job_id, last_seq
            FROM projection_jobs
@@ -288,6 +289,7 @@ describe('jobs reducer equivalence', () => {
         session_id: null,
         provider: null,
         project_root: '/workspace/coral',
+        work_dir: '/workspace/coral',
         backend_namespace: 'namespace-1',
         bundle_hash: null,
         job_kind: 'workflow',
@@ -309,7 +311,7 @@ describe('jobs reducer equivalence', () => {
       const after = db
         .prepare(
           `SELECT job_id, execution_owner, phase, terminal, diagnostics,
-                session_id, provider, project_root, backend_namespace, bundle_hash, job_kind, created_at,
+                session_id, provider, project_root, work_dir, backend_namespace, bundle_hash, job_kind, created_at,
                 parent_workflow_job_id, workflow_slot, workflow_slot_generation,
                 replaces_workflow_job_id, last_seq
            FROM projection_jobs
@@ -383,7 +385,7 @@ describe('jobs reducer equivalence', () => {
       const before = db
         .prepare(
           `SELECT job_id, execution_owner, phase, terminal, diagnostics,
-                session_id, provider, project_root, backend_namespace, bundle_hash, job_kind, created_at,
+                session_id, provider, project_root, work_dir, backend_namespace, bundle_hash, job_kind, created_at,
                 parent_workflow_job_id, workflow_slot, workflow_slot_generation,
                 replaces_workflow_job_id, last_seq
            FROM projection_jobs
@@ -401,6 +403,7 @@ describe('jobs reducer equivalence', () => {
         session_id: 'session-aborted',
         provider: 'codex',
         project_root: '/workspace/coral',
+        work_dir: '/workspace/coral',
         backend_namespace: 'namespace-1',
         bundle_hash: null,
         job_kind: 'provider',
@@ -422,7 +425,7 @@ describe('jobs reducer equivalence', () => {
       const after = db
         .prepare(
           `SELECT job_id, execution_owner, phase, terminal, diagnostics,
-                session_id, provider, project_root, backend_namespace, bundle_hash, job_kind, created_at,
+                session_id, provider, project_root, work_dir, backend_namespace, bundle_hash, job_kind, created_at,
                 parent_workflow_job_id, workflow_slot, workflow_slot_generation,
                 replaces_workflow_job_id, last_seq
            FROM projection_jobs

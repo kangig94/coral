@@ -49,6 +49,7 @@ import type { GenerationAdoptionLockLease } from '#src/store/generation-mutation
 const FRESH_LOCK_STALENESS_WINDOW_MS = 30_000;
 import { openReadOnlyStoreDatabase } from '#src/store/read-port.js';
 import {
+  isCanonicalStoreResetIncidentId,
   MAX_RESET_MANIFEST_BYTES,
   parseStoreResetIncidentManifest,
   serializeStoreResetIncidentManifest,
@@ -474,7 +475,15 @@ describe('openOrResetBackendStoreDb', () => {
     db.close();
 
     expect(tableExists(dbPath, 'sentinel_before_reset')).toBe(false);
-    expect(retainedManifest(dbPath).resetPolicyCause).toBe('corrupt-or-unsupported');
+    const manifest = retainedManifest(dbPath);
+    expect(isCanonicalStoreResetIncidentId(manifest.incidentId)).toBe(true);
+    expect(manifest.resetPolicyCause).toBe('corrupt-or-unsupported');
+    expect(
+      tableExists(
+        join(dirname(dbPath), 'store-reset-quarantine', manifest.incidentId, 'store.db'),
+        'sentinel_before_reset',
+      ),
+    ).toBe(true);
   });
 
   it('quarantines an older incompatible store and boots fresh state', () => {
@@ -486,7 +495,15 @@ describe('openOrResetBackendStoreDb', () => {
     db.close();
 
     expect(tableExists(dbPath, 'sentinel_before_reset')).toBe(false);
-    expect(retainedManifest(dbPath).resetPolicyCause).toBe('older-incompatible');
+    const manifest = retainedManifest(dbPath);
+    expect(isCanonicalStoreResetIncidentId(manifest.incidentId)).toBe(true);
+    expect(manifest.resetPolicyCause).toBe('older-incompatible');
+    expect(
+      tableExists(
+        join(dirname(dbPath), 'store-reset-quarantine', manifest.incidentId, 'store.db'),
+        'sentinel_before_reset',
+      ),
+    ).toBe(true);
   });
 
   it('keeps the existing newer-incompatible refusal without mutating bytes', () => {

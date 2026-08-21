@@ -90,7 +90,7 @@ disallowedTools: Write, Edit
        a. Can common operations be one-liners while advanced options are discoverable?
           Level 1: `coral-cli codex -i "review auth.ts"`
           Level 2: `coral-cli codex -i "..." --model "<model>" --work-dir "<path>"`
-          Level 3: `coral-cli codex -i "..." --work-dir "<path>" -d` + `coral-cli wait --jobs "<job>" --embed` with the printed `Result path: <path>` recovery contract
+          Level 3: `coral-cli codex -i "..." --work-dir "<path>" -d` + `cd "<path>" && coral-cli wait jobs "<job>" --embed` with the printed `Result path: <path>` recovery contract
        b. Do descriptions hint at advanced capabilities without overwhelming?
        c. Flag: all parameters equally prominent, advanced features undiscoverable,
           simple operations requiring expert-level knowledge

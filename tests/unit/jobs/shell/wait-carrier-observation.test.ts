@@ -18,6 +18,7 @@ import { insertProviderOperation } from '#src/store/provider-operation-journal.j
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 const JOB_A = 'job-a';
 const JOB_B = 'job-b';
@@ -38,6 +39,7 @@ function inheritedDetail(): JobProjectionDetail {
       sessionId: 'session-1',
       provider: 'codex',
       projectRoot: '/tmp/project',
+      workDir: fixtureCanonicalWorkDir('/tmp/project'),
       backendNamespace: 'test-ns',
       jobKind: 'provider',
       phase: 'running',

@@ -135,13 +135,13 @@ items with the "unconfirmed" marker, then seek user feedback.
     // --delegate: dispatch to the other host, then monitor for one bounded wait
     launch = Bash(`coral-cli <other-host> pioneer -i "<draft file content>" --work-dir "<work_dir>" -d`)
     job = parse `Job <job> <launchState> (session <session>)` from launch
-    terminal = Bash(`coral-cli wait jobs ${job} --embed`)   // foreground; returns at terminal or the bound
+    terminal = Bash(`cd "<work_dir>" && coral-cli wait jobs ${job} --embed`)   // foreground; returns at terminal or the bound
     while true:
       if terminal begins `Still waiting` with `(cursor: <cursor>)`:
-        terminal = Bash(`coral-cli wait jobs ${job} --cursor <cursor> --embed`)
+        terminal = Bash(`cd "<work_dir>" && coral-cli wait jobs ${job} --cursor <cursor> --embed`)
         continue
       if terminal prints `remediation: <command>`:
-        terminal = Bash(<command exactly as printed>)
+        terminal = Bash(`cd "<work_dir>" && <the printed coral-cli wait jobs command>`)
         continue
       if terminal contains `Result path: <path>`:
         output = Read(<path>)

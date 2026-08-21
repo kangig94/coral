@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import { executionOwnerSchema } from '../runtime/execution-owner.js';
 import type { ExecutionOwner } from '../runtime/execution-owner.js';
+import { canonicalWorkDirWireSchema } from '../runtime/canonical-work-dir.js';
 import type { Database } from '../store/db.js';
 import { jobPhaseSchema } from './phase.js';
 import { jobKindSchema } from './records.js';
@@ -17,6 +18,7 @@ export const projectionJobStoredRowSchema = z
     session_id: z.string().min(1).nullable(),
     provider: z.string().min(1).nullable(),
     project_root: z.string(),
+    work_dir: canonicalWorkDirWireSchema.nullable(),
     backend_namespace: z.string().min(1),
     bundle_hash: z.string().min(1).nullable(),
     job_kind: jobKindSchema,
@@ -113,7 +115,7 @@ export const projectionJobDecoderContract = {
 } as const;
 
 export const PROJECTION_JOB_COLUMNS =
-  'job_id, execution_owner, phase, terminal, diagnostics, session_id, provider, project_root, backend_namespace, bundle_hash, job_kind, parent_workflow_job_id, workflow_slot, workflow_slot_generation, replaces_workflow_job_id, created_at, last_seq';
+  'job_id, execution_owner, phase, terminal, diagnostics, session_id, provider, project_root, work_dir, backend_namespace, bundle_hash, job_kind, parent_workflow_job_id, workflow_slot, workflow_slot_generation, replaces_workflow_job_id, created_at, last_seq';
 
 function parseJson(raw: string, column: string, jobId: string): unknown {
   try {

@@ -5,21 +5,23 @@ import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema, type Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
+import { fixtureCanonicalWorkDir } from '../../helpers/canonical-work-dir.js';
 
-const PROJECT_ROOT = '/workspace/coral';
+const PROJECT_ROOT = fixtureCanonicalWorkDir('/workspace/coral');
 
 function insertRunningJob(db: Database, jobId: string, namespace: string): void {
   db.prepare(
     `INSERT INTO projection_jobs (
        job_id, execution_owner, phase, terminal, diagnostics, session_id, provider,
-       project_root, backend_namespace, bundle_hash, job_kind, parent_workflow_job_id,
+       project_root, work_dir, backend_namespace, bundle_hash, job_kind, parent_workflow_job_id,
        workflow_slot, workflow_slot_generation, replaces_workflow_job_id, created_at, last_seq
-     ) VALUES (?, ?, 'running', NULL, ?, ?, 'codex', ?, ?, NULL, 'provider', NULL, NULL, NULL, NULL, ?, 0)`,
+     ) VALUES (?, ?, 'running', NULL, ?, ?, 'codex', ?, ?, ?, NULL, 'provider', NULL, NULL, NULL, NULL, ?, 0)`,
   ).run(
     jobId,
     JSON.stringify({ kind: 'provider-session', id: `session-${jobId}` }),
     JSON.stringify({ progressFaults: [] }),
     `session-${jobId}`,
+    PROJECT_ROOT,
     PROJECT_ROOT,
     namespace,
     '2026-08-05T00:00:00.000Z',

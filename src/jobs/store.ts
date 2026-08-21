@@ -240,6 +240,7 @@ export function hydrateJobRecoveryProjection(
       sessionId: projection.session_id,
       provider: projection.provider,
       projectRoot: projection.project_root,
+      workDir: projection.work_dir,
       backendNamespace: projection.backend_namespace,
       ...(projection.bundle_hash === null ? {} : { bundleHash: projection.bundle_hash }),
       jobKind: projection.job_kind,

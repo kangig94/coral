@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS projection_jobs (
   session_id              TEXT,
   provider                TEXT,
   project_root            TEXT NOT NULL,
+  work_dir                TEXT,
   backend_namespace       TEXT NOT NULL,
   bundle_hash             TEXT,
   job_kind                TEXT NOT NULL,
@@ -46,7 +47,8 @@ CREATE TABLE IF NOT EXISTS projection_jobs (
   workflow_slot_generation INTEGER,
   replaces_workflow_job_id TEXT,
   created_at              TEXT NOT NULL,
-  last_seq                INTEGER NOT NULL
+  last_seq                INTEGER NOT NULL,
+  CONSTRAINT projection_jobs_work_dir_authority CHECK ((job_kind = 'kb') = (work_dir IS NULL))
 );
 CREATE INDEX IF NOT EXISTS projection_jobs_phase_namespace ON projection_jobs(phase, backend_namespace);
 CREATE INDEX IF NOT EXISTS projection_jobs_session ON projection_jobs(session_id);

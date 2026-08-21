@@ -13,6 +13,7 @@ import { upsertProjection } from '../store/projection-upsert.js';
 import type { DomainAppendValidator, Reducer } from '../store/reducers.js';
 import type { JobLaunchRequestBody } from './launch.js';
 import type { ExecutionOwner } from '../runtime/execution-owner.js';
+import type { CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 import type { JobPhase } from './phase.js';
 import { phaseForOutcome, type JobAbortedBody, type JobLaunchRejected, type JobProgressFault } from './outcome.js';
 import { jobDiagnosticsSchema, normalizeJobTerminal, type JobTerminaledBody } from './terminal/result.js';
@@ -38,6 +39,7 @@ type ProjectedJobState = {
   sessionId: string | null;
   provider: string | null;
   projectRoot: string;
+  workDir: CanonicalWorkDir | null;
   backendNamespace: string;
   bundleHash: string | null;
   jobKind: 'provider' | 'workflow' | 'kb';
@@ -143,6 +145,7 @@ export const validateJobTerminalOrder: DomainAppendValidator = (ctx, inputs) => 
 function createInitialProjectionJobState(event: CoralEvent, patch: Partial<ProjectedJobState>): ProjectedJobState {
   if (
     patch.projectRoot === undefined ||
+    patch.workDir === undefined ||
     patch.backendNamespace === undefined ||
     patch.jobKind === undefined ||
     patch.createdAt === undefined ||
@@ -159,6 +162,7 @@ function createInitialProjectionJobState(event: CoralEvent, patch: Partial<Proje
     sessionId: patch.sessionId ?? null,
     provider: patch.provider ?? null,
     projectRoot: patch.projectRoot,
+    workDir: patch.workDir,
     backendNamespace: patch.backendNamespace,
     bundleHash: patch.bundleHash ?? null,
     jobKind: patch.jobKind,
@@ -184,6 +188,7 @@ function readProjectionJob(db: Database, jobId: string): ProjectedJobState | nul
     sessionId: row.session_id,
     provider: row.provider,
     projectRoot: row.project_root,
+    workDir: row.work_dir,
     backendNamespace: row.backend_namespace,
     bundleHash: row.bundle_hash,
     jobKind: row.job_kind,
@@ -217,6 +222,7 @@ function upsertProjectionJob(db: Database, event: CoralEvent, patch: Partial<Pro
     sessionId: patch.sessionId === undefined ? base.sessionId : patch.sessionId,
     provider: patch.provider === undefined ? base.provider : patch.provider,
     projectRoot: patch.projectRoot ?? base.projectRoot,
+    workDir: patch.workDir === undefined ? base.workDir : patch.workDir,
     backendNamespace: patch.backendNamespace ?? base.backendNamespace,
     bundleHash: patch.bundleHash ?? base.bundleHash,
     jobKind: patch.jobKind ?? base.jobKind,
@@ -236,6 +242,7 @@ function upsertProjectionJob(db: Database, event: CoralEvent, patch: Partial<Pro
     session_id: next.sessionId,
     provider: next.provider,
     project_root: next.projectRoot,
+    work_dir: next.workDir,
     backend_namespace: next.backendNamespace,
     bundle_hash: next.bundleHash,
     job_kind: next.jobKind,
@@ -259,6 +266,7 @@ function upsertProjectionJob(db: Database, event: CoralEvent, patch: Partial<Pro
       session_id: next.sessionId,
       provider: next.provider,
       project_root: next.projectRoot,
+      work_dir: next.workDir,
       backend_namespace: next.backendNamespace,
       bundle_hash: next.bundleHash,
       job_kind: next.jobKind,
@@ -275,12 +283,14 @@ function upsertProjectionJob(db: Database, event: CoralEvent, patch: Partial<Pro
 export const reduceJobLaunchRequested: Reducer<JobLaunchRequestBody> = (db, event) => {
   const sessionId = event.body.jobKind === 'provider' ? event.body.sessionId : null;
   const provider = event.body.jobKind === 'provider' ? event.body.provider : null;
+  const workDir = event.body.jobKind === 'kb' ? null : event.body.request.cwd;
   upsertProjectionJob(db, event, {
     owner: event.body.owner,
     phase: 'launching',
     sessionId,
     provider,
     projectRoot: event.body.projectRoot,
+    workDir,
     backendNamespace: event.body.backendNamespace,
     bundleHash: event.body.bundleHash ?? null,
     jobKind: event.body.jobKind,

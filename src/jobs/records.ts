@@ -7,6 +7,7 @@ import type { SourceImportReadiness } from './launch.js';
 import type { DiscussionRunDescriptor } from './discussion-run.js';
 import type { JobProgressTiming } from './event-bodies.js';
 import type { ExecutionOwner } from '../runtime/execution-owner.js';
+import type { CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 import type { LaunchPool } from './contracts/admission.js';
 
 /**
@@ -72,6 +73,7 @@ export interface JobStatus {
   sessionId: string | null;
   provider: string | null;
   projectRoot: string;
+  workDir: CanonicalWorkDir | null;
   backendNamespace: string;
   bundleHash?: string;
   jobKind: JobKind;

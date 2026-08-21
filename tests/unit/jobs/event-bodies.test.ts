@@ -151,6 +151,15 @@ describe('job event body schemas', () => {
     };
     expect(jobLaunchRequestBodySchema.safeParse(providerLaunch).success).toBe(true);
     expect(jobLaunchRequestBodySchema.safeParse({ ...providerLaunch, pool: 'unknown' }).success).toBe(false);
+    expect(
+      jobLaunchRequestBodySchema.safeParse({
+        ...providerLaunch,
+        request: { ...providerLaunch.request, cwd: 'relative/workspace' },
+      }).success,
+    ).toBe(false);
+    expect(
+      jobLaunchRequestBodySchema.safeParse({ ...providerLaunch, projectRoot: 'persisted-project-id' }).success,
+    ).toBe(true);
   });
 
   it('projects created events as exact provider, workflow, and KB variants', () => {

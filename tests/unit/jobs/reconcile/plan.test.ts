@@ -15,6 +15,7 @@ import {
   type RecoveryJobFacts,
   planRecovery,
 } from '#src/jobs/reconcile/plan.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 const NOW = '2026-04-12T00:00:00.000Z';
 const CURRENT_NAMESPACE = 'namespace-current';
@@ -144,6 +145,7 @@ function makeStatus(jobId: string, phase: JobStatus['phase'], overrides: Partial
     sessionId: `${jobId}-session`,
     provider: 'fakeprovider',
     projectRoot: `/projects/${jobId}`,
+    workDir: fixtureCanonicalWorkDir(`/projects/${jobId}`),
     backendNamespace: CURRENT_NAMESPACE,
     jobKind: 'provider',
     phase,

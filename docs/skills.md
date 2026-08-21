@@ -40,7 +40,7 @@ Many skills follow the same detached-launch pattern:
 
 ```bash
 coral-cli codex -i "<prompt>" --work-dir "<path>" -d
-coral-cli wait jobs <jobId> --embed
+cd "<path>" && coral-cli wait jobs <jobId> --embed
 ```
 
 Rules:

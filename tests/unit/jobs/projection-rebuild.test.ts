@@ -136,7 +136,7 @@ describe('jobs projection rebuild (live ConsumerDriver, cursor-only base consume
       expect(
         db
           .prepare(
-            `SELECT job_id, phase, terminal, diagnostics, parent_workflow_job_id, workflow_slot, last_seq
+            `SELECT job_id, phase, terminal, diagnostics, work_dir, parent_workflow_job_id, workflow_slot, last_seq
                FROM projection_jobs
               WHERE job_id = ?
               LIMIT 1`,
@@ -153,6 +153,7 @@ describe('jobs projection rebuild (live ConsumerDriver, cursor-only base consume
         diagnostics: JSON.stringify({
           progressFaults: [{ kind: 'recovery_parse_failed', cause: { message: 'partial stderr' } }],
         }),
+        work_dir: '/workspace/coral',
         parent_workflow_job_id: null,
         workflow_slot: null,
         last_seq: appended.at(-1)?.seq ?? 0,

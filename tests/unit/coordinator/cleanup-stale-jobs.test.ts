@@ -37,9 +37,9 @@ async function runCleanup(
   const insertProjection = db.prepare(
     `INSERT INTO projection_jobs (
        job_id, execution_owner, phase, terminal, diagnostics, session_id, provider,
-       project_root, backend_namespace, bundle_hash, job_kind, parent_workflow_job_id,
+       project_root, work_dir, backend_namespace, bundle_hash, job_kind, parent_workflow_job_id,
        workflow_slot, workflow_slot_generation, replaces_workflow_job_id, created_at, last_seq
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const insertEvent = db.prepare(
     `INSERT INTO events (
@@ -59,6 +59,7 @@ async function runCleanup(
       '{"progressFaults":[]}',
       `${jobId}-session`,
       'codex',
+      '/project',
       '/project',
       'namespace',
       jobStatus.bundleHash ?? null,
