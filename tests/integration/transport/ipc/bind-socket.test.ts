@@ -1,11 +1,12 @@
 // Phase B coverage for `bindSocket` (the tagged-result EADDRINUSE primitive)
 // and the ownership-safe `closeIpcServer` close path.
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createServer, type Server as NetServer } from 'node:net';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { socketFallbackDir } from '#src/infra/path/unix-socket.js';
 import { bindSocket, closeIpcServer, type IpcListener } from '#src/transport/ipc/server.js';
 
 const tempDirs: string[] = [];
@@ -39,6 +40,7 @@ afterEach(async () => {
   for (const root of tempDirs.splice(0)) {
     rmSync(root, { recursive: true, force: true });
   }
+  vi.restoreAllMocks();
 });
 
 describe('bindSocket', () => {
@@ -73,6 +75,32 @@ describe('bindSocket', () => {
     const result = await bindSocket(server, socketPath);
     expect(result).toEqual({ kind: 'incumbent', reason: 'live-listener' });
     expect(server.listening).toBe(false);
+  });
+
+  // A synthetic uid, so the shared per-uid directory this exercises cannot be the one a coordinator on this
+  // host is bound in.
+  function relocatedSocketPath(): { readonly directory: string; readonly socketPath: string } {
+    const uid = 9_000_000 + process.pid;
+    vi.spyOn(process, 'getuid').mockReturnValue(uid);
+    const directory = socketFallbackDir(uid);
+    tempDirs.push(directory);
+    return { directory, socketPath: join(directory, 'relocated.sock') };
+  }
+
+  it('refuses a relocated socket directory it cannot establish as its own, without listening', async () => {
+    const { directory, socketPath } = relocatedSocketPath();
+    const target = mkdtempSync(join(tmpdir(), 'coral-relocated-target-'));
+    tempDirs.push(target);
+    symlinkSync(target, directory);
+
+    const server = createServer();
+    cleanupServers.push(server);
+
+    await expect(bindSocket(server, socketPath)).rejects.toThrow(
+      expect.objectContaining({ code: 'coordinator_socket_dir_insecure' }),
+    );
+    expect(server.listening).toBe(false);
+    expect(existsSync(join(target, 'relocated.sock'))).toBe(false);
   });
 
   it('rethrows non-EADDRINUSE errors from listen', async () => {

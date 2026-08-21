@@ -429,10 +429,10 @@ function capsuleBackedStorage(
   const storage = {
     ...base,
     readdirSync: (() => (options.discover && present ? [basename(path)] : [])) as unknown as StoragePort['readdirSync'],
-    lstatSync: () => {
+    lstatSync: (() => {
       requirePresent();
       return { isDirectory: () => false, isFile: () => true, isSymbolicLink: () => false };
-    },
+    }) as unknown as StoragePort['lstatSync'],
     statSync: ((_path: string, statOptions?: { bigint: true }) => {
       requirePresent();
       return statOptions?.bigint === true

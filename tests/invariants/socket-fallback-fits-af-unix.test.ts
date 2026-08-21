@@ -9,15 +9,9 @@ import { socketFallbackDir, socketPathByteLimit } from '#src/infra/path/unix-soc
  * `sun_path`. That is the last address available — there is nowhere shorter to go, and a path nothing can
  * bind surfaces as `listen EINVAL` naming no limit, no byte count and no variable to change.
  *
- * Nothing at runtime checks it. The name schemes and the platform limits are numbers set independently in
- * files that reference each other for the limit and not for the length, and this tree has already shipped
- * one ten-mebibyte cap under a ten-mebibyte budget. So the check lives here, and it demands a margin
- * rather than an ordering: a name that merely fits breaks the first time a field is added to what it
- * encodes. The ratio is the same one `diagnostics-fit-one-frame` uses for the same reason, loosened to
- * three quarters because a socket name has no envelope wrapped around it.
- *
- * The paths measured are what the resolvers return, not a restatement of their grammar: a name that grows
- * inside either module must move these numbers.
+ * The bound demands a margin rather than an ordering: a name that merely fits breaks the first time a field
+ * is added to what it encodes. The paths measured are what the resolvers return, not a restatement of their
+ * grammar, so a name that grows inside either module must move these numbers.
  */
 describe('a relocated socket path fits AF_UNIX on every platform', () => {
   const HEADROOM_RATIO = 0.75;
@@ -29,8 +23,8 @@ describe('a relocated socket path fits AF_UNIX on every platform', () => {
   function secureStorage(uid: number): ProviderProxyEndpointEnvironment['storage'] {
     return {
       mkdirSync: () => undefined,
-      lstatSync: () => ({ isDirectory: () => true, isFile: () => false, isSymbolicLink: () => false }),
-      statSync: () => ({
+      chmodSync: () => undefined,
+      lstatSync: () => ({
         dev: 1n,
         ino: 1n,
         mode: 0o40700n,
@@ -51,8 +45,7 @@ describe('a relocated socket path fits AF_UNIX on every platform', () => {
   });
 
   it.each(PLATFORMS)('keeps a relocated provider endpoint under the %s limit, with margin', (platform) => {
-    // A safe-integer uid, because the resolver refuses one that is not; the coordinator half above carries
-    // the wider bound, and the two names differ only in their fixed prefix.
+    // A safe-integer uid, because the resolver refuses one that is not.
     const uid = Number.MAX_SAFE_INTEGER;
     const relocated = providerProxyEndpoint(
       {

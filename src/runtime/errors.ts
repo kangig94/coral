@@ -185,9 +185,15 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
   },
   coordinator_socket_dir_insecure: {
     userMessage: (context) =>
-      `Coral relocated its coordinator socket into ${stringContextValue(context, 'directory', '<directory>')} because the path beside its run directory exceeds this platform's limit, and that directory is not a private directory owned by this user.`,
+      `Coral relocated its coordinator socket into ${stringContextValue(context, 'directory', '<directory>')} because the path beside its run directory exceeds this platform's limit, and ${
+        context?.reason === 'foreign'
+          ? 'that directory is not one this user owns'
+          : 'Coral could not establish who owns that directory'
+      }.`,
     remediation: (context) =>
-      `Remove or repair ${stringContextValue(context, 'directory', '<directory>')} so it is a directory you own with mode 0700, then start Coral again. It is shared with every user on this host, so Coral will not bind a socket in a directory it cannot establish as yours.`,
+      context?.reason === 'foreign'
+        ? `${stringContextValue(context, 'directory', '<directory>')} belongs to another user, so removing it needs its owner or root; a shorter Coral state root avoids relocating the socket at all. Coral will not bind its singleton socket in a directory it cannot establish as yours.`
+        : `Resolve the filesystem error reported for ${stringContextValue(context, 'directory', '<directory>')} (${stringContextValue(context, 'cause', 'cause unavailable')}), then start Coral again. Coral will not bind its singleton socket in a directory it could not verify.`,
   },
   store_schema_outdated: {
     userMessage: 'Coral backend store format does not match this installation.',

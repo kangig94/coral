@@ -10,9 +10,10 @@ Two halves. Both are about ownership of the address; neither is about its length
 
 ## Half 1 — the assertion holds at one binder out of four
 
-`ensurePrivateSocketDir` (`src/infra/path/unix-socket.ts`) creates the directory `0700` and refuses
-unless it is a non-symlink directory owned by that uid at exactly that mode. A recursive create does not
-tighten a directory that already exists, so refusing is the only way an existing one gets checked.
+`ensurePrivateSocketDir` (`src/infra/private-socket-directory.ts`) creates the directory `0700`, tightens
+one that is already its own, and refuses one it observes as someone else's or cannot observe at all.
+Ownership and type come from a non-following `lstat`, because a following `stat` describes whatever the
+entry currently resolves to rather than the entry itself.
 
 `bindSocket` (`src/transport/ipc/server.ts`) calls it before binding, in the process that will hold the
 socket. That is the coordinator, and it is enforcing.
@@ -29,32 +30,44 @@ role binders would then have no parent at all on a relocated path. The shape wan
 assertion called at each binder — noting that the provider listener deliberately does not clear a stale
 socket the way `bindSocket` does, so routing provider sockets through `bindSocket` wholesale is not it.
 
-`proxy_endpoint_insecure` moves with the check when that happens, and each role binder gains a refusal
-on its startup path that it does not have today. That is the substance here, not a detail: refusing to
-start is a hold, and `design-rationale.md` §11 asks what ends it.
+Moving the check also has to move its report, and today there is nowhere for it to land. A role's startup
+throw is collapsed to a numeric exit status by `runProviderRoleMain`'s caller in
+`src/coordinator/bootstrap.ts`, and `spawnRoleProcess` (`src/provider-proxy/role-spawn.ts`) drains the
+child's stderr into a no-op listener. A refusal raised in a role binder therefore reaches the coordinator
+as an opaque connect failure unless this work also gives the role a structured startup-diagnostic channel
+back to its parent. `proxy_endpoint_insecure` moves with the check, and each role binder gains a refusal
+on its startup path that it does not have today — refusing to start is a hold, and
+`.claude/rules/design-philosophy.md` principle 11 asks what ends it.
 
-## Half 2 — the effective uid participates in installation identity, and nothing says so
+## Half 2 — the uid participates in installation identity, and nothing says so
 
-The socket path is a function of the run directory, the platform, **and the effective uid** — the last
-because the shared root demands a per-user namespace. `coordinatorPaths` reads it, and the operator
-store-reset resolver reads it a second time, independently.
+When — and only when — the socket beside the run directory overflows `sun_path`, the address relocates and
+becomes a function of the uid as well, because the shared root demands a per-user namespace.
+`coordinatorPaths` reads the uid for that, and the operator store-reset resolver reads it a second time,
+independently.
 
-So two processes over one state root with different effective uids compute different locks, and both can
-coordinate one journal. A `sudo -E` invocation that preserves `HOME` reaches it. This is not new — an
-ambient temp directory produced the same divergence, and usually did — but the fix did not close it, and
-nothing in the tree states the boundary.
+So two processes over one state root with different uids compute different locks for a relocated socket,
+and both can coordinate one journal. A `sudo -E` invocation that preserves `HOME` reaches it. This is not
+new — an ambient temp directory produced the same divergence, and usually did — but the fix did not close
+it, and nothing in the tree states the boundary.
 
-`design-rationale.md` §8.2 says exactly one coordinator per Coral installation. What an installation *is*
-has never been written down. Either:
+The tree also does not say *which* uid. Every producer calls `process.getuid()`, the real uid, while the
+directory those producers create is owned by the effective uid and the mode check compares against the
+real one; under a setuid invocation Coral would refuse a directory it had just created itself. Real
+versus effective is part of this decision, not a separate one.
 
-- define it as `(state root, effective uid)` and refuse a state root whose owner is not the effective
+`docs/design-rationale.md` §8.2 says exactly one coordinator per Coral installation, and
+`docs/todo/store-format-routing.md` states a store authority of canonical state root plus flavor. Neither
+says whether the uid augments that identity. Either:
+
+- define an installation as `(state root, flavor, uid)` and refuse a state root whose owner is not that
   uid, which makes the divergence impossible rather than undetected; or
 - derive the fallback namespace from the state root's owner rather than the caller's uid, which makes one
   state root resolve to one lock for every caller that can reach it.
 
-The first is a refusal on a startup path and owes §11 an answer about what ends it. The second keeps
-today's behaviour for the ordinary case and needs a `stat` of the state root at composition time, which
-that layer does not do today.
+The first is a refusal on a startup path and owes principle 11 an answer about what ends it. The second
+keeps today's behaviour for the ordinary case and needs a `stat` of the state root at composition time,
+which that layer does not do today.
 
 ## Explicitly out of scope
 
@@ -65,5 +78,6 @@ a test.
 
 ## Start condition
 
-None blocking for half 1. Half 2 wants the installation-identity decision first, because the two options
-put the refusal in different places and only one of them adds a hold.
+None blocking for half 1, though its diagnostic channel is most of its cost. Half 2 wants the
+installation-identity decision first, because the two options put the refusal in different places and only
+one of them adds a hold.

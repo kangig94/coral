@@ -2,22 +2,23 @@ import { join } from 'node:path';
 
 import type { BuildFlavor } from '../build-flavor.js';
 import { hashToken } from '../hash.js';
-import type { StorageBigIntStat, StoragePort } from '../port-types.js';
+import {
+  ensurePrivateSocketDir,
+  SocketDirectoryError,
+  type SocketDirectoryRefusal,
+  type SocketDirectoryStorage,
+} from '../private-socket-directory.js';
 import { generationRunDir } from './coordinator.js';
-import { ensurePrivateSocketDir, socketFallbackDir, socketPathByteLimit, SocketDirectoryError } from './unix-socket.js';
+import { socketFallbackDir, socketPathByteLimit } from './unix-socket.js';
 
 const PROVIDER_PATH_IDENTITY_HASH_LENGTH = 24;
 const PROVIDER_ROLE_PREFIX = { guardian: '0', proxy: '1', reaper: '2' } as const;
-
-type ProviderEndpointStorage = Pick<StoragePort, 'lstatSync' | 'mkdirSync'> & {
-  statSync(path: string, options: { bigint: true }): StorageBigIntStat;
-};
 
 export type ProviderProxyEndpointEnvironment = {
   readonly baseDir?: string;
   readonly platform: string;
   readonly uid: number;
-  readonly storage: ProviderEndpointStorage;
+  readonly storage: SocketDirectoryStorage;
 };
 
 type ProviderSetIdentity = {
@@ -80,13 +81,18 @@ function providerPathIdentityHash(
 function insecureEndpointError(
   fallbackDirectory: string,
   env: ProviderProxyEndpointEnvironment,
+  refusal: SocketDirectoryRefusal,
   cause?: unknown,
 ): ProviderProxyEndpointError {
+  const requirement = `a directory owned by uid ${env.uid} with mode 0700`;
   return new ProviderProxyEndpointError(
     'proxy_endpoint_insecure',
-    `Provider endpoint fallback directory is not owned by uid ${env.uid} with mode 0700.`,
+    refusal === 'foreign'
+      ? `Provider endpoint fallback directory is not ${requirement}.`
+      : `Provider endpoint fallback directory could not be verified as ${requirement}.`,
     {
       fallbackDirectory,
+      refusal,
       expectedUid: env.uid,
       expectedMode: '0700',
       ...(cause === undefined
@@ -100,8 +106,10 @@ function ensurePrivateFallbackDirectory(fallbackDirectory: string, env: Provider
   try {
     ensurePrivateSocketDir(fallbackDirectory, env.uid, env.storage);
   } catch (error: unknown) {
-    if (error instanceof SocketDirectoryError) throw insecureEndpointError(fallbackDirectory, env, error.cause);
-    throw insecureEndpointError(fallbackDirectory, env, error);
+    if (error instanceof SocketDirectoryError) {
+      throw insecureEndpointError(fallbackDirectory, env, error.refusal, error.cause);
+    }
+    throw insecureEndpointError(fallbackDirectory, env, 'unverified', error);
   }
 }
 

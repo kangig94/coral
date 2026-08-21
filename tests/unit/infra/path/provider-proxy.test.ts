@@ -29,14 +29,14 @@ const identity: ProviderProxyEndpointIdentity = {
   proxyInstanceId: UUID_A,
 };
 
-function secureStorage(): ProviderProxyEndpointEnvironment['storage'] {
+function secureStorage(mode = 0o40700n): ProviderProxyEndpointEnvironment['storage'] {
   return {
     mkdirSync: vi.fn(),
-    lstatSync: () => ({ isDirectory: () => true, isFile: () => false, isSymbolicLink: () => false }),
-    statSync: () => ({
+    chmodSync: vi.fn(),
+    lstatSync: () => ({
       dev: 1n,
       ino: 1n,
-      mode: 0o40700n,
+      mode,
       uid: BigInt(CURRENT_UID),
       size: 0n,
       mtimeNs: 0n,
@@ -140,27 +140,80 @@ describe('provider proxy paths', () => {
     expect(endpoint.startsWith(`${fallbackDirectory}/provider-`)).toBe(true);
   });
 
-  it('rejects an existing fallback directory whose mode is not 0700', () => {
-    const loose = secureStorage();
+  it('tightens an existing fallback directory of its own whose mode is not 0700', () => {
+    const loose = secureStorage(0o40755n);
+    let mode = 0o40755n;
     const storage: ProviderProxyEndpointEnvironment['storage'] = {
       ...loose,
-      statSync: (path) => ({ ...loose.statSync(path, { bigint: true }), mode: 0o40755n }),
+      chmodSync: vi.fn((_path: string, next: number) => {
+        mode = 0o40000n | BigInt(next);
+      }),
+      lstatSync: (path) => ({ ...loose.lstatSync(path, { bigint: true }), mode }),
     };
 
-    expect(() => providerProxyEndpoint(identity, environment({ baseDir: pathOfLength(200), storage }))).toThrowError(
-      expect.objectContaining({ code: 'proxy_endpoint_insecure' }),
+    const endpoint = providerProxyEndpoint(identity, environment({ baseDir: pathOfLength(200), storage }));
+
+    expect(storage.chmodSync).toHaveBeenCalledWith(socketFallbackDir(CURRENT_UID), 0o700);
+    expect(endpoint.startsWith(`${socketFallbackDir(CURRENT_UID)}/provider-`)).toBe(true);
+  });
+
+  it('refuses a fallback directory whose mode cannot be tightened', () => {
+    const loose = secureStorage(0o40755n);
+
+    expect(() =>
+      providerProxyEndpoint(identity, environment({ baseDir: pathOfLength(200), storage: loose })),
+    ).toThrowError(
+      expect.objectContaining({
+        code: 'proxy_endpoint_insecure',
+        context: expect.objectContaining({ refusal: 'foreign' }),
+      }),
     );
   });
 
-  it('rejects a fallback directory owned by another uid', () => {
+  it('refuses a fallback directory owned by another uid', () => {
     const loose = secureStorage();
     const storage: ProviderProxyEndpointEnvironment['storage'] = {
       ...loose,
-      statSync: (path) => ({ ...loose.statSync(path, { bigint: true }), uid: BigInt(CURRENT_UID) + 1n }),
+      lstatSync: (path) => ({ ...loose.lstatSync(path, { bigint: true }), uid: BigInt(CURRENT_UID) + 1n }),
     };
 
     expect(() => providerProxyEndpoint(identity, environment({ baseDir: pathOfLength(200), storage }))).toThrowError(
-      expect.objectContaining({ code: 'proxy_endpoint_insecure' }),
+      expect.objectContaining({
+        code: 'proxy_endpoint_insecure',
+        context: expect.objectContaining({ refusal: 'foreign' }),
+      }),
+    );
+  });
+
+  it('refuses a fallback directory whose entry is a symlink, without following it', () => {
+    const loose = secureStorage();
+    const storage: ProviderProxyEndpointEnvironment['storage'] = {
+      ...loose,
+      lstatSync: (path) => ({ ...loose.lstatSync(path, { bigint: true }), mode: 0o120777n }),
+    };
+
+    expect(() => providerProxyEndpoint(identity, environment({ baseDir: pathOfLength(200), storage }))).toThrowError(
+      expect.objectContaining({
+        code: 'proxy_endpoint_insecure',
+        context: expect.objectContaining({ refusal: 'foreign' }),
+      }),
+    );
+  });
+
+  it('separates a directory it could not observe from one it observed as foreign', () => {
+    const loose = secureStorage();
+    const storage: ProviderProxyEndpointEnvironment['storage'] = {
+      ...loose,
+      lstatSync: () => {
+        throw new Error('EIO: i/o error, lstat');
+      },
+    };
+
+    expect(() => providerProxyEndpoint(identity, environment({ baseDir: pathOfLength(200), storage }))).toThrowError(
+      expect.objectContaining({
+        code: 'proxy_endpoint_insecure',
+        context: expect.objectContaining({ refusal: 'unverified', cause: 'EIO: i/o error, lstat' }),
+      }),
     );
   });
 });

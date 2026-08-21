@@ -1,6 +1,6 @@
 import type { ProcessIncarnation } from '../../infra/node-process.js';
 import { timingSafeEqual } from 'node:crypto';
-import { chmodSync, lstatSync, mkdirSync, statSync, unlinkSync } from 'node:fs';
+import { chmodSync, lstatSync, mkdirSync, unlinkSync } from 'node:fs';
 import { createConnection, createServer, type Server as NetServer, type Socket } from 'node:net';
 import { basename, dirname, join } from 'node:path';
 import * as timers from 'node:timers';
@@ -16,7 +16,8 @@ import {
   type JsonRpcRequestEnvelope,
   type JsonRpcResponseEnvelope,
 } from './json-rpc.js';
-import { ensurePrivateSocketDir, isRelocatedSocket, SocketDirectoryError } from '../../infra/path/index.js';
+import { isRelocatedSocket } from '../../infra/path/index.js';
+import { ensurePrivateSocketDir, SocketDirectoryError } from '../../infra/private-socket-directory.js';
 import { documentedCoralSetupError } from '../../runtime/errors.js';
 import { createLineFramer, FrameTooLargeError } from '../line-framing.js';
 import { rpcCatalog, type RpcMethodSpec } from '../rpc/catalog.js';
@@ -365,13 +366,14 @@ export async function bindSocket(server: NetServer, socketPath: string): Promise
   if (isRelocatedSocket(socketPath, uid)) {
     const directory = dirname(socketPath);
     try {
-      ensurePrivateSocketDir(directory, uid, { mkdirSync, lstatSync, statSync });
+      ensurePrivateSocketDir(directory, uid, { chmodSync, lstatSync, mkdirSync });
     } catch (error: unknown) {
-      // A refusal the startup sentinel cannot serialise never reaches a terminal, so it carries a
-      // documented code rather than the plain error the assertion raises.
+      // A refusal only the sentinel writer can serialise never reaches a terminal, and it serialises
+      // documented codes alone — see writeStartupErrorSentinel in src/coordinator/bootstrap-diagnostics.ts.
       if (!(error instanceof SocketDirectoryError)) throw error;
       throw documentedCoralSetupError({
         code: 'coordinator_socket_dir_insecure',
+        reason: error.refusal,
         directory,
         socketPath,
         cause: error.message,

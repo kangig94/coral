@@ -37,6 +37,9 @@ export type StorageBigIntStat = {
   isFile(): boolean;
 };
 
+/** What a non-following observation reports about a path, without describing what it may resolve to. */
+export type StorageEntryKind = { isDirectory(): boolean; isFile(): boolean; isSymbolicLink(): boolean };
+
 export interface StoragePort {
   readFile(path: string, encoding: 'utf-8'): Promise<string>;
   readFileSync(path: string, encoding: 'utf-8'): string;
@@ -57,7 +60,8 @@ export interface StoragePort {
   statSync(path: string): { size: number; mtimeMs: number; isDirectory(): boolean; isFile(): boolean };
   statSync(path: string, options: { bigint: true }): StorageBigIntStat;
   fstatSync(fd: number, options: { bigint: true }): StorageBigIntStat;
-  lstatSync(path: string): { isDirectory(): boolean; isFile(): boolean; isSymbolicLink(): boolean };
+  lstatSync(path: string): StorageEntryKind;
+  lstatSync(path: string, options: { bigint: true }): StorageBigIntStat;
   realpathSync(path: string): string;
   existsSync(path: string): boolean;
   openSync(path: string, flags: string, mode?: number): number;

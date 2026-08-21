@@ -1,5 +1,12 @@
 import { dirname, normalize } from 'node:path';
-import type { DirentLike, StorageData, StoragePort, TimePort } from '../../../src/infra/port-types.js';
+import type {
+  DirentLike,
+  StorageBigIntStat,
+  StorageData,
+  StorageEntryKind,
+  StoragePort,
+  TimePort,
+} from '../../../src/infra/port-types.js';
 import { DEFAULT_CORAL_ROOT, DEFAULT_JOBS_DIR } from './constants.js';
 
 type FileIdentity = {
@@ -421,8 +428,20 @@ export class InMemoryStorage implements StoragePort {
     };
   }
 
-  lstatSync(path: string): { isDirectory(): boolean; isFile(): boolean; isSymbolicLink(): boolean } {
+  lstatSync(path: string): StorageEntryKind;
+  lstatSync(path: string, options: { bigint: true }): StorageBigIntStat;
+  lstatSync(path: string, options?: { bigint: true }): StorageEntryKind | StorageBigIntStat {
     const normalized = normalizePathForStorage(path);
+    // This store holds no symlinks, so the non-following observation is the following one; the file-type
+    // bits a caller reads out of `mode` still have to be there.
+    if (options?.bigint === true) {
+      const stat = this.statSync(normalized, { bigint: true });
+      return {
+        ...stat,
+        mode: (stat.isDirectory() ? 0o040000n : 0o100000n) | stat.mode,
+        uid: BigInt(process.getuid?.() ?? 0),
+      };
+    }
     if (this.files.has(normalized)) {
       return {
         isDirectory: () => false,
