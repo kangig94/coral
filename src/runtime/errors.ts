@@ -189,12 +189,16 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
       `Coral relocated its coordinator socket into ${stringContextValue(context, 'directory', '<directory>')} because the path beside its run directory exceeds this platform's limit, and ${
         context?.reason === 'foreign'
           ? 'that path belongs to another user'
-          : 'that path is not a directory Coral can keep private to you'
+          : context?.reason === 'unusable'
+            ? 'that path is yours and is not a directory'
+            : 'that path cannot be held private to you on this filesystem'
       }.`,
     remediation: (context) =>
-      context?.reason === 'foreign'
-        ? `Only its owner or root can clear ${stringContextValue(context, 'directory', '<directory>')}; a Coral state root short enough that the socket does not relocate avoids the shared directory entirely. Coral will not bind its singleton socket where it cannot establish exclusive ownership.`
-        : `Remove ${stringContextValue(context, 'directory', '<directory>')} — it is yours, and it is not a directory — then start Coral again. Coral will not bind its singleton socket where it cannot establish exclusive ownership.`,
+      context?.reason === 'unusable'
+        ? `Remove ${stringContextValue(context, 'directory', '<directory>')} and start Coral again. Coral will not bind its singleton socket where it cannot establish exclusive ownership.`
+        : context?.reason === 'foreign'
+          ? `Ask the owner of ${stringContextValue(context, 'directory', '<directory>')}, or this host's administrator, to remove it — do not try to remove or repair it yourself. Coral will not bind its singleton socket where it cannot establish exclusive ownership.`
+          : `Report this with the path ${stringContextValue(context, 'directory', '<directory>')}: its parent permits other users to replace it, or the filesystem does not keep the mode Coral set. Coral cannot place its singleton socket there and has no shorter address to fall back to.`,
   },
   /**
    * Exit 75, not 1, and separate from `coordinator_socket_dir_insecure` for the reason

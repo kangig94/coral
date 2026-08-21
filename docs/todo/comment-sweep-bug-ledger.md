@@ -532,9 +532,9 @@ than repeated: `kiwi` is not in `BUNDLED_ENGINES`; it is an install-only package
 (`BUNDLED_INSTALL_ONLY_PACKAGES`). It is an implementation identity all the same, which is what the check
 bans: `src/engines/kiwi/loader.ts` types its own `engine: 'kiwi'`, and the sibling AC7.1 check allowlists
 `kiwi-boot.ts` as an engine importer. The phantom `kb-scann` is gone with it — the sweep's trace to
-`78285643` held up, and a repo-wide grep still found no other referent. The check passes unchanged, which
-confirms the sweep's own reading that no `'kiwi'` literal leaks into an engine-blind scope today; the gap
-it closed was latent, not live.
+`78285643` held up, and a repo-wide grep still found no other referent. The check passes with the widened
+set, which confirms the sweep's own reading that no `'kiwi'` literal leaks into an engine-blind scope
+today; the gap it closed was latent, not live.
 
 - **What is wrong**: The commit-time-reducer-vs-`rebuildProjections` parity test's discuss-event fixture
   (`session-store-golden.events.jsonl`) exercises only 10 of the 16 `discussEventKinds` the discuss reducer

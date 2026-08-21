@@ -23,6 +23,14 @@ afterEach(() => {
 
 const realStorage = { chmodSync, lstatSync, mkdirSync };
 
+// `mkdtemp` gives 0700, and a parent that no other user can write to is the precondition the assertion
+// requires; a case that needs the opposite opens it explicitly.
+function scratchDirectory(mode: number): string {
+  const root = scratch();
+  chmodSync(root, mode);
+  return join(root, 'fallback');
+}
+
 describe('ensurePrivateSocketDir', () => {
   it('creates a missing directory at mode 0700', () => {
     const directory = join(scratch(), 'fallback');
@@ -89,6 +97,38 @@ describe('ensurePrivateSocketDir', () => {
       expect((error as SocketDirectoryError).refusal).toBe('unverified');
       expect((error as SocketDirectoryError).message).toContain('could not be verified');
     }
+  });
+
+  it('refuses a parent that lets any user replace the entry it just checked', () => {
+    const directory = scratchDirectory(0o777);
+
+    expect(() => ensurePrivateSocketDir(directory, CURRENT_UID, realStorage)).toThrowError(
+      expect.objectContaining({ refusal: 'unsecurable' }),
+    );
+  });
+
+  it('accepts a world-writable parent that keeps the restricted-deletion bit', () => {
+    const directory = scratchDirectory(0o1777);
+
+    ensurePrivateSocketDir(directory, CURRENT_UID, realStorage);
+
+    expect(lstatSync(directory).mode & 0o777).toBe(0o700);
+  });
+
+  it('refuses a filesystem that accepts the mode change and keeps its own permissions', () => {
+    const directory = join(scratch(), 'immutable-mode');
+    const stubborn = {
+      ...realStorage,
+      chmodSync: () => undefined,
+      lstatSync: ((path: string, options?: { bigint: true }) =>
+        options?.bigint === true
+          ? { ...lstatSync(path, { bigint: true }), mode: 0o40755n }
+          : lstatSync(path)) as typeof lstatSync,
+    };
+
+    expect(() => ensurePrivateSocketDir(directory, CURRENT_UID, stubborn)).toThrowError(
+      expect.objectContaining({ refusal: 'unsecurable' }),
+    );
   });
 
   it('refuses a uid it cannot use as an owner', () => {

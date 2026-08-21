@@ -14,9 +14,6 @@ export function socketPathByteLimit(platformName: string): number {
  */
 const SOCKET_FALLBACK_ROOT = '/tmp';
 
-/** 64 bits, because under a fixed root every overflowing state root on the host draws from one namespace. */
-export const SOCKET_FALLBACK_HASH_LENGTH = 16;
-
 export function socketFallbackDir(uid: number): string {
   return join(SOCKET_FALLBACK_ROOT, `coral-${uid}`);
 }

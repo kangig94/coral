@@ -85,13 +85,17 @@ function insecureEndpointError(
   cause?: unknown,
 ): ProviderProxyEndpointError {
   const requirement = `a directory owned by uid ${env.uid} with mode 0700`;
+  const observed: Record<SocketDirectoryRefusal, string> = {
+    foreign: `belongs to another user, so it cannot be ${requirement}`,
+    unusable: `is not ${requirement}`,
+    unsecurable: `cannot be held as ${requirement}`,
+    unverified: `could not be verified as ${requirement}`,
+  };
+  // The context this carries is dropped by every consumer that renders only `Error.message`, so the path an
+  // operator would act on belongs in the sentence.
   return new ProviderProxyEndpointError(
     'proxy_endpoint_insecure',
-    refusal === 'foreign'
-      ? `Provider endpoint fallback directory belongs to another user, so it cannot be ${requirement}.`
-      : refusal === 'unusable'
-        ? `Provider endpoint fallback directory is not ${requirement}.`
-        : `Provider endpoint fallback directory could not be verified as ${requirement}.`,
+    `Provider endpoint fallback directory '${fallbackDirectory}' ${observed[refusal]}.`,
     {
       fallbackDirectory,
       refusal,

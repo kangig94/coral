@@ -3,13 +3,14 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createServer, type Server as NetServer } from 'node:net';
-import { existsSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { socketFallbackDir } from '#src/infra/path/unix-socket.js';
 import { bindSocket, closeIpcServer, type IpcListener } from '#src/transport/ipc/server.js';
 
 const tempDirs: string[] = [];
+const createdFallbackLinks: string[] = [];
 const cleanupServers: NetServer[] = [];
 
 function makeSocketPath(name: string): string {
@@ -39,6 +40,11 @@ afterEach(async () => {
   }
   for (const root of tempDirs.splice(0)) {
     rmSync(root, { recursive: true, force: true });
+  }
+  // Never recursive, and only for an entry a test proved it created: this path is derived from a uid rather
+  // than from mkdtemp, so a recursive remove of one this suite did not make is a remove of someone's data.
+  for (const link of createdFallbackLinks.splice(0)) {
+    unlinkSync(link);
   }
   vi.restoreAllMocks();
 });
@@ -77,16 +83,6 @@ describe('bindSocket', () => {
     expect(server.listening).toBe(false);
   });
 
-  // A synthetic uid, so the shared per-uid directory this exercises cannot be the one a coordinator on this
-  // host is bound in.
-  function relocatedSocketPath(): { readonly directory: string; readonly socketPath: string } {
-    const uid = 9_000_000 + process.pid;
-    vi.spyOn(process, 'getuid').mockReturnValue(uid);
-    const directory = socketFallbackDir(uid);
-    tempDirs.push(directory);
-    return { directory, socketPath: join(directory, 'relocated.sock') };
-  }
-
   it('reports a relocated directory it could not observe under its own code, not the ownership verdict', async () => {
     // A uid no directory can be owned by, so the assertion refuses before it touches the filesystem.
     vi.spyOn(process, 'getuid').mockReturnValue(Number.NaN);
@@ -99,16 +95,23 @@ describe('bindSocket', () => {
     expect(server.listening).toBe(false);
   });
 
-  it('refuses a relocated socket directory it cannot establish as its own, without listening', async () => {
-    const { directory, socketPath } = relocatedSocketPath();
+  // Which refusal the assertion reaches is `ensurePrivateSocketDir`'s own test's subject; this one is here
+  // for the wiring — that a refusal becomes the documented code and that no listen is attempted after it.
+  // The uid is synthetic so the shared per-uid directory named here cannot be one a coordinator on this host
+  // is bound in, and the entry it creates is removed only once creating it succeeded.
+  it('turns a relocated-directory refusal into its documented code without listening', async () => {
+    const uid = 9_000_000 + process.pid;
+    vi.spyOn(process, 'getuid').mockReturnValue(uid);
+    const directory = socketFallbackDir(uid);
     const target = mkdtempSync(join(tmpdir(), 'coral-relocated-target-'));
     tempDirs.push(target);
     symlinkSync(target, directory);
+    createdFallbackLinks.push(directory);
 
     const server = createServer();
     cleanupServers.push(server);
 
-    await expect(bindSocket(server, socketPath)).rejects.toThrow(
+    await expect(bindSocket(server, join(directory, 'relocated.sock'))).rejects.toThrow(
       expect.objectContaining({ code: 'coordinator_socket_dir_insecure' }),
     );
     expect(server.listening).toBe(false);

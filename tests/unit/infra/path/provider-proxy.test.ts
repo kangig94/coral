@@ -1,5 +1,6 @@
 import { statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { dirname } from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 
@@ -29,20 +30,29 @@ const identity: ProviderProxyEndpointIdentity = {
   proxyInstanceId: UUID_A,
 };
 
+const FALLBACK_DIRECTORY = socketFallbackDir(CURRENT_UID);
+const FALLBACK_ROOT = dirname(FALLBACK_DIRECTORY);
+
+// The assertion observes the fallback directory's parent as well, to establish that no other user can
+// replace what it is about to check. Only the directory's own stat varies per test.
 function secureStorage(mode = 0o40700n): ProviderProxyEndpointEnvironment['storage'] {
+  let current = mode;
+  const stat = (value: bigint) => ({
+    dev: 1n,
+    ino: 1n,
+    mode: value,
+    uid: BigInt(CURRENT_UID),
+    size: 0n,
+    mtimeNs: 0n,
+    isDirectory: () => (value & 0o170000n) === 0o040000n,
+    isFile: () => false,
+  });
   return {
     mkdirSync: vi.fn(),
-    chmodSync: vi.fn(),
-    lstatSync: () => ({
-      dev: 1n,
-      ino: 1n,
-      mode,
-      uid: BigInt(CURRENT_UID),
-      size: 0n,
-      mtimeNs: 0n,
-      isDirectory: () => true,
-      isFile: () => false,
+    chmodSync: vi.fn((_path: string, next: number) => {
+      current = (current & 0o170000n) | BigInt(next);
     }),
+    lstatSync: (path: string) => (path === FALLBACK_ROOT ? stat(0o41777n) : stat(current)),
   };
 }
 
@@ -145,7 +155,7 @@ describe('provider proxy paths', () => {
 
     const endpoint = providerProxyEndpoint(identity, environment({ baseDir: pathOfLength(200), storage }));
 
-    expect(storage.chmodSync).toHaveBeenCalledWith(socketFallbackDir(CURRENT_UID), 0o700);
+    expect(storage.chmodSync).toHaveBeenCalledWith(FALLBACK_DIRECTORY, 0o700);
     expect(endpoint.startsWith(`${socketFallbackDir(CURRENT_UID)}/provider-`)).toBe(true);
   });
 
@@ -153,7 +163,10 @@ describe('provider proxy paths', () => {
     const loose = secureStorage();
     const storage: ProviderProxyEndpointEnvironment['storage'] = {
       ...loose,
-      lstatSync: (path) => ({ ...loose.lstatSync(path, { bigint: true }), uid: BigInt(CURRENT_UID) + 1n }),
+      lstatSync: (path) =>
+        path === FALLBACK_ROOT
+          ? loose.lstatSync(path, { bigint: true })
+          : { ...loose.lstatSync(path, { bigint: true }), uid: BigInt(CURRENT_UID) + 1n },
     };
 
     expect(() => providerProxyEndpoint(identity, environment({ baseDir: pathOfLength(200), storage }))).toThrowError(
@@ -168,7 +181,10 @@ describe('provider proxy paths', () => {
     const loose = secureStorage();
     const storage: ProviderProxyEndpointEnvironment['storage'] = {
       ...loose,
-      lstatSync: (path) => ({ ...loose.lstatSync(path, { bigint: true }), mode: 0o120777n }),
+      lstatSync: (path) =>
+        path === FALLBACK_ROOT
+          ? loose.lstatSync(path, { bigint: true })
+          : { ...loose.lstatSync(path, { bigint: true }), mode: 0o120777n },
     };
 
     expect(() => providerProxyEndpoint(identity, environment({ baseDir: pathOfLength(200), storage }))).toThrowError(

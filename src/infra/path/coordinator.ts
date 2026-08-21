@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import type { BuildFlavor } from '../build-flavor.js';
 import { hashToken } from '../hash.js';
 import { generationRoot } from './root.js';
-import { SOCKET_FALLBACK_HASH_LENGTH, socketFallbackDir, socketPathByteLimit } from './unix-socket.js';
+import { socketFallbackDir, socketPathByteLimit } from './unix-socket.js';
 
 export interface CoordinatorPaths {
   runDir: string;
@@ -17,6 +17,10 @@ export interface CoordinatorPaths {
 export interface CoordinatorPathOptions {
   readonly baseDir?: string;
 }
+
+/** 64 bits, because under one shared fallback root every overflowing state root on the host draws from a
+ *  single namespace rather than from this installation's own. */
+const FALLBACK_HASH_LENGTH = 16;
 
 interface SocketPathEnvironment {
   readonly platform: string;
@@ -32,7 +36,7 @@ export function socketPathForRunDir(runDir: string, flavor: BuildFlavor, env: So
   const limit = socketPathByteLimit(env.platform);
   if (Buffer.byteLength(candidateSocket, 'utf8') < limit) return candidateSocket;
 
-  const hash = hashToken(candidateSocket, SOCKET_FALLBACK_HASH_LENGTH);
+  const hash = hashToken(candidateSocket, FALLBACK_HASH_LENGTH);
   return join(socketFallbackDir(env.uid), `coral-${flavor}-${hash}.sock`);
 }
 

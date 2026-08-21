@@ -212,8 +212,11 @@ printed no handoff notice, and which fallback fired is not determinable from out
 
 At the far end, a `0.10.4` CLI reports **`Backend not running`** against a live daemon — it predates the
 strict-identity protocol entirely. Its own message then says a mutating command relaunches the backend,
-which points at two coordinators over one journal. Not tested, deliberately: the address that made those
-two coordinators possible was fixed, and what remains of it is `socket-address-ownership.md`.
+which points at two coordinators over one journal. Not tested, deliberately — and the socket-identity fix
+does not close it, because closing it needs both processes running the new address rule. A `0.10.4` build
+still resolves an overflowing socket through `TMPDIR`, so against a current daemon it computes a different
+address, finds it unbound, and binds. Mixed-version divergence is the part of that defect no forward-only
+change can reach.
 
 ## Start condition
 

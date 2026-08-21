@@ -11,13 +11,15 @@ Two halves. Both are about ownership of the address; neither is about its length
 ## Half 1 — the assertion holds at one binder out of four
 
 `ensurePrivateSocketDir` (`src/infra/private-socket-directory.ts`) creates the directory `0700`, tightens
-one that is already its own, and otherwise returns one of three refusals — `foreign`, `unusable`,
-`unverified` — which the coordinator's binder turns into two documented codes so that the one that observed
-nothing does not exit as an ownership verdict. Ownership and type come from a non-following `lstat`, because
+one that is already its own, and otherwise throws a refusal carrying one of `foreign`, `unusable`,
+`unsecurable`, or `unverified`, which the coordinator's binder turns into two documented codes so that the
+one that observed nothing does not exit as an ownership verdict. Ownership and type come from a non-following `lstat`, because
 a following `stat` describes whatever the entry currently resolves to rather than the entry itself.
 
 `bindSocket` (`src/transport/ipc/server.ts`) calls it before binding, in the process that will hold the
-socket. That is the coordinator, and it is enforcing.
+socket. That is the coordinator, and it is enforcing. The premise the whole assertion rests on — that no
+other user can replace the entry once it is ours — is checked rather than assumed: the parent must not be
+world-writable without the restricted-deletion bit.
 
 The provider roles are not. `providerEndpoint` (`src/infra/path/provider-proxy.ts`) calls the same
 assertion, but it runs in the **coordinator**, inside a function that returns a `string`, while the
@@ -53,10 +55,12 @@ and both can coordinate one journal. A `sudo -E` invocation that preserves `HOME
 new — an ambient temp directory produced the same divergence, and usually did — but the fix did not close
 it, and nothing in the tree states the boundary.
 
-The tree also does not say *which* uid. Every producer calls `process.getuid()`, the real uid, while the
-directory those producers create is owned by the effective uid and the mode check compares against the
-real one; under a setuid invocation Coral would refuse a directory it had just created itself. Real
-versus effective is part of this decision, not a separate one.
+The tree also does not say *which* uid. The path constructors take an injected `env.uid` and are neutral
+about it; every production caller that supplies one — `coordinatorPaths`, the provider acquisition step, the
+operator store-reset resolver, and `bindSocket` — reads `process.getuid()`, the real uid. The directory
+those paths then create is owned by the effective uid, and the mode check compares against the real one, so
+under a setuid invocation Coral would refuse a directory it had just created itself. Real versus effective
+is part of this decision, not a separate one.
 
 `docs/design-rationale.md` §8.2 says exactly one coordinator per Coral installation, and
 `docs/todo/store-format-routing.md` states a store authority of canonical state root plus flavor. Neither

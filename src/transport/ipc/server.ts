@@ -366,37 +366,44 @@ function staleSocketClearLockDir(socketPath: string): string {
 /**
  * The code, not a field beside it, carries which refusal this was: `errorCodeToExit` classifies by code
  * alone, so a code spanning both "decided" and "could not observe" exits one of them wrong. Exhaustive so a
- * fourth refusal cannot inherit a third one's operator text by default.
+ * new refusal cannot inherit another one's operator text by default.
  */
 const SOCKET_DIRECTORY_REFUSAL_CODES = {
   foreign: 'coordinator_socket_dir_insecure',
   unusable: 'coordinator_socket_dir_insecure',
+  unsecurable: 'coordinator_socket_dir_insecure',
   unverified: 'coordinator_socket_dir_unverified',
 } as const satisfies Record<SocketDirectoryRefusal, DocumentedCoralSetupErrorCode>;
 
-export async function bindSocket(server: NetServer, socketPath: string): Promise<BindSocketResult> {
-  // A relocated socket shares one world-writable root with every other user on the host, so its parent is
-  // asserted rather than assumed. A run directory is not shared and must not be held to the same mode.
+/**
+ * A relocated socket shares one root with every other user on the host, so its parent is asserted rather
+ * than assumed. A run directory is not shared and must not be held to the same mode.
+ */
+function prepareSocketParent(socketPath: string): void {
   const uid = process.getuid?.() ?? 0;
-  if (isRelocatedSocket(socketPath, uid)) {
-    const directory = dirname(socketPath);
-    try {
-      ensurePrivateSocketDir(directory, uid, { chmodSync, lstatSync, mkdirSync });
-    } catch (error: unknown) {
-      // A refusal only the sentinel writer can serialise never reaches a terminal, and it serialises
-      // documented codes alone — see writeStartupErrorSentinel in src/coordinator/bootstrap-diagnostics.ts.
-      if (!(error instanceof SocketDirectoryError)) throw error;
-      throw documentedCoralSetupError({
-        code: SOCKET_DIRECTORY_REFUSAL_CODES[error.refusal],
-        reason: error.refusal,
-        directory,
-        socketPath,
-        cause: error.message,
-      });
-    }
-  } else {
-    mkdirSync(dirname(socketPath), { recursive: true });
+  const directory = dirname(socketPath);
+  if (!isRelocatedSocket(socketPath, uid)) {
+    mkdirSync(directory, { recursive: true });
+    return;
   }
+  try {
+    ensurePrivateSocketDir(directory, uid, { chmodSync, lstatSync, mkdirSync });
+  } catch (error: unknown) {
+    // A refusal only the sentinel writer can serialise never reaches a terminal, and it serialises
+    // documented codes alone — see writeStartupErrorSentinel in src/coordinator/bootstrap-diagnostics.ts.
+    if (!(error instanceof SocketDirectoryError)) throw error;
+    throw documentedCoralSetupError({
+      code: SOCKET_DIRECTORY_REFUSAL_CODES[error.refusal],
+      reason: error.refusal,
+      directory,
+      socketPath,
+      cause: error.message,
+    });
+  }
+}
+
+export async function bindSocket(server: NetServer, socketPath: string): Promise<BindSocketResult> {
+  prepareSocketParent(socketPath);
 
   const finalize = (): void => {
     if (process.platform !== 'win32') {

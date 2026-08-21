@@ -4,10 +4,13 @@
 than by a failure. That work fixed one such path. These are the rest, and one of them holds more than a
 socket does.
 
-The shared question is the same at every site: on Linux with no `TMPDIR`, `os.tmpdir()` is `/tmp` — sticky,
-world-writable, world-listable. On macOS it is the per-user `/var/folders/…` at mode `0700`, which is why
-none of this shows up there. A path Coral puts under that root needs a name another user cannot usefully
-pre-empt, a mode, and a decision about what happens when the entry is already someone else's.
+The shared question is the same at every site: on Linux with no `TMPDIR`, `os.tmpdir()` is `/tmp` —
+world-writable and world-listable, and conventionally but not necessarily carrying the restricted-deletion
+bit that stops one user removing another's entry. On macOS it is the per-user `/var/folders/…` at mode
+`0700`, which is why none of this shows up there. A path Coral puts under that root needs a name another
+user cannot usefully pre-empt, a mode, a check of that parent property rather than a reliance on it, and a
+decision about what happens when the entry is already someone else's. Only the socket path does any of
+this; `ensurePrivateSocketDir` (`src/infra/private-socket-directory.ts`) is what the others would reuse.
 
 `socket-address-ownership.md` holds the namespace half of this question for the socket and has not answered
 it yet. The per-user naming below inherits that answer; the modes do not, and are worth doing alone.
@@ -66,7 +69,8 @@ here.
 
 ## 4. `/tmp/claude-<uid>` — the hooks' state root
 
-`sandboxTmpDir` (`clients/hooks/lib/plugin-paths.mjs`) is `/tmp/claude-<uid>`, already per-user, and the
+`sandboxTmpDir` (`clients/hooks/lib/plugin-paths.mjs`) is `/tmp/claude-<uid>` unless
+`CORAL_WORK_ROOT_OVERRIDE` names something else, already per-user by default, and the
 live-work registry and compaction snapshots live beneath it. It is the harness's own sandbox scratch
 convention rather than Coral's namespace, and Coral's `mkdirSync(dir, { recursive: true })` calls create
 every missing component of it with no mode when the harness has not already.
