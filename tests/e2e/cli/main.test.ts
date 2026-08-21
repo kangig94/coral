@@ -3,10 +3,9 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { e2eBundleDir } from '#tests/support/e2e-bundle-dir.js';
 
-import { e2eBundleFile } from '#tests/support/e2e-bundle-dir.js';
-
-const CLI_BUNDLE = e2eBundleFile('coral-cli.cjs');
+const CLI_BUNDLE = join(e2eBundleDir(), 'coral-cli.cjs');
 
 function runCli(
   args: string[],
