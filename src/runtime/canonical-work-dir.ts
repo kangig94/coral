@@ -1,5 +1,5 @@
 import { realpathSync, statSync } from 'node:fs';
-import { isAbsolute, normalize, resolve } from 'node:path';
+import { isAbsolute, normalize, relative, resolve, sep } from 'node:path';
 
 import { z } from 'zod';
 
@@ -14,6 +14,11 @@ export const canonicalWorkDirWireSchema = z
   .brand<'CanonicalWorkDir'>();
 
 export type CanonicalWorkDir = z.infer<typeof canonicalWorkDirWireSchema>;
+
+export function containsWorkDir(scopeRoot: CanonicalWorkDir, candidate: CanonicalWorkDir): boolean {
+  const descendant = relative(scopeRoot, candidate);
+  return descendant === '' || (!descendant.startsWith(`..${sep}`) && descendant !== '..' && !isAbsolute(descendant));
+}
 
 export class WorkDirectoryError extends Error {
   readonly code = 'invalid_work_directory';

@@ -147,7 +147,6 @@ export interface LaunchOrchestratorDeps {
 
 type ProviderLaunchOptions = {
   pool?: LaunchPool;
-  projectRoot?: string;
   parentWorkflowJobId?: string;
   workflowSlotId?: string;
   workflowSlotGeneration?: number;
@@ -382,7 +381,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
 
     const { hostedRequest, launch, projectRoot } = this.buildProviderLaunch(
       provider,
-      preparedSession.sessionId,
+      preparedSession,
       jobId,
       request,
       opts,
@@ -457,19 +456,19 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
 
   private buildProviderLaunch(
     provider: BoundProvider,
-    sessionId: string,
+    session: ProviderSession,
     jobId: string,
     request: ProviderRequest,
     opts: ProviderLaunchOptions,
   ): { hostedRequest: ProviderRequest; launch: JobLaunch; pool: LaunchPool; projectRoot: string } {
     const pool = opts.pool ?? 'default';
-    const projectRoot = opts.projectRoot ?? request.cwd ?? '';
+    const projectRoot = session.projectRoot;
     const hostedRequest: ProviderRequest = {
       ...request,
       coralEnv: {
         ...request.coralEnv,
         CORAL_JOB_ID: jobId,
-        CORAL_SESSION_ID: sessionId,
+        CORAL_SESSION_ID: session.sessionId,
       },
     };
     return {
@@ -478,9 +477,9 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
       projectRoot,
       launch: {
         jobId,
-        owner: opts.owner ?? { kind: 'provider-session', id: sessionId },
+        owner: opts.owner ?? { kind: 'provider-session', id: session.sessionId },
         ...(opts.discussionRun === undefined ? {} : { discussionRun: opts.discussionRun }),
-        sessionId,
+        sessionId: session.sessionId,
         provider: provider.name,
         providerAction: request.action,
         projectRoot,
@@ -493,7 +492,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
           prompt: hostedRequest.prompt,
           name: hostedRequest.name,
           model: hostedRequest.model,
-          cwd: hostedRequest.cwd ?? '',
+          cwd: hostedRequest.cwd,
           effort: hostedRequest.effort,
           bypassPermissions: hostedRequest.bypassPermissions,
           systemPrompt: hostedRequest.systemPrompt,
@@ -531,7 +530,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
       return rejectLaunch('busy', QUEUE_FULL_MESSAGE);
     }
 
-    const built = this.buildProviderLaunch(provider, session.sessionId, jobId, request, opts);
+    const built = this.buildProviderLaunch(provider, session, jobId, request, opts);
     const metadata = this.resolveEventMetadata(jobId, built.projectRoot);
     let claimedSession: ProviderSession | undefined;
     try {
@@ -605,7 +604,6 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
       workflowSlotGeneration: number;
       replacesWorkflowJobId: string;
       pool?: LaunchPool;
-      projectRoot: string;
       mintProtectedEnv: (jobId: string) => ProviderOperationEnvironmentInput;
     },
   ): ProviderSessionLaunchDecision {
@@ -616,11 +614,11 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
       this.deps.jobPools.delete(jobId);
       return rejectLaunch('busy', QUEUE_FULL_MESSAGE);
     }
-    const built = this.buildProviderLaunch(provider, session.sessionId, jobId, request, {
+    const built = this.buildProviderLaunch(provider, session, jobId, request, {
       ...opts,
       pool,
     });
-    const metadata = this.resolveEventMetadata(jobId, opts.projectRoot);
+    const metadata = this.resolveEventMetadata(jobId, built.projectRoot);
     let claimedSession: ProviderSession | undefined;
     try {
       this.deps.coordinatorCommit((commit) => {

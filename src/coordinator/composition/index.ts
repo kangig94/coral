@@ -905,7 +905,11 @@ export function createCoordinatorCore(
           if (filters.all !== true && !isLivePhase(entry.status.phase)) {
             continue;
           }
-          if (filters.projectRoot !== undefined && entry.status.projectRoot !== filters.projectRoot) {
+          if (
+            filters.projectRoot !== undefined &&
+            entry.status.workDir !== filters.projectRoot &&
+            entry.status.jobKind !== 'kb'
+          ) {
             continue;
           }
           if (filters.phase !== undefined && entry.status.phase !== filters.phase) {

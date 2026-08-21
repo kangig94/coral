@@ -1138,19 +1138,19 @@ async function handleEventStream(
       onClose();
     }
   };
-  const matchesJobScope = (jobId: string, eventProjectRoot?: string): boolean => {
+  const matchesJobScope = (jobId: string): boolean => {
     // Streams without projectRoot are intentionally suppressed; job events must be project-scoped.
     if (canonicalProjectRoot === null) return false;
     if (filterJobId !== null && jobId !== filterJobId) return false;
-    if (eventProjectRoot !== undefined && eventProjectRoot !== canonicalProjectRoot) return false;
-    const scopeCheck = deps.jobs.scopeCheck([jobId], canonicalProjectRoot);
+    const relation = filterJobId === null ? 'exact' : 'contains';
+    const scopeCheck = deps.jobs.scopeCheck([jobId], canonicalProjectRoot, relation);
     return scopeCheck.missing.length === 0 && scopeCheck.mismatch.length === 0;
   };
   const matchesDiscussScope = (payloadProjectRoot: string): boolean =>
     canonicalProjectRoot !== null && payloadProjectRoot === canonicalProjectRoot;
 
   const onCreated: EventStreamHandlers['onJobCreated'] = (payload) => {
-    if (closed || !matchesJobScope(payload.jobId, payload.projectRoot)) return;
+    if (closed || !matchesJobScope(payload.jobId)) return;
     writeOrClose('job:created', payload);
   };
   const onPhaseChanged: EventStreamHandlers['onPhaseChanged'] = (payload) => {

@@ -34,6 +34,7 @@ describe('jobs queries', () => {
       ['session-completed', '/workspace/coral'],
       ['session-rejected', '/workspace/coral'],
       ['session-queued', '/workspace/coral'],
+      ['session-descendant', '/workspace/coral'],
       ['session-other', '/workspace/other-project'],
     ] as const) {
       seedTestSessionProjection(db, {
@@ -185,6 +186,29 @@ describe('jobs queries', () => {
       },
       {
         type: 'job.launch.requested',
+        stream: { kind: 'job', id: 'job-descendant-work-dir' },
+        refs: { sessionId: 'session-descendant' },
+        body: {
+          owner: { kind: 'provider-session', id: 'session-descendant' },
+          sessionId: 'session-descendant',
+          provider: 'codex',
+          providerAction: 'exec',
+          projectRoot: '/workspace/coral',
+          backendNamespace: 'tests',
+          jobKind: 'provider',
+          pool: 'default',
+          enqueueSequence: 4,
+          request: {
+            prompt: 'Run below the ambient work directory.',
+            cwd: '/workspace/coral/sub',
+            bypassPermissions: false,
+            coralEnv: {},
+          },
+          createdAt: '2026-04-20T00:02:20.000Z',
+        },
+      },
+      {
+        type: 'job.launch.requested',
         stream: { kind: 'job', id: 'job-kb-global' },
         refs: {},
         body: {
@@ -306,14 +330,15 @@ describe('jobs queries', () => {
     db.prepare(
       `INSERT INTO projection_jobs (
          job_id, execution_owner, phase, terminal, diagnostics, session_id, provider,
-         project_root, backend_namespace, bundle_hash, job_kind, parent_workflow_job_id,
+         project_root, work_dir, backend_namespace, bundle_hash, job_kind, parent_workflow_job_id,
          workflow_slot, workflow_slot_generation, replaces_workflow_job_id, created_at, last_seq
-       ) VALUES (?, ?, 'running', NULL, ?, ?, 'codex', ?, 'tests', NULL, 'provider', ?, ?, 1, ?, ?, 0)`,
+       ) VALUES (?, ?, 'running', NULL, ?, ?, 'codex', ?, ?, 'tests', NULL, 'provider', ?, ?, 1, ?, ?, 0)`,
     ).run(
       childJobId,
       JSON.stringify({ kind: 'workflow', id: workflowJobId }),
       JSON.stringify({ progressFaults: [] }),
       'session-child',
+      '/workspace/coral',
       '/workspace/coral',
       workflowJobId,
       workflowSlotId,
@@ -362,6 +387,8 @@ describe('jobs queries', () => {
     expect(ids).toContain('job-kb-global');
     // ...the current project's own live job still lists...
     expect(ids).toContain('job-queued');
+    // Ambient selection is exact: a descendant work directory is not selected by its project identity.
+    expect(ids).not.toContain('job-descendant-work-dir');
     // ...but a different project's non-KB job stays scoped out.
     expect(ids).not.toContain('job-other-project');
   });
@@ -374,6 +401,7 @@ describe('jobs queries', () => {
     // the current project's terminal job now appears, the foreign non-KB stays out.
     expect(ids).toContain('job-kb-global');
     expect(ids).toContain('job-completed');
+    expect(ids).not.toContain('job-descendant-work-dir');
     expect(ids).not.toContain('job-other-project');
   });
 });

@@ -173,7 +173,7 @@ function readOrderedProjectionRows(db: Database, filters?: JobsListFilters): Pro
   return rows.filter((row) => {
     if (filters && filters.all !== true && !isLivePhase(row.phase)) return false;
     // KB jobs belong to no single project and remain visible from every project.
-    if (filters?.projectRoot !== undefined && row.project_root !== filters.projectRoot && row.job_kind !== 'kb') {
+    if (filters?.projectRoot !== undefined && row.work_dir !== filters.projectRoot && row.job_kind !== 'kb') {
       return false;
     }
     if (filters?.phase !== undefined && row.phase !== filters.phase) return false;
@@ -492,6 +492,7 @@ function projectionRowToStatus(
     sessionId: projection.session_id,
     provider: projection.provider,
     projectRoot: projection.project_root,
+    workDir: projection.work_dir,
     backendNamespace: projection.backend_namespace,
     ...(projection.bundle_hash === null ? {} : { bundleHash: projection.bundle_hash }),
     jobKind: projection.job_kind,

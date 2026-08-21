@@ -29,6 +29,7 @@ import type { ProviderSession } from '#src/sessions/entry.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { bindingSuccess } from '#src/providers/contracts/binding.js';
 import { validatedTestContinuityBlob } from '#tests/helpers/session.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import {
   finalizeInterruptedAppServerRecovery,
@@ -524,6 +525,7 @@ describe('interrupted recovery settlement ownership', () => {
     sessionId: launchRecord.sessionId,
     provider: launchRecord.provider,
     projectRoot: launchRecord.projectRoot,
+    workDir: fixtureCanonicalWorkDir(launchRecord.request.cwd),
     backendNamespace: launchRecord.backendNamespace,
     jobKind: launchRecord.jobKind,
     phase: 'running',

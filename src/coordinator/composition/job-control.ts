@@ -4,7 +4,8 @@ import type { ProjectRequestPort } from '../contracts.js';
 import type { LifecycleController } from '../lifecycle.js';
 import type { JobStore } from '../../jobs/store.js';
 import type { CoordinatorWorld } from './world.js';
-import type { ScopeCheckResult } from '../../transport/rpc/ports.js';
+import { containsWorkDir, type CanonicalWorkDir } from '../../runtime/canonical-work-dir.js';
+import type { JobScopeRelation, ScopeCheckResult } from '../../transport/rpc/ports.js';
 
 type CreateBackendControlDeps = {
   world: CoordinatorWorld;
@@ -25,7 +26,7 @@ export function createCoordinatorControl({
   internalJobAbortRegistry,
 }: CreateBackendControlDeps): {
   abortJobs: (jobIds: string[]) => AbortResult;
-  scopeCheckJobs: (jobIds: string[], projectRoot: string) => ScopeCheckResult;
+  scopeCheckJobs: (jobIds: string[], callerRoot: CanonicalWorkDir, relation: JobScopeRelation) => ScopeCheckResult;
   isDrainRequested: () => boolean;
   requestDrain: (reason: string) => void;
 } {
@@ -77,7 +78,11 @@ export function createCoordinatorControl({
     return { aborted, notFound: [...pending] };
   }
 
-  function scopeCheckJobs(jobIds: string[], projectRoot: string): ScopeCheckResult {
+  function scopeCheckJobs(
+    jobIds: string[],
+    callerRoot: CanonicalWorkDir,
+    relation: JobScopeRelation,
+  ): ScopeCheckResult {
     const valid: string[] = [];
     const missing: string[] = [];
     const mismatch: string[] = [];
@@ -91,9 +96,11 @@ export function createCoordinatorControl({
         continue;
       }
 
-      // KB jobs run against the shared corpus and belong to no single project,
-      // so they stay abortable from any project's cwd.
-      if (status.projectRoot !== projectRoot && status.jobKind !== 'kb') {
+      const matches =
+        status.jobKind === 'kb' ||
+        (status.workDir !== null &&
+          (relation === 'contains' ? containsWorkDir(callerRoot, status.workDir) : callerRoot === status.workDir));
+      if (!matches) {
         mismatch.push(jobId);
         continue;
       }

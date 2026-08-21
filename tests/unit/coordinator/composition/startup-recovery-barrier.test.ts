@@ -19,6 +19,7 @@ vi.mock('#src/coordinator/composition/world.js', async (importOriginal) => {
 import { createStartupRecoveryBarrier } from '#src/coordinator/composition/world.js';
 import { classifyLocalCarriers } from '#src/coordinator/composition/carrier-observation.js';
 import type { JobProjectionDetail } from '#src/jobs/read-queries.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import {
   createHandoffCoresHarness,
   type HandoffCoresHarness,
@@ -34,6 +35,7 @@ function ownerlessAcquiredDetail(): JobProjectionDetail {
       sessionId: 'session-1',
       provider: 'codex',
       projectRoot: '/tmp/project',
+      workDir: fixtureCanonicalWorkDir('/tmp/project'),
       backendNamespace: 'barrier-test',
       jobKind: 'provider',
       phase: 'running',

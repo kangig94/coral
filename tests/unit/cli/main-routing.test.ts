@@ -30,6 +30,7 @@ import { IpcRpcError } from '#src/transport/ipc/client.js';
 import { ProviderHostUnserviceableError } from '#src/providers/host-admission.js';
 import { encodeHostRef } from '#src/providers/host-ref-codec.js';
 import type { HostRef } from '#src/providers/contract.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { registerBackendCommands, type BackendStatusCommandOperations } from '#src/cli/commands/backend.js';
 import { assertNever } from '#src/infra/error-format.js';
 import type { ShutdownReason, ShutdownResult } from '#src/transport/http/backend/shutdown.js';
@@ -262,6 +263,7 @@ function makeJobsListResponse(jobIds: string[], overrides: { phase?: string; pro
         sessionId: `session-${jobId}`,
         provider,
         projectRoot: process.cwd(),
+        workDir: fixtureCanonicalWorkDir(process.cwd()),
         backendNamespace: 'default',
         jobKind: 'provider' as const,
         phase,
@@ -279,6 +281,7 @@ function makeJobDetailResponse(): JobDetailResponse {
       sessionId: 'session-1',
       provider: 'codex',
       projectRoot: process.cwd(),
+      workDir: fixtureCanonicalWorkDir(process.cwd()),
       backendNamespace: 'default',
       jobKind: 'provider',
       phase: 'completed',
@@ -1042,7 +1045,7 @@ describe('cli main routing', () => {
     expect(stderr).toBe('');
   });
 
-  it('routes abort --all through live job lookup for the current project', async () => {
+  it('routes abort --all through live job lookup for the current work directory', async () => {
     const { buildProgram } = await loadMainModule();
     const program = buildProgram();
 
@@ -1064,7 +1067,7 @@ describe('cli main routing', () => {
     expect(stderr).toBe('');
   });
 
-  it('routes abort --phase running through live job lookup for the current project', async () => {
+  it('routes abort --phase running through live job lookup for the current work directory', async () => {
     const { buildProgram } = await loadMainModule();
     const program = buildProgram();
 

@@ -237,6 +237,7 @@ export function formatJobDetail(
     formatWorkflowChildren(workflowChildren),
     status.sessionId === null ? undefined : `Provider session: ${status.sessionId}`,
     `Project: ${status.projectRoot}`,
+    status.workDir === null ? undefined : `Work dir: ${status.workDir}`,
     `Updated: ${status.updatedAt}`,
     status.lastSeq === undefined ? undefined : `Last seq: ${status.lastSeq}`,
     response.exit === null ? undefined : `Exit: ${terminalOutcomeText(response.exit, describeCauseRef)}`,

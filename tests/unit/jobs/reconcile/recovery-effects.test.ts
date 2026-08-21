@@ -13,6 +13,7 @@ import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { seedTestSessionProjection } from '#tests/helpers/session.js';
 import { SessionManager } from '#src/sessions/shell.js';
 import { createRealRuntime } from '#src/runtime/real.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 const NOW = new Date('2026-04-28T00:00:00.000Z');
 
@@ -40,6 +41,7 @@ function recoveryStatus(): JobStatus {
     sessionId: 'session-recovery-synthetic-launch',
     provider: 'codex',
     projectRoot: '/workspace/recovery-synthetic-launch',
+    workDir: fixtureCanonicalWorkDir('/workspace/recovery-synthetic-launch'),
     backendNamespace: 'tests',
     jobKind: 'provider',
     phase: 'running',

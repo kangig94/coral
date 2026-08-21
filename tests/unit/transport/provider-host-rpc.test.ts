@@ -64,6 +64,41 @@ describe('provider-host RPC authorization', () => {
     },
   );
 
+  it.each([
+    ['inspect', providerHostInspectRpcSpec, 'inspect'],
+    ['evict', providerHostEvictRpcSpec, 'evict'],
+  ] as const)('routes provider-host %s for a separator-confusable child directory', async (_route, spec, method) => {
+    const root = mkdtempSync(join(tmpdir(), 'coral-provider-host-rpc-dotdot-name-'));
+    const allowed = join(root, 'a');
+    const child = join(allowed, '..b');
+    mkdirSync(allowed);
+    mkdirSync(child);
+    const reachedOwner = new Error(`provider_host_${method}_reached_owner`);
+    const providerHosts = {
+      list: vi.fn(),
+      inspect: vi.fn(async () => {
+        throw reachedOwner;
+      }),
+      evict: vi.fn(async () => {
+        throw reachedOwner;
+      }),
+    };
+    const ports = { providerHosts } as unknown as HttpHandlerPorts;
+    const boundOperator = {
+      ...operator,
+      binding: { kind: 'project', root: canonicalizeWorkDir(allowed, root) },
+    } satisfies Principal;
+
+    try {
+      await expect(
+        executeCatalogRequest(spec, { workDir: '..b', projectRoot: allowed }, ports, boundOperator),
+      ).rejects.toBe(reachedOwner);
+      expect(providerHosts[method]).toHaveBeenCalledExactlyOnceWith({ workDir: canonicalizeWorkDir(child, allowed) });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('declares the mandatory capability split in the catalog', () => {
     expect(providerHostListRpcSpec.requires).toBe('system:debug');
     expect(providerHostInspectRpcSpec.requires).toBe('system:debug');

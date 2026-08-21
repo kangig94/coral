@@ -1,8 +1,10 @@
-import { isAbsolute, relative } from 'node:path';
-
 import { ALL_CAPABILITIES, capabilityScope, type Capability } from '../capability.js';
 import type { Principal, ResourceBinding } from '../principal.js';
+import { containsWorkDir } from '../../runtime/canonical-work-dir.js';
 import { capabilitiesFor } from './capabilities.js';
+
+// `containsProjectRoot` moved to the shared `containsWorkDir` predicate during the
+// two-coordinate transition.
 
 export type AuthorizationFailureReason = 'missing_capability' | 'resource_unbound' | 'unauthenticated';
 
@@ -92,10 +94,5 @@ function bindingSatisfies(principal: Principal, requestedBinding: ResourceBindin
     return false;
   }
 
-  return containsProjectRoot(principalBinding.root, requestedBinding.root);
-}
-
-function containsProjectRoot(boundRoot: string, requestedRoot: string): boolean {
-  const descendant = relative(boundRoot, requestedRoot);
-  return descendant === '' || (!descendant.startsWith('..') && !isAbsolute(descendant));
+  return containsWorkDir(principalBinding.root, requestedBinding.root);
 }

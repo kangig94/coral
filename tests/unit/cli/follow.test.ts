@@ -233,9 +233,9 @@ function createCauseRenderFixture(workflowChildren: readonly WorkflowChildFixtur
     const insertProjection = db.prepare(
       `INSERT INTO projection_jobs (
         job_id, execution_owner, phase, terminal, diagnostics, session_id, provider,
-        project_root, backend_namespace, bundle_hash, job_kind, parent_workflow_job_id,
+        project_root, work_dir, backend_namespace, bundle_hash, job_kind, parent_workflow_job_id,
         workflow_slot, workflow_slot_generation, replaces_workflow_job_id, created_at, last_seq
-      ) VALUES (?, ?, 'running', NULL, ?, ?, 'codex', ?, 'test-namespace', NULL, 'provider', ?, ?, ?, NULL, ?, 0)`,
+      ) VALUES (?, ?, 'running', NULL, ?, ?, 'codex', ?, ?, 'test-namespace', NULL, 'provider', ?, ?, ?, NULL, ?, 0)`,
     );
     for (const child of workflowChildren) {
       insertProjection.run(
@@ -243,6 +243,7 @@ function createCauseRenderFixture(workflowChildren: readonly WorkflowChildFixtur
         JSON.stringify({ kind: 'workflow', id: child.workflowJobId }),
         JSON.stringify({ progressFaults: [] }),
         `session-${child.jobId}`,
+        '/project/root',
         '/project/root',
         child.workflowJobId,
         child.workflowSlotId,

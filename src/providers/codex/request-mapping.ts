@@ -1,4 +1,4 @@
-import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { join, resolve } from 'node:path';
 import { z } from 'zod';
 import type { EffortLevel, ProviderContinuityUpdate, ProviderRequest, ProviderRuntime } from '../contract.js';
 import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
@@ -11,7 +11,12 @@ import type { ThreadResumeParams, ThreadStartParams, TurnStartParams, UserInput 
 import type { RecoverableTurnFailure } from './turn-recovery.js';
 import type { CodexExecutionPlan } from './execution-plan.js';
 import { zodPersistedParser } from '../binding-parser.js';
-import { canonicalizeWorkDir, type CanonicalWorkDir } from '../../runtime/canonical-work-dir.js';
+import {
+  canonicalizeWorkDir,
+  canonicalWorkDirWireSchema,
+  containsWorkDir,
+  type CanonicalWorkDir,
+} from '../../runtime/canonical-work-dir.js';
 
 const codexPersistedContinuitySchema = z
   .object({
@@ -257,16 +262,9 @@ function scopedCodexCwd(cwd: string | undefined, cwdScope: string | undefined): 
     return undefined;
   }
 
-  const resolvedScope = resolve(cwdScope);
-  const resolvedCwd = resolve(cwd);
-  const scopedRelative = relative(resolvedScope, resolvedCwd);
-  if (
-    scopedRelative === '' ||
-    (!scopedRelative.startsWith(`..${sep}`) && scopedRelative !== '..' && !isAbsolute(scopedRelative))
-  ) {
-    return resolvedCwd;
-  }
-  return undefined;
+  const resolvedScope = canonicalWorkDirWireSchema.parse(resolve(cwdScope));
+  const resolvedCwd = canonicalWorkDirWireSchema.parse(resolve(cwd));
+  return containsWorkDir(resolvedScope, resolvedCwd) ? resolvedCwd : undefined;
 }
 
 export function resolveCodexHostCwd(

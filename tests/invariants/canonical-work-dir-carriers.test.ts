@@ -8,7 +8,6 @@ import ts from 'typescript';
 
 import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
 import { WorkDirectoryError } from '#src/runtime/canonical-work-dir.js';
-import { currentCoralStoreFormat } from '#src/store-format.js';
 import { decodeProviderOperationRecord, encodeProviderOperationRecord } from '#src/store/provider-operation-record.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 
@@ -40,6 +39,16 @@ const REQUIRED_SOURCE_CARRIERS = [
     carrier: 'WorkflowPortInput.workDir',
     file: 'src/transport/rpc/ports.ts',
     pattern: /type WorkflowPortInput[\s\S]*?workDir:\s*CanonicalWorkDir/u,
+  },
+  {
+    carrier: 'JobStatus.workDir',
+    file: 'src/jobs/records.ts',
+    pattern: /interface JobStatus[\s\S]*?workDir:\s*CanonicalWorkDir\s*\|\s*null/u,
+  },
+  {
+    carrier: 'JobsRequestPort.scopeCheck callerRoot',
+    file: 'src/transport/rpc/ports.ts',
+    pattern: /scopeCheck\(jobIds:\s*string\[\],\s*callerRoot:\s*CanonicalWorkDir,/u,
   },
   {
     carrier: 'CanonicalWorkflowCommand.workDir',
@@ -90,6 +99,8 @@ import type { ResourceBinding } from '../src/security/principal.js';
 import type { ProviderServerSpec } from '../src/providers/contract.js';
 import type { JobLaunchRequest } from '../src/jobs/launch.js';
 import type { WorkflowPortInput } from '../src/transport/rpc/ports.js';
+import type { JobStatus } from '../src/jobs/records.js';
+import type { HttpHandlerPorts } from '../src/transport/server-ports.js';
 import type { CanonicalWorkflowCommand, CompiledWorkflow } from '../src/workflow/compile.js';
 import type { ExecuteAgentAttemptParams } from '../src/discuss/shell/runtime-build.js';
 import type { WorkflowRecoveryDescendant } from '../src/workflow/recover.js';
@@ -109,6 +120,11 @@ declare let launchCwd: JobLaunchRequest['cwd'];
 launchCwd = raw; // @carrier JobLaunchRequest.cwd
 declare let workflowPortWorkDir: WorkflowPortInput['workDir'];
 workflowPortWorkDir = raw; // @carrier WorkflowPortInput.workDir
+declare let jobStatusWorkDir: JobStatus['workDir'];
+jobStatusWorkDir = raw; // @carrier JobStatus.workDir
+type ScopeCheckCallerRoot = Parameters<HttpHandlerPorts['jobs']['scopeCheck']>[1];
+declare let scopeCheckCallerRoot: ScopeCheckCallerRoot;
+scopeCheckCallerRoot = raw; // @carrier JobsRequestPort.scopeCheck callerRoot
 declare let canonicalCommandWorkDir: CanonicalWorkflowCommand['workDir'];
 canonicalCommandWorkDir = raw; // @carrier CanonicalWorkflowCommand.workDir
 declare let compiledWorkDir: CompiledWorkflow['workDir'];
@@ -242,12 +258,6 @@ describe('canonical work-directory carrier closure', () => {
     const source = readFileSync(resolve(REPO_ROOT, 'src/store/provider-operation-record.ts'), 'utf8');
 
     expect(source).not.toMatch(/security\/principal-wire/u);
-  });
-
-  it('does not change the store-format fingerprint while separating the durability boundary', () => {
-    expect(currentCoralStoreFormat().fingerprint).toBe(
-      'sha256:9fd970cdcb803f517d77b133bba86ae83ef1ff662f77da8656604f32c8e67980',
-    );
   });
 
   it('canonicalizes a persisted symlink binding before registering the recovered principal', () => {

@@ -233,10 +233,10 @@ function createHarness(options: {
     if (projectionPhase !== null) {
       db.prepare(
         `INSERT INTO projection_jobs (
-           job_id, execution_owner, phase, diagnostics, session_id, provider, project_root, backend_namespace,
+           job_id, execution_owner, phase, diagnostics, session_id, provider, project_root, work_dir, backend_namespace,
            job_kind, parent_workflow_job_id, workflow_slot, created_at, last_seq
 	         )
-	         VALUES (?, ?, ?, '{"progressFaults":[]}', ?, ?, ?, ?, 'provider', ?, ?, '2026-04-20T00:00:00.000Z', ?)
+	         VALUES (?, ?, ?, '{"progressFaults":[]}', ?, ?, ?, ?, ?, 'provider', ?, ?, '2026-04-20T00:00:00.000Z', ?)
 	         ON CONFLICT(job_id) DO UPDATE SET
 	           execution_owner = excluded.execution_owner,
 	           phase = excluded.phase,
@@ -244,6 +244,7 @@ function createHarness(options: {
 	           session_id = excluded.session_id,
 	           provider = excluded.provider,
 	           project_root = excluded.project_root,
+	           work_dir = excluded.work_dir,
 	           backend_namespace = excluded.backend_namespace,
 	           job_kind = excluded.job_kind,
 	           parent_workflow_job_id = excluded.parent_workflow_job_id,
@@ -256,6 +257,7 @@ function createHarness(options: {
         projectionPhase,
         sessionId,
         slot.provider,
+        projectRoot,
         projectRoot,
         BACKEND_NAMESPACE,
         'workflow-1',
@@ -728,16 +730,17 @@ describe('workflow recovery branch rules', () => {
     harness.db
       .prepare(
         `INSERT INTO projection_jobs (
-         job_id, execution_owner, phase, diagnostics, session_id, provider, project_root, backend_namespace,
+         job_id, execution_owner, phase, diagnostics, session_id, provider, project_root, work_dir, backend_namespace,
          job_kind, parent_workflow_job_id, workflow_slot, workflow_slot_generation,
          replaces_workflow_job_id, created_at, last_seq
-       ) VALUES (?, ?, 'completed', '{"progressFaults":[]}', ?, ?, ?, ?, 'provider', ?, ?, 2, ?, ?, 999)`,
+       ) VALUES (?, ?, 'completed', '{"progressFaults":[]}', ?, ?, ?, ?, ?, 'provider', ?, ?, 2, ?, ?, 999)`,
       )
       .run(
         'invalid-generation-2',
         JSON.stringify({ kind: 'workflow', id: 'workflow-1' }),
         'session-atom-1',
         slot.provider,
+        PROJECT_ROOT,
         PROJECT_ROOT,
         BACKEND_NAMESPACE,
         'workflow-1',

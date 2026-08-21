@@ -8,6 +8,7 @@ import { hostKeyFromSpec } from '#src/coordinator/live/provider-hosts/state.js';
 import {
   canonicalizeWorkDir,
   canonicalWorkDirWireSchema,
+  containsWorkDir,
   WorkDirectoryError,
 } from '#src/runtime/canonical-work-dir.js';
 import type { Principal } from '#src/security/principal.js';
@@ -71,6 +72,23 @@ afterEach(() => {
 });
 
 describe('canonical work directory transport ingress', () => {
+  it('distinguishes descendants from ancestors and separator-confusable siblings', () => {
+    const root = canonicalWorkDirWireSchema.parse('/repo');
+    expect(containsWorkDir(root, root)).toBe(true);
+    expect(containsWorkDir(root, canonicalWorkDirWireSchema.parse('/repo/sub'))).toBe(true);
+    expect(containsWorkDir(canonicalWorkDirWireSchema.parse('/repo/sub'), root)).toBe(false);
+    expect(containsWorkDir(root, canonicalWorkDirWireSchema.parse('/sibling'))).toBe(false);
+    expect(containsWorkDir(root, canonicalWorkDirWireSchema.parse('/repo/..cache'))).toBe(true);
+  });
+
+  if (process.platform === 'win32') {
+    it('rejects a candidate on a different Windows drive', () => {
+      expect(
+        containsWorkDir(canonicalWorkDirWireSchema.parse('C:\\repo'), canonicalWorkDirWireSchema.parse('D:\\repo')),
+      ).toBe(false);
+    });
+  }
+
   it('refuses missing paths and files with an explicit work-directory error', () => {
     const root = tempRoot();
     const file = join(root, 'file.txt');

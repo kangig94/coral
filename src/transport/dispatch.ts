@@ -1,11 +1,14 @@
-import { isAbsolute, relative } from 'node:path';
-
 import type { DiscussSessionsListResponse } from '../discuss/read-contract.js';
 import type { JobLaunchRequest } from '../jobs/launch.js';
 import type { JobsListResponse } from '../jobs/records.js';
 import type { WaitStreamEvent, WaitStreamRequest } from '../jobs/wait.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
-import { canonicalizeWorkDir, type CanonicalWorkDir, WorkDirectoryError } from '../runtime/canonical-work-dir.js';
+import {
+  canonicalizeWorkDir,
+  containsWorkDir,
+  type CanonicalWorkDir,
+  WorkDirectoryError,
+} from '../runtime/canonical-work-dir.js';
 import { isCapability, type Capability } from '../security/capability.js';
 import type { Principal, ResourceBinding } from '../security/principal.js';
 import { authorizeCapability, authorizeResourceBinding, type Decision } from '../security/policy/authorize.js';
@@ -276,8 +279,7 @@ function authorizeCatalogResourceBinding(
     return decision;
   }
 
-  const descendant = relative(principal.binding.root, requestedBinding.root);
-  if (descendant === '' || (!descendant.startsWith('..') && !isAbsolute(descendant))) {
+  if (containsWorkDir(principal.binding.root, requestedBinding.root)) {
     return decision;
   }
 
@@ -780,14 +782,19 @@ async function executeExpansionCatalogRequest({
 
 async function executeJobsAbortCatalogRequest({
   request,
+  canonicalRequest,
   rpcPorts,
 }: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
   const parsed = request as { jobs: string[]; projectRoot: string };
-  const scopeCheck = rpcPorts.jobs.scopeCheck(parsed.jobs, parsed.projectRoot);
+  const callerRoot = canonicalRequest.projectRoot;
+  if (callerRoot === undefined) return unaryHttp(domainResultToHttp(invalidRequestResult()));
+  const scopeCheck = rpcPorts.jobs.scopeCheck(parsed.jobs, callerRoot, 'contains');
   if (scopeCheck.mismatch.length > 0) {
     return unaryHttp(
       domainResultToHttp(
-        domainError('scope_mismatch', 'Jobs do not belong to this project', { jobs: scopeCheck.mismatch }),
+        domainError('scope_mismatch', "Jobs are outside the caller's work directory scope", {
+          jobs: scopeCheck.mismatch,
+        }),
       ),
     );
   }
@@ -822,14 +829,19 @@ async function executeJobsListCatalogRequest({
 
 async function executeJobsDetailCatalogRequest({
   request,
+  canonicalRequest,
   rpcPorts,
 }: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
   const parsed = request as { jobId: string; projectRoot: string };
-  const scopeCheck = rpcPorts.jobs.scopeCheck([parsed.jobId], parsed.projectRoot);
+  const callerRoot = canonicalRequest.projectRoot;
+  if (callerRoot === undefined) return unaryHttp(domainResultToHttp(invalidRequestResult()));
+  const scopeCheck = rpcPorts.jobs.scopeCheck([parsed.jobId], callerRoot, 'contains');
   if (scopeCheck.mismatch.length > 0) {
     return unaryHttp(
       domainResultToHttp(
-        domainError('scope_mismatch', 'Jobs do not belong to this project', { jobs: scopeCheck.mismatch }),
+        domainError('scope_mismatch', "Jobs are outside the caller's work directory scope", {
+          jobs: scopeCheck.mismatch,
+        }),
       ),
     );
   }
@@ -846,6 +858,7 @@ async function executeJobsDetailCatalogRequest({
 
 async function executeJobsWaitCatalogRequest({
   request,
+  canonicalRequest,
   rpcPorts,
   abortSignal,
 }: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
@@ -856,11 +869,15 @@ async function executeJobsWaitCatalogRequest({
     cursor?: { afterSeq: number };
     supportsInterrupted?: boolean;
   };
-  const scopeCheck = rpcPorts.jobs.scopeCheck(parsed.jobIds, parsed.projectRoot);
+  const callerRoot = canonicalRequest.projectRoot;
+  if (callerRoot === undefined) return unaryHttp(domainResultToHttp(invalidRequestResult()));
+  const scopeCheck = rpcPorts.jobs.scopeCheck(parsed.jobIds, callerRoot, 'contains');
   if (scopeCheck.mismatch.length > 0) {
     return unaryHttp(
       domainResultToHttp(
-        domainError('scope_mismatch', 'Jobs do not belong to this project', { jobs: scopeCheck.mismatch }),
+        domainError('scope_mismatch', "Jobs are outside the caller's work directory scope", {
+          jobs: scopeCheck.mismatch,
+        }),
       ),
     );
   }

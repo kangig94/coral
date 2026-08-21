@@ -59,6 +59,7 @@ import { providerOperationRecord } from '#tests/unit/store/provider-operation-fi
 import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
 import { setStoreServicesForTest } from '#tools/testing/store-services.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import {
   StubbedContainmentProviderHostManager,
   createEntry,
@@ -79,6 +80,7 @@ function acquiredDetail(jobId: string, hostRef: HostRef): JobProjectionDetail {
     sessionId: 'idle-session',
     provider: hostRef.provider,
     projectRoot: '/workspace',
+    workDir: fixtureCanonicalWorkDir('/workspace'),
     backendNamespace: 'idle-carrier-test',
     jobKind: 'provider',
     phase: 'running',

@@ -590,6 +590,7 @@ function _makeStatusRecord(
     sessionId: options.sessionId ?? `${jobId}-session`,
     provider: 'codex',
     projectRoot: ctx.projectRoot,
+    workDir: ctx.projectRoot,
     backendNamespace: TEST_BACKEND_NAMESPACE,
     jobKind: 'provider',
     phase,

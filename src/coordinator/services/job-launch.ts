@@ -172,7 +172,6 @@ export class JobLaunchService {
         owner: input.owner ?? { kind: 'provider-session', id: session.sessionId },
         requestedJobId: input.jobId,
         pool,
-        projectRoot: ctx.projectRoot,
         parentWorkflowJobId: input.parentWorkflowJobId,
         workflowSlotId: input.workflowSlotId,
         workflowSlotGeneration: input.workflowSlotGeneration,
@@ -416,7 +415,6 @@ export class JobLaunchService {
           workflowSlotGeneration,
           replacesWorkflowJobId,
           pool,
-          projectRoot: ctx.projectRoot,
           mintProtectedEnv: (jobId) =>
             this.mintChildPrincipalSecretEnv(ctx, session.sessionId, jobId, 'job-launch:workflow-replacement'),
         }),
@@ -430,7 +428,6 @@ export class JobLaunchService {
         sessionBusyMessage: busyMessage,
         requestedJobId: input.jobId,
         pool,
-        projectRoot: ctx.projectRoot,
         parentWorkflowJobId: input.parentWorkflowJobId,
         workflowSlotId: input.workflowSlotId,
         workflowSlotGeneration: input.workflowSlotGeneration,

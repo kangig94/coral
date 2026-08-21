@@ -17,6 +17,7 @@ type ProjectionJobRevisionRow = {
   readonly session_id: RecoveryRevisionValue;
   readonly provider: RecoveryRevisionValue;
   readonly project_root: RecoveryRevisionValue;
+  readonly work_dir: RecoveryRevisionValue;
   readonly backend_namespace: RecoveryRevisionValue;
   readonly bundle_hash: RecoveryRevisionValue;
   readonly job_kind: RecoveryRevisionValue;
@@ -83,6 +84,7 @@ export function projectionJobRevisionFields(row: ProjectionJobRevisionRow): Reco
     { table: 'projection_jobs', key, field: 'session_id', value: row.session_id },
     { table: 'projection_jobs', key, field: 'provider', value: row.provider },
     { table: 'projection_jobs', key, field: 'project_root', value: row.project_root },
+    { table: 'projection_jobs', key, field: 'work_dir', value: row.work_dir },
     { table: 'projection_jobs', key, field: 'backend_namespace', value: row.backend_namespace },
     { table: 'projection_jobs', key, field: 'bundle_hash', value: row.bundle_hash },
     { table: 'projection_jobs', key, field: 'job_kind', value: row.job_kind },

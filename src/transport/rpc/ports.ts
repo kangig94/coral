@@ -38,6 +38,8 @@ export type ScopeCheckResult = {
   mismatch: string[];
 };
 
+export type JobScopeRelation = 'contains' | 'exact';
+
 export type JobListFilters = {
   projectRoot?: string;
   phase?: JobPhase;
@@ -50,7 +52,7 @@ interface SessionRequestPort {
 }
 
 interface JobsRequestPort {
-  scopeCheck(jobIds: string[], projectRoot: string): ScopeCheckResult;
+  scopeCheck(jobIds: string[], callerRoot: CanonicalWorkDir, relation: JobScopeRelation): ScopeCheckResult;
   abort(jobIds: string[]): AbortResult;
   waitStream(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent>;
   list(filters: JobListFilters): Array<{ jobId: string; status: JobStatus }>;

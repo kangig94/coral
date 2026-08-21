@@ -1,6 +1,7 @@
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { allocateTestSession } from '../../../helpers/session.js';
+import { fixtureCanonicalWorkDir } from '../../../helpers/canonical-work-dir.js';
 import {
   TEST_CODEX_BINDING,
   TEST_CODEX_ACCESS,
@@ -397,6 +398,7 @@ function stubLaunchRecord(
     provider: string;
     projectRoot: string;
     backendNamespace: string;
+    workDir?: string;
     pool?: LaunchPool;
     jobKind?: 'provider' | 'workflow';
   },
@@ -409,7 +411,7 @@ function stubLaunchRecord(
     enqueueSequence: 0,
     request: {
       prompt: '',
-      cwd: '/tmp/test',
+      cwd: overrides.workDir ?? overrides.projectRoot,
       bypassPermissions: false,
       coralEnv: {},
     },
@@ -4374,7 +4376,7 @@ describe('execution backend server', () => {
         expectedStatus: 403,
         expectedBody: {
           code: 'scope_mismatch',
-          message: 'Jobs do not belong to this project',
+          message: "Jobs are outside the caller's work directory scope",
           detail: { jobs: ['job-foreign'] },
         },
       },
@@ -4414,6 +4416,59 @@ describe('execution backend server', () => {
         }
       },
     );
+
+    it('uses containment for filtered job streams and equality for ambient streams', async () => {
+      const scopeCheckJobs = vi.fn(() => ({ valid: ['job-descendant'], missing: [], mismatch: [] }));
+      const { deps } = createHttpHandlerDeps({ scopeCheckJobs });
+      const started = await startHttpHandlerServer(deps);
+      const filtered = await openHttpStream(
+        `${started.baseUrl}/events/stream?projectRoot=${encodeURIComponent(DEFAULT_PROJECT_ROOT)}&filter=job:job-descendant`,
+        { 'X-Coral-Backend-Token': 'test-token' },
+      );
+
+      try {
+        await filtered.waitForText((text) => text.includes('event: ready'));
+        deps.events.bus.emit('job:created', {
+          kind: 'provider',
+          jobId: 'job-descendant',
+          sessionId: 'session-descendant',
+          provider: 'codex',
+          projectRoot: '/another/project-identity',
+        });
+        await filtered.waitForText((text) => text.includes('event: job:created'));
+        expect(scopeCheckJobs).toHaveBeenCalledWith(
+          ['job-descendant'],
+          fixtureCanonicalWorkDir(DEFAULT_PROJECT_ROOT),
+          'contains',
+        );
+      } finally {
+        filtered.close();
+      }
+
+      scopeCheckJobs.mockClear();
+      const ambient = await openHttpStream(
+        `${started.baseUrl}/events/stream?projectRoot=${encodeURIComponent(DEFAULT_PROJECT_ROOT)}`,
+        { 'X-Coral-Backend-Token': 'test-token' },
+      );
+      try {
+        await ambient.waitForText((text) => text.includes('event: ready'));
+        deps.events.bus.emit('job:progress', {
+          jobId: 'job-descendant',
+          seq: 1,
+          message: 'progress',
+          timing: waitTiming,
+        });
+        await ambient.waitForText((text) => text.includes('event: job:progress'));
+        expect(scopeCheckJobs).toHaveBeenCalledWith(
+          ['job-descendant'],
+          fixtureCanonicalWorkDir(DEFAULT_PROJECT_ROOT),
+          'exact',
+        );
+      } finally {
+        ambient.close();
+        await _closeHttpServer(started.server);
+      }
+    });
   });
 
   it('defaults an absent /jobs/wait cursor to an empty replay state', async () => {
@@ -4926,7 +4981,7 @@ describe('execution backend server', () => {
     expect(response.status).toBe(403);
     expect(await response.json()).toEqual({
       code: 'scope_mismatch',
-      message: 'Jobs do not belong to this project',
+      message: "Jobs are outside the caller's work directory scope",
       detail: { jobs: ['job-foreign-project'] },
     });
   });
@@ -4972,7 +5027,7 @@ describe('execution backend server', () => {
     expect(response.status).toBe(403);
     expect(await response.json()).toEqual({
       code: 'scope_mismatch',
-      message: 'Jobs do not belong to this project',
+      message: "Jobs are outside the caller's work directory scope",
       detail: { jobs: [jobId] },
     });
   });
@@ -4988,6 +5043,7 @@ describe('execution backend server', () => {
       createdJobIds.add('job-running');
       createdJobIds.add('job-queued');
       createdJobIds.add('job-completed');
+      createdJobIds.add('job-descendant-work-dir');
       createdJobIds.add('job-foreign-project');
 
       seedTestJobSession(progressStore, {
@@ -5043,6 +5099,22 @@ describe('execution backend server', () => {
         'completed',
       );
       seedTestJobSession(progressStore, {
+        jobId: 'job-descendant-work-dir',
+        sessionId: 'session-descendant-work-dir',
+        provider: 'claude',
+        projectRoot: DEFAULT_PROJECT_ROOT,
+        backendNamespace: testBackendNamespace,
+        initialPhase: 'queued',
+      });
+      stubLaunchRecord(progressStore, {
+        jobId: 'job-descendant-work-dir',
+        sessionId: 'session-descendant-work-dir',
+        provider: 'claude',
+        projectRoot: DEFAULT_PROJECT_ROOT,
+        workDir: DEFAULT_WORK_DIR,
+        backendNamespace: testBackendNamespace,
+      });
+      seedTestJobSession(progressStore, {
         jobId: 'job-foreign-project',
         sessionId: 'session-foreign-project',
         provider: 'codex',
@@ -5066,7 +5138,12 @@ describe('execution backend server', () => {
       };
 
       expect(allResponse.status).toBe(200);
-      expect(allBody.jobs.map((job) => job.jobId)).toEqual(['job-foreign-project', 'job-queued', 'job-running']);
+      expect(allBody.jobs.map((job) => job.jobId)).toEqual([
+        'job-foreign-project',
+        'job-descendant-work-dir',
+        'job-queued',
+        'job-running',
+      ]);
 
       const projectScopedResponse = await fetch(
         `${backend.baseUrl}/jobs?projectRoot=${encodeURIComponent(DEFAULT_PROJECT_ROOT)}`,
@@ -5262,7 +5339,7 @@ describe('execution backend server', () => {
     expect(response.status).toBe(403);
     expect(await response.json()).toEqual({
       code: 'scope_mismatch',
-      message: 'Jobs do not belong to this project',
+      message: "Jobs are outside the caller's work directory scope",
       detail: { jobs: ['job-foreign'] },
     });
     expect(fakeService.waitStream).not.toHaveBeenCalled();

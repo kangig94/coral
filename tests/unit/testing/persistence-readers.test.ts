@@ -130,6 +130,7 @@ function seedJobProjection(
          session_id,
          provider,
          project_root,
+         work_dir,
          backend_namespace,
          bundle_hash,
          job_kind,
@@ -137,7 +138,7 @@ function seedJobProjection(
          workflow_slot,
          created_at,
          last_seq
-       ) VALUES (?, ?, ?, NULL, '{"progressFaults":[]}', ?, ?, ?, ?, NULL, ?, NULL, NULL, ?, ?)`,
+       ) VALUES (?, ?, ?, NULL, '{"progressFaults":[]}', ?, ?, ?, ?, ?, NULL, ?, NULL, NULL, ?, ?)`,
     ).run(
       jobId,
       JSON.stringify(
@@ -148,6 +149,7 @@ function seedJobProjection(
       options.phase ?? 'running',
       options.sessionId ?? 's1',
       options.provider ?? 'codex',
+      options.projectRoot ?? '/tmp/project',
       options.projectRoot ?? '/tmp/project',
       options.backendNamespace ?? 'ns',
       options.jobKind === 'workflow' ? 'workflow' : 'provider',
@@ -209,6 +211,7 @@ describe('readStatusRecord', () => {
       sessionId: 's1',
       provider: 'codex',
       projectRoot: '/tmp/project',
+      workDir: '/tmp/project',
       backendNamespace: 'ns',
       jobKind: 'provider',
       phase: 'running',

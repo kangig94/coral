@@ -4,7 +4,11 @@ import { errorMessage } from '../infra/error-format.js';
 import { describeSessionJobClaimReleaseResult } from '../sessions/job-release.js';
 import type { SessionJobClaimReleaseResult } from '../sessions/contracts.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
-import { canonicalizeWorkDir, type CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
+import {
+  canonicalizeWorkDir,
+  canonicalWorkDirWireSchema,
+  type CanonicalWorkDir,
+} from '../runtime/canonical-work-dir.js';
 import type { IdPort } from '../runtime/ports.js';
 import type { TimePort } from '../infra/port-types.js';
 import { nowIsoString } from '../infra/time.js';
@@ -399,6 +403,7 @@ async function resumePendingReplacementIntents(
           sessionId: launch.sessionId,
           provider: launch.provider,
           projectRoot: launch.projectRoot,
+          workDir: canonicalWorkDirWireSchema.parse(launch.request.cwd),
           backendNamespace: launch.backendNamespace,
           jobKind: 'provider' as const,
           updatedAt: launch.createdAt,
