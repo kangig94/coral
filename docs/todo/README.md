@@ -53,7 +53,7 @@ signal a correctly identified target, they are about there being no party left t
 | Order | Entry                                                       | Why here                                                                                                                                                  |
 | ----- | ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1     | the compatibility policy, then `build-identity-and-upgrade` | Unblocks three others. Its own first step is small and blocks nothing: carry the routing reason instead of collapsing four situations into `use-current`. |
-| 2     | `coordinator-socket-identity`, `job-scope-containment`      | Independent, small, failing case is one assertion each. Parallelisable against 1.                                                                         |
+| 2     | `coordinator-socket-identity`                               | Independent, small, failing case is one assertion. Parallelisable against 1.                                                                              |
 | 3     | `darwin-signal-authority` + `durable-cli-signal-authority`  | Needs a synchronous exit state on `ChildProcessLike`, which touches every fake in the suite. Do it when nothing else is in flight.                        |
 | 4     | `provider-operation-admission-hold`                         | Design complete and recorded; ships as one unit or not at all.                                                                                            |
 | 5     | `coordinator-process-disposition`                           | After 4 has settled the recovery boundary the custody transfer has to attach to.                                                                          |
@@ -118,14 +118,6 @@ session, and a mixed window called "permitted by design" — so its corrections 
 The `wait` change is blocked on build identity's **output** direction specifically: a session still
 holding the old skill's text, reading a new always-zero exit, would convert failure into success. #316
 landing does not unblock it — that was the record direction.
-
----
-
-## A job has one root
-
-|                                                          |                                                                                                                                                                                                                                                                                                                                                                                                       |
-| -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`job-scope-containment.md`](./job-scope-containment.md) | Authorization already decides against the directory the work happens in; the durable record takes the shell's cwd instead. Record the former, and compare by containment rather than equality. **Three launch paths write the record, not one** — initial, resumed, and workflow-replacement. Must land before the jobs read contract — a consumer inventory cannot be audited while the values move. |
 
 ---
 
@@ -215,7 +207,7 @@ not about what the probe claims.
 
 |                                                                              |                                                                                                                                                                                                  |
 | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| [`jobs-read-contract-schema-first.md`](./jobs-read-contract-schema-first.md) | `jobs.list` and `jobs.detail` cross four boundaries with no response schema. The field that motivated it stopped crossing the wire while it sat open; the boundary is the defect, not the field. |
+| [`jobs-read-contract-schema-first.md`](./jobs-read-contract-schema-first.md) | `jobs.list` and `jobs.detail` cross four boundaries with no response schema. The field that motivated it stopped crossing the wire while it sat open; the boundary is the defect, not the field. Its one prerequisite is cleared: job scope stopped moving when `projection_jobs.work_dir` landed, so a consumer inventory can now be audited against settled values. |
 | [`result-artifact-availability.md`](./result-artifact-availability.md)       | **Re-score before starting.** The symptom that motivated it was fixed by a ten-line change (#314); what remains has never been observed and costs a protocol transition.                         |
 
 ---
