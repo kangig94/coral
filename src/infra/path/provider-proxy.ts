@@ -85,17 +85,27 @@ function insecureEndpointError(
   cause?: unknown,
 ): ProviderProxyEndpointError {
   const requirement = `a directory owned by uid ${env.uid} with mode 0700`;
+  const observation =
+    cause instanceof Error ? cause.message : typeof cause === 'string' ? cause : 'observation unavailable';
+  const directory = observation.includes(fallbackDirectory)
+    ? 'The provider endpoint fallback directory'
+    : `Provider endpoint fallback directory '${fallbackDirectory}'`;
   const observed: Record<SocketDirectoryRefusal, string> = {
     foreign: `belongs to another user, so it cannot be ${requirement}`,
     unusable: `is not ${requirement}`,
-    unsecurable: `cannot be held as ${requirement}`,
-    unverified: `could not be verified as ${requirement}`,
+    unsecurable: `cannot be held as ${requirement}: ${observation}`,
+    unverified: `could not be verified as ${requirement}: ${observation}`,
   };
-  // The context this carries is dropped by every consumer that renders only `Error.message`, so the path an
-  // operator would act on belongs in the sentence.
+  const remediation: Record<SocketDirectoryRefusal, string> = {
+    foreign: 'Ask its owner or an administrator to remove it, then start Coral again.',
+    unusable: 'Remove it, then start Coral again.',
+    unsecurable:
+      "Give this host's administrator this observation, then start Coral again after the directory is repaired.",
+    unverified: 'Resolve the reported filesystem error, then start Coral again.',
+  };
   return new ProviderProxyEndpointError(
     'proxy_endpoint_insecure',
-    `Provider endpoint fallback directory '${fallbackDirectory}' ${observed[refusal]}.`,
+    `${directory} ${observed[refusal]}. ${remediation[refusal]}`,
     {
       fallbackDirectory,
       refusal,

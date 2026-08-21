@@ -3,7 +3,17 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createServer, type Server as NetServer } from 'node:net';
-import { existsSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  rmdirSync,
+  statSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { socketFallbackDir } from '#src/infra/path/unix-socket.js';
@@ -11,6 +21,7 @@ import { bindSocket, closeIpcServer, type IpcListener } from '#src/transport/ipc
 
 const tempDirs: string[] = [];
 const createdFallbackLinks: string[] = [];
+const createdFallbackDirectories: string[] = [];
 const cleanupServers: NetServer[] = [];
 
 function makeSocketPath(name: string): string {
@@ -45,6 +56,9 @@ afterEach(async () => {
   // than from mkdtemp, so a recursive remove of one this suite did not make is a remove of someone's data.
   for (const link of createdFallbackLinks.splice(0)) {
     unlinkSync(link);
+  }
+  for (const directory of createdFallbackDirectories.splice(0)) {
+    rmdirSync(directory);
   }
   vi.restoreAllMocks();
 });
@@ -122,6 +136,49 @@ describe('bindSocket', () => {
     );
     expect(server.listening).toBe(false);
     expect(existsSync(join(target, 'relocated.sock'))).toBe(false);
+  });
+
+  it('maps a foreign refusal reached through a repeated separator and renders its reason', async () => {
+    const parentUid = statSync(tmpdir(), { bigint: true }).uid;
+    const uid = parentUid === 0n ? 9_000_000 + process.pid : Number(parentUid);
+    vi.spyOn(process, 'getuid').mockReturnValue(uid);
+    const directory = socketFallbackDir(uid);
+    mkdirSync(directory, { mode: 0o700 });
+    createdFallbackDirectories.push(directory);
+    const socketPath = `${directory}//foreign.sock`;
+    const server = createServer();
+    cleanupServers.push(server);
+
+    await expect(bindSocket(server, socketPath)).rejects.toThrow(
+      expect.objectContaining({
+        code: 'coordinator_socket_dir_insecure',
+        context: expect.objectContaining({ reason: 'foreign' }),
+        userMessage: expect.stringContaining('and that path belongs to another user.'),
+      }),
+    );
+    expect(server.listening).toBe(false);
+    expect(existsSync(socketPath)).toBe(false);
+  });
+
+  it('maps an unsecurable refusal reached through a dot segment and renders its observation', async () => {
+    const uid = 9_000_000 + process.pid;
+    vi.spyOn(process, 'getuid').mockReturnValue(uid);
+    const directory = socketFallbackDir(uid);
+    mkdirSync(directory, { mode: 0o700 });
+    createdFallbackDirectories.push(directory);
+    const socketPath = `${directory}/./unsecurable.sock`;
+    const server = createServer();
+    cleanupServers.push(server);
+
+    await expect(bindSocket(server, socketPath)).rejects.toThrow(
+      expect.objectContaining({
+        code: 'coordinator_socket_dir_insecure',
+        context: expect.objectContaining({ reason: 'unsecurable' }),
+        userMessage: expect.stringContaining('belongs to uid'),
+      }),
+    );
+    expect(server.listening).toBe(false);
+    expect(existsSync(socketPath)).toBe(false);
   });
 
   it('rethrows non-EADDRINUSE errors from listen', async () => {

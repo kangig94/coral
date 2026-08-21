@@ -173,6 +173,9 @@ describe('provider proxy paths', () => {
     expect(() => providerProxyEndpoint(identity, environment({ baseDir: pathOfLength(200), storage }))).toThrowError(
       expect.objectContaining({
         code: 'proxy_endpoint_insecure',
+        message:
+          `Provider endpoint fallback directory '${FALLBACK_DIRECTORY}' belongs to another user, so it cannot be a directory owned by uid ${CURRENT_UID} with mode 0700. ` +
+          'Ask its owner or an administrator to remove it, then start Coral again.',
         context: expect.objectContaining({ refusal: 'foreign' }),
       }),
     );
@@ -191,7 +194,31 @@ describe('provider proxy paths', () => {
     expect(() => providerProxyEndpoint(identity, environment({ baseDir: pathOfLength(200), storage }))).toThrowError(
       expect.objectContaining({
         code: 'proxy_endpoint_insecure',
+        message:
+          `Provider endpoint fallback directory '${FALLBACK_DIRECTORY}' is not a directory owned by uid ${CURRENT_UID} with mode 0700. ` +
+          'Remove it, then start Coral again.',
         context: expect.objectContaining({ refusal: 'unusable' }),
+      }),
+    );
+  });
+
+  it('reports an unsecurable fallback directory with the observation and administrator remediation', () => {
+    const loose = secureStorage();
+    const storage: ProviderProxyEndpointEnvironment['storage'] = {
+      ...loose,
+      statSync: (path) =>
+        path === FALLBACK_ROOT
+          ? { ...loose.statSync(path, { bigint: true }), mode: 0o40777n }
+          : loose.statSync(path, { bigint: true }),
+    };
+
+    expect(() => providerProxyEndpoint(identity, environment({ baseDir: pathOfLength(200), storage }))).toThrowError(
+      expect.objectContaining({
+        code: 'proxy_endpoint_insecure',
+        message:
+          `Provider endpoint fallback directory '${FALLBACK_DIRECTORY}' cannot be held as a directory owned by uid ${CURRENT_UID} with mode 0700: its parent '${FALLBACK_ROOT}' is writable by other users and does not restrict deletion. ` +
+          "Give this host's administrator this observation, then start Coral again after the directory is repaired.",
+        context: expect.objectContaining({ refusal: 'unsecurable' }),
       }),
     );
   });
@@ -201,14 +228,20 @@ describe('provider proxy paths', () => {
     const storage: ProviderProxyEndpointEnvironment['storage'] = {
       ...loose,
       lstatSync: () => {
-        throw new Error('EIO: i/o error, lstat');
+        throw new Error(`EACCES: permission denied, lstat '${FALLBACK_DIRECTORY}'`);
       },
     };
 
     expect(() => providerProxyEndpoint(identity, environment({ baseDir: pathOfLength(200), storage }))).toThrowError(
       expect.objectContaining({
         code: 'proxy_endpoint_insecure',
-        context: expect.objectContaining({ refusal: 'unverified', cause: 'EIO: i/o error, lstat' }),
+        message:
+          `The provider endpoint fallback directory could not be verified as a directory owned by uid ${CURRENT_UID} with mode 0700: EACCES: permission denied, lstat '${FALLBACK_DIRECTORY}'. ` +
+          'Resolve the reported filesystem error, then start Coral again.',
+        context: expect.objectContaining({
+          refusal: 'unverified',
+          cause: `EACCES: permission denied, lstat '${FALLBACK_DIRECTORY}'`,
+        }),
       }),
     );
   });

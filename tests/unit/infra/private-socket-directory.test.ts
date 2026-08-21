@@ -23,8 +23,14 @@ afterEach(() => {
 
 const realStorage = { chmodSync, lstatSync, mkdirSync, statSync };
 
-// `mkdtemp` gives 0700, and a parent that no other user can write to is the precondition the assertion
-// requires; a case that needs the opposite opens it explicitly.
+function storageReportingParentUid(uid: bigint | undefined): typeof realStorage {
+  return {
+    ...realStorage,
+    statSync: ((path: string, options?: { bigint: true }) =>
+      options?.bigint === true ? { ...statSync(path, { bigint: true }), uid } : statSync(path)) as typeof statSync,
+  };
+}
+
 function scratchDirectory(mode: number): string {
   const root = scratch();
   chmodSync(root, mode);
@@ -74,8 +80,15 @@ describe('ensurePrivateSocketDir', () => {
   it('refuses a directory owned by another uid as foreign', () => {
     const directory = join(scratch(), 'foreign');
     mkdirSync(directory, { mode: 0o700 });
+    const foreignEntry = {
+      ...realStorage,
+      lstatSync: ((path: string, options?: { bigint: true }) =>
+        options?.bigint === true
+          ? { ...lstatSync(path, { bigint: true }), uid: BigInt(CURRENT_UID) + 1n }
+          : lstatSync(path)) as typeof lstatSync,
+    };
 
-    expect(() => ensurePrivateSocketDir(directory, CURRENT_UID + 1, realStorage)).toThrowError(
+    expect(() => ensurePrivateSocketDir(directory, CURRENT_UID, foreignEntry)).toThrowError(
       expect.objectContaining({ refusal: 'foreign' }),
     );
   });
@@ -120,17 +133,51 @@ describe('ensurePrivateSocketDir', () => {
     expect(lstatSync(directory).mode & 0o777).toBe(0o700);
   });
 
-  it('refuses a restricted-deletion parent belonging to someone else, which that owner is exempt from', () => {
+  it('accepts the root-owned sticky parent used by production /tmp', () => {
     const directory = scratchDirectory(0o1777);
-    const foreignOwner = {
-      ...realStorage,
-      statSync: ((path: string, options?: { bigint: true }) =>
+    const uid = CURRENT_UID === 0 ? 1 : CURRENT_UID;
+    const rootOwnedParent = {
+      ...storageReportingParentUid(0n),
+      lstatSync: ((path: string, options?: { bigint: true }) =>
         options?.bigint === true
-          ? { ...statSync(path, { bigint: true }), uid: BigInt(CURRENT_UID) + 1n }
-          : statSync(path)) as typeof statSync,
+          ? { ...lstatSync(path, { bigint: true }), uid: BigInt(uid) }
+          : lstatSync(path)) as typeof lstatSync,
     };
 
-    expect(() => ensurePrivateSocketDir(directory, CURRENT_UID, foreignOwner)).toThrowError(
+    ensurePrivateSocketDir(directory, uid, rootOwnedParent);
+
+    expect(lstatSync(directory).mode & 0o777).toBe(0o700);
+  });
+
+  it.each([
+    ['0755', 0o755],
+    ['0700', 0o700],
+  ])('refuses a foreign-owned parent with mode %s', (_label, mode) => {
+    const directory = scratchDirectory(mode);
+    const foreignUid = BigInt(CURRENT_UID) + 1n;
+
+    expect(() => ensurePrivateSocketDir(directory, CURRENT_UID, storageReportingParentUid(foreignUid))).toThrowError(
+      expect.objectContaining({
+        refusal: 'unsecurable',
+        detail: expect.stringContaining(`belongs to uid ${foreignUid}`),
+      }),
+    );
+  });
+
+  it('leaves a parent with no reported owner unverified', () => {
+    const directory = scratchDirectory(0o700);
+
+    expect(() => ensurePrivateSocketDir(directory, CURRENT_UID, storageReportingParentUid(undefined))).toThrowError(
+      expect.objectContaining({ refusal: 'unverified', detail: 'the parent reported no owner' }),
+    );
+  });
+
+  it('refuses a restricted-deletion parent belonging to someone else, which that owner is exempt from', () => {
+    const directory = scratchDirectory(0o1777);
+
+    expect(() =>
+      ensurePrivateSocketDir(directory, CURRENT_UID, storageReportingParentUid(BigInt(CURRENT_UID) + 1n)),
+    ).toThrowError(
       expect.objectContaining({ refusal: 'unsecurable', detail: expect.stringContaining('belongs to uid') }),
     );
   });

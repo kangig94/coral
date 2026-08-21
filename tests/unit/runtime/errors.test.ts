@@ -300,9 +300,6 @@ describe('CoralSetupError', () => {
     });
   });
 
-  // What the operator is told is the deliverable of the socket-directory refusal, and it is assembled from
-  // context keys the thrower supplies by name: a key the renderer reads and nobody passes leaves a
-  // placeholder in the sentence rather than failing anywhere.
   describe('the relocated socket directory refusals', () => {
     it('separates an ownership verdict from an observation that was never made', () => {
       const foreign = documentedCoralSetupError({
@@ -324,28 +321,43 @@ describe('CoralSetupError', () => {
       const unverified = documentedCoralSetupError({
         code: 'coordinator_socket_dir_unverified',
         directory: '/tmp/coral-1000',
-        cause: 'EIO: i/o error, lstat',
+        cause: "EACCES: permission denied, lstat '/tmp/coral-1000'",
+      });
+      const parentUnverified = documentedCoralSetupError({
+        code: 'coordinator_socket_dir_unverified',
+        directory: '/tmp/coral-1000',
+        cause: "EACCES: permission denied, stat '/tmp'",
       });
 
-      for (const error of [foreign, unusable, unsecurable, unverified]) {
+      for (const error of [foreign, unusable, unsecurable]) {
         expect(error.userMessage).toContain('/tmp/coral-1000');
-        expect(error.remediation).toContain('/tmp/coral-1000');
         expect(`${error.userMessage} ${error.remediation}`).not.toContain('<directory>');
         expect(`${error.userMessage} ${error.remediation}`).not.toContain('cause unavailable');
+      }
+      for (const error of [foreign, unusable]) {
+        expect(error.remediation).toContain('/tmp/coral-1000');
       }
       expect(foreign.userMessage).toContain('belongs to another user');
       expect(foreign.remediation).not.toMatch(/^Remove/u);
       expect(unusable.remediation).toContain('Remove');
       expect(unsecurable.remediation).not.toContain('Remove');
-      // `unsecurable` and `unverified` each cover several observations, so the one that happened has to be in
-      // the sentence — and only once: the caller already names the directory, so passing the whole underlying
-      // message rather than its observation nests one inside the other.
-      expect(unsecurable.userMessage).toContain('is writable by other users');
-      for (const error of [unsecurable, unverified]) {
-        expect(error.userMessage).not.toContain('Socket directory');
+      expect(unsecurable.userMessage).toBe(
+        "Coral relocated its coordinator socket into /tmp/coral-1000 because the path beside its run directory exceeds this platform's limit, and Coral cannot keep that path private to you (its parent '/tmp' is writable by other users and does not restrict deletion).",
+      );
+      expect(unsecurable.remediation).toBe(
+        "Give this host's administrator the observation above. Coral did not bind its singleton socket. Start Coral again once the directory is repaired.",
+      );
+      expect(unverified.userMessage).toBe(
+        "Coral relocated its coordinator socket into a fallback directory because the path beside its run directory exceeds this platform's limit, and could not establish whether it is private to you (EACCES: permission denied, lstat '/tmp/coral-1000'). This does not mean the directory is wrong.",
+      );
+      expect(parentUnverified.userMessage).toBe(
+        "Coral relocated its coordinator socket into /tmp/coral-1000 because the path beside its run directory exceeds this platform's limit, and could not establish whether that directory is private to you (EACCES: permission denied, stat '/tmp'). This does not mean the directory is wrong.",
+      );
+      for (const error of [unverified, parentUnverified]) {
+        expect(error.remediation).toBe(
+          'Resolve the filesystem error reported in the observation above, then start Coral again. Coral will not bind its singleton socket in a directory it could not observe.',
+        );
       }
-      expect(unverified.userMessage).toContain('EIO: i/o error, lstat');
-      expect(unverified.userMessage).toContain('does not mean');
     });
   });
 });

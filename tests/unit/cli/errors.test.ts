@@ -286,8 +286,6 @@ describe('cli errors', () => {
       ['audit_requires_ended_session', 409, 1],
       ['invalid_request', 400, 1],
       ['backend_recovering', 503, 75],
-      // "Could not observe", not "decided no" — members of `NOT_OBSERVED_CORAL_SETUP_ERROR_CODES`. See each
-      // code's doc comment in `runtime/errors.ts`.
       ['coordinator_record_unreadable', undefined, 75],
       ['coordinator_unreachable', undefined, 75],
       ['coordinator_socket_dir_unverified', undefined, 75],

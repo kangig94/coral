@@ -198,7 +198,7 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
         ? `Remove ${stringContextValue(context, 'directory', '<directory>')} and start Coral again. Coral will not bind its singleton socket where it cannot establish exclusive ownership.`
         : context?.reason === 'foreign'
           ? `Ask the owner of ${stringContextValue(context, 'directory', '<directory>')}, or this host's administrator, to remove it — do not try to remove or repair it yourself. Coral will not bind its singleton socket where it cannot establish exclusive ownership.`
-          : `Give this host's administrator the observation above for ${stringContextValue(context, 'directory', '<directory>')}: Coral relocates there only because the ordinary socket path is too long for this platform, and it has no shorter address to fall back to.`,
+          : "Give this host's administrator the observation above. Coral did not bind its singleton socket. Start Coral again once the directory is repaired.",
   },
   /**
    * Exit 75, not 1, and separate from `coordinator_socket_dir_insecure` for the reason
@@ -207,10 +207,16 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
    * act on an ownership verdict this run never reached.
    */
   coordinator_socket_dir_unverified: {
-    userMessage: (context) =>
-      `Coral relocated its coordinator socket into ${stringContextValue(context, 'directory', '<directory>')} because the path beside its run directory exceeds this platform's limit, and could not establish whether that directory is private to you (${stringContextValue(context, 'cause', 'cause unavailable')}). This does not mean the directory is wrong.`,
-    remediation: (context) =>
-      `Resolve the filesystem error reported for ${stringContextValue(context, 'directory', '<directory>')}, then start Coral again. Coral will not bind its singleton socket in a directory it could not observe.`,
+    userMessage: (context) => {
+      const directory = stringContextValue(context, 'directory', '<directory>');
+      const cause = stringContextValue(context, 'cause', 'cause unavailable');
+      const observationNamesDirectory = cause.includes(directory);
+      const location = observationNamesDirectory ? 'a fallback directory' : directory;
+      const reference = observationNamesDirectory ? 'it' : 'that directory';
+      return `Coral relocated its coordinator socket into ${location} because the path beside its run directory exceeds this platform's limit, and could not establish whether ${reference} is private to you (${cause}). This does not mean the directory is wrong.`;
+    },
+    remediation:
+      'Resolve the filesystem error reported in the observation above, then start Coral again. Coral will not bind its singleton socket in a directory it could not observe.',
   },
   store_schema_outdated: {
     userMessage: 'Coral backend store format does not match this installation.',

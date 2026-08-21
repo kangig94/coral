@@ -20,6 +20,9 @@ that invalidates it will not be the edit that notices.
 - Rejected outright, as instances of description: change history (the VCS owns it); any claim about
   another file, quoted or paraphrased; prose restating the expression beneath it; a count of
   anything; a comment justifying an unreachable branch instead of deleting the branch.
+- Refreshing is permitted only when a later diff re-measures an external fact or corrects its
+  citation, or moves a pointer's named symbol or path. Neither permits editing a comment because
+  the code beneath it changed.
 - A comment you must edit because the code changed slightly is the worst case, not a maintenance
   cost to accept. There is no third option that keeps it: **delete it.** Do not re-express it as a
   test or a type to preserve the sentence — that is the same claim implemented twice, and the

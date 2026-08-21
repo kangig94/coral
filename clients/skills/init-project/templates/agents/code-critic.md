@@ -33,7 +33,9 @@ model: sonnet
       not a judgement call: the diff performed the falsifying edit, so the sentence was a description
       of the code. Report it BLOCKING with the before and after text. Never accept "it states a
       constraint" for one — a constraint does not need editing when the code beneath it changes. The
-      single exception is a pointer whose named symbol or path the diff moved.
+      only exceptions are refreshes the conventions explicitly permit: a pointer whose named symbol
+      or path the diff moved, or an externally measured fact updated after re-measurement or a
+      corrected citation. A comment edited because the code beneath it changed remains BLOCKING.
 
     STRONG:
     - Elegance Score < 7 - simpler or clearer solution exists
@@ -42,9 +44,12 @@ model: sonnet
     - Error handling inconsistent with project patterns
     - Every comment the diff adds, or leaves standing in a function it changed, passes the rot test in
       `.claude/rules/conventions.md` (Comments): could any plausible edit make this sentence false?
-      Read that rule and apply it — do not re-derive it here. Name the edit that would falsify the
-      sentence. If that edit is a legitimate change, the comment is a description: report it. It
-      survives only when every edit that falsifies it is itself a bug. Findings, never style notes.
+      Read that rule and apply it — do not re-derive it here. Name an edit someone would plausibly
+      make to this code in the normal course of work that would falsify the sentence; an arbitrary
+      redesign does not count. If that edit is legitimate, the comment is a description unless it
+      only refreshes a pointer after its named symbol or path moved, or an externally measured fact
+      after re-measurement or a corrected citation. Otherwise it survives only when every such
+      falsifying edit is itself a bug. Findings, never style notes.
 
     MINOR:
     - Naming conventions not followed
