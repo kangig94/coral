@@ -249,13 +249,7 @@ function readProbeAttempts(fixture: Fixture): Array<{ kind: string; args: unknow
 }
 
 function coordinatorArtifacts(fixture: Fixture): { infoFile: string; socketPath: string } {
-  const paths = coordinatorPaths(
-    fixture.flavor,
-    { HOME: fixture.home, TMPDIR: fixture.home },
-    {
-      baseDir: join(fixture.home, '.coral'),
-    },
-  );
+  const paths = coordinatorPaths(fixture.flavor, { baseDir: join(fixture.home, '.coral') });
   return {
     infoFile: paths.infoFile,
     socketPath: paths.socketPath,

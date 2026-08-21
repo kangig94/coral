@@ -173,7 +173,7 @@ export function composeCoralPaths(flavor: BuildFlavor, opts?: ComposeCoralPathOp
     store: storePaths(flavor, stateOpts),
     corpus: corpusPaths(flavor, corpusOpts),
     kbRuntime: kbRuntimePaths(flavor, stateOpts),
-    coordinator: coordinatorPaths(flavor, undefined, stateOpts),
+    coordinator: coordinatorPaths(flavor, stateOpts),
     exports: exportsPaths(flavor, stateOpts),
     engine: enginePaths(flavor, stateOpts),
     projects: projectsPaths(flavor, stateOpts),

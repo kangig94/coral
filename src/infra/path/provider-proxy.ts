@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import type { BuildFlavor } from '../build-flavor.js';
 import { hashToken } from '../hash.js';
 import type { StorageBigIntStat, StoragePort } from '../port-types.js';
-import { generationRunDir, socketPathByteLimit } from './coordinator.js';
+import { generationRunDir, socketPathByteLimit, socketFallbackDir } from './coordinator.js';
 
 const PROVIDER_PATH_IDENTITY_HASH_LENGTH = 24;
 const PROVIDER_ROLE_PREFIX = { guardian: '0', proxy: '1', reaper: '2' } as const;
@@ -17,7 +17,6 @@ type ProviderEndpointStorage = Pick<StoragePort, 'lstatSync' | 'mkdirSync'> & {
 export type ProviderProxyEndpointEnvironment = {
   readonly baseDir?: string;
   readonly platform: string;
-  readonly tempDirectory: string;
   readonly uid: number;
   readonly storage: ProviderEndpointStorage;
 };
@@ -45,7 +44,7 @@ export type ProviderBootstrapCapsulePathOptions = {
   readonly baseDir?: string;
 };
 
-export type ProviderProxyEndpointErrorCode = 'proxy_endpoint_insecure' | 'proxy_endpoint_too_long';
+export type ProviderProxyEndpointErrorCode = 'proxy_endpoint_insecure';
 
 export class ProviderProxyEndpointError extends Error {
   readonly code: ProviderProxyEndpointErrorCode;
@@ -135,16 +134,8 @@ function providerEndpoint(
   const candidate = join(generationRunDir(identity.flavor, { baseDir: env.baseDir }), filename);
   if (Buffer.byteLength(candidate, 'utf8') < limit) return candidate;
 
-  const fallbackDirectory = join(env.tempDirectory, `coral-${env.uid}`);
+  const fallbackDirectory = socketFallbackDir(env.uid);
   const fallback = join(fallbackDirectory, filename);
-  const fallbackBytes = Buffer.byteLength(fallback, 'utf8');
-  if (fallbackBytes >= limit) {
-    throw new ProviderProxyEndpointError(
-      'proxy_endpoint_too_long',
-      `Provider endpoint path is ${fallbackBytes} bytes; ${env.platform} requires fewer than ${limit}.`,
-      { path: fallback, observedBytes: fallbackBytes, limit, platform: env.platform },
-    );
-  }
 
   ensurePrivateFallbackDirectory(fallbackDirectory, env);
   return fallback;

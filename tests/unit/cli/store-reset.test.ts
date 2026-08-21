@@ -274,10 +274,7 @@ describe('local store-reset operations', () => {
   it.each(['prod', 'dev'] as const)('uses one socket path rule for %s generated and legacy roots', (flavor) => {
     const baseDir = join(tmpdir(), 'coral-store-reset-socket-path', 'a'.repeat(110));
     const runtime = createRealRuntime(flavor, { baseDir });
-    const socketEnvironment = {
-      platform: runtime.env.platform(),
-      tempDirectory: runtime.env.get('TMPDIR') ?? runtime.env.tmpdir(),
-    };
+    const socketEnvironment = { platform: runtime.env.platform(), uid: process.getuid?.() ?? 0 };
     const generated = runtime.paths.coral.coordinator;
     const legacy = resolveStoreResetTargetPaths(runtime, 'legacy');
     const legacyRunDir = join(baseDir, basename(generated.runDir));

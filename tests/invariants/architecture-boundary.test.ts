@@ -1126,7 +1126,7 @@ describe('architecture boundary guard', () => {
   });
 
   it('engine-blind domains carry no engine-id string literals (AC7.2)', () => {
-    // Engine-id literals (`'orama'`, `'gemini'`, `'onnx'`) leaking
+    // Engine-id literals (`'orama'`, `'gemini'`, `'onnx'`, `'kiwi'`) leaking
     // into KB, coordinator, CLI expansion, infra, or runtime code defeat
     // engine-blindness regardless of whether the leak is wired through an
     // import. Slot names
@@ -1134,7 +1134,7 @@ describe('architecture boundary guard', () => {
     // names (`'corpus'`, `'content'`, `'metadata'`, `'journal'`) remain
     // allowed — they are capability vocabulary, not engine identity.
     const engineBlindScopes = ['src/kb/', 'src/coordinator/', 'src/cli/expansion/', 'src/infra/', 'src/runtime/'];
-    const engineIds = new Set(['orama', 'gemini', 'onnx', 'kb-scann']);
+    const engineIds = new Set(['orama', 'gemini', 'onnx', 'kiwi']);
 
     const violations: string[] = [];
 

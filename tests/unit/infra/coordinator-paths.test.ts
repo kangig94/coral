@@ -4,19 +4,14 @@ import type * as NodeOs from 'node:os';
 
 const mockState = vi.hoisted(() => ({
   platform: 'linux' as NodeJS.Platform,
-  tmpdir: '/tmp/coral-coordinator-paths',
 }));
 
 vi.mock('node:os', async () => {
   const actual = await vi.importActual<typeof NodeOs>('node:os');
-  return {
-    ...actual,
-    platform: () => mockState.platform,
-    tmpdir: () => mockState.tmpdir,
-  };
+  return { ...actual, platform: () => mockState.platform };
 });
 
-import { coordinatorPaths } from '#src/infra/path/coordinator.js';
+import { coordinatorPaths, socketFallbackDir } from '#src/infra/path/coordinator.js';
 
 function baseDirOfLength(length: number): string {
   return `/${'a'.repeat(length - 1)}`;
@@ -33,7 +28,6 @@ function baseDirForSocketLength(targetLength: number, flavor: 'prod' | 'dev'): s
 
 afterEach(() => {
   mockState.platform = 'linux';
-  mockState.tmpdir = '/tmp/coral-coordinator-paths';
 });
 
 describe('coordinatorPaths', () => {
@@ -48,10 +42,10 @@ describe('coordinatorPaths', () => {
 
     expect(Buffer.byteLength(expectedSocket, 'utf8')).toBe(socketBytes);
 
-    const paths = coordinatorPaths('prod', { TMPDIR: mockState.tmpdir }, { baseDir });
+    const paths = coordinatorPaths('prod', { baseDir });
     if (fallback) {
-      expect(paths.socketPath.startsWith(`${mockState.tmpdir}/`)).toBe(true);
-      expect(paths.socketPath).toMatch(/\/coral-prod-[0-9a-f]{8}\.sock$/);
+      expect(paths.socketPath.startsWith(`${socketFallbackDir(process.getuid?.() ?? 0)}/`)).toBe(true);
+      expect(paths.socketPath).toMatch(/\/coral-prod-[0-9a-f]{16}\.sock$/);
       return;
     }
 
@@ -69,10 +63,10 @@ describe('coordinatorPaths', () => {
 
     expect(Buffer.byteLength(expectedSocket, 'utf8')).toBe(socketBytes);
 
-    const paths = coordinatorPaths('dev', { TMPDIR: mockState.tmpdir }, { baseDir });
+    const paths = coordinatorPaths('dev', { baseDir });
     if (fallback) {
-      expect(paths.socketPath.startsWith(`${mockState.tmpdir}/`)).toBe(true);
-      expect(paths.socketPath).toMatch(/\/coral-dev-[0-9a-f]{8}\.sock$/);
+      expect(paths.socketPath.startsWith(`${socketFallbackDir(process.getuid?.() ?? 0)}/`)).toBe(true);
+      expect(paths.socketPath).toMatch(/\/coral-dev-[0-9a-f]{16}\.sock$/);
       return;
     }
 

@@ -117,7 +117,7 @@ export function updatePluginFixtureBundleHash(fixture: PluginFixture, bundleHash
 }
 
 export function coordinatorFilesForHome(home: string, flavor: BuildFlavor) {
-  return coordinatorPaths(flavor, process.env, { baseDir: join(home, '.coral') });
+  return coordinatorPaths(flavor, { baseDir: join(home, '.coral') });
 }
 
 export function storeDbPathForHome(home: string, flavor: BuildFlavor): string {

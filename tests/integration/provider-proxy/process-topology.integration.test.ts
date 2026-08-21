@@ -455,7 +455,6 @@ function writeCapsuleSet(
   const endpointEnv = {
     baseDir,
     platform: runtime.env.platform(),
-    tempDirectory: runtime.env.tmpdir(),
     uid,
     storage: runtime.storage,
   };

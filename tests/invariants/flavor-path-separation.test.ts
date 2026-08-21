@@ -231,7 +231,7 @@ describe('flavor path separation', () => {
 
   it.each(PATH_CASES)('%s puts every moved live family under gen2', (_label, flavor, opts) => {
     const stateRoot = generationStateRoot(flavor, opts);
-    const runDir = coordinatorPaths(flavor, {}, opts).runDir;
+    const runDir = coordinatorPaths(flavor, opts).runDir;
     const movedRoots = [
       storePaths(flavor, opts).dbDir,
       kbRuntimePaths(flavor, opts).root,
@@ -252,7 +252,7 @@ describe('flavor path separation', () => {
   it.each(PATH_CASES)('%s keeps run and data as non-nested siblings', (_label, flavor, opts) => {
     const root = generationRoot(opts);
     const dataRoot = generationStateRoot(flavor, opts);
-    const runDir = coordinatorPaths(flavor, {}, opts).runDir;
+    const runDir = coordinatorPaths(flavor, opts).runDir;
 
     expect(runDir).toBe(join(root, flavor === 'dev' ? 'run-dev' : 'run'));
     expect(dirname(runDir)).toBe(root);

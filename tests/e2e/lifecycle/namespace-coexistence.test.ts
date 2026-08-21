@@ -246,7 +246,7 @@ async function ensureFixtureBackend(pluginRoot: string, home: string): Promise<v
       await ensure(pluginRoot);
     } catch (error: unknown) {
       const flavor = readBuildFlavor(pluginRoot);
-      const paths = coordinatorPaths(flavor, process.env, { baseDir: join(home, '.coral') });
+      const paths = coordinatorPaths(flavor, { baseDir: join(home, '.coral') });
       const diagnostics = [join(paths.runDir, 'coordinator.log'), paths.startupErrorFile, paths.startupDiagnosticFile]
         .filter((path) => existsSync(path))
         .map((path) => `${path}:\n${readFileSync(path, 'utf-8')}`)

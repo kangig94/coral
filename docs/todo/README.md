@@ -53,11 +53,10 @@ signal a correctly identified target, they are about there being no party left t
 | Order | Entry                                                       | Why here                                                                                                                                                  |
 | ----- | ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1     | the compatibility policy, then `build-identity-and-upgrade` | Unblocks three others. Its own first step is small and blocks nothing: carry the routing reason instead of collapsing four situations into `use-current`. |
-| 2     | `coordinator-socket-identity`                               | Independent, small, failing case is one assertion. Parallelisable against 1.                                                                              |
-| 3     | `darwin-signal-authority` + `durable-cli-signal-authority`  | Needs a synchronous exit state on `ChildProcessLike`, which touches every fake in the suite. Do it when nothing else is in flight.                        |
-| 4     | `provider-operation-admission-hold`                         | Design complete and recorded; ships as one unit or not at all.                                                                                            |
-| 5     | `coordinator-process-disposition`                           | After 4 has settled the recovery boundary the custody transfer has to attach to.                                                                          |
-| 6     | `foreign-capsule-retirement-terminal-recovery`              | After 4 or 5, and only if one of them lands: it wants a recovery boundary that nothing about its own residue justifies introducing.                       |
+| 2     | `darwin-signal-authority` + `durable-cli-signal-authority`  | Needs a synchronous exit state on `ChildProcessLike`, which touches every fake in the suite. Do it when nothing else is in flight.                        |
+| 3     | `provider-operation-admission-hold`                         | Design complete and recorded; ships as one unit or not at all.                                                                                            |
+| 4     | `provider-operation-admission-hold` has settled the recovery boundary; then `coordinator-process-disposition` | After 4 has settled the recovery boundary the custody transfer has to attach to.                                                                          |
+| 5     | `foreign-capsule-retirement-terminal-recovery`              | After 4 or 5, and only if one of them lands: it wants a recovery boundary that nothing about its own residue justifies introducing.                       |
 
 **Not yet, and why it is not laziness.** `wedged-coordinator-self-drain` has never been observed and
 asks for a reachable cause before either half is built. `proxy-set-acquisition`'s clock-drift symptom
@@ -198,7 +197,7 @@ not about what the probe claims.
 |                                                                        |                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | [`export-lifetime.md`](./export-lifetime.md)                           | Nothing prunes `~/.coral/exports/jobs/`. Ever — the retention setting's own doc comment says otherwise. Part 1 gives it a retention authority; part 2 is archived-session restore, whose real question is answerable only once part 1 exists.                                                                                                                                                                                        |
-| [`coordinator-socket-identity.md`](./coordinator-socket-identity.md)   | The socket path falls back through `TMPDIR`, so two processes with one state root can both bind. Two coordinators over one journal. The **provider endpoint resolver has the same fallback** — fix both together. Small, independent.                                                                                                                                                                                                |
+| [`socket-privacy-is-advisory.md`](./socket-privacy-is-advisory.md)     | The successor to `coordinator-socket-identity`, whose fix landed. The fallback directory's `0700`/ownership check runs in the coordinator and the bind happens in a spawned guardian, so the guarantee has expired by the time it is used — and it lives inside a path constructor that silently touches the filesystem. The coordinator's own socket has no such check at all.                                                     |
 | [`scoped-ignore-glob-anchoring.md`](./scoped-ignore-glob-anchoring.md) | **A decision, not an investigation.** The generated `*.coral-*.tmp` line in a user's `.claude/.gitignore` is unanchored, so it matches at any depth rather than the two files Coral writes beside it. Anchoring it is not blocked — this file already retires a superseded literal the same way — but it costs one extra write on every existing install and a retirement branch that stays. No correctness argument on either side. |
 
 ---
@@ -240,9 +239,19 @@ they share a failure mode — the fix landed, the thing that would have caught i
 
 |                                                        |                                                                                                                 |
 | ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
-| [`store-format-routing.md`](./store-format-routing.md) | **Dormant.** Its one live defect was extracted to `coordinator-socket-identity.md`. Read it as a design record. |
+| [`store-format-routing.md`](./store-format-routing.md) | **Dormant.** Its one live defect was extracted to `coordinator-socket-identity.md` and has since been fixed. Read it as a design record. |
 
 ---
+
+## A ledger, not a concept
+
+One file here is deliberately not a concept entry, and it says so in its own opening. It is grouped
+separately rather than left out, because an unindexed file in a corpus whose index is the entry point is
+a file nobody reads.
+
+|                                                                            |                                                                                                                                                                                                                                                                                                                                          |
+| -------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`comment-sweep-bug-ledger.md`](./comment-sweep-bug-ledger.md)             | **Open and accumulating.** Defects the comment-rot sweep found in code it walked for other reasons, recorded rather than fixed so a comment-only diff stays reviewable. A flat list of unrelated findings across fourteen sectors, most documentation-only or latent. An entry someone acts on is struck; one that needs its own argument graduates to a conforming entry. |
 
 ---
 

@@ -1,9 +1,9 @@
-import { chmodSync, lstatSync, mkdirSync, mkdtempSync, rmSync, statSync } from 'node:fs';
+import { statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, join } from 'node:path';
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
+import { socketFallbackDir } from '#src/infra/path/coordinator.js';
 import {
   providerGuardianBootstrapCapsulePath,
   providerGuardianEndpoint,
@@ -11,7 +11,6 @@ import {
   providerProxyEndpoint,
   providerReaperBootstrapCapsulePath,
   providerReaperEndpoint,
-  ProviderProxyEndpointError,
   type ProviderProxyEndpointEnvironment,
   type ProviderProxyEndpointIdentity,
 } from '#src/infra/path/provider-proxy.js';
@@ -21,7 +20,6 @@ const UUID_B = '22222222-2222-4222-8222-222222222222';
 const BUILD_SET_ID = '33333333-3333-4333-8333-333333333333';
 const HOST_FINGERPRINT = 'a'.repeat(64);
 const CURRENT_UID = process.getuid?.() ?? Number(statSync(tmpdir(), { bigint: true }).uid);
-const tempRoots: string[] = [];
 
 const identity: ProviderProxyEndpointIdentity = {
   generation: 'gen2',
@@ -30,14 +28,6 @@ const identity: ProviderProxyEndpointIdentity = {
   hostFingerprint: HOST_FINGERPRINT,
   proxyInstanceId: UUID_A,
 };
-
-function realStorage(): ProviderProxyEndpointEnvironment['storage'] {
-  return {
-    mkdirSync: (path, options) => mkdirSync(path, options),
-    lstatSync: (path) => lstatSync(path),
-    statSync: (path) => statSync(path, { bigint: true }),
-  };
-}
 
 function secureStorage(): ProviderProxyEndpointEnvironment['storage'] {
   return {
@@ -60,7 +50,6 @@ function environment(overrides: Partial<ProviderProxyEndpointEnvironment> = {}):
   return {
     baseDir: '/short',
     platform: 'linux',
-    tempDirectory: '/tmp',
     uid: CURRENT_UID,
     storage: secureStorage(),
     ...overrides,
@@ -70,18 +59,6 @@ function environment(overrides: Partial<ProviderProxyEndpointEnvironment> = {}):
 function pathOfLength(length: number): string {
   return `/${'t'.repeat(length - 1)}`;
 }
-
-function fallbackTempDirectoryForLength(targetLength: number): string {
-  const filename = basename(providerProxyEndpoint(identity, environment()));
-  const suffix = `/coral-${CURRENT_UID}/${filename}`;
-  return pathOfLength(targetLength - Buffer.byteLength(suffix, 'utf8'));
-}
-
-afterEach(() => {
-  for (const root of tempRoots.splice(0)) {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
 
 describe('provider proxy paths', () => {
   it('places short endpoints in the flavor-specific generation run directory', () => {
@@ -152,79 +129,38 @@ describe('provider proxy paths', () => {
   });
 
   it('creates and uses a current-uid mode-0700 fallback directory', () => {
-    const tempRoot = mkdtempSync(join(tmpdir(), 'coral-provider-endpoint-'));
-    tempRoots.push(tempRoot);
+    const mkdir = vi.fn();
     const endpoint = providerProxyEndpoint(
       identity,
-      environment({
-        baseDir: pathOfLength(200),
-        tempDirectory: tempRoot,
-        storage: realStorage(),
-      }),
+      environment({ baseDir: pathOfLength(200), storage: { ...secureStorage(), mkdirSync: mkdir } }),
     );
-    const fallbackDirectory = join(tempRoot, `coral-${CURRENT_UID}`);
-    const stat = statSync(fallbackDirectory, { bigint: true });
+    const fallbackDirectory = socketFallbackDir(CURRENT_UID);
 
+    expect(mkdir).toHaveBeenCalledWith(fallbackDirectory, { recursive: true, mode: 0o700 });
     expect(endpoint.startsWith(`${fallbackDirectory}/provider-`)).toBe(true);
-    expect(stat.uid).toBe(BigInt(CURRENT_UID));
-    expect(stat.mode & 0o777n).toBe(0o700n);
   });
 
   it('rejects an existing fallback directory whose mode is not 0700', () => {
-    const tempRoot = mkdtempSync(join(tmpdir(), 'coral-provider-endpoint-'));
-    tempRoots.push(tempRoot);
-    const fallbackDirectory = join(tempRoot, `coral-${CURRENT_UID}`);
-    mkdirSync(fallbackDirectory, { mode: 0o700 });
-    chmodSync(fallbackDirectory, 0o755);
+    const loose = secureStorage();
+    const storage: ProviderProxyEndpointEnvironment['storage'] = {
+      ...loose,
+      statSync: (path) => ({ ...loose.statSync(path, { bigint: true }), mode: 0o40755n }),
+    };
 
-    expect(() =>
-      providerProxyEndpoint(
-        identity,
-        environment({
-          baseDir: pathOfLength(200),
-          tempDirectory: tempRoot,
-          storage: realStorage(),
-        }),
-      ),
-    ).toThrowError(expect.objectContaining({ code: 'proxy_endpoint_insecure' }));
+    expect(() => providerProxyEndpoint(identity, environment({ baseDir: pathOfLength(200), storage }))).toThrowError(
+      expect.objectContaining({ code: 'proxy_endpoint_insecure' }),
+    );
   });
 
-  it.each([
-    { platform: 'darwin', limit: 104 },
-    { platform: 'linux', limit: 108 },
-  ])('rejects the final $platform path at the $limit-byte AF_UNIX boundary', ({ platform, limit }) => {
-    const accepted = providerProxyEndpoint(
-      identity,
-      environment({
-        baseDir: pathOfLength(200),
-        platform,
-        tempDirectory: fallbackTempDirectoryForLength(limit - 1),
-      }),
+  it('rejects a fallback directory owned by another uid', () => {
+    const loose = secureStorage();
+    const storage: ProviderProxyEndpointEnvironment['storage'] = {
+      ...loose,
+      statSync: (path) => ({ ...loose.statSync(path, { bigint: true }), uid: BigInt(CURRENT_UID) + 1n }),
+    };
+
+    expect(() => providerProxyEndpoint(identity, environment({ baseDir: pathOfLength(200), storage }))).toThrowError(
+      expect.objectContaining({ code: 'proxy_endpoint_insecure' }),
     );
-    expect(Buffer.byteLength(accepted, 'utf8')).toBe(limit - 1);
-
-    expect(() =>
-      providerProxyEndpoint(
-        identity,
-        environment({
-          baseDir: pathOfLength(200),
-          platform,
-          tempDirectory: fallbackTempDirectoryForLength(limit),
-        }),
-      ),
-    ).toThrowError(ProviderProxyEndpointError);
-
-    try {
-      providerProxyEndpoint(
-        identity,
-        environment({
-          baseDir: pathOfLength(200),
-          platform,
-          tempDirectory: fallbackTempDirectoryForLength(limit),
-        }),
-      );
-    } catch (error: unknown) {
-      expect(error).toMatchObject({ code: 'proxy_endpoint_too_long', context: { observedBytes: limit, limit } });
-    }
   });
 });
