@@ -17,7 +17,7 @@ export function socketPathByteLimit(platformName: string): number {
  * `os.tmpdir()`: moving a socket moves ownership, and two processes over one state root that disagree
  * about the address both find their own unbound and both bind.
  */
-export const SOCKET_FALLBACK_ROOT = '/tmp';
+const SOCKET_FALLBACK_ROOT = '/tmp';
 
 /** 64 bits. Under a fixed root every overflowing state root on the host draws from one namespace. */
 export const SOCKET_FALLBACK_HASH_LENGTH = 16;
@@ -36,7 +36,7 @@ export function isRelocatedSocket(socketPath: string, uid: number): boolean {
   return dirname(socketPath) === socketFallbackDir(uid);
 }
 
-export type SocketDirectoryStorage = Pick<StoragePort, 'lstatSync' | 'mkdirSync'> & {
+type SocketDirectoryStorage = Pick<StoragePort, 'lstatSync' | 'mkdirSync'> & {
   statSync(path: string, options: { bigint: true }): StorageBigIntStat;
 };
 
@@ -44,8 +44,14 @@ export class SocketDirectoryError extends Error {
   readonly directory: string;
   readonly uid: number;
 
+  // An I/O failure has established nothing about ownership or mode, so it must not be reported as though
+  // it had: an operator told to check permissions will go and check permissions.
   constructor(directory: string, uid: number, cause?: unknown) {
-    super(`Socket directory '${directory}' must be a uid-${uid} directory with mode 0700.`, { cause });
+    const reason =
+      cause === undefined
+        ? `must be a uid-${uid} directory with mode 0700`
+        : `could not be verified as a uid-${uid} directory with mode 0700: ${cause instanceof Error ? cause.message : 'unknown cause'}`;
+    super(`Socket directory '${directory}' ${reason}.`, { cause });
     this.name = 'SocketDirectoryError';
     this.directory = directory;
     this.uid = uid;

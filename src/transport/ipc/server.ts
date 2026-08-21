@@ -16,7 +16,8 @@ import {
   type JsonRpcRequestEnvelope,
   type JsonRpcResponseEnvelope,
 } from './json-rpc.js';
-import { ensurePrivateSocketDir, isRelocatedSocket } from '../../infra/path/index.js';
+import { ensurePrivateSocketDir, isRelocatedSocket, SocketDirectoryError } from '../../infra/path/index.js';
+import { documentedCoralSetupError } from '../../runtime/errors.js';
 import { createLineFramer, FrameTooLargeError } from '../line-framing.js';
 import { rpcCatalog, type RpcMethodSpec } from '../rpc/catalog.js';
 import { operationalRouteSpecs, type IpcOperationalSpec } from '../rpc/operational-catalog.js';
@@ -362,7 +363,20 @@ export async function bindSocket(server: NetServer, socketPath: string): Promise
   // asserted rather than assumed. A run directory is not shared and must not be held to the same mode.
   const uid = process.getuid?.() ?? 0;
   if (isRelocatedSocket(socketPath, uid)) {
-    ensurePrivateSocketDir(dirname(socketPath), uid, { mkdirSync, lstatSync, statSync });
+    const directory = dirname(socketPath);
+    try {
+      ensurePrivateSocketDir(directory, uid, { mkdirSync, lstatSync, statSync });
+    } catch (error: unknown) {
+      // A refusal the startup sentinel cannot serialise never reaches a terminal, so it carries a
+      // documented code rather than the plain error the assertion raises.
+      if (!(error instanceof SocketDirectoryError)) throw error;
+      throw documentedCoralSetupError({
+        code: 'coordinator_socket_dir_insecure',
+        directory,
+        socketPath,
+        cause: error.message,
+      });
+    }
   } else {
     mkdirSync(dirname(socketPath), { recursive: true });
   }

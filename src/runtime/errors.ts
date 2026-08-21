@@ -26,6 +26,7 @@ export type DocumentedCoralSetupErrorCode =
   | 'startup_bundle_unresolvable'
   | 'coordinator_socket_in_use'
   | 'coordinator_socket_bind_failed'
+  | 'coordinator_socket_dir_insecure'
   | 'store_schema_outdated'
   | 'legacy_foreign_generation'
   | 'legacy_source_not_quiescent'
@@ -181,6 +182,12 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
       `Coral could not bind the coordinator socket at ${stringContextValue(context, 'socketPath', '<socket-path>')} for ${stringContextValue(context, 'operation', 'this operator command')}.`,
     remediation: (context) =>
       `Run 'coral-cli backend shutdown'. Check the socket parent directory, permissions, and platform path-length limit, then retry '${stringContextValue(context, 'retryCommand', '<operator-command>')}'.`,
+  },
+  coordinator_socket_dir_insecure: {
+    userMessage: (context) =>
+      `Coral relocated its coordinator socket into ${stringContextValue(context, 'directory', '<directory>')} because the path beside its run directory exceeds this platform's limit, and that directory is not a private directory owned by this user.`,
+    remediation: (context) =>
+      `Remove or repair ${stringContextValue(context, 'directory', '<directory>')} so it is a directory you own with mode 0700, then start Coral again. It is shared with every user on this host, so Coral will not bind a socket in a directory it cannot establish as yours.`,
   },
   store_schema_outdated: {
     userMessage: 'Coral backend store format does not match this installation.',
