@@ -239,7 +239,7 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
     .description('Abort running jobs')
     .option('--all', 'Abort all live jobs in the current work directory (plus shared KB jobs)')
     .option('--phase <phase>', 'Abort live jobs in a single phase (current work directory + KB jobs)')
-    .option('--provider <name>', 'Abort live jobs for a registered provider')
+    .option('--provider <name>', 'Abort live jobs for a registered provider in the current work directory')
     .action(async (opts: AbortOptions) => {
       try {
         const parsed = abortSelectorSchema.parse(opts);

@@ -81,7 +81,8 @@ to pay.
 **2. Compare by containment, not equality.** `scopeCheckJobs`
 (`src/coordinator/composition/job-control.ts`) tests `status.projectRoot !== projectRoot`. The
 predicate it should use already exists and is already used for exactly this question on the
-child-principal path: `containsProjectRoot` (`src/security/policy/authorize.ts`).
+child-principal path: a module-private `containsProjectRoot`, which the implementation replaced with
+the shared `containsWorkDir` (`src/runtime/canonical-work-dir.ts`).
 
 That predicate is **module-private** — `authorize.ts` does not export it. Reusing it means exporting it
 or moving it to a lower owner; do not copy it, since a second containment predicate is exactly the

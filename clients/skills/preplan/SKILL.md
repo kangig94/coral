@@ -141,7 +141,7 @@ items with the "unconfirmed" marker, then seek user feedback.
         terminal = Bash(`cd "<work_dir>" && coral-cli wait jobs ${job} --cursor <cursor> --embed`)
         continue
       if terminal prints `remediation: <command>`:
-        terminal = Bash(<command exactly as printed>)
+        terminal = Bash(`cd "<work_dir>" && <the printed coral-cli wait jobs command>`)
         continue
       if terminal contains `Result path: <path>`:
         output = Read(<path>)

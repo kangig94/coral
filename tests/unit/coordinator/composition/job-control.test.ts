@@ -48,9 +48,8 @@ describe('createCoordinatorControl.abortJobs', () => {
 });
 
 describe('createCoordinatorControl.scopeCheckJobs', () => {
-  // Namespace is no longer work tenancy, so the same job — same work directory, still recorded under a
-  // different `backendNamespace` — is now simply in scope. The status deliberately keeps the foreign namespace
-  // so the assertion fails again if namespace ever re-enters scoping.
+  // The status deliberately carries a foreign `backendNamespace`, so this assertion fails again if
+  // namespace ever re-enters scope judgement.
   it('keeps a job recorded under another build namespace in scope when the work directory matches', () => {
     const runtime = new SimulationRuntime();
     const internalJobAbortRegistry = new AbortRegistry(runtime.ids);

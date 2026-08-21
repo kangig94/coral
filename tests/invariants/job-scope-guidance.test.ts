@@ -39,6 +39,7 @@ const GUIDANCE_BLOCKS: readonly GuidanceBlock[] = [
     waits: [
       'cd "<work_dir>" && coral-cli wait jobs <job> --embed',
       'cd "<work_dir>" && coral-cli wait jobs <job> --cursor <cursor> --embed',
+      'cd "<work_dir>" && <the printed coral-cli wait jobs command>',
     ],
   },
   {
@@ -48,6 +49,7 @@ const GUIDANCE_BLOCKS: readonly GuidanceBlock[] = [
     waits: [
       'cd "<work_dir>" && coral-cli wait jobs <job> --embed',
       'cd "<work_dir>" && coral-cli wait jobs <job> --cursor <cursor> --embed',
+      'cd "<work_dir>" && <the printed coral-cli wait jobs command>',
     ],
   },
   {
@@ -59,6 +61,7 @@ const GUIDANCE_BLOCKS: readonly GuidanceBlock[] = [
       'cd "<project root>" && coral-cli wait jobs <job> --embed',
       'cd "<project root>" && coral-cli wait jobs <job> --cursor <cursor> --embed',
       'cd "<project root>" && coral-cli wait jobs <job-id...> --embed',
+      'cd "<project root>" && <the printed coral-cli wait jobs command>',
     ],
   },
   {
@@ -69,6 +72,7 @@ const GUIDANCE_BLOCKS: readonly GuidanceBlock[] = [
     waits: [
       'cd "{work_dir}" && coral-cli wait jobs <job>',
       'cd "{work_dir}" && coral-cli wait jobs <job> --cursor <cursor>',
+      'cd "{work_dir}" && <the printed coral-cli wait jobs command>',
     ],
   },
   {
@@ -78,6 +82,7 @@ const GUIDANCE_BLOCKS: readonly GuidanceBlock[] = [
     waits: [
       'cd "<work_dir>" && coral-cli wait jobs ${job} --embed',
       'cd "<work_dir>" && coral-cli wait jobs ${job} --cursor <cursor> --embed',
+      'cd "<work_dir>" && <the printed coral-cli wait jobs command>',
     ],
   },
   {
@@ -87,6 +92,7 @@ const GUIDANCE_BLOCKS: readonly GuidanceBlock[] = [
     waits: [
       'cd "<project root>" && coral-cli wait jobs <job-id...> --embed',
       'cd "<project root>" && coral-cli wait jobs <job-id...> --cursor <cursor> --embed',
+      'cd "<project root>" && <the printed coral-cli wait jobs command>',
     ],
   },
   {
@@ -97,6 +103,7 @@ const GUIDANCE_BLOCKS: readonly GuidanceBlock[] = [
     waits: [
       'cd "<project root>" && coral-cli wait jobs <job> --embed',
       'cd "<project root>" && coral-cli wait jobs <job> --cursor <cursor> --embed',
+      'cd "<project root>" && <the printed coral-cli wait jobs command>',
     ],
   },
   {

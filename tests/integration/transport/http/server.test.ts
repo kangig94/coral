@@ -4377,6 +4377,7 @@ describe('execution backend server', () => {
         expectedBody: {
           code: 'scope_mismatch',
           message: "Jobs are outside the caller's work directory scope",
+          remediation: "Rerun from the job's work directory, or from a directory that contains it.",
           detail: { jobs: ['job-foreign'] },
         },
       },
@@ -4982,6 +4983,7 @@ describe('execution backend server', () => {
     expect(await response.json()).toEqual({
       code: 'scope_mismatch',
       message: "Jobs are outside the caller's work directory scope",
+      remediation: "Rerun from the job's work directory, or from a directory that contains it.",
       detail: { jobs: ['job-foreign-project'] },
     });
   });
@@ -5028,6 +5030,7 @@ describe('execution backend server', () => {
     expect(await response.json()).toEqual({
       code: 'scope_mismatch',
       message: "Jobs are outside the caller's work directory scope",
+      remediation: "Rerun from the job's work directory, or from a directory that contains it.",
       detail: { jobs: [jobId] },
     });
   });
@@ -5340,6 +5343,7 @@ describe('execution backend server', () => {
     expect(await response.json()).toEqual({
       code: 'scope_mismatch',
       message: "Jobs are outside the caller's work directory scope",
+      remediation: "Rerun from the job's work directory, or from a directory that contains it.",
       detail: { jobs: ['job-foreign'] },
     });
     expect(fakeService.waitStream).not.toHaveBeenCalled();

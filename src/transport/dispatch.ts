@@ -50,6 +50,18 @@ function invalidRequestResult(message = 'invalid request', detail?: unknown): To
   return domainError('invalid_request', message, detail);
 }
 
+// The refused job's own work directory is deliberately not disclosed: the caller is outside the
+// scope that would authorize reading it.
+function jobScopeMismatchResult(jobs: readonly string[]): ToolDomainResult {
+  return {
+    ok: false,
+    code: 'scope_mismatch',
+    message: "Jobs are outside the caller's work directory scope",
+    remediation: "Rerun from the job's work directory, or from a directory that contains it.",
+    detail: { jobs: [...jobs] },
+  };
+}
+
 function unary(body: unknown, statusCode?: number): CatalogRequestExecution {
   return statusCode === undefined ? { kind: 'unary', body } : { kind: 'unary', body, statusCode };
 }
@@ -790,13 +802,7 @@ async function executeJobsAbortCatalogRequest({
   if (callerRoot === undefined) return unaryHttp(domainResultToHttp(invalidRequestResult()));
   const scopeCheck = rpcPorts.jobs.scopeCheck(parsed.jobs, callerRoot, 'contains');
   if (scopeCheck.mismatch.length > 0) {
-    return unaryHttp(
-      domainResultToHttp(
-        domainError('scope_mismatch', "Jobs are outside the caller's work directory scope", {
-          jobs: scopeCheck.mismatch,
-        }),
-      ),
-    );
+    return unaryHttp(domainResultToHttp(jobScopeMismatchResult(scopeCheck.mismatch)));
   }
   if (scopeCheck.missing.length === parsed.jobs.length) {
     return unary(
@@ -837,13 +843,7 @@ async function executeJobsDetailCatalogRequest({
   if (callerRoot === undefined) return unaryHttp(domainResultToHttp(invalidRequestResult()));
   const scopeCheck = rpcPorts.jobs.scopeCheck([parsed.jobId], callerRoot, 'contains');
   if (scopeCheck.mismatch.length > 0) {
-    return unaryHttp(
-      domainResultToHttp(
-        domainError('scope_mismatch', "Jobs are outside the caller's work directory scope", {
-          jobs: scopeCheck.mismatch,
-        }),
-      ),
-    );
+    return unaryHttp(domainResultToHttp(jobScopeMismatchResult(scopeCheck.mismatch)));
   }
   if (scopeCheck.missing.length === 1) {
     return unary({ code: 'job_not_found', message: `Job not found: ${parsed.jobId}` }, 404);
@@ -873,13 +873,7 @@ async function executeJobsWaitCatalogRequest({
   if (callerRoot === undefined) return unaryHttp(domainResultToHttp(invalidRequestResult()));
   const scopeCheck = rpcPorts.jobs.scopeCheck(parsed.jobIds, callerRoot, 'contains');
   if (scopeCheck.mismatch.length > 0) {
-    return unaryHttp(
-      domainResultToHttp(
-        domainError('scope_mismatch', "Jobs are outside the caller's work directory scope", {
-          jobs: scopeCheck.mismatch,
-        }),
-      ),
-    );
+    return unaryHttp(domainResultToHttp(jobScopeMismatchResult(scopeCheck.mismatch)));
   }
   if (scopeCheck.missing.length === parsed.jobIds.length) {
     return unary(

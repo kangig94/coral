@@ -17,11 +17,6 @@ const PRIOR_MANIFEST_FIXTURE = 'approved-prior.manifest.json';
 
 const APPROVED_FORMAT_TRANSITION = {
   prior: 'sha256:9fd970cdcb803f517d77b133bba86ae83ef1ff662f77da8656604f32c8e67980',
-  components: [
-    'projection_jobs DDL work_dir authority',
-    'job.launch.requested provider/workflow request.cwd codec',
-    'projection_jobs row work_dir codec',
-  ],
 } as const;
 
 /**
@@ -225,11 +220,6 @@ function assertApprovedTransition(prior: StoreFormatManifest, current: StoreForm
 
 describe('store-format-fingerprint-main', () => {
   it('authorizes only the single recorded prior-to-current format transition', () => {
-    expect(APPROVED_FORMAT_TRANSITION.components).toStrictEqual([
-      'projection_jobs DDL work_dir authority',
-      'job.launch.requested provider/workflow request.cwd codec',
-      'projection_jobs row work_dir codec',
-    ]);
     expect(readdirSync(FIXTURE_DIR).sort()).toStrictEqual([PRIOR_MANIFEST_FIXTURE]);
 
     const prior = readPriorManifest();
