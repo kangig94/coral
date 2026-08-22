@@ -37,7 +37,10 @@ describe('backend bootstrap store handoff', () => {
 
   it.each([
     {
-      continuation: { kind: 'run-current' },
+      continuation: {
+        kind: 'run-current',
+        reason: { kind: 'routing', basis: { kind: 'incumbent-absent' } },
+      },
       message: 'Validated active-store startup handoff did not start the selected backend.',
     },
     {

@@ -3,11 +3,6 @@ import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
 import { isAbsolute, join, resolve } from 'node:path';
 import { z } from 'zod';
 
-import {
-  createUseCurrentBackendRouting,
-  routeLiveIncumbent,
-  type BackendRoutingResult,
-} from '../infra/backend-routing.js';
 import { backendLog } from '../infra/backend-log.js';
 import { probeCoordinator, type CoordinatorDiscoveryRecord } from '../infra/backend-discovery.js';
 import { resolveBuildFlavor } from '../infra/build-flavor.js';
@@ -24,10 +19,18 @@ import {
   type ForeignTargetValidationResult,
   type ValidatedHandoffTarget,
 } from '../infra/handoff-target.js';
+import { assertNever } from '../infra/error-format.js';
 import type { TimePort, TimerHandle } from '../infra/port-types.js';
 import type { Runtime } from '../runtime/ports.js';
 import { createRealRuntime } from '../runtime/real.js';
 import { createIpcClient } from '../transport/ipc/client.js';
+import {
+  routeLiveIncumbent,
+  type HandoffRoutingBasis,
+  type HandoffRoutingResult,
+  type IncumbentIdentitySummary,
+  type UnresolvedIncumbentCause,
+} from './handoff-routing.js';
 
 // The pre-flight's own probe budget. Not `HEALTH_TIMEOUT_MS` from `transport/http/sse.ts`: the coordinator
 // topology invariant forbids a coordinator module depending on the HTTP transport, and this bound answers a
@@ -112,8 +115,9 @@ type LiveIncumbentHealth = z.infer<typeof liveIncumbentHealthSchema>;
  */
 type LiveIncumbentReading =
   | Readonly<{ kind: 'observed'; health: LiveIncumbentHealth }>
-  | Readonly<{ kind: 'observed-unusable' }>
-  | Readonly<{ kind: 'not-observed'; reason: 'absent' | 'unresolved' }>;
+  | Readonly<{ kind: 'observed-unusable'; cause: 'draining' | 'identity-mismatch' }>
+  | Readonly<{ kind: 'not-observed'; reason: 'absent' }>
+  | Readonly<{ kind: 'not-observed'; reason: 'unresolved'; cause: UnresolvedIncumbentCause }>;
 
 export type HandoffOperation =
   | Readonly<{ kind: 'cli-invocation'; argv: readonly string[] }>
@@ -131,8 +135,13 @@ export type HandoffOutcome =
   | Readonly<{ kind: 'handoff-exit'; exitCode: number }>
   | Readonly<{ kind: 'handoff-signal'; signal: NodeJS.Signals }>;
 
+export type HandoffContinuationReason =
+  | Readonly<{ kind: 'routing'; basis: HandoffRoutingBasis }>
+  | Readonly<{ kind: 'handoff-not-applicable'; reason: 'display-only' }>
+  | Readonly<{ kind: 'handoff-abandoned'; reason: 'stdout-drain-incomplete' }>;
+
 export type HandoffContinuationResult =
-  | Readonly<{ kind: 'run-current' }>
+  | Readonly<{ kind: 'run-current'; reason: HandoffContinuationReason }>
   | Readonly<{ kind: 'delegated'; version: string; outcome: HandoffOutcome }>;
 
 export type RunHandoffOptions = Readonly<{
@@ -153,7 +162,7 @@ type ObservedChild = Readonly<{
 }>;
 
 type RoutingResolution = Readonly<{
-  routing: BackendRoutingResult;
+  routing: HandoffRoutingResult;
   runtime: Pick<Runtime, 'env' | 'paths' | 'storage'>;
   time: TimePort;
 }>;
@@ -232,24 +241,40 @@ async function readAuthenticatedHealth(
     // events, but none of them is a positive observation of absence — the socket may be held by a live
     // incumbent that was merely slow, or answering a shape this build does not recognize. `'unresolved'` is
     // the disposition all three share; `readLiveCoordinatorHealth` is where it is kept apart from `'absent'`.
-    return parsed.success ? { kind: 'observed', health: parsed.data } : { kind: 'not-observed', reason: 'unresolved' };
+    return parsed.success
+      ? { kind: 'observed', health: parsed.data }
+      : { kind: 'not-observed', reason: 'unresolved', cause: 'health-shape-rejected' };
   } catch {
-    return { kind: 'not-observed', reason: 'unresolved' };
+    return { kind: 'not-observed', reason: 'unresolved', cause: 'health-request-failed' };
   }
 }
 
-function routeAuthenticatedHealth(health: LiveIncumbentHealth): BackendRoutingResult {
-  const candidate =
-    health.manifest === undefined || health.bundleDir === undefined
-      ? null
-      : Object.freeze({ bundleDir: health.bundleDir, expectedManifest: health.manifest });
+function summarizeIncumbentIdentity(health: LiveIncumbentHealth): IncumbentIdentitySummary {
+  return {
+    version: health.version,
+    bundleHash: health.bundleHash,
+    flavor: health.flavor,
+    namespace: health.namespace,
+  };
+}
+
+export function routeAuthenticatedHealth(health: LiveIncumbentHealth): HandoffRoutingResult {
   const invokingIdentity = resolveStrictBundleIdentity();
-  if (!invokingIdentity.ok || candidate === null) {
-    return createUseCurrentBackendRouting();
+  if (!invokingIdentity.ok) {
+    return {
+      kind: 'continue-current',
+      basis: { kind: 'invoking-identity-unavailable', failure: invokingIdentity.reason },
+    };
+  }
+  if (health.manifest === undefined || health.bundleDir === undefined) {
+    return {
+      kind: 'continue-current',
+      basis: { kind: 'incumbent-identity-unavailable', incumbent: summarizeIncumbentIdentity(health) },
+    };
   }
   return routeLiveIncumbent({
     invokingManifest: invokingIdentity.manifest,
-    incumbent: candidate,
+    incumbent: Object.freeze({ bundleDir: health.bundleDir, expectedManifest: health.manifest }),
     validateForeignTarget: foreignTargetValidator,
   });
 }
@@ -276,7 +301,7 @@ async function readLiveCoordinatorHealth(
         // An undecodable record leaves nothing to ask with — no socket path, no `bootToken` — so 'unresolved'
         // is the only answer available here, not a judgement that none exists. It is reported rather than
         // inferred: `probeCoordinator` warns on this branch.
-        return { kind: 'not-observed', reason: 'unresolved' };
+        return { kind: 'not-observed', reason: 'unresolved', cause: 'unreadable-record' };
       }
       // An unobservable pid still has a record, and authenticated health is a stronger statement about whether
       // an incumbent is serving than a pid probe ever was — so ask it rather than concluding nobody is there.
@@ -306,7 +331,7 @@ async function readLiveCoordinatorHealth(
     // own wording, so a caller cannot mistake this for the unresolved probe above or the identity mismatch
     // below.
     backendLog.warn(`Live incumbent at ${discovery.socketPath} reported status draining; treating it as unusable.`);
-    return { kind: 'observed-unusable' };
+    return { kind: 'observed-unusable', cause: 'draining' };
   }
   if (!discoveryMatchesHealth(discovery, runtime.paths.coral.coordinator.socketPath, reading.health)) {
     // Also a positive observation: something answered and decoded, naming an identity the discovery record
@@ -314,7 +339,7 @@ async function readLiveCoordinatorHealth(
     backendLog.warn(
       `Authenticated health from ${discovery.socketPath} named a different coordinator identity than the discovery record; treating it as unusable.`,
     );
-    return { kind: 'observed-unusable' };
+    return { kind: 'observed-unusable', cause: 'identity-mismatch' };
   }
   return reading;
 }
@@ -329,12 +354,35 @@ async function resolveHandoffRouting(pluginRoot?: string, timePort?: TimePort): 
   // own wording as it is produced. Only the usable reply carries anything to route against here; every other
   // reading reaches `use-current` regardless of which of the three it is, which is why the branch below reads
   // `reading.kind`, not a boolean folded out of it.
-  return reading.kind === 'observed'
-    ? { routing: routeAuthenticatedHealth(reading.health), runtime, time }
-    : { routing: createUseCurrentBackendRouting(), runtime, time };
+  return {
+    routing:
+      reading.kind === 'observed'
+        ? routeAuthenticatedHealth(reading.health)
+        : { kind: 'continue-current', basis: routingBasisForReading(reading) },
+    runtime,
+    time,
+  };
 }
 
-async function resolveHandoffRoutingForOperation(
+function routingBasisForReading(reading: Exclude<LiveIncumbentReading, { kind: 'observed' }>): HandoffRoutingBasis {
+  switch (reading.kind) {
+    case 'observed-unusable':
+      return { kind: 'incumbent-unusable', cause: reading.cause };
+    case 'not-observed':
+      switch (reading.reason) {
+        case 'absent':
+          return { kind: 'incumbent-absent' };
+        case 'unresolved':
+          return { kind: 'incumbent-unresolved', cause: reading.cause };
+        default:
+          return assertNever(reading);
+      }
+    default:
+      return assertNever(reading);
+  }
+}
+
+export async function resolveHandoffRoutingForOperation(
   operation: HandoffOperation,
   options: RunHandoffOptions,
 ): Promise<RoutingResolution> {
@@ -486,14 +534,13 @@ export async function runHandoff(
   const operation = handoffOperationSchema.parse(operationInput) as HandoffOperation;
   const guard = operation.kind === 'backend-startup' ? undefined : readCliHandoffGuard();
   if (isDisplayOnlyInvocation(operation)) {
-    return { kind: 'run-current' };
+    return { kind: 'run-current', reason: { kind: 'handoff-not-applicable', reason: 'display-only' } };
   }
 
   const { routing, runtime, time } = await resolveHandoffRoutingForOperation(operation, options);
   switch (routing.kind) {
-    case 'use-current':
-    case 'reset-newer-invalid':
-      return { kind: 'run-current' };
+    case 'continue-current':
+      return { kind: 'run-current', reason: { kind: 'routing', basis: routing.basis } };
     case 'handoff': {
       if (guard === '1') {
         throw new Error(
@@ -504,7 +551,10 @@ export async function runHandoff(
       }
 
       if (operation.kind !== 'backend-startup' && !(await drainStdoutBeforeHandoff(time, options.signal))) {
-        return { kind: 'run-current' };
+        return {
+          kind: 'run-current',
+          reason: { kind: 'handoff-abandoned', reason: 'stdout-drain-incomplete' },
+        };
       }
 
       const execution = withValidatedHandoffTarget(routing.target);
@@ -550,5 +600,7 @@ export async function runHandoff(
       const outcome = handoffOutcome(execution.manifest.version, await childObservation.outcome);
       return { kind: 'delegated', version: execution.manifest.version, outcome };
     }
+    default:
+      return assertNever(routing);
   }
 }

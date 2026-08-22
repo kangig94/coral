@@ -1,9 +1,8 @@
 import { basename, dirname, join, resolve } from 'node:path';
 
-import type { BackendRoutingResult } from '../infra/backend-routing.js';
 import type { BuildFlavor } from '../infra/build-flavor.js';
 import { resolveRunningBundleDir, type StrictBundleManifest } from '../infra/bundle-manifest.js';
-import type { ForeignTargetValidator } from '../infra/handoff-target.js';
+import type { ForeignTargetValidator, ValidatedHandoffTarget } from '../infra/handoff-target.js';
 import { socketPathForRunDir } from '../infra/path/index.js';
 import { CoralSetupError, documentedCoralSetupError } from '../runtime/errors.js';
 import type { Runtime } from '../runtime/ports.js';
@@ -52,7 +51,7 @@ export type StoreResetDiscardResult = {
 
 export type StoreResetDiscardDecision =
   | StoreResetDiscardResult
-  | Extract<BackendRoutingResult, { readonly kind: 'handoff' }>;
+  | { readonly kind: 'handoff'; readonly target: ValidatedHandoffTarget; readonly source: 'active-selection' };
 
 type AcquireStoreResetSocketGuard = (
   paths: StoreResetTargetPaths,

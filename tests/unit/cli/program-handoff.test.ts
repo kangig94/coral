@@ -58,7 +58,7 @@ describe('program', () => {
     const order: string[] = [];
     mockState.runHandoff.mockImplementation(async () => {
       order.push('preflight');
-      return { kind: 'run-current' };
+      return { kind: 'run-current', reason: { kind: 'routing', basis: { kind: 'incumbent-absent' } } };
     });
     const { parseProgramWithHandoff, runCliHandoffPreflight } = await loadProgramFresh();
     const program = commandWithAction(() => order.push('dispatch'));

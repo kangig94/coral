@@ -294,7 +294,9 @@ describe('cli follow', () => {
     sigintHandler = null;
     process.exitCode = undefined;
     mockState.ensure.mockReset();
-    mockState.runHandoff.mockReset().mockResolvedValue({ kind: 'run-current' });
+    mockState.runHandoff
+      .mockReset()
+      .mockResolvedValue({ kind: 'run-current', reason: { kind: 'routing', basis: { kind: 'incumbent-absent' } } });
     mockState.subscribe.mockReset();
 
     vi.spyOn(process.stdout, 'write').mockImplementation(((

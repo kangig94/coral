@@ -1,5 +1,4 @@
-import type { BackendRoutingResult } from '../infra/backend-routing.js';
-import type { ForeignTargetValidator } from '../infra/handoff-target.js';
+import type { ForeignTargetValidator, InvalidTargetEvidence, ValidatedHandoffTarget } from '../infra/handoff-target.js';
 import type { Runtime } from '../runtime/ports.js';
 import {
   coordinateActiveStoreSelection,
@@ -10,8 +9,8 @@ import type { Database } from './db.js';
 
 export type StartupBackendStoreRoutingResult =
   | { readonly kind: 'open'; readonly db: Database }
-  | Extract<BackendRoutingResult, { readonly kind: 'handoff' }>
-  | (Extract<BackendRoutingResult, { readonly kind: 'reset-newer-invalid' }> & { readonly db: Database });
+  | { readonly kind: 'handoff'; readonly target: ValidatedHandoffTarget; readonly source: 'active-selection' }
+  | { readonly kind: 'reset-newer-invalid'; readonly evidence: InvalidTargetEvidence; readonly db: Database };
 
 export type StartupActiveStoreSelectionOptions = Omit<ActiveStoreSelectionProtocolOptions, 'dependencies'> & {
   readonly dependencies?: never;
@@ -27,9 +26,7 @@ export type RouteOrOpenBackendStoreAtStartupInput = Readonly<{
 export async function routeOrOpenBackendStoreAtStartup(
   input: RouteOrOpenBackendStoreAtStartupInput,
 ): Promise<StartupBackendStoreRoutingResult> {
-  let invalidTargetEvidence:
-    | Extract<BackendRoutingResult, { readonly kind: 'reset-newer-invalid' }>['evidence']
-    | null = null;
+  let invalidTargetEvidence: InvalidTargetEvidence | null = null;
   const result = await coordinateActiveStoreSelection(input.runtime, input.authority, {
     ...input.options,
     dependencies: {

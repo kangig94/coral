@@ -868,7 +868,10 @@ describe('backend store-reset commands', () => {
 
   it('exits transiently when this process cannot finish preparing the discard handoff', async () => {
     const target = Object.freeze({}) as ValidatedHandoffTarget;
-    mockState.runHandoff.mockResolvedValue({ kind: 'run-current' });
+    mockState.runHandoff.mockResolvedValue({
+      kind: 'run-current',
+      reason: { kind: 'handoff-abandoned', reason: 'stdout-drain-incomplete' },
+    });
     const operations: StoreResetCommandOperations = {
       list: () => ({ incidents: [] }),
       report: async () => publicReport(),

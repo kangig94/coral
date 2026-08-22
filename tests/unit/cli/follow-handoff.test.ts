@@ -142,17 +142,22 @@ describe('cli follow handoff', () => {
       return true;
     }) as typeof process.stdout.write);
     mockState.ensure.mockResolvedValueOnce(makeBackend(subscribe)).mockResolvedValueOnce(makeBackend());
-    mockState.runHandoff.mockResolvedValueOnce({ kind: 'run-current' }).mockImplementationOnce(async (operation) => {
-      secondRunStarted.resolve();
-      expect(progressAcknowledged).toBe(false);
-      // The runner takes the cursor as the opaque string the CLI already holds; base64url of {"afterSeq":4}.
-      expect(operation).toEqual({
-        kind: 'wait-jobs',
-        jobId: 'job-1',
-        serializedCursor: 'eyJhZnRlclNlcSI6NH0',
+    mockState.runHandoff
+      .mockResolvedValueOnce({
+        kind: 'run-current',
+        reason: { kind: 'routing', basis: { kind: 'incumbent-absent' } },
+      })
+      .mockImplementationOnce(async (operation) => {
+        secondRunStarted.resolve();
+        expect(progressAcknowledged).toBe(false);
+        // The runner takes the cursor as the opaque string the CLI already holds; base64url of {"afterSeq":4}.
+        expect(operation).toEqual({
+          kind: 'wait-jobs',
+          jobId: 'job-1',
+          serializedCursor: 'eyJhZnRlclNlcSI6NH0',
+        });
+        return { kind: 'delegated', outcome: { kind: 'handoff-success', version: '2.0.0' } };
       });
-      return { kind: 'delegated', outcome: { kind: 'handoff-success', version: '2.0.0' } };
-    });
 
     const { launchAndFollow } = await import('#src/cli/follow.js');
     const follow = launchAndFollow(makeOptions());
@@ -204,7 +209,10 @@ describe('cli follow handoff', () => {
     mockState.ensure
       .mockResolvedValueOnce(makeBackend(firstSubscribe))
       .mockResolvedValueOnce(makeBackend(secondSubscribe));
-    mockState.runHandoff.mockResolvedValue({ kind: 'run-current' });
+    mockState.runHandoff.mockResolvedValue({
+      kind: 'run-current',
+      reason: { kind: 'routing', basis: { kind: 'incumbent-unresolved', cause: 'health-request-failed' } },
+    });
 
     const { launchAndFollow } = await import('#src/cli/follow.js');
     await expect(
@@ -234,7 +242,10 @@ describe('cli follow handoff', () => {
       return true;
     }) as typeof process.stdout.write);
     mockState.ensure.mockResolvedValue(makeBackend(subscribe));
-    mockState.runHandoff.mockResolvedValue({ kind: 'run-current' });
+    mockState.runHandoff.mockResolvedValue({
+      kind: 'run-current',
+      reason: { kind: 'handoff-abandoned', reason: 'stdout-drain-incomplete' },
+    });
 
     const { launchAndFollow } = await import('#src/cli/follow.js');
     await expect(launchAndFollow(makeOptions({ emitError }))).resolves.toBe(0);

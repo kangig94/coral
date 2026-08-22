@@ -377,6 +377,14 @@ describe('architecture layering invariants', () => {
     expect(violations).toEqual([]);
   });
 
+  it('the store does not import coordinator modules', () => {
+    const violations = collectViolations(
+      (source, target) => source.startsWith(STORE_ROOT) && target.startsWith('src/coordinator/'),
+    );
+
+    expect(violations).toEqual([]);
+  });
+
   it('the jobs domain does not reach into the provider proxy', () => {
     // Jobs must remain meaningful without a live proxy process; proxy correlation brands stop at the wire
     // boundary and durable saga identities are validated by the store instead.
