@@ -54,14 +54,14 @@ function overrideBigIntStat(
       return read(path, options);
     }
     const observed = read(path, options);
-    // `Stats` carries `isDirectory`/`isFile` on its prototype, so a spread drops them while the declared
-    // return type still promises them.
-    return {
-      ...observed,
-      ...overrides,
-      isDirectory: () => observed.isDirectory(),
-      isFile: () => observed.isFile(),
-    };
+    // Copied onto the real prototype rather than spread into a plain object: `Stats` carries
+    // `isDirectory`/`isFile` there, and a double whose methods disagree with the `mode` it reports can let
+    // an implementation that reads one of them pass.
+    return Object.assign(
+      Object.create(Object.getPrototypeOf(observed) as object) as StorageBigIntStat,
+      observed,
+      overrides,
+    );
   }
   return overridden;
 }
@@ -204,7 +204,7 @@ describe('ensurePrivateSocketDir', () => {
     const directory = scratchDirectory(0o700);
 
     expect(() => ensurePrivateSocketDir(directory, CURRENT_UID, storageReportingParentUid(undefined))).toThrowError(
-      expect.objectContaining({ refusal: 'unverified', detail: 'the parent reported no owner' }),
+      expect.objectContaining({ refusal: 'unverified', detail: expect.stringContaining('reported no owner') }),
     );
   });
 

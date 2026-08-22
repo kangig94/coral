@@ -80,11 +80,16 @@ function refuseEntry(
 }
 
 function assertSecureParent(directory: string, uid: number, parent: StorageBigIntStat): void {
+  const parentPath = dirname(directory);
   if (parent.uid === undefined) {
-    throw new SocketDirectoryError('unverified', directory, uid, new Error('the parent reported no owner'));
+    throw new SocketDirectoryError(
+      'unverified',
+      directory,
+      uid,
+      new Error(`its parent '${parentPath}' reported no owner`),
+    );
   }
 
-  const parentPath = dirname(directory);
   const parentIsTrusted = parent.uid === BigInt(uid) || parent.uid === ROOT_UID;
   if (!parentIsTrusted) {
     throw new SocketDirectoryError(

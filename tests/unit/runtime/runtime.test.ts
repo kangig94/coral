@@ -348,6 +348,7 @@ describe('storage.lstatSync bigint', () => {
   // decides ownership and file type from it; a field this adapter drops becomes a refusal to start.
   it('carries the owner, mode and type the socket-directory assertion reads', () => {
     const root = mkdtempSync(join(tmpdir(), 'coral-runtime-lstat-'));
+    createdDirs.push(root);
     const runtime = createRealRuntime('prod', { baseDir: root });
 
     const observed = runtime.storage.lstatSync(root, { bigint: true });
@@ -355,6 +356,5 @@ describe('storage.lstatSync bigint', () => {
     expect(observed.uid).toBe(BigInt(process.getuid?.() ?? 0));
     expect(observed.mode & 0o170000n).toBe(0o040000n);
     expect(observed.mode & 0o777n).toBe(BigInt(lstatSync(root).mode & 0o777));
-    rmSync(root, { recursive: true, force: true });
   });
 });
