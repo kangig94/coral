@@ -286,7 +286,9 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
   const durable: DurableExecutionTransport = {
     launch: async (options) => {
       const envPath = `${options.jobDir}/${ENV_RECORD_FILE}`;
-      writeAtomicJson(storage, envPath, options.env ?? buildSpawnEnv(options.envAdditions));
+      storage.writeAtomicSync(envPath, JSON.stringify(options.env ?? buildSpawnEnv(options.envAdditions)), {
+        mode: 0o600,
+      });
 
       const wrapper = spawnChild(
         process.execPath,
@@ -551,10 +553,6 @@ function captureEnvState(): CapturedEnvState {
   };
 }
 
-function writeAtomicJson(storage: StoragePort, path: string, value: unknown): void {
-  storage.writeAtomicSync(path, JSON.stringify(value), { mode: 0o600 });
-}
-
 function createDeferred<T>(): {
   promise: Promise<T>;
   resolve: (value: T) => void;
@@ -767,6 +765,9 @@ function writeAtomicSyncNode(
   const tempPath = `${path}.tmp`;
   try {
     writeFileSync(tempPath, normalizeStorageData(data), writeFileSyncOptions(options));
+    if (options?.mode !== undefined) {
+      chmodSync(tempPath, options.mode);
+    }
     renameSync(tempPath, path);
     return true;
   } catch (error: unknown) {

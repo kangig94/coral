@@ -30,7 +30,7 @@ type FileNode = FileIdentity & {
 
 type DirectoryNode = FileIdentity & {
   kind: 'dir';
-  mode?: number;
+  mode: number;
   mtimeMs: number;
   mtimeNs: bigint;
 };
@@ -38,7 +38,7 @@ type DirectoryNode = FileIdentity & {
 type OpenFile = {
   path: string;
   position: number;
-  mode: 'r' | 'a' | 'wx';
+  mode: 'r' | 'w' | 'a' | 'wx';
   identity: FileIdentity;
 };
 
@@ -137,8 +137,16 @@ function posixMode(mode: number): number {
   return mode & POSIX_MODE_BITS;
 }
 
-function fileCreationMode(mode?: number): number {
+function createWithUmaskMode(mode?: number): number {
   return posixMode(mode ?? 0o666) & ~process.umask();
+}
+
+function exclusiveThenChmodMode(mode?: number): number {
+  return posixMode(mode ?? 0o600);
+}
+
+function durableAtomicMode(mode?: number): number {
+  return mode === undefined ? createWithUmaskMode() : posixMode(mode);
 }
 
 function defaultDirectoryMode(): number {
@@ -222,19 +230,53 @@ export class InMemoryStorage implements StoragePort {
     return file.content.toString(encoding);
   }
 
-  writeFileSync(path: string, data: StorageData, options?: { encoding?: BufferEncoding; mode?: number }): void {
+  writeFileSync(
+    path: string,
+    data: StorageData,
+    options?: { encoding?: BufferEncoding; mode?: number; flag?: string },
+  ): void {
     const normalized = normalizePathForStorage(path);
     const parent = parentPath(normalized);
-    this.requireDirectory(parent);
+    const flag = options?.flag ?? 'w';
+    if (flag !== 'w' && flag !== 'wx' && flag !== 'a' && flag !== 'r+') {
+      throw createErrnoError('EINVAL', normalized, `Unsupported write flag: ${flag}`);
+    }
+    const current = this.files.get(normalized);
+    if (flag === 'wx' && (current !== undefined || this.directories.has(normalized))) {
+      throw createErrnoError('EEXIST', normalized);
+    }
     if (this.directories.has(normalized)) {
       throw createErrnoError('EISDIR', normalized);
     }
-    const current = this.files.get(normalized);
+    if (flag === 'r+' && current === undefined) {
+      throw createErrnoError('ENOENT', normalized);
+    }
+    this.requireDirectory(parent);
+    const nextContent = bufferFromStorageData(data, options?.encoding);
+    if (flag === 'a' && current !== undefined) {
+      current.content = Buffer.concat([current.content, nextContent]);
+      const stamps = this.nextStamps();
+      current.mtimeMs = stamps.mtimeMs;
+      current.mtimeNs = stamps.mtimeNs;
+      this.touchAncestors(parent);
+      return;
+    }
+    if (flag === 'r+' && current !== undefined) {
+      const content = Buffer.alloc(Math.max(current.content.length, nextContent.length));
+      current.content.copy(content);
+      nextContent.copy(content);
+      current.content = content;
+      const stamps = this.nextStamps();
+      current.mtimeMs = stamps.mtimeMs;
+      current.mtimeNs = stamps.mtimeNs;
+      this.touchAncestors(parent);
+      return;
+    }
     const identity = current ? fileIdentityOf(current) : this.nextIdentity();
     this.files.set(normalized, {
       kind: 'file',
-      content: bufferFromStorageData(data, options?.encoding),
-      mode: current?.mode ?? fileCreationMode(options?.mode),
+      content: nextContent,
+      mode: current?.mode ?? createWithUmaskMode(options?.mode),
       ...identity,
       ...this.nextStamps(),
     });
@@ -533,7 +575,7 @@ export class InMemoryStorage implements StoragePort {
       return {
         dev: BigInt(directory.dev),
         ino: BigInt(directory.ino),
-        mode: DIRECTORY_TYPE_BITS | BigInt(posixMode(directory.mode ?? defaultDirectoryMode())),
+        mode: DIRECTORY_TYPE_BITS | BigInt(posixMode(directory.mode)),
         uid: SIMULATED_OWNER_UID,
         size: 0n,
         mtimeNs: directory.mtimeNs,
@@ -574,8 +616,8 @@ export class InMemoryStorage implements StoragePort {
 
   openSync(path: string, flags: string, mode?: number): number {
     const normalized = normalizePathForStorage(path);
-    if (flags !== 'r' && flags !== 'a' && flags !== 'wx') {
-      throw new Error(`InMemoryStorage.openSync only supports 'r', 'a', and 'wx' (received ${flags})`);
+    if (flags !== 'r' && flags !== 'w' && flags !== 'a' && flags !== 'wx') {
+      throw createErrnoError('EINVAL', normalized, `Unsupported open flag: ${flags}`);
     }
     let file = this.files.get(normalized);
     if (flags === 'wx' && (file !== undefined || this.directories.has(normalized))) {
@@ -593,13 +635,18 @@ export class InMemoryStorage implements StoragePort {
       file = {
         kind: 'file',
         content: Buffer.alloc(0),
-        mode: fileCreationMode(mode),
+        mode: createWithUmaskMode(mode),
         ...this.nextIdentity(),
         ...this.nextStamps(),
       };
       this.files.set(normalized, file);
       this.registerChild(normalized);
       this.touchAncestors(parent);
+    } else if (flags === 'w') {
+      file.content = Buffer.alloc(0);
+      const stamps = this.nextStamps();
+      file.mtimeMs = stamps.mtimeMs;
+      file.mtimeNs = stamps.mtimeNs;
     }
     const fd = this.nextFd++;
     this.openFiles.set(fd, {
@@ -633,7 +680,7 @@ export class InMemoryStorage implements StoragePort {
     if (!open) {
       throw createErrnoError('EBADF', String(fd));
     }
-    if (open.mode !== 'a' && open.mode !== 'wx') {
+    if (open.mode !== 'w' && open.mode !== 'a' && open.mode !== 'wx') {
       throw createErrnoError('EBADF', String(fd));
     }
     const file = this.requireOpenFileNode(open);
@@ -681,7 +728,7 @@ export class InMemoryStorage implements StoragePort {
       this.files.set(normalized, {
         kind: 'file',
         content: Buffer.from(data, 'utf-8'),
-        mode: fileCreationMode(),
+        mode: createWithUmaskMode(),
         ...this.nextIdentity(),
         ...this.nextStamps(),
       });
@@ -762,7 +809,7 @@ export class InMemoryStorage implements StoragePort {
     this.files.set(normalized, {
       kind: 'file',
       content: bufferFromStorageData(data, options?.encoding),
-      mode: fileCreationMode(options?.mode),
+      mode: exclusiveThenChmodMode(options?.mode),
       ...this.nextIdentity(),
       ...this.nextStamps(),
     });
@@ -779,14 +826,10 @@ export class InMemoryStorage implements StoragePort {
     }
 
     const tempPath = `${normalized}.tmp`;
-    this.files.set(tempPath, {
-      kind: 'file',
-      content: bufferFromStorageData(data, options?.encoding),
-      mode: fileCreationMode(options?.mode),
-      ...this.nextIdentity(),
-      ...this.nextStamps(),
-    });
-    this.registerChild(tempPath);
+    this.writeFileSync(tempPath, data, options);
+    if (options?.mode !== undefined) {
+      this.chmodSync(tempPath, options.mode);
+    }
     this.renameSync(tempPath, normalized);
     return true;
   }
@@ -796,7 +839,27 @@ export class InMemoryStorage implements StoragePort {
     data: StorageData,
     options?: { encoding?: BufferEncoding; mode?: number },
   ): boolean {
-    return this.writeAtomicSync(path, data, options);
+    const normalized = normalizePathForStorage(path);
+    const parent = parentPath(normalized);
+    this.mkdirSync(parent, { recursive: true });
+
+    const tempPath = `${normalized}.tmp`;
+    if (this.directories.has(tempPath)) {
+      throw createErrnoError('EISDIR', tempPath);
+    }
+    const current = this.files.get(tempPath);
+    const identity = current ? fileIdentityOf(current) : this.nextIdentity();
+    this.files.set(tempPath, {
+      kind: 'file',
+      content: bufferFromStorageData(data, options?.encoding),
+      mode: options?.mode === undefined ? (current?.mode ?? durableAtomicMode()) : durableAtomicMode(options.mode),
+      ...identity,
+      ...this.nextStamps(),
+    });
+    this.registerChild(tempPath);
+    this.touchAncestors(parent);
+    this.renameSync(tempPath, normalized);
+    return this.syncDirectoryDurableSync(parent);
   }
 
   syncDirectoryDurableSync(path: string): boolean {
