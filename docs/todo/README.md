@@ -52,7 +52,7 @@ signal a correctly identified target, they are about there being no party left t
 
 | Order | Entry                                                       | Why here                                                                                                                                                  |
 | ----- | ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1     | the compatibility policy, then `build-identity-and-upgrade` | Unblocks three others. Its own first step is small and blocks nothing: carry the routing reason instead of collapsing four situations into `use-current`. |
+| 1     | the compatibility policy, then `build-identity-and-upgrade` | Unblocks three others. The routing-reason step is closed; this entry still carries the record direction behind the compatibility policy and the independent output direction. |
 | 2     | `darwin-signal-authority` + `durable-cli-signal-authority`  | Needs a synchronous exit state on `ChildProcessLike`, which touches every fake in the suite. Do it when nothing else is in flight.                        |
 | 3     | `provider-operation-admission-hold`                         | Design complete and recorded; ships as one unit or not at all.                                                                                            |
 | 4     | `coordinator-process-disposition`                           | After 3 has settled the recovery boundary the custody transfer has to attach to.                                                                          |

@@ -5,8 +5,8 @@ document has been wrong three times, kept because the corrections are the part t
 
 |                |                                                                                                                                                                                                                                                                           |
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Shipped**    | The takeover works. A process start time is no longer compared across a process boundary in `probeCoordinator` or on the handoff signal path, so a newer build can obtain the incumbent's `bootToken`, ask it to stand down, and escalate if it does not.                 |
-| **Still open** | The mixed window itself: the **record** direction (a new CLI writes what an old coordinator reads), the **output** direction (a live session holding old skill text drives a new CLI), and **observability** (four different situations collapse into one `use-current`). |
+| **Shipped**    | The takeover works. A process start time is no longer compared across a process boundary in `probeCoordinator` or on the handoff signal path, so a newer build can obtain the incumbent's `bootToken`, ask it to stand down, and escalate if it does not. The routing-reason step is also closed: preflight continuations retain their basis and `backend status` renders the process-local result. |
+| **Still open** | The **record** direction (a new CLI writes what an old coordinator reads), the **output** direction (a live session holding old skill text drives a new CLI), and the compatibility policy that the ordering ledger places ahead of the record direction. |
 | **Elsewhere**  | The same defect, uncorrected, at four other pairs of processes — see `proxy-set-acquisition.md`.                                                                                                                                                                          |
 
 ## Correction — this document named the wrong cause
@@ -124,7 +124,7 @@ build identity:
 | Entry point                                              | What it decides on                                                 |
 | -------------------------------------------------------- | ------------------------------------------------------------------ |
 | `clients/hooks/session-start.mjs` (`isCoordinatorAlive`) | pid liveness only — no version, no bundle hash                     |
-| `routeLiveIncumbent` (`src/infra/backend-routing.ts`)    | a newer invoking CLI is told to **use the incumbent**              |
+| `routeLiveIncumbent` (`src/coordinator/handoff-routing.ts`) | a newer invoking CLI continues with an `invoking-build-not-older` basis |
 | `src/transport/ipc/ensure.ts`                            | discovery-record ↔ health self-consistency, not "is this my build" |
 
 So the incumbent can only learn it has been replaced by seeing a successor's `instanceId`; a successor
@@ -192,23 +192,15 @@ the continuity defect — it is fixed, and this document is not its home.
 ## What the preflight actually does, since it keeps being assumed
 
 `runCliHandoffPreflight` runs on every invocation and does reach a build comparison. The decision is
-`routeLiveIncumbent` (`src/infra/backend-routing.ts`): same build set → use the incumbent; then
-`compareProductVersions`, and **a newer or equal invoker also uses the incumbent**. Only an older
-invoker hands off, to the newer bundle. Confirmed live against a machine in the window: the `0.10.8`
-CLI ran against the `0.10.6` daemon, exited 0, and reported `Version: 0.10.6` with no notice.
+`routeLiveIncumbent` (`src/coordinator/handoff-routing.ts`) distinguishes same build set,
+newer-or-equal invoking build, invalid foreign target, and a validated handoff. The observation layer in
+`src/coordinator/handoff-runner.ts` separately distinguishes incumbent absence, three unresolved causes,
+two live-but-unusable causes, and invoking or incumbent identity failure. `backend status` renders the
+memoized top-level continuation, including its basis, when the command continues in this process.
 
-`useLiveIncumbent()` returns `createUseCurrentBackendRouting()` — literally the same value the preflight
-returns when no coordinator is running at all. Three gates fall back to it with no trace:
-
-| Fallback                                                           | Site                                |
-| ------------------------------------------------------------------ | ----------------------------------- |
-| incumbent omits `manifest`/`bundleDir` (older or non-strict build) | `src/coordinator/handoff-runner.ts` |
-| invoking bundle's strict identity does not resolve                 | `src/coordinator/handoff-runner.ts` |
-| foreign-target validation rejects the incumbent's bundle           | `src/infra/backend-routing.ts`      |
-
-So a process can be in the mixed window for four different reasons and nothing distinguishes them.
-Observed and unresolved: a `0.10.5` CLI against the `0.10.6` daemon should hand off by that code and
-printed no handoff notice, and which fallback fired is not determinable from outside. That is the defect.
+That closes the routing-reason step only. The record direction remains open behind the shared compatibility
+policy, and the independent output direction remains open as well; this process-local result is neither
+durable history nor a contract for a session holding old skill text.
 
 At the far end, a `0.10.4` CLI reports **`Backend not running`** against a live daemon — it predates the
 strict-identity protocol entirely. Its own message then says a mutating command relaunches the backend,
@@ -220,9 +212,9 @@ change can reach.
 
 ## Start condition
 
-1. **Make the window observable.** Carry the reason on the routing result instead of collapsing four
-   situations into one `use-current`, and surface it in `backend status`. Small, blocks nothing, and it
-   is why the August incident stayed misattributed as long as it did.
+1. ~~**Make the window observable.**~~ **Routing-reason step shipped.** The routing result carries its basis,
+   and `backend status` surfaces the process-local continuation. This does not close the record or output
+   directions below.
 2. **Fold the record direction into the one compatibility policy** shared with
    `jobs-read-contract-schema-first.md` and `result-artifact-availability.md`. It is a consumer of a
    policy those two need anyway, not a driver.

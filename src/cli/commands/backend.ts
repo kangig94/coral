@@ -178,6 +178,17 @@ export type BackendCommandOperations = Readonly<{
   providerHosts?: ProviderHostCommandOperations;
 }>;
 
+export function createBackendStatusCommandOperations(
+  getLiveHandoffResult: BackendStatusCommandOperations['getLiveHandoffResult'] = () => null,
+): BackendStatusCommandOperations {
+  return {
+    inspectReadiness: () =>
+      inspectGenerationReadiness(createRealRuntime(resolveBuildFlavor(process.env)), currentCoralStoreFormat()),
+    getStatus: () => getBackendStatusFull(getPluginRoot()),
+    getLiveHandoffResult,
+  };
+}
+
 type RecoveryQuarantineReadRuntime = Pick<Runtime, 'flavor' | 'paths' | 'storage'>;
 
 export function listRecoveryQuarantineLocal(
@@ -251,12 +262,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
     kbCommit = {
       quarantine: quarantineKbCommitLocal,
     },
-    backendStatus = {
-      inspectReadiness: () =>
-        inspectGenerationReadiness(createRealRuntime(resolveBuildFlavor(process.env)), currentCoralStoreFormat()),
-      getStatus: () => getBackendStatusFull(getPluginRoot()),
-      getLiveHandoffResult: () => null,
-    },
+    backendStatus = createBackendStatusCommandOperations(),
     recoveryQuarantine = createRecoveryQuarantineCommandOperations(),
     providerHosts = createProviderHostCommandOperations(),
   } = operations;

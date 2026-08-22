@@ -3,7 +3,7 @@ import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 // cross-version-coordinator-continuity review): `bindWithHandoff`
 // (`src/coordinator/handoff.ts`) must apply the same product-version
 // precedence the CLI target-routing path already applies
-// (`src/infra/backend-routing.ts`), so that:
+// (`src/coordinator/handoff-routing.ts`), so that:
 //   - two same-version builds with different bundle hashes never both
 //     conclude the other side should be evicted (the data-destroying loop);
 //   - an older build never evicts a healthy newer incumbent;

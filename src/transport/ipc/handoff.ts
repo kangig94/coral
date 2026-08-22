@@ -88,7 +88,7 @@ export class IpcDeadlineExceededError extends Error {
  * build would provide, so evicting it would trade a healthy coordinator for
  * one that is not an upgrade. This is the daemon-side half of the precedence
  * rule V1.1 already applies on the CLI path (`routeLiveIncumbent` in
- * `src/infra/backend-routing.ts`): a version difference alone is never a
+ * `src/coordinator/handoff-routing.ts`): a version difference alone is never a
  * replacement reason, and there is no arbitrary tie-break at equal version —
  * the incumbent keeps the socket. `bundleHash` identifies a build, it does
  * not order one.

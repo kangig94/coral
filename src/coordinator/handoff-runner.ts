@@ -100,21 +100,6 @@ const liveIncumbentHealthSchema = z
 
 type LiveIncumbentHealth = z.infer<typeof liveIncumbentHealthSchema>;
 
-/**
- * What this preflight learned about a live incumbent, kept apart because `'not-observed'` and
- * `'observed-unusable'` are not the same statement. `'not-observed'` means this probe never got a usable
- * answer at all: `'absent'` is decisive (`probeCoordinator` itself directly observed no incumbent),
- * `'unresolved'` is everything else that kept this file from deciding — a connect failure, a timed-out
- * round-trip, or a reply that failed `liveIncumbentHealthSchema` all land here alike, because none of the
- * three is evidence that nobody answered; they are evidence that this probe did not get a usable answer.
- *
- * `'observed-unusable'` is the opposite: a live incumbent answered and decoded, and is disqualified — reporting
- * its own shutdown, or naming a different pid, bundle, or namespace than the discovery record this probe asked
- * — rather than absent. Filing that under `'not-observed'` would claim nobody answered when someone did.
- * `backendLog.warn` (below) records which disqualifying reason applied at the point it was observed; every
- * consumer of this type routes `'observed-unusable'` and `'not-observed'` to the same non-usable outcome, so
- * neither carries a payload past that point.
- */
 type LiveIncumbentReading =
   | Readonly<{ kind: 'observed'; health: LiveIncumbentHealth }>
   | Readonly<{ kind: 'observed-unusable'; cause: 'draining' | 'identity-mismatch' }>
@@ -281,8 +266,7 @@ async function readAuthenticatedHealth(
     const parsed = liveIncumbentHealthSchema.safeParse(value);
     // A connect failure, a timed-out round-trip, and a reply that failed this schema are three different
     // events, but none of them is a positive observation of absence — the socket may be held by a live
-    // incumbent that was merely slow, or answering a shape this build does not recognize. `'unresolved'` is
-    // the disposition all three share; `readLiveCoordinatorHealth` is where it is kept apart from `'absent'`.
+    // incumbent that was merely slow, or answering a shape this build does not recognize.
     return parsed.success
       ? { kind: 'observed', health: parsed.data }
       : { kind: 'not-observed', reason: 'unresolved', cause: 'health-shape-rejected' };
@@ -333,16 +317,9 @@ async function readLiveCoordinatorHealth(
   let discovery: CoordinatorDiscoveryRecord;
   switch (probe.kind) {
     case 'absent':
-      // The only decisive short-circuit: `probeCoordinator` itself directly observed no incumbent (no record,
-      // or a pid it confirmed gone). Every other reading below — observed-unusable or not-observed alike —
-      // also reaches `use-current` (`resolveHandoffRouting`), but none of them is this one — see
-      // `LiveIncumbentReading`.
       return { kind: 'not-observed', reason: 'absent' };
     case 'unobservable':
       if (probe.reason === 'unreadable-record') {
-        // An undecodable record leaves nothing to ask with — no socket path, no `bootToken` — so 'unresolved'
-        // is the only answer available here, not a judgement that none exists. It is reported rather than
-        // inferred: `probeCoordinator` warns on this branch.
         return { kind: 'not-observed', reason: 'unresolved', cause: 'unreadable-record' };
       }
       // An unobservable pid still has a record, and authenticated health is a stronger statement about whether
@@ -356,22 +333,13 @@ async function readLiveCoordinatorHealth(
 
   const reading = await readAuthenticatedHealth(discovery, time);
   if (reading.kind === 'not-observed') {
-    // Said out loud for the same reason `probeCoordinator` says it for an undecodable record: a caller that
-    // reads this warning-free would have no way to tell a refused connection apart from a busy one. What
-    // bounds the cost of treating it as `use-current` anyway lives outside this function: the kernel's
-    // exclusive bind on the IPC socket (`transport/ipc/ensure.ts`) rules out a second daemon regardless of
-    // what this probe concluded, and that same file's `ensure()` already reuses a healthy incumbent "Healthy
-    // → return it regardless of build" for every same-or-older incumbent. A false negative here costs the
-    // version-upgrade handoff this mechanism exists to deliver, not a second coordinator or a protocol break.
     backendLog.warn(
       `Authenticated health from ${discovery.socketPath} did not resolve; treating the incumbent as unobserved, not absent.`,
     );
     return reading;
   }
   if (reading.health.status === 'draining') {
-    // A positive observation, not an absence: something answered, decoded, and named its own shutdown. Its
-    // own wording, so a caller cannot mistake this for the unresolved probe above or the identity mismatch
-    // below.
+    // A positive observation, not an absence: something answered, decoded, and named its own shutdown.
     backendLog.warn(`Live incumbent at ${discovery.socketPath} reported status draining; treating it as unusable.`);
     return { kind: 'observed-unusable', cause: 'draining' };
   }
@@ -391,11 +359,6 @@ async function resolveHandoffRouting(pluginRoot?: string, timePort?: TimePort): 
   const runtime = createRealRuntime(flavor);
   const time = timePort ?? runtime.time;
   const reading = await readLiveCoordinatorHealth(runtime, time);
-  // `readLiveCoordinatorHealth` distinguishes a decisive absence, an unresolved probe, and a live-but-unusable
-  // incumbent (draining, or a foreign identity) from a usable `'observed'` reply, and logs each one under its
-  // own wording as it is produced. Only the usable reply carries anything to route against here; every other
-  // reading reaches `use-current` regardless of which of the three it is, which is why the branch below reads
-  // `reading.kind`, not a boolean folded out of it.
   return {
     routing:
       reading.kind === 'observed'

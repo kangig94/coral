@@ -110,7 +110,6 @@ function makeBackend(subscribe = vi.fn()) {
     port: 4100,
     token: 'token',
     version: '1.0.0',
-    routing: { kind: 'use-current' } as const,
     request: vi.fn(),
     subscribe,
     ping: vi.fn(),
