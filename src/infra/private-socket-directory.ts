@@ -1,10 +1,10 @@
-import { dirname } from 'node:path';
+import { dirname, resolve } from 'node:path';
 
 import type { StorageBigIntStat, StoragePort } from './port-types.js';
 
 const FILE_TYPE_BITS = 0o170000n;
 const DIRECTORY_TYPE = 0o040000n;
-const PERMISSION_BITS = 0o777n;
+const PERMISSION_BITS = 0o7777n;
 const REQUIRED_POSIX_MODE = 0o700n;
 const WRITABLE_BY_OTHERS = 0o022n;
 const RESTRICTED_DELETION = 0o1000n;
@@ -130,7 +130,10 @@ function assertSecureParent(directory: string, uid: number, parent: StorageBigIn
  * `chmod` succeeding is not the mode being set — a CIFS mount without unix extensions accepts the call and
  * keeps its own permissions — so the result is read back.
  */
-export function ensurePrivateSocketDir(directory: string, uid: number, storage: SocketDirectoryStorage): void {
+export function ensurePrivateSocketDir(target: string, uid: number, storage: SocketDirectoryStorage): void {
+  // A trailing separator makes `lstat` follow a symlink, so the non-following read below is only
+  // non-following on a canonical path.
+  const directory = resolve(target);
   if (!Number.isSafeInteger(uid) || uid < 0) {
     throw new SocketDirectoryError('unverified', directory, uid, new Error('the current uid is not a usable owner'));
   }

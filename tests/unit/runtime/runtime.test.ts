@@ -344,8 +344,6 @@ describe('createRealRuntime', () => {
 });
 
 describe('storage.lstatSync bigint', () => {
-  // The only production consumer of this overload is the relocated socket-directory assertion, which
-  // decides ownership and file type from it; a field this adapter drops becomes a refusal to start.
   it('carries the owner, mode and type the socket-directory assertion reads', () => {
     const root = mkdtempSync(join(tmpdir(), 'coral-runtime-lstat-'));
     createdDirs.push(root);

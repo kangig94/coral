@@ -18,7 +18,6 @@ export interface CoordinatorPathOptions {
   readonly baseDir?: string;
 }
 
-/** Every overflowing state root on the host draws from one namespace, not from this installation's own. */
 const FALLBACK_HASH_LENGTH = 16;
 
 interface SocketPathEnvironment {

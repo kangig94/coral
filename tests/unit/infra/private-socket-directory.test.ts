@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -204,7 +204,10 @@ describe('ensurePrivateSocketDir', () => {
     const directory = scratchDirectory(0o700);
 
     expect(() => ensurePrivateSocketDir(directory, CURRENT_UID, storageReportingParentUid(undefined))).toThrowError(
-      expect.objectContaining({ refusal: 'unverified', detail: expect.stringContaining('reported no owner') }),
+      expect.objectContaining({
+        refusal: 'unverified',
+        detail: expect.stringContaining(`'${dirname(directory)}' reported no owner`),
+      }),
     );
   });
 

@@ -10,6 +10,9 @@ import type {
 import { DEFAULT_CORAL_ROOT, DEFAULT_JOBS_DIR } from './constants.js';
 
 const SIMULATED_OWNER_UID = BigInt(process.getuid?.() ?? 0);
+// A caller reading the file type out of `mode` must not disagree with `isDirectory()`.
+const DIRECTORY_TYPE_BITS = 0o040000n;
+const REGULAR_FILE_TYPE_BITS = 0o100000n;
 
 type FileIdentity = {
   dev: number;
@@ -435,8 +438,7 @@ export class InMemoryStorage implements StoragePort {
   lstatSync(path: string, options?: { bigint: true }): StorageEntryKind | StorageBigIntStat {
     const normalized = normalizePathForStorage(path);
     if (options?.bigint === true) {
-      const stat = this.statSync(normalized, { bigint: true });
-      return { ...stat, mode: (stat.isDirectory() ? 0o040000n : 0o100000n) | stat.mode };
+      return this.statSync(normalized, { bigint: true });
     }
     if (this.files.has(normalized)) {
       return {
@@ -476,7 +478,7 @@ export class InMemoryStorage implements StoragePort {
         return {
           dev: BigInt(file.dev),
           ino: BigInt(file.ino),
-          mode: BigInt(file.mode ?? 0o600),
+          mode: REGULAR_FILE_TYPE_BITS | BigInt(file.mode ?? 0o600),
           uid: SIMULATED_OWNER_UID,
           size: BigInt(file.content.length),
           mtimeNs: file.mtimeNs,
@@ -499,7 +501,7 @@ export class InMemoryStorage implements StoragePort {
       return {
         dev: BigInt(directory.dev),
         ino: BigInt(directory.ino),
-        mode: BigInt(directory.mode ?? 0o700),
+        mode: DIRECTORY_TYPE_BITS | BigInt(directory.mode ?? 0o700),
         uid: SIMULATED_OWNER_UID,
         size: 0n,
         mtimeNs: directory.mtimeNs,

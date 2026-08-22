@@ -186,7 +186,7 @@ describe('provider proxy paths', () => {
       lstatSync: (path) =>
         path === FALLBACK_ROOT
           ? loose.lstatSync(path, { bigint: true })
-          : { ...loose.lstatSync(path, { bigint: true }), mode: 0o120777n },
+          : { ...loose.lstatSync(path, { bigint: true }), mode: 0o120777n, isDirectory: () => false },
     };
 
     expect(() => providerProxyEndpoint(identity, environment({ baseDir: pathOfLength(200), storage }))).toThrowError(
