@@ -263,6 +263,48 @@ describe('ensurePrivateSocketDir', () => {
     );
   });
 
+  // "mode 0700" is twelve bits: a set-id or sticky bit on a directory of ours is not the mode this asks for,
+  // and a check reading only the access bits cannot see it.
+  it.each([
+    ['sticky', 0o1700],
+    ['setgid', 0o2700],
+    ['setuid', 0o4700],
+  ])('tightens a directory of its own carrying the %s bit', (_label, mode) => {
+    const directory = join(scratch(), 'high-bit');
+    mkdirSync(directory, { mode: 0o700 });
+    chmodSync(directory, mode);
+
+    ensurePrivateSocketDir(directory, CURRENT_UID, realStorage);
+
+    expect(lstatSync(directory).mode & 0o7777).toBe(0o700);
+  });
+
+  // A trailing separator makes `lstat` follow, so the read this module calls non-following is only
+  // non-following once the argument is canonical.
+  it('canonicalises before the non-following read', () => {
+    const root = scratch();
+    const target = join(root, 'target');
+    const link = join(root, 'link');
+    mkdirSync(target, { mode: 0o700 });
+    symlinkSync(target, link);
+
+    expect(() => ensurePrivateSocketDir(`${link}/`, CURRENT_UID, realStorage)).toThrowError(
+      expect.objectContaining({ refusal: 'unusable' }),
+    );
+  });
+
+  // An entry the create could not make but the read can name is a decided observation, not an unobserved
+  // one: a dangling link fails `ENOENT` where an occupied path fails `EEXIST`.
+  it('names a dangling link rather than reporting the create that could not pass it', () => {
+    const root = scratch();
+    const link = join(root, 'fallback');
+    symlinkSync(join(root, 'absent'), link);
+
+    expect(() => ensurePrivateSocketDir(link, CURRENT_UID, realStorage)).toThrowError(
+      expect.objectContaining({ refusal: 'unusable' }),
+    );
+  });
+
   it('refuses a uid it cannot use as an owner', () => {
     const directory = join(scratch(), 'nan-uid');
 

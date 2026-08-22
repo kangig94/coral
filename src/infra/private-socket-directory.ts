@@ -122,7 +122,7 @@ function assertSecureParent(directory: string, uid: number, parent: StorageBigIn
 
 /**
  * The entry's own owner and type must come from a non-following read: a following one describes whatever
- * the path resolves to, and `bind` resolves it again afterwards.
+ * the path resolves to rather than the entry this will hand to a caller.
  *
  * Its enclosing directory must be read the following way round, because `/tmp` is a symlink on macOS and a
  * link's own mode says nothing about who may write where it points.
@@ -141,18 +141,24 @@ export function ensurePrivateSocketDir(target: string, uid: number, storage: Soc
   const parent = observe(directory, uid, () => storage.statSync(dirname(directory), { bigint: true }));
   assertSecureParent(directory, uid, parent);
 
+  // A create that fails is never the last word while the entry can still be read: an occupied path fails
+  // `EEXIST`, a dangling link at the same position fails `ENOENT`, and both are entries the read below
+  // names. Only a path the read cannot reach either leaves this having observed nothing.
+  let created: unknown = null;
   try {
     storage.mkdirSync(directory, { recursive: true, mode: Number(REQUIRED_POSIX_MODE) });
   } catch (error: unknown) {
-    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
-      throw new SocketDirectoryError('unverified', directory, uid, error);
-    }
+    created = error;
   }
 
-  const entry = classifyEntry(
-    observe(directory, uid, () => storage.lstatSync(directory, { bigint: true })),
-    uid,
-  );
+  let observed: StorageBigIntStat;
+  try {
+    observed = storage.lstatSync(directory, { bigint: true });
+  } catch (error: unknown) {
+    throw new SocketDirectoryError('unverified', directory, uid, created ?? error);
+  }
+
+  const entry = classifyEntry(observed, uid);
   if (entry === 'matching-posix-owner-and-mode') return;
   if (entry !== 'loose') refuseEntry(entry, directory, uid);
 

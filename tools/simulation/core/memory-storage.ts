@@ -319,7 +319,9 @@ export class InMemoryStorage implements StoragePort {
     this.touchAncestors(targetParent);
   }
 
-  mkdirSync(path: string, options?: { recursive?: boolean }): void {
+  // The requested mode is recorded rather than dropped: a caller that creates loose and then tightens is
+  // exercising a different branch from one that finds the directory already private.
+  mkdirSync(path: string, options?: { recursive?: boolean; mode?: number }): void {
     const normalized = normalizePathForStorage(path);
     if (this.files.has(normalized)) {
       throw createErrnoError('EEXIST', normalized);
@@ -344,6 +346,7 @@ export class InMemoryStorage implements StoragePort {
         if (!this.directories.has(cursor)) {
           this.directories.set(cursor, {
             kind: 'dir',
+            ...(options.mode === undefined ? {} : { mode: options.mode }),
             ...this.nextIdentity(),
             ...this.nextStamps(),
           });
@@ -356,6 +359,7 @@ export class InMemoryStorage implements StoragePort {
 
     this.directories.set(normalized, {
       kind: 'dir',
+      ...(options?.mode === undefined ? {} : { mode: options.mode }),
       ...this.nextIdentity(),
       ...this.nextStamps(),
     });
