@@ -242,6 +242,22 @@ describe('cli errors', () => {
     });
 
     it.each([
+      ['coordinator_socket_dir_insecure', { reason: 'unusable', directory: '/tmp/coral-1000' }, 1],
+      [
+        'coordinator_socket_dir_unverified',
+        { directory: '/tmp/coral-1000', cause: 'the directory reported no owner' },
+        75,
+      ],
+    ] as const)('preserves the %s exit class through HTTP 409', (code, context, exitCode) => {
+      const response = buildTransportErrorResponse(documentedCoralSetupError(code, context));
+
+      expect(response.statusCode).toBe(409);
+      expect(
+        buildErrorEnvelope(new BackendToolHttpError(response.message, response.statusCode, response.body)).exitCode,
+      ).toBe(exitCode);
+    });
+
+    it.each([
       ['kb_disabled', 'KB daemon supervisor is disabled: disabled (CORAL_KB_ENABLE=0)'],
       ['kb_initializing', 'Knowledge base is starting up — retry in ~5 seconds'],
       ['kb_offline', 'Knowledge base is offline'],
@@ -286,24 +302,21 @@ describe('cli errors', () => {
       ['audit_requires_ended_session', 409, 1],
       ['invalid_request', 400, 1],
       ['backend_recovering', 503, 75],
-      // Both are "could not observe", not "decided no" — members of `NOT_OBSERVED_CORAL_SETUP_ERROR_CODES`. See
-      // both codes' doc comments in `runtime/errors.ts`.
       ['coordinator_record_unreadable', undefined, 75],
       ['coordinator_unreachable', undefined, 75],
+      ['coordinator_socket_dir_unverified', undefined, 75],
+      ['coordinator_socket_dir_insecure', undefined, 1],
       ['unexpected_code', undefined, 1],
     ])('maps %s / %s to %i', (code, httpStatus, exitCode) => {
       expect(errorCodeToExit(code, httpStatus)).toBe(exitCode);
     });
 
-    // The mechanism `NOT_OBSERVED_CORAL_SETUP_ERROR_CODES` exists to prevent — a code added to one consumer's
-    // exit-code list and not the other's — was previously asserted only in a JSDoc comment, never a test. This
-    // drives both `errorCodeToExit` (this file) and `expansionExitCode` (`cli/commands/expansion.ts`) from the
-    // real exported set, so a future member that either consumer stops honoring fails here instead of shipping
-    // silently. `EXPECTED_NOT_OBSERVED_CODES` is an independent, hand-written statement of the set's current
-    // membership — mirroring `main-routing.test.ts`'s "has a row for every refusal" pattern — so a code
-    // silently added to or removed from the real set is caught here too, not just a drift between consumers.
     it('gives every NOT_OBSERVED_CORAL_SETUP_ERROR_CODES member exit 75 in both errorCodeToExit and expansionExitCode', async () => {
-      const EXPECTED_NOT_OBSERVED_CODES = ['coordinator_unreachable', 'coordinator_record_unreadable'];
+      const EXPECTED_NOT_OBSERVED_CODES = [
+        'coordinator_unreachable',
+        'coordinator_record_unreadable',
+        'coordinator_socket_dir_unverified',
+      ];
       const { NOT_OBSERVED_CORAL_SETUP_ERROR_CODES } = await import('#src/runtime/errors.js');
       const { expansionExitCode } = await import('#src/cli/commands/expansion.js');
 
@@ -312,6 +325,19 @@ describe('cli errors', () => {
       for (const code of NOT_OBSERVED_CORAL_SETUP_ERROR_CODES) {
         expect(errorCodeToExit(code)).toBe(75);
         expect(expansionExitCode({ status: 'error', code, userMessage: 'unused', remediation: 'unused' })).toBe(75);
+      }
+    });
+
+    it('names every NOT_OBSERVED_CORAL_SETUP_ERROR_CODES member in the exit-75 catalog row', async () => {
+      const { NOT_OBSERVED_CORAL_SETUP_ERROR_CODES } = await import('#src/runtime/errors.js');
+      const { readFileSync } = await import('node:fs');
+      const row = readFileSync('docs/cli-errors.md', 'utf-8')
+        .split('\n')
+        .find((line) => line.startsWith('| `75` |'));
+
+      expect(row).toBeDefined();
+      for (const code of NOT_OBSERVED_CORAL_SETUP_ERROR_CODES) {
+        expect(row).toContain(`\`${code}\``);
       }
     });
   });

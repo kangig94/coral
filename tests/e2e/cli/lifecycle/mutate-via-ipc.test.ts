@@ -244,7 +244,7 @@ function createFixture(): Fixture {
 }
 
 function discoveryFilePath(home: string, flavor: 'prod' | 'dev'): string {
-  return coordinatorPaths(flavor, { HOME: home, TMPDIR: home }, { baseDir: join(home, '.coral') }).infoFile;
+  return coordinatorPaths(flavor, { baseDir: join(home, '.coral') }).infoFile;
 }
 
 function resultArtifactPath(home: string, flavor: 'prod' | 'dev', jobId: string): string {

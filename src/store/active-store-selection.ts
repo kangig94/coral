@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { strictBundleManifestSchema, type StrictBundleManifest } from '../infra/bundle-manifest.js';
 import { isNoEntryError } from '../infra/fs-errors.js';
 import { manifestsMatch, type InvalidTargetEvidence, type InvalidTargetFailure } from '../infra/handoff-target.js';
-import type { StorageBigIntStat, StoragePort } from '../infra/port-types.js';
+import type { StorageBigIntStat, StorageEntryKind, StoragePort } from '../infra/port-types.js';
 import { compareProductVersions } from '../infra/product-version.js';
 import type { Runtime } from '../runtime/ports.js';
 import { resolveGenerationBoundaryPaths } from './generation-mutation-coordination.js';
@@ -563,7 +563,7 @@ function inspectCoordinationDirectory(
   storage: StoragePort,
   coordinationRoot: string,
 ): { readonly kind: 'present' } | Exclude<BoundedRecordReadResult, { readonly kind: 'bytes' }> {
-  let pathStat: ReturnType<StoragePort['lstatSync']>;
+  let pathStat: StorageEntryKind;
   try {
     pathStat = storage.lstatSync(coordinationRoot);
   } catch (error: unknown) {
@@ -669,7 +669,7 @@ function readBoundedRecord(
   const coordination = inspectCoordinationDirectory(storage, coordinationRoot);
   if (coordination.kind !== 'present') return coordination;
 
-  let pathKind: ReturnType<StoragePort['lstatSync']>;
+  let pathKind: StorageEntryKind;
   try {
     pathKind = storage.lstatSync(path);
   } catch (error: unknown) {

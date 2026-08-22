@@ -230,11 +230,7 @@ describe('bundled store-reset CLI', () => {
       INSERT INTO private_pre_reset VALUES ('PRIVATE_DB_SENTINEL');
     `);
     old.close();
-    const discovery = coordinatorPaths(
-      build.flavor,
-      { HOME: home, TMPDIR: temp },
-      { baseDir: join(home, '.coral') },
-    ).infoFile;
+    const discovery = coordinatorPaths(build.flavor, { baseDir: join(home, '.coral') }).infoFile;
     const hasPreResetTable = (): boolean => {
       const db = new DatabaseSync(storePath, { readOnly: true });
       try {

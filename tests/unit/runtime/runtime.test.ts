@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync } from 'node:fs';
 import type * as NodeFs from 'node:fs';
 import { tmpdir } from 'node:os';
 import type * as NodeOs from 'node:os';
@@ -340,5 +340,47 @@ describe('createRealRuntime', () => {
   it('runtime.paths.coral is referentially stable across accesses', () => {
     const runtime = createRealRuntime('prod');
     expect(runtime.paths.coral).toBe(runtime.paths.coral);
+  });
+});
+
+describe('storage bigint stats', () => {
+  it('retains owner, type, and full mode when only the following view resolves a symlink', () => {
+    const root = mkdtempSync(join(tmpdir(), 'coral-runtime-lstat-'));
+    createdDirs.push(root);
+    const target = join(root, 'target');
+    const link = join(root, 'link');
+    mkdirSync(target, { mode: 0o700 });
+    chmodSync(target, 0o1700);
+    symlinkSync(target, link);
+    const runtime = createRealRuntime('prod', { baseDir: root });
+
+    const observedLstat = runtime.storage.lstatSync(link, { bigint: true });
+    const observedStat = runtime.storage.statSync(link, { bigint: true });
+    const expectedLstat = lstatSync(link, { bigint: true });
+    const expectedStat = statSync(link, { bigint: true });
+
+    expect({
+      lstat: {
+        uid: observedLstat.uid,
+        type: observedLstat.mode & 0o170000n,
+        mode: observedLstat.mode & 0o7777n,
+      },
+      stat: {
+        uid: observedStat.uid,
+        type: observedStat.mode & 0o170000n,
+        mode: observedStat.mode & 0o7777n,
+      },
+    }).toEqual({
+      lstat: {
+        uid: expectedLstat.uid,
+        type: expectedLstat.mode & 0o170000n,
+        mode: expectedLstat.mode & 0o7777n,
+      },
+      stat: {
+        uid: expectedStat.uid,
+        type: expectedStat.mode & 0o170000n,
+        mode: expectedStat.mode & 0o7777n,
+      },
+    });
   });
 });

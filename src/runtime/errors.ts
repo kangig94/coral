@@ -26,6 +26,8 @@ export type DocumentedCoralSetupErrorCode =
   | 'startup_bundle_unresolvable'
   | 'coordinator_socket_in_use'
   | 'coordinator_socket_bind_failed'
+  | 'coordinator_socket_dir_insecure'
+  | 'coordinator_socket_dir_unverified'
   | 'store_schema_outdated'
   | 'legacy_foreign_generation'
   | 'legacy_source_not_quiescent'
@@ -181,6 +183,42 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
       `Coral could not bind the coordinator socket at ${stringContextValue(context, 'socketPath', '<socket-path>')} for ${stringContextValue(context, 'operation', 'this operator command')}.`,
     remediation: (context) =>
       `Run 'coral-cli backend shutdown'. Check the socket parent directory, permissions, and platform path-length limit, then retry '${stringContextValue(context, 'retryCommand', '<operator-command>')}'.`,
+  },
+  coordinator_socket_dir_insecure: {
+    userMessage: (context) =>
+      `Coral's coordinator socket uses ${stringContextValue(context, 'directory', '<directory>')} as its fallback directory, and ${
+        context?.reason === 'foreign'
+          ? 'that path belongs to another user'
+          : context?.reason === 'unusable'
+            ? 'that path is not a directory'
+            : `Coral cannot keep that path private to you (${stringContextValue(context, 'cause', 'cause unavailable')})`
+      }.`,
+    remediation: (context) =>
+      context?.reason === 'unusable'
+        ? `Remove ${stringContextValue(context, 'directory', '<directory>')} and start Coral again. Coral will not bind its singleton socket where it cannot establish exclusive ownership.`
+        : context?.reason === 'foreign'
+          ? `Ask the owner of ${stringContextValue(context, 'directory', '<directory>')}, or this host's administrator, to remove it — do not try to remove or repair it yourself. Coral will not bind its singleton socket where it cannot establish exclusive ownership.`
+          : "Give this host's administrator the observation above. Coral did not bind its singleton socket. Start Coral again once the directory is repaired.",
+  },
+  coordinator_socket_dir_unverified: {
+    userMessage: (context) => {
+      const directory = stringContextValue(context, 'directory', '<directory>');
+      const cause = stringContextValue(context, 'cause', 'cause unavailable');
+      const observationNamesDirectory = cause.includes(directory);
+      const location = observationNamesDirectory ? 'a fallback directory' : directory;
+      const reference = observationNamesDirectory ? 'it' : 'that directory';
+      return `Coral's coordinator socket uses ${location}, but Coral could not establish whether ${reference} is private to you (${cause}). This does not mean the directory is wrong.`;
+    },
+    remediation: (context) => {
+      const cause = stringContextValue(context, 'cause', 'cause unavailable');
+      if (cause === 'the owner uid named by the socket address is not usable') {
+        return 'Start Coral in an environment that provides an owner uid the filesystem can represent for the fallback socket address. Coral will not bind its singleton socket without a usable owner identity.';
+      }
+      if (cause.includes('reported no owner')) {
+        return 'Start Coral on a filesystem that reports owner identity for the fallback directory. The observation succeeded but did not identify an owner, so Coral could not settle whether the directory is private.';
+      }
+      return 'Resolve the filesystem error reported in the observation above, then start Coral again. Coral will not bind its singleton socket in a directory it could not observe.';
+    },
   },
   store_schema_outdated: {
     userMessage: 'Coral backend store format does not match this installation.',
@@ -642,25 +680,11 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
   },
 } satisfies Record<DocumentedCoralSetupErrorCode, DocumentedCoralSetupErrorSpec>;
 
-/**
- * Codes that mean "this run could not observe the answer", not "the answer is no" — the same distinction
- * `SHUTDOWN_REFUSAL_EXIT_CODES` (`cli/commands/backend.ts`) draws for `ShutdownReason`. `errorCodeToExit`
- * (`cli/errors.ts`) and `expansionExitCode` (`cli/commands/expansion.ts`) each map a code to a CLI exit status
- * independently; a code added to one list and not the other exits "observed/decided" 1 in the list that
- * missed it, by accident rather than by decision. Listed here, once, so both read the same membership rather
- * than repeating it. `Set<string>` rather than
- * `Set<DocumentedCoralSetupErrorCode>` at the export boundary: both consumers hold a plain `string` by the
- * time they check membership — `CoralSetupError.code` is `string`, not this union, because domains outside
- * this registry (`jobs/events.ts`, `sessions/events.ts`, and others) construct `CoralSetupError` with codes of
- * their own that never enter `DocumentedCoralSetupErrorCode`.
- *
- * `coordinator_record_unreadable` is a member alongside `coordinator_unreachable`: an unreadable record says
- * nothing about whether the coordinator it would have named is running, so this run has not observed the
- * answer either way — the same axis, not "will retrying help" (see that code's doc comment above).
- */
+/** Exit 75 must not be read as a settled negative verdict or as a promise that retrying will resolve it. */
 export const NOT_OBSERVED_CORAL_SETUP_ERROR_CODES: ReadonlySet<string> = new Set<DocumentedCoralSetupErrorCode>([
   'coordinator_unreachable',
   'coordinator_record_unreadable',
+  'coordinator_socket_dir_unverified',
 ]);
 
 function renderDocumentedSpec(

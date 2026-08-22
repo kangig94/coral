@@ -16,6 +16,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import * as auditLogModule from '#src/infra/audit-log.js';
+import type { StorageBigIntStat, StorageEntryKind } from '#src/infra/port-types.js';
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
 import { createForeignTargetValidator } from '#src/infra/handoff-target.js';
 import type { Runtime } from '#src/runtime/ports.js';
@@ -395,13 +396,16 @@ describe('active-store-selection locking', () => {
       } else {
         const lstatSync = runtime.storage.lstatSync.bind(runtime.storage);
         let rejectStat = true;
-        runtime.storage.lstatSync = (path) => {
+        function rejectTransitionStat(path: string): StorageEntryKind;
+        function rejectTransitionStat(path: string, options: { bigint: true }): StorageBigIntStat;
+        function rejectTransitionStat(path: string, options?: { bigint: true }): StorageEntryKind | StorageBigIntStat {
           if (path === paths.transitionFile && rejectStat) {
             rejectStat = false;
             throw Object.assign(new Error('transition stat unavailable'), { code: 'EACCES' });
           }
-          return lstatSync(path);
-        };
+          return options?.bigint === true ? lstatSync(path, options) : lstatSync(path);
+        }
+        runtime.storage.lstatSync = rejectTransitionStat;
       }
       const db = fakeDatabase();
       stubStoreOpen({ kind: 'fresh' }, db);
@@ -464,14 +468,20 @@ describe('active-store-selection locking', () => {
     publish(runtime, 'transitionFile', encodeActiveStoreTransition(supersededTransition(currentSelection)));
     const lstatSync = runtime.storage.lstatSync.bind(runtime.storage);
     let removeBeforeRetention = true;
-    runtime.storage.lstatSync = (path) => {
+    function removeBeforeTransitionRetention(path: string): StorageEntryKind;
+    function removeBeforeTransitionRetention(path: string, options: { bigint: true }): StorageBigIntStat;
+    function removeBeforeTransitionRetention(
+      path: string,
+      options?: { bigint: true },
+    ): StorageEntryKind | StorageBigIntStat {
       if (path === paths.transitionFile && removeBeforeRetention) {
         removeBeforeRetention = false;
         runtime.storage.unlinkSync(path);
         throw Object.assign(new Error('transition disappeared'), { code: 'EACCES' });
       }
-      return lstatSync(path);
-    };
+      return options?.bigint === true ? lstatSync(path, options) : lstatSync(path);
+    }
+    runtime.storage.lstatSync = removeBeforeTransitionRetention;
     const db = fakeDatabase();
     stubStoreOpen({ kind: 'fresh' }, db);
     const recordAudit = stubAudit();
@@ -800,18 +810,22 @@ describe('active-store-selection locking', () => {
     const paths = resolveActiveStoreRecordPaths(runtime);
     const lstatSync = runtime.storage.lstatSync.bind(runtime.storage);
     let coordinationRootLstatCalls = 0;
-    runtime.storage.lstatSync = (path) => {
+    function poisonCreatedCoordinationRoot(path: string): StorageEntryKind;
+    function poisonCreatedCoordinationRoot(path: string, options: { bigint: true }): StorageBigIntStat;
+    function poisonCreatedCoordinationRoot(
+      path: string,
+      options?: { bigint: true },
+    ): StorageEntryKind | StorageBigIntStat {
       if (path === paths.coordinationRoot) {
         coordinationRootLstatCalls += 1;
-        // Calls 1-2 are the read-side checks against the not-yet-created directory (both ENOENT). Call 3 is
-        // `ensureActiveStoreCoordinationDirectory`'s post-mkdir safety check, which this poisons.
         if (coordinationRootLstatCalls === 3) {
-          const real = lstatSync(path);
+          const real = options?.bigint === true ? lstatSync(path, options) : lstatSync(path);
           return { ...real, isDirectory: () => true, isSymbolicLink: () => true };
         }
       }
-      return lstatSync(path);
-    };
+      return options?.bigint === true ? lstatSync(path, options) : lstatSync(path);
+    }
+    runtime.storage.lstatSync = poisonCreatedCoordinationRoot;
 
     await expect(
       coordinateActiveStoreSelection(runtime, authority, {

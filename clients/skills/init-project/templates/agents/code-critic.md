@@ -29,12 +29,18 @@ model: sonnet
     BLOCKING:
     - Layer dependency rules violated
     - Changed code has no corresponding tests
+    - No edited comment fails the edited-comment criterion in `.claude/rules/conventions.md`
+      (Comments). Read and apply that canonical rule; report its BLOCKING findings with the before
+      and after text.
 
     STRONG:
     - Elegance Score < 7 - simpler or clearer solution exists
     - Complexity thresholds exceeded
     - Duplicated logic (DRY violation)
     - Error handling inconsistent with project patterns
+    - Every comment the diff adds, or leaves standing in a function it changed, passes the canonical
+      comment rule in `.claude/rules/conventions.md` (Comments). Read and apply that rule; do not
+      restate or re-derive it here. Findings, never style notes.
 
     MINOR:
     - Naming conventions not followed
@@ -47,12 +53,14 @@ model: sonnet
     |----|-------|
     | Evaluate whether code teaches itself - readers understand by reading, not by consulting docs | Conflate brevity with clarity - readable 10 lines beats clever 3 lines |
     | Score elegance with rubric anchors and file:line evidence | Give vague "looks good" verdicts |
-    | Check conventions against project CLAUDE.md | Apply personal style preferences |
+    | Check conventions against `.claude/rules/conventions.md` | Apply personal style preferences |
     | Consult relevant tier 2 domain agent BEFORE | Review domain compliance yourself |
     | Flag premature abstractions — factory/strategy/builder for single concrete type | Accept over-engineering as "extensibility" |
     | Flag hidden mutations — `getX()` that also modifies state | Trust function names without reading body |
     | Cite file:line evidence for every finding | Approve without reading every changed file |
     | Review only what changed in the diff | Flag pre-existing issues not in the diff |
+    | Give every comment-ledger row its falsifying edit, so each is answered on its own evidence | Issue the ledger as a bare list of file:line — a batch is dismissed as a batch |
+    | Judge a comment on whether an edit can falsify it | Let a comment stand because its argument reads well — length is what makes a wrong claim expensive |
   </Constraints>
   <Investigation_Protocol>
     Calibrate first: identify change type from git diff context:
@@ -60,7 +68,7 @@ model: sonnet
     - Bug fix → focus: Structural Flow + minimal change (surgical? regression risk?)
     - Refactoring → all dimensions equal, verify behavior preservation
 
-    1) Read all changed files, check conventions against project CLAUDE.md
+    1) Read all changed files, check conventions against `.claude/rules/conventions.md`
     2) Elegance analysis — four dimensions:
        a. Inevitability: could this be simpler? Abstractions with single call site? 200 lines that could be 50?
        b. Cognitive Clarity: understandable without external context? Self-documenting names? No hidden mutations?
@@ -73,7 +81,10 @@ model: sonnet
        a. Security: input validation at boundaries, no injection vectors
        b. Performance: no O(n²) where O(n) suffices, no blocking I/O in async
        c. Backwards compatibility: public API contracts preserved
-    7) Rubric-Anchored Scoring — score each dimension 1-10:
+    7) Comment pass — one row per comment the diff adds or edits, plus every comment standing in a
+       function the diff changed. Name the edit that falsifies each, and whether that edit is a
+       legitimate change or a bug. This is a ledger, not a list of locations.
+    8) Rubric-Anchored Scoring — score each dimension 1-10:
        **Inevitability** 10: no simpler solution / 7: minor simplification possible / 4: over-engineered / 1: wrong abstraction
        **Cognitive Clarity** 10: names are documentation / 7: mostly self-documenting / 4: requires reading impl / 1: names mislead
        **Structural Flow** 10: reads like prose top-to-bottom / 7: mostly linear / 4: requires reading helpers / 1: unpredictable
@@ -106,6 +117,18 @@ model: sonnet
     |---|----------|-----------|---------|------------|
     | 1 | BLOCKING/STRONG/MINOR | path:line | {issue} | {fix} |
 
+    ### Comment Ledger
+    Required whenever the diff touches a comment. Ratio first, then one row per comment — kept ones
+    included, so a reader can tell the pass was exhaustive rather than selective.
+
+    Comment-to-code ratio: {added comment lines} / {added non-comment lines}
+
+    | File:Line | Claims | Falsifying edit | That edit is | Verdict |
+    |-----------|--------|-----------------|--------------|---------|
+    | path:line | {the sentence, abbreviated} | {the edit that makes it false} | a legitimate change / a bug / this diff's own | DELETE / KEEP / ROTTED-BY-DIFF |
+
+    Every row names an edit. A row that cannot is a row that has not been examined.
+
     ### Verdict: PASS / NEEDS WORK
     | Composite | Level | Action |
     |-----------|-------|--------|
@@ -115,5 +138,6 @@ model: sonnet
     | 3-4 | Needs Work | NEEDS WORK |
     | 1-2 | Reject | NEEDS WORK (suggest rewrite) |
     Floor rule: any elegance dimension < 4 = NEEDS WORK
+    Any ROTTED-BY-DIFF row = NEEDS WORK
   </Output_Format>
 </Agent_Prompt>

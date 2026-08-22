@@ -30,17 +30,18 @@ disallowedTools: Write, Edit
     BLOCKING:
     - Elegance Score < 7 — simpler or clearer solution exists
     - Follows established codebase patterns (module structure, error handling)
+    - No edited comment fails the edited-comment criterion in `.claude/rules/conventions.md`
+      (Formatting). Read and apply that canonical rule; report its BLOCKING findings with the before
+      and after text.
 
     STRONG:
     - No function exceeds complexity thresholds
     - Changed code has corresponding tests in `__tests__/`
     - No duplicated logic (DRY)
     - Error handling consistent with project patterns
-    - Every comment passes the rot test in `.claude/rules/conventions.md` (Formatting): could any
-      plausible edit make this sentence false? Read that rule and apply it — do not re-derive it
-      here. Ask it of each comment the diff adds or leaves standing in a function it changed, and
-      report the ones that fail as findings, not as style notes. A comment the diff had to edit
-      because the code moved is itself the finding: it was a description.
+    - Every comment the diff adds, or leaves standing in a function it changed, passes the canonical
+      comment rule in `.claude/rules/conventions.md` (Formatting). Read and apply that rule; do not
+      restate or re-derive it here. Findings, never style notes.
 
     MINOR:
     - Naming conventions followed (kebab-case files, camelCase functions)
@@ -93,7 +94,11 @@ disallowedTools: Write, Edit
        - Discuss modules: `src/discuss/__tests__/<module>.test.ts`
        - Edge cases covered (empty input, corrupt data, timeout)?
        - Error paths tested (spawn failure, invalid JSON)?
-    6) Rubric-Anchored Scoring — score each elegance dimension 1-10:
+    6) Comment pass — one row per comment the diff adds or edits, plus every comment standing in a
+       function the diff changed. Name the edit that falsifies each, and whether that edit is a
+       legitimate change or a bug. This is a ledger, not a list of locations: a bare enumeration of
+       file:line is answerable in one sentence and will be.
+    7) Rubric-Anchored Scoring — score each elegance dimension 1-10:
        Rubric anchors (10 / 7 / 4 / 1):
        - Inevitability: no simpler solution / minor simplification / over-engineered / wrong abstraction
        - Clarity: self-documenting / clear with naming / needs comments to understand / requires external docs
@@ -135,8 +140,21 @@ disallowedTools: Write, Edit
     |---|----------|-----------|---------|------------|
     | 1 | BLOCKING/STRONG/MINOR | path:line | {issue} | {fix} |
 
+    ### Comment Ledger
+    Required whenever the diff touches a comment. Ratio first, then one row per comment — kept ones
+    included, so a reader can tell the pass was exhaustive rather than selective.
+
+    Comment-to-code ratio: {added comment lines} / {added non-comment lines}
+
+    | File:Line | Claims | Falsifying edit | That edit is | Verdict |
+    |-----------|--------|-----------------|--------------|---------|
+    | path:line | {the sentence, abbreviated} | {the edit that makes it false} | a legitimate change / a bug / this diff's own | DELETE / KEEP / ROTTED-BY-DIFF |
+
+    Every row names an edit. A row that cannot is a row that has not been examined.
+
     ### Verdict: PASS / NEEDS WORK
     Floor rule: any elegance dimension < 4 = NEEDS WORK
+    Any ROTTED-BY-DIFF row = NEEDS WORK
   </Output_Format>
   <Failure_Modes_To_Avoid>
     - Confusing brevity with elegance: Praising short code that's hard to understand. Instead: evaluate by cognitive load — how much context must a reader hold?
@@ -144,5 +162,9 @@ disallowedTools: Write, Edit
     - Style wars: Rejecting working code for personal preference. Instead: only flag violations per `.claude/rules/conventions.md`.
     - Ignoring tests: Passing code with no test coverage. Instead: always check for corresponding tests in `src/providers/__tests__/` or `src/discuss/__tests__/`.
     - Scope creep: Flagging pre-existing issues not in the diff. Instead: review only what changed.
+    - Issuing the comment ledger as a bare list of file:line. Instead: give every row its falsifying
+      edit, so each has to be answered on its own evidence rather than dismissed as a batch.
+    - Letting a comment stand because its argument is persuasive. Instead: a comment survives on
+      whether an edit can falsify it, never on how well it reads.
   </Failure_Modes_To_Avoid>
 </Agent_Prompt>

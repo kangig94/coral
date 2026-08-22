@@ -520,6 +520,9 @@ function spawnCoordinator(backendBin: string, paths: CoordinatorPaths): SpawnedC
 /**
  * Uses the same primitive as daemon-side bind (path-cleanup is the next
  * binder's job per `bindSocket` contract).
+ *
+ * `false` means an incumbent still holds the address. A refusal is not that,
+ * and draining cannot clear it.
  */
 async function probeSocketReleased(socketPath: string): Promise<boolean> {
   const probe = createServer();
@@ -536,7 +539,8 @@ async function probeSocketReleased(socketPath: string): Promise<boolean> {
       return true;
     }
     return false;
-  } catch {
+  } catch (error: unknown) {
+    if (error instanceof CoralSetupError) throw error;
     return false;
   }
 }

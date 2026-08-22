@@ -343,7 +343,7 @@ argument-hint: "[existing|new]"
   | Rules | `.claude/rules/agents.md` | Must exist | - |
   | Rules | `.claude/rules/design-philosophy.md` | Must exist | - |
   | Rules | `.claude/rules/validation.md` | Must exist | - |
-  | Rules | `.claude/rules/conventions.md` | Must exist | - |
+  | Rules | `.claude/rules/conventions.md` | Must exist | `## Comments` section present |
   | Rules | `.claude/rules/{domain-specific}.md` | At least 1 per detected domain | `paths:` frontmatter, no `{placeholder}` text |
   | Agents | `.claude/agents/code-critic.md` | Must exist | Rubric anchors (10/7/4/1) |
   | Agents | `.claude/agents/doc-critic.md` | Must exist | Rubric anchors (10/7/4/1) |

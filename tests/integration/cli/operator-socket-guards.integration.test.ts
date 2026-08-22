@@ -1,8 +1,10 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { socketFallbackDir } from '#src/infra/path/unix-socket.js';
+import { acquireOperatorSocketGuard } from '#src/cli/operator-socket-guard.js';
 import { quarantineKbCommit } from '#src/cli/kb-commit-quarantine.js';
 import { acquireStoreResetSocketGuard } from '#src/cli/store-reset-socket.js';
 import { serializeCoralSetupError } from '#src/runtime/errors.js';
@@ -27,9 +29,31 @@ afterEach(() => {
   for (const value of roots.splice(0)) {
     rmSync(value, { recursive: true, force: true });
   }
+  vi.restoreAllMocks();
 });
 
 describe('operator coordinator socket bind failures', () => {
+  // The generic wrapper below is for a bind failure this command cannot classify. One that already carries a
+  // documented code carries its own remediation and its own exit class, and re-wrapping puts "could not
+  // observe" back under the exit-1 verdict the split exists to separate it from.
+  it('passes a documented bind refusal through instead of rewrapping it', async () => {
+    vi.spyOn(process, 'getuid').mockReturnValue(Number.NaN);
+
+    let refusal: unknown;
+    try {
+      await acquireOperatorSocketGuard({
+        socketPath: join(socketFallbackDir(Number.NaN), 'coordinator.sock'),
+        flavor: 'prod',
+        operation: 'store reset',
+        retryCommand: 'retry',
+      });
+    } catch (error: unknown) {
+      refusal = error;
+    }
+
+    expect(serializeCoralSetupError(refusal)).toMatchObject({ code: 'coordinator_socket_dir_unverified' });
+  });
+
   it.each(['store-reset', 'kb-commit'] as const)('translates a non-EADDRINUSE bind failure for %s', async (command) => {
     const runtime = createRealRuntime('prod', { baseDir: root() });
     blockSocketParent(runtime.paths.coral.coordinator.socketPath);

@@ -167,7 +167,6 @@ export function createProviderProxyAcquisitionSteps(
       const endpointEnv: ProviderProxyEndpointEnvironment = {
         ...(options.baseDir === undefined ? {} : { baseDir: options.baseDir }),
         platform: runtime.env.platform(),
-        tempDirectory: runtime.env.tmpdir(),
         uid,
         storage: runtime.storage,
       };

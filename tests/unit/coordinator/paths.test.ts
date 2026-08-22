@@ -76,7 +76,7 @@ describe('composeCoralPaths', () => {
   });
 
   it('coordinatorPaths accepts an explicit baseDir', () => {
-    expect(coordinatorPaths('prod', { TMPDIR: '/tmp' }, { baseDir: '/tmp/coral-root' })).toEqual({
+    expect(coordinatorPaths('prod', { baseDir: '/tmp/coral-root' })).toEqual({
       runDir: join('/tmp/coral-root', 'gen2', 'run'),
       socketPath: join('/tmp/coral-root', 'gen2', 'run', 'coordinator.sock'),
       infoFile: join('/tmp/coral-root', 'gen2', 'run', 'coordinator.json'),

@@ -1,6 +1,19 @@
 import { dirname, normalize } from 'node:path';
-import type { DirentLike, StorageData, StoragePort, TimePort } from '../../../src/infra/port-types.js';
+import type {
+  DirentLike,
+  StorageBigIntStat,
+  StorageData,
+  StorageEntryKind,
+  StoragePort,
+  TimePort,
+} from '../../../src/infra/port-types.js';
 import { DEFAULT_CORAL_ROOT, DEFAULT_JOBS_DIR } from './constants.js';
+
+const SIMULATED_OWNER_UID = BigInt(process.getuid?.() ?? 0);
+// A caller reading the file type out of `mode` must not disagree with `isDirectory()`.
+const DIRECTORY_TYPE_BITS = 0o040000n;
+const REGULAR_FILE_TYPE_BITS = 0o100000n;
+const POSIX_MODE_BITS = 0o7777;
 
 type FileIdentity = {
   dev: number;
@@ -120,6 +133,14 @@ function createErrnoError(code: string, path: string, message?: string): NodeJS.
   return error;
 }
 
+function posixMode(mode: number): number {
+  return mode & POSIX_MODE_BITS;
+}
+
+function defaultDirectoryMode(): number {
+  return 0o777 & ~process.umask();
+}
+
 export class InMemoryStorage implements StoragePort {
   private readonly files = new Map<string, FileNode>();
   private readonly directories = new Map<string, DirectoryNode>();
@@ -136,7 +157,12 @@ export class InMemoryStorage implements StoragePort {
     this.time = time;
     this.roots = roots;
     this.lastStamp = this.time.now();
-    this.directories.set('/', { kind: 'dir', ...this.nextIdentity(), ...this.nextStamps() });
+    this.directories.set('/', {
+      kind: 'dir',
+      mode: defaultDirectoryMode(),
+      ...this.nextIdentity(),
+      ...this.nextStamps(),
+    });
     this.childIndex.set('/', new Set());
     this.mkdirSync(this.jobsDirRoot(), { recursive: true });
     this.mkdirSync(this.coralRoot(), { recursive: true });
@@ -307,7 +333,7 @@ export class InMemoryStorage implements StoragePort {
     this.touchAncestors(targetParent);
   }
 
-  mkdirSync(path: string, options?: { recursive?: boolean }): void {
+  mkdirSync(path: string, options?: { recursive?: boolean; mode?: number }): void {
     const normalized = normalizePathForStorage(path);
     if (this.files.has(normalized)) {
       throw createErrnoError('EEXIST', normalized);
@@ -320,35 +346,49 @@ export class InMemoryStorage implements StoragePort {
     }
 
     const parent = parentPath(normalized);
+    if (!options?.recursive && this.files.has(parent)) {
+      throw createErrnoError('ENOTDIR', parent);
+    }
     if (!options?.recursive && !this.directories.has(parent)) {
       throw createErrnoError('ENOENT', normalized);
     }
 
+    const mode = posixMode(options?.mode ?? 0o777) & ~process.umask();
+
     if (options?.recursive) {
-      const segments = normalized.split('/').filter(Boolean);
-      let cursor = '';
-      for (const segment of segments) {
-        cursor += `/${segment}`;
-        if (!this.directories.has(cursor)) {
-          this.directories.set(cursor, {
-            kind: 'dir',
-            ...this.nextIdentity(),
-            ...this.nextStamps(),
-          });
-          this.registerDirectory(cursor);
-          this.touchAncestors(parentPath(cursor));
-        }
-      }
+      this.createDirectoryTree(normalized, mode);
       return;
     }
 
     this.directories.set(normalized, {
       kind: 'dir',
+      mode,
       ...this.nextIdentity(),
       ...this.nextStamps(),
     });
     this.registerDirectory(normalized);
     this.touchAncestors(parent);
+  }
+
+  private createDirectoryTree(path: string, mode: number): void {
+    const segments = path.split('/').filter(Boolean);
+    let cursor = '';
+    for (const segment of segments) {
+      cursor += `/${segment}`;
+      if (this.files.has(cursor)) {
+        throw createErrnoError('ENOTDIR', cursor);
+      }
+      if (!this.directories.has(cursor)) {
+        this.directories.set(cursor, {
+          kind: 'dir',
+          mode,
+          ...this.nextIdentity(),
+          ...this.nextStamps(),
+        });
+        this.registerDirectory(cursor);
+        this.touchAncestors(parentPath(cursor));
+      }
+    }
   }
 
   rmSync(path: string, options?: { recursive?: boolean; force?: boolean }): void {
@@ -421,8 +461,13 @@ export class InMemoryStorage implements StoragePort {
     };
   }
 
-  lstatSync(path: string): { isDirectory(): boolean; isFile(): boolean; isSymbolicLink(): boolean } {
+  lstatSync(path: string): StorageEntryKind;
+  lstatSync(path: string, options: { bigint: true }): StorageBigIntStat;
+  lstatSync(path: string, options?: { bigint: true }): StorageEntryKind | StorageBigIntStat {
     const normalized = normalizePathForStorage(path);
+    if (options?.bigint === true) {
+      return this.statSync(normalized, { bigint: true });
+    }
     if (this.files.has(normalized)) {
       return {
         isDirectory: () => false,
@@ -449,32 +494,11 @@ export class InMemoryStorage implements StoragePort {
   }
 
   statSync(path: string): { size: number; mtimeMs: number; isDirectory(): boolean; isFile(): boolean };
-  statSync(
-    path: string,
-    options: { bigint: true },
-  ): {
-    dev: bigint;
-    ino: bigint;
-    mode: bigint;
-    size: bigint;
-    mtimeNs: bigint;
-    isDirectory(): boolean;
-    isFile(): boolean;
-  };
+  statSync(path: string, options: { bigint: true }): StorageBigIntStat;
   statSync(
     path: string,
     options?: { bigint: true },
-  ):
-    | { size: number; mtimeMs: number; isDirectory(): boolean; isFile(): boolean }
-    | {
-        dev: bigint;
-        ino: bigint;
-        mode: bigint;
-        size: bigint;
-        mtimeNs: bigint;
-        isDirectory(): boolean;
-        isFile(): boolean;
-      } {
+  ): { size: number; mtimeMs: number; isDirectory(): boolean; isFile(): boolean } | StorageBigIntStat {
     const normalized = normalizePathForStorage(path);
     const file = this.files.get(normalized);
     if (file) {
@@ -482,7 +506,8 @@ export class InMemoryStorage implements StoragePort {
         return {
           dev: BigInt(file.dev),
           ino: BigInt(file.ino),
-          mode: BigInt(file.mode ?? 0o600),
+          mode: REGULAR_FILE_TYPE_BITS | BigInt(posixMode(file.mode ?? 0o600)),
+          uid: SIMULATED_OWNER_UID,
           size: BigInt(file.content.length),
           mtimeNs: file.mtimeNs,
           isDirectory: () => false,
@@ -504,7 +529,8 @@ export class InMemoryStorage implements StoragePort {
       return {
         dev: BigInt(directory.dev),
         ino: BigInt(directory.ino),
-        mode: BigInt(directory.mode ?? 0o700),
+        mode: DIRECTORY_TYPE_BITS | BigInt(posixMode(directory.mode ?? defaultDirectoryMode())),
+        uid: SIMULATED_OWNER_UID,
         size: 0n,
         mtimeNs: directory.mtimeNs,
         isDirectory: () => true,
@@ -519,18 +545,7 @@ export class InMemoryStorage implements StoragePort {
     };
   }
 
-  fstatSync(
-    fd: number,
-    _options: { bigint: true },
-  ): {
-    dev: bigint;
-    ino: bigint;
-    mode: bigint;
-    size: bigint;
-    mtimeNs: bigint;
-    isDirectory(): boolean;
-    isFile(): boolean;
-  } {
+  fstatSync(fd: number, _options: { bigint: true }): StorageBigIntStat {
     const open = this.openFiles.get(fd);
     if (!open) {
       throw createErrnoError('EBADF', String(fd));
@@ -539,7 +554,8 @@ export class InMemoryStorage implements StoragePort {
     return {
       dev: BigInt(file.dev),
       ino: BigInt(file.ino),
-      mode: BigInt(file.mode ?? 0o600),
+      mode: REGULAR_FILE_TYPE_BITS | BigInt(posixMode(file.mode ?? 0o600)),
+      uid: SIMULATED_OWNER_UID,
       size: BigInt(file.content.length),
       mtimeNs: file.mtimeNs,
       isDirectory: () => false,
@@ -786,7 +802,7 @@ export class InMemoryStorage implements StoragePort {
     const normalized = normalizePathForStorage(path);
     const file = this.files.get(normalized);
     if (file) {
-      file.mode = mode;
+      file.mode = posixMode(mode);
       const stamps = this.nextStamps();
       file.mtimeMs = stamps.mtimeMs;
       file.mtimeNs = stamps.mtimeNs;
@@ -794,7 +810,7 @@ export class InMemoryStorage implements StoragePort {
     }
     const directory = this.directories.get(normalized);
     if (directory) {
-      directory.mode = mode;
+      directory.mode = posixMode(mode);
       const stamps = this.nextStamps();
       directory.mtimeMs = stamps.mtimeMs;
       directory.mtimeNs = stamps.mtimeNs;

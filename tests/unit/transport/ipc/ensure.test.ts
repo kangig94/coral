@@ -980,6 +980,39 @@ describe('ipc ensure', () => {
     expect(mockState.shutdown).not.toHaveBeenCalled();
   });
 
+  // A refusal that no wait can clear must not be spent as drain time and reported as a timeout: the release
+  // probe answers a two-valued question, and the third answer leaves through the error channel instead.
+  it('surfaces a documented bind refusal instead of draining against it', async () => {
+    makeHome();
+    const root = createPluginRoot();
+    writeDiscovery(root, {
+      port: 4262,
+      token: 'refused-token',
+      instanceId: 'refused-coordinator',
+      bundleHash: 'old-hash',
+    });
+    mockState.health.mockResolvedValue({
+      status: 'draining',
+      version: '0.5.2',
+      bundleHash: 'old-hash',
+      flavor: 'prod',
+      instanceId: 'refused-coordinator',
+      namespace: pluginRootNamespace(root),
+    });
+    const { ensure } = await importEnsure();
+    const { documentedCoralSetupError } = await import('#src/runtime/errors.js');
+    mockState.bindSocket.mockRejectedValue(
+      documentedCoralSetupError({
+        code: 'coordinator_socket_dir_unverified',
+        directory: '/tmp/coral-1000',
+        cause: 'EIO: i/o error, lstat',
+      }),
+    );
+
+    await expect(ensure(root)).rejects.toThrow(expect.objectContaining({ code: 'coordinator_socket_dir_unverified' }));
+    expect(mockState.spawn).not.toHaveBeenCalled();
+  });
+
   describe('coordinator.log rotation on spawn', () => {
     function runDir(): string {
       return coordinatorPaths('prod').runDir;

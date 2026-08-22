@@ -526,31 +526,15 @@ that half of the claim was cut, the same-file half about `serializeKnowledgeBloc
 
 ## Sector 12 — `tests/invariants/`
 
-- **What is wrong**: The `engineIds` allowlist in the "engine-blind domains carry no engine-id string
-  literals (AC7.2)" check does not match the codebase's actual set of engine identities. It is missing
-  `'kiwi'`, a real, registered engine — `BUNDLED_ENGINES` in `src/expansion/bundled.ts` declares `id: 'kiwi'`
-  alongside `'orama'`, `'gemini'`, and `'onnx'`, and the same test file's sibling AC7.1 check
-  (`allowedEngineImporters`) explicitly allowlists `src/kb-daemon/expansion/kiwi-boot.ts` as an engine
-  importer — so the codebase already treats `kiwi` as a fourth engine identity everywhere except this one
-  literal-ban list. A bare string literal `'kiwi'` leaking into `src/kb/`, `src/coordinator/`,
-  `src/cli/expansion/`, `src/infra/`, or `src/runtime/` code would therefore not be caught, unlike a leak of
-  `'orama'`, `'gemini'`, or `'onnx'`. The set also contains `'kb-scann'`, a token that does not correspond to
-  any engine, file, symbol, or other reference anywhere in the tree (a repo-wide grep for `kb-scann` finds
-  only this one line) — its origin is unclear and it does not fire the check for anything real.
-- **Where**: the `engineIds` constant inside the `'engine-blind domains carry no engine-id string literals
-(AC7.2)'` test, in `tests/invariants/architecture-boundary.test.ts`.
-- **Evidence**: `grep -n "id: 'kiwi'" src/expansion/bundled.ts` and `grep -n "kiwi-boot" tests/invariants/architecture-boundary.test.ts`
-  both hit; `grep -rn "kb-scann" src/ tests/ docs/` returns only the `engineIds` declaration itself. Traced via
-  `git log --all -S "kb-scann"` to `78285643` ("test: remove redundant engine acceptance scan (#279)"), the
-  commit that introduced the current four-entry set — `'kb-scann'` was already present and `'kiwi'` already
-  absent at that point, so this is not drift from a later rename; it was incomplete from that commit onward.
-- **Why it was not fixed**: Comment-only sweep scope; correcting `engineIds` is a code change (editing a
-  `Set` literal), not a comment edit.
-- **Severity, as observed**: Not hit by any test failure — nothing in the current tree leaks a `'kiwi'`
-  string literal into an engine-blind scope, so the gap is latent. Reachability is a future edit that
-  references the engine by its literal id (rather than through the existing capability-vocabulary slot/
-  authority names the check already allows) inside one of the five engine-blind roots; AC7.2 would pass
-  regardless, silently certifying the same engine-blindness violation this check exists to catch.
+Struck: fixed. The banned set is now `orama | gemini | onnx | kiwi`, named for what its members actually
+are — bundled expansion ids, not engines. The sweep's attribution was off and is corrected here rather
+than repeated: `kiwi` is not in `BUNDLED_ENGINES`; it is an install-only package
+(`BUNDLED_INSTALL_ONLY_PACKAGES`). It is an implementation identity all the same, which is what the check
+bans: `src/engines/kiwi/loader.ts` types its own `engine: 'kiwi'`, and the sibling AC7.1 check allowlists
+`kiwi-boot.ts` as an engine importer. The phantom `kb-scann` is gone with it — the sweep's trace to
+`78285643` held up, and a repo-wide grep still found no other referent. The check passes with the widened
+set, which confirms the sweep's own reading that no `'kiwi'` literal leaks into an engine-blind scope
+today; the gap it closed was latent, not live.
 
 - **What is wrong**: The commit-time-reducer-vs-`rebuildProjections` parity test's discuss-event fixture
   (`session-store-golden.events.jsonl`) exercises only 10 of the 16 `discussEventKinds` the discuss reducer

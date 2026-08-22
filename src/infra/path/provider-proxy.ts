@@ -2,24 +2,23 @@ import { join } from 'node:path';
 
 import type { BuildFlavor } from '../build-flavor.js';
 import { hashToken } from '../hash.js';
-import type { StorageBigIntStat, StoragePort } from '../port-types.js';
-import { generationRunDir, socketPathByteLimit } from './coordinator.js';
+import {
+  ensurePrivateSocketDir,
+  SocketDirectoryError,
+  type SocketDirectoryRefusal,
+  type SocketDirectoryStorage,
+} from '../private-socket-directory.js';
+import { generationRunDir } from './coordinator.js';
+import { socketFallbackDir, socketPathByteLimit } from './unix-socket.js';
 
 const PROVIDER_PATH_IDENTITY_HASH_LENGTH = 24;
 const PROVIDER_ROLE_PREFIX = { guardian: '0', proxy: '1', reaper: '2' } as const;
-const PRIVATE_DIRECTORY_MODE = 0o700n;
-const PERMISSION_BITS = 0o777n;
-
-type ProviderEndpointStorage = Pick<StoragePort, 'lstatSync' | 'mkdirSync'> & {
-  statSync(path: string, options: { bigint: true }): StorageBigIntStat;
-};
 
 export type ProviderProxyEndpointEnvironment = {
   readonly baseDir?: string;
   readonly platform: string;
-  readonly tempDirectory: string;
   readonly uid: number;
-  readonly storage: ProviderEndpointStorage;
+  readonly storage: SocketDirectoryStorage;
 };
 
 type ProviderSetIdentity = {
@@ -45,7 +44,7 @@ export type ProviderBootstrapCapsulePathOptions = {
   readonly baseDir?: string;
 };
 
-export type ProviderProxyEndpointErrorCode = 'proxy_endpoint_insecure' | 'proxy_endpoint_too_long';
+export type ProviderProxyEndpointErrorCode = 'proxy_endpoint_insecure' | 'proxy_endpoint_unverified';
 
 export class ProviderProxyEndpointError extends Error {
   readonly code: ProviderProxyEndpointErrorCode;
@@ -82,44 +81,54 @@ function providerPathIdentityHash(
 function insecureEndpointError(
   fallbackDirectory: string,
   env: ProviderProxyEndpointEnvironment,
+  refusal: SocketDirectoryRefusal,
   cause?: unknown,
 ): ProviderProxyEndpointError {
+  const requirement = `a directory owned by uid ${env.uid} with mode 0700`;
+  const observation =
+    cause instanceof Error ? cause.message : typeof cause === 'string' ? cause : 'observation unavailable';
+  const directory = observation.includes(fallbackDirectory)
+    ? 'The provider endpoint fallback directory'
+    : `Provider endpoint fallback directory '${fallbackDirectory}'`;
+  const observed: Record<SocketDirectoryRefusal, string> = {
+    foreign: `belongs to another user, so it cannot be ${requirement}`,
+    unusable: `is not ${requirement}`,
+    unsecurable: `cannot be held as ${requirement}: ${observation}`,
+    unverified: `could not be verified as ${requirement}: ${observation}`,
+  };
+  const remediation: Record<Exclude<SocketDirectoryRefusal, 'unverified'>, string> = {
+    foreign: 'Ask its owner or an administrator to remove it, then start Coral again.',
+    unusable: 'Remove it, then start Coral again.',
+    unsecurable:
+      "Give this host's administrator this observation, then start Coral again after the directory is repaired.",
+  };
+  const unverifiedRemediation =
+    observation === 'the owner uid named by the socket address is not usable'
+      ? 'Start Coral in an environment that provides an owner uid the filesystem can represent for the fallback socket address.'
+      : observation.includes('reported no owner')
+        ? 'Start Coral on a filesystem that reports owner identity for the fallback directory; the observation succeeded but did not identify an owner.'
+        : 'Resolve the reported filesystem error, then start Coral again.';
   return new ProviderProxyEndpointError(
-    'proxy_endpoint_insecure',
-    `Provider endpoint fallback directory is not owned by uid ${env.uid} with mode 0700.`,
+    refusal === 'unverified' ? 'proxy_endpoint_unverified' : 'proxy_endpoint_insecure',
+    `${directory} ${observed[refusal]}. ${refusal === 'unverified' ? unverifiedRemediation : remediation[refusal]}`,
     {
       fallbackDirectory,
+      refusal,
       expectedUid: env.uid,
       expectedMode: '0700',
-      ...(cause === undefined
-        ? {}
-        : { cause: cause instanceof Error ? cause.message : typeof cause === 'string' ? cause : 'unknown error' }),
+      ...(cause === undefined ? {} : { cause: observation }),
     },
   );
 }
 
 function ensurePrivateFallbackDirectory(fallbackDirectory: string, env: ProviderProxyEndpointEnvironment): void {
-  if (!Number.isSafeInteger(env.uid) || env.uid < 0) {
-    throw insecureEndpointError(fallbackDirectory, env);
-  }
-
   try {
-    env.storage.mkdirSync(fallbackDirectory, { recursive: true, mode: Number(PRIVATE_DIRECTORY_MODE) });
-    const link = env.storage.lstatSync(fallbackDirectory);
-    const stat = env.storage.statSync(fallbackDirectory, { bigint: true });
-    if (
-      !link.isDirectory() ||
-      link.isSymbolicLink() ||
-      !stat.isDirectory() ||
-      stat.uid === undefined ||
-      stat.uid !== BigInt(env.uid) ||
-      (stat.mode & PERMISSION_BITS) !== PRIVATE_DIRECTORY_MODE
-    ) {
-      throw insecureEndpointError(fallbackDirectory, env);
-    }
+    ensurePrivateSocketDir(fallbackDirectory, env.uid, env.storage);
   } catch (error: unknown) {
-    if (error instanceof ProviderProxyEndpointError) throw error;
-    throw insecureEndpointError(fallbackDirectory, env, error);
+    if (error instanceof SocketDirectoryError) {
+      throw insecureEndpointError(fallbackDirectory, env, error.refusal, error.detail);
+    }
+    throw insecureEndpointError(fallbackDirectory, env, 'unverified', error);
   }
 }
 
@@ -135,16 +144,8 @@ function providerEndpoint(
   const candidate = join(generationRunDir(identity.flavor, { baseDir: env.baseDir }), filename);
   if (Buffer.byteLength(candidate, 'utf8') < limit) return candidate;
 
-  const fallbackDirectory = join(env.tempDirectory, `coral-${env.uid}`);
+  const fallbackDirectory = socketFallbackDir(env.uid);
   const fallback = join(fallbackDirectory, filename);
-  const fallbackBytes = Buffer.byteLength(fallback, 'utf8');
-  if (fallbackBytes >= limit) {
-    throw new ProviderProxyEndpointError(
-      'proxy_endpoint_too_long',
-      `Provider endpoint path is ${fallbackBytes} bytes; ${env.platform} requires fewer than ${limit}.`,
-      { path: fallback, observedBytes: fallbackBytes, limit, platform: env.platform },
-    );
-  }
 
   ensurePrivateFallbackDirectory(fallbackDirectory, env);
   return fallback;

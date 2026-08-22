@@ -38,6 +38,8 @@ function setupErrorStatusCode(code: string): number {
     case 'kb_commit_corrupt_or_unsupported':
     case 'coordinator_socket_in_use':
     case 'coordinator_socket_bind_failed':
+    case 'coordinator_socket_dir_insecure':
+    case 'coordinator_socket_dir_unverified':
     case 'kb_commit_not_found':
     case 'kb_commit_already_quarantined':
     case 'kb_commit_quarantine_failed':

@@ -603,8 +603,6 @@ export function createSimulationBackend(
 
   const pluginRoot = scenario.pluginRoot ?? DEFAULT_PLUGIN_ROOT;
   const projectRoot = scenario.projectRoot ?? DEFAULT_PROJECT_ROOT;
-  // Recovery canonicalizes a launch record's project root against the real filesystem, so a scenario
-  // that restarts the coordinator needs this path to exist. Nothing before adoption ever read it.
   mkdirSync(projectRoot, { recursive: true });
   const namespace = runtime.paths.pluginRootNamespace(pluginRoot);
   const eventBus = new TypedEventBus();
@@ -758,9 +756,7 @@ export function createSimulationBackend(
         return { host: listenHost, port: listenPort };
       },
       listenIpcFn: async () => ({
-        socketPath: coordinatorPaths('dev', runtime.env.fullSnapshot(), {
-          baseDir: join(runtime.env.homedir(), '.coral'),
-        }).socketPath,
+        socketPath: coordinatorPaths('dev', { baseDir: join(runtime.env.homedir(), '.coral') }).socketPath,
       }),
       writeBackendInfoFn: (info) => {
         hooks.writeBackendInfoCalls.push({ pluginRoot, info });

@@ -180,14 +180,27 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
       }
       return { entries, overflow };
     },
-    lstatSync: (path) => {
+    lstatSync: ((path: string, options?: { bigint: true }) => {
+      if (options?.bigint === true) {
+        const stats = lstatSync(path, { bigint: true });
+        return {
+          dev: stats.dev,
+          ino: stats.ino,
+          mode: stats.mode,
+          uid: stats.uid,
+          size: stats.size,
+          mtimeNs: stats.mtimeNs,
+          isDirectory: () => stats.isDirectory(),
+          isFile: () => stats.isFile(),
+        };
+      }
       const stats = lstatSync(path);
       return {
         isDirectory: () => stats.isDirectory(),
         isFile: () => stats.isFile(),
         isSymbolicLink: () => stats.isSymbolicLink(),
       };
-    },
+    }) as StoragePort['lstatSync'],
     realpathSync: (path) => realpathSync(path),
     statSync: ((path: string, options?: { bigint: true }) => {
       if (options?.bigint === true) {

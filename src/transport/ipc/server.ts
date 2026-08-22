@@ -1,8 +1,8 @@
 import type { ProcessIncarnation } from '../../infra/node-process.js';
 import { timingSafeEqual } from 'node:crypto';
-import { chmodSync, mkdirSync, unlinkSync } from 'node:fs';
+import { chmodSync, lstatSync, mkdirSync, statSync, unlinkSync } from 'node:fs';
 import { createConnection, createServer, type Server as NetServer, type Socket } from 'node:net';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import * as timers from 'node:timers';
 import type { ZodError } from 'zod';
 import type { HttpHandlerPorts } from '../server-ports.js';
@@ -16,6 +16,14 @@ import {
   type JsonRpcRequestEnvelope,
   type JsonRpcResponseEnvelope,
 } from './json-rpc.js';
+
+import {
+  ensurePrivateSocketDir,
+  SocketDirectoryError,
+  type SocketDirectoryRefusal,
+} from '../../infra/private-socket-directory.js';
+import { socketFallbackUid } from '../../infra/path/index.js';
+import { documentedCoralSetupError, type DocumentedCoralSetupErrorCode } from '../../runtime/errors.js';
 import { createLineFramer, FrameTooLargeError } from '../line-framing.js';
 import { rpcCatalog, type RpcMethodSpec } from '../rpc/catalog.js';
 import { operationalRouteSpecs, type IpcOperationalSpec } from '../rpc/operational-catalog.js';
@@ -356,15 +364,51 @@ function staleSocketClearLockDir(socketPath: string): string {
   return join(dirname(socketPath), `${basename(socketPath)}.clear.lock`);
 }
 
+/**
+ * One code may not span both a settled verdict and no verdict — see errorCodeToExit in src/cli/errors.ts.
+ */
+const SOCKET_DIRECTORY_REFUSAL_CODES = {
+  foreign: 'coordinator_socket_dir_insecure',
+  unusable: 'coordinator_socket_dir_insecure',
+  unsecurable: 'coordinator_socket_dir_insecure',
+  unverified: 'coordinator_socket_dir_unverified',
+} as const satisfies Record<SocketDirectoryRefusal, DocumentedCoralSetupErrorCode>;
+
+/**
+ * A relocated socket shares one root with every other user on the host, so its parent is asserted rather
+ * than assumed. A run directory is not shared and must not be held to the same mode.
+ */
+function prepareSocketParent(socketPath: string): void {
+  const directory = resolve(dirname(socketPath));
+  const uid = socketFallbackUid(directory);
+  if (uid === undefined) {
+    mkdirSync(directory, { recursive: true });
+    return;
+  }
+  try {
+    ensurePrivateSocketDir(directory, uid, { chmodSync, lstatSync, mkdirSync, statSync });
+  } catch (error: unknown) {
+    if (!(error instanceof SocketDirectoryError)) throw error;
+    throw documentedCoralSetupError({
+      code: SOCKET_DIRECTORY_REFUSAL_CODES[error.refusal],
+      reason: error.refusal,
+      directory,
+      socketPath,
+      uid: error.uid,
+      cause: error.detail ?? error.message,
+    });
+  }
+}
+
 export async function bindSocket(server: NetServer, socketPath: string): Promise<BindSocketResult> {
-  mkdirSync(dirname(socketPath), { recursive: true });
+  prepareSocketParent(socketPath);
 
   const finalize = (): void => {
     if (process.platform !== 'win32') {
       try {
         chmodSync(socketPath, 0o600);
       } catch {
-        // Best-effort.
+        return;
       }
     }
   };

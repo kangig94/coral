@@ -66,6 +66,7 @@ export type CoralPaths = {
 // provider endpoint and capsule paths are dynamic and therefore publish their constructors here.
 export type { CoordinatorPaths } from './coordinator.js';
 export { socketPathForRunDir };
+export { isRelocatedSocket, socketFallbackUid } from './unix-socket.js';
 export type {
   ProviderBootstrapCapsulePathOptions,
   ProviderGuardianEndpointIdentity,
@@ -173,7 +174,7 @@ export function composeCoralPaths(flavor: BuildFlavor, opts?: ComposeCoralPathOp
     store: storePaths(flavor, stateOpts),
     corpus: corpusPaths(flavor, corpusOpts),
     kbRuntime: kbRuntimePaths(flavor, stateOpts),
-    coordinator: coordinatorPaths(flavor, undefined, stateOpts),
+    coordinator: coordinatorPaths(flavor, stateOpts),
     exports: exportsPaths(flavor, stateOpts),
     engine: enginePaths(flavor, stateOpts),
     projects: projectsPaths(flavor, stateOpts),

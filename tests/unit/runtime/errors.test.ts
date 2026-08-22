@@ -299,4 +299,85 @@ describe('CoralSetupError', () => {
       remediation: "Run 'coral-cli expansion unequip <name>' before retrying 'coral-cli expansion equip <name>'.",
     });
   });
+
+  describe('the relocated socket directory refusals', () => {
+    it('separates an ownership verdict from an observation that was never made', () => {
+      const foreign = documentedCoralSetupError({
+        code: 'coordinator_socket_dir_insecure',
+        reason: 'foreign',
+        directory: '/tmp/coral-1000',
+      });
+      const unusable = documentedCoralSetupError({
+        code: 'coordinator_socket_dir_insecure',
+        reason: 'unusable',
+        directory: '/tmp/coral-1000',
+      });
+      const unsecurable = documentedCoralSetupError({
+        code: 'coordinator_socket_dir_insecure',
+        reason: 'unsecurable',
+        directory: '/tmp/coral-1000',
+        cause: "its parent '/tmp' is writable by other users and does not restrict deletion",
+      });
+      const unverified = documentedCoralSetupError({
+        code: 'coordinator_socket_dir_unverified',
+        directory: '/tmp/coral-1000',
+        cause: "EACCES: permission denied, lstat '/tmp/coral-1000'",
+      });
+      const parentUnverified = documentedCoralSetupError({
+        code: 'coordinator_socket_dir_unverified',
+        directory: '/tmp/coral-1000',
+        cause: "EACCES: permission denied, stat '/tmp'",
+      });
+      const invalidUid = documentedCoralSetupError({
+        code: 'coordinator_socket_dir_unverified',
+        directory: '/tmp/coral-NaN',
+        cause: 'the owner uid named by the socket address is not usable',
+      });
+      const missingOwner = documentedCoralSetupError({
+        code: 'coordinator_socket_dir_unverified',
+        directory: '/tmp/coral-1000',
+        cause: 'the directory reported no owner',
+      });
+
+      for (const error of [foreign, unusable, unsecurable]) {
+        expect(error.userMessage).toContain('/tmp/coral-1000');
+        expect(`${error.userMessage} ${error.remediation}`).not.toContain('<directory>');
+        expect(`${error.userMessage} ${error.remediation}`).not.toContain('cause unavailable');
+      }
+      for (const error of [foreign, unusable]) {
+        expect(error.remediation).toContain('/tmp/coral-1000');
+      }
+      expect(foreign.userMessage).toContain('belongs to another user');
+      expect(foreign.remediation).not.toMatch(/^Remove/u);
+      expect(unusable.userMessage).toBe(
+        "Coral's coordinator socket uses /tmp/coral-1000 as its fallback directory, and that path is not a directory.",
+      );
+      expect(unusable.remediation).toContain('Remove');
+      expect(unsecurable.remediation).not.toContain('Remove');
+      expect(unsecurable.userMessage).toBe(
+        "Coral's coordinator socket uses /tmp/coral-1000 as its fallback directory, and Coral cannot keep that path private to you (its parent '/tmp' is writable by other users and does not restrict deletion).",
+      );
+      expect(unsecurable.remediation).toBe(
+        "Give this host's administrator the observation above. Coral did not bind its singleton socket. Start Coral again once the directory is repaired.",
+      );
+      expect(unverified.userMessage).toBe(
+        "Coral's coordinator socket uses a fallback directory, but Coral could not establish whether it is private to you (EACCES: permission denied, lstat '/tmp/coral-1000'). This does not mean the directory is wrong.",
+      );
+      expect(parentUnverified.userMessage).toBe(
+        "Coral's coordinator socket uses /tmp/coral-1000, but Coral could not establish whether that directory is private to you (EACCES: permission denied, stat '/tmp'). This does not mean the directory is wrong.",
+      );
+      for (const error of [unverified, parentUnverified]) {
+        expect(error.remediation).toBe(
+          'Resolve the filesystem error reported in the observation above, then start Coral again. Coral will not bind its singleton socket in a directory it could not observe.',
+        );
+      }
+      expect(invalidUid.remediation).toBe(
+        'Start Coral in an environment that provides an owner uid the filesystem can represent for the fallback socket address. Coral will not bind its singleton socket without a usable owner identity.',
+      );
+      expect(missingOwner.remediation).toBe(
+        'Start Coral on a filesystem that reports owner identity for the fallback directory. The observation succeeded but did not identify an owner, so Coral could not settle whether the directory is private.',
+      );
+      expect(missingOwner.remediation).not.toContain('error');
+    });
+  });
 });

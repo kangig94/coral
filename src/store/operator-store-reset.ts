@@ -104,7 +104,7 @@ export function resolveStoreResetTargetPaths(
     quarantineRoot: join(dirname(storeDbPath), STORE_RESET_QUARANTINE_DIRECTORY),
     socketPath: socketPathForRunDir(runDirectory, runtime.flavor, {
       platform: runtime.env.platform(),
-      tempDirectory: runtime.env.get('TMPDIR') ?? runtime.env.tmpdir(),
+      uid: process.getuid?.() ?? 0,
     }),
   };
 }
