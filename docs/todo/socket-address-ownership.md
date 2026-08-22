@@ -57,9 +57,11 @@ new — an ambient temp directory produced the same divergence, and usually did 
 it, and nothing in the tree states the boundary.
 
 The tree also does not say *which* uid. The path constructors take an injected `env.uid` and are neutral
-about it; every production caller that supplies one — `coordinatorPaths`, the provider acquisition step, the
-operator store-reset resolver, and `bindSocket` — reads `process.getuid()`, the real uid. The directory
-those paths then create is owned by the effective uid, and the mode check compares against the real one, so
+about it; every production caller that supplies one — `coordinatorPaths`, the provider acquisition step, and
+the operator store-reset resolver — reads `process.getuid()`, the real uid. The binder no longer reads it at
+all: `prepareSocketParent` recovers the uid the address itself names, so the check cannot answer against a
+different value than the one the path was built from. The directory those paths then create is owned by the
+effective uid, and the mode check compares against the real one, so
 under a setuid invocation Coral would refuse a directory it had just created itself. Real versus effective
 is part of this decision, not a separate one.
 
@@ -78,9 +80,10 @@ which that layer does not do today.
 
 ## Part 3 — the assertion proves owner and mode, which is less than privacy
 
-`ensurePrivateSocketDir` observes the entry with a non-following `lstat`, requires the expected uid, the
-directory file type, and mode `0700`, reads that mode back after `chmod`, and separately requires a trusted
-parent owner plus either no group/other write bits or the restricted-deletion bit. Those are the owner,
+`ensurePrivateSocketDir` observes the entry with a non-following `lstat`, requires an owner a `uid_t` can
+represent, the expected uid, the directory file type, and mode `0700` across all twelve bits, reads that
+mode back after `chmod`, and separately requires a parent that is a directory, is owned by this uid or
+root, and either denies group and other write or carries the restricted-deletion bit. Those are the owner,
 type, and BSD mode facts Node's `fs.Stats` exposes. They are what it proves.
 
 macOS ACLs grant a named user or group rights beyond the BSD mode bits — Apple documents them as a more
