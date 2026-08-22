@@ -18,7 +18,7 @@ steps:
   - type: launch
     prompt: kill before runtime
   - type: kill
-    jobId: '00000000-0000-0000-0000-000000000003'
+    jobId: "00000000-0000-0000-0000-000000000003"
 continueOnFailure: true
 expectedFailure:
   stepIndex: 2

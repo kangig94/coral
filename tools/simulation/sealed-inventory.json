@@ -1,5 +1,9 @@
 {
-  "roots": ["tools/simulation/core/backend.ts", "tools/simulation/adversarial.ts", "tools/simulation/runner.ts"],
+  "roots": [
+    "tools/simulation/core/backend.ts",
+    "tools/simulation/adversarial.ts",
+    "tools/simulation/runner.ts"
+  ],
   "forbidden": [
     "src/coordinator/bootstrap.ts",
     "src/providers/bootstrap.ts",
