@@ -5,7 +5,7 @@ import type { StorageBigIntStat, StoragePort } from './port-types.js';
 const FILE_TYPE_BITS = 0o170000n;
 const DIRECTORY_TYPE = 0o040000n;
 const PERMISSION_BITS = 0o777n;
-const PRIVATE_DIRECTORY_MODE = 0o700n;
+const REQUIRED_POSIX_MODE = 0o700n;
 const WRITABLE_BY_OTHERS = 0o022n;
 const RESTRICTED_DELETION = 0o1000n;
 const ROOT_UID = 0n;
@@ -45,14 +45,14 @@ export class SocketDirectoryError extends Error {
   }
 }
 
-type EntryKind = 'unowned' | 'foreign' | 'not-a-directory' | 'loose' | 'private';
+type EntryKind = 'unowned' | 'foreign' | 'not-a-directory' | 'loose' | 'matching-posix-owner-and-mode';
 
 const ENTRY_REFUSALS = {
   unowned: { refusal: 'unverified', observed: 'the directory reported no owner' },
   foreign: { refusal: 'foreign', observed: undefined },
   'not-a-directory': { refusal: 'unusable', observed: undefined },
 } as const satisfies Record<
-  Exclude<EntryKind, 'loose' | 'private'>,
+  Exclude<EntryKind, 'loose' | 'matching-posix-owner-and-mode'>,
   { refusal: SocketDirectoryRefusal; observed: string | undefined }
 >;
 
@@ -60,7 +60,7 @@ function classifyEntry(entry: StorageBigIntStat, uid: number): EntryKind {
   if (entry.uid === undefined) return 'unowned';
   if (entry.uid !== BigInt(uid)) return 'foreign';
   if ((entry.mode & FILE_TYPE_BITS) !== DIRECTORY_TYPE) return 'not-a-directory';
-  return (entry.mode & PERMISSION_BITS) === PRIVATE_DIRECTORY_MODE ? 'private' : 'loose';
+  return (entry.mode & PERMISSION_BITS) === REQUIRED_POSIX_MODE ? 'matching-posix-owner-and-mode' : 'loose';
 }
 
 function observe(directory: string, uid: number, read: () => StorageBigIntStat): StorageBigIntStat {
@@ -71,7 +71,11 @@ function observe(directory: string, uid: number, read: () => StorageBigIntStat):
   }
 }
 
-function refuseEntry(kind: Exclude<EntryKind, 'loose' | 'private'>, directory: string, uid: number): never {
+function refuseEntry(
+  kind: Exclude<EntryKind, 'loose' | 'matching-posix-owner-and-mode'>,
+  directory: string,
+  uid: number,
+): never {
   const { refusal, observed } = ENTRY_REFUSALS[kind];
   throw new SocketDirectoryError(refusal, directory, uid, observed === undefined ? undefined : new Error(observed));
 }
@@ -122,10 +126,8 @@ export function ensurePrivateSocketDir(directory: string, uid: number, storage: 
   assertSecureParent(directory, uid, parent);
 
   try {
-    storage.mkdirSync(directory, { recursive: true, mode: Number(PRIVATE_DIRECTORY_MODE) });
+    storage.mkdirSync(directory, { recursive: true, mode: Number(REQUIRED_POSIX_MODE) });
   } catch (error: unknown) {
-    // Only an occupied path is an observation the read below can name; every other create failure leaves
-    // this having observed nothing.
     if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
       throw new SocketDirectoryError('unverified', directory, uid, error);
     }
@@ -135,17 +137,17 @@ export function ensurePrivateSocketDir(directory: string, uid: number, storage: 
     observe(directory, uid, () => storage.lstatSync(directory, { bigint: true })),
     uid,
   );
-  if (entry === 'private') return;
+  if (entry === 'matching-posix-owner-and-mode') return;
   if (entry !== 'loose') refuseEntry(entry, directory, uid);
 
   const tightened = classifyEntry(
     observe(directory, uid, () => {
-      storage.chmodSync(directory, Number(PRIVATE_DIRECTORY_MODE));
+      storage.chmodSync(directory, Number(REQUIRED_POSIX_MODE));
       return storage.lstatSync(directory, { bigint: true });
     }),
     uid,
   );
-  if (tightened === 'private') return;
+  if (tightened === 'matching-posix-owner-and-mode') return;
   if (tightened === 'loose') {
     throw new SocketDirectoryError(
       'unsecurable',

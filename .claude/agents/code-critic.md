@@ -30,27 +30,18 @@ disallowedTools: Write, Edit
     BLOCKING:
     - Elegance Score < 7 — simpler or clearer solution exists
     - Follows established codebase patterns (module structure, error handling)
-    - No comment in the diff was edited rather than deleted. An edited comment is a settled finding,
-      not a judgement call: the diff performed the falsifying edit, so the sentence was a description
-      of the code. Report it BLOCKING with the before and after text. Never accept "it states a
-      constraint" for one — a constraint does not need editing when the code beneath it changes. The
-      only exceptions are refreshes the conventions explicitly permit: a pointer whose named symbol
-      or path the diff moved, or an externally measured fact updated after re-measurement or a
-      corrected citation. A comment edited because the code beneath it changed remains BLOCKING.
+    - No edited comment fails the edited-comment criterion in `.claude/rules/conventions.md`
+      (Formatting). Read and apply that canonical rule; report its BLOCKING findings with the before
+      and after text.
 
     STRONG:
     - No function exceeds complexity thresholds
     - Changed code has corresponding tests in `__tests__/`
     - No duplicated logic (DRY)
     - Error handling consistent with project patterns
-    - Every comment the diff adds, or leaves standing in a function it changed, passes the rot test in
-      `.claude/rules/conventions.md` (Formatting): could any plausible edit make this sentence false?
-      Read that rule and apply it — do not re-derive it here. Name an edit someone would plausibly
-      make to this code in the normal course of work that would falsify the sentence; an arbitrary
-      redesign does not count. If that edit is legitimate, the comment is a description unless it
-      only refreshes a pointer after its named symbol or path moved, or an externally measured fact
-      after re-measurement or a corrected citation. Otherwise it survives only when every such
-      falsifying edit is itself a bug. Findings, never style notes.
+    - Every comment the diff adds, or leaves standing in a function it changed, passes the canonical
+      comment rule in `.claude/rules/conventions.md` (Formatting). Read and apply that rule; do not
+      restate or re-derive it here. Findings, never style notes.
 
     MINOR:
     - Naming conventions followed (kebab-case files, camelCase functions)
@@ -157,13 +148,13 @@ disallowedTools: Write, Edit
 
     | File:Line | Claims | Falsifying edit | That edit is | Verdict |
     |-----------|--------|-----------------|--------------|---------|
-    | path:line | {the sentence, abbreviated} | {the edit that makes it false} | a legitimate change / a bug / this diff's own | DELETE / KEEP / EDITED-BY-DIFF |
+    | path:line | {the sentence, abbreviated} | {the edit that makes it false} | a legitimate change / a bug / this diff's own | DELETE / KEEP / ROTTED-BY-DIFF |
 
     Every row names an edit. A row that cannot is a row that has not been examined.
 
     ### Verdict: PASS / NEEDS WORK
     Floor rule: any elegance dimension < 4 = NEEDS WORK
-    Any EDITED-BY-DIFF row = NEEDS WORK
+    Any ROTTED-BY-DIFF row = NEEDS WORK
   </Output_Format>
   <Failure_Modes_To_Avoid>
     - Confusing brevity with elegance: Praising short code that's hard to understand. Instead: evaluate by cognitive load — how much context must a reader hold?

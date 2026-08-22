@@ -2,7 +2,7 @@ import type { ProcessIncarnation } from '../../infra/node-process.js';
 import { timingSafeEqual } from 'node:crypto';
 import { chmodSync, lstatSync, mkdirSync, statSync, unlinkSync } from 'node:fs';
 import { createConnection, createServer, type Server as NetServer, type Socket } from 'node:net';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import * as timers from 'node:timers';
 import type { ZodError } from 'zod';
 import type { HttpHandlerPorts } from '../server-ports.js';
@@ -379,8 +379,8 @@ const SOCKET_DIRECTORY_REFUSAL_CODES = {
  */
 function prepareSocketParent(socketPath: string): void {
   const uid = process.getuid?.() ?? 0;
-  const directory = dirname(socketPath);
-  if (!isRelocatedSocket(socketPath, uid)) {
+  const directory = resolve(dirname(socketPath));
+  if (!isRelocatedSocket(directory, uid)) {
     mkdirSync(directory, { recursive: true });
     return;
   }

@@ -18,8 +18,9 @@ a following `stat` describes whatever the entry currently resolves to rather tha
 
 `bindSocket` (`src/transport/ipc/server.ts`) calls it before binding, in the process that will hold the
 socket. That is the coordinator, and it is enforcing. The premise the whole assertion rests on — that no
-other user can replace the entry once it is ours — is checked rather than assumed: the directory it sits in
-must be writable by nobody else, or carry the restricted-deletion bit and belong to this uid or to root.
+other user can replace the entry once it is ours — is checked rather than assumed: the parent must belong
+to this uid or to root, **and** it must either be writable by neither group nor other users or carry the
+restricted-deletion bit.
 
 The provider roles are not. `providerEndpoint` (`src/infra/path/provider-proxy.ts`) calls the same
 assertion, but it runs in the **coordinator**, inside a function that returns a `string`, while the

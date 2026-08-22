@@ -20,6 +20,12 @@ spawn's window. The attempt id is therefore not the parent's only predicate, but
 unique to that parent-child pair. A valid sentinel from a concurrent same-installation attempt passes the
 shared identity checks and time window, then fails that attempt-id check.
 
+The existing-starting reader is broader still. It compares `sentinel.pid` only when that polling iteration
+obtained an `observedPid` from discovery or health. With neither available, it performs no pid comparison:
+any sentinel that passes the shared installation identity checks is accepted unless the process named by
+that sentinel is observed absent. The shared slot can therefore lose one parent's diagnostic and can also
+attribute a concurrent coordinator's diagnostic to a parent that never observed that coordinator's pid.
+
 ## Reachable scenario and consequence
 
 Two top-level CLIs can both observe no serving coordinator and reach `spawnTopLevelCoordinator`; there is no
@@ -39,14 +45,20 @@ already has the id, and a current-attempt parent already has the same id; both s
 own file rather than a shared destination.
 
 This also needs lifecycle work around the other reader shape. A parent waiting on an already-starting
-incumbent has no attempt id and currently selects the shared sentinel by the observed pid, then uses process
-liveness to decide whether it may clear it. A per-attempt layout therefore needs a bounded lookup for that
-pid and a retention rule that removes abandoned attempt files without letting one parent erase another
-live attempt's evidence. The clear-before-spawn operation must become attempt-scoped as well.
+incumbent has no attempt id. When it has an observed pid, a per-attempt layout could perform a bounded lookup
+for that pid before using process liveness to decide whether it may clear the file. That is not a complete
+design: when `observedPid` is undefined, a pid-keyed lookup has no safe selector and dropping that lookup
+would discard the only structured startup diagnostic. The wait path must either retain enough identity from
+the incumbent observation that led into it, or define how an ambiguous same-installation sentinel is
+reported without attributing it to the wrong process. The layout also needs a retention rule that removes
+abandoned attempt files without letting one parent erase another live attempt's evidence, and the
+clear-before-spawn operation must become attempt-scoped.
 
 ## Start condition
 
 First add a deterministic two-attempt lifecycle fixture that forces child A's write, child B's overwrite,
 then parent A's read, and proves A receives `backend_unreachable` while B's sentinel occupies the shared
-slot. The keyed layout, existing-starting lookup, and stale-attempt cleanup should then ship together; fixing
-only the current-attempt reader would leave unbounded files or break the incumbent-starting path.
+slot. Add the existing-starting case with no discovery record and no health response, where the current
+reader has no observed pid and accepts a same-installation sentinel. The keyed layout, both
+existing-starting dispositions, and stale-attempt cleanup should then ship together; fixing only the
+current-attempt reader would leave unbounded files or lose diagnostics on the no-observed-pid path.

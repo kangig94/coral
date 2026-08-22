@@ -1,16 +1,31 @@
-import { chmodSync, lstatSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  type Stats,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { ensurePrivateSocketDir, SocketDirectoryError } from '#src/infra/private-socket-directory.js';
+import type { StorageBigIntStat } from '#src/infra/port-types.js';
+import {
+  ensurePrivateSocketDir,
+  SocketDirectoryError,
+  type SocketDirectoryStorage,
+} from '#src/infra/private-socket-directory.js';
 
 const CURRENT_UID = process.getuid?.() ?? 0;
 const roots: string[] = [];
 
 function scratch(): string {
-  const root = mkdtempSync(join(tmpdir(), 'coral-private-socket-dir-'));
+  const root = mkdtempSync(join(tmpdir(), 'coral-socket-dir-'));
   roots.push(root);
   return root;
 }
@@ -23,11 +38,30 @@ afterEach(() => {
 
 const realStorage = { chmodSync, lstatSync, mkdirSync, statSync };
 
-function storageReportingParentUid(uid: bigint | undefined): typeof realStorage {
+interface SupportedStatSync {
+  (path: string, options?: undefined): Stats;
+  (path: string, options: { bigint: true }): StorageBigIntStat;
+}
+
+function overrideBigIntStat(
+  read: SupportedStatSync,
+  overrides: Partial<Pick<StorageBigIntStat, 'mode' | 'uid'>>,
+): SupportedStatSync {
+  function overridden(path: string, options?: undefined): Stats;
+  function overridden(path: string, options: { bigint: true }): StorageBigIntStat;
+  function overridden(path: string, options?: { bigint: true }): Stats | StorageBigIntStat {
+    if (options === undefined) {
+      return read(path, options);
+    }
+    return { ...read(path, options), ...overrides };
+  }
+  return overridden;
+}
+
+function storageReportingParentUid(uid: bigint | undefined): SocketDirectoryStorage {
   return {
     ...realStorage,
-    statSync: ((path: string, options?: { bigint: true }) =>
-      options?.bigint === true ? { ...statSync(path, { bigint: true }), uid } : statSync(path)) as typeof statSync,
+    statSync: overrideBigIntStat(statSync, { uid }),
   };
 }
 
@@ -82,10 +116,7 @@ describe('ensurePrivateSocketDir', () => {
     mkdirSync(directory, { mode: 0o700 });
     const foreignEntry = {
       ...realStorage,
-      lstatSync: ((path: string, options?: { bigint: true }) =>
-        options?.bigint === true
-          ? { ...lstatSync(path, { bigint: true }), uid: BigInt(CURRENT_UID) + 1n }
-          : lstatSync(path)) as typeof lstatSync,
+      lstatSync: overrideBigIntStat(lstatSync, { uid: BigInt(CURRENT_UID) + 1n }),
     };
 
     expect(() => ensurePrivateSocketDir(directory, CURRENT_UID, foreignEntry)).toThrowError(
@@ -138,10 +169,7 @@ describe('ensurePrivateSocketDir', () => {
     const uid = CURRENT_UID === 0 ? 1 : CURRENT_UID;
     const rootOwnedParent = {
       ...storageReportingParentUid(0n),
-      lstatSync: ((path: string, options?: { bigint: true }) =>
-        options?.bigint === true
-          ? { ...lstatSync(path, { bigint: true }), uid: BigInt(uid) }
-          : lstatSync(path)) as typeof lstatSync,
+      lstatSync: overrideBigIntStat(lstatSync, { uid: BigInt(uid) }),
     };
 
     ensurePrivateSocketDir(directory, uid, rootOwnedParent);
@@ -187,10 +215,7 @@ describe('ensurePrivateSocketDir', () => {
     const stubborn = {
       ...realStorage,
       chmodSync: () => undefined,
-      lstatSync: ((path: string, options?: { bigint: true }) =>
-        options?.bigint === true
-          ? { ...lstatSync(path, { bigint: true }), mode: 0o40755n }
-          : lstatSync(path)) as typeof lstatSync,
+      lstatSync: overrideBigIntStat(lstatSync, { mode: 0o40755n }),
     };
 
     expect(() => ensurePrivateSocketDir(directory, CURRENT_UID, stubborn)).toThrowError(

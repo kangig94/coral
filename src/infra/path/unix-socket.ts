@@ -1,4 +1,4 @@
-import { dirname, join, resolve } from 'node:path';
+import { join } from 'node:path';
 
 const SOCKET_LIMIT_DARWIN = 104;
 const SOCKET_LIMIT_LINUX = 108;
@@ -18,7 +18,6 @@ export function socketFallbackDir(uid: number): string {
   return join(SOCKET_FALLBACK_ROOT, `coral-${uid}`);
 }
 
-/** Exactly the shared per-uid directory, never merely somewhere under the shared root or a spelling of it. */
-export function isRelocatedSocket(socketPath: string, uid: number): boolean {
-  return resolve(dirname(socketPath)) === socketFallbackDir(uid);
+export function isRelocatedSocket(socketDirectory: string, uid: number): boolean {
+  return socketDirectory === socketFallbackDir(uid);
 }

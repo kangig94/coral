@@ -3,26 +3,47 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createServer, type Server as NetServer } from 'node:net';
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  rmSync,
-  rmdirSync,
-  statSync,
-  symlinkSync,
-  unlinkSync,
-  writeFileSync,
-} from 'node:fs';
+import type * as Fs from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { socketFallbackDir } from '#src/infra/path/unix-socket.js';
 import { bindSocket, closeIpcServer, type IpcListener } from '#src/transport/ipc/server.js';
+
+const fsDouble = vi.hoisted(() => ({
+  actualLstatSync: undefined as typeof Fs.lstatSync | undefined,
+  actualStatSync: undefined as typeof Fs.statSync | undefined,
+  lstatSync: vi.fn<typeof Fs.lstatSync>(),
+  statSync: vi.fn<typeof Fs.statSync>(),
+}));
+
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof Fs>();
+  fsDouble.actualLstatSync = actual.lstatSync;
+  fsDouble.actualStatSync = actual.statSync;
+  fsDouble.lstatSync.mockImplementation(actual.lstatSync);
+  fsDouble.statSync.mockImplementation(actual.statSync);
+  return { ...actual, lstatSync: fsDouble.lstatSync, statSync: fsDouble.statSync };
+});
 
 const tempDirs: string[] = [];
 const createdFallbackLinks: string[] = [];
 const createdFallbackDirectories: string[] = [];
 const cleanupServers: NetServer[] = [];
+
+function reportFallbackParent(uid: bigint, mode: bigint): void {
+  const parent = fsDouble.actualStatSync!('/tmp', { bigint: true });
+  fsDouble.statSync.mockImplementationOnce((() => ({ ...parent, uid, mode })) as unknown as typeof Fs.statSync);
+}
+
+function reportFallbackEntryUid(directory: string, uid: bigint): void {
+  const entry = fsDouble.actualLstatSync!(directory, { bigint: true });
+  fsDouble.lstatSync.mockImplementationOnce((() => ({ ...entry, uid })) as unknown as typeof Fs.lstatSync);
+}
+
+function anotherUid(uid: number): number {
+  return uid === 0xffff_ffff ? 0 : uid + 1;
+}
 
 function makeSocketPath(name: string): string {
   const root = mkdtempSync(join(tmpdir(), 'coral-bind-socket-test-'));
@@ -61,6 +82,10 @@ afterEach(async () => {
     rmdirSync(directory);
   }
   vi.restoreAllMocks();
+  fsDouble.lstatSync.mockReset();
+  fsDouble.lstatSync.mockImplementation(fsDouble.actualLstatSync!);
+  fsDouble.statSync.mockReset();
+  fsDouble.statSync.mockImplementation(fsDouble.actualStatSync!);
 });
 
 describe('bindSocket', () => {
@@ -131,12 +156,13 @@ describe('bindSocket', () => {
   });
 
   it('maps a foreign refusal reached through a repeated separator and renders its reason', async () => {
-    const parentUid = statSync(tmpdir(), { bigint: true }).uid;
-    const uid = parentUid === 0n ? 9_000_000 + process.pid : Number(parentUid);
+    const entryUid = process.getuid?.() ?? 0;
+    const uid = anotherUid(entryUid);
     vi.spyOn(process, 'getuid').mockReturnValue(uid);
     const directory = socketFallbackDir(uid);
     mkdirSync(directory, { mode: 0o700 });
     createdFallbackDirectories.push(directory);
+    reportFallbackParent(0n, 0o041777n);
     const socketPath = `${directory}//foreign.sock`;
     const server = createServer();
     cleanupServers.push(server);
@@ -152,23 +178,39 @@ describe('bindSocket', () => {
     expect(existsSync(socketPath)).toBe(false);
   });
 
-  it('maps an unsecurable refusal reached through a dot segment and renders its observation', async () => {
-    const uid = 9_000_000 + process.pid;
+  it.each([
+    ['a dot segment', '/./'],
+    ['a repeated separator', '//'],
+  ])('examines the effective parent for a relocated path with %s', async (_label, separator) => {
+    const uid = anotherUid(process.getuid?.() ?? 0);
+    const observedUid = BigInt(anotherUid(uid));
     vi.spyOn(process, 'getuid').mockReturnValue(uid);
     const directory = socketFallbackDir(uid);
     mkdirSync(directory, { mode: 0o700 });
     createdFallbackDirectories.push(directory);
-    const socketPath = `${directory}/./unsecurable.sock`;
+    reportFallbackParent(observedUid, 0o040700n);
+    reportFallbackEntryUid(directory, BigInt(uid));
+    const socketPath = `${directory}${separator}unsecurable.sock`;
+    const effectiveParent = dirname(directory);
     const server = createServer();
     cleanupServers.push(server);
 
-    await expect(bindSocket(server, socketPath)).rejects.toThrow(
-      expect.objectContaining({
-        code: 'coordinator_socket_dir_insecure',
-        context: expect.objectContaining({ reason: 'unsecurable' }),
-        userMessage: expect.stringContaining('belongs to uid'),
+    const error = await bindSocket(server, socketPath).catch((cause: unknown) => cause);
+
+    expect(error).toMatchObject({
+      code: 'coordinator_socket_dir_insecure',
+      context: expect.objectContaining({
+        reason: 'unsecurable',
+        directory,
+        socketPath,
+        cause: expect.stringContaining(`parent '${effectiveParent}'`),
       }),
-    );
+    });
+    const userMessage = (error as { userMessage: string }).userMessage;
+    expect(userMessage).toContain(`parent '${effectiveParent}'`);
+    expect(userMessage).toContain(`uid ${observedUid}`);
+    expect(userMessage).toContain(`uid ${uid}`);
+    expect(userMessage).toContain('or root');
     expect(server.listening).toBe(false);
     expect(existsSync(socketPath)).toBe(false);
   });

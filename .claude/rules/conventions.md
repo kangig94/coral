@@ -91,9 +91,10 @@ The GitHub release body is generated automatically (`gh release create --generat
 - Single blank line between top-level declarations
 - JSDoc on exported functions and complex internal functions
 - Comments state a constraint, never a description. "Is it WHY?" is the wrong test — a WHY that
-  describes the current implementation rots exactly as fast as a WHAT. The test is **could any
-  plausible edit make this sentence false?** If yes, delete it rather than write it, because the
-  edit that invalidates it will not be the edit that notices.
+  describes the current implementation rots exactly as fast as a WHAT. The test is **could an edit
+  someone would plausibly make to this code in the normal course of work make this sentence false?**
+  An arbitrary redesign does not count. If a legitimate edit can falsify it, delete the comment
+  rather than write it, because the edit that invalidates it will not be the edit that notices.
   - A **constraint** survives rewriting, and breaking it is a bug: "a non-zero exit here must not
     be read as a settled no"; "unknown may not authorize finalization"; "`flock` opens the path
     `O_RDONLY|O_CREAT`, so a missing lock file exits 0 and is created". Measured facts about the
@@ -101,10 +102,17 @@ The GitHub release body is generated automatically (`gh release create --generat
   - A **description** dies on contact with the next edit: what the code below does, which branch
     runs first, how many call sites there are, what another file currently says, what this used to
     be. All of it is re-derivable by reading the code, and none of it survives changing the code.
-  - Rejected outright, as instances of description: change history (git owns it); any claim about
+  - Rejected outright, as instances of description: change history (the VCS owns it); any claim about
     another file, quoted or paraphrased; prose restating the expression beneath it; a count of
     anything; a comment justifying an unreachable branch instead of deleting the branch.
-  - A comment you must edit because the code changed slightly is the worst case, not a maintenance
+  - An edited comment is a finding when the diff changed the code it describes and then edited the
+    comment to keep that description true. Report the before and after text: the edit is the evidence
+    that the description rotted. Replacing an already-bad description with a constraint is a repair,
+    not that finding; judge the replacement by the same rot test as any added comment.
+  - Refreshing is also permitted when a later diff re-measures an external fact or corrects its
+    citation, or moves a pointer's named symbol or path. None of these permits keeping a description
+    true as the code beneath it changes.
+  - A description you must edit because the code changed slightly is the worst case, not a maintenance
     cost to accept. There is no third option that keeps it: **delete it.** Do not re-express it as a
     test or a type to preserve the sentence — that is the same claim implemented twice, and the
     duplicate rots the same way.
