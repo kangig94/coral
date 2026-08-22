@@ -60,6 +60,7 @@ describe('backend status generation readiness', () => {
         storedProductVersion: '0.9.16',
       }),
       getStatus: async () => ({ status: 'not_running' }),
+      getLiveHandoffResult: () => null,
     };
     const program = new Command();
     program.exitOverride();
@@ -80,6 +81,7 @@ describe('backend status generation readiness', () => {
         status: 'recent_failure',
         phase: 'startup_failed',
       }),
+      getLiveHandoffResult: () => null,
     };
     const program = new Command();
     program.exitOverride();
@@ -96,6 +98,47 @@ describe('backend status generation readiness', () => {
         '',
       ].join('\n'),
     );
+  });
+});
+
+describe('backend status live handoff disposition', () => {
+  it('renders and exits 75 for a same-version incumbent from a different build set', async () => {
+    const status: BackendStatusCommandOperations = {
+      inspectReadiness: () => ({ kind: 'no-legacy' }),
+      getStatus: async () => ({ status: 'not_running' }),
+      getLiveHandoffResult: () => ({
+        kind: 'run-current',
+        reason: {
+          kind: 'routing',
+          basis: {
+            kind: 'invoking-build-not-older',
+            comparison: 'same-version',
+            invoking: {
+              version: '0.10.9',
+              buildSetId: '123e4567-e89b-42d3-a456-426614174000',
+              bundleHash: 'invoking-bundle',
+              flavor: 'prod',
+            },
+            incumbent: {
+              version: '0.10.9',
+              buildSetId: '223e4567-e89b-42d3-a456-426614174000',
+              bundleHash: 'incumbent-bundle',
+              flavor: 'prod',
+            },
+          },
+        },
+      }),
+    };
+    const program = new Command();
+    program.exitOverride();
+    registerBackendCommands(program, { storeReset, backendStatus: status });
+
+    await program.parseAsync(['node', 'coral-cli', 'backend', 'status']);
+
+    expect(stdout).toContain(
+      'Handoff: continuing current build — invoking and incumbent builds are both version 0.10.9, but have different build sets.\n',
+    );
+    expect(process.exitCode).toBe(75);
   });
 });
 
@@ -281,6 +324,7 @@ describe('backend startup diagnostic classification', () => {
     const status: BackendStatusCommandOperations = {
       inspectReadiness: () => ({ kind: 'no-legacy' }),
       getStatus: async () => classified,
+      getLiveHandoffResult: () => null,
     };
     const program = new Command();
     program.exitOverride();

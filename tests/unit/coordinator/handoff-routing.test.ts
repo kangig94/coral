@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { routeLiveIncumbent } from '#src/coordinator/handoff-routing.js';
+import { HANDOFF_ROUTING_BASIS_OBLIGATIONS, routeLiveIncumbent } from '#src/coordinator/handoff-routing.js';
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
 import {
   createForeignTargetValidator,
@@ -63,6 +63,59 @@ afterEach(() => {
 });
 
 describe('handoff routing', () => {
+  it('binds every routing basis to its durability, retention, severity, and exit obligation', () => {
+    expect(HANDOFF_ROUTING_BASIS_OBLIGATIONS).toEqual({
+      'incumbent-absent': {
+        requiredDurability: 'durable-status-required',
+        requiredRetention: 'until-superseded',
+        severity: 'info',
+        exitContribution: 0,
+      },
+      'incumbent-unresolved': {
+        requiredDurability: 'durable-status-required',
+        requiredRetention: 'bounded-history',
+        severity: 'warning',
+        exitContribution: 75,
+      },
+      'incumbent-unusable': {
+        requiredDurability: 'durable-status-required',
+        requiredRetention: 'bounded-history',
+        severity: 'warning',
+        exitContribution: 75,
+      },
+      'invoking-identity-unavailable': {
+        requiredDurability: 'durable-status-required',
+        requiredRetention: 'bounded-history',
+        severity: 'warning',
+        exitContribution: 75,
+      },
+      'incumbent-identity-unavailable': {
+        requiredDurability: 'durable-status-required',
+        requiredRetention: 'bounded-history',
+        severity: 'warning',
+        exitContribution: 75,
+      },
+      'same-build-set': {
+        requiredDurability: 'durable-status-required',
+        requiredRetention: 'until-superseded',
+        severity: 'info',
+        exitContribution: 0,
+      },
+      'invoking-build-not-older': {
+        requiredDurability: 'durable-status-required',
+        requiredRetention: 'bounded-history',
+        severity: 'warning',
+        exitContribution: 75,
+      },
+      'invalid-incumbent-target': {
+        requiredDurability: 'durable-status-required',
+        requiredRetention: 'bounded-history',
+        severity: 'warning',
+        exitContribution: 75,
+      },
+    });
+  });
+
   it('produces same-build-set for an exact build set without validation', () => {
     const invoking = manifest('1.0.0', '123e4567-e89b-42d3-a456-426614174000');
     const incumbent = candidate({ ...invoking, version: '9.0.0' });

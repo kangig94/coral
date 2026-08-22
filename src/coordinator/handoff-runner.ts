@@ -25,10 +25,12 @@ import type { Runtime } from '../runtime/ports.js';
 import { createRealRuntime } from '../runtime/real.js';
 import { createIpcClient } from '../transport/ipc/client.js';
 import {
+  HANDOFF_ROUTING_BASIS_OBLIGATIONS,
   routeLiveIncumbent,
   type HandoffRoutingBasis,
   type HandoffRoutingResult,
   type IncumbentIdentitySummary,
+  type RoutingBasisObligation,
   type UnresolvedIncumbentCause,
 } from './handoff-routing.js';
 
@@ -140,9 +142,49 @@ export type HandoffContinuationReason =
   | Readonly<{ kind: 'handoff-not-applicable'; reason: 'display-only' }>
   | Readonly<{ kind: 'handoff-abandoned'; reason: 'stdout-drain-incomplete' }>;
 
+export const HANDOFF_CONTINUATION_REASON_OBLIGATIONS: Readonly<
+  Record<HandoffContinuationReason['kind'], RoutingBasisObligation>
+> = {
+  routing: {
+    requiredDurability: 'ephemeral-allowed',
+    requiredRetention: 'until-superseded',
+    severity: 'info',
+    exitContribution: 0,
+  },
+  'handoff-not-applicable': {
+    requiredDurability: 'ephemeral-allowed',
+    requiredRetention: 'until-superseded',
+    severity: 'info',
+    exitContribution: 0,
+  },
+  'handoff-abandoned': {
+    requiredDurability: 'durable-status-required',
+    requiredRetention: 'bounded-history',
+    severity: 'warning',
+    exitContribution: 75,
+  },
+};
+
+export const ABSENT_HANDOFF_RESULT_OBLIGATION: RoutingBasisObligation = {
+  requiredDurability: 'ephemeral-allowed',
+  requiredRetention: 'until-superseded',
+  severity: 'info',
+  exitContribution: 0,
+};
+
 export type HandoffContinuationResult =
   | Readonly<{ kind: 'run-current'; reason: HandoffContinuationReason }>
   | Readonly<{ kind: 'delegated'; version: string; outcome: HandoffOutcome }>;
+
+export type LiveHandoffContinuationResult = Extract<HandoffContinuationResult, { kind: 'run-current' }>;
+
+export function liveHandoffResultObligation(result: LiveHandoffContinuationResult | null): RoutingBasisObligation {
+  if (result === null) return ABSENT_HANDOFF_RESULT_OBLIGATION;
+  if (result.reason.kind === 'routing') {
+    return HANDOFF_ROUTING_BASIS_OBLIGATIONS[result.reason.basis.kind];
+  }
+  return HANDOFF_CONTINUATION_REASON_OBLIGATIONS[result.reason.kind];
+}
 
 export type RunHandoffOptions = Readonly<{
   pluginRoot?: string;

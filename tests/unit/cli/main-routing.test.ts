@@ -543,7 +543,11 @@ describe('cli main routing', () => {
       const program = new Command();
       program.exitOverride();
       registerBackendCommands(program, {
-        backendStatus: { inspectReadiness: () => ({ kind: 'no-legacy' }), getStatus },
+        backendStatus: {
+          inspectReadiness: () => ({ kind: 'no-legacy' }),
+          getStatus,
+          getLiveHandoffResult: () => null,
+        },
       });
       return program;
     }

@@ -1,4 +1,6 @@
 import { assertNever } from '../../infra/error-format.js';
+import type { HandoffRoutingBasis } from '../../coordinator/handoff-routing.js';
+import type { HandoffContinuationReason, LiveHandoffContinuationResult } from '../../coordinator/handoff-runner.js';
 import type { RecoveryQuarantineEntry } from '../../recovery/quarantine.js';
 import type { BackendHealth } from '../../transport/http/backend/health.js';
 import type { BackendStatusFull } from '../../transport/http/backend/status.js';
@@ -7,6 +9,63 @@ import type { RecoveryQuarantineClearResult } from '../../recovery/source-regist
 
 export const RECOVERY_REVISION_UNTIL_CLEARED = 'until-cleared';
 export const RECOVERY_REVISION_FINGERPRINT_PREFIX = 'fingerprint:';
+
+export function formatLiveHandoffResult(result: LiveHandoffContinuationResult | null): string | null {
+  return result === null ? null : formatHandoffContinuationReason(result.reason);
+}
+
+export function formatHandoffContinuationReason(reason: HandoffContinuationReason): string {
+  switch (reason.kind) {
+    case 'routing':
+      return formatHandoffRoutingBasis(reason.basis);
+    case 'handoff-not-applicable':
+      return 'Handoff: not applicable — this is a display-only invocation.';
+    case 'handoff-abandoned':
+      return 'Handoff: continuing current build — stdout did not drain before delegation.';
+    default:
+      return assertNever(reason);
+  }
+}
+
+export function formatHandoffRoutingBasis(basis: HandoffRoutingBasis): string {
+  switch (basis.kind) {
+    case 'incumbent-absent':
+      return 'Handoff: continuing current build — no incumbent coordinator was observed.';
+    case 'incumbent-unresolved':
+      return `Handoff: continuing current build — incumbent coordinator could not be resolved (${basis.cause}).`;
+    case 'incumbent-unusable':
+      return `Handoff: continuing current build — incumbent coordinator is unusable (${basis.cause}).`;
+    case 'invoking-identity-unavailable':
+      return `Handoff: continuing current build — invoking build identity is unavailable (${basis.failure}).`;
+    case 'incumbent-identity-unavailable':
+      return `Handoff: continuing current build — incumbent ${basis.incumbent.version} identity is unavailable.`;
+    case 'same-build-set':
+      return `Handoff: continuing current build — invoking and incumbent builds share build set ${basis.buildSetId}.`;
+    case 'invoking-build-not-older':
+      return formatInvokingBuildNotOlder(basis);
+    case 'invalid-incumbent-target': {
+      const expectedVersion = basis.evidence.expectedManifest?.version;
+      return expectedVersion === undefined
+        ? `Handoff: continuing current build — incumbent handoff target is invalid (${basis.evidence.failure}).`
+        : `Handoff: continuing current build — incumbent ${expectedVersion} handoff target is invalid (${basis.evidence.failure}).`;
+    }
+    default:
+      return assertNever(basis);
+  }
+}
+
+function formatInvokingBuildNotOlder(
+  basis: Extract<HandoffRoutingBasis, { kind: 'invoking-build-not-older' }>,
+): string {
+  switch (basis.comparison) {
+    case 'same-version':
+      return `Handoff: continuing current build — invoking and incumbent builds are both version ${basis.invoking.version}, but have different build sets.`;
+    case 'newer-version':
+      return `Handoff: continuing current build — invoking build ${basis.invoking.version} is newer than incumbent ${basis.incumbent.version}.`;
+    default:
+      return assertNever(basis.comparison);
+  }
+}
 
 // Shared by every shutdown disposition this run could not resolve either way: none of them may tell an
 // operator to do anything but ask again.

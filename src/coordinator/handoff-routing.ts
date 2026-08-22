@@ -33,6 +33,65 @@ export type HandoffRoutingBasis =
     }>
   | Readonly<{ kind: 'invalid-incumbent-target'; evidence: InvalidTargetEvidence }>;
 
+export type RoutingBasisObligation = Readonly<{
+  requiredDurability: 'durable-status-required' | 'ephemeral-allowed';
+  requiredRetention: 'until-superseded' | 'bounded-history';
+  severity: 'info' | 'warning';
+  exitContribution: 0 | 75;
+}>;
+
+export const HANDOFF_ROUTING_BASIS_OBLIGATIONS: Readonly<Record<HandoffRoutingBasis['kind'], RoutingBasisObligation>> =
+  {
+    'incumbent-absent': {
+      requiredDurability: 'durable-status-required',
+      requiredRetention: 'until-superseded',
+      severity: 'info',
+      exitContribution: 0,
+    },
+    'incumbent-unresolved': {
+      requiredDurability: 'durable-status-required',
+      requiredRetention: 'bounded-history',
+      severity: 'warning',
+      exitContribution: 75,
+    },
+    'incumbent-unusable': {
+      requiredDurability: 'durable-status-required',
+      requiredRetention: 'bounded-history',
+      severity: 'warning',
+      exitContribution: 75,
+    },
+    'invoking-identity-unavailable': {
+      requiredDurability: 'durable-status-required',
+      requiredRetention: 'bounded-history',
+      severity: 'warning',
+      exitContribution: 75,
+    },
+    'incumbent-identity-unavailable': {
+      requiredDurability: 'durable-status-required',
+      requiredRetention: 'bounded-history',
+      severity: 'warning',
+      exitContribution: 75,
+    },
+    'same-build-set': {
+      requiredDurability: 'durable-status-required',
+      requiredRetention: 'until-superseded',
+      severity: 'info',
+      exitContribution: 0,
+    },
+    'invoking-build-not-older': {
+      requiredDurability: 'durable-status-required',
+      requiredRetention: 'bounded-history',
+      severity: 'warning',
+      exitContribution: 75,
+    },
+    'invalid-incumbent-target': {
+      requiredDurability: 'durable-status-required',
+      requiredRetention: 'bounded-history',
+      severity: 'warning',
+      exitContribution: 75,
+    },
+  };
+
 export type HandoffRoutingResult =
   | Readonly<{ kind: 'continue-current'; basis: HandoffRoutingBasis }>
   | Readonly<{

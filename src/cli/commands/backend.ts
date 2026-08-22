@@ -1,6 +1,10 @@
 import { InvalidArgumentError, type Command } from 'commander';
 
-import { runHandoff } from '../../coordinator/handoff-runner.js';
+import {
+  liveHandoffResultObligation,
+  runHandoff,
+  type LiveHandoffContinuationResult,
+} from '../../coordinator/handoff-runner.js';
 import { resolveBuildFlavor, type BuildFlavor } from '../../infra/build-flavor.js';
 import { readBuildFlavor } from '../../infra/bundle-manifest.js';
 import { assertNever } from '../../infra/error-format.js';
@@ -45,6 +49,7 @@ import { emitError } from '../emit.js';
 import { errorCodeToExit } from '../errors.js';
 import {
   formatBackendStatus,
+  formatLiveHandoffResult,
   formatRecoveryQuarantineClear,
   formatRecoveryQuarantineList,
   formatShutdown,
@@ -97,11 +102,12 @@ export const SHUTDOWN_REFUSAL_EXIT_CODES: Readonly<Record<ShutdownReason, 1 | 75
 };
 
 /**
- * The three `BackendStatusFull` statuses
- * named `undecodable_record`, `unreachable`, and `no_record_socket_present` are exactly that: `getBackendStatusFull`
- * itself refuses to call any of them `ok` or `not_running` because it could not tell. Every other status is a
- * confidently observed answer — the backend genuinely is running, stopped, draining, or unauthorized — and this
- * command succeeding at determining that stays exit `0` even when the answer itself is bad news.
+ * This table binds the daemon-only `BackendStatusFull` observation. `undecodable_record`, `unreachable`, and
+ * `no_record_socket_present` contribute `75` because the read did not settle the daemon state; the other daemon
+ * statuses contribute `0`. The status command separately combines the live handoff obligation:
+ * `same-build-set` and `incumbent-absent` contribute `0`, while every other routing basis contributes `75`.
+ * Only `incumbent-unresolved` is a not-observed routing disposition; the other `75` routing contributions mark
+ * decisive observations that require operator attention.
  *
  * `75`, not `1`: matches `SHUTDOWN_REFUSAL_EXIT_CODES`'s "not observed, retry" code above rather than a
  * `backend shutdown`-style observed refusal, since none of the three is a refusal at all — this is a read-only
@@ -150,6 +156,7 @@ export interface KbCommitCommandOperations {
 export interface BackendStatusCommandOperations {
   inspectReadiness(): GenerationReadiness;
   getStatus(): Promise<BackendStatusFull>;
+  getLiveHandoffResult(): LiveHandoffContinuationResult | null;
 }
 
 export interface RecoveryQuarantineCommandOperations {
@@ -248,6 +255,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
       inspectReadiness: () =>
         inspectGenerationReadiness(createRealRuntime(resolveBuildFlavor(process.env)), currentCoralStoreFormat()),
       getStatus: () => getBackendStatusFull(getPluginRoot()),
+      getLiveHandoffResult: () => null,
     },
     recoveryQuarantine = createRecoveryQuarantineCommandOperations(),
     providerHosts = createProviderHostCommandOperations(),
@@ -269,8 +277,17 @@ export function registerBackendCommands(program: Command, operations: BackendCom
           assertNever(readiness);
       }
       const status = await backendStatus.getStatus();
+      const liveHandoffResult = backendStatus.getLiveHandoffResult();
+      const liveHandoffLine = formatLiveHandoffResult(liveHandoffResult);
+      if (liveHandoffLine !== null) {
+        process.stdout.write(`${liveHandoffLine}\n`);
+      }
       process.stdout.write(formatBackendStatus(status) + '\n');
-      process.exitCode = BACKEND_STATUS_EXIT_CODES[status.status];
+      process.exitCode =
+        BACKEND_STATUS_EXIT_CODES[status.status] === 75 ||
+        liveHandoffResultObligation(liveHandoffResult).exitContribution === 75
+          ? 75
+          : 0;
     } catch (error) {
       emitError(error);
     }

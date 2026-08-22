@@ -7,6 +7,8 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  ABSENT_HANDOFF_RESULT_OBLIGATION,
+  HANDOFF_CONTINUATION_REASON_OBLIGATIONS,
   resolveHandoffRoutingForOperation,
   routeAuthenticatedHealth,
   runHandoff,
@@ -198,6 +200,35 @@ afterEach(() => {
 });
 
 describe('handoff-runner', () => {
+  it('binds every continuation reason and the absent result to an obligation', () => {
+    expect(HANDOFF_CONTINUATION_REASON_OBLIGATIONS).toEqual({
+      routing: {
+        requiredDurability: 'ephemeral-allowed',
+        requiredRetention: 'until-superseded',
+        severity: 'info',
+        exitContribution: 0,
+      },
+      'handoff-not-applicable': {
+        requiredDurability: 'ephemeral-allowed',
+        requiredRetention: 'until-superseded',
+        severity: 'info',
+        exitContribution: 0,
+      },
+      'handoff-abandoned': {
+        requiredDurability: 'durable-status-required',
+        requiredRetention: 'bounded-history',
+        severity: 'warning',
+        exitContribution: 75,
+      },
+    });
+    expect(ABSENT_HANDOFF_RESULT_OBLIGATION).toEqual({
+      requiredDurability: 'ephemeral-allowed',
+      requiredRetention: 'until-superseded',
+      severity: 'info',
+      exitContribution: 0,
+    });
+  });
+
   it.each([
     ['absent', undefined],
     ['zero', '0'],
