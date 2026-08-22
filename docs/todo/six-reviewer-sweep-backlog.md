@@ -33,7 +33,7 @@ is entered — the finding is a type gap with a matching call site, not an obser
 Fix: expose a compiler-checked `WorkflowExecutionPort` from coordinator composition — implement the two
 methods on `ExecutionService`, or return a dedicated typed adapter — and delete both `as never`.
 
-## 2. Nine branches the call graph cannot reach
+## 2. Branches the call graph cannot reach
 
 Each was proved by walking every producer into the consumer, the same method that retired
 `runHandoff`'s `reset-newer-invalid` arm and `handoffStartupToSelectedBuild`'s `run-current` branch. Several
@@ -42,7 +42,7 @@ code: it documents a failure mode that does not exist.
 
 | Site | What cannot happen |
 | --- | --- |
-| `RecoveryService` in `src/coordinator/services/recovery/service.ts` | Three "lost capability" errors; the service derives recovery/probe capability and passes the same object to the performer, and the planner only emits `probe` when probe capability is present |
+| `performInterruptedAppServerRecovery` and `performInterruptedDurableRecovery` in `src/coordinator/services/recovery/interrupted-performer.ts` | The "lost capability" throws; the service derives recovery/probe capability and passes the same object to the performer, and the planner only emits `probe` when probe capability is present |
 | `materializePlannedOutcomeInCommit` in `src/coordinator/services/terminal-materializer.ts` | The missing failed-cause event error; `RuntimeIngestPlan` declares `immediateOutcome: null` only on `failed_cause`, whose `domainEvents` is a one-element tuple |
 | `createProviderProxyAcquisitionSteps` in `src/coordinator/live/provider-proxy/acquisition-steps.ts` | Two out-of-order errors; the sole caller runs `createCapsules` → `spawnGuardian` → `establishControl` and returns on every failed cut |
 | `createProviderProxyAuthorityHeartbeatAssembly` in `src/coordinator/live/provider-proxy/heartbeat.ts` | Duplicate-role and incomplete-role errors; both production constructors start each role once before `complete`, and neither loops. Unit tests preserve both impossible states |
@@ -55,7 +55,7 @@ recovery a seam-specific union, start heartbeats from one session aggregate, ret
 instead of an unconstrained string id. Deleting the branch without that just moves the impossibility into a
 type nobody checks.
 
-## 3. Six places that admit two answers where the evidence has three
+## 3. Places that admit two answers where the evidence has three
 
 `.claude/rules/design-philosophy.md` principle 11. The tree already has
 `tests/invariants/liveness-is-never-a-boolean.test.ts`, so the rule is enforced somewhere and these are what
@@ -77,7 +77,7 @@ it does not reach.
 - `resolveBackendInfoPath` in `clients/skills/statusline/coral-hud.mjs` — any signal-zero exception renders as "no backend", including
   the `EPERM` that proves one exists.
 
-## 4. Four contracts weaker than they read
+## 4. Contracts weaker than they read
 
 - `createKbDaemonWriteRuntimeHost` in `src/kb-daemon/runtime-host.ts` — all five expansion methods cast `request.args` from `unknown` to
   their method-specific types. The wire guard validates `method` and `ctx` only, so `{method:'equipExpansion',
@@ -95,7 +95,7 @@ it does not reach.
   `responseSchema` metadata. Removing a field nothing reads is mechanical; deciding whether the concept
   should instead be *used* is not, which is why they are here and not in the immediate batch.
 
-## 5. Nine assertions that pass when their subject is absent
+## 5. Assertions that pass when their subject is absent
 
 All the same shape: optional chaining makes a missing subject satisfy a negative assertion.
 `readStatus(...)?.phase` compared with `not.toBe('error')` passes when the status was deleted rather than

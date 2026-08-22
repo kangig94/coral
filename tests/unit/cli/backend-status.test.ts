@@ -287,9 +287,28 @@ describe('handoff continuation remediation', () => {
     },
   ];
 
-  it.each(cases)('authors a next step for $name', ({ reason, expected }) => {
-    expect(formatHandoffContinuationReason(reason)).toBe(expected);
-    expect(expected).toContain('Next step:');
+  // Machine identifiers the formatter translates rather than prints. A raw one reaching this list is the
+  // defect these strings were written to remove.
+  const RAW_ENUM_TOKENS = [
+    'health-shape-rejected',
+    'health-request-failed',
+    'unreadable-record',
+    'identity-mismatch',
+    'stdout-drain-incomplete',
+    'embedded_identity_unavailable',
+    'adjacent_manifest_unavailable',
+    'adjacent_manifest_invalid',
+    'adjacent_manifest_mismatch',
+    'bundle-dir-not-canonical',
+    'bundle-dir-unavailable',
+    'expected-manifest-invalid',
+  ];
+
+  it.each(cases)('authors a next step for $name', ({ reason }) => {
+    const rendered = formatHandoffContinuationReason(reason);
+
+    expect(rendered).toContain('Next step:');
+    expect(RAW_ENUM_TOKENS.filter((token) => rendered.includes(token))).toEqual([]);
   });
 });
 

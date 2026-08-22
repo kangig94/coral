@@ -6,11 +6,17 @@ that would tell it how.
 
 ## What was measured
 
-`clients/hooks/session-start.mjs` emits **11,320 bytes** in one `additionalContext` payload. The harness
+`clients/hooks/session-start.mjs` emits its whole packet as one `additionalContext` payload. The harness
 persists a payload over its threshold to a file and shows the model only a preview of the **first 2 KB**,
-with a note naming the full path. Measured on 2026-08-22 across three injections in one session (a fresh
-start and two compactions): all three were persisted at exactly 11,320 bytes, so the packet is truncated
-every time, not occasionally.
+with a note naming the full path. Measured on 2026-08-22 across three injections of **one session's
+configuration** (a fresh start and two compactions): all three were persisted at exactly 11,320 bytes.
+
+That is one configuration, not a universal size. `renderInject` varies with KB enablement, equipped tools,
+project and wiki state, startup notices, and path substitution, so a different install emits a different
+total. What generalises is the static floor — the source fragments below sum to 9,740 bytes before any
+runtime content is added — and that the observed configuration is a KB-enabled project, which is the
+ordinary one. Whether a minimal configuration stays under the threshold is unmeasured, and worth measuring
+before this entry's fix is chosen.
 
 Two other SessionStart hooks inject alongside it — a codebase-memory "Code Discovery Protocol" block
 (~0.7 KB) and a PARA-ZK vault block (~1.7 KB). **Neither is truncated.** They are separate payloads; nothing

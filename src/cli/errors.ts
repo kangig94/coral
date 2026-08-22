@@ -147,6 +147,7 @@ export function errorCodeToExit(code: string, httpStatus?: number): number {
     code === 'kb_disabled' ||
     code === 'kb_initializing' ||
     code === 'kb_offline' ||
+    code === 'startup_not_ready' ||
     code === 'provider_host_inventory_unavailable' ||
     // "Could not observe", not "decided no" — see `NOT_OBSERVED_CORAL_SETUP_ERROR_CODES` for why this checks a
     // shared list instead of naming codes here; `code` is a bare `string`, not `DocumentedCoralSetupErrorCode`,

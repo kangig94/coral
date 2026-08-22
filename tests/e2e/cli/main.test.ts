@@ -240,11 +240,13 @@ describe('cli main — backend status without daemon', () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('emits text output by default', () => {
+  it('prints only the daemon status when the routing basis is informational', () => {
     const { stdout, status } = runCli(['backend', 'status'], {
       env: { HOME: tmpDir },
     });
 
+    // `incumbent-absent` is info/0, so this pins suppression, not the order of the two writes — the unit
+    // tests drive a warning basis and are what fail if the order reverses.
     expect(status).toBe(0);
     expect(stdout.trim()).toBe(
       'Backend not running. Any coral-cli mutating command (or a Claude Code session start) relaunches it.',
