@@ -1,8 +1,9 @@
 # TODO — Coral-owned paths under a root every user on the host can write
 
-**Status**: open, unfixed, and found by sweeping for the class the socket-identity work belongs to rather
-than by a failure. That work fixed one such path. These are the rest, and one of them holds more than a
-socket does.
+**Status**: partly closed. Found by sweeping for the class the socket-identity work belongs to rather than
+by a failure; that work fixed one such path, and these were the rest. Sites 2 and 3 are struck, and so are
+site 1's three file modes. What is left is site 1's directory mode — which cannot be set before the naming
+question below is answered — and site 4.
 
 The shared question is the same at every site: on Linux with no `TMPDIR`, `os.tmpdir()` is `/tmp` —
 world-writable and world-listable, and conventionally but not necessarily carrying the restricted-deletion
@@ -43,8 +44,10 @@ also rename or unlink Coral's entries, and a recursive `rmSync` of a job directo
 `src/coordinator/services/recovery/actions.ts`) then deletes through a path whose resolution someone else
 controls.
 
-Smallest fix: `0600` on the `env.json` write and a mode argument on the wrapper's two `openSync` calls.
-The **directory** mode does not belong beside them. Node applies a recursive `mkdirSync`'s `mode` to every
+Struck, for the three files: `env.json` is written `{ mode: 0o600 }` through `writeAtomicSync`, and the
+wrapper opens `stdout` and `stderr` with an explicit `0o600`. A real-runtime test asserts all three modes.
+
+The **directory** mode was not part of that and does not belong beside them. Node applies a recursive `mkdirSync`'s `mode` to every
 component it creates, not only the leaf — measured on Node 26.3.1, where `mkdirSync(root + '/leaf', {
 recursive: true, mode: 0o700 })` reports `700` on `root` as well — and both call sites pass
 `<tmpdir>/coral-jobs/<jobId>` with `recursive: true`. `0700` would therefore land on the literal
@@ -53,33 +56,28 @@ of Coral with the same `EACCES` this site describes as the attack. The directory
 per-user rename and waits with it on `socket-address-ownership.md`; only the three file modes are
 separable.
 
-## 2. `/tmp/coral-input-<hash>.txt` — the Bash rewrite hook's inline-text spill
+## 2. `/tmp/coral-input-<name>.txt` — the Bash rewrite hook's inline-text spill
 
-`writeInlineTextFile` (`clients/hooks/bash-rewrite.mjs`) turns an inline `-i "…"` argument into a file so
-the command stays inside argv limits. It names that file `sha256(content)[0:12]`, in `tmpdir()` directly.
-The mode is `0600`, which is the one site here that sets one — and it is the site where the mode is not
-enough, because a **content-addressed name in a shared namespace is not the writer's to claim**:
+Struck: fixed. The name was `sha256(content)[0:12]`, and a content-addressed name in a shared namespace is
+not the writer's to claim — `writeFileSync` opens `O_CREAT|O_TRUNC` and follows symlinks, so anyone who
+could predict the content could pre-create that name as a link and receive the prompt text at its target.
+The name now comes from `randomBytes`, and the write carries `flag: 'wx'`, which is the half that actually
+refuses: `O_CREAT|O_EXCL` fails `EEXIST` on an existing path including a symlink, dangling or not. `wx` also
+makes the pre-existing `mode: 0o600` unconditional, since the file is now always the one being created.
+Both halves are asserted — one test runs the hook under a zero umask and reads the spill's mode, another
+pre-creates the spill path as a symlink and proves the target is untouched and the hook still fails open.
 
-- `writeFileSync(path, value, { mode })` opens `O_CREAT|O_TRUNC` and follows symlinks, and `mode` applies
-  only when the file is created. Another user who can predict the content — a skill-generated invocation is
-  byte-identical across machines — pre-creates that name as a symlink to something the victim can write, and
-  the hook truncates it and writes the prompt text there instead.
-- Two users on one host who pass the same text collide on one filename. The first owns it at `0600`; the
-  second's write fails `EACCES`. The hook's top-level `catch { process.exit(0) }` means that failure is
-  silent and the command simply runs unrewritten.
-- The name is also an oracle: `/tmp` is world-listable, so the presence of a given hash confirms that
-  someone on the host ran that exact prompt, even though the content stays unreadable.
-
-Smallest fix: a random name rather than a content hash, and `flag: 'wx'` so an existing entry is an error
-rather than a target. Nothing here needs the namespace decision.
+Two things the fix does not do, and neither is a defect: identical prompts no longer collapse onto one
+file, and nothing in production unlinks these files — that was true before and is unchanged.
 
 ## 3. `/tmp/coral-discovery-<uuid>.md` — the KB curate corpus
 
-`buildDiscoveryPrompt` (`src/kb/curate/discovery.ts`) writes the note corpus it hands a provider through
-`writeFileAtomic`, which passes no mode. The name is a UUID, but it sits directly in a world-listable `/tmp`
-rather than under a Coral-owned parent, so the name is read rather than guessed. The content is the user's
-own KB note bodies. One `mode` argument closes it. Whether the file is ever unlinked is not established
-here.
+Struck: fixed. `buildDiscoveryPrompt` (`src/kb/curate/discovery.ts`) now asks `writeFileAtomic` for mode
+`0600`, which it applies to the temporary file so the rename carries it — a `chmod` after the rename would
+leave a window at `0644`, which is the thing being fixed. No other caller of `writeFileAtomic` changed.
+
+The sweep recorded that whether the file is ever unlinked was not established. It is now: `runPrincipleDiscovery`
+(`src/kb/curate/principles.ts`) calls `unlinkIfExists(corpusPath)` in a `finally`.
 
 ## 4. `/tmp/claude-<uid>` — the hooks' state root
 
@@ -103,6 +101,7 @@ when it meets a `0700` directory a newer build tightened, which is the
 
 ## Start condition
 
-Site 1's three file modes, site 2, and site 3 have none. Site 1's directory mode and its per-user rename
-both want `socket-address-ownership.md` part 2 decided first, for the same reason that entry gives: the two
-options put the per-user boundary in different places.
+What remains is site 1's directory mode, its per-user rename, and site 4. The first two want
+`socket-address-ownership.md` part 2 decided first, for the same reason that entry gives: the two options
+put the per-user boundary in different places. Site 4 wants an answer about whose directory it is before
+anything is done to it.
