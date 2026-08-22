@@ -16,12 +16,13 @@ import {
   type JsonRpcRequestEnvelope,
   type JsonRpcResponseEnvelope,
 } from './json-rpc.js';
-import { isRelocatedSocket } from '../../infra/path/index.js';
+
 import {
   ensurePrivateSocketDir,
   SocketDirectoryError,
   type SocketDirectoryRefusal,
 } from '../../infra/private-socket-directory.js';
+import { socketFallbackUid } from '../../infra/path/index.js';
 import { documentedCoralSetupError, type DocumentedCoralSetupErrorCode } from '../../runtime/errors.js';
 import { createLineFramer, FrameTooLargeError } from '../line-framing.js';
 import { rpcCatalog, type RpcMethodSpec } from '../rpc/catalog.js';
@@ -378,9 +379,9 @@ const SOCKET_DIRECTORY_REFUSAL_CODES = {
  * than assumed. A run directory is not shared and must not be held to the same mode.
  */
 function prepareSocketParent(socketPath: string): void {
-  const uid = process.getuid?.() ?? 0;
   const directory = resolve(dirname(socketPath));
-  if (!isRelocatedSocket(directory, uid)) {
+  const uid = socketFallbackUid(directory);
+  if (uid === undefined) {
     mkdirSync(directory, { recursive: true });
     return;
   }
@@ -393,6 +394,7 @@ function prepareSocketParent(socketPath: string): void {
       reason: error.refusal,
       directory,
       socketPath,
+      uid: error.uid,
       cause: error.detail ?? error.message,
     });
   }

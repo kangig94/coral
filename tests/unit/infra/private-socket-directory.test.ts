@@ -85,7 +85,7 @@ describe('ensurePrivateSocketDir', () => {
 
     ensurePrivateSocketDir(directory, CURRENT_UID, realStorage);
 
-    expect(lstatSync(directory).mode & 0o777).toBe(0o700);
+    expect(lstatSync(directory).mode & 0o7777).toBe(0o700);
   });
 
   it('tightens a directory of its own that another umask left loose', () => {
@@ -151,6 +151,25 @@ describe('ensurePrivateSocketDir', () => {
     }
   });
 
+  it('preserves a primitive thrown by a storage adapter', () => {
+    const directory = join(scratch(), 'primitive-error');
+    const failing = {
+      ...realStorage,
+      lstatSync: () => {
+        // eslint-disable-next-line @typescript-eslint/only-throw-error -- Unknown adapter failures must retain primitive observations.
+        throw 'EIO primitive';
+      },
+    };
+
+    expect(() => ensurePrivateSocketDir(directory, CURRENT_UID, failing)).toThrowError(
+      expect.objectContaining({
+        refusal: 'unverified',
+        detail: 'EIO primitive',
+        message: expect.stringContaining('EIO primitive'),
+      }),
+    );
+  });
+
   it.each([
     ['world-writable', 0o777],
     // A group another user belongs to can rename our entry exactly as `other` can, so a check that reads
@@ -211,6 +230,21 @@ describe('ensurePrivateSocketDir', () => {
     );
   });
 
+  it('leaves an entry with no reported owner unverified', () => {
+    const directory = join(scratch(), 'unowned-entry');
+    const unownedEntry = {
+      ...realStorage,
+      lstatSync: overrideBigIntStat(lstatSync, { uid: undefined }),
+    };
+
+    expect(() => ensurePrivateSocketDir(directory, CURRENT_UID, unownedEntry)).toThrowError(
+      expect.objectContaining({
+        refusal: 'unverified',
+        detail: 'the directory reported no owner',
+      }),
+    );
+  });
+
   it('refuses a restricted-deletion parent belonging to someone else, which that owner is exempt from', () => {
     const directory = scratchDirectory(0o1777);
 
@@ -231,6 +265,25 @@ describe('ensurePrivateSocketDir', () => {
 
     expect(() => ensurePrivateSocketDir(directory, CURRENT_UID, stubborn)).toThrowError(
       expect.objectContaining({ refusal: 'unsecurable', detail: expect.stringContaining('kept its own permissions') }),
+    );
+  });
+
+  it('uses the readback verdict when chmod fails but the directory remains observable', () => {
+    const directory = join(scratch(), 'read-only-mode');
+    mkdirSync(directory, { mode: 0o755 });
+    chmodSync(directory, 0o755);
+    const readOnly = {
+      ...realStorage,
+      chmodSync: () => {
+        throw new Error('EROFS: read-only file system, chmod');
+      },
+    };
+
+    expect(() => ensurePrivateSocketDir(directory, CURRENT_UID, readOnly)).toThrowError(
+      expect.objectContaining({
+        refusal: 'unsecurable',
+        detail: expect.stringMatching(/EROFS: read-only file system, chmod.*040755/u),
+      }),
     );
   });
 

@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, mkdtempSync, rmSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdtempSync, rmSync, statSync } from 'node:fs';
 import type * as NodeFs from 'node:fs';
 import { tmpdir } from 'node:os';
 import type * as NodeOs from 'node:os';
@@ -343,16 +343,40 @@ describe('createRealRuntime', () => {
   });
 });
 
-describe('storage.lstatSync bigint', () => {
-  it('carries the owner, mode and type the socket-directory assertion reads', () => {
+describe('storage bigint stats', () => {
+  it('retains owner, type, and full mode in following and non-following views', () => {
     const root = mkdtempSync(join(tmpdir(), 'coral-runtime-lstat-'));
     createdDirs.push(root);
+    chmodSync(root, 0o1700);
     const runtime = createRealRuntime('prod', { baseDir: root });
 
-    const observed = runtime.storage.lstatSync(root, { bigint: true });
+    const observedLstat = runtime.storage.lstatSync(root, { bigint: true });
+    const observedStat = runtime.storage.statSync(root, { bigint: true });
+    const expectedLstat = lstatSync(root, { bigint: true });
+    const expectedStat = statSync(root, { bigint: true });
 
-    expect(observed.uid).toBe(BigInt(process.getuid?.() ?? 0));
-    expect(observed.mode & 0o170000n).toBe(0o040000n);
-    expect(observed.mode & 0o777n).toBe(BigInt(lstatSync(root).mode & 0o777));
+    expect({
+      lstat: {
+        uid: observedLstat.uid,
+        type: observedLstat.mode & 0o170000n,
+        mode: observedLstat.mode & 0o7777n,
+      },
+      stat: {
+        uid: observedStat.uid,
+        type: observedStat.mode & 0o170000n,
+        mode: observedStat.mode & 0o7777n,
+      },
+    }).toEqual({
+      lstat: {
+        uid: expectedLstat.uid,
+        type: expectedLstat.mode & 0o170000n,
+        mode: expectedLstat.mode & 0o7777n,
+      },
+      stat: {
+        uid: expectedStat.uid,
+        type: expectedStat.mode & 0o170000n,
+        mode: expectedStat.mode & 0o7777n,
+      },
+    });
   });
 });

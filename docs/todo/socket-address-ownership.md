@@ -39,7 +39,7 @@ throw is collapsed to a numeric exit status by `runProviderRoleMain`'s caller in
 `src/coordinator/bootstrap.ts`, and `spawnRoleProcess` (`src/provider-proxy/role-spawn.ts`) drains the
 child's stderr into a no-op listener. A refusal raised in a role binder therefore reaches the coordinator
 as an opaque connect failure unless this work also gives the role a structured startup-diagnostic channel
-back to its parent. `proxy_endpoint_insecure` moves with the check, and each role binder gains a refusal
+back to its parent. The endpoint's two codes move with the check, and each role binder gains a refusal
 on its startup path that it does not have today — refusing to start is a hold, and
 `.claude/rules/design-philosophy.md` principle 11 asks what ends it. It also has one disposition where the
 coordinator now has three, so the split the coordinator side just made has to reach it.

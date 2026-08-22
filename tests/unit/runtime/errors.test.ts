@@ -328,6 +328,11 @@ describe('CoralSetupError', () => {
         directory: '/tmp/coral-1000',
         cause: "EACCES: permission denied, stat '/tmp'",
       });
+      const invalidUid = documentedCoralSetupError({
+        code: 'coordinator_socket_dir_unverified',
+        directory: '/tmp/coral-NaN',
+        cause: 'the current uid is not a usable owner',
+      });
 
       for (const error of [foreign, unusable, unsecurable]) {
         expect(error.userMessage).toContain('/tmp/coral-1000');
@@ -342,22 +347,26 @@ describe('CoralSetupError', () => {
       expect(unusable.remediation).toContain('Remove');
       expect(unsecurable.remediation).not.toContain('Remove');
       expect(unsecurable.userMessage).toBe(
-        "Coral relocated its coordinator socket into /tmp/coral-1000 because the path beside its run directory exceeds this platform's limit, and Coral cannot keep that path private to you (its parent '/tmp' is writable by other users and does not restrict deletion).",
+        "Coral's coordinator socket uses /tmp/coral-1000 as its fallback directory, and Coral cannot keep that path private to you (its parent '/tmp' is writable by other users and does not restrict deletion).",
       );
       expect(unsecurable.remediation).toBe(
         "Give this host's administrator the observation above. Coral did not bind its singleton socket. Start Coral again once the directory is repaired.",
       );
       expect(unverified.userMessage).toBe(
-        "Coral relocated its coordinator socket into a fallback directory because the path beside its run directory exceeds this platform's limit, and could not establish whether it is private to you (EACCES: permission denied, lstat '/tmp/coral-1000'). This does not mean the directory is wrong.",
+        "Coral's coordinator socket uses a fallback directory, but Coral could not establish whether it is private to you (EACCES: permission denied, lstat '/tmp/coral-1000'). This does not mean the directory is wrong.",
       );
       expect(parentUnverified.userMessage).toBe(
-        "Coral relocated its coordinator socket into /tmp/coral-1000 because the path beside its run directory exceeds this platform's limit, and could not establish whether that directory is private to you (EACCES: permission denied, stat '/tmp'). This does not mean the directory is wrong.",
+        "Coral's coordinator socket uses /tmp/coral-1000, but Coral could not establish whether that directory is private to you (EACCES: permission denied, stat '/tmp'). This does not mean the directory is wrong.",
       );
       for (const error of [unverified, parentUnverified]) {
         expect(error.remediation).toBe(
           'Resolve the filesystem error reported in the observation above, then start Coral again. Coral will not bind its singleton socket in a directory it could not observe.',
         );
       }
+      expect(invalidUid.remediation).toBe(
+        'Start Coral in an environment that provides a usable non-negative integer uid. Coral will not bind its singleton socket without a usable owner identity.',
+      );
+      expect(invalidUid.remediation).not.toContain('filesystem');
     });
   });
 });

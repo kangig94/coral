@@ -137,7 +137,7 @@ describe('provider proxy paths', () => {
     );
   });
 
-  it('creates and uses a current-uid mode-0700 fallback directory', () => {
+  it('requests and uses a current-uid mode-0700 fallback directory', () => {
     const mkdir = vi.fn();
     const endpoint = providerProxyEndpoint(
       identity,
@@ -232,7 +232,7 @@ describe('provider proxy paths', () => {
 
     expect(() => providerProxyEndpoint(identity, environment({ baseDir: pathOfLength(200), storage }))).toThrowError(
       expect.objectContaining({
-        code: 'proxy_endpoint_insecure',
+        code: 'proxy_endpoint_unverified',
         message:
           `The provider endpoint fallback directory could not be verified as a directory owned by uid ${CURRENT_UID} with mode 0700: EACCES: permission denied, lstat '${FALLBACK_DIRECTORY}'. ` +
           'Resolve the reported filesystem error, then start Coral again.',

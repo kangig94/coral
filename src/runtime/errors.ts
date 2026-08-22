@@ -186,7 +186,7 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
   },
   coordinator_socket_dir_insecure: {
     userMessage: (context) =>
-      `Coral relocated its coordinator socket into ${stringContextValue(context, 'directory', '<directory>')} because the path beside its run directory exceeds this platform's limit, and ${
+      `Coral's coordinator socket uses ${stringContextValue(context, 'directory', '<directory>')} as its fallback directory, and ${
         context?.reason === 'foreign'
           ? 'that path belongs to another user'
           : context?.reason === 'unusable'
@@ -213,10 +213,12 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
       const observationNamesDirectory = cause.includes(directory);
       const location = observationNamesDirectory ? 'a fallback directory' : directory;
       const reference = observationNamesDirectory ? 'it' : 'that directory';
-      return `Coral relocated its coordinator socket into ${location} because the path beside its run directory exceeds this platform's limit, and could not establish whether ${reference} is private to you (${cause}). This does not mean the directory is wrong.`;
+      return `Coral's coordinator socket uses ${location}, but Coral could not establish whether ${reference} is private to you (${cause}). This does not mean the directory is wrong.`;
     },
-    remediation:
-      'Resolve the filesystem error reported in the observation above, then start Coral again. Coral will not bind its singleton socket in a directory it could not observe.',
+    remediation: (context) =>
+      context?.cause === 'the current uid is not a usable owner'
+        ? 'Start Coral in an environment that provides a usable non-negative integer uid. Coral will not bind its singleton socket without a usable owner identity.'
+        : 'Resolve the filesystem error reported in the observation above, then start Coral again. Coral will not bind its singleton socket in a directory it could not observe.',
   },
   store_schema_outdated: {
     userMessage: 'Coral backend store format does not match this installation.',

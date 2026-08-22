@@ -44,7 +44,7 @@ export type ProviderBootstrapCapsulePathOptions = {
   readonly baseDir?: string;
 };
 
-export type ProviderProxyEndpointErrorCode = 'proxy_endpoint_insecure';
+export type ProviderProxyEndpointErrorCode = 'proxy_endpoint_insecure' | 'proxy_endpoint_unverified';
 
 export class ProviderProxyEndpointError extends Error {
   readonly code: ProviderProxyEndpointErrorCode;
@@ -104,7 +104,7 @@ function insecureEndpointError(
     unverified: 'Resolve the reported filesystem error, then start Coral again.',
   };
   return new ProviderProxyEndpointError(
-    'proxy_endpoint_insecure',
+    refusal === 'unverified' ? 'proxy_endpoint_unverified' : 'proxy_endpoint_insecure',
     `${directory} ${observed[refusal]}. ${remediation[refusal]}`,
     {
       fallbackDirectory,

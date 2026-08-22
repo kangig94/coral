@@ -15,8 +15,15 @@ export type SocketDirectoryStorage = Pick<StoragePort, 'chmodSync' | 'mkdirSync'
   statSync(path: string, options: { bigint: true }): StorageBigIntStat;
 };
 
-/** `unverified` decided nothing: an operator told their permissions are wrong will go and change them. */
 export type SocketDirectoryRefusal = 'foreign' | 'unusable' | 'unsecurable' | 'unverified';
+
+function primitiveDetail(value: unknown): string | undefined {
+  if (value instanceof Error) return value.message;
+  if (value === null || ['string', 'number', 'bigint', 'boolean', 'symbol'].includes(typeof value)) {
+    return String(value);
+  }
+  return undefined;
+}
 
 export class SocketDirectoryError extends Error {
   readonly refusal: SocketDirectoryRefusal;
@@ -26,7 +33,8 @@ export class SocketDirectoryError extends Error {
 
   constructor(refusal: SocketDirectoryRefusal, directory: string, uid: number, cause?: unknown) {
     const requirement = `a directory owned by uid ${uid} with mode 0700`;
-    const observed = cause instanceof Error ? cause.message : 'unknown cause';
+    const detail = primitiveDetail(cause);
+    const observed = detail ?? 'unknown cause';
     const reason =
       refusal === 'foreign'
         ? `belongs to another user, so it cannot be ${requirement}`
@@ -40,7 +48,7 @@ export class SocketDirectoryError extends Error {
     this.refusal = refusal;
     this.directory = directory;
     this.uid = uid;
-    this.detail = cause instanceof Error ? cause.message : undefined;
+    this.detail = detail;
   }
 }
 
@@ -67,6 +75,17 @@ function observe(directory: string, uid: number, read: () => StorageBigIntStat):
     return read();
   } catch (error: unknown) {
     throw new SocketDirectoryError('unverified', directory, uid, error);
+  }
+}
+
+type OperationResult = { readonly failed: false } | { readonly failed: true; readonly error: unknown };
+
+function attempt(operation: () => void): OperationResult {
+  try {
+    operation();
+    return { failed: false };
+  } catch (error: unknown) {
+    return { failed: true, error };
   }
 }
 
@@ -121,9 +140,6 @@ function assertSecureParent(directory: string, uid: number, parent: StorageBigIn
 }
 
 /**
- * The entry's own owner and type must come from a non-following read: a following one describes whatever
- * the path resolves to rather than the entry this will hand to a caller.
- *
  * Its enclosing directory must be read the following way round, because `/tmp` is a symlink on macOS and a
  * link's own mode says nothing about who may write where it points.
  *
@@ -144,38 +160,38 @@ export function ensurePrivateSocketDir(target: string, uid: number, storage: Soc
   // A create that fails is never the last word while the entry can still be read: an occupied path fails
   // `EEXIST`, a dangling link at the same position fails `ENOENT`, and both are entries the read below
   // names. Only a path the read cannot reach either leaves this having observed nothing.
-  let created: unknown = null;
-  try {
-    storage.mkdirSync(directory, { recursive: true, mode: Number(REQUIRED_POSIX_MODE) });
-  } catch (error: unknown) {
-    created = error;
-  }
+  const creation = attempt(() => storage.mkdirSync(directory, { recursive: true, mode: Number(REQUIRED_POSIX_MODE) }));
 
   let observed: StorageBigIntStat;
   try {
     observed = storage.lstatSync(directory, { bigint: true });
   } catch (error: unknown) {
-    throw new SocketDirectoryError('unverified', directory, uid, created ?? error);
+    throw new SocketDirectoryError('unverified', directory, uid, creation.failed ? creation.error : error);
   }
 
   const entry = classifyEntry(observed, uid);
   if (entry === 'matching-posix-owner-and-mode') return;
   if (entry !== 'loose') refuseEntry(entry, directory, uid);
 
-  const tightened = classifyEntry(
-    observe(directory, uid, () => {
-      storage.chmodSync(directory, Number(REQUIRED_POSIX_MODE));
-      return storage.lstatSync(directory, { bigint: true });
-    }),
-    uid,
-  );
+  const tightening = attempt(() => storage.chmodSync(directory, Number(REQUIRED_POSIX_MODE)));
+  let tightenedObservation: StorageBigIntStat;
+  try {
+    tightenedObservation = storage.lstatSync(directory, { bigint: true });
+  } catch (error: unknown) {
+    throw new SocketDirectoryError('unverified', directory, uid, tightening.failed ? tightening.error : error);
+  }
+
+  const tightened = classifyEntry(tightenedObservation, uid);
   if (tightened === 'matching-posix-owner-and-mode') return;
   if (tightened === 'loose') {
+    const operation = tightening.failed
+      ? `the mode change failed (${primitiveDetail(tightening.error) ?? 'unknown cause'}) and`
+      : 'the filesystem accepted the mode change and kept its own permissions;';
     throw new SocketDirectoryError(
       'unsecurable',
       directory,
       uid,
-      new Error('the filesystem accepted the mode change and kept its own permissions'),
+      new Error(`${operation} the directory still reported mode 0${tightenedObservation.mode.toString(8)}`),
     );
   }
   refuseEntry(tightened, directory, uid);

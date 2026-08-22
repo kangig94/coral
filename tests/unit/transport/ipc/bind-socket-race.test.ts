@@ -104,7 +104,7 @@ describe('bindSocket stale-clear race', () => {
         return {
           dev: 1n,
           ino: 1n,
-          mode: 0n,
+          mode: 0o040700n,
           size: 0n,
           mtimeNs: BigInt(Date.now()) * 1_000_000n,
           isDirectory: () => true,
@@ -274,7 +274,7 @@ describe('bindSocket stale-clear race', () => {
         return {
           dev: 1n,
           ino: 1n,
-          mode: 0n,
+          mode: 0o040700n,
           size: 0n,
           mtimeNs: BigInt(Date.now()) * 1_000_000n,
           isDirectory: () => true,

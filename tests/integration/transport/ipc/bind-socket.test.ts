@@ -142,6 +142,27 @@ describe('bindSocket', () => {
     expect(server.listening).toBe(false);
   });
 
+  it('asserts a fallback directory against the uid encoded in its address', async () => {
+    const addressUid = 9_000_000 + process.pid;
+    const laterUid = anotherUid(addressUid);
+    vi.spyOn(process, 'getuid').mockReturnValue(laterUid);
+    const directory = socketFallbackDir(addressUid);
+    mkdirSync(directory, { mode: 0o700 });
+    createdFallbackDirectories.push(directory);
+    reportFallbackParent(0n, 0o041777n);
+    reportFallbackEntryUid(directory, BigInt(laterUid));
+    const server = createServer();
+    cleanupServers.push(server);
+
+    await expect(bindSocket(server, join(directory, 'relocated.sock'))).rejects.toThrow(
+      expect.objectContaining({
+        code: 'coordinator_socket_dir_insecure',
+        context: expect.objectContaining({ reason: 'foreign', uid: addressUid }),
+      }),
+    );
+    expect(server.listening).toBe(false);
+  });
+
   // The entry is reported as this uid's so the owner check passes and the type check is what refuses:
   // without that the symlink is simply foreign, and this would assert a mapping it never reached.
   it('maps an owned symlink to unusable and renders that reason, without listening', async () => {
@@ -152,6 +173,7 @@ describe('bindSocket', () => {
     tempDirs.push(target);
     symlinkSync(target, directory);
     createdFallbackLinks.push(directory);
+    reportFallbackParent(0n, 0o041777n);
     reportFallbackEntryUid(directory, BigInt(uid));
 
     const server = createServer();
