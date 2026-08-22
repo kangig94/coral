@@ -158,6 +158,10 @@ describe('runCommunitySummaryAgent', () => {
     expect(request.prompt).toContain('coral-cli kb community list-stale');
     expect(request.prompt).toContain('coral-cli kb community summary-input <slug>');
     expect(request.prompt).toContain('coral-cli kb community set-summary <slug> --from');
+    expect(request.prompt).toContain('Run: mktemp');
+    expect(request.prompt).not.toMatch(/Run:\s+\w+\s*=\s*["']?\$\(mktemp/);
+    expect(request.prompt).not.toMatch(/Run:\s+coral-cli kb community set-summary[^\n]*\$(?:\w|\{)/);
+    expect(request.prompt).not.toContain('/tmp/coral-summary.txt');
     expect(request.prompt).toContain('Never invent or pass a fingerprint');
   });
 

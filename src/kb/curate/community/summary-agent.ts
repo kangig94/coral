@@ -16,8 +16,10 @@ Loop until done:
 2. Take the FIRST listed slug, then:
    a. Run: coral-cli kb community summary-input <slug>
       This prints the material to summarize AND the instructions for how to write the summary. Follow those instructions exactly.
-   b. Write your summary to a temp file (e.g. /tmp/coral-summary.txt). Plain text only.
-   c. Run: coral-cli kb community set-summary <slug> --from /tmp/coral-summary.txt
+   b. Run: mktemp "\${TMPDIR:-/tmp}/coral-summary.XXXXXX"
+      This creates the file and prints its path. Copy that printed path exactly, then write your summary to that literal path. Plain text only.
+   c. Run: coral-cli kb community set-summary <slug> --from <path-printed-by-mktemp>
+      Replace <path-printed-by-mktemp> with the literal path printed in step b.
 3. Go back to step 1.
 
 Rules:
