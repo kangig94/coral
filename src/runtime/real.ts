@@ -763,34 +763,26 @@ function writeAtomicSyncNode(
   options?: { encoding?: BufferEncoding; mode?: number },
 ): boolean {
   const tempPath = `${path}.tmp`;
+  let fd: number | null = null;
   try {
-    writeFileSync(tempPath, normalizeStorageData(data), writeFileSyncOptions(options));
+    fd = options?.mode === undefined ? openSync(tempPath, 'w') : openSync(tempPath, 'w', options.mode);
     if (options?.mode !== undefined) {
-      chmodSync(tempPath, options.mode);
+      fchmodSync(fd, options.mode);
     }
+    writeAllSync(fd, normalizeStorageBuffer(data, options?.encoding ?? 'utf-8'));
+    closeSync(fd);
+    fd = null;
     renameSync(tempPath, path);
     return true;
   } catch (error: unknown) {
+    if (fd !== null) {
+      closeSync(fd);
+    }
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
       return false;
     }
     throw error;
   }
-}
-
-function writeFileSyncOptions(options?: {
-  encoding?: BufferEncoding;
-  mode?: number;
-}): { encoding?: BufferEncoding; mode?: number } | undefined {
-  if (options === undefined || (options.encoding === undefined && options.mode === undefined)) {
-    return undefined;
-  }
-
-  const { encoding, mode } = options;
-  return {
-    ...(encoding === undefined ? {} : { encoding }),
-    ...(mode === undefined ? {} : { mode }),
-  };
 }
 
 function writeAtomicDurableSyncNode(

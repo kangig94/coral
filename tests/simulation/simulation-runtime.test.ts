@@ -142,7 +142,7 @@ describe('simulation runtime', () => {
     expect(storage.writeAtomicDurableSync(atomicPath, '{"ok":"durable"}', { encoding: 'utf-8' })).toBe(true);
     expect(storage.appendFileDurableSync(filePath, '\ngamma')).toBe(true);
     expect(storage.writeAtomicDurableSync(join('/tmp/sim/missing', 'state.json'), '{}')).toBe(true);
-    expect(storage.appendFileDurableSync(join('/tmp/sim/missing', 'events.jsonl'), 'event\n')).toBe(true);
+    expect(storage.appendFileDurableSync(join('/tmp/sim/append-missing', 'events.jsonl'), 'event\n')).toBe(true);
     storage.renameSync(atomicPath, join(workDir, 'renamed.json'));
 
     const entries = storage.readdirSync(workDir, { withFileTypes: true }).map((entry) => entry.name);
@@ -405,20 +405,81 @@ describe('simulation runtime', () => {
         simulated: simulatedStorage.readFileSync(simulatedExisting, 'utf-8'),
         real: realStorage.readFileSync(realExisting, 'utf-8'),
       }).toEqual({ simulated: 'reset', real: 'reset' });
+
+      for (const flag of ['w+', 'ax'] as const) {
+        const simulatedWritePath = join(simulatedRoot, `write-flag-${flag}`);
+        const realWritePath = join(realRoot, `write-flag-${flag}`);
+        simulatedStorage.writeFileSync(simulatedWritePath, 'value', { flag });
+        realStorage.writeFileSync(realWritePath, 'value', { flag });
+        expect({
+          simulated: simulatedStorage.readFileSync(simulatedWritePath, 'utf-8'),
+          real: realStorage.readFileSync(realWritePath, 'utf-8'),
+        }).toEqual({ simulated: 'value', real: 'value' });
+
+        const simulatedOpenPath = join(simulatedRoot, `open-flag-${flag}`);
+        const realOpenPath = join(realRoot, `open-flag-${flag}`);
+        simulatedStorage.closeSync(simulatedStorage.openSync(simulatedOpenPath, flag));
+        realStorage.closeSync(realStorage.openSync(realOpenPath, flag));
+        expect({
+          simulated: simulatedStorage.existsSync(simulatedOpenPath),
+          real: realStorage.existsSync(realOpenPath),
+        }).toEqual({ simulated: true, real: true });
+      }
+
+      const simulatedAppendMissing = join(simulatedRoot, 'append-missing', 'events.jsonl');
+      const realAppendMissing = join(realRoot, 'append-missing', 'events.jsonl');
+      expect({
+        simulated: simulatedStorage.appendFileDurableSync(simulatedAppendMissing, 'event\n'),
+        real: realStorage.appendFileDurableSync(realAppendMissing, 'event\n'),
+      }).toEqual({ simulated: true, real: true });
     } finally {
       process.umask(originalUmask);
       rmSync(realRoot, { recursive: true, force: true });
     }
   });
 
-  it('reports classifiable errno codes for unsupported in-memory write and open flags', () => {
-    const storage = new InMemoryStorage(new VirtualTime(1_000));
-    const path = '/tmp/sim/unsupported-flag';
+  it("matches real invalid-flag classification and names each in-memory method's supported flags", () => {
+    const simulatedStorage: StoragePort = new InMemoryStorage(new VirtualTime(1_000));
+    const realRoot = mkdtempSync(join(tmpdir(), 'coral-invalid-storage-flag-'));
+    const realStorage = createRealRuntime('prod', { baseDir: realRoot }).storage;
 
-    expect(() => storage.writeFileSync(path, 'value', { flag: 'unsupported' })).toThrowError(
-      expect.objectContaining({ code: 'EINVAL' }),
-    );
-    expect(() => storage.openSync(path, 'unsupported')).toThrowError(expect.objectContaining({ code: 'EINVAL' }));
+    const captureError = (action: () => void): { name: string; code: string | undefined; message: string } => {
+      try {
+        action();
+      } catch (error: unknown) {
+        const typed = error as NodeJS.ErrnoException;
+        return { name: typed.name, code: typed.code, message: typed.message };
+      }
+      throw new Error('expected action to throw');
+    };
+
+    try {
+      const writeErrors = {
+        simulated: captureError(() =>
+          simulatedStorage.writeFileSync('/tmp/sim/unsupported-write', 'value', { flag: 'unsupported' }),
+        ),
+        real: captureError(() =>
+          realStorage.writeFileSync(join(realRoot, 'unsupported-write'), 'value', { flag: 'unsupported' }),
+        ),
+      };
+      expect({ name: writeErrors.simulated.name, code: writeErrors.simulated.code }).toEqual({
+        name: writeErrors.real.name,
+        code: writeErrors.real.code,
+      });
+      expect(writeErrors.simulated.message).toContain('Supported flags: w, w+, wx, a, ax, r+');
+
+      const openErrors = {
+        simulated: captureError(() => simulatedStorage.openSync('/tmp/sim/unsupported-open', 'unsupported')),
+        real: captureError(() => realStorage.openSync(join(realRoot, 'unsupported-open'), 'unsupported')),
+      };
+      expect({ name: openErrors.simulated.name, code: openErrors.simulated.code }).toEqual({
+        name: openErrors.real.name,
+        code: openErrors.real.code,
+      });
+      expect(openErrors.simulated.message).toContain('Supported flags: r, r+, w, w+, a, wx, ax');
+    } finally {
+      rmSync(realRoot, { recursive: true, force: true });
+    }
   });
 
   it('reapplies an explicit atomic mode when a fixed temp file survives', () => {
