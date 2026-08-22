@@ -190,7 +190,7 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
         context?.reason === 'foreign'
           ? 'that path belongs to another user'
           : context?.reason === 'unusable'
-            ? 'that path is yours and is not a directory'
+            ? 'that path is not a directory'
             : `Coral cannot keep that path private to you (${stringContextValue(context, 'cause', 'cause unavailable')})`
       }.`,
     remediation: (context) =>
@@ -212,7 +212,7 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
     remediation: (context) => {
       const cause = stringContextValue(context, 'cause', 'cause unavailable');
       if (cause === 'the owner uid named by the socket address is not usable') {
-        return 'Start Coral in an environment that provides a usable non-negative integer owner uid for the fallback socket address. Coral will not bind its singleton socket without a usable owner identity.';
+        return 'Start Coral in an environment that provides an owner uid the filesystem can represent for the fallback socket address. Coral will not bind its singleton socket without a usable owner identity.';
       }
       if (cause.includes('reported no owner')) {
         return 'Start Coral on a filesystem that reports owner identity for the fallback directory. The observation succeeded but did not identify an owner, so Coral could not settle whether the directory is private.';

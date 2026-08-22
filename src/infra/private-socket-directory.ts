@@ -9,6 +9,7 @@ const REQUIRED_POSIX_MODE = 0o700n;
 const WRITABLE_BY_OTHERS = 0o022n;
 const RESTRICTED_DELETION = 0o1000n;
 const ROOT_UID = 0n;
+const MAX_FILESYSTEM_UID = 0xffff_fffe;
 const NO_STORAGE_OBSERVATION = 'the storage adapter threw without an observation';
 
 export type SocketDirectoryStorage = Pick<StoragePort, 'chmodSync' | 'mkdirSync'> & {
@@ -172,7 +173,7 @@ export function ensurePrivateSocketDir(target: string, uid: number, storage: Soc
   // A trailing separator makes `lstat` follow a symlink, so the non-following read below is only
   // non-following on a canonical path.
   const directory = resolve(target);
-  if (!Number.isSafeInteger(uid) || uid < 0) {
+  if (!Number.isSafeInteger(uid) || uid < 0 || uid > MAX_FILESYSTEM_UID) {
     throw new SocketDirectoryError(
       'unverified',
       directory,

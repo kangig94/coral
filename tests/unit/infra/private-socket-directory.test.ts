@@ -22,6 +22,9 @@ import {
 } from '#src/infra/private-socket-directory.js';
 
 const CURRENT_UID = process.getuid?.() ?? 0;
+const FILE_TYPE_BITS = 0o170000n;
+const DIRECTORY_TYPE = 0o040000n;
+const REGULAR_FILE_TYPE = 0o100000n;
 const roots: string[] = [];
 
 function scratch(): string {
@@ -54,11 +57,14 @@ function overrideBigIntStat(
       return read(path, options);
     }
     const observed = read(path, options);
-    return Object.assign(
-      Object.create(Object.getPrototypeOf(observed) as object) as StorageBigIntStat,
-      observed,
-      overrides,
-    );
+    const mode = overrides.mode ?? observed.mode;
+    return {
+      ...observed,
+      ...overrides,
+      mode,
+      isDirectory: () => (mode & FILE_TYPE_BITS) === DIRECTORY_TYPE,
+      isFile: () => (mode & FILE_TYPE_BITS) === REGULAR_FILE_TYPE,
+    };
   }
   return overridden;
 }
@@ -92,7 +98,7 @@ describe('ensurePrivateSocketDir', () => {
 
     ensurePrivateSocketDir(directory, CURRENT_UID, realStorage);
 
-    expect(lstatSync(directory).mode & 0o777).toBe(0o700);
+    expect(lstatSync(directory).mode & 0o7777).toBe(0o700);
   });
 
   it('refuses a symlink to a directory that would otherwise pass, without following it', () => {
@@ -125,6 +131,19 @@ describe('ensurePrivateSocketDir', () => {
     };
 
     expect(() => ensurePrivateSocketDir(directory, CURRENT_UID, foreignEntry)).toThrowError(
+      expect.objectContaining({ refusal: 'foreign' }),
+    );
+  });
+
+  it('keeps a foreign regular file classified as foreign', () => {
+    const directory = join(scratch(), 'foreign-file');
+    writeFileSync(directory, '');
+    const storage = {
+      ...realStorage,
+      lstatSync: overrideBigIntStat(lstatSync, { uid: BigInt(CURRENT_UID) + 1n }),
+    };
+
+    expect(() => ensurePrivateSocketDir(directory, CURRENT_UID, storage)).toThrowError(
       expect.objectContaining({ refusal: 'foreign' }),
     );
   });
@@ -166,7 +185,21 @@ describe('ensurePrivateSocketDir', () => {
     );
   });
 
-  it('separates an observation it could not make from one that decided', () => {
+  it('accepts a secure matching directory observed after its create reports failure', () => {
+    const directory = join(scratch(), 'created-despite-error');
+    mkdirSync(directory, { mode: 0o700 });
+    const storage = {
+      ...realStorage,
+      mkdirSync: () => {
+        throw new Error('EIO: create result unavailable');
+      },
+    };
+
+    expect(() => ensurePrivateSocketDir(directory, CURRENT_UID, storage)).not.toThrow();
+    expect(lstatSync(directory).mode & 0o7777).toBe(0o700);
+  });
+
+  it('reports an entry it could not observe as unverified', () => {
     const directory = join(scratch(), 'unobservable');
     const failing = {
       ...realStorage,
@@ -243,7 +276,7 @@ describe('ensurePrivateSocketDir', () => {
 
     ensurePrivateSocketDir(directory, CURRENT_UID, realStorage);
 
-    expect(lstatSync(directory).mode & 0o777).toBe(0o700);
+    expect(lstatSync(directory).mode & 0o7777).toBe(0o700);
   });
 
   it('accepts the root-owned sticky parent used by production /tmp', () => {
@@ -256,7 +289,7 @@ describe('ensurePrivateSocketDir', () => {
 
     ensurePrivateSocketDir(directory, uid, rootOwnedParent);
 
-    expect(lstatSync(directory).mode & 0o777).toBe(0o700);
+    expect(lstatSync(directory).mode & 0o7777).toBe(0o700);
   });
 
   it.each([
@@ -366,6 +399,22 @@ describe('ensurePrivateSocketDir', () => {
     );
   });
 
+  it('accepts an exact private readback after chmod reports failure', () => {
+    const directory = join(scratch(), 'completed-chmod');
+    mkdirSync(directory, { mode: 0o755 });
+    chmodSync(directory, 0o755);
+    const storage = {
+      ...realStorage,
+      chmodSync: (path: string, mode: number) => {
+        chmodSync(path, mode);
+        throw new Error('EIO: chmod result unavailable');
+      },
+    };
+
+    expect(() => ensurePrivateSocketDir(directory, CURRENT_UID, storage)).not.toThrow();
+    expect(lstatSync(directory).mode & 0o7777).toBe(0o700);
+  });
+
   it('reports the chmod failure when tightening and its readback both fail', () => {
     const directory = join(scratch(), 'chmod-and-read-error');
     mkdirSync(directory, { mode: 0o755 });
@@ -391,6 +440,29 @@ describe('ensurePrivateSocketDir', () => {
     );
   });
 
+  it.each([
+    ['foreign directory', { uid: BigInt(CURRENT_UID) + 1n, mode: 0o40700n }, 'foreign'],
+    ['regular file', { uid: BigInt(CURRENT_UID), mode: 0o100600n }, 'unusable'],
+  ] as const)('uses the final readback when the entry becomes a %s', (_label, replacement, refusal) => {
+    const directory = join(scratch(), 'replaced-after-chmod');
+    mkdirSync(directory, { mode: 0o755 });
+    chmodSync(directory, 0o755);
+    let lstatCalls = 0;
+    const replacementRead = overrideBigIntStat(lstatSync, replacement);
+    const storage: SocketDirectoryStorage = {
+      ...realStorage,
+      chmodSync: () => undefined,
+      lstatSync: (path, options) => {
+        lstatCalls += 1;
+        return lstatCalls === 1 ? lstatSync(path, options) : replacementRead(path, options);
+      },
+    };
+
+    expect(() => ensurePrivateSocketDir(directory, CURRENT_UID, storage)).toThrowError(
+      expect.objectContaining({ refusal }),
+    );
+  });
+
   // `/tmp` is a symlink on macOS, and a link's own mode decides nothing about who may write in the directory
   // it names — on Linux every symlink reads `0777`, which a non-following parent read would refuse outright.
   it('reads the parent through the link rather than reading the link', () => {
@@ -404,7 +476,7 @@ describe('ensurePrivateSocketDir', () => {
 
     ensurePrivateSocketDir(directory, CURRENT_UID, realStorage);
 
-    expect(lstatSync(directory).mode & 0o777).toBe(0o700);
+    expect(lstatSync(directory).mode & 0o7777).toBe(0o700);
   });
 
   // Ownership and permission bits say nothing about what the entry is; a create against a regular file

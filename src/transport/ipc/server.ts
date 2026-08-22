@@ -408,7 +408,7 @@ export async function bindSocket(server: NetServer, socketPath: string): Promise
       try {
         chmodSync(socketPath, 0o600);
       } catch {
-        // The listener is already bound; refusing here would abandon a working socket over its mode.
+        return;
       }
     }
   };

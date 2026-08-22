@@ -49,6 +49,9 @@ function providerBaseDirForCandidateLength(length: number): string {
 describe('a relocated socket path fits AF_UNIX on every platform', () => {
   const HEADROOM_RATIO = 0.75;
   const WIDEST_UID = -Number.MAX_VALUE;
+  // The widest uid the assertion will accept as an owner: `uid_t` is 32 bits, so no address it agrees to
+  // check can encode a longer one.
+  const WIDEST_OWNER_UID = 0xffff_fffe;
 
   function privateDirectory(uid: number) {
     return {
@@ -80,7 +83,7 @@ describe('a relocated socket path fits AF_UNIX on every platform', () => {
   });
 
   it.each(PLATFORMS)('keeps a relocated provider endpoint under the %s limit, with margin', (platform) => {
-    const uid = Number.MAX_SAFE_INTEGER;
+    const uid = WIDEST_OWNER_UID;
     const relocated = providerProxyEndpoint(PROVIDER_IDENTITY, {
       baseDir: DEEP_RUN_DIR,
       platform,
@@ -103,7 +106,7 @@ describe('a relocated socket path fits AF_UNIX on every platform', () => {
   it.each(['darwin', 'freebsd', 'openbsd', 'future-platform'])(
     'relocates a 104-byte coordinator candidate on %s',
     (platform) => {
-      const uid = Number.MAX_SAFE_INTEGER;
+      const uid = WIDEST_OWNER_UID;
       const coordinator = socketPathForRunDir(coordinatorRunDirForCandidateLength(104), 'prod', { platform, uid });
 
       expect(coordinator.startsWith(`${socketFallbackDir(uid)}/`)).toBe(true);
@@ -113,7 +116,7 @@ describe('a relocated socket path fits AF_UNIX on every platform', () => {
   it.each(['darwin', 'freebsd', 'openbsd', 'future-platform'])(
     'relocates a 104-byte provider candidate on %s',
     (platform) => {
-      const uid = Number.MAX_SAFE_INTEGER;
+      const uid = WIDEST_OWNER_UID;
       const provider = providerProxyEndpoint(PROVIDER_IDENTITY, {
         baseDir: providerBaseDirForCandidateLength(104),
         platform,

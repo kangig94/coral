@@ -541,18 +541,7 @@ export class InMemoryStorage implements StoragePort {
     };
   }
 
-  fstatSync(
-    fd: number,
-    _options: { bigint: true },
-  ): {
-    dev: bigint;
-    ino: bigint;
-    mode: bigint;
-    size: bigint;
-    mtimeNs: bigint;
-    isDirectory(): boolean;
-    isFile(): boolean;
-  } {
+  fstatSync(fd: number, _options: { bigint: true }): StorageBigIntStat {
     const open = this.openFiles.get(fd);
     if (!open) {
       throw createErrnoError('EBADF', String(fd));
@@ -562,6 +551,7 @@ export class InMemoryStorage implements StoragePort {
       dev: BigInt(file.dev),
       ino: BigInt(file.ino),
       mode: REGULAR_FILE_TYPE_BITS | BigInt(posixMode(file.mode ?? 0o600)),
+      uid: SIMULATED_OWNER_UID,
       size: BigInt(file.content.length),
       mtimeNs: file.mtimeNs,
       isDirectory: () => false,

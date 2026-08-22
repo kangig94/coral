@@ -242,6 +242,22 @@ describe('cli errors', () => {
     });
 
     it.each([
+      ['coordinator_socket_dir_insecure', { reason: 'unusable', directory: '/tmp/coral-1000' }, 1],
+      [
+        'coordinator_socket_dir_unverified',
+        { directory: '/tmp/coral-1000', cause: 'the directory reported no owner' },
+        75,
+      ],
+    ] as const)('preserves the %s exit class through HTTP 409', (code, context, exitCode) => {
+      const response = buildTransportErrorResponse(documentedCoralSetupError(code, context));
+
+      expect(response.statusCode).toBe(409);
+      expect(
+        buildErrorEnvelope(new BackendToolHttpError(response.message, response.statusCode, response.body)).exitCode,
+      ).toBe(exitCode);
+    });
+
+    it.each([
       ['kb_disabled', 'KB daemon supervisor is disabled: disabled (CORAL_KB_ENABLE=0)'],
       ['kb_initializing', 'Knowledge base is starting up — retry in ~5 seconds'],
       ['kb_offline', 'Knowledge base is offline'],

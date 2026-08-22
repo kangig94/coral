@@ -267,6 +267,31 @@ describe('simulation runtime', () => {
     }
   });
 
+  it('reports the same owner through path, entry, and descriptor bigint stats', () => {
+    const storage = new InMemoryStorage(new VirtualTime(1_000));
+    const directory = '/tmp/sim/descriptor-metadata';
+    const file = join(directory, 'file.txt');
+    const owner = BigInt(process.getuid?.() ?? 0);
+    storage.mkdirSync(directory, { recursive: true });
+    storage.writeFileSync(file, 'alpha');
+    const descriptor = storage.openSync(file, 'r');
+
+    try {
+      const pathStat = storage.statSync(file, { bigint: true });
+      const entryStat = storage.lstatSync(file, { bigint: true });
+      const descriptorStat = storage.fstatSync(descriptor, { bigint: true });
+
+      expect({
+        pathUid: pathStat.uid,
+        entryUid: entryStat.uid,
+        fdUid: descriptorStat.uid,
+        fdHasUid: Object.hasOwn(descriptorStat, 'uid'),
+      }).toEqual({ pathUid: owner, entryUid: owner, fdUid: owner, fdHasUid: true });
+    } finally {
+      storage.closeSync(descriptor);
+    }
+  });
+
   it('keeps in-memory storage directory listings updated across indexed mutations', () => {
     const storage = new InMemoryStorage(new VirtualTime(1_000));
     const root = '/tmp/indexed';

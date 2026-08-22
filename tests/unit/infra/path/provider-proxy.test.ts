@@ -221,7 +221,7 @@ describe('provider proxy paths', () => {
     );
   });
 
-  it('separates a directory it could not observe from one it observed as foreign', () => {
+  it('reports a fallback directory it could not observe as unverified', () => {
     const loose = secureStorage();
     const storage: ProviderProxyEndpointEnvironment['storage'] = {
       ...loose,
@@ -304,14 +304,17 @@ describe('provider proxy paths', () => {
     );
   });
 
-  it('names the unusable owner from the fallback address', () => {
-    expect(() =>
-      providerProxyEndpoint(identity, environment({ baseDir: pathOfLength(200), uid: Number.NaN })),
-    ).toThrowError(
-      expect.objectContaining({
-        code: 'proxy_endpoint_unverified',
-        message: expect.stringContaining('the owner uid named by the socket address is not usable'),
-      }),
-    );
-  });
+  it.each([Number.NaN, 0xffff_ffff, Number.MAX_SAFE_INTEGER])(
+    'names an owner uid the filesystem cannot represent from the fallback address (%s)',
+    (uid) => {
+      expect(() => providerProxyEndpoint(identity, environment({ baseDir: pathOfLength(200), uid }))).toThrowError(
+        expect.objectContaining({
+          code: 'proxy_endpoint_unverified',
+          message: expect.stringContaining(
+            'Start Coral in an environment that provides an owner uid the filesystem can represent',
+          ),
+        }),
+      );
+    },
+  );
 });

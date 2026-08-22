@@ -349,6 +349,9 @@ describe('CoralSetupError', () => {
       }
       expect(foreign.userMessage).toContain('belongs to another user');
       expect(foreign.remediation).not.toMatch(/^Remove/u);
+      expect(unusable.userMessage).toBe(
+        "Coral's coordinator socket uses /tmp/coral-1000 as its fallback directory, and that path is not a directory.",
+      );
       expect(unusable.remediation).toContain('Remove');
       expect(unsecurable.remediation).not.toContain('Remove');
       expect(unsecurable.userMessage).toBe(
@@ -369,9 +372,8 @@ describe('CoralSetupError', () => {
         );
       }
       expect(invalidUid.remediation).toBe(
-        'Start Coral in an environment that provides a usable non-negative integer owner uid for the fallback socket address. Coral will not bind its singleton socket without a usable owner identity.',
+        'Start Coral in an environment that provides an owner uid the filesystem can represent for the fallback socket address. Coral will not bind its singleton socket without a usable owner identity.',
       );
-      expect(invalidUid.remediation).not.toContain('filesystem');
       expect(missingOwner.remediation).toBe(
         'Start Coral on a filesystem that reports owner identity for the fallback directory. The observation succeeded but did not identify an owner, so Coral could not settle whether the directory is private.',
       );

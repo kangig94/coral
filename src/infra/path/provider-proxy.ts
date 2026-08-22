@@ -104,7 +104,7 @@ function insecureEndpointError(
   };
   const unverifiedRemediation =
     observation === 'the owner uid named by the socket address is not usable'
-      ? 'Start Coral in an environment that provides a usable non-negative integer owner uid for the fallback socket address.'
+      ? 'Start Coral in an environment that provides an owner uid the filesystem can represent for the fallback socket address.'
       : observation.includes('reported no owner')
         ? 'Start Coral on a filesystem that reports owner identity for the fallback directory; the observation succeeded but did not identify an owner.'
         : 'Resolve the reported filesystem error, then start Coral again.';
