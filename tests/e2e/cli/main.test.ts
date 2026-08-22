@@ -246,9 +246,10 @@ describe('cli main — backend status without daemon', () => {
     });
 
     expect(status).toBe(0);
-    expect(stdout.trim()).toBe(
+    expect(stdout.trim().split('\n')).toEqual([
+      'Handoff: continuing current build — no incumbent coordinator was observed.',
       'Backend not running. Any coral-cli mutating command (or a Claude Code session start) relaunches it.',
-    );
+    ]);
   });
 });
 

@@ -2,6 +2,8 @@ import { Command } from 'commander';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type * as HandoffNoticeMod from '#src/cli/handoff-notice.js';
+import type * as GenerationMutationMod from '#src/store/generation-mutation-coordination.js';
+import type * as BackendStatusMod from '#src/transport/http/backend/status.js';
 import type * as ProgramMod from '#src/cli/program.js';
 import type * as HandoffRunnerMod from '#src/coordinator/handoff-runner.js';
 import { filterForwardableCoralEnv } from '#src/infra/env-sanitize.js';
@@ -15,12 +17,12 @@ const mockState = vi.hoisted(() => ({
 }));
 
 vi.mock('#src/store/generation-mutation-coordination.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('#src/store/generation-mutation-coordination.js')>();
+  const actual = await importOriginal<typeof GenerationMutationMod>();
   return { ...actual, inspectGenerationReadiness: mockState.inspectGenerationReadiness };
 });
 
 vi.mock('#src/transport/http/backend/status.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('#src/transport/http/backend/status.js')>();
+  const actual = await importOriginal<typeof BackendStatusMod>();
   return { ...actual, getBackendStatusFull: mockState.getBackendStatusFull };
 });
 
