@@ -112,6 +112,19 @@ function attempt(operation: () => void): OperationResult {
   }
 }
 
+function preferConclusiveObservation(
+  directory: string,
+  uid: number,
+  operation: OperationResult,
+  read: () => StorageBigIntStat,
+): StorageBigIntStat {
+  try {
+    return read();
+  } catch (error: unknown) {
+    throw new SocketDirectoryError('unverified', directory, uid, operation.failed ? operation.error : error);
+  }
+}
+
 function refuseEntry(
   kind: Exclude<EntryKind, 'loose' | 'matching-posix-owner-and-mode'>,
   directory: string,
@@ -189,25 +202,18 @@ export function ensurePrivateSocketDir(target: string, uid: number, storage: Soc
   // `EEXIST`, a dangling link at the same position fails `ENOENT`, and both are entries the read below
   // names. Only a path the read cannot reach either leaves this having observed nothing.
   const creation = attempt(() => storage.mkdirSync(directory, { recursive: true, mode: Number(REQUIRED_POSIX_MODE) }));
-
-  let observed: StorageBigIntStat;
-  try {
-    observed = storage.lstatSync(directory, { bigint: true });
-  } catch (error: unknown) {
-    throw new SocketDirectoryError('unverified', directory, uid, creation.failed ? creation.error : error);
-  }
+  const observed = preferConclusiveObservation(directory, uid, creation, () =>
+    storage.lstatSync(directory, { bigint: true }),
+  );
 
   const entry = classifyEntry(observed, uid);
   if (entry === 'matching-posix-owner-and-mode') return;
   if (entry !== 'loose') refuseEntry(entry, directory, uid);
 
   const tightening = attempt(() => storage.chmodSync(directory, Number(REQUIRED_POSIX_MODE)));
-  let tightenedObservation: StorageBigIntStat;
-  try {
-    tightenedObservation = storage.lstatSync(directory, { bigint: true });
-  } catch (error: unknown) {
-    throw new SocketDirectoryError('unverified', directory, uid, tightening.failed ? tightening.error : error);
-  }
+  const tightenedObservation = preferConclusiveObservation(directory, uid, tightening, () =>
+    storage.lstatSync(directory, { bigint: true }),
+  );
 
   const tightened = classifyEntry(tightenedObservation, uid);
   if (tightened === 'matching-posix-owner-and-mode') return;

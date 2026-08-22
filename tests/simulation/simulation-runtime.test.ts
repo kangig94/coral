@@ -161,6 +161,18 @@ describe('simulation runtime', () => {
     expect(storage.existsSync(join(workDir, 'renamed.json'))).toBe(false);
   });
 
+  it('refuses recursive directory creation beneath a regular file', () => {
+    const storage = new InMemoryStorage(new VirtualTime(1_000));
+    const file = '/tmp/sim/file-barrier';
+    const child = join(file, 'child');
+    storage.writeFileSync(file, 'content');
+
+    expect(() => storage.mkdirSync(child, { recursive: true })).toThrowError(
+      expect.objectContaining({ code: 'ENOTDIR' }),
+    );
+    expect(storage.existsSync(child)).toBe(false);
+  });
+
   it('matches real filesystem modes and keeps every stat overload internally consistent', () => {
     const realRoot = mkdtempSync(join(tmpdir(), 'coral-simulation-storage-'));
     const originalUmask = process.umask(0o077);

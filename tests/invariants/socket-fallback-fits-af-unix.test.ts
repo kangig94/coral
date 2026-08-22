@@ -46,7 +46,7 @@ function providerBaseDirForCandidateLength(length: number): string {
   return pathOfLength(length - Buffer.byteLength(suffix, 'utf8'));
 }
 
-describe('a relocated socket path fits AF_UNIX on every platform', () => {
+describe('relocated socket paths stay within the configured conservative byte ceilings', () => {
   const HEADROOM_RATIO = 0.75;
   const WIDEST_UID = -Number.MAX_VALUE;
   // The widest uid the assertion will accept as an owner: `uid_t` is 32 bits, so no address it agrees to
@@ -75,14 +75,14 @@ describe('a relocated socket path fits AF_UNIX on every platform', () => {
     };
   }
 
-  it.each(PLATFORMS)('keeps a relocated coordinator socket under the %s limit, with margin', (platform) => {
+  it.each(PLATFORMS)('keeps a relocated coordinator socket below 75% of the ceiling on %s', (platform) => {
     const relocated = socketPathForRunDir(DEEP_RUN_DIR, 'prod', { platform, uid: WIDEST_UID });
 
     expect(relocated.startsWith(`${socketFallbackDir(WIDEST_UID)}/`)).toBe(true);
     expect(Buffer.byteLength(relocated, 'utf8')).toBeLessThan(socketPathByteLimit(platform) * HEADROOM_RATIO);
   });
 
-  it.each(PLATFORMS)('keeps a relocated provider endpoint under the %s limit, with margin', (platform) => {
+  it.each(PLATFORMS)('keeps a relocated provider endpoint below 75% of the ceiling on %s', (platform) => {
     const uid = WIDEST_OWNER_UID;
     const relocated = providerProxyEndpoint(PROVIDER_IDENTITY, {
       baseDir: DEEP_RUN_DIR,

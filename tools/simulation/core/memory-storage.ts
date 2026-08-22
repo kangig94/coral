@@ -356,24 +356,7 @@ export class InMemoryStorage implements StoragePort {
     const mode = posixMode(options?.mode ?? 0o777) & ~process.umask();
 
     if (options?.recursive) {
-      const segments = normalized.split('/').filter(Boolean);
-      let cursor = '';
-      for (const segment of segments) {
-        cursor += `/${segment}`;
-        if (this.files.has(cursor)) {
-          throw createErrnoError('ENOTDIR', cursor);
-        }
-        if (!this.directories.has(cursor)) {
-          this.directories.set(cursor, {
-            kind: 'dir',
-            mode,
-            ...this.nextIdentity(),
-            ...this.nextStamps(),
-          });
-          this.registerDirectory(cursor);
-          this.touchAncestors(parentPath(cursor));
-        }
-      }
+      this.createDirectoryTree(normalized, mode);
       return;
     }
 
@@ -385,6 +368,27 @@ export class InMemoryStorage implements StoragePort {
     });
     this.registerDirectory(normalized);
     this.touchAncestors(parent);
+  }
+
+  private createDirectoryTree(path: string, mode: number): void {
+    const segments = path.split('/').filter(Boolean);
+    let cursor = '';
+    for (const segment of segments) {
+      cursor += `/${segment}`;
+      if (this.files.has(cursor)) {
+        throw createErrnoError('ENOTDIR', cursor);
+      }
+      if (!this.directories.has(cursor)) {
+        this.directories.set(cursor, {
+          kind: 'dir',
+          mode,
+          ...this.nextIdentity(),
+          ...this.nextStamps(),
+        });
+        this.registerDirectory(cursor);
+        this.touchAncestors(parentPath(cursor));
+      }
+    }
   }
 
   rmSync(path: string, options?: { recursive?: boolean; force?: boolean }): void {

@@ -91,7 +91,7 @@ describe('ensurePrivateSocketDir', () => {
     expect(lstatSync(directory).mode & 0o7777).toBe(0o700);
   });
 
-  it('tightens a directory of its own that another umask left loose', () => {
+  it('tightens an existing 0755 directory to mode 0700', () => {
     const directory = join(scratch(), 'loose');
     mkdirSync(directory, { mode: 0o755 });
     chmodSync(directory, 0o755);
@@ -279,7 +279,7 @@ describe('ensurePrivateSocketDir', () => {
     expect(lstatSync(directory).mode & 0o7777).toBe(0o700);
   });
 
-  it('accepts the root-owned sticky parent used by production /tmp', () => {
+  it('accepts a sticky parent whose reported uid is root', () => {
     const directory = scratchDirectory(0o1777);
     const uid = CURRENT_UID === 0 ? 1 : CURRENT_UID;
     const rootOwnedParent = {
@@ -357,7 +357,7 @@ describe('ensurePrivateSocketDir', () => {
     );
   });
 
-  it('refuses a restricted-deletion parent belonging to someone else, which that owner is exempt from', () => {
+  it('refuses a restricted-deletion parent whose reported uid is foreign', () => {
     const directory = scratchDirectory(0o1777);
 
     expect(() =>
@@ -538,6 +538,17 @@ describe('ensurePrivateSocketDir', () => {
     const directory = join(scratch(), 'nan-uid');
 
     expect(() => ensurePrivateSocketDir(directory, Number.NaN, realStorage)).toThrowError(
+      expect.objectContaining({
+        refusal: 'unverified',
+        detail: 'the owner uid named by the socket address is not usable',
+      }),
+    );
+  });
+
+  it('refuses a negative uid as an unusable owner', () => {
+    const directory = join(scratch(), 'negative-uid');
+
+    expect(() => ensurePrivateSocketDir(directory, -1, realStorage)).toThrowError(
       expect.objectContaining({
         refusal: 'unverified',
         detail: 'the owner uid named by the socket address is not usable',

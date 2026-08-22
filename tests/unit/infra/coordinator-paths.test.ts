@@ -73,4 +73,17 @@ describe('coordinatorPaths', () => {
 
     expect(paths.socketPath).toBe(expectedSocket);
   });
+
+  it('relocates a multibyte base path at the Linux byte threshold', () => {
+    const asciiBaseDir = baseDirForSocketLength(107, 'prod');
+    const baseDir = `${asciiBaseDir.slice(0, -1)}é`;
+    const expectedSocket = socketPathFor(baseDir, 'prod');
+
+    expect(expectedSocket).toHaveLength(107);
+    expect(Buffer.byteLength(expectedSocket, 'utf8')).toBe(108);
+
+    const paths = coordinatorPaths('prod', { baseDir });
+
+    expect(paths.socketPath.startsWith(`${socketFallbackDir(process.getuid?.() ?? 0)}/`)).toBe(true);
+  });
 });

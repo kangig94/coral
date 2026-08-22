@@ -149,6 +149,19 @@ describe('provider proxy paths', () => {
     expect(endpoint.startsWith(`${fallbackDirectory}/provider-`)).toBe(true);
   });
 
+  it('relocates a multibyte base path at the Linux byte threshold', () => {
+    const suffix = `/gen2/run/provider-${'0'.repeat(24)}.sock`;
+    const baseDir = `${pathOfLength(108 - Buffer.byteLength(suffix, 'utf8') - Buffer.byteLength('é', 'utf8'))}é`;
+    const candidateShape = `${baseDir}${suffix}`;
+
+    expect(candidateShape).toHaveLength(107);
+    expect(Buffer.byteLength(candidateShape, 'utf8')).toBe(108);
+
+    const endpoint = providerProxyEndpoint(identity, environment({ baseDir }));
+
+    expect(endpoint.startsWith(`${socketFallbackDir(CURRENT_UID)}/provider-`)).toBe(true);
+  });
+
   it('tightens an existing fallback directory of its own whose mode is not 0700', () => {
     const storage = secureStorage(0o40755n);
 
