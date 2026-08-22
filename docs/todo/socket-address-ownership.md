@@ -6,9 +6,9 @@ input both resolvers took and moved the overflow fallback under `socketFallbackD
 `TMPDIR` used to answer by accident into one the tree has to answer on purpose: **who is allowed to own
 the directory the singleton socket sits in, and who checks.**
 
-Two halves. Both are about ownership of the address; neither is about its length, which is settled.
+Three parts. All are about ownership of the address; none is about its length, which is settled.
 
-## Half 1 — the assertion holds at one binder out of four
+## Part 1 — the assertion holds at one binder out of four
 
 `ensurePrivateSocketDir` (`src/infra/private-socket-directory.ts`) creates the directory `0700`, tightens
 one that is already its own, and otherwise throws a refusal carrying one of `foreign`, `unusable`,
@@ -44,7 +44,7 @@ on its startup path that it does not have today — refusing to start is a hold,
 `.claude/rules/design-philosophy.md` principle 11 asks what ends it. It also has one disposition where the
 coordinator now has three, so the split the coordinator side just made has to reach it.
 
-## Half 2 — the uid participates in installation identity, and nothing says so
+## Part 2 — the uid participates in installation identity, and nothing says so
 
 When — and only when — the socket beside the run directory overflows `sun_path`, the address relocates and
 becomes a function of the uid as well, because the shared root demands a per-user namespace.
@@ -76,6 +76,31 @@ The first is a refusal on a startup path and owes principle 11 an answer about w
 keeps today's behaviour for the ordinary case and needs a `stat` of the state root at composition time,
 which that layer does not do today.
 
+## Part 3 — the assertion proves owner and mode, which is less than privacy
+
+`ensurePrivateSocketDir` observes the entry with a non-following `lstat`, requires the expected uid, the
+directory file type, and mode `0700`, reads that mode back after `chmod`, and separately requires a trusted
+parent owner plus either no group/other write bits or the restricted-deletion bit. Those are the owner,
+type, and BSD mode facts Node's `fs.Stats` exposes. They are what it proves.
+
+macOS ACLs grant a named user or group rights beyond the BSD mode bits — Apple documents them as a more
+detailed policy than BSD permissions in [File System Details](https://developer.apple.com/library/archive/documentation/FileManagement/Conceptual/FileSystemProgrammingGuide/FileSystemDetails/FileSystemDetails.html)
+— and Node's [`fs.Stats`](https://nodejs.org/api/fs.html#class-fsstats) surface carries no ACL entries. A
+successful observation showing this uid and `0700` therefore does not show that no other principal has
+effective access. The reachable case is a relocated directory carrying an inherited or explicitly added
+allow ACL: owner and mode still satisfy the check, and if that ACL grants search, write, or delete rights,
+that principal can reach or replace entries in the namespace.
+
+Nothing in the injected storage boundary returns ACL state, so this is not a gap the module can close by
+being more careful. A fix needs an ACL-capable port over an OS API or a strictly parsed system tool,
+applied to the directory and to the parent premise, distinguishing no allow ACL from an ACL it could not
+read, verifying after any tightening, preserving the existing refusal dispositions, and exercised by a
+macOS fixture that demonstrates another principal's effective access through a `0700` directory. Choose the
+observation boundary and the refusal mapping before writing any of it.
+
+Until then the module says owner-and-mode rather than private, and callers may not read more into it than
+that. Parts 1 and 2 both rest on this assertion, so whatever it cannot establish, they cannot either.
+
 ## Explicitly out of scope
 
 The fallback address itself, the byte bound, and the removal of the ambient input — settled, with the
@@ -85,6 +110,7 @@ a test.
 
 ## Start condition
 
-None blocking for half 1, though its diagnostic channel is most of its cost. Half 2 wants the
+None blocking for part 1, though its diagnostic channel is most of its cost. Part 2 wants the
 installation-identity decision first, because the two options put the refusal in different places and only
-one of them adds a hold.
+one of them adds a hold. Part 3 wants its observation boundary chosen first, and is worth doing only
+alongside a macOS fixture that can demonstrate the gap.
