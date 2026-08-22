@@ -73,8 +73,8 @@ const prompt = process.argv[5] || '';
 const stdoutPath = join(jobDir, 'stdout');
 const stderrPath = join(jobDir, 'stderr');
 
-const stdoutFd = openSync(stdoutPath, 'w');
-const stderrFd = openSync(stderrPath, 'w');
+const stdoutFd = openSync(stdoutPath, 'w', 0o600);
+const stderrFd = openSync(stderrPath, 'w', 0o600);
 
 function shouldUseWindowsCommandShell(value) {
   if (process.platform !== 'win32') return false;
@@ -552,7 +552,7 @@ function captureEnvState(): CapturedEnvState {
 }
 
 function writeAtomicJson(storage: StoragePort, path: string, value: unknown): void {
-  storage.writeAtomicSync(path, JSON.stringify(value));
+  storage.writeAtomicSync(path, JSON.stringify(value), { mode: 0o600 });
 }
 
 function createDeferred<T>(): {

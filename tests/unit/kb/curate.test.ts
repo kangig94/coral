@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -21,6 +21,7 @@ import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 import { readCurateState, writeCurateState, type CurateState } from '#src/kb/curate/state/index.js';
 import { readCurateRetryQueue, syncCurateRetryQueue } from '#src/kb/curate/retry.js';
 import { parseCommunityFrontmatter, parseFrontmatter } from '#src/kb/corpus/frontmatter.js';
+import { writeFileAtomic } from '#src/kb/corpus/file-atomic.js';
 import { computeBodySurfaceHash } from '#src/kb/corpus/snapshot.js';
 import { applyBoundCorpusConsumerForTest, createKbTestRuntime } from '#tests/helpers/kb-test-runtime.js';
 import {
@@ -850,7 +851,17 @@ describe('curate', () => {
       expect(corpus).toContain('## coral-alpha\nAlpha\n');
       expect(corpus).toContain('x'.repeat(4000));
       expect(corpus).not.toContain('x'.repeat(4001));
+      expect(statSync(corpusPath).mode & 0o777).toBe(0o600);
       unlinkSync(corpusPath);
+    });
+
+    it('keeps the default atomic file mode governed by the process umask', () => {
+      const realRuntime = createRealRuntime('prod');
+      const filePath = join(tempDir, 'atomic-default.md');
+
+      writeFileAtomic({ storagePort: realRuntime.storage, ids: realRuntime.ids }, filePath, 'content');
+
+      expect(statSync(filePath).mode & 0o777).toBe(0o666 & ~process.umask());
     });
 
     it('parses discovery responses from raw and code-fenced JSON arrays and drops malformed entries', () => {

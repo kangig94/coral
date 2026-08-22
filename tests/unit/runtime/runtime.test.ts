@@ -134,36 +134,46 @@ describe('createRealRuntime', () => {
     expect(existsSync(recordingDir)).toBe(false);
   });
 
-  it('launches durable detached jobs without materializing runtime/exit sidecar files', async () => {
+  it('launches durable detached jobs with private artifacts and without runtime/exit sidecar files', async () => {
     const runtime = createRealRuntime('prod');
     const rootDir = createTempDir('coral-runtime-');
     const jobDir = join(rootDir, 'job-1');
     runtime.storage.mkdirSync(jobDir, { recursive: true });
+    const originalUmask = process.umask(0o022);
 
-    const durable = await runtime.process.durable.launch({
-      provider: 'codex',
-      command: process.execPath,
-      args: [
-        '-e',
-        [
-          "process.stdout.write('step-one\\n');",
-          "process.stderr.write('warn\\n');",
-          'setTimeout(() => process.exit(0), 25);',
-        ].join(''),
-      ],
-      jobDir,
-      envAdditions: {
-        CORAL_OWNER: 'durable-owner',
-      },
-    });
-    const exit = await runtime.process.durable.waitForExit(durable);
+    try {
+      const durable = await runtime.process.durable.launch({
+        provider: 'codex',
+        command: process.execPath,
+        args: [
+          '-e',
+          [
+            "process.stdout.write('step-one\\n');",
+            "process.stderr.write('warn\\n');",
+            'setTimeout(() => process.exit(0), 25);',
+          ].join(''),
+        ],
+        jobDir,
+        envAdditions: {
+          CORAL_OWNER: 'durable-owner',
+        },
+      });
+      const exit = await runtime.process.durable.waitForExit(durable);
 
-    expect(durable.pid).toBeGreaterThan(0);
-    expect(exit).toMatchObject({ exitCode: 0, signal: null });
-    expect(existsSync(join(jobDir, 'runtime.json'))).toBe(false);
-    expect(existsSync(join(jobDir, 'exit.json'))).toBe(false);
-    expect(runtime.storage.readFileSync(durable.stdoutPath, 'utf-8')).toContain('step-one');
-    expect(runtime.storage.readFileSync(durable.stderrPath, 'utf-8')).toContain('warn');
+      expect(durable.pid).toBeGreaterThan(0);
+      expect(exit).toMatchObject({ exitCode: 0, signal: null });
+      expect(existsSync(join(jobDir, 'runtime.json'))).toBe(false);
+      expect(existsSync(join(jobDir, 'exit.json'))).toBe(false);
+      expect(runtime.storage.readFileSync(durable.stdoutPath, 'utf-8')).toContain('step-one');
+      expect(runtime.storage.readFileSync(durable.stderrPath, 'utf-8')).toContain('warn');
+      expect({
+        env: runtime.storage.statSync(join(jobDir, 'env.json'), { bigint: true }).mode & 0o777n,
+        stdout: runtime.storage.statSync(durable.stdoutPath, { bigint: true }).mode & 0o777n,
+        stderr: runtime.storage.statSync(durable.stderrPath, { bigint: true }).mode & 0o777n,
+      }).toEqual({ env: 0o600n, stdout: 0o600n, stderr: 0o600n });
+    } finally {
+      process.umask(originalUmask);
+    }
   });
 
   it('writes and appends through durable storage operations', () => {

@@ -216,7 +216,7 @@ export function buildDiscoveryPrompt(
     noteBlocks.push(`## ${note.slug}\n${note.title}\n${truncateDiscoveryBody(note.body)}`);
   }
   const corpusPath = join(kb.envPort.tmpdir(), `coral-discovery-${kb.ids.uuid()}.md`);
-  writeFileAtomic(kb, corpusPath, noteBlocks.join('\n\n'));
+  writeFileAtomic(kb, corpusPath, noteBlocks.join('\n\n'), { mode: 0o600 });
 
   const sortedPrinciples = Object.entries(existingPrinciples).sort(([left], [right]) => compareLocale(left, right));
   const principleEntries: string[] = [];
