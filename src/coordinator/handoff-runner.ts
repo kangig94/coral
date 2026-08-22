@@ -158,6 +158,7 @@ export type HandoffContinuationResult =
   | Readonly<{ kind: 'delegated'; version: string; outcome: HandoffOutcome }>;
 
 export type LiveHandoffContinuationResult = Extract<HandoffContinuationResult, { kind: 'run-current' }>;
+export type DelegatedHandoffContinuationResult = Extract<HandoffContinuationResult, { kind: 'delegated' }>;
 
 export function liveHandoffResultObligation(result: LiveHandoffContinuationResult | null): RoutingBasisObligation {
   if (result === null) return ABSENT_HANDOFF_RESULT_OBLIGATION;
@@ -528,6 +529,19 @@ function drainStdoutBeforeHandoff(time: TimePort, signal?: AbortSignal): Promise
   });
 }
 
+// A startup handoff delegates or throws; it has no `run-current`. Each of the three producers is excluded by
+// construction: `isDisplayOnlyInvocation` matches only `cli-invocation`, a supplied `activeSelectionTarget`
+// makes routing `handoff` without consulting an incumbent, and the stdout drain is skipped for this operation.
+// Breaking any one of them makes this signature a lie, so `refuses to continue-current for a startup handoff`
+// drives it rather than trusting the overload.
+export function runHandoff(
+  operationInput: Readonly<{ kind: 'backend-startup' }>,
+  options: RunHandoffOptions & Readonly<{ activeSelectionTarget: ValidatedHandoffTarget }>,
+): Promise<DelegatedHandoffContinuationResult>;
+export function runHandoff(
+  operationInput: HandoffOperation,
+  options?: RunHandoffOptions,
+): Promise<HandoffContinuationResult>;
 export async function runHandoff(
   operationInput: HandoffOperation,
   options: RunHandoffOptions = {},

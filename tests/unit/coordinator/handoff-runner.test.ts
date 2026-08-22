@@ -371,6 +371,50 @@ describe('handoff-runner', () => {
     expect(time.clearTimeout).toHaveBeenCalledWith(confirmationTimer);
   });
 
+  it('refuses to continue-current for a startup handoff whose stdout drain would fail', async () => {
+    const bundleDir = roots[0];
+    const target = validatedTarget(bundleDir);
+    let child: ChildProcess | undefined;
+    let confirmAlive: (() => void) | undefined;
+    const time: TimePort = {
+      now: () => 0,
+      monotonicNow: () => 0n,
+      sleep: async () => {},
+      setTimeout: vi.fn((fn: () => void) => {
+        confirmAlive = fn;
+        return {};
+      }),
+      clearTimeout: vi.fn(),
+      setInterval: vi.fn(() => ({})),
+      clearInterval: vi.fn(),
+    };
+    mockState.spawn.mockImplementationOnce(() => {
+      child = childThatStaysAlive();
+      return child;
+    });
+
+    // An aborted signal is the one input that makes `drainStdoutBeforeHandoff` answer false without waiting.
+    const aborted = AbortSignal.abort();
+    const result = runHandoff(
+      { kind: 'backend-startup' },
+      { pluginRoot: '/plugin/root', activeSelectionTarget: target, time, signal: aborted },
+    );
+    await vi.waitFor(() => expect(child?.unref).toHaveBeenCalledOnce());
+    confirmAlive?.();
+
+    await expect(result).resolves.toMatchObject({ kind: 'delegated' });
+
+    // The same signal abandons a CLI handoff, which is what makes the assertion above about the operation
+    // rather than about the signal.
+    mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
+    await expect(
+      runHandoff(cliOperation('run'), { pluginRoot: '/plugin/root', activeSelectionTarget: target, signal: aborted }),
+    ).resolves.toEqual({
+      kind: 'run-current',
+      reason: { kind: 'handoff-abandoned', reason: 'stdout-drain-incomplete' },
+    });
+  });
+
   it('should produce the active-selection source before backend startup delegation', async () => {
     const target = validatedTarget(roots[0]);
 
