@@ -73,8 +73,8 @@ const prompt = process.argv[5] || '';
 const stdoutPath = join(jobDir, 'stdout');
 const stderrPath = join(jobDir, 'stderr');
 
-const stdoutFd = openSync(stdoutPath, 'w');
-const stderrFd = openSync(stderrPath, 'w');
+const stdoutFd = openSync(stdoutPath, 'w', 0o600);
+const stderrFd = openSync(stderrPath, 'w', 0o600);
 
 function shouldUseWindowsCommandShell(value) {
   if (process.platform !== 'win32') return false;
@@ -286,7 +286,9 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
   const durable: DurableExecutionTransport = {
     launch: async (options) => {
       const envPath = `${options.jobDir}/${ENV_RECORD_FILE}`;
-      writeAtomicJson(storage, envPath, options.env ?? buildSpawnEnv(options.envAdditions));
+      storage.writeAtomicSync(envPath, JSON.stringify(options.env ?? buildSpawnEnv(options.envAdditions)), {
+        mode: 0o600,
+      });
 
       const wrapper = spawnChild(
         process.execPath,
@@ -551,10 +553,6 @@ function captureEnvState(): CapturedEnvState {
   };
 }
 
-function writeAtomicJson(storage: StoragePort, path: string, value: unknown): void {
-  storage.writeAtomicSync(path, JSON.stringify(value));
-}
-
 function createDeferred<T>(): {
   promise: Promise<T>;
   resolve: (value: T) => void;
@@ -765,31 +763,26 @@ function writeAtomicSyncNode(
   options?: { encoding?: BufferEncoding; mode?: number },
 ): boolean {
   const tempPath = `${path}.tmp`;
+  let fd: number | null = null;
   try {
-    writeFileSync(tempPath, normalizeStorageData(data), writeFileSyncOptions(options));
+    fd = options?.mode === undefined ? openSync(tempPath, 'w') : openSync(tempPath, 'w', options.mode);
+    if (options?.mode !== undefined) {
+      fchmodSync(fd, options.mode);
+    }
+    writeAllSync(fd, normalizeStorageBuffer(data, options?.encoding ?? 'utf-8'));
+    closeSync(fd);
+    fd = null;
     renameSync(tempPath, path);
     return true;
   } catch (error: unknown) {
+    if (fd !== null) {
+      closeSync(fd);
+    }
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
       return false;
     }
     throw error;
   }
-}
-
-function writeFileSyncOptions(options?: {
-  encoding?: BufferEncoding;
-  mode?: number;
-}): { encoding?: BufferEncoding; mode?: number } | undefined {
-  if (options === undefined || (options.encoding === undefined && options.mode === undefined)) {
-    return undefined;
-  }
-
-  const { encoding, mode } = options;
-  return {
-    ...(encoding === undefined ? {} : { encoding }),
-    ...(mode === undefined ? {} : { mode }),
-  };
 }
 
 function writeAtomicDurableSyncNode(

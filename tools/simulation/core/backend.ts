@@ -187,7 +187,6 @@ export type FakeProviderScenario = {
 };
 
 const DEFAULT_PLUGIN_ROOT = '/tmp/sim/plugin';
-const DEFAULT_PROJECT_ROOT = '/tmp/sim/project';
 const DEFAULT_VERSION = '0.0.0-sim';
 const DEFAULT_BUILD_SET_ID = '00000000-0000-4000-8000-000000000000';
 const DEFAULT_BUNDLE_HASH = '0000000000000000';
@@ -602,7 +601,7 @@ export function createSimulationBackend(
   }
 
   const pluginRoot = scenario.pluginRoot ?? DEFAULT_PLUGIN_ROOT;
-  const projectRoot = scenario.projectRoot ?? DEFAULT_PROJECT_ROOT;
+  const projectRoot = scenario.projectRoot ?? join(runtimeRoot, 'project');
   mkdirSync(projectRoot, { recursive: true });
   const namespace = runtime.paths.pluginRootNamespace(pluginRoot);
   const eventBus = new TypedEventBus();

@@ -3,6 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { MAX_BUFFER, SIGTERM_GRACE_MS } from '#src/infra/process-constants.js';
+import type { StoragePort } from '#src/infra/port-types.js';
+import { createRealRuntime } from '#src/runtime/real.js';
 import { SessionManager } from '#src/sessions/shell.js';
 import { createSimulationBackend } from '#tools/simulation/core/backend.js';
 import { InMemoryStorage } from '#tools/simulation/core/memory-storage.js';
@@ -139,8 +141,8 @@ describe('simulation runtime', () => {
     expect(storage.writeAtomicSync(atomicPath, '{"ok":true}', { encoding: 'utf-8' })).toBe(true);
     expect(storage.writeAtomicDurableSync(atomicPath, '{"ok":"durable"}', { encoding: 'utf-8' })).toBe(true);
     expect(storage.appendFileDurableSync(filePath, '\ngamma')).toBe(true);
-    expect(storage.writeAtomicDurableSync(join('/tmp/sim/missing', 'state.json'), '{}')).toBe(false);
-    expect(storage.appendFileDurableSync(join('/tmp/sim/missing', 'events.jsonl'), 'event\n')).toBe(false);
+    expect(storage.writeAtomicDurableSync(join('/tmp/sim/missing', 'state.json'), '{}')).toBe(true);
+    expect(storage.appendFileDurableSync(join('/tmp/sim/append-missing', 'events.jsonl'), 'event\n')).toBe(true);
     storage.renameSync(atomicPath, join(workDir, 'renamed.json'));
 
     const entries = storage.readdirSync(workDir, { withFileTypes: true }).map((entry) => entry.name);
@@ -175,7 +177,7 @@ describe('simulation runtime', () => {
 
   it('matches real filesystem modes and keeps every stat overload internally consistent', () => {
     const realRoot = mkdtempSync(join(tmpdir(), 'coral-simulation-storage-'));
-    const originalUmask = process.umask(0o077);
+    const originalUmask = process.umask(0o022);
 
     try {
       const storage = new InMemoryStorage(new VirtualTime(1_000));
@@ -275,6 +277,234 @@ describe('simulation runtime', () => {
       process.umask(originalUmask);
       const realDirectory = join(realRoot, 'metadata');
       if (existsSync(realDirectory)) chmodSync(realDirectory, 0o700);
+      rmSync(realRoot, { recursive: true, force: true });
+    }
+  });
+
+  it.each([0o022, 0o077])('matches real file-creation modes under umask %o', (umask) => {
+    const realRoot = mkdtempSync(join(tmpdir(), 'coral-simulation-mode-parity-'));
+    const realStorage = createRealRuntime('prod', { baseDir: realRoot }).storage;
+    const simulatedStorage: StoragePort = new InMemoryStorage(new VirtualTime(1_000));
+    const simulatedRoot = '/tmp/sim/mode-parity';
+    const originalUmask = process.umask(umask);
+
+    const cases: Array<{
+      name: string;
+      create(storage: StoragePort, path: string, mode: number | undefined): void;
+    }> = [
+      {
+        name: 'writeFileSync',
+        create: (storage, path, mode) =>
+          storage.writeFileSync(path, 'value', mode === undefined ? undefined : { mode }),
+      },
+      {
+        name: 'openSync',
+        create: (storage, path, mode) => {
+          const fd = storage.openSync(path, 'w', mode);
+          storage.closeSync(fd);
+        },
+      },
+      {
+        name: 'appendFileSync',
+        create: (storage, path) => storage.appendFileSync(path, 'value'),
+      },
+      {
+        name: 'writeAtomicSync',
+        create: (storage, path, mode) => {
+          expect(storage.writeAtomicSync(path, 'value', mode === undefined ? undefined : { mode })).toBe(true);
+        },
+      },
+      {
+        name: 'writeAtomicDurableSync',
+        create: (storage, path, mode) => {
+          expect(storage.writeAtomicDurableSync(path, 'value', mode === undefined ? undefined : { mode })).toBe(true);
+        },
+      },
+      {
+        name: 'tryExclusiveWriteSync',
+        create: (storage, path, mode) => {
+          expect(storage.tryExclusiveWriteSync(path, 'value', mode === undefined ? undefined : { mode })).toBe(true);
+        },
+      },
+    ];
+
+    try {
+      simulatedStorage.mkdirSync(simulatedRoot, { recursive: true });
+      realStorage.mkdirSync(realRoot, { recursive: true });
+      const simulatedModes: Record<string, number> = {};
+      const realModes: Record<string, number> = {};
+
+      for (const testCase of cases) {
+        const modes = testCase.name === 'appendFileSync' ? [undefined] : [undefined, 0o640];
+        for (const mode of modes) {
+          const suffix = mode === undefined ? 'default' : 'explicit';
+          const fileName = `${testCase.name}-${suffix}`;
+          const simulatedPath = join(simulatedRoot, fileName);
+          const realPath = join(realRoot, fileName);
+
+          testCase.create(simulatedStorage, simulatedPath, mode);
+          testCase.create(realStorage, realPath, mode);
+
+          const label = `${testCase.name}:${suffix}`;
+          simulatedModes[label] = Number(simulatedStorage.statSync(simulatedPath, { bigint: true }).mode & 0o7777n);
+          realModes[label] = Number(realStorage.statSync(realPath, { bigint: true }).mode & 0o7777n);
+        }
+      }
+
+      expect(simulatedModes).toEqual(realModes);
+
+      const errorCode = (action: () => void): string | undefined => {
+        try {
+          action();
+          return undefined;
+        } catch (error: unknown) {
+          return (error as NodeJS.ErrnoException).code;
+        }
+      };
+      const simulatedExclusive = join(simulatedRoot, 'write-flag-wx');
+      const realExclusive = join(realRoot, 'write-flag-wx');
+      simulatedStorage.writeFileSync(simulatedExclusive, 'first');
+      realStorage.writeFileSync(realExclusive, 'first');
+      expect({
+        simulated: errorCode(() => simulatedStorage.writeFileSync(simulatedExclusive, 'second', { flag: 'wx' })),
+        real: errorCode(() => realStorage.writeFileSync(realExclusive, 'second', { flag: 'wx' })),
+      }).toEqual({ simulated: 'EEXIST', real: 'EEXIST' });
+      expect({
+        simulated: simulatedStorage.readFileSync(simulatedExclusive, 'utf-8'),
+        real: realStorage.readFileSync(realExclusive, 'utf-8'),
+      }).toEqual({ simulated: 'first', real: 'first' });
+
+      const simulatedMissing = join(simulatedRoot, 'write-flag-r-plus-missing');
+      const realMissing = join(realRoot, 'write-flag-r-plus-missing');
+      expect({
+        simulated: errorCode(() => simulatedStorage.writeFileSync(simulatedMissing, 'value', { flag: 'r+' })),
+        real: errorCode(() => realStorage.writeFileSync(realMissing, 'value', { flag: 'r+' })),
+      }).toEqual({ simulated: 'ENOENT', real: 'ENOENT' });
+
+      const simulatedExisting = join(simulatedRoot, 'write-flag-r-plus-existing');
+      const realExisting = join(realRoot, 'write-flag-r-plus-existing');
+      simulatedStorage.writeFileSync(simulatedExisting, 'abcdef');
+      realStorage.writeFileSync(realExisting, 'abcdef');
+      simulatedStorage.writeFileSync(simulatedExisting, 'xy', { flag: 'r+' });
+      realStorage.writeFileSync(realExisting, 'xy', { flag: 'r+' });
+      expect({
+        simulated: simulatedStorage.readFileSync(simulatedExisting, 'utf-8'),
+        real: realStorage.readFileSync(realExisting, 'utf-8'),
+      }).toEqual({ simulated: 'xycdef', real: 'xycdef' });
+
+      simulatedStorage.writeFileSync(simulatedExisting, 'tail', { flag: 'a' });
+      realStorage.writeFileSync(realExisting, 'tail', { flag: 'a' });
+      expect({
+        simulated: simulatedStorage.readFileSync(simulatedExisting, 'utf-8'),
+        real: realStorage.readFileSync(realExisting, 'utf-8'),
+      }).toEqual({ simulated: 'xycdeftail', real: 'xycdeftail' });
+
+      simulatedStorage.writeFileSync(simulatedExisting, 'reset', { flag: 'w' });
+      realStorage.writeFileSync(realExisting, 'reset', { flag: 'w' });
+      expect({
+        simulated: simulatedStorage.readFileSync(simulatedExisting, 'utf-8'),
+        real: realStorage.readFileSync(realExisting, 'utf-8'),
+      }).toEqual({ simulated: 'reset', real: 'reset' });
+
+      for (const flag of ['w+', 'ax'] as const) {
+        const simulatedWritePath = join(simulatedRoot, `write-flag-${flag}`);
+        const realWritePath = join(realRoot, `write-flag-${flag}`);
+        simulatedStorage.writeFileSync(simulatedWritePath, 'value', { flag });
+        realStorage.writeFileSync(realWritePath, 'value', { flag });
+        expect({
+          simulated: simulatedStorage.readFileSync(simulatedWritePath, 'utf-8'),
+          real: realStorage.readFileSync(realWritePath, 'utf-8'),
+        }).toEqual({ simulated: 'value', real: 'value' });
+
+        const simulatedOpenPath = join(simulatedRoot, `open-flag-${flag}`);
+        const realOpenPath = join(realRoot, `open-flag-${flag}`);
+        simulatedStorage.closeSync(simulatedStorage.openSync(simulatedOpenPath, flag));
+        realStorage.closeSync(realStorage.openSync(realOpenPath, flag));
+        expect({
+          simulated: simulatedStorage.existsSync(simulatedOpenPath),
+          real: realStorage.existsSync(realOpenPath),
+        }).toEqual({ simulated: true, real: true });
+      }
+
+      const simulatedAppendMissing = join(simulatedRoot, 'append-missing', 'events.jsonl');
+      const realAppendMissing = join(realRoot, 'append-missing', 'events.jsonl');
+      expect({
+        simulated: simulatedStorage.appendFileDurableSync(simulatedAppendMissing, 'event\n'),
+        real: realStorage.appendFileDurableSync(realAppendMissing, 'event\n'),
+      }).toEqual({ simulated: true, real: true });
+    } finally {
+      process.umask(originalUmask);
+      rmSync(realRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("matches real invalid-flag classification and names each in-memory method's supported flags", () => {
+    const simulatedStorage: StoragePort = new InMemoryStorage(new VirtualTime(1_000));
+    const realRoot = mkdtempSync(join(tmpdir(), 'coral-invalid-storage-flag-'));
+    const realStorage = createRealRuntime('prod', { baseDir: realRoot }).storage;
+
+    const captureError = (action: () => void): { name: string; code: string | undefined; message: string } => {
+      try {
+        action();
+      } catch (error: unknown) {
+        const typed = error as NodeJS.ErrnoException;
+        return { name: typed.name, code: typed.code, message: typed.message };
+      }
+      throw new Error('expected action to throw');
+    };
+
+    try {
+      const writeErrors = {
+        simulated: captureError(() =>
+          simulatedStorage.writeFileSync('/tmp/sim/unsupported-write', 'value', { flag: 'unsupported' }),
+        ),
+        real: captureError(() =>
+          realStorage.writeFileSync(join(realRoot, 'unsupported-write'), 'value', { flag: 'unsupported' }),
+        ),
+      };
+      expect({ name: writeErrors.simulated.name, code: writeErrors.simulated.code }).toEqual({
+        name: writeErrors.real.name,
+        code: writeErrors.real.code,
+      });
+      expect(writeErrors.simulated.message).toContain('Supported flags: w, w+, wx, a, ax, r+');
+
+      const openErrors = {
+        simulated: captureError(() => simulatedStorage.openSync('/tmp/sim/unsupported-open', 'unsupported')),
+        real: captureError(() => realStorage.openSync(join(realRoot, 'unsupported-open'), 'unsupported')),
+      };
+      expect({ name: openErrors.simulated.name, code: openErrors.simulated.code }).toEqual({
+        name: openErrors.real.name,
+        code: openErrors.real.code,
+      });
+      expect(openErrors.simulated.message).toContain('Supported flags: r, r+, w, w+, a, wx, ax');
+    } finally {
+      rmSync(realRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('reapplies an explicit atomic mode when a fixed temp file survives', () => {
+    const realRoot = mkdtempSync(join(tmpdir(), 'coral-atomic-temp-mode-'));
+    const realStorage = createRealRuntime('prod', { baseDir: realRoot }).storage;
+    const simulatedStorage = new InMemoryStorage(new VirtualTime(1_000));
+    const simulatedPath = '/tmp/sim/atomic-temp-mode/state.json';
+    const realPath = join(realRoot, 'state.json');
+    const originalUmask = process.umask(0o077);
+
+    try {
+      simulatedStorage.mkdirSync(join('/tmp/sim/atomic-temp-mode'), { recursive: true });
+      simulatedStorage.writeFileSync(`${simulatedPath}.tmp`, 'stale');
+      realStorage.writeFileSync(`${realPath}.tmp`, 'stale');
+      simulatedStorage.chmodSync(`${simulatedPath}.tmp`, 0o644);
+      realStorage.chmodSync(`${realPath}.tmp`, 0o644);
+
+      expect(simulatedStorage.writeAtomicSync(simulatedPath, 'fresh', { mode: 0o600 })).toBe(true);
+      expect(realStorage.writeAtomicSync(realPath, 'fresh', { mode: 0o600 })).toBe(true);
+      expect({
+        simulated: Number(simulatedStorage.statSync(simulatedPath, { bigint: true }).mode & 0o7777n),
+        real: Number(realStorage.statSync(realPath, { bigint: true }).mode & 0o7777n),
+      }).toEqual({ simulated: 0o600, real: 0o600 });
+    } finally {
+      process.umask(originalUmask);
       rmSync(realRoot, { recursive: true, force: true });
     }
   });
@@ -637,6 +867,7 @@ describe('simulation runtime', () => {
     expect(worldA.hooks.kbDaemonStartCalls).toHaveLength(1);
     expect(worldA.hooks.recoverPersistedDiscussCalls).toBe(1);
     expect(worldA.providerRegistry.get('codex')).toBeDefined();
+    expect(worldA.projectRoot).toBe(join(worldA.carryOver.runtimeRoot, 'project'));
     expect(worldA.runtime.storage.existsSync(worldA.runtime.paths.coral.coordinator.infoFile)).toBe(true);
     const bound = await worldA.providerRegistry.bindProfile(
       'codex',

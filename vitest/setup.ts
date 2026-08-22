@@ -1,8 +1,6 @@
 import { join } from 'node:path';
 
-// Vitest threads pool registers SIGTERM/SIGINT handlers per test file in the
-// same worker. With 60+ files this exceeds Node's default limit of 10. These
-// handlers are cleaned up normally — raise the limit to suppress the warning.
+// Shared workers must raise the listener ceiling for Vitest's per-file signal handlers.
 process.setMaxListeners(100);
 
 // Hermetic env baseline: scrub the KB-control variables a developer may export

@@ -23,6 +23,7 @@ export const RALPH_LOOP_HOOK = join(process.cwd(), 'clients', 'hooks', 'ralph-lo
 export const CLAUDE_HOOKS_JSON_PATH = join(process.cwd(), 'clients', 'hooks', 'claude.json');
 export const CODEX_HOOKS_JSON_PATH = join(process.cwd(), 'clients', 'hooks', 'codex.json');
 export const COPILOT_HOOKS_JSON_PATH = join(process.cwd(), 'clients', 'hooks', 'copilot.json');
+export const TEMP_INPUT_FILE_PATTERN = /coral-input-[0-9a-f]{16}\.txt/;
 
 export interface HookRunResult {
   stdout: string;
@@ -292,7 +293,9 @@ export function expectBashRewriteOutput(result: HookRunResult): BashRewriteOutpu
 }
 
 export function extractTempInputPaths(command: string): string[] {
-  return [...command.matchAll(/coral-input-[0-9a-f]{12}\.txt/g)].map((match) => join(tmpdir(), match[0]));
+  return [...command.matchAll(new RegExp(TEMP_INPUT_FILE_PATTERN.source, 'g'))].map((match) =>
+    join(tmpdir(), match[0]),
+  );
 }
 
 export type InjectBundleFixture = {

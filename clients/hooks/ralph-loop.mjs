@@ -9,6 +9,7 @@
 //                       maxIterations cap) or `decision: 'block'` to drive
 //                       the next iteration.
 
+import { randomBytes } from 'node:crypto';
 import {
   closeSync,
   existsSync,
@@ -157,8 +158,8 @@ function readState(statePath) {
 
 function atomicWriteJson(path, value) {
   mkdirSync(dirname(path), { recursive: true });
-  const tempPath = `${path}.tmp-${process.pid}`;
-  writeFileSync(tempPath, JSON.stringify(value), 'utf8');
+  const tempPath = `${path}.tmp-${process.pid}-${randomBytes(8).toString('hex')}`;
+  writeFileSync(tempPath, JSON.stringify(value), { encoding: 'utf8', flag: 'wx' });
   renameSync(tempPath, path);
 }
 

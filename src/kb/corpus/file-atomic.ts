@@ -14,13 +14,22 @@ export type FileAtomicHost = {
   readonly ids: FileAtomicIds;
 };
 
-export function writeFileAtomic(host: FileAtomicHost, filePath: string, payload: string): void {
+export function writeFileAtomic(
+  host: FileAtomicHost,
+  filePath: string,
+  payload: string,
+  options?: { readonly mode?: number },
+): void {
   const dir = dirname(filePath);
   host.storagePort.mkdirSync(dir, { recursive: true });
   const tmpPath = `${filePath}.${host.ids.uuid()}.tmp`;
 
   try {
-    host.storagePort.writeFileSync(tmpPath, payload, { encoding: 'utf-8' });
+    // An explicit mode must apply to the temp file; chmod after rename exposes the destination at its default mode.
+    host.storagePort.writeFileSync(tmpPath, payload, {
+      encoding: 'utf-8',
+      ...(options?.mode === undefined ? {} : { mode: options.mode }),
+    });
     host.storagePort.renameSync(tmpPath, filePath);
   } catch (error: unknown) {
     host.storagePort.rmSync(tmpPath, { force: true });

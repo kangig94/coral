@@ -1,4 +1,13 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -11,6 +20,7 @@ import {
   liveWorkBackgroundDir,
   parseJsonOutput,
   runHook,
+  TEMP_INPUT_FILE_PATTERN,
   type HookFixture,
 } from '#tests/unit/hooks/_helpers.js';
 
@@ -106,6 +116,85 @@ describe('bash-rewrite.mjs', () => {
     expect(rewritten).toContain(`node "${cliBundle}" workflow -e architect`);
     expect(tempPaths).toHaveLength(2);
     expect(tempPaths.map((filePath) => readFileSync(filePath, 'utf-8'))).toEqual(['start prompt', 'ctx "quoted"']);
+  });
+
+  it('creates inline-text spill files readable only by the owner', () => {
+    const fixture = createFixture();
+    const preloadPath = join(fixture.root, 'zero-umask.cjs');
+    writeFileSync(preloadPath, 'process.umask(0);\n', 'utf-8');
+
+    const result = runHook(
+      BASH_REWRITE_HOOK,
+      {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        cwd: fixture.projectRoot,
+        tool_input: { command: 'coral-cli codex agent -i "private prompt"' },
+      },
+      { NODE_OPTIONS: `--require=${preloadPath}`, TMPDIR: fixture.tmpRoot },
+    );
+
+    expect(result.status).toBe(0);
+
+    expectBashRewriteOutput(result);
+    const tempInputName = new RegExp(`^${TEMP_INPUT_FILE_PATTERN.source}$`);
+    const tempInputs = readdirSync(fixture.tmpRoot).filter((name) => tempInputName.test(name));
+
+    expect(tempInputs).toHaveLength(1);
+    expect(statSync(join(fixture.tmpRoot, tempInputs[0])).mode & 0o777).toBe(0o600);
+  });
+
+  it('fails open without writing through a pre-existing inline-text symlink', () => {
+    const fixture = createFixture();
+    const id = '0011223344556677';
+    const targetPath = join(fixture.root, 'symlink-target.txt');
+    const spillPath = join(fixture.tmpRoot, `coral-input-${id}.txt`);
+    const preloadPath = join(fixture.root, 'fixed-random-bytes.cjs');
+    const prompt = 'must not reach the symlink target';
+
+    writeFileSync(targetPath, 'sentinel', 'utf-8');
+    symlinkSync(targetPath, spillPath);
+    writeFileSync(
+      preloadPath,
+      [
+        "const crypto = require('node:crypto');",
+        "const { syncBuiltinESMExports } = require('node:module');",
+        `crypto.randomBytes = () => Buffer.from('${id}', 'hex');`,
+        'syncBuiltinESMExports();',
+        '',
+      ].join('\n'),
+      'utf-8',
+    );
+
+    const result = runHook(
+      BASH_REWRITE_HOOK,
+      {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        cwd: fixture.projectRoot,
+        tool_input: { command: `coral-cli codex agent -i "${prompt}"` },
+      },
+      { NODE_OPTIONS: `--require=${preloadPath}`, TMPDIR: fixture.tmpRoot },
+    );
+
+    expect(result.status).toBe(0);
+    expect(readFileSync(targetPath, 'utf-8')).toBe('sentinel');
+    expect(result.stdout).toBe('');
+
+    rmSync(spillPath, { force: true });
+    const control = runHook(
+      BASH_REWRITE_HOOK,
+      {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        cwd: fixture.projectRoot,
+        tool_input: { command: `coral-cli codex agent -i "${prompt}"` },
+      },
+      { NODE_OPTIONS: `--require=${preloadPath}`, TMPDIR: fixture.tmpRoot },
+    );
+
+    expect(control.stdout).not.toBe('');
+    expect(readFileSync(spillPath, 'utf-8')).toBe(prompt);
   });
 
   it('preserves kb-local -f json during rewrite', () => {
