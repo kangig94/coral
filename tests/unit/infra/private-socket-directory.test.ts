@@ -53,7 +53,15 @@ function overrideBigIntStat(
     if (options === undefined) {
       return read(path, options);
     }
-    return { ...read(path, options), ...overrides };
+    const observed = read(path, options);
+    // `Stats` carries `isDirectory`/`isFile` on its prototype, so a spread drops them while the declared
+    // return type still promises them.
+    return {
+      ...observed,
+      ...overrides,
+      isDirectory: () => observed.isDirectory(),
+      isFile: () => observed.isFile(),
+    };
   }
   return overridden;
 }
@@ -237,6 +245,19 @@ describe('ensurePrivateSocketDir', () => {
     ensurePrivateSocketDir(directory, CURRENT_UID, realStorage);
 
     expect(lstatSync(directory).mode & 0o777).toBe(0o700);
+  });
+
+  // Ownership and permission bits say nothing about what the entry is; a create against a regular file
+  // fails ENOTDIR, which is a decided condition and not an unobserved one.
+  it('refuses a parent of its own that is not a directory', () => {
+    const root = scratch();
+    const parent = join(root, 'regular-parent');
+    writeFileSync(parent, '');
+    chmodSync(parent, 0o700);
+
+    expect(() => ensurePrivateSocketDir(join(parent, 'fallback'), CURRENT_UID, realStorage)).toThrowError(
+      expect.objectContaining({ refusal: 'unsecurable', detail: expect.stringContaining('is not a directory') }),
+    );
   });
 
   it('refuses a uid it cannot use as an owner', () => {

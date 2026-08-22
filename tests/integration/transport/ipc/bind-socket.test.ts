@@ -31,14 +31,20 @@ const createdFallbackLinks: string[] = [];
 const createdFallbackDirectories: string[] = [];
 const cleanupServers: NetServer[] = [];
 
+// `Stats` carries `isDirectory`/`isFile` on its prototype, so a spread drops them while the declared return
+// type still promises them.
+function overriding(observed: Fs.BigIntStats, overrides: Partial<Fs.BigIntStats>): Fs.BigIntStats {
+  return Object.assign(Object.create(Object.getPrototypeOf(observed) as object) as Fs.BigIntStats, observed, overrides);
+}
+
 function reportFallbackParent(uid: bigint, mode: bigint): void {
   const parent = fsDouble.actualStatSync!('/tmp', { bigint: true });
-  fsDouble.statSync.mockImplementationOnce((() => ({ ...parent, uid, mode })) as unknown as typeof Fs.statSync);
+  fsDouble.statSync.mockImplementationOnce((() => overriding(parent, { uid, mode })) as unknown as typeof Fs.statSync);
 }
 
 function reportFallbackEntryUid(directory: string, uid: bigint): void {
   const entry = fsDouble.actualLstatSync!(directory, { bigint: true });
-  fsDouble.lstatSync.mockImplementationOnce((() => ({ ...entry, uid })) as unknown as typeof Fs.lstatSync);
+  fsDouble.lstatSync.mockImplementationOnce((() => overriding(entry, { uid })) as unknown as typeof Fs.lstatSync);
 }
 
 function anotherUid(uid: number): number {

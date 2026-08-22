@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, lstatSync, mkdtempSync, rmSync } from 'node:fs';
 import type * as NodeFs from 'node:fs';
 import { tmpdir } from 'node:os';
 import type * as NodeOs from 'node:os';
@@ -340,5 +340,21 @@ describe('createRealRuntime', () => {
   it('runtime.paths.coral is referentially stable across accesses', () => {
     const runtime = createRealRuntime('prod');
     expect(runtime.paths.coral).toBe(runtime.paths.coral);
+  });
+});
+
+describe('storage.lstatSync bigint', () => {
+  // The only production consumer of this overload is the relocated socket-directory assertion, which
+  // decides ownership and file type from it; a field this adapter drops becomes a refusal to start.
+  it('carries the owner, mode and type the socket-directory assertion reads', () => {
+    const root = mkdtempSync(join(tmpdir(), 'coral-runtime-lstat-'));
+    const runtime = createRealRuntime('prod', { baseDir: root });
+
+    const observed = runtime.storage.lstatSync(root, { bigint: true });
+
+    expect(observed.uid).toBe(BigInt(process.getuid?.() ?? 0));
+    expect(observed.mode & 0o170000n).toBe(0o040000n);
+    expect(observed.mode & 0o777n).toBe(BigInt(lstatSync(root).mode & 0o777));
+    rmSync(root, { recursive: true, force: true });
   });
 });

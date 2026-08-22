@@ -312,8 +312,6 @@ describe('cli errors', () => {
       }
     });
 
-    // The exit-75 row spells the membership out in prose, and prose is where an exhaustive claim goes stale
-    // without anything failing.
     it('names every NOT_OBSERVED_CORAL_SETUP_ERROR_CODES member in the exit-75 catalog row', async () => {
       const { NOT_OBSERVED_CORAL_SETUP_ERROR_CODES } = await import('#src/runtime/errors.js');
       const { readFileSync } = await import('node:fs');

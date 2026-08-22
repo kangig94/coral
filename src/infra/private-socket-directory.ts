@@ -26,7 +26,6 @@ export class SocketDirectoryError extends Error {
 
   constructor(refusal: SocketDirectoryRefusal, directory: string, uid: number, cause?: unknown) {
     const requirement = `a directory owned by uid ${uid} with mode 0700`;
-    // One refusal covers several observations, and no reader downstream may be left to enumerate them.
     const observed = cause instanceof Error ? cause.message : 'unknown cause';
     const reason =
       refusal === 'foreign'
@@ -93,6 +92,15 @@ function assertSecureParent(directory: string, uid: number, parent: StorageBigIn
       directory,
       uid,
       new Error(`its parent '${parentPath}' belongs to uid ${parent.uid} rather than uid ${uid} or root`),
+    );
+  }
+
+  if ((parent.mode & FILE_TYPE_BITS) !== DIRECTORY_TYPE) {
+    throw new SocketDirectoryError(
+      'unsecurable',
+      directory,
+      uid,
+      new Error(`its parent '${parentPath}' is not a directory`),
     );
   }
 

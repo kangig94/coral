@@ -4,15 +4,6 @@ import { socketPathForRunDir } from '#src/infra/path/coordinator.js';
 import { providerProxyEndpoint, type ProviderProxyEndpointEnvironment } from '#src/infra/path/provider-proxy.js';
 import { socketFallbackDir, socketPathByteLimit } from '#src/infra/path/unix-socket.js';
 
-/**
- * Both socket resolvers relocate under `socketFallbackDir` when the path beside the run directory exceeds
- * `sun_path`. That is the last address available — there is nowhere shorter to go, and a path nothing can
- * bind surfaces as `listen EINVAL` naming no limit, no byte count and no variable to change.
- *
- * The bound demands a margin rather than an ordering: a name that merely fits breaks the first time a field
- * is added to what it encodes. The paths measured are what the resolvers return, not a restatement of their
- * grammar, so a name that grows inside either module must move these numbers.
- */
 describe('a relocated socket path fits AF_UNIX on every platform', () => {
   const HEADROOM_RATIO = 0.75;
   const WIDEST_UID = -Number.MAX_VALUE;
