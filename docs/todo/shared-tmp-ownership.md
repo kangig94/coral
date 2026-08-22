@@ -15,9 +15,10 @@ what happens when the entry is already someone else's. Only the socket path does
 `ensurePrivateSocketDir` (`src/infra/private-socket-directory.ts`) is what the others would reuse.
 
 `socket-address-ownership.md` holds this question for the socket itself and has not answered it. The
-per-user naming below inherits that answer; the modes do not, and are worth doing alone. What that entry's
-part 3 records applies here too: the assertion these sites would reuse proves owner and mode, and on macOS
-that is not effective access.
+per-user naming below inherits that answer, and so does site 1's directory mode — that site says why the
+two cannot be separated. The file modes and site 2's naming do not, and are worth doing alone. What that
+entry's part 3 records applies here too: the assertion these sites would reuse proves owner and mode, and
+on macOS that is not effective access.
 
 ## 1. `/tmp/coral-jobs` — the job scratch root
 
@@ -43,7 +44,14 @@ also rename or unlink Coral's entries, and a recursive `rmSync` of a job directo
 controls.
 
 Smallest fix: `0600` on the `env.json` write and a mode argument on the wrapper's two `openSync` calls.
-`0700` on the two `mkdirSync` calls. The per-user rename waits on `socket-address-ownership.md`.
+The **directory** mode does not belong beside them. Node applies a recursive `mkdirSync`'s `mode` to every
+component it creates, not only the leaf — measured on Node 26.3.1, where `mkdirSync(root + '/leaf', {
+recursive: true, mode: 0o700 })` reports `700` on `root` as well — and both call sites pass
+`<tmpdir>/coral-jobs/<jobId>` with `recursive: true`. `0700` would therefore land on the literal
+`/tmp/coral-jobs` whenever Coral is the process that creates it, and lock every other uid on the host out
+of Coral with the same `EACCES` this site describes as the attack. The directory mode is part of the
+per-user rename and waits with it on `socket-address-ownership.md`; only the three file modes are
+separable.
 
 ## 2. `/tmp/coral-input-<hash>.txt` — the Bash rewrite hook's inline-text spill
 
@@ -95,6 +103,6 @@ when it meets a `0700` directory a newer build tightened, which is the
 
 ## Start condition
 
-Sites 1 (modes), 2, and 3 have none. The per-user naming for site 1 wants `socket-address-ownership.md`
-half 2 decided first, for the same reason that entry gives: the two options put the per-user boundary in
-different places.
+Site 1's three file modes, site 2, and site 3 have none. Site 1's directory mode and its per-user rename
+both want `socket-address-ownership.md` part 2 decided first, for the same reason that entry gives: the two
+options put the per-user boundary in different places.
