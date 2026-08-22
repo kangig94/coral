@@ -15,7 +15,7 @@ export type IncumbentIdentitySummary = Readonly<{
   version: string;
   bundleHash: string;
   flavor: StrictBundleManifest['flavor'];
-  namespace: string;
+  instanceId: string;
 }>;
 
 export type HandoffRoutingBasis =
@@ -40,6 +40,8 @@ export type RoutingBasisObligation = Readonly<{
   exitContribution: 0 | 75;
 }>;
 
+// Every routed invocation opens a lifecycle whatever it decided, so no basis may be `ephemeral-allowed`;
+// the field varies across continuation reasons, not across bases.
 export const HANDOFF_ROUTING_BASIS_OBLIGATIONS: Readonly<Record<HandoffRoutingBasis['kind'], RoutingBasisObligation>> =
   {
     'incumbent-absent': {

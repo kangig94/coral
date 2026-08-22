@@ -202,12 +202,6 @@ afterEach(() => {
 describe('handoff-runner', () => {
   it('binds every continuation reason and the absent result to an obligation', () => {
     expect(HANDOFF_CONTINUATION_REASON_OBLIGATIONS).toEqual({
-      routing: {
-        requiredDurability: 'ephemeral-allowed',
-        requiredRetention: 'until-superseded',
-        severity: 'info',
-        exitContribution: 0,
-      },
       'handoff-not-applicable': {
         requiredDurability: 'ephemeral-allowed',
         requiredRetention: 'until-superseded',
@@ -411,7 +405,7 @@ describe('handoff-runner', () => {
           version: manifest.version,
           bundleHash: manifest.bundleHash,
           flavor: manifest.flavor,
-          namespace: 'handoff-runner',
+          instanceId: 'incumbent-1',
         },
       },
     });

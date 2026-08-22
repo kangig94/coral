@@ -127,15 +127,11 @@ export type HandoffContinuationReason =
   | Readonly<{ kind: 'handoff-not-applicable'; reason: 'display-only' }>
   | Readonly<{ kind: 'handoff-abandoned'; reason: 'stdout-drain-incomplete' }>;
 
+// A `routing` reason's obligation is its basis's, so it has no entry here: one written down would state an
+// exit contribution that is wrong for six of the eight bases.
 export const HANDOFF_CONTINUATION_REASON_OBLIGATIONS: Readonly<
-  Record<HandoffContinuationReason['kind'], RoutingBasisObligation>
+  Record<Exclude<HandoffContinuationReason['kind'], 'routing'>, RoutingBasisObligation>
 > = {
-  routing: {
-    requiredDurability: 'ephemeral-allowed',
-    requiredRetention: 'until-superseded',
-    severity: 'info',
-    exitContribution: 0,
-  },
   'handoff-not-applicable': {
     requiredDurability: 'ephemeral-allowed',
     requiredRetention: 'until-superseded',
@@ -280,7 +276,7 @@ function summarizeIncumbentIdentity(health: LiveIncumbentHealth): IncumbentIdent
     version: health.version,
     bundleHash: health.bundleHash,
     flavor: health.flavor,
-    namespace: health.namespace,
+    instanceId: health.instanceId,
   };
 }
 
