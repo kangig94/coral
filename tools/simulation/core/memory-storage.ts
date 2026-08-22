@@ -23,7 +23,7 @@ type FileIdentity = {
 type FileNode = FileIdentity & {
   kind: 'file';
   content: Buffer;
-  mode?: number;
+  mode: number;
   mtimeMs: number;
   mtimeNs: bigint;
 };
@@ -137,6 +137,10 @@ function posixMode(mode: number): number {
   return mode & POSIX_MODE_BITS;
 }
 
+function fileCreationMode(mode?: number): number {
+  return posixMode(mode ?? 0o666) & ~process.umask();
+}
+
 function defaultDirectoryMode(): number {
   return 0o777 & ~process.umask();
 }
@@ -230,7 +234,7 @@ export class InMemoryStorage implements StoragePort {
     this.files.set(normalized, {
       kind: 'file',
       content: bufferFromStorageData(data, options?.encoding),
-      mode: current?.mode ?? options?.mode,
+      mode: current?.mode ?? fileCreationMode(options?.mode),
       ...identity,
       ...this.nextStamps(),
     });
@@ -506,7 +510,7 @@ export class InMemoryStorage implements StoragePort {
         return {
           dev: BigInt(file.dev),
           ino: BigInt(file.ino),
-          mode: REGULAR_FILE_TYPE_BITS | BigInt(posixMode(file.mode ?? 0o600)),
+          mode: REGULAR_FILE_TYPE_BITS | BigInt(posixMode(file.mode)),
           uid: SIMULATED_OWNER_UID,
           size: BigInt(file.content.length),
           mtimeNs: file.mtimeNs,
@@ -554,7 +558,7 @@ export class InMemoryStorage implements StoragePort {
     return {
       dev: BigInt(file.dev),
       ino: BigInt(file.ino),
-      mode: REGULAR_FILE_TYPE_BITS | BigInt(posixMode(file.mode ?? 0o600)),
+      mode: REGULAR_FILE_TYPE_BITS | BigInt(posixMode(file.mode)),
       uid: SIMULATED_OWNER_UID,
       size: BigInt(file.content.length),
       mtimeNs: file.mtimeNs,
@@ -589,7 +593,7 @@ export class InMemoryStorage implements StoragePort {
       file = {
         kind: 'file',
         content: Buffer.alloc(0),
-        mode,
+        mode: fileCreationMode(mode),
         ...this.nextIdentity(),
         ...this.nextStamps(),
       };
@@ -677,6 +681,7 @@ export class InMemoryStorage implements StoragePort {
       this.files.set(normalized, {
         kind: 'file',
         content: Buffer.from(data, 'utf-8'),
+        mode: fileCreationMode(),
         ...this.nextIdentity(),
         ...this.nextStamps(),
       });
@@ -757,7 +762,7 @@ export class InMemoryStorage implements StoragePort {
     this.files.set(normalized, {
       kind: 'file',
       content: bufferFromStorageData(data, options?.encoding),
-      mode: options?.mode,
+      mode: fileCreationMode(options?.mode),
       ...this.nextIdentity(),
       ...this.nextStamps(),
     });
@@ -777,7 +782,7 @@ export class InMemoryStorage implements StoragePort {
     this.files.set(tempPath, {
       kind: 'file',
       content: bufferFromStorageData(data, options?.encoding),
-      mode: options?.mode,
+      mode: fileCreationMode(options?.mode),
       ...this.nextIdentity(),
       ...this.nextStamps(),
     });

@@ -175,7 +175,7 @@ describe('simulation runtime', () => {
 
   it('matches real filesystem modes and keeps every stat overload internally consistent', () => {
     const realRoot = mkdtempSync(join(tmpdir(), 'coral-simulation-storage-'));
-    const originalUmask = process.umask(0o077);
+    const originalUmask = process.umask(0o022);
 
     try {
       const storage = new InMemoryStorage(new VirtualTime(1_000));
