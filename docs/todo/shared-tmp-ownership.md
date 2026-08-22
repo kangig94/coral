@@ -1,9 +1,11 @@
 # TODO — Coral-owned paths under a root every user on the host can write
 
 **Status**: partly closed. Found by sweeping for the class the socket-identity work belongs to rather than
-by a failure; that work fixed one such path, and these were the rest. Sites 2 and 3 are struck, and so are
-site 1's three file modes. What is left is site 1's directory mode — which cannot be set before the naming
-question below is answered — and site 4.
+by a failure; that work fixed one such path, and sites 1–4 were the paths found in that sweep. Review later
+found the community-summary agent's fixed `/tmp/coral-summary.txt` and the simulation backend's fixed
+`/tmp/sim/project`. Sites 2 and 3 are struck, as are those two later paths and site 1's three file modes.
+What is left is site 1's directory mode — which cannot be set before the naming question below is answered
+— and site 4.
 
 The shared question is the same at every site: on Linux with no `TMPDIR`, `os.tmpdir()` is `/tmp` —
 world-writable and world-listable, and conventionally but not necessarily carrying the restricted-deletion
@@ -31,8 +33,8 @@ on macOS that is not effective access.
   is in the file. On a developer machine that is routinely a provider API key.
 - `stdout` and `stderr` — the provider's raw transcript.
 
-None of the three is written with a mode. `writeAtomicJson` calls `writeAtomicSync` with no `mode`, and the
-wrapper opens the two streams with a bare `openSync(path, 'w')`, so all three land at `0666 & ~umask` —
+None of the three was written with a mode. The durable launcher called `writeAtomicSync` with no `mode`, and
+the wrapper opened the two streams with a bare `openSync(path, 'w')`, so all three landed at `0666 & ~umask` —
 `0644` under the common default. The directories are the same: `initJob` and `appendLaunchRequested`
 (`src/jobs/store.ts`) both call `mkdirSync(dir, { recursive: true })` with no mode.
 
@@ -91,6 +93,60 @@ This is the weakest of the four and may not be Coral's to fix: what the harness 
 and when, was not established here. What is Coral's is that its own `mkdirSync` calls pass no mode and its
 hooks never check whose directory they landed in. A hook may not refuse — fail-open is the contract — so the
 disposition here is to skip recording, not to stop the command.
+
+## Additional paths found during review
+
+`src/kb/curate/community/summary-agent.ts` taught an agent to write user KB summary content through the
+constant `/tmp/coral-summary.txt`, then passed that same path to `set-summary`. Each summary iteration now
+runs `mktemp`, copies the path it prints, and uses that literal path both for the summary write and for the
+same `--from <path>` command shape, without relying on shell state between commands.
+
+`tools/simulation/core/backend.ts` used `/tmp/sim/project` as a real-filesystem project root. It now places
+the default project root below the backend's existing `mkdtemp` root, so a foreign pre-created directory
+in `/tmp` cannot lock every simulation run out.
+
+## Simulation storage was part of the defect surface
+
+The storage fake used to leave a mode-less file's mode absent and report `file.mode ?? 0o600` from stats.
+That made every simulation-backed privacy assertion report `0600` regardless of production. Its parity
+test pinned umask `077`, the one setting where Node's default `0666 & ~umask` also becomes `0600`.
+
+The first repair applied create-with-umask semantics at every fake creation site. That repaired ordinary
+file creation but regressed `tryExclusiveWriteSync`, whose real implementation chmods to `mode ?? 0600`,
+and explicit-mode `writeAtomicDurableSync`, whose real implementation uses `fchmod` without applying the
+umask. The fake now encodes those three creation policies separately, and the differential test covers both
+`022` and `077` across ordinary, exclusive, atomic, and durable-atomic creation.
+
+The fake still cannot represent a symlink. A green simulation therefore is not evidence that a write is
+safe against the symlink/pre-emption threat model described by this entry; that evidence must come from a
+real-filesystem test.
+
+## Review boundary — file privacy policy has no decided owner
+
+This review deliberately did not introduce a project-wide file or directory mode owner. Bare `0o600`
+literals appear in roughly twenty places throughout `src/`, alongside `PRIVATE_FILE_MODE` in
+`src/store/active-store-selection.ts`, `PRIVATE_CAPSULE_MODE` and `PRIVATE_DIRECTORY_MODE` in
+`src/provider-proxy/bootstrap-capsule.ts`, `PRIVATE_HANDOFF_CAPSULE_MODE` in
+`src/provider-proxy/handoff-capsule.ts`, and `REQUIRED_POSIX_MODE` in
+`src/infra/private-socket-directory.ts`. `ensurePrivateSocketDir` is a directory-level primitive; there is
+no file-level counterpart.
+
+Two positions remain live:
+
+- The bare literal is the established convention. Its evidence is that many file owners use `0o600`
+  directly while the separately named constants express narrower owner-specific concepts. A generic
+  shared constant could erase those distinctions without adding enforcement.
+- The duplication is the defect. Its evidence is that the same privacy policy is independently spelled
+  as literals and four constants, while no file-level primitive owns creation plus verification in the
+  way `ensurePrivateSocketDir` does for directories.
+
+This entry leaves that choice undecided.
+
+The same review found that `createControlEndpoint` in
+`src/provider-proxy/control-endpoint.ts` binds without the post-listen `chmodSync(0o600)` used by
+`bindSocket` in `src/transport/ipc/server.ts`. That belongs to
+[`socket-address-ownership.md`](./socket-address-ownership.md) part 1, not to this file-mode review, and was
+not changed here.
 
 ## Not verified here
 
