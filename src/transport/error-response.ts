@@ -50,6 +50,7 @@ function setupErrorStatusCode(code: string): number {
       return 409;
     case 'kb_commit_id_invalid':
       return 400;
+    case 'startup_not_ready':
     case 'kb_disabled':
     case 'kb_initializing':
     case 'kb_offline':

@@ -694,6 +694,19 @@ describe('simulation runtime', () => {
     expect(received).toHaveLength(1);
   });
 
+  it('forwards exec shell to the spawn boundary the way the node runtime does', async () => {
+    const runtime = new SimulationRuntime();
+    runtime.spawner.enqueueSpawn({ stdout: [], stderr: [], close: { delayMs: 1, code: 0 } });
+
+    const execPromise = runtime.process.exec('fake-shell', ['--x'], { timeout: 25, shell: true });
+    await flushMicrotasks();
+
+    expect(runtime.spawner.spawnCalls).toEqual([expect.objectContaining({ command: 'fake-shell', shell: true })]);
+
+    runtime.time.tick(1);
+    await execPromise;
+  });
+
   it('reuses the spawn queue for exec and exposes the dispatch through spawnCalls and observer events', async () => {
     const runtime = new SimulationRuntime();
     const observed: Array<{ command: string; args: string[] }> = [];

@@ -285,6 +285,19 @@ describe('coral setup error parity', () => {
       remediation: 'Reload the workflow before retrying.',
     });
   });
+  it('serializes a still-starting backend as a retryable HTTP 503, not an internal error', () => {
+    const response = buildTransportErrorResponse(
+      new CoralSetupError({
+        code: 'startup_not_ready',
+        userMessage: 'Coral backend is still starting.',
+        remediation: 'The Coral backend is still starting; retry shortly.',
+      }),
+    );
+
+    // Its own remediation says to retry, and 500 drives the CLI to the permanent internal exit instead.
+    expect(response.statusCode).toBe(503);
+  });
+
   it.each(ADDED_DOCUMENTED_SETUP_ERRORS)(
     'surfaces $code through IPC and HTTP with matching setup payloads',
     async ({ code, context }) => {
