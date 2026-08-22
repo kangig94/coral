@@ -5,7 +5,7 @@ document has been wrong three times, kept because the corrections are the part t
 
 |                |                                                                                                                                                                                                                                                                           |
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Shipped**    | The takeover works. A process start time is no longer compared across a process boundary in `probeCoordinator` or on the handoff signal path, so a newer build can obtain the incumbent's `bootToken`, ask it to stand down, and escalate if it does not. The routing-reason step is also closed: preflight continuations retain their basis and `backend status` renders the process-local result. |
+| **Shipped**    | The takeover works. A process start time is no longer compared across a process boundary in `probeCoordinator` or on the handoff signal path, so a newer build can obtain the incumbent's `bootToken`, ask it to stand down, and escalate if it does not. The routing-reason step is also closed: the routing preflight continuation retains its basis and `backend status` renders the process-local result. |
 | **Still open** | The **record** direction (a new CLI writes what an old coordinator reads), the **output** direction (a live session holding old skill text drives a new CLI), and the compatibility policy that the ordering ledger places ahead of the record direction. |
 | **Elsewhere**  | The same defect, uncorrected, at four other pairs of processes — see `proxy-set-acquisition.md`.                                                                                                                                                                          |
 
@@ -118,8 +118,8 @@ The intended behaviour exists: `createReplacementBackendOwnershipChecker`
 **different `instanceId`**, calls `idleTimer.requestDrain('replaced')`, which `shutdownModeFromReason`
 routes to a handoff-mode drain. An incumbent yielding to a successor is a solved problem.
 
-What is missing is anything that makes a successor start. Three entry points could, and none compares
-build identity:
+What is missing is anything that turns a build-identity comparison into starting a successor. Three entry
+points could participate, but none starts the newer successor:
 
 | Entry point                                              | What it decides on                                                 |
 | -------------------------------------------------------- | ------------------------------------------------------------------ |
@@ -191,8 +191,10 @@ the continuity defect — it is fixed, and this document is not its home.
 
 ## What the preflight actually does, since it keeps being assumed
 
-`runCliHandoffPreflight` runs on every invocation and does reach a build comparison. The decision is
-`routeLiveIncumbent` (`src/coordinator/handoff-routing.ts`) distinguishes same build set,
+`runCliHandoffPreflight` runs on ordinary invocations except `--print-store-reset-build-identity`; help and
+version enter preflight but return before routing, and a build comparison is reached only when routing
+observes a usable live incumbent with both identities available. The decision is `routeLiveIncumbent`
+(`src/coordinator/handoff-routing.ts`), which distinguishes same build set,
 newer-or-equal invoking build, invalid foreign target, and a validated handoff. The observation layer in
 `src/coordinator/handoff-runner.ts` separately distinguishes incumbent absence, three unresolved causes,
 two live-but-unusable causes, and invoking or incumbent identity failure. `backend status` renders the

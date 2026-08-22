@@ -102,18 +102,10 @@ export const SHUTDOWN_REFUSAL_EXIT_CODES: Readonly<Record<ShutdownReason, 1 | 75
 };
 
 /**
- * This table binds the daemon-only `BackendStatusFull` observation. `undecodable_record`, `unreachable`, and
- * `no_record_socket_present` contribute `75` because the read did not settle the daemon state; the other daemon
- * statuses contribute `0`. The status command separately combines the live handoff obligation:
- * `same-build-set` and `incumbent-absent` contribute `0`, while every other routing basis contributes `75`.
- * Only `incumbent-unresolved` is a not-observed routing disposition; the other `75` routing contributions mark
- * decisive observations that require operator attention.
+ * Every new daemon status must be assigned an explicit exit contribution.
  *
- * `75`, not `1`: matches `SHUTDOWN_REFUSAL_EXIT_CODES`'s "not observed, retry" code above rather than a
- * `backend shutdown`-style observed refusal, since none of the three is a refusal at all — this is a read-only
- * inspection, and all three mean only "ask again". A `Record` over the full `BackendStatusFull['status']` union for
- * the same reason as `SHUTDOWN_REFUSAL_EXIT_CODES`: a new status fails to compile here until someone decides
- * its exit code, instead of silently inheriting `0`.
+ * `75`, not `1`, for the statuses that did not settle: this command is a read-only inspection, so none of them
+ * is an observed refusal the way `backend shutdown`'s are — they mean only "ask again".
  */
 export const BACKEND_STATUS_EXIT_CODES: Readonly<Record<BackendStatusFull['status'], 0 | 75>> = {
   ok: 0,
@@ -284,16 +276,16 @@ export function registerBackendCommands(program: Command, operations: BackendCom
       }
       const status = await backendStatus.getStatus();
       const liveHandoffResult = backendStatus.getLiveHandoffResult();
-      const liveHandoffLine = formatLiveHandoffResult(liveHandoffResult);
-      if (liveHandoffLine !== null) {
-        process.stdout.write(`${liveHandoffLine}\n`);
-      }
+      const liveHandoffObligation = liveHandoffResultObligation(liveHandoffResult);
       process.stdout.write(formatBackendStatus(status) + '\n');
+      if (liveHandoffObligation.severity === 'warning') {
+        const liveHandoffLine = formatLiveHandoffResult(liveHandoffResult);
+        if (liveHandoffLine !== null) {
+          process.stdout.write(`${liveHandoffLine}\n`);
+        }
+      }
       process.exitCode =
-        BACKEND_STATUS_EXIT_CODES[status.status] === 75 ||
-        liveHandoffResultObligation(liveHandoffResult).exitContribution === 75
-          ? 75
-          : 0;
+        BACKEND_STATUS_EXIT_CODES[status.status] === 75 || liveHandoffObligation.exitContribution === 75 ? 75 : 0;
     } catch (error) {
       emitError(error);
     }

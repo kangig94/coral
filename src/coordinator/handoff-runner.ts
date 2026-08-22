@@ -127,8 +127,7 @@ export type HandoffContinuationReason =
   | Readonly<{ kind: 'handoff-not-applicable'; reason: 'display-only' }>
   | Readonly<{ kind: 'handoff-abandoned'; reason: 'stdout-drain-incomplete' }>;
 
-// A `routing` reason's obligation is its basis's, so it has no entry here: one written down would state an
-// exit contribution that is wrong for six of the eight bases.
+// A routing continuation must resolve its obligation through its basis table.
 export const HANDOFF_CONTINUATION_REASON_OBLIGATIONS: Readonly<
   Record<Exclude<HandoffContinuationReason['kind'], 'routing'>, RoutingBasisObligation>
 > = {
@@ -249,8 +248,6 @@ function discoveryMatchesHealth(
   );
 }
 
-// Never returns `'observed-unusable'`: that disposition belongs to `readLiveCoordinatorHealth` below, which is
-// the one place a decoded reply is checked against `draining` and the discovery record's own identity.
 async function readAuthenticatedHealth(
   discovery: CoordinatorDiscoveryRecord,
   time: TimePort,
@@ -261,9 +258,7 @@ async function readAuthenticatedHealth(
       token: discovery.bootToken,
     }).health<unknown>({ timeoutMs: INCUMBENT_HEALTH_PROBE_TIMEOUT_MS });
     const parsed = liveIncumbentHealthSchema.safeParse(value);
-    // A connect failure, a timed-out round-trip, and a reply that failed this schema are three different
-    // events, but none of them is a positive observation of absence — the socket may be held by a live
-    // incumbent that was merely slow, or answering a shape this build does not recognize.
+    // Failing to obtain a valid authenticated reply is not evidence that no incumbent exists.
     return parsed.success
       ? { kind: 'observed', health: parsed.data }
       : { kind: 'not-observed', reason: 'unresolved', cause: 'health-shape-rejected' };
@@ -307,10 +302,7 @@ async function readLiveCoordinatorHealth(
   time: TimePort,
 ): Promise<LiveIncumbentReading> {
   const probe = probeCoordinator({ storage: runtime.storage, env: runtime.env, paths: runtime.paths });
-  // A fifth `CoordinatorProbe` shape without a record joins the `null` that means "nobody is there", and one
-  // with a record joins the branch that asks health, neither on purpose. Definite assignment is what the
-  // switch buys: a new shape leaves `discovery` unassigned and fails the build here until someone says which
-  // of the two answers below it is.
+  // Every probe disposition must explicitly decide whether authenticated health can be requested.
   let discovery: CoordinatorDiscoveryRecord;
   switch (probe.kind) {
     case 'absent':
@@ -529,11 +521,8 @@ function drainStdoutBeforeHandoff(time: TimePort, signal?: AbortSignal): Promise
   });
 }
 
-// A startup handoff delegates or throws; it has no `run-current`. Each of the three producers is excluded by
-// construction: `isDisplayOnlyInvocation` matches only `cli-invocation`, a supplied `activeSelectionTarget`
-// makes routing `handoff` without consulting an incumbent, and the stdout drain is skipped for this operation.
-// Breaking any one of them makes this signature a lie, so `refuses to continue-current for a startup handoff`
-// drives it rather than trusting the overload.
+// A startup handoff delegates or throws; `refuses to continue-current for a startup handoff whose stdout drain
+// would fail` enforces this contract.
 export function runHandoff(
   operationInput: Readonly<{ kind: 'backend-startup' }>,
   options: RunHandoffOptions & Readonly<{ activeSelectionTarget: ValidatedHandoffTarget }>,

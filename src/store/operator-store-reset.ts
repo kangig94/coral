@@ -39,7 +39,6 @@ export interface StoreResetSocketGuard {
 }
 
 export type StoreResetDiscardResult = {
-  /** Present so the decision below is discriminated — a caller must not reach for incident fields on a handoff. */
   readonly kind: 'discarded';
   readonly target: 'gen2';
   readonly flavor: BuildFlavor;

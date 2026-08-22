@@ -116,8 +116,9 @@ describe('program', () => {
 
     expect(stdout.join('')).toBe(
       [
-        'Handoff: continuing current build — invoking build 2.0.0 is newer than incumbent 1.0.0.',
         'Backend not running. Any coral-cli mutating command (or a Claude Code session start) relaunches it.',
+        'Handoff: continuing current build — CLI version 2.0.0 is newer than running backend 1.0.0, so guarded operations will not proceed across these builds.',
+        'Next step: run coral-cli backend shutdown, then rerun a mutating command to relaunch from this installation.',
         '',
       ].join('\n'),
     );
