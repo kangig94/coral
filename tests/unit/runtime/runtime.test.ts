@@ -139,6 +139,7 @@ describe('createRealRuntime', () => {
     const rootDir = createTempDir('coral-runtime-');
     const jobDir = join(rootDir, 'job-1');
     runtime.storage.mkdirSync(jobDir, { recursive: true });
+    // This test must run in a process fork because worker threads cannot set the process umask.
     const originalUmask = process.umask(0o022);
 
     try {

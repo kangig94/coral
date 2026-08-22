@@ -20,6 +20,7 @@ import {
   liveWorkBackgroundDir,
   parseJsonOutput,
   runHook,
+  TEMP_INPUT_FILE_PATTERN,
   type HookFixture,
 } from '#tests/unit/hooks/_helpers.js';
 
@@ -136,7 +137,8 @@ describe('bash-rewrite.mjs', () => {
     expect(result.status).toBe(0);
 
     expectBashRewriteOutput(result);
-    const tempInputs = readdirSync(fixture.tmpRoot).filter((name) => /^coral-input-[0-9a-f]{16}\.txt$/.test(name));
+    const tempInputName = new RegExp(`^${TEMP_INPUT_FILE_PATTERN.source}$`);
+    const tempInputs = readdirSync(fixture.tmpRoot).filter((name) => tempInputName.test(name));
 
     expect(tempInputs).toHaveLength(1);
     expect(statSync(join(fixture.tmpRoot, tempInputs[0])).mode & 0o777).toBe(0o600);
@@ -178,6 +180,21 @@ describe('bash-rewrite.mjs', () => {
     expect(result.status).toBe(0);
     expect(readFileSync(targetPath, 'utf-8')).toBe('sentinel');
     expect(result.stdout).toBe('');
+
+    rmSync(spillPath, { force: true });
+    const control = runHook(
+      BASH_REWRITE_HOOK,
+      {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        cwd: fixture.projectRoot,
+        tool_input: { command: `coral-cli codex agent -i "${prompt}"` },
+      },
+      { NODE_OPTIONS: `--require=${preloadPath}`, TMPDIR: fixture.tmpRoot },
+    );
+
+    expect(control.stdout).not.toBe('');
+    expect(readFileSync(spillPath, 'utf-8')).toBe(prompt);
   });
 
   it('preserves kb-local -f json during rewrite', () => {

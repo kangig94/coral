@@ -25,7 +25,11 @@ export function writeFileAtomic(
   const tmpPath = `${filePath}.${host.ids.uuid()}.tmp`;
 
   try {
-    host.storagePort.writeFileSync(tmpPath, payload, { encoding: 'utf-8', ...options });
+    // An explicit mode must apply to the temp file; chmod after rename exposes the destination at its default mode.
+    host.storagePort.writeFileSync(tmpPath, payload, {
+      encoding: 'utf-8',
+      ...(options?.mode === undefined ? {} : { mode: options.mode }),
+    });
     host.storagePort.renameSync(tmpPath, filePath);
   } catch (error: unknown) {
     host.storagePort.rmSync(tmpPath, { force: true });
