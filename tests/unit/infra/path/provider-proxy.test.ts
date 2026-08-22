@@ -243,4 +243,75 @@ describe('provider proxy paths', () => {
       }),
     );
   });
+
+  it.each([
+    ['an Error', new Error('real'), 'real'],
+    ['an Error subclass', new TypeError('wrong type'), 'wrong type'],
+    ['an Error with no message', new Error(''), 'the storage adapter threw without an observation'],
+    ['an errno-like object with a code', { code: 'EIO' }, 'EIO'],
+    ['an errno-like object with a message', { message: 'adapter offline' }, 'adapter offline'],
+    ['a plain object', { operation: 'lstat' }, 'the storage adapter threw without an observation'],
+    ['a string', 'EIO primitive', 'EIO primitive'],
+    ['an empty string', '', 'the storage adapter threw without an observation'],
+    ['a whitespace-only string', '   ', 'the storage adapter threw without an observation'],
+    ['a number', 17, '17'],
+    ['a bigint', 17n, '17'],
+    ['a boolean', false, 'false'],
+    ['null', null, 'the storage adapter threw without an observation'],
+    ['no observation', undefined, 'the storage adapter threw without an observation'],
+    ['a symbol', Symbol('EIO'), 'Symbol(EIO)'],
+    ['an array', ['EIO'], 'the storage adapter threw without an observation'],
+    ['a function', () => undefined, 'the storage adapter threw without an observation'],
+  ])('renders %s storage failure in the provider diagnostic', (_label, thrown, expectedCause) => {
+    const storage = {
+      ...secureStorage(),
+      lstatSync: () => {
+        // eslint-disable-next-line @typescript-eslint/only-throw-error -- Unknown adapter failures must retain primitive observations.
+        throw thrown;
+      },
+    };
+
+    expect(() => providerProxyEndpoint(identity, environment({ baseDir: pathOfLength(200), storage }))).toThrowError(
+      expect.objectContaining({
+        code: 'proxy_endpoint_unverified',
+        message: expect.stringContaining(`with mode 0700: ${expectedCause}.`),
+        context: expect.objectContaining({ refusal: 'unverified', cause: expectedCause }),
+      }),
+    );
+    expect(() => providerProxyEndpoint(identity, environment({ baseDir: pathOfLength(200), storage }))).toThrowError(
+      expect.not.objectContaining({ message: expect.stringContaining('undefined') }),
+    );
+  });
+
+  it('does not prescribe a filesystem-error repair when an observation reports no owner', () => {
+    const loose = secureStorage();
+    const storage: ProviderProxyEndpointEnvironment['storage'] = {
+      ...loose,
+      lstatSync: (path) =>
+        path === FALLBACK_ROOT
+          ? loose.lstatSync(path, { bigint: true })
+          : { ...loose.lstatSync(path, { bigint: true }), uid: undefined },
+    };
+
+    expect(() => providerProxyEndpoint(identity, environment({ baseDir: pathOfLength(200), storage }))).toThrowError(
+      expect.objectContaining({
+        code: 'proxy_endpoint_unverified',
+        message: expect.stringContaining(
+          'Start Coral on a filesystem that reports owner identity for the fallback directory; the observation succeeded but did not identify an owner.',
+        ),
+        context: expect.objectContaining({ refusal: 'unverified', cause: 'the directory reported no owner' }),
+      }),
+    );
+  });
+
+  it('names the unusable owner from the fallback address', () => {
+    expect(() =>
+      providerProxyEndpoint(identity, environment({ baseDir: pathOfLength(200), uid: Number.NaN })),
+    ).toThrowError(
+      expect.objectContaining({
+        code: 'proxy_endpoint_unverified',
+        message: expect.stringContaining('the owner uid named by the socket address is not usable'),
+      }),
+    );
+  });
 });

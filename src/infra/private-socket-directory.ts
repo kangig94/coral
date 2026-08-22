@@ -9,6 +9,7 @@ const REQUIRED_POSIX_MODE = 0o700n;
 const WRITABLE_BY_OTHERS = 0o022n;
 const RESTRICTED_DELETION = 0o1000n;
 const ROOT_UID = 0n;
+const NO_STORAGE_OBSERVATION = 'the storage adapter threw without an observation';
 
 export type SocketDirectoryStorage = Pick<StoragePort, 'chmodSync' | 'mkdirSync'> & {
   lstatSync(path: string, options: { bigint: true }): StorageBigIntStat;
@@ -17,12 +18,31 @@ export type SocketDirectoryStorage = Pick<StoragePort, 'chmodSync' | 'mkdirSync'
 
 export type SocketDirectoryRefusal = 'foreign' | 'unusable' | 'unsecurable' | 'unverified';
 
-function primitiveDetail(value: unknown): string | undefined {
-  if (value instanceof Error) return value.message;
-  if (value === null || ['string', 'number', 'bigint', 'boolean', 'symbol'].includes(typeof value)) {
-    return String(value);
+function nonEmptyText(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim().length > 0 ? value : undefined;
+}
+
+function thrownDetail(value: unknown): string {
+  if (value instanceof Error) {
+    return nonEmptyText(value.message) ?? nonEmptyText((value as NodeJS.ErrnoException).code) ?? NO_STORAGE_OBSERVATION;
   }
-  return undefined;
+
+  if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+    const error = value as { readonly code?: unknown; readonly message?: unknown };
+    return nonEmptyText(error.code) ?? nonEmptyText(error.message) ?? NO_STORAGE_OBSERVATION;
+  }
+
+  switch (typeof value) {
+    case 'string':
+      return nonEmptyText(value) ?? NO_STORAGE_OBSERVATION;
+    case 'number':
+    case 'bigint':
+    case 'boolean':
+    case 'symbol':
+      return String(value);
+    default:
+      return NO_STORAGE_OBSERVATION;
+  }
 }
 
 export class SocketDirectoryError extends Error {
@@ -31,9 +51,11 @@ export class SocketDirectoryError extends Error {
   readonly uid: number;
   readonly detail: string | undefined;
 
-  constructor(refusal: SocketDirectoryRefusal, directory: string, uid: number, cause?: unknown) {
+  constructor(refusal: SocketDirectoryRefusal, directory: string, uid: number, ...causes: [] | [unknown]) {
     const requirement = `a directory owned by uid ${uid} with mode 0700`;
-    const detail = primitiveDetail(cause);
+    const causeWasProvided = causes.length === 1;
+    const cause = causes[0];
+    const detail = causeWasProvided ? thrownDetail(cause) : undefined;
     const observed = detail ?? 'unknown cause';
     const reason =
       refusal === 'foreign'
@@ -43,7 +65,7 @@ export class SocketDirectoryError extends Error {
           : refusal === 'unsecurable'
             ? `cannot be held as ${requirement}: ${observed}`
             : `could not be verified as ${requirement}: ${observed}`;
-    super(`Socket directory '${directory}' ${reason}.`, { cause });
+    super(`Socket directory '${directory}' ${reason}.`, causeWasProvided ? { cause } : undefined);
     this.name = 'SocketDirectoryError';
     this.refusal = refusal;
     this.directory = directory;
@@ -64,9 +86,9 @@ const ENTRY_REFUSALS = {
 >;
 
 function classifyEntry(entry: StorageBigIntStat, uid: number): EntryKind {
-  if (entry.uid === undefined) return 'unowned';
-  if (entry.uid !== BigInt(uid)) return 'foreign';
+  if (entry.uid !== undefined && entry.uid !== BigInt(uid)) return 'foreign';
   if ((entry.mode & FILE_TYPE_BITS) !== DIRECTORY_TYPE) return 'not-a-directory';
+  if (entry.uid === undefined) return 'unowned';
   return (entry.mode & PERMISSION_BITS) === REQUIRED_POSIX_MODE ? 'matching-posix-owner-and-mode' : 'loose';
 }
 
@@ -95,22 +117,13 @@ function refuseEntry(
   uid: number,
 ): never {
   const { refusal, observed } = ENTRY_REFUSALS[kind];
-  throw new SocketDirectoryError(refusal, directory, uid, observed === undefined ? undefined : new Error(observed));
+  if (observed === undefined) throw new SocketDirectoryError(refusal, directory, uid);
+  throw new SocketDirectoryError(refusal, directory, uid, new Error(observed));
 }
 
 function assertSecureParent(directory: string, uid: number, parent: StorageBigIntStat): void {
   const parentPath = dirname(directory);
-  if (parent.uid === undefined) {
-    throw new SocketDirectoryError(
-      'unverified',
-      directory,
-      uid,
-      new Error(`its parent '${parentPath}' reported no owner`),
-    );
-  }
-
-  const parentIsTrusted = parent.uid === BigInt(uid) || parent.uid === ROOT_UID;
-  if (!parentIsTrusted) {
+  if (parent.uid !== undefined && parent.uid !== BigInt(uid) && parent.uid !== ROOT_UID) {
     throw new SocketDirectoryError(
       'unsecurable',
       directory,
@@ -125,6 +138,15 @@ function assertSecureParent(directory: string, uid: number, parent: StorageBigIn
       directory,
       uid,
       new Error(`its parent '${parentPath}' is not a directory`),
+    );
+  }
+
+  if (parent.uid === undefined) {
+    throw new SocketDirectoryError(
+      'unverified',
+      directory,
+      uid,
+      new Error(`its parent '${parentPath}' reported no owner`),
     );
   }
 
@@ -151,7 +173,12 @@ export function ensurePrivateSocketDir(target: string, uid: number, storage: Soc
   // non-following on a canonical path.
   const directory = resolve(target);
   if (!Number.isSafeInteger(uid) || uid < 0) {
-    throw new SocketDirectoryError('unverified', directory, uid, new Error('the current uid is not a usable owner'));
+    throw new SocketDirectoryError(
+      'unverified',
+      directory,
+      uid,
+      new Error('the owner uid named by the socket address is not usable'),
+    );
   }
 
   const parent = observe(directory, uid, () => storage.statSync(dirname(directory), { bigint: true }));
@@ -185,7 +212,7 @@ export function ensurePrivateSocketDir(target: string, uid: number, storage: Soc
   if (tightened === 'matching-posix-owner-and-mode') return;
   if (tightened === 'loose') {
     const operation = tightening.failed
-      ? `the mode change failed (${primitiveDetail(tightening.error) ?? 'unknown cause'}) and`
+      ? `the mode change failed (${thrownDetail(tightening.error)}) and`
       : 'the filesystem accepted the mode change and kept its own permissions;';
     throw new SocketDirectoryError(
       'unsecurable',

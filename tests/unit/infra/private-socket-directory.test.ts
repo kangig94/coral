@@ -54,9 +54,6 @@ function overrideBigIntStat(
       return read(path, options);
     }
     const observed = read(path, options);
-    // Copied onto the real prototype rather than spread into a plain object: `Stats` carries
-    // `isDirectory`/`isFile` there, and a double whose methods disagree with the `mode` it reports can let
-    // an implementation that reads one of them pass.
     return Object.assign(
       Object.create(Object.getPrototypeOf(observed) as object) as StorageBigIntStat,
       observed,
@@ -132,6 +129,43 @@ describe('ensurePrivateSocketDir', () => {
     );
   });
 
+  it('wraps a failed parent observation as unverified', () => {
+    const directory = join(scratch(), 'parent-read-error');
+    const failing = {
+      ...realStorage,
+      statSync: () => {
+        throw new Error('EIO: i/o error, stat parent');
+      },
+    };
+
+    expect(() => ensurePrivateSocketDir(directory, CURRENT_UID, failing)).toThrowError(
+      expect.objectContaining({
+        refusal: 'unverified',
+        detail: 'EIO: i/o error, stat parent',
+      }),
+    );
+  });
+
+  it('reports the mkdir failure when creation and its readback both fail', () => {
+    const directory = join(scratch(), 'create-and-read-error');
+    const failing = {
+      ...realStorage,
+      mkdirSync: () => {
+        throw new Error('EROFS: read-only file system, mkdir');
+      },
+      lstatSync: () => {
+        throw new Error('EIO: i/o error, lstat after mkdir');
+      },
+    };
+
+    expect(() => ensurePrivateSocketDir(directory, CURRENT_UID, failing)).toThrowError(
+      expect.objectContaining({
+        refusal: 'unverified',
+        detail: 'EROFS: read-only file system, mkdir',
+      }),
+    );
+  });
+
   it('separates an observation it could not make from one that decided', () => {
     const directory = join(scratch(), 'unobservable');
     const failing = {
@@ -151,22 +185,43 @@ describe('ensurePrivateSocketDir', () => {
     }
   });
 
-  it('preserves a primitive thrown by a storage adapter', () => {
-    const directory = join(scratch(), 'primitive-error');
+  it.each([
+    ['an Error', new Error('real'), 'real'],
+    ['an Error subclass', new TypeError('wrong type'), 'wrong type'],
+    ['an Error with no message', new Error(''), 'the storage adapter threw without an observation'],
+    ['an errno-like object with a code', { code: 'EIO' }, 'EIO'],
+    ['an errno-like object with a message', { message: 'adapter offline' }, 'adapter offline'],
+    ['a plain object', { operation: 'lstat' }, 'the storage adapter threw without an observation'],
+    ['a string', 'EIO primitive', 'EIO primitive'],
+    ['an empty string', '', 'the storage adapter threw without an observation'],
+    ['a whitespace-only string', '   ', 'the storage adapter threw without an observation'],
+    ['a number', 17, '17'],
+    ['a bigint', 17n, '17'],
+    ['a boolean', false, 'false'],
+    ['null', null, 'the storage adapter threw without an observation'],
+    ['no observation', undefined, 'the storage adapter threw without an observation'],
+    ['a symbol', Symbol('EIO'), 'Symbol(EIO)'],
+    ['an array', ['EIO'], 'the storage adapter threw without an observation'],
+    ['a function', () => undefined, 'the storage adapter threw without an observation'],
+  ])('renders %s thrown by a storage adapter', (_label, thrown, expectedDetail) => {
+    const directory = join(scratch(), 'adapter-error');
     const failing = {
       ...realStorage,
       lstatSync: () => {
         // eslint-disable-next-line @typescript-eslint/only-throw-error -- Unknown adapter failures must retain primitive observations.
-        throw 'EIO primitive';
+        throw thrown;
       },
     };
 
     expect(() => ensurePrivateSocketDir(directory, CURRENT_UID, failing)).toThrowError(
       expect.objectContaining({
         refusal: 'unverified',
-        detail: 'EIO primitive',
-        message: expect.stringContaining('EIO primitive'),
+        detail: expectedDetail,
+        message: expect.stringContaining(expectedDetail),
       }),
+    );
+    expect(() => ensurePrivateSocketDir(directory, CURRENT_UID, failing)).toThrowError(
+      expect.not.objectContaining({ message: expect.stringContaining('undefined') }),
     );
   });
 
@@ -230,6 +285,18 @@ describe('ensurePrivateSocketDir', () => {
     );
   });
 
+  it('refuses a non-directory parent even when it reports no owner', () => {
+    const directory = scratchDirectory(0o700);
+    const storage = {
+      ...realStorage,
+      statSync: overrideBigIntStat(statSync, { uid: undefined, mode: 0o100700n }),
+    };
+
+    expect(() => ensurePrivateSocketDir(directory, CURRENT_UID, storage)).toThrowError(
+      expect.objectContaining({ refusal: 'unsecurable', detail: expect.stringContaining('is not a directory') }),
+    );
+  });
+
   it('leaves an entry with no reported owner unverified', () => {
     const directory = join(scratch(), 'unowned-entry');
     const unownedEntry = {
@@ -242,6 +309,18 @@ describe('ensurePrivateSocketDir', () => {
         refusal: 'unverified',
         detail: 'the directory reported no owner',
       }),
+    );
+  });
+
+  it('refuses a non-directory entry even when it reports no owner', () => {
+    const directory = join(scratch(), 'unowned-file');
+    const storage = {
+      ...realStorage,
+      lstatSync: overrideBigIntStat(lstatSync, { uid: undefined, mode: 0o100700n }),
+    };
+
+    expect(() => ensurePrivateSocketDir(directory, CURRENT_UID, storage)).toThrowError(
+      expect.objectContaining({ refusal: 'unusable' }),
     );
   });
 
@@ -283,6 +362,31 @@ describe('ensurePrivateSocketDir', () => {
       expect.objectContaining({
         refusal: 'unsecurable',
         detail: expect.stringMatching(/EROFS: read-only file system, chmod.*040755/u),
+      }),
+    );
+  });
+
+  it('reports the chmod failure when tightening and its readback both fail', () => {
+    const directory = join(scratch(), 'chmod-and-read-error');
+    mkdirSync(directory, { mode: 0o755 });
+    chmodSync(directory, 0o755);
+    let lstatCalls = 0;
+    const failing = {
+      ...realStorage,
+      chmodSync: () => {
+        throw new Error('EROFS: read-only file system, chmod');
+      },
+      lstatSync: (path: string, options: { bigint: true }) => {
+        lstatCalls += 1;
+        if (lstatCalls === 1) return lstatSync(path, options);
+        throw new Error('EIO: i/o error, lstat after chmod');
+      },
+    };
+
+    expect(() => ensurePrivateSocketDir(directory, CURRENT_UID, failing)).toThrowError(
+      expect.objectContaining({
+        refusal: 'unverified',
+        detail: 'EROFS: read-only file system, chmod',
       }),
     );
   });
@@ -362,7 +466,10 @@ describe('ensurePrivateSocketDir', () => {
     const directory = join(scratch(), 'nan-uid');
 
     expect(() => ensurePrivateSocketDir(directory, Number.NaN, realStorage)).toThrowError(
-      expect.objectContaining({ refusal: 'unverified' }),
+      expect.objectContaining({
+        refusal: 'unverified',
+        detail: 'the owner uid named by the socket address is not usable',
+      }),
     );
   });
 });

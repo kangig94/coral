@@ -331,7 +331,12 @@ describe('CoralSetupError', () => {
       const invalidUid = documentedCoralSetupError({
         code: 'coordinator_socket_dir_unverified',
         directory: '/tmp/coral-NaN',
-        cause: 'the current uid is not a usable owner',
+        cause: 'the owner uid named by the socket address is not usable',
+      });
+      const missingOwner = documentedCoralSetupError({
+        code: 'coordinator_socket_dir_unverified',
+        directory: '/tmp/coral-1000',
+        cause: 'the directory reported no owner',
       });
 
       for (const error of [foreign, unusable, unsecurable]) {
@@ -364,9 +369,13 @@ describe('CoralSetupError', () => {
         );
       }
       expect(invalidUid.remediation).toBe(
-        'Start Coral in an environment that provides a usable non-negative integer uid. Coral will not bind its singleton socket without a usable owner identity.',
+        'Start Coral in an environment that provides a usable non-negative integer owner uid for the fallback socket address. Coral will not bind its singleton socket without a usable owner identity.',
       );
       expect(invalidUid.remediation).not.toContain('filesystem');
+      expect(missingOwner.remediation).toBe(
+        'Start Coral on a filesystem that reports owner identity for the fallback directory. The observation succeeded but did not identify an owner, so Coral could not settle whether the directory is private.',
+      );
+      expect(missingOwner.remediation).not.toContain('error');
     });
   });
 });

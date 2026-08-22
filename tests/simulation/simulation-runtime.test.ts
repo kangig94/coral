@@ -1,3 +1,5 @@
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { MAX_BUFFER, SIGTERM_GRACE_MS } from '#src/infra/process-constants.js';
@@ -157,6 +159,112 @@ describe('simulation runtime', () => {
     expect(storage.readFileSync(filePath, 'utf-8')).toBe('alpha\nbeta');
     expect(storage.existsSync(exclusivePath)).toBe(false);
     expect(storage.existsSync(join(workDir, 'renamed.json'))).toBe(false);
+  });
+
+  it('matches real filesystem modes and keeps every stat overload internally consistent', () => {
+    const realRoot = mkdtempSync(join(tmpdir(), 'coral-simulation-storage-'));
+    const originalUmask = process.umask(0o077);
+
+    try {
+      const storage = new InMemoryStorage(new VirtualTime(1_000));
+      const simulatedDirectory = '/tmp/sim/metadata';
+      const simulatedFile = join(simulatedDirectory, 'file.txt');
+      const realDirectory = join(realRoot, 'metadata');
+      const realFile = join(realDirectory, 'file.txt');
+
+      storage.mkdirSync(simulatedDirectory, { mode: 0o777 });
+      mkdirSync(realDirectory, { mode: 0o777 });
+      storage.writeFileSync(simulatedFile, 'alpha');
+      writeFileSync(realFile, 'alpha');
+
+      const expectConsistentViews = (simulatedPath: string, realPath: string): void => {
+        const simulatedLstat = storage.lstatSync(simulatedPath);
+        const simulatedStat = storage.statSync(simulatedPath);
+        const simulatedBigIntLstat = storage.lstatSync(simulatedPath, { bigint: true });
+        const simulatedBigIntStat = storage.statSync(simulatedPath, { bigint: true });
+        const realLstat = lstatSync(realPath, { bigint: true });
+        const realStat = statSync(realPath, { bigint: true });
+
+        expect({
+          lstat: {
+            directory: simulatedLstat.isDirectory(),
+            file: simulatedLstat.isFile(),
+            symbolicLink: simulatedLstat.isSymbolicLink(),
+          },
+          stat: {
+            directory: simulatedStat.isDirectory(),
+            file: simulatedStat.isFile(),
+          },
+          bigintLstat: {
+            directory: simulatedBigIntLstat.isDirectory(),
+            file: simulatedBigIntLstat.isFile(),
+            type: simulatedBigIntLstat.mode & 0o170000n,
+            mode: simulatedBigIntLstat.mode & 0o7777n,
+            uid: simulatedBigIntLstat.uid,
+          },
+          bigintStat: {
+            directory: simulatedBigIntStat.isDirectory(),
+            file: simulatedBigIntStat.isFile(),
+            type: simulatedBigIntStat.mode & 0o170000n,
+            mode: simulatedBigIntStat.mode & 0o7777n,
+            uid: simulatedBigIntStat.uid,
+          },
+        }).toEqual({
+          lstat: {
+            directory: realLstat.isDirectory(),
+            file: realLstat.isFile(),
+            symbolicLink: realLstat.isSymbolicLink(),
+          },
+          stat: {
+            directory: realStat.isDirectory(),
+            file: realStat.isFile(),
+          },
+          bigintLstat: {
+            directory: realLstat.isDirectory(),
+            file: realLstat.isFile(),
+            type: realLstat.mode & 0o170000n,
+            mode: realLstat.mode & 0o7777n,
+            uid: realLstat.uid,
+          },
+          bigintStat: {
+            directory: realStat.isDirectory(),
+            file: realStat.isFile(),
+            type: realStat.mode & 0o170000n,
+            mode: realStat.mode & 0o7777n,
+            uid: realStat.uid,
+          },
+        });
+        expect(simulatedStat.size).toBe(Number(simulatedBigIntStat.size));
+        expect(simulatedStat.mtimeMs).toBe(Number(simulatedBigIntStat.mtimeNs / 1_000_000n));
+        expect(simulatedBigIntLstat).toMatchObject({
+          dev: expect.any(BigInt),
+          ino: expect.any(BigInt),
+          mode: expect.any(BigInt),
+          size: expect.any(BigInt),
+          mtimeNs: expect.any(BigInt),
+        });
+        expect(simulatedBigIntLstat).toMatchObject({
+          dev: simulatedBigIntStat.dev,
+          ino: simulatedBigIntStat.ino,
+          mode: simulatedBigIntStat.mode,
+          size: simulatedBigIntStat.size,
+          mtimeNs: simulatedBigIntStat.mtimeNs,
+        });
+      };
+
+      expectConsistentViews(simulatedDirectory, realDirectory);
+      expectConsistentViews(simulatedFile, realFile);
+
+      storage.chmodSync(simulatedDirectory, 0o17654);
+      chmodSync(realDirectory, 0o17654);
+
+      expectConsistentViews(simulatedDirectory, realDirectory);
+    } finally {
+      process.umask(originalUmask);
+      const realDirectory = join(realRoot, 'metadata');
+      if (existsSync(realDirectory)) chmodSync(realDirectory, 0o700);
+      rmSync(realRoot, { recursive: true, force: true });
+    }
   });
 
   it('keeps in-memory storage directory listings updated across indexed mutations', () => {

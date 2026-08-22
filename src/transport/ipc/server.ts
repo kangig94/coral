@@ -365,7 +365,7 @@ function staleSocketClearLockDir(socketPath: string): string {
 }
 
 /**
- * One code may not span both "decided" and "could not observe" — see errorCodeToExit in src/cli/errors.ts.
+ * One code may not span both a settled verdict and no verdict — see errorCodeToExit in src/cli/errors.ts.
  */
 const SOCKET_DIRECTORY_REFUSAL_CODES = {
   foreign: 'coordinator_socket_dir_insecure',

@@ -200,12 +200,6 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
           ? `Ask the owner of ${stringContextValue(context, 'directory', '<directory>')}, or this host's administrator, to remove it — do not try to remove or repair it yourself. Coral will not bind its singleton socket where it cannot establish exclusive ownership.`
           : "Give this host's administrator the observation above. Coral did not bind its singleton socket. Start Coral again once the directory is repaired.",
   },
-  /**
-   * Exit 75, not 1, and separate from `coordinator_socket_dir_insecure` for the reason
-   * `coordinator_record_unreadable` is separate from `coordinator_unreachable`: a create or observation that
-   * failed says nothing about who owns the directory, and a caller that reads only the code would otherwise
-   * act on an ownership verdict this run never reached.
-   */
   coordinator_socket_dir_unverified: {
     userMessage: (context) => {
       const directory = stringContextValue(context, 'directory', '<directory>');
@@ -215,10 +209,16 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
       const reference = observationNamesDirectory ? 'it' : 'that directory';
       return `Coral's coordinator socket uses ${location}, but Coral could not establish whether ${reference} is private to you (${cause}). This does not mean the directory is wrong.`;
     },
-    remediation: (context) =>
-      context?.cause === 'the current uid is not a usable owner'
-        ? 'Start Coral in an environment that provides a usable non-negative integer uid. Coral will not bind its singleton socket without a usable owner identity.'
-        : 'Resolve the filesystem error reported in the observation above, then start Coral again. Coral will not bind its singleton socket in a directory it could not observe.',
+    remediation: (context) => {
+      const cause = stringContextValue(context, 'cause', 'cause unavailable');
+      if (cause === 'the owner uid named by the socket address is not usable') {
+        return 'Start Coral in an environment that provides a usable non-negative integer owner uid for the fallback socket address. Coral will not bind its singleton socket without a usable owner identity.';
+      }
+      if (cause.includes('reported no owner')) {
+        return 'Start Coral on a filesystem that reports owner identity for the fallback directory. The observation succeeded but did not identify an owner, so Coral could not settle whether the directory is private.';
+      }
+      return 'Resolve the filesystem error reported in the observation above, then start Coral again. Coral will not bind its singleton socket in a directory it could not observe.';
+    },
   },
   store_schema_outdated: {
     userMessage: 'Coral backend store format does not match this installation.',
@@ -680,22 +680,7 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
   },
 } satisfies Record<DocumentedCoralSetupErrorCode, DocumentedCoralSetupErrorSpec>;
 
-/**
- * Codes that mean "this run could not observe the answer", not "the answer is no" — the same distinction
- * `SHUTDOWN_REFUSAL_EXIT_CODES` (`cli/commands/backend.ts`) draws for `ShutdownReason`. `errorCodeToExit`
- * (`cli/errors.ts`) and `expansionExitCode` (`cli/commands/expansion.ts`) each map a code to a CLI exit status
- * independently; a code added to one list and not the other exits "observed/decided" 1 in the list that
- * missed it, by accident rather than by decision. Listed here, once, so both read the same membership rather
- * than repeating it. `Set<string>` rather than
- * `Set<DocumentedCoralSetupErrorCode>` at the export boundary: both consumers hold a plain `string` by the
- * time they check membership — `CoralSetupError.code` is `string`, not this union, because domains outside
- * this registry (`jobs/events.ts`, `sessions/events.ts`, and others) construct `CoralSetupError` with codes of
- * their own that never enter `DocumentedCoralSetupErrorCode`.
- *
- * `coordinator_record_unreadable` is a member alongside `coordinator_unreachable`: an unreadable record says
- * nothing about whether the coordinator it would have named is running, so this run has not observed the
- * answer either way — the same axis, not "will retrying help" (see that code's doc comment above).
- */
+/** Exit 75 must not be read as a settled negative verdict or as a promise that retrying will resolve it. */
 export const NOT_OBSERVED_CORAL_SETUP_ERROR_CODES: ReadonlySet<string> = new Set<DocumentedCoralSetupErrorCode>([
   'coordinator_unreachable',
   'coordinator_record_unreadable',

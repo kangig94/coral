@@ -34,20 +34,20 @@ steps:
   - type: launch
     prompt: become queued
   - type: expect
-    jobId: "00000000-0000-0000-0000-000000000005"
+    jobId: '00000000-0000-0000-0000-000000000005'
     phase: queued
   - type: abort
-    jobId: "00000000-0000-0000-0000-000000000003"
+    jobId: '00000000-0000-0000-0000-000000000003'
   - type: advance
     ms: 100
   - type: wait
-    jobId: "00000000-0000-0000-0000-000000000005"
+    jobId: '00000000-0000-0000-0000-000000000005'
     until:
       terminal: true
     stepMs: 500
     maxSteps: 10
   - type: expect
-    jobId: "00000000-0000-0000-0000-000000000005"
+    jobId: '00000000-0000-0000-0000-000000000005'
     phase: completed
     result:
       content: promoted-result

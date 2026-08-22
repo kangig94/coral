@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, lstatSync, mkdtempSync, rmSync, statSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync } from 'node:fs';
 import type * as NodeFs from 'node:fs';
 import { tmpdir } from 'node:os';
 import type * as NodeOs from 'node:os';
@@ -344,16 +344,20 @@ describe('createRealRuntime', () => {
 });
 
 describe('storage bigint stats', () => {
-  it('retains owner, type, and full mode in following and non-following views', () => {
+  it('retains owner, type, and full mode when only the following view resolves a symlink', () => {
     const root = mkdtempSync(join(tmpdir(), 'coral-runtime-lstat-'));
     createdDirs.push(root);
-    chmodSync(root, 0o1700);
+    const target = join(root, 'target');
+    const link = join(root, 'link');
+    mkdirSync(target, { mode: 0o700 });
+    chmodSync(target, 0o1700);
+    symlinkSync(target, link);
     const runtime = createRealRuntime('prod', { baseDir: root });
 
-    const observedLstat = runtime.storage.lstatSync(root, { bigint: true });
-    const observedStat = runtime.storage.statSync(root, { bigint: true });
-    const expectedLstat = lstatSync(root, { bigint: true });
-    const expectedStat = statSync(root, { bigint: true });
+    const observedLstat = runtime.storage.lstatSync(link, { bigint: true });
+    const observedStat = runtime.storage.statSync(link, { bigint: true });
+    const expectedLstat = lstatSync(link, { bigint: true });
+    const expectedStat = statSync(link, { bigint: true });
 
     expect({
       lstat: {

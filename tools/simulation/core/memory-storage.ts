@@ -353,7 +353,7 @@ export class InMemoryStorage implements StoragePort {
       throw createErrnoError('ENOENT', normalized);
     }
 
-    const mode = options?.mode === undefined ? defaultDirectoryMode() : posixMode(options.mode);
+    const mode = posixMode(options?.mode ?? 0o777) & ~process.umask();
 
     if (options?.recursive) {
       const segments = normalized.split('/').filter(Boolean);

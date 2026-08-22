@@ -31,8 +31,6 @@ const createdFallbackLinks: string[] = [];
 const createdFallbackDirectories: string[] = [];
 const cleanupServers: NetServer[] = [];
 
-// `Stats` carries `isDirectory`/`isFile` on its prototype, so a spread drops them while the declared return
-// type still promises them.
 function overriding(observed: Fs.BigIntStats, overrides: Partial<Fs.BigIntStats>): Fs.BigIntStats {
   return Object.assign(Object.create(Object.getPrototypeOf(observed) as object) as Fs.BigIntStats, observed, overrides);
 }
@@ -128,7 +126,7 @@ describe('bindSocket', () => {
     expect(server.listening).toBe(false);
   });
 
-  it('reports a relocated directory it could not observe under its own code, not the ownership verdict', async () => {
+  it('reports an unusable address owner under the no-verdict code', async () => {
     vi.spyOn(process, 'getuid').mockReturnValue(Number.NaN);
     const server = createServer();
     cleanupServers.push(server);
@@ -136,7 +134,7 @@ describe('bindSocket', () => {
     await expect(bindSocket(server, join(socketFallbackDir(Number.NaN), 'relocated.sock'))).rejects.toThrow(
       expect.objectContaining({
         code: 'coordinator_socket_dir_unverified',
-        userMessage: expect.not.stringContaining('Socket directory'),
+        userMessage: expect.stringContaining('the owner uid named by the socket address is not usable'),
       }),
     );
     expect(server.listening).toBe(false);

@@ -96,24 +96,27 @@ function insecureEndpointError(
     unsecurable: `cannot be held as ${requirement}: ${observation}`,
     unverified: `could not be verified as ${requirement}: ${observation}`,
   };
-  const remediation: Record<SocketDirectoryRefusal, string> = {
+  const remediation: Record<Exclude<SocketDirectoryRefusal, 'unverified'>, string> = {
     foreign: 'Ask its owner or an administrator to remove it, then start Coral again.',
     unusable: 'Remove it, then start Coral again.',
     unsecurable:
       "Give this host's administrator this observation, then start Coral again after the directory is repaired.",
-    unverified: 'Resolve the reported filesystem error, then start Coral again.',
   };
+  const unverifiedRemediation =
+    observation === 'the owner uid named by the socket address is not usable'
+      ? 'Start Coral in an environment that provides a usable non-negative integer owner uid for the fallback socket address.'
+      : observation.includes('reported no owner')
+        ? 'Start Coral on a filesystem that reports owner identity for the fallback directory; the observation succeeded but did not identify an owner.'
+        : 'Resolve the reported filesystem error, then start Coral again.';
   return new ProviderProxyEndpointError(
     refusal === 'unverified' ? 'proxy_endpoint_unverified' : 'proxy_endpoint_insecure',
-    `${directory} ${observed[refusal]}. ${remediation[refusal]}`,
+    `${directory} ${observed[refusal]}. ${refusal === 'unverified' ? unverifiedRemediation : remediation[refusal]}`,
     {
       fallbackDirectory,
       refusal,
       expectedUid: env.uid,
       expectedMode: '0700',
-      ...(cause === undefined
-        ? {}
-        : { cause: cause instanceof Error ? cause.message : typeof cause === 'string' ? cause : 'unknown error' }),
+      ...(cause === undefined ? {} : { cause: observation }),
     },
   );
 }
@@ -123,7 +126,7 @@ function ensurePrivateFallbackDirectory(fallbackDirectory: string, env: Provider
     ensurePrivateSocketDir(fallbackDirectory, env.uid, env.storage);
   } catch (error: unknown) {
     if (error instanceof SocketDirectoryError) {
-      throw insecureEndpointError(fallbackDirectory, env, error.refusal, error.cause);
+      throw insecureEndpointError(fallbackDirectory, env, error.refusal, error.detail);
     }
     throw insecureEndpointError(fallbackDirectory, env, 'unverified', error);
   }
