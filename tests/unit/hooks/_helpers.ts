@@ -292,7 +292,7 @@ export function expectBashRewriteOutput(result: HookRunResult): BashRewriteOutpu
 }
 
 export function extractTempInputPaths(command: string): string[] {
-  return [...command.matchAll(/coral-input-[0-9a-f]{12}\.txt/g)].map((match) => join(tmpdir(), match[0]));
+  return [...command.matchAll(/coral-input-[0-9a-f]{16}\.txt/g)].map((match) => join(tmpdir(), match[0]));
 }
 
 export type InjectBundleFixture = {

@@ -17,7 +17,7 @@
 //   5. Top-level orchestration (splitter + per-segment pipeline)
 //   6. Main I/O (coral resolution + background-task wrapping)
 
-import { createHash } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import { existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -152,9 +152,9 @@ function rewriteStaleBridge(segText, tokens) {
 // === 4. Post-processing ===
 
 function writeInlineTextFile(value) {
-  const hash = createHash('sha256').update(value).digest('hex').slice(0, 12);
-  const filePath = join(tmpdir(), `coral-input-${hash}.txt`);
-  writeFileSync(filePath, value, { encoding: 'utf8', mode: 0o600 });
+  const id = randomBytes(8).toString('hex');
+  const filePath = join(tmpdir(), `coral-input-${id}.txt`);
+  writeFileSync(filePath, value, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
   return filePath;
 }
 
