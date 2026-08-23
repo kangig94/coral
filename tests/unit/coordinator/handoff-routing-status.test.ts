@@ -9,6 +9,7 @@ import {
   ABSENT_HANDOFF_RESULT_POLICY_PROJECTION,
   HANDOFF_CONTINUATION_REASON_POLICY_PROJECTIONS,
   HANDOFF_ROUTING_COMPLETED_RETENTION_MS,
+  MAX_HANDOFF_ROUTING_OWNER_SWEEP_MS,
   HANDOFF_ROUTING_STATUS_GENERATION,
   MAX_COMPLETED_HANDOFF_ROUTING_PAIRS,
   MAX_ENCODED_RETIREMENT_TOMBSTONE_BYTES,
@@ -23,6 +24,8 @@ import {
   persistedHandoffDispositionPolicy,
   publishHandoffRoutingTransitions,
   readHandoffRoutingStatus as readHandoffRoutingStatusWithRuntime,
+  readHandoffRoutingStatusWithOwnerObservations,
+  resolveHandoffRoutingStatus,
   retirementTombstoneSchema,
   terminalEventSchema,
   type DurableHandoffRoutingBasis,
@@ -30,6 +33,7 @@ import {
   type PublicationOutcome,
   type RetirementTombstone,
 } from '#src/coordinator/handoff-routing-status.js';
+import type { ProcessIdentityObservation } from '#src/infra/port-types.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { SimulationRuntime } from '../../../tools/simulation/runtime.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
@@ -1115,5 +1119,162 @@ describe('handoff routing status', () => {
         latestSelectedAt: at(1),
       }),
     ).toMatchObject({ severity: 'warning', exitContribution: 0 });
+  });
+
+  it('resolves only absent owners and returns typed stale, terminal, and live refusals', async () => {
+    const absentId = '123e4567-e89b-42d3-a456-426614174001';
+    const liveId = '123e4567-e89b-42d3-a456-426614174002';
+    const terminalId = '123e4567-e89b-42d3-a456-426614174003';
+    const staleId = '123e4567-e89b-42d3-a456-426614174004';
+    const reusedId = '123e4567-e89b-42d3-a456-426614174007';
+    const path = databasePath();
+    const absentSelection = await committed(path, [selection(absentId, 1)]);
+    await committed(path, [selection(liveId, 2)]);
+    const terminalSelection = await committed(path, [selection(terminalId, 3)]);
+    await committed(path, [terminal(terminalId, 4, terminalSelection.sequence)]);
+    await committed(path, [selection(reusedId, 5)]);
+
+    const repairRuntime = (evidence: ProcessIdentityObservation['evidence']) => ({
+      ...runtime,
+      process: {
+        ...runtime.process,
+        readProcessIncarnation: () => {
+          throw new Error('repair must use the batch observer');
+        },
+        observeProcessIdentities: async (owners: readonly (typeof OWNER)[]) =>
+          owners.map((owner) => ({ owner, evidence })),
+      },
+    });
+
+    await expect(
+      resolveHandoffRoutingStatus(repairRuntime({ kind: 'pid-absent' }), path, {
+        invocationId: staleId,
+        forceUnobservable: false,
+      }),
+    ).resolves.toEqual({ kind: 'stale', invocationId: staleId });
+    await expect(
+      resolveHandoffRoutingStatus(repairRuntime({ kind: 'pid-absent' }), path, {
+        invocationId: terminalId,
+        forceUnobservable: false,
+      }),
+    ).resolves.toEqual({ kind: 'already-terminal', invocationId: terminalId });
+    await expect(
+      resolveHandoffRoutingStatus(repairRuntime({ kind: 'incarnation', incarnation: OWNER.incarnation }), path, {
+        invocationId: liveId,
+        forceUnobservable: false,
+      }),
+    ).resolves.toEqual({ kind: 'live-owner', invocationId: liveId });
+
+    const resolved = await resolveHandoffRoutingStatus(repairRuntime({ kind: 'pid-absent' }), path, {
+      invocationId: absentId,
+      forceUnobservable: false,
+    });
+    expect(resolved).toMatchObject({
+      kind: 'resolved',
+      invocationId: absentId,
+      reason: 'owner-absent',
+    });
+    expect(absentSelection.sequence).toBeGreaterThan(0);
+    await expect(
+      resolveHandoffRoutingStatus(repairRuntime({ kind: 'incarnation', incarnation: testIncarnation(999) }), path, {
+        invocationId: reusedId,
+        forceUnobservable: false,
+      }),
+    ).resolves.toMatchObject({ kind: 'resolved', invocationId: reusedId, reason: 'owner-absent' });
+    const status = readHandoffRoutingStatus(path);
+    expect(status.kind).toBe('current');
+    if (status.kind !== 'current') throw new Error(`Expected current status, received ${status.kind}`);
+    expect(
+      status.statuses.find(
+        (candidate) => candidate.kind === 'retired' && candidate.tombstone.invocationId === absentId,
+      ),
+    ).toMatchObject({
+      kind: 'retired',
+      tombstone: {
+        invocationId: absentId,
+        retirementCause: 'operator-resolved',
+        resolutionReason: 'owner-absent',
+      },
+    });
+  });
+
+  it('requires force for unobservable owners and never lets force override an expired deadline', async () => {
+    const forcedId = '123e4567-e89b-42d3-a456-426614174005';
+    const deadlineId = '123e4567-e89b-42d3-a456-426614174006';
+    const path = databasePath();
+    await committed(path, [selection(forcedId, 1), selection(deadlineId, 2)]);
+
+    const repairRuntime = (cause: 'probe-failed' | 'deadline-expired') => ({
+      ...runtime,
+      process: {
+        ...runtime.process,
+        observeProcessIdentities: async (owners: readonly (typeof OWNER)[]) =>
+          owners.map((owner) => ({ owner, evidence: { kind: 'unobservable' as const, cause } })),
+      },
+    });
+
+    await expect(
+      resolveHandoffRoutingStatus(repairRuntime('probe-failed'), path, {
+        invocationId: forcedId,
+        forceUnobservable: false,
+      }),
+    ).resolves.toEqual({
+      kind: 'unauthorized-unobservable',
+      invocationId: forcedId,
+      cause: 'probe-failed',
+    });
+    await expect(
+      resolveHandoffRoutingStatus(repairRuntime('deadline-expired'), path, {
+        invocationId: deadlineId,
+        forceUnobservable: true,
+      }),
+    ).resolves.toEqual({
+      kind: 'unauthorized-unobservable',
+      invocationId: deadlineId,
+      cause: 'deadline-expired',
+    });
+    await expect(
+      resolveHandoffRoutingStatus(repairRuntime('probe-failed'), path, {
+        invocationId: forcedId,
+        forceUnobservable: true,
+      }),
+    ).resolves.toMatchObject({
+      kind: 'resolved',
+      invocationId: forcedId,
+      reason: 'operator-abandoned-unobservable',
+    });
+  });
+
+  it('observes the retained owner window in one bounded batch without the synchronous incarnation probe', async () => {
+    const path = databasePath();
+    const transitions = Array.from({ length: MAX_UNRESOLVED_INVOCATIONS + 1 }, (_, index) =>
+      selection(`window-${index}`, index + 1),
+    );
+    await committed(path, transitions);
+    const calls: Array<{ owners: readonly (typeof OWNER)[]; deadlineMs: number }> = [];
+    const batchRuntime = {
+      ...runtime,
+      process: {
+        ...runtime.process,
+        readProcessIncarnation: () => {
+          throw new Error('status read must use the batch observer');
+        },
+        observeProcessIdentities: async (owners: readonly (typeof OWNER)[], deadlineMs: number) => {
+          calls.push({ owners, deadlineMs });
+          return owners.map((owner) => ({ owner, evidence: { kind: 'pid-absent' as const } }));
+        },
+      },
+    };
+
+    const result = await readHandoffRoutingStatusWithOwnerObservations(batchRuntime, path);
+
+    expect(result.kind).toBe('current');
+    if (result.kind !== 'current') throw new Error(`Expected current status, received ${result.kind}`);
+    expect(result.statuses.filter((status) => status.kind === 'unresolved')).toHaveLength(MAX_UNRESOLVED_INVOCATIONS);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      owners: { length: MAX_UNRESOLVED_INVOCATIONS },
+      deadlineMs: MAX_HANDOFF_ROUTING_OWNER_SWEEP_MS,
+    });
   });
 });

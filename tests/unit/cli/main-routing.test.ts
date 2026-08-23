@@ -547,6 +547,7 @@ describe('cli main routing', () => {
           inspectReadiness: () => ({ kind: 'no-legacy' }),
           getStatus,
           getLiveHandoffResult: () => null,
+          getRoutingStatus: async () => ({ kind: 'absent' }),
         },
       });
       return program;

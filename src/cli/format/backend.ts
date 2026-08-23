@@ -1,5 +1,10 @@
 import { assertNever } from '../../infra/error-format.js';
 import type { HandoffRoutingBasis } from '../../coordinator/handoff-routing.js';
+import type {
+  HandoffRoutingResolveResult,
+  HandoffRoutingStatusReadResult,
+  OwnerLiveness,
+} from '../../coordinator/handoff-routing-status.js';
 import type { HandoffContinuationReason, LiveHandoffContinuationResult } from '../../coordinator/handoff-runner.js';
 import type { RecoveryQuarantineEntry } from '../../recovery/quarantine.js';
 import type { BackendHealth } from '../../transport/http/backend/health.js';
@@ -188,6 +193,76 @@ export function formatBackendStatus(result: BackendStatusFull): string {
       return 'Backend shutting down';
     case 'unauthorized':
       return 'Backend unauthorized. The discovery record and daemon token disagree — run coral-cli backend shutdown, then retry to relaunch with a fresh token.';
+    default:
+      return assertNever(result);
+  }
+}
+
+function formatRoutingOwnerLiveness(invocationId: string, liveness: OwnerLiveness): string {
+  switch (liveness.kind) {
+    case 'alive':
+      return `Routing invocation ${invocationId}: in flight; its recorded owner is alive.`;
+    case 'absent':
+      return [
+        `Routing invocation ${invocationId}: unresolved; its recorded owner is absent.`,
+        `Next step: run coral-cli backend routing-status resolve --invocation ${invocationId}.`,
+      ].join('\n');
+    case 'unobservable':
+      return liveness.cause === 'deadline-expired'
+        ? [
+            `Routing invocation ${invocationId}: unresolved; owner observation was unobservable (${liveness.cause}).`,
+            'Next step: rerun coral-cli backend status; an expired sweep cannot authorize resolution.',
+          ].join('\n')
+        : [
+            `Routing invocation ${invocationId}: unresolved; owner observation was unobservable (${liveness.cause}).`,
+            `Next step: verify the owner externally, then run coral-cli backend routing-status resolve --invocation ${invocationId} --force-unobservable to abandon it.`,
+          ].join('\n');
+    default:
+      return assertNever(liveness);
+  }
+}
+
+export function formatHandoffRoutingStatus(result: HandoffRoutingStatusReadResult): string | null {
+  switch (result.kind) {
+    case 'absent':
+      return null;
+    case 'unreadable':
+      return `Routing status is unreadable (${result.reason}).`;
+    case 'unsupported-generation':
+      return `Routing status generation ${result.generation} is not supported by this build.`;
+    case 'undeterminable':
+      return `Routing status could not be read (${result.cause}, errcode ${result.errcode}).`;
+    case 'current': {
+      const unresolved = result.statuses.flatMap((status) =>
+        status.kind === 'unresolved'
+          ? [formatRoutingOwnerLiveness(status.selection.invocationId, status.ownerLiveness)]
+          : [],
+      );
+      return unresolved.length === 0 ? null : unresolved.join('\n');
+    }
+    default:
+      return assertNever(result);
+  }
+}
+
+export function formatHandoffRoutingResolveResult(result: HandoffRoutingResolveResult): string {
+  switch (result.kind) {
+    case 'resolved':
+      return `Resolved routing invocation ${result.invocationId} (${result.reason}).`;
+    case 'stale':
+      return `Routing invocation ${result.invocationId} is stale or no longer retained.`;
+    case 'already-terminal':
+      return `Routing invocation ${result.invocationId} is already terminal.`;
+    case 'live-owner':
+      return `Refusing to resolve routing invocation ${result.invocationId}: its recorded owner is alive.`;
+    case 'unauthorized-unobservable':
+      return result.cause === 'deadline-expired'
+        ? `Refusing to resolve routing invocation ${result.invocationId}: the owner sweep deadline expired; rerun the command.`
+        : `Refusing to resolve routing invocation ${result.invocationId}: owner observation is unobservable (${result.cause}); pass --force-unobservable only after external verification.`;
+    case 'status-unavailable':
+      return `Refusing to resolve routing status because the authoritative journal is ${result.status.kind}.`;
+    case 'not-published':
+      return `Routing resolution was not published (${result.outcome.kind}:${result.outcome.cause}).`;
     default:
       return assertNever(result);
   }

@@ -1,4 +1,6 @@
 import { STANDING_PROBE_ERRNOS } from './process-constants.js';
+import type { ProcessIncarnation } from './node-process.js';
+import type { RecordedProcessIdentity } from './process-containment.js';
 
 // Canonical port-shape vocabulary. Domains and runtime alias these via
 // `runtime/ports.ts`; infra-tier helpers reach here directly because infra
@@ -17,6 +19,17 @@ export interface TimePort {
   setInterval(fn: () => void, ms: number): TimerHandle;
   clearInterval(handle: TimerHandle | null): void;
 }
+
+export type ProcessIdentityObservation = Readonly<{
+  owner: RecordedProcessIdentity;
+  evidence:
+    | Readonly<{ kind: 'incarnation'; incarnation: ProcessIncarnation }>
+    | Readonly<{ kind: 'pid-absent' }>
+    | Readonly<{
+        kind: 'unobservable';
+        cause: 'incarnation-unavailable' | 'probe-not-available' | 'probe-failed' | 'deadline-expired';
+      }>;
+}>;
 
 export interface DirentLike {
   name: string;

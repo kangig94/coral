@@ -2,7 +2,14 @@ declare const __VERSION__: string;
 
 import { Command } from 'commander';
 
-import { runHandoff, type HandoffOutcome, type LiveHandoffContinuationResult } from '../coordinator/handoff-runner.js';
+import {
+  HandoffRunError,
+  runHandoff,
+  type HandoffOutcome,
+  type HandoffPublicationIncident,
+  type HandoffRunResult,
+  type LiveHandoffContinuationResult,
+} from '../coordinator/handoff-runner.js';
 import { assertNever } from '../infra/error-format.js';
 import { createBuiltInProviderRegistry } from '../providers/bootstrap.js';
 import type { ProviderRegistry } from '../providers/registry.js';
@@ -19,14 +26,55 @@ import { registerKbCommands } from './commands/kb.js';
 import { registerProviderCommands } from './commands/provider.js';
 import { registerSessionCommands } from './commands/session.js';
 import { registerWorkflowCommands } from './commands/workflow.js';
-import { renderHandoffNotice } from './handoff-notice.js';
+import { renderHandoffNotice, renderHandoffPublicationIncidents } from './handoff-notice.js';
 import { resolvePluginRoot } from './plugin-root.js';
 
 let cliHandoffPreflightPromise: Promise<HandoffOutcome | null> | null = null;
 let cliHandoffPreflightResult: LiveHandoffContinuationResult | null = null;
 
 async function executeCliHandoffPreflight(argv: readonly string[]): Promise<HandoffOutcome | null> {
-  const continuation = await runHandoff({ kind: 'cli-invocation', argv }, { pluginRoot: resolvePluginRoot() });
+  const statusInvocation = argv[2] === 'backend' && argv[3] === 'status';
+  let result: HandoffRunResult;
+  try {
+    result = await runHandoff(
+      { kind: 'cli-invocation', argv },
+      {
+        pluginRoot: resolvePluginRoot(),
+        ...(statusInvocation
+          ? {}
+          : { onSelectionPublicationIncident: (incident) => renderHandoffPublicationIncidents([incident]) }),
+      },
+    );
+  } catch (error: unknown) {
+    if (!(error instanceof HandoffRunError)) throw error;
+    renderHandoffPublicationIncidents(
+      statusInvocation ? error.incidents : error.incidents.filter((incident) => incident.phase === 'terminal'),
+    );
+    throw error.originalError;
+  }
+
+  let continuation;
+  let publicationIncidents: readonly HandoffPublicationIncident[] = [];
+  switch (result.kind) {
+    case 'recorded':
+      continuation = result.continuation;
+      break;
+    case 'recording-not-applicable':
+      continuation = result.continuationWithoutRecording;
+      break;
+    case 'recording-incidents':
+      continuation = result.observedWork;
+      publicationIncidents = result.publicationIncidents;
+      renderHandoffPublicationIncidents(
+        statusInvocation
+          ? result.publicationIncidents
+          : result.publicationIncidents.filter((incident) => incident.phase === 'terminal'),
+      );
+      break;
+    default:
+      return assertNever(result);
+  }
+
   switch (continuation.kind) {
     case 'run-current':
       cliHandoffPreflightResult = continuation;
@@ -36,7 +84,7 @@ async function executeCliHandoffPreflight(argv: readonly string[]): Promise<Hand
       switch (outcome.kind) {
         case 'handoff-success':
           renderHandoffNotice(outcome);
-          return outcome;
+          return statusInvocation && publicationIncidents.length > 0 ? { kind: 'handoff-exit', exitCode: 75 } : outcome;
         case 'handoff-exit':
         case 'handoff-signal':
           return outcome;

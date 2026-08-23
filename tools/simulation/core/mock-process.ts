@@ -16,8 +16,10 @@ import type {
   ChildProcessLike,
   ChildReadableLike,
   ChildStdinLike,
+  ProcessIdentityObservation,
   TimerHandle,
 } from '../../../src/infra/port-types.js';
+import type { RecordedProcessIdentity } from '../../../src/infra/process-containment.js';
 import type {
   DurableExecutionTransport,
   DurableLaunchOptions,
@@ -350,6 +352,20 @@ export class MockProcessSpawner {
   readProcessIncarnation(pid: number): ProcessIncarnation | null {
     const record = this.processes.get(pid);
     return record && !record.closed ? record.incarnation : null;
+  }
+
+  async observeProcessIdentities(
+    owners: readonly RecordedProcessIdentity[],
+  ): Promise<readonly ProcessIdentityObservation[]> {
+    return owners.map((owner) => {
+      if (this.observeLiveness(owner.pid) === 'absent') {
+        return { owner, evidence: { kind: 'pid-absent' as const } };
+      }
+      const incarnation = this.readProcessIncarnation(owner.pid);
+      return incarnation === null
+        ? { owner, evidence: { kind: 'unobservable' as const, cause: 'incarnation-unavailable' as const } }
+        : { owner, evidence: { kind: 'incarnation' as const, incarnation } };
+    });
   }
 
   setAlive(pid: number, alive: boolean): void {

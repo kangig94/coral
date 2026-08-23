@@ -2,6 +2,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { emitError, isAcceptedLaunchResponse } from '#src/cli/emit.js';
 import { StoreResetCliError } from '#src/cli/errors.js';
+import { HandoffRunError } from '#src/coordinator/handoff-runner.js';
+import { BackendUnreachableError, TransientHttpError } from '#src/infra/http-errors.js';
+import { BackendToolHttpError } from '#src/transport/http/errors.js';
 import { IpcRpcError } from '#src/transport/ipc/client.js';
 
 afterEach(() => {
@@ -119,5 +122,50 @@ describe('IPC authorization error emission', () => {
       'This nested Coral session cannot perform this command. Ask the top-level Coral session to run it. [code=missing_capability]\n',
     );
     expect(process.exitCode).toBe(77);
+  });
+});
+
+describe('handoff publication error emission', () => {
+  it.each([
+    {
+      label: 'backend unreachable',
+      error: () => new BackendUnreachableError('Backend could not be reached.'),
+      exitCode: 69,
+      errorTag: 'code=backend_unreachable',
+    },
+    {
+      label: 'internal error',
+      error: () => new Error('unexpected failure'),
+      exitCode: 70,
+      errorTag: 'code=internal',
+    },
+    {
+      label: 'transient error',
+      error: () => new TransientHttpError(503, 'retry later'),
+      exitCode: 75,
+      errorTag: 'code=transient',
+    },
+    {
+      label: 'permission HTTP error',
+      error: () =>
+        new BackendToolHttpError('denied', 403, {
+          code: 'missing_capability',
+          message: 'denied',
+        }),
+      exitCode: 77,
+      errorTag: 'code=missing_capability, http=403',
+    },
+  ])('preserves the $exitCode classification for a wrapped $label', ({ error, exitCode, errorTag }) => {
+    let stderr = '';
+    vi.spyOn(process.stderr, 'write').mockImplementation(((chunk: string | Uint8Array) => {
+      stderr += chunk.toString();
+      return true;
+    }) as typeof process.stderr.write);
+
+    emitError(new HandoffRunError(error(), [{ phase: 'selection', kind: 'not-published', cause: 'contended' }]));
+
+    expect(stderr).toContain('Handoff routing-status selection publication was not published (contended).\n');
+    expect(stderr).toContain(`[${errorTag}]`);
+    expect(process.exitCode).toBe(exitCode);
   });
 });

@@ -114,6 +114,7 @@ export const commandContainerPaths = new Set<string>([
   'backend kb-commit',
   'backend recovery-quarantine',
   'backend provider-host',
+  'backend routing-status',
   'backend store-reset',
   'discuss',
   'expansion',
@@ -132,6 +133,7 @@ export const commandClassExemptions = {
   'backend store-reset list': 'local operational incident inspection',
   'backend store-reset report': 'local operational incident inspection',
   'backend store-reset discard': 'operator-only direct-filesystem store quarantine',
+  'backend routing-status resolve': 'operator-only local routing journal repair',
 } as const;
 
 const providerCommandFamily = new WeakSet<Command>();

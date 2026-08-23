@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type * as FollowModule from '#src/cli/follow.js';
+import type * as HandoffNoticeModule from '#src/cli/handoff-notice.js';
+import type * as HandoffRunnerModule from '#src/coordinator/handoff-runner.js';
 import type { AcceptedLaunchResponse } from '#src/jobs/launch.js';
 import { parseSerializedWaitCursor, serializeWaitCursor, type WaitStreamEvent } from '#src/jobs/wait.js';
 import { advanceWaitRenderCursor, parseWaitStreamEvent } from '#src/jobs/wait-stream-event.js';
@@ -16,13 +18,15 @@ vi.mock('#src/transport/ipc/ensure.js', () => ({
   ensure: mockState.ensure,
 }));
 
-vi.mock('#src/coordinator/handoff-runner.js', () => ({
-  runHandoff: mockState.runHandoff,
-}));
+vi.mock('#src/coordinator/handoff-runner.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof HandoffRunnerModule>();
+  return { ...actual, runHandoff: mockState.runHandoff };
+});
 
-vi.mock('#src/cli/handoff-notice.js', () => ({
-  renderHandoffNotice: mockState.renderHandoffNotice,
-}));
+vi.mock('#src/cli/handoff-notice.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof HandoffNoticeModule>();
+  return { ...actual, renderHandoffNotice: mockState.renderHandoffNotice };
+});
 
 const launchResult = {
   kind: 'provider-session',
@@ -39,6 +43,10 @@ const waitTiming = {
 } as const;
 
 type FollowOptions = Parameters<typeof FollowModule.launchAndFollow>[0];
+
+function recorded(continuation: HandoffRunnerModule.HandoffContinuationResult): HandoffRunnerModule.HandoffRunResult {
+  return { kind: 'recorded', continuation, publicationIncidents: [] };
+}
 
 function makeOptions(overrides: Partial<FollowOptions> = {}): FollowOptions {
   return {
@@ -142,10 +150,9 @@ describe('cli follow handoff', () => {
     }) as typeof process.stdout.write);
     mockState.ensure.mockResolvedValueOnce(makeBackend(subscribe)).mockResolvedValueOnce(makeBackend());
     mockState.runHandoff
-      .mockResolvedValueOnce({
-        kind: 'run-current',
-        reason: { kind: 'routing', basis: { kind: 'incumbent-absent' } },
-      })
+      .mockResolvedValueOnce(
+        recorded({ kind: 'run-current', reason: { kind: 'routing', basis: { kind: 'incumbent-absent' } } }),
+      )
       .mockImplementationOnce(async (operation) => {
         secondRunStarted.resolve();
         expect(progressAcknowledged).toBe(false);
@@ -155,7 +162,11 @@ describe('cli follow handoff', () => {
           jobId: 'job-1',
           serializedCursor: 'eyJhZnRlclNlcSI6NH0',
         });
-        return { kind: 'delegated', outcome: { kind: 'handoff-success', version: '2.0.0' } };
+        return recorded({
+          kind: 'delegated',
+          version: '2.0.0',
+          outcome: { kind: 'handoff-success', version: '2.0.0' } as HandoffRunnerModule.HandoffOutcome,
+        });
       });
 
     const { launchAndFollow } = await import('#src/cli/follow.js');
@@ -208,10 +219,12 @@ describe('cli follow handoff', () => {
     mockState.ensure
       .mockResolvedValueOnce(makeBackend(firstSubscribe))
       .mockResolvedValueOnce(makeBackend(secondSubscribe));
-    mockState.runHandoff.mockResolvedValue({
-      kind: 'run-current',
-      reason: { kind: 'routing', basis: { kind: 'incumbent-unresolved', cause: 'health-request-failed' } },
-    });
+    mockState.runHandoff.mockResolvedValue(
+      recorded({
+        kind: 'run-current',
+        reason: { kind: 'routing', basis: { kind: 'incumbent-unresolved', cause: 'health-request-failed' } },
+      }),
+    );
 
     const { launchAndFollow } = await import('#src/cli/follow.js');
     await expect(
@@ -241,10 +254,12 @@ describe('cli follow handoff', () => {
       return true;
     }) as typeof process.stdout.write);
     mockState.ensure.mockResolvedValue(makeBackend(subscribe));
-    mockState.runHandoff.mockResolvedValue({
-      kind: 'run-current',
-      reason: { kind: 'handoff-abandoned', reason: 'stdout-drain-incomplete' },
-    });
+    mockState.runHandoff.mockResolvedValue(
+      recorded({
+        kind: 'run-current',
+        reason: { kind: 'handoff-abandoned', reason: 'stdout-drain-incomplete' },
+      }),
+    );
 
     const { launchAndFollow } = await import('#src/cli/follow.js');
     await expect(launchAndFollow(makeOptions({ emitError }))).resolves.toBe(0);
@@ -256,10 +271,9 @@ describe('cli follow handoff', () => {
   it('should preserve a delegated bounded-wait exit code of 75', async () => {
     vi.spyOn(process.stdout, 'write').mockImplementation((() => true) as typeof process.stdout.write);
     mockState.ensure.mockResolvedValue(makeBackend());
-    mockState.runHandoff.mockResolvedValue({
-      kind: 'delegated',
-      outcome: { kind: 'handoff-exit', exitCode: 75 },
-    });
+    mockState.runHandoff.mockResolvedValue(
+      recorded({ kind: 'delegated', version: '2.0.0', outcome: { kind: 'handoff-exit', exitCode: 75 } }),
+    );
 
     const { launchAndFollow } = await import('#src/cli/follow.js');
     await expect(launchAndFollow(makeOptions())).resolves.toBe(75);
@@ -268,11 +282,8 @@ describe('cli follow handoff', () => {
   });
 
   it('should preserve double Ctrl-C abort semantics while delegated waits are active', async () => {
-    const firstHandoff = createDeferred<{ kind: 'delegated'; outcome: { kind: 'handoff-signal'; signal: 'SIGINT' } }>();
-    const secondHandoff = createDeferred<{
-      kind: 'delegated';
-      outcome: { kind: 'handoff-signal'; signal: 'SIGINT' };
-    }>();
+    const firstHandoff = createDeferred<HandoffRunnerModule.HandoffRunResult>();
+    const secondHandoff = createDeferred<HandoffRunnerModule.HandoffRunResult>();
     const secondRunStarted = createDeferred<void>();
     const abortJob = vi.fn().mockResolvedValue(undefined);
     vi.spyOn(process.stdout, 'write').mockImplementation(((
@@ -294,11 +305,15 @@ describe('cli follow handoff', () => {
 
     sigintHandler?.();
     expect(abortJob).not.toHaveBeenCalled();
-    firstHandoff.resolve({ kind: 'delegated', outcome: { kind: 'handoff-signal', signal: 'SIGINT' } });
+    firstHandoff.resolve(
+      recorded({ kind: 'delegated', version: '2.0.0', outcome: { kind: 'handoff-signal', signal: 'SIGINT' } }),
+    );
     await secondRunStarted.promise;
 
     sigintHandler?.();
-    secondHandoff.resolve({ kind: 'delegated', outcome: { kind: 'handoff-signal', signal: 'SIGINT' } });
+    secondHandoff.resolve(
+      recorded({ kind: 'delegated', version: '2.0.0', outcome: { kind: 'handoff-signal', signal: 'SIGINT' } }),
+    );
     await expect(follow).resolves.toBe(1);
 
     expect(abortJob).toHaveBeenCalledOnce();

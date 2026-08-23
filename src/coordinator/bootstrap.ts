@@ -3,7 +3,7 @@ declare const __PLUGIN_ROOT__: string | undefined;
 
 import { auditBootstrapFailure, writeBootstrapDiagnostic, writeStartupErrorSentinel } from './bootstrap-diagnostics.js';
 import { BackendAlreadyRunningError } from './handoff.js';
-import { runHandoff } from './handoff-runner.js';
+import { HandoffRunError, runHandoff, type HandoffPublicationIncident } from './handoff-runner.js';
 import { createCoordinatorServer } from './index.js';
 import { StartupStoreHandoffError } from './lifecycle.js';
 import { runKbDaemonMain } from '../kb-daemon/daemon-main.js';
@@ -74,10 +74,35 @@ export async function handoffStartupToSelectedBuild(
   startupError: StartupStoreHandoffError,
 ): Promise<Readonly<{ kind: 'started' }> | Readonly<{ kind: 'failed'; error: unknown }>> {
   try {
-    const continuation = await runHandoff(
+    const result = await runHandoff(
       { kind: 'backend-startup' },
-      { pluginRoot, activeSelectionTarget: startupError.target },
+      {
+        pluginRoot,
+        activeSelectionTarget: startupError.target,
+        onSelectionPublicationIncident: logStartupHandoffPublicationIncident,
+      },
     );
+    let continuation;
+    switch (result.kind) {
+      case 'recorded':
+        continuation = result.continuation;
+        break;
+      case 'recording-not-applicable':
+        continuation = result.continuationWithoutRecording;
+        break;
+      case 'recording-incidents':
+        continuation = result.observedWork;
+        result.publicationIncidents
+          .filter((incident) => incident.phase === 'terminal')
+          .forEach(logStartupHandoffPublicationIncident);
+        break;
+    }
+    if (continuation.kind === 'run-current') {
+      return {
+        kind: 'failed',
+        error: new Error('Selected backend startup handoff did not delegate to the selected build.'),
+      };
+    }
     switch (continuation.outcome.kind) {
       case 'handoff-success':
         return { kind: 'started' };
@@ -97,8 +122,16 @@ export async function handoffStartupToSelectedBuild(
         };
     }
   } catch (error: unknown) {
+    if (error instanceof HandoffRunError) {
+      error.incidents.filter((incident) => incident.phase === 'terminal').forEach(logStartupHandoffPublicationIncident);
+      return { kind: 'failed', error: error.originalError };
+    }
     return { kind: 'failed', error };
   }
+}
+
+function logStartupHandoffPublicationIncident(incident: HandoffPublicationIncident): void {
+  backendLog.warn(`Backend startup handoff routing-status publication incident: ${JSON.stringify(incident)}`);
 }
 
 export async function main(): Promise<number> {

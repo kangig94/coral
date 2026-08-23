@@ -194,6 +194,18 @@ export function createForeignTargetValidator(): ForeignTargetValidator {
   };
 }
 
+export function inspectValidatedHandoffTarget(target: ValidatedHandoffTarget): Readonly<{
+  build: Readonly<Pick<StrictBundleManifest, 'version' | 'buildSetId' | 'bundleHash' | 'flavor'>>;
+}> {
+  const state = validatedTargets.get(target);
+  if (state === undefined) {
+    throw new Error('Handoff target was not produced by the live foreign-target authority.');
+  }
+
+  const { version, buildSetId, bundleHash, flavor } = state.evidence.expectedManifest;
+  return Object.freeze({ build: Object.freeze({ version, buildSetId, bundleHash, flavor }) });
+}
+
 export function withValidatedHandoffTarget(target: ValidatedHandoffTarget): ValidatedTargetExecution {
   const state = validatedTargets.get(target);
   if (state === undefined) {

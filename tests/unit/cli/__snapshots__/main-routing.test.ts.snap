@@ -10,6 +10,7 @@ Options:
 
 Commands:
   status               Show backend daemon status
+  routing-status       Inspect and repair routing status
   shutdown             Gracefully shut down backend daemon
   recovery-quarantine  Inspect or retry retained recovery failures
   provider-host        Inspect and evict provider hosts

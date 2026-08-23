@@ -839,9 +839,13 @@ describe('backend store-reset commands', () => {
     const target = Object.freeze({}) as ValidatedHandoffTarget;
     const discard = vi.fn(async () => ({ kind: 'handoff' as const, target, source: 'active-selection' as const }));
     mockState.runHandoff.mockResolvedValue({
-      kind: 'delegated',
-      version: '2.0.0',
-      outcome: { kind: 'handoff-success', version: '2.0.0' },
+      kind: 'recorded',
+      continuation: {
+        kind: 'delegated',
+        version: '2.0.0',
+        outcome: { kind: 'handoff-success', version: '2.0.0' },
+      },
+      publicationIncidents: [],
     });
     const operations: StoreResetCommandOperations = {
       list: () => ({ incidents: [] }),
@@ -866,11 +870,52 @@ describe('backend store-reset commands', () => {
     expect(process.exitCode).toBeUndefined();
   });
 
+  it('reports both publication phases without replacing the delegated discard exit', async () => {
+    const target = Object.freeze({}) as ValidatedHandoffTarget;
+    mockState.runHandoff.mockImplementationOnce(async (_operation, options) => {
+      options.onSelectionPublicationIncident({
+        phase: 'selection',
+        kind: 'not-published',
+        cause: 'contended',
+      });
+      return {
+        kind: 'recording-incidents',
+        observedWork: {
+          kind: 'delegated',
+          version: '2.0.0',
+          outcome: { kind: 'handoff-exit', exitCode: 23 },
+        },
+        publicationIncidents: [
+          { phase: 'selection', kind: 'not-published', cause: 'contended' },
+          { phase: 'terminal', kind: 'undeterminable', cause: 'io-failed', errcode: 5 },
+        ],
+      };
+    });
+    const operations: StoreResetCommandOperations = {
+      list: () => ({ incidents: [] }),
+      report: async () => publicReport(),
+      discard: async () => ({ kind: 'handoff', target, source: 'active-selection' }),
+    };
+
+    await runCommand(['backend', 'store-reset', 'discard', '--target', 'gen2', '--flavor', 'prod'], operations);
+
+    expect(stderr).toBe(
+      'Handoff routing-status selection publication was not published (contended).\n' +
+        'Handoff routing-status terminal publication could not be determined (io-failed, errcode 5).\n' +
+        'Coral 2.0.0 ran the delegated store-reset command.\n',
+    );
+    expect(process.exitCode).toBe(23);
+  });
+
   it('exits transiently when this process cannot finish preparing the discard handoff', async () => {
     const target = Object.freeze({}) as ValidatedHandoffTarget;
     mockState.runHandoff.mockResolvedValue({
-      kind: 'run-current',
-      reason: { kind: 'handoff-abandoned', reason: 'stdout-drain-incomplete' },
+      kind: 'recorded',
+      continuation: {
+        kind: 'run-current',
+        reason: { kind: 'handoff-abandoned', reason: 'stdout-drain-incomplete' },
+      },
+      publicationIncidents: [],
     });
     const operations: StoreResetCommandOperations = {
       list: () => ({ incidents: [] }),
@@ -899,7 +944,11 @@ describe('backend store-reset commands', () => {
   ])('names the newer build before mirroring a delegated discard $label', async ({ outcome }) => {
     const target = Object.freeze({}) as ValidatedHandoffTarget;
     const kill = vi.spyOn(process, 'kill').mockReturnValue(true);
-    mockState.runHandoff.mockResolvedValue({ kind: 'delegated', version: '2.0.0', outcome });
+    mockState.runHandoff.mockResolvedValue({
+      kind: 'recorded',
+      continuation: { kind: 'delegated', version: '2.0.0', outcome },
+      publicationIncidents: [],
+    });
     const operations: StoreResetCommandOperations = {
       list: () => ({ incidents: [] }),
       report: async () => publicReport(),

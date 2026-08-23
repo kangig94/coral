@@ -27,11 +27,7 @@ import {
   type IncumbentIdentitySummary,
   type RoutingBasisObligation,
 } from './handoff-routing.js';
-import {
-  ABSENT_HANDOFF_RESULT_OBLIGATION,
-  HANDOFF_CONTINUATION_REASON_OBLIGATIONS,
-  type HandoffContinuationReason,
-} from './handoff-runner.js';
+import type { ABSENT_HANDOFF_RESULT_OBLIGATION, HANDOFF_CONTINUATION_REASON_OBLIGATIONS } from './handoff-runner.js';
 
 export const HANDOFF_ROUTING_STATUS_GENERATION = 1;
 export const MAX_HANDOFF_ROUTING_STATUS_BYTES = 1_048_576;
@@ -39,6 +35,7 @@ export const MAX_RETIREMENT_TOMBSTONES = 128;
 export const MAX_RETIREMENT_TOMBSTONE_BYTES = 262_144;
 export const MAX_ENCODED_RETIREMENT_TOMBSTONE_BYTES = 2_048;
 export const MAX_UNRESOLVED_INVOCATIONS = 64;
+export const MAX_HANDOFF_ROUTING_OWNER_SWEEP_MS = 500;
 export const MAX_COMPLETED_HANDOFF_ROUTING_PAIRS = 256;
 export const HANDOFF_ROUTING_COMPLETED_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 
@@ -187,6 +184,26 @@ export type ObligationPolicyProjection =
   | Readonly<{ kind: 'ephemeral'; policy: Extract<RoutingStatusPolicy, { durability: 'ephemeral' }> }>
   | Readonly<{ kind: 'persisted'; policy: Extract<RoutingStatusPolicy, { durability: 'lifecycle-journal' }> }>;
 
+type ObligationPolicyProjectionFor<Obligation extends RoutingBasisObligation> =
+  Obligation['requiredDurability'] extends 'ephemeral-allowed'
+    ? Readonly<{
+        kind: 'ephemeral';
+        policy: Readonly<{
+          durability: 'ephemeral';
+          severity: Obligation['severity'];
+          exitContribution: Obligation['exitContribution'];
+        }>;
+      }>
+    : Readonly<{
+        kind: 'persisted';
+        policy: Readonly<{
+          durability: 'lifecycle-journal';
+          retention: Obligation['requiredRetention'];
+          severity: Obligation['severity'];
+          exitContribution: Obligation['exitContribution'];
+        }>;
+      }>;
+
 export function projectRoutingObligationToPolicy(obligation: RoutingBasisObligation): ObligationPolicyProjection {
   if (obligation.requiredDurability === 'ephemeral-allowed') {
     return {
@@ -235,18 +252,34 @@ export const HANDOFF_ROUTING_BASIS_POLICIES: Readonly<
   'invalid-incumbent-target': requirePersistedProjection(HANDOFF_ROUTING_BASIS_OBLIGATIONS['invalid-incumbent-target']),
 });
 
-export const HANDOFF_CONTINUATION_REASON_POLICY_PROJECTIONS: Readonly<
-  Record<Exclude<HandoffContinuationReason['kind'], 'routing'>, ObligationPolicyProjection>
-> = Object.freeze({
-  'handoff-not-applicable': projectRoutingObligationToPolicy(
-    HANDOFF_CONTINUATION_REASON_OBLIGATIONS['handoff-not-applicable'],
-  ),
-  'handoff-abandoned': projectRoutingObligationToPolicy(HANDOFF_CONTINUATION_REASON_OBLIGATIONS['handoff-abandoned']),
+type HandoffContinuationReasonObligations = typeof HANDOFF_CONTINUATION_REASON_OBLIGATIONS;
+
+export const HANDOFF_CONTINUATION_REASON_POLICY_PROJECTIONS: Readonly<{
+  [Kind in keyof HandoffContinuationReasonObligations]: ObligationPolicyProjectionFor<
+    HandoffContinuationReasonObligations[Kind]
+  >;
+}> = Object.freeze({
+  'handoff-not-applicable': {
+    kind: 'ephemeral',
+    policy: { durability: 'ephemeral', severity: 'info', exitContribution: 0 },
+  },
+  'handoff-abandoned': {
+    kind: 'persisted',
+    policy: {
+      durability: 'lifecycle-journal',
+      retention: 'bounded-history',
+      severity: 'warning',
+      exitContribution: 75,
+    },
+  },
 });
 
-export const ABSENT_HANDOFF_RESULT_POLICY_PROJECTION = projectRoutingObligationToPolicy(
-  ABSENT_HANDOFF_RESULT_OBLIGATION,
-);
+export const ABSENT_HANDOFF_RESULT_POLICY_PROJECTION: ObligationPolicyProjectionFor<
+  typeof ABSENT_HANDOFF_RESULT_OBLIGATION
+> = Object.freeze({
+  kind: 'ephemeral',
+  policy: { durability: 'ephemeral', severity: 'info', exitContribution: 0 },
+} as const);
 
 const recordedProcessIdentitySchema: z.ZodType<RecordedProcessIdentity> = z
   .object({
@@ -1300,6 +1333,32 @@ export type HandoffRoutingStatusReadResult =
 
 export type HandoffRoutingOwnerLivenessProbe = (owner: RecordedProcessIdentity) => OwnerLiveness;
 
+export type HandoffRoutingResolveRequest = Readonly<{
+  invocationId: string;
+  forceUnobservable: boolean;
+}>;
+
+export type HandoffRoutingResolveResult =
+  | Readonly<{
+      kind: 'resolved';
+      invocationId: string;
+      reason: 'owner-absent' | 'operator-abandoned-unobservable';
+      sequence: number;
+    }>
+  | Readonly<{ kind: 'stale'; invocationId: string }>
+  | Readonly<{ kind: 'already-terminal'; invocationId: string }>
+  | Readonly<{ kind: 'live-owner'; invocationId: string }>
+  | Readonly<{
+      kind: 'unauthorized-unobservable';
+      invocationId: string;
+      cause: Extract<OwnerLiveness, { kind: 'unobservable' }>['cause'];
+    }>
+  | Readonly<{
+      kind: 'status-unavailable';
+      status: Exclude<HandoffRoutingStatusReadResult, { kind: 'current' }>;
+    }>
+  | Readonly<{ kind: 'not-published'; outcome: Exclude<PublicationOutcome, { kind: 'committed' }> }>;
+
 const statusReadRowSchema = z
   .object({
     sequence: positiveSequenceSchema,
@@ -1646,6 +1705,147 @@ export function readHandoffRoutingStatus(
     statuses: projection.statuses,
     retirementHistoryTruncated: retirementHistory.data,
   };
+}
+
+function observationProbe(
+  observations: Awaited<ReturnType<Runtime['process']['observeProcessIdentities']>>,
+): HandoffRoutingOwnerLivenessProbe {
+  return (owner) => {
+    const observation = observations.find(
+      (candidate) => candidate.owner.pid === owner.pid && candidate.owner.incarnation === owner.incarnation,
+    );
+    if (observation === undefined) return { kind: 'unobservable', cause: 'probe-failed' };
+    switch (observation.evidence.kind) {
+      case 'pid-absent':
+        return { kind: 'absent' };
+      case 'incarnation':
+        return observation.evidence.incarnation === owner.incarnation ? { kind: 'alive' } : { kind: 'absent' };
+      case 'unobservable':
+        return observation.evidence;
+      default:
+        return assertNever(observation.evidence);
+    }
+  };
+}
+
+export async function readHandoffRoutingStatusWithOwnerObservations(
+  runtime: Pick<Runtime, 'storage' | 'process'>,
+  path: string,
+): Promise<HandoffRoutingStatusReadResult> {
+  const initial = readHandoffRoutingStatus(runtime, path);
+  if (initial.kind !== 'current') return initial;
+  const owners = initial.statuses.flatMap((status) => (status.kind === 'unresolved' ? [status.selection.owner] : []));
+  if (owners.length === 0) return initial;
+  let observations: Awaited<ReturnType<Runtime['process']['observeProcessIdentities']>>;
+  try {
+    observations = await runtime.process.observeProcessIdentities(
+      owners.slice(0, MAX_UNRESOLVED_INVOCATIONS),
+      MAX_HANDOFF_ROUTING_OWNER_SWEEP_MS,
+    );
+  } catch {
+    observations = owners.map((owner) => ({
+      owner,
+      evidence: { kind: 'unobservable', cause: 'probe-failed' },
+    }));
+  }
+  return readHandoffRoutingStatus(runtime, path, observationProbe(observations));
+}
+
+function statusInvocationId(status: HandoffRoutingInvocationStatus): string {
+  switch (status.kind) {
+    case 'unresolved':
+      return status.selection.invocationId;
+    case 'terminal':
+      return status.terminal.invocationId;
+    case 'retired':
+      return status.tombstone.invocationId;
+    default:
+      return assertNever(status);
+  }
+}
+
+export async function resolveHandoffRoutingStatus(
+  runtime: Pick<Runtime, 'storage' | 'process' | 'time' | 'ids'>,
+  path: string,
+  request: HandoffRoutingResolveRequest,
+  signal?: AbortSignal,
+): Promise<HandoffRoutingResolveResult> {
+  const statusRead = await readHandoffRoutingStatusWithOwnerObservations(runtime, path);
+  if (statusRead.kind !== 'current') {
+    return statusRead.kind === 'absent'
+      ? { kind: 'stale', invocationId: request.invocationId }
+      : { kind: 'status-unavailable', status: statusRead };
+  }
+
+  const status = statusRead.statuses.find((candidate) => statusInvocationId(candidate) === request.invocationId);
+  if (status === undefined) return { kind: 'stale', invocationId: request.invocationId };
+  if (status.kind === 'terminal') return { kind: 'already-terminal', invocationId: request.invocationId };
+  if (status.kind === 'retired') {
+    return status.tombstone.retirementCause === 'operator-resolved' || status.tombstone.terminalExisted
+      ? { kind: 'already-terminal', invocationId: request.invocationId }
+      : { kind: 'stale', invocationId: request.invocationId };
+  }
+
+  let reason: 'owner-absent' | 'operator-abandoned-unobservable';
+  switch (status.ownerLiveness.kind) {
+    case 'alive':
+      return { kind: 'live-owner', invocationId: request.invocationId };
+    case 'absent':
+      reason = 'owner-absent';
+      break;
+    case 'unobservable':
+      if (!request.forceUnobservable || status.ownerLiveness.cause === 'deadline-expired') {
+        return {
+          kind: 'unauthorized-unobservable',
+          invocationId: request.invocationId,
+          cause: status.ownerLiveness.cause,
+        };
+      }
+      reason = 'operator-abandoned-unobservable';
+      break;
+    default:
+      return assertNever(status.ownerLiveness);
+  }
+
+  const outcome = await publishHandoffRoutingTransitions(
+    runtime,
+    path,
+    [
+      {
+        kind: 'operator-resolved',
+        eventId: runtime.ids.uuid(),
+        invocationId: request.invocationId,
+        observedAt: new Date(runtime.time.now()).toISOString(),
+        selectionSequence: status.selection.sequence,
+        reason,
+      },
+    ],
+    signal,
+  );
+  return outcome.kind === 'committed'
+    ? { kind: 'resolved', invocationId: request.invocationId, reason, sequence: outcome.sequence }
+    : { kind: 'not-published', outcome };
+}
+
+export function handoffRoutingStatusExitContribution(result: HandoffRoutingStatusReadResult): 0 | 75 {
+  if (result.kind === 'absent') return 0;
+  if (result.kind !== 'current') return 75;
+  if (result.retirementHistoryTruncated.causes['selection-evicted-at-capacity'] > 0) return 75;
+  for (const status of result.statuses) {
+    if (status.kind === 'unresolved') {
+      if (status.ownerLiveness.kind === 'absent') return 75;
+      if (status.ownerLiveness.kind === 'unobservable' && status.ownerLiveness.cause !== 'probe-not-available') {
+        return 75;
+      }
+      continue;
+    }
+    if (status.kind === 'retired') {
+      if (status.tombstone.retirementCause !== 'completed-pair-compaction') return 75;
+      continue;
+    }
+    if (persistedHandoffDispositionPolicy(status.terminal.disposition).exitContribution === 75) return 75;
+  }
+  return 0;
 }
 
 const MAX_TEXT = '\u0800';

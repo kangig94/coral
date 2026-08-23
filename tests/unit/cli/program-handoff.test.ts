@@ -43,10 +43,15 @@ vi.mock('#src/cli/plugin-root.js', () => ({
 const GUARD_ENV = 'CORAL_CLI_HANDOFF_DELEGATED';
 
 type HandoffOutcome = HandoffRunnerMod.HandoffOutcome;
+type HandoffContinuationResult = HandoffRunnerMod.HandoffContinuationResult;
 type ProgramModule = typeof ProgramMod;
 
 function handoffSuccess(): HandoffOutcome {
   return { kind: 'handoff-success', version: '2.3.4' } as HandoffOutcome;
+}
+
+function recorded(continuation: HandoffContinuationResult): HandoffRunnerMod.HandoffRunResult {
+  return { kind: 'recorded', continuation, publicationIncidents: [] };
 }
 
 function commandWithAction(action: () => void): Command {
@@ -97,18 +102,20 @@ describe('program', () => {
       stdout.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'));
       return true;
     }) as typeof process.stdout.write);
-    mockState.runHandoff.mockResolvedValue({
-      kind: 'run-current',
-      reason: {
-        kind: 'routing',
-        basis: {
-          kind: 'invoking-build-not-older',
-          comparison: 'newer-version',
-          invoking: { version: '2.0.0', buildSetId: 'invoking', bundleHash: 'invoking-hash', flavor: 'prod' },
-          incumbent: { version: '1.0.0', buildSetId: 'incumbent', bundleHash: 'incumbent-hash', flavor: 'prod' },
+    mockState.runHandoff.mockResolvedValue(
+      recorded({
+        kind: 'run-current',
+        reason: {
+          kind: 'routing',
+          basis: {
+            kind: 'invoking-build-not-older',
+            comparison: 'newer-version',
+            invoking: { version: '2.0.0', buildSetId: 'invoking', bundleHash: 'invoking-hash', flavor: 'prod' },
+            incumbent: { version: '1.0.0', buildSetId: 'incumbent', bundleHash: 'incumbent-hash', flavor: 'prod' },
+          },
         },
-      },
-    });
+      }),
+    );
     const { buildProgram, parseProgramWithHandoff } = await loadProgramFresh();
     const program = buildProgram();
 
@@ -129,7 +136,7 @@ describe('program', () => {
     const order: string[] = [];
     mockState.runHandoff.mockImplementation(async () => {
       order.push('preflight');
-      return { kind: 'run-current', reason: { kind: 'routing', basis: { kind: 'incumbent-absent' } } };
+      return recorded({ kind: 'run-current', reason: { kind: 'routing', basis: { kind: 'incumbent-absent' } } });
     });
     const { parseProgramWithHandoff, runCliHandoffPreflight } = await loadProgramFresh();
     const program = commandWithAction(() => order.push('dispatch'));
@@ -143,13 +150,13 @@ describe('program', () => {
     expect(mockState.runHandoff).toHaveBeenCalledOnce();
     expect(mockState.runHandoff).toHaveBeenCalledWith(
       { kind: 'cli-invocation', argv: ['node', 'coral-cli', 'run'] },
-      { pluginRoot: '/plugin/root' },
+      { pluginRoot: '/plugin/root', onSelectionPublicationIncident: expect.any(Function) },
     );
   });
 
   it('should return a successful delegated outcome and render its notice without local dispatch', async () => {
     const success = handoffSuccess();
-    mockState.runHandoff.mockResolvedValue({ kind: 'delegated', outcome: success });
+    mockState.runHandoff.mockResolvedValue(recorded({ kind: 'delegated', version: '2.3.4', outcome: success }));
     const { parseProgramWithHandoff, runCliHandoffPreflight } = await loadProgramFresh();
     const dispatch = vi.fn();
     const argv = ['node', 'coral-cli', 'backend', 'status'];
@@ -171,7 +178,7 @@ describe('program', () => {
     { kind: 'handoff-exit', exitCode: 23 },
     { kind: 'handoff-signal', signal: 'SIGTERM' },
   ])('should return $kind without a notice or local dispatch', async (handoffOutcome) => {
-    mockState.runHandoff.mockResolvedValue({ kind: 'delegated', outcome: handoffOutcome });
+    mockState.runHandoff.mockResolvedValue(recorded({ kind: 'delegated', version: '2.3.4', outcome: handoffOutcome }));
     const { parseProgramWithHandoff } = await loadProgramFresh();
     const dispatch = vi.fn();
 
@@ -180,5 +187,61 @@ describe('program', () => {
     expect(outcome).toEqual(handoffOutcome);
     expect(dispatch).not.toHaveBeenCalled();
     expect(mockState.renderHandoffNotice).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { childOutcome: { kind: 'handoff-success' as const, version: '2.3.4' }, expectedExit: 75 },
+    { childOutcome: { kind: 'handoff-exit' as const, exitCode: 69 }, expectedExit: 69 },
+    { childOutcome: { kind: 'handoff-exit' as const, exitCode: 70 }, expectedExit: 70 },
+    { childOutcome: { kind: 'handoff-exit' as const, exitCode: 77 }, expectedExit: 77 },
+  ])('should preserve delegated status exit arbitration at $expectedExit', async ({ childOutcome, expectedExit }) => {
+    let stderr = '';
+    vi.spyOn(process.stderr, 'write').mockImplementation(((chunk: string | Uint8Array) => {
+      stderr += chunk.toString();
+      return true;
+    }) as typeof process.stderr.write);
+    mockState.runHandoff.mockResolvedValue({
+      kind: 'recording-incidents',
+      observedWork: { kind: 'delegated', version: '2.3.4', outcome: childOutcome },
+      publicationIncidents: [{ phase: 'terminal', kind: 'not-published', cause: 'contended' }],
+    });
+    const { parseProgramWithHandoff } = await loadProgramFresh();
+
+    const outcome = await parseProgramWithHandoff(commandWithAction(vi.fn()), [
+      'node',
+      'coral-cli',
+      'backend',
+      'status',
+    ]);
+
+    expect(outcome).toEqual(
+      expectedExit === 75 ? { kind: 'handoff-exit', exitCode: 75 } : { kind: 'handoff-exit', exitCode: expectedExit },
+    );
+    expect(stderr).toContain('Handoff routing-status terminal publication was not published (contended).');
+  });
+
+  it('should append delegated status publication notices after the child exits', async () => {
+    const order: string[] = [];
+    vi.spyOn(process.stderr, 'write').mockImplementation((() => {
+      order.push('parent-notice');
+      return true;
+    }) as typeof process.stderr.write);
+    mockState.runHandoff.mockImplementation(async () => {
+      order.push('child-exit');
+      return {
+        kind: 'recording-incidents',
+        observedWork: {
+          kind: 'delegated',
+          version: '2.3.4',
+          outcome: { kind: 'handoff-success', version: '2.3.4' },
+        },
+        publicationIncidents: [{ phase: 'selection', kind: 'not-published', cause: 'contended' }],
+      };
+    });
+    const { parseProgramWithHandoff } = await loadProgramFresh();
+
+    await parseProgramWithHandoff(commandWithAction(vi.fn()), ['node', 'coral-cli', 'backend', 'status']);
+
+    expect(order).toEqual(['child-exit', 'parent-notice']);
   });
 });

@@ -58,6 +58,7 @@ export class SimulationRuntime implements Runtime {
     };
     simulationProcess.observeLiveness = (pid) => this.spawner.observeLiveness(pid);
     simulationProcess.readProcessIncarnation = (pid) => this.spawner.readProcessIncarnation(pid);
+    simulationProcess.observeProcessIdentities = (owners) => this.spawner.observeProcessIdentities(owners);
     simulationProcess.durable = this.spawner.durable;
 
     simulationProcess.exec = (command, args, options = {}) => {

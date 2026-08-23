@@ -12,6 +12,7 @@ import { createDeferred } from '#tools/testing/deferred.js';
 import { openStoreDatabase } from '#src/store/db.js';
 import { storePaths } from '#src/infra/path/store.js';
 import type * as FollowMod from '#src/cli/follow.js';
+import type * as HandoffRunnerMod from '#src/coordinator/handoff-runner.js';
 import { buildErrorEnvelope } from '#src/cli/errors.js';
 import { formatLaunch } from '#src/cli/format/jobs.js';
 import { formatWaitProgress, formatWaitQueued, formatWaitTerminal } from '#src/cli/format/wait.js';
@@ -26,9 +27,10 @@ vi.mock('#src/transport/ipc/ensure.js', () => ({
   ensure: mockState.ensure,
 }));
 
-vi.mock('#src/coordinator/handoff-runner.js', () => ({
-  runHandoff: mockState.runHandoff,
-}));
+vi.mock('#src/coordinator/handoff-runner.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof HandoffRunnerMod>();
+  return { ...actual, runHandoff: mockState.runHandoff };
+});
 
 type FollowModule = typeof FollowMod;
 
@@ -289,9 +291,11 @@ describe('cli follow', () => {
     sigintHandler = null;
     process.exitCode = undefined;
     mockState.ensure.mockReset();
-    mockState.runHandoff
-      .mockReset()
-      .mockResolvedValue({ kind: 'run-current', reason: { kind: 'routing', basis: { kind: 'incumbent-absent' } } });
+    mockState.runHandoff.mockReset().mockResolvedValue({
+      kind: 'recorded',
+      continuation: { kind: 'run-current', reason: { kind: 'routing', basis: { kind: 'incumbent-absent' } } },
+      publicationIncidents: [],
+    });
     mockState.subscribe.mockReset();
 
     vi.spyOn(process.stdout, 'write').mockImplementation(((
@@ -377,6 +381,39 @@ describe('cli follow', () => {
         signal: expect.any(AbortSignal),
       },
     );
+  });
+
+  it('surfaces both publication phases without aborting the subscription', async () => {
+    const { launchAndFollow } = await loadFollowModule();
+    mockState.ensure.mockResolvedValueOnce(makeBackend());
+    mockState.runHandoff.mockImplementationOnce(async (_operation, options) => {
+      options.onSelectionPublicationIncident({
+        phase: 'selection',
+        kind: 'not-published',
+        cause: 'contended',
+      });
+      return {
+        kind: 'recording-incidents',
+        observedWork: { kind: 'run-current', reason: { kind: 'routing', basis: { kind: 'incumbent-absent' } } },
+        publicationIncidents: [
+          { phase: 'selection', kind: 'not-published', cause: 'contended' },
+          { phase: 'terminal', kind: 'undeterminable', cause: 'io-failed', errcode: 5 },
+        ],
+      };
+    });
+    mockState.subscribe.mockResolvedValueOnce(
+      makeSubscription(async function* () {
+        yield makeTerminalEvent();
+      }),
+    );
+
+    await expect(launchAndFollow(makeOptions())).resolves.toBe(0);
+
+    expect(stderr).toBe(
+      'Handoff routing-status selection publication was not published (contended).\n' +
+        'Handoff routing-status terminal publication could not be determined (io-failed, errcode 5).\n',
+    );
+    expect(mockState.subscribe).toHaveBeenCalledOnce();
   });
 
   it('emits launch, queued, progress, waiting, and terminal text output with cursor resume', async () => {

@@ -8,6 +8,8 @@ import {
 } from '#src/cli/commands/backend.js';
 import { formatBackendStatus, formatHandoffContinuationReason } from '#src/cli/format/backend.js';
 import type { HandoffContinuationReason } from '#src/coordinator/handoff-runner.js';
+import type { HandoffRoutingStatusReadResult } from '#src/coordinator/handoff-routing-status.js';
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { createRecoveryComponent } from '#src/coordinator/runtime-components/recovery-component.js';
 import { createRuntimeComponentRegistry } from '#src/coordinator/runtime-components/registry.js';
 import { RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
@@ -62,6 +64,7 @@ describe('backend status generation readiness', () => {
       }),
       getStatus: async () => ({ status: 'not_running' }),
       getLiveHandoffResult: () => null,
+      getRoutingStatus: async () => ({ kind: 'absent' }),
     };
     const program = new Command();
     program.exitOverride();
@@ -83,6 +86,7 @@ describe('backend status generation readiness', () => {
         phase: 'startup_failed',
       }),
       getLiveHandoffResult: () => null,
+      getRoutingStatus: async () => ({ kind: 'absent' }),
     };
     const program = new Command();
     program.exitOverride();
@@ -129,6 +133,7 @@ describe('backend status live handoff disposition', () => {
           },
         },
       }),
+      getRoutingStatus: async () => ({ kind: 'absent' }),
     };
     const program = new Command();
     program.exitOverride();
@@ -161,6 +166,7 @@ describe('backend status live handoff disposition', () => {
           },
         },
       }),
+      getRoutingStatus: async () => ({ kind: 'absent' }),
     };
     const program = new Command();
     program.exitOverride();
@@ -172,6 +178,64 @@ describe('backend status live handoff disposition', () => {
       'Backend not running. Any coral-cli mutating command (or a Claude Code session start) relaunches it.\n',
     );
     expect(process.exitCode).toBe(0);
+  });
+});
+
+describe('backend routing status', () => {
+  it('renders an unresolved invocation ID and contributes exit 75 for an absent owner', async () => {
+    const invocationId = '123e4567-e89b-42d3-a456-426614174000';
+    const routingStatus: HandoffRoutingStatusReadResult = {
+      kind: 'current',
+      generation: 1,
+      statuses: [
+        {
+          kind: 'unresolved',
+          selection: {
+            generation: 1,
+            sequence: 1,
+            eventId: 'event-1',
+            invocationId,
+            observedAt: '2026-08-03T00:00:00.000Z',
+            eventKind: 'routing-selected',
+            phase: 'selection',
+            owner: { pid: 101, incarnation: testIncarnation(101) },
+            disposition: {
+              kind: 'continue-current',
+              basis: { kind: 'same-build-set', buildSetId: '123e4567-e89b-42d3-a456-426614174000' },
+            },
+          },
+          ownerLiveness: { kind: 'absent' },
+        },
+      ],
+      retirementHistoryTruncated: {
+        kind: 'retirement-history-truncated',
+        expiredIdentityCount: 0,
+        causes: {
+          'selection-evicted-at-capacity': 0,
+          'completed-pair-compaction': 0,
+          'operator-resolved': 0,
+        },
+        minSelectionSequence: null,
+        maxSelectionSequence: null,
+        earliestSelectedAt: null,
+        latestSelectedAt: null,
+      },
+    };
+    const status: BackendStatusCommandOperations = {
+      inspectReadiness: () => ({ kind: 'no-legacy' }),
+      getStatus: async () => ({ status: 'not_running' }),
+      getLiveHandoffResult: () => null,
+      getRoutingStatus: async () => routingStatus,
+    };
+    const program = new Command();
+    program.exitOverride();
+    registerBackendCommands(program, { storeReset, backendStatus: status });
+
+    await program.parseAsync(['node', 'coral-cli', 'backend', 'status']);
+
+    expect(stdout).toContain(`Routing invocation ${invocationId}: unresolved; its recorded owner is absent.`);
+    expect(stdout).toContain(`backend routing-status resolve --invocation ${invocationId}`);
+    expect(process.exitCode).toBe(75);
   });
 });
 
@@ -495,6 +559,7 @@ describe('backend startup diagnostic classification', () => {
       inspectReadiness: () => ({ kind: 'no-legacy' }),
       getStatus: async () => classified,
       getLiveHandoffResult: () => null,
+      getRoutingStatus: async () => ({ kind: 'absent' }),
     };
     const program = new Command();
     program.exitOverride();

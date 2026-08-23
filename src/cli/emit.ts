@@ -1,12 +1,14 @@
 import { Option } from 'commander';
 import type { Command } from 'commander';
 
+import { HandoffRunError } from '../coordinator/handoff-runner.js';
 import { BackendToolHttpError } from '../transport/http/errors.js';
 import type { AcceptedLaunchResponse } from '../jobs/launch.js';
 import { buildErrorEnvelope } from './errors.js';
 import { formatErrorEnvelope } from './format/error.js';
 import { formatDetachedLaunchStatus, formatLaunchWaitHint } from './format/jobs.js';
 import { launchAndFollow } from './follow.js';
+import { renderHandoffPublicationIncidents } from './handoff-notice.js';
 import { isJsonObject } from './parse.js';
 import { clearPendingReadStoreNote, flushPendingReadStoreNote } from './read-store.js';
 import { type AbortCapableClient, getPluginRoot } from './dispatch.js';
@@ -54,8 +56,12 @@ export function emitText<T>(result: T, textFormatter: (data: T) => string): void
 
 export function emitError(error: unknown): void {
   clearPendingReadStoreNote();
-  const { envelope, exitCode } = buildErrorEnvelope(error);
-  const statusCode = error instanceof BackendToolHttpError ? error.statusCode : undefined;
+  const originalError = error instanceof HandoffRunError ? error.originalError : error;
+  if (error instanceof HandoffRunError) {
+    renderHandoffPublicationIncidents(error.incidents);
+  }
+  const { envelope, exitCode } = buildErrorEnvelope(originalError);
+  const statusCode = originalError instanceof BackendToolHttpError ? originalError.statusCode : undefined;
   process.stderr.write(formatErrorEnvelope(envelope, statusCode) + '\n');
   process.exitCode = exitCode;
 }
