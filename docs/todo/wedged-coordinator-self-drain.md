@@ -104,10 +104,37 @@ fault=control-channel-fault  reason=provider_authority_lost
 subject=reaper  liveClaims=2  error=The control channel closed.
 ```
 
-`PROXY_CONTROL_LEASE_MS` is 12,000 ms (`src/provider-proxy/orphan-deadline.ts`). A coordinator frozen past
-that loses the lease, and the reaper then executes `stop-and-reap` on the whole proxy set, terminating every
-live claim on it. Five provider jobs ended this way in one day. The jobs themselves were healthy; they were
+A coordinator frozen past a deadline loses provider authority, and the reaper then executes `stop-and-reap`
+on the whole proxy set, terminating every live claim on it. The jobs themselves were healthy; they were
 deliberately killed by a policy acting on the wedge.
+
+**Corrected 2026-08-24: the deadline that fires is not the lease.** This entry first named
+`PROXY_CONTROL_LEASE_MS`, 12,000 ms. The log says otherwise — what breaks first is the heartbeat RPC's own
+budget:
+
+```
+heartbeat echo failed for <set>: control.heartbeat.v1 exceeded its 5000ms budget
+Provider proxy set action=stop-and-reap reason=provider_authority_lost fault=heartbeat-failed liveClaims=7
+```
+
+`PROXY_CONTROL_RPC_TIMEOUT_MS` is 5,000 ms, and the 12,000 ms lease is the next line of defence rather than
+the one that kills jobs. That matters for anyone tempted to raise a number: the lease's own floor is
+`2 × rpc + heartbeat` through `providerProxyDeadlineTimingIsValid` (`src/provider-proxy/orphan-deadline.ts`),
+so the rpc budget is what
+sets it, not the reverse.
+
+One reaped set carried `liveClaims=7` — seven jobs ended together because one heartbeat missed its budget.
+
+**The strongest evidence is Coral measuring its own stall.** The same window records:
+
+```
+Provider proxy lifecycle containment-attempt-deadline woke 3203ms after its requested time.
+Provider proxy lifecycle containment-retry woke 1ms after its requested time.
+```
+
+A timer that asked to fire and woke three seconds late is the event loop not turning, observed from inside the
+process rather than inferred from a `D` state outside it. The retry that woke 1 ms late immediately afterwards
+shows the stall had passed. Two such episodes appear 25 minutes apart, each followed by reaped sets.
 
 The evidence that the cause is shared rather than per-proxy: **two different proxy instances lost their
 control channels two milliseconds apart** (12:22:02.609 and .611, with `liveClaims` 1 and 2). Two independent
@@ -122,8 +149,8 @@ coordinator that died from one that stalled. What was observed is "no renewal ar
 was concluded is that authority was lost. Those are not the same, and the third answer — the question could
 not be answered — has no representation at that site. Raising the constant does not reach it: a three-minute
 stall exceeds any lease value, and the timing constants are a solved inequality system
-(`providerProxyDeadlineTimingIsValid` in the same file) in which 12,000 ms is 1,000 ms above the floor set by
-`2 × PROXY_CONTROL_RPC_TIMEOUT_MS + PROXY_CONTROL_HEARTBEAT_MS`, so moving it alone breaks
+(`providerProxyDeadlineTimingIsValid` in `src/provider-proxy/orphan-deadline.ts`) in which 12,000 ms is 1,000 ms
+above the floor set by `2 × PROXY_CONTROL_RPC_TIMEOUT_MS + PROXY_CONTROL_HEARTBEAT_MS`, so moving it alone breaks
 `leaseMs + successorTail < adoptionWindow`.
 
 ## Start condition

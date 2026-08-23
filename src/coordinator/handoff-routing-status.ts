@@ -1383,6 +1383,39 @@ function errorNumber(error: unknown, fallback: number): number {
   return typeof candidate === 'number' && Number.isInteger(candidate) ? candidate : fallback;
 }
 
+function rollbackUncommittedPublication(
+  db: DatabaseSync | undefined,
+  transactionOpen: boolean,
+  commitStarted: boolean,
+): void {
+  if (db === undefined || !transactionOpen || commitStarted) return;
+  try {
+    db.exec('ROLLBACK');
+  } catch (rollbackError) {
+    void rollbackError;
+  }
+}
+
+function classifyPublicationError(error: unknown, commitStarted: boolean): PublicationOutcome {
+  if (error instanceof RejectedTransitionError) {
+    return { kind: 'not-published', cause: 'rejected-transition' };
+  }
+  if (error instanceof UnsupportedGenerationError) {
+    return { kind: 'undeterminable', cause: 'unsupported-generation', errcode: SQLITE_ERROR };
+  }
+  if (error instanceof UnreadableStatusError) {
+    return { kind: 'undeterminable', cause: 'unreadable', errcode: error.errcode };
+  }
+  const errcode = errorNumber(error, SQLITE_ERROR);
+  const primaryErrcode = errcode & 0xff;
+  if (primaryErrcode === SQLITE_FULL) return { kind: 'not-published', cause: 'capacity-exhausted' };
+  if (primaryErrcode === SQLITE_BUSY && !commitStarted) return { kind: 'not-published', cause: 'contended' };
+  if (primaryErrcode === SQLITE_NOTADB || primaryErrcode === SQLITE_CORRUPT) {
+    return { kind: 'undeterminable', cause: 'unreadable', errcode };
+  }
+  return { kind: 'undeterminable', cause: 'io-failed', errcode };
+}
+
 function publishOnce(path: string, transitions: readonly HandoffRoutingTransition[]): PublicationOutcome {
   const parsed = z.array(handoffRoutingTransitionSchema).min(1).safeParse(transitions);
   if (!parsed.success) return { kind: 'not-published', cause: 'rejected-transition' };
@@ -1409,30 +1442,8 @@ function publishOnce(path: string, transitions: readonly HandoffRoutingTransitio
     transactionOpen = false;
     return { kind: 'committed', sequence: publishedSequence };
   } catch (error) {
-    if (transactionOpen && !commitStarted && db !== undefined) {
-      try {
-        db.exec('ROLLBACK');
-      } catch (rollbackError) {
-        void rollbackError;
-      }
-    }
-    if (error instanceof RejectedTransitionError) {
-      return { kind: 'not-published', cause: 'rejected-transition' };
-    }
-    if (error instanceof UnsupportedGenerationError) {
-      return { kind: 'undeterminable', cause: 'unsupported-generation', errcode: SQLITE_ERROR };
-    }
-    if (error instanceof UnreadableStatusError) {
-      return { kind: 'undeterminable', cause: 'unreadable', errcode: error.errcode };
-    }
-    const errcode = errorNumber(error, SQLITE_ERROR);
-    const primaryErrcode = errcode & 0xff;
-    if (primaryErrcode === SQLITE_FULL) return { kind: 'not-published', cause: 'capacity-exhausted' };
-    if (primaryErrcode === SQLITE_BUSY && !commitStarted) return { kind: 'not-published', cause: 'contended' };
-    if (primaryErrcode === SQLITE_NOTADB || primaryErrcode === SQLITE_CORRUPT) {
-      return { kind: 'undeterminable', cause: 'unreadable', errcode };
-    }
-    return { kind: 'undeterminable', cause: 'io-failed', errcode };
+    rollbackUncommittedPublication(db, transactionOpen, commitStarted);
+    return classifyPublicationError(error, commitStarted);
   } finally {
     if (db !== undefined) {
       try {
@@ -1485,17 +1496,59 @@ const boundedWarningPolicy: Extract<RoutingStatusPolicy, { durability: 'lifecycl
   exitContribution: 75,
 });
 
-export function persistedHandoffDispositionPolicy(disposition: PersistedHandoffDisposition): RoutingStatusPolicy {
+type BoundedWarningDisposition = Extract<
+  PersistedHandoffDisposition,
+  {
+    kind:
+      | 'delegated-exit'
+      | 'delegated-signal'
+      | 'execution-failed'
+      | 'failed-without-selection'
+      | 'finalized-without-selection'
+      | 'terminal-without-retained-selection'
+      | 'terminal-after-operator-resolution';
+  }
+>;
+
+type RetirementDisposition = Extract<PersistedHandoffDisposition, { terminalExisted: boolean }>;
+
+const SELECTED_DISPOSITION_KINDS: Readonly<Record<SelectedHandoffDisposition['kind'], true>> = Object.freeze({
+  'continue-current': true,
+  'handoff-selected': true,
+});
+
+const BOUNDED_WARNING_DISPOSITION_KINDS: Readonly<Record<BoundedWarningDisposition['kind'], true>> = Object.freeze({
+  'delegated-exit': true,
+  'delegated-signal': true,
+  'execution-failed': true,
+  'failed-without-selection': true,
+  'finalized-without-selection': true,
+  'terminal-without-retained-selection': true,
+  'terminal-after-operator-resolution': true,
+});
+
+function isRoutingBasisDisposition(
+  disposition: PersistedHandoffDisposition,
+): disposition is DurableHandoffRoutingBasis {
+  return Object.hasOwn(HANDOFF_ROUTING_BASIS_POLICIES, disposition.kind);
+}
+
+function isSelectedDisposition(disposition: PersistedHandoffDisposition): disposition is SelectedHandoffDisposition {
+  return Object.hasOwn(SELECTED_DISPOSITION_KINDS, disposition.kind);
+}
+
+function isBoundedWarningDisposition(
+  disposition: PersistedHandoffDisposition,
+): disposition is BoundedWarningDisposition {
+  return Object.hasOwn(BOUNDED_WARNING_DISPOSITION_KINDS, disposition.kind);
+}
+
+function isRetirementDisposition(disposition: PersistedHandoffDisposition): disposition is RetirementDisposition {
+  return 'terminalExisted' in disposition;
+}
+
+function selectedDispositionPolicy(disposition: SelectedHandoffDisposition): RoutingStatusPolicy {
   switch (disposition.kind) {
-    case 'incumbent-absent':
-    case 'incumbent-unresolved':
-    case 'incumbent-unusable':
-    case 'invoking-identity-unavailable':
-    case 'incumbent-identity-unavailable':
-    case 'same-build-set':
-    case 'invoking-build-not-older':
-    case 'invalid-incumbent-target':
-      return HANDOFF_ROUTING_BASIS_POLICIES[disposition.kind];
     case 'continue-current':
       return HANDOFF_ROUTING_BASIS_POLICIES[disposition.basis.kind];
     case 'handoff-selected':
@@ -1505,6 +1558,35 @@ export function persistedHandoffDispositionPolicy(disposition: PersistedHandoffD
         severity: 'info',
         exitContribution: 0,
       };
+    default:
+      return assertNever(disposition);
+  }
+}
+
+function retirementDispositionPolicy(disposition: RetirementDisposition): RoutingStatusPolicy {
+  switch (disposition.kind) {
+    case 'selection-evicted-at-capacity':
+    case 'operator-resolved':
+      return boundedWarningPolicy;
+    case 'completed-pair-compaction':
+      return {
+        durability: 'lifecycle-journal',
+        retention: 'bounded-history',
+        severity: 'info',
+        exitContribution: 0,
+      };
+    default:
+      return assertNever(disposition.kind);
+  }
+}
+
+export function persistedHandoffDispositionPolicy(disposition: PersistedHandoffDisposition): RoutingStatusPolicy {
+  if (isRoutingBasisDisposition(disposition)) return HANDOFF_ROUTING_BASIS_POLICIES[disposition.kind];
+  if (isSelectedDisposition(disposition)) return selectedDispositionPolicy(disposition);
+  if (isRetirementDisposition(disposition)) return retirementDispositionPolicy(disposition);
+  if (isBoundedWarningDisposition(disposition)) return boundedWarningPolicy;
+
+  switch (disposition.kind) {
     case 'continued-current':
       return disposition.reason.kind === 'routing'
         ? HANDOFF_ROUTING_BASIS_POLICIES[disposition.reason.basis.kind]
@@ -1516,25 +1598,6 @@ export function persistedHandoffDispositionPolicy(disposition: PersistedHandoffD
         severity: 'info',
         exitContribution: 0,
       };
-    case 'delegated-exit':
-    case 'delegated-signal':
-    case 'execution-failed':
-    case 'failed-without-selection':
-    case 'finalized-without-selection':
-    case 'terminal-without-retained-selection':
-    case 'terminal-after-operator-resolution':
-      return boundedWarningPolicy;
-    case 'selection-evicted-at-capacity':
-      return boundedWarningPolicy;
-    case 'completed-pair-compaction':
-      return {
-        durability: 'lifecycle-journal',
-        retention: 'bounded-history',
-        severity: 'info',
-        exitContribution: 0,
-      };
-    case 'operator-resolved':
-      return boundedWarningPolicy;
     case 'retirement-history-truncated':
       return {
         durability: 'lifecycle-journal',
@@ -1618,15 +1681,37 @@ type RetirementHistoryRow = Readonly<{
   latest_selected_at: string | null;
 }>;
 
+type StatusSnapshot = Readonly<{
+  kind: 'snapshot';
+  rows: readonly unknown[];
+  reserves: readonly unknown[];
+  retirement: RetirementHistoryRow | undefined;
+}>;
+
+type StatusSnapshotReadResult =
+  | StatusSnapshot
+  | Extract<HandoffRoutingStatusReadResult, { kind: 'unreadable' | 'unsupported-generation' | 'undeterminable' }>;
+
 type InvocationRecords = {
   selection?: RoutingSelectedEvent;
   terminal?: HandoffRoutingTerminalEvent;
   tombstone?: RetirementTombstone;
 };
 
+type StoredStatusRecord = RoutingSelectedEvent | HandoffRoutingTerminalEvent | RetirementTombstone;
+
+type UnreadableStatus = Extract<HandoffRoutingStatusReadResult, { kind: 'unreadable' }>;
+
 type StatusProjection =
   | Readonly<{ kind: 'projected'; statuses: readonly HandoffRoutingInvocationStatus[] }>
-  | Extract<HandoffRoutingStatusReadResult, { kind: 'unreadable' }>;
+  | UnreadableStatus;
+
+type DecodedStatusRow = Readonly<{ kind: 'decoded'; record: StoredStatusRecord }> | UnreadableStatus;
+
+type InvocationStatusProjection =
+  | Readonly<{ kind: 'projected'; status: HandoffRoutingInvocationStatus }>
+  | Readonly<{ kind: 'empty' }>
+  | UnreadableStatus;
 
 function statusRowByteLimit(recordKind: string): number | undefined {
   switch (recordKind) {
@@ -1656,6 +1741,159 @@ function ownerLiveness(
   }
 }
 
+function decodeAndValidateStatusRow(rawRow: unknown): DecodedStatusRow {
+  const parsedRow = statusReadRowSchema.safeParse(rawRow);
+  if (!parsedRow.success) return { kind: 'unreadable', reason: 'invalid-shape' };
+  const row: StatusReadRow = parsedRow.data;
+  const byteLimit = statusRowByteLimit(row.record_kind);
+  if (byteLimit === undefined) return { kind: 'unreadable', reason: 'invalid-shape' };
+  const bodyBytes = Buffer.byteLength(row.body_json, 'utf8');
+  if (bodyBytes > byteLimit) return { kind: 'unreadable', reason: 'too-large' };
+
+  let body: unknown;
+  try {
+    body = JSON.parse(row.body_json);
+  } catch {
+    return { kind: 'unreadable', reason: 'invalid-json' };
+  }
+
+  const parsed =
+    row.record_kind === 'selection'
+      ? routingSelectedEventSchema.safeParse(body)
+      : row.record_kind === 'terminal'
+        ? terminalEventSchema.safeParse(body)
+        : retirementTombstoneSchema.safeParse(body);
+  if (!parsed.success) return { kind: 'unreadable', reason: 'invalid-shape' };
+
+  const record = parsed.data;
+  if (
+    row.encoded_bytes !== bodyBytes ||
+    row.sequence !== record.sequence ||
+    row.generation !== record.generation ||
+    row.event_id !== record.eventId ||
+    row.invocation_id !== record.invocationId ||
+    row.observed_at !== record.observedAt ||
+    row.event_kind !== record.eventKind
+  ) {
+    return { kind: 'unreadable', reason: 'invalid-shape' };
+  }
+  if (record.phase === 'selection') {
+    if (row.selection_sequence !== null || row.retirement_cause !== null || row.terminal_existed !== null) {
+      return { kind: 'unreadable', reason: 'invalid-shape' };
+    }
+  } else if (record.phase === 'terminal') {
+    const selectionSequence =
+      record.selection.kind === 'with-selection-sequence' ? record.selection.selectionSequence : null;
+    if (
+      row.selection_sequence !== selectionSequence ||
+      row.retirement_cause !== null ||
+      row.terminal_existed !== null
+    ) {
+      return { kind: 'unreadable', reason: 'invalid-shape' };
+    }
+  } else if (
+    row.selection_sequence !== record.selectionSequence ||
+    row.retirement_cause !== record.retirementCause ||
+    row.terminal_existed !== Number(record.terminalExisted)
+  ) {
+    return { kind: 'unreadable', reason: 'invalid-shape' };
+  }
+
+  return { kind: 'decoded', record };
+}
+
+function admitStatusRecord(invocations: Map<string, InvocationRecords>, record: StoredStatusRecord): boolean {
+  const invocation = invocations.get(record.invocationId) ?? {};
+  if (record.phase === 'selection') {
+    if (invocation.selection !== undefined) return false;
+    invocation.selection = record;
+  } else if (record.phase === 'terminal') {
+    if (invocation.terminal !== undefined) return false;
+    invocation.terminal = record;
+  } else {
+    if (invocation.tombstone !== undefined) return false;
+    invocation.tombstone = record;
+  }
+  invocations.set(record.invocationId, invocation);
+  return true;
+}
+
+function admitClosingReserve(rawReserve: unknown, closingReserves: Map<string, ClosingReserveReadRow>): boolean {
+  const parsedReserve = closingReserveReadRowSchema.safeParse(rawReserve);
+  if (!parsedReserve.success) return false;
+  const reserve = parsedReserve.data;
+  if (reserve.allocation_bytes !== MAX_LEGAL_CLOSING_RECORD_BYTES || closingReserves.has(reserve.invocation_id)) {
+    return false;
+  }
+  closingReserves.set(reserve.invocation_id, reserve);
+  return true;
+}
+
+function validateInvocationReserve(
+  selection: RoutingSelectedEvent,
+  closingReserves: Map<string, ClosingReserveReadRow>,
+): boolean {
+  const reserve = closingReserves.get(selection.invocationId);
+  if (reserve === undefined || reserve.event_id !== selection.eventId || reserve.observed_at !== selection.observedAt) {
+    return false;
+  }
+  closingReserves.delete(selection.invocationId);
+  return true;
+}
+
+function projectInvocationStatus(
+  invocation: InvocationRecords,
+  closingReserves: Map<string, ClosingReserveReadRow>,
+  probe: HandoffRoutingOwnerLivenessProbe | undefined,
+): InvocationStatusProjection {
+  if (invocation.tombstone !== undefined) {
+    if (
+      invocation.selection !== undefined ||
+      invocation.terminal !== undefined ||
+      closingReserves.has(invocation.tombstone.invocationId)
+    ) {
+      return { kind: 'unreadable', reason: 'invalid-shape' };
+    }
+    return { kind: 'projected', status: { kind: 'retired', tombstone: invocation.tombstone } };
+  }
+  if (invocation.terminal !== undefined) {
+    if (closingReserves.has(invocation.terminal.invocationId)) {
+      return { kind: 'unreadable', reason: 'invalid-shape' };
+    }
+    if (invocation.selection !== undefined) {
+      if (
+        invocation.terminal.selection.kind !== 'with-selection-sequence' ||
+        invocation.terminal.selection.selectionSequence !== invocation.selection.sequence
+      ) {
+        return { kind: 'unreadable', reason: 'invalid-shape' };
+      }
+    } else if (
+      invocation.terminal.selection.kind === 'with-selection-sequence' &&
+      invocation.terminal.disposition.kind !== 'terminal-without-retained-selection' &&
+      invocation.terminal.disposition.kind !== 'terminal-after-operator-resolution'
+    ) {
+      return { kind: 'unreadable', reason: 'invalid-shape' };
+    }
+    return {
+      kind: 'projected',
+      status: { kind: 'terminal', selection: invocation.selection ?? null, terminal: invocation.terminal },
+    };
+  }
+  if (invocation.selection === undefined) return { kind: 'empty' };
+
+  if (!validateInvocationReserve(invocation.selection, closingReserves)) {
+    return { kind: 'unreadable', reason: 'invalid-shape' };
+  }
+  return {
+    kind: 'projected',
+    status: {
+      kind: 'unresolved',
+      selection: invocation.selection,
+      ownerLiveness: ownerLiveness(invocation.selection.owner, probe),
+    },
+  };
+}
+
 function projectInvocationStatuses(
   rows: readonly unknown[],
   reserves: readonly unknown[],
@@ -1663,160 +1901,40 @@ function projectInvocationStatuses(
 ): StatusProjection {
   const invocations = new Map<string, InvocationRecords>();
   for (const rawRow of rows) {
-    const parsedRow = statusReadRowSchema.safeParse(rawRow);
-    if (!parsedRow.success) return { kind: 'unreadable', reason: 'invalid-shape' };
-    const row: StatusReadRow = parsedRow.data;
-    const byteLimit = statusRowByteLimit(row.record_kind);
-    if (byteLimit === undefined) return { kind: 'unreadable', reason: 'invalid-shape' };
-    const bodyBytes = Buffer.byteLength(row.body_json, 'utf8');
-    if (bodyBytes > byteLimit) return { kind: 'unreadable', reason: 'too-large' };
-
-    let body: unknown;
-    try {
-      body = JSON.parse(row.body_json);
-    } catch {
-      return { kind: 'unreadable', reason: 'invalid-json' };
-    }
-
-    const parsed =
-      row.record_kind === 'selection'
-        ? routingSelectedEventSchema.safeParse(body)
-        : row.record_kind === 'terminal'
-          ? terminalEventSchema.safeParse(body)
-          : retirementTombstoneSchema.safeParse(body);
-    if (!parsed.success) return { kind: 'unreadable', reason: 'invalid-shape' };
-
-    const record = parsed.data;
-    if (
-      row.encoded_bytes !== bodyBytes ||
-      row.sequence !== record.sequence ||
-      row.generation !== record.generation ||
-      row.event_id !== record.eventId ||
-      row.invocation_id !== record.invocationId ||
-      row.observed_at !== record.observedAt ||
-      row.event_kind !== record.eventKind
-    ) {
-      return { kind: 'unreadable', reason: 'invalid-shape' };
-    }
-    if (record.phase === 'selection') {
-      if (row.selection_sequence !== null || row.retirement_cause !== null || row.terminal_existed !== null) {
-        return { kind: 'unreadable', reason: 'invalid-shape' };
-      }
-    } else if (record.phase === 'terminal') {
-      const selectionSequence =
-        record.selection.kind === 'with-selection-sequence' ? record.selection.selectionSequence : null;
-      if (
-        row.selection_sequence !== selectionSequence ||
-        row.retirement_cause !== null ||
-        row.terminal_existed !== null
-      ) {
-        return { kind: 'unreadable', reason: 'invalid-shape' };
-      }
-    } else if (
-      row.selection_sequence !== record.selectionSequence ||
-      row.retirement_cause !== record.retirementCause ||
-      row.terminal_existed !== Number(record.terminalExisted)
-    ) {
-      return { kind: 'unreadable', reason: 'invalid-shape' };
-    }
-
-    const invocation = invocations.get(record.invocationId) ?? {};
-    if (record.phase === 'selection') {
-      if (invocation.selection !== undefined) return { kind: 'unreadable', reason: 'invalid-shape' };
-      invocation.selection = record;
-    } else if (record.phase === 'terminal') {
-      if (invocation.terminal !== undefined) return { kind: 'unreadable', reason: 'invalid-shape' };
-      invocation.terminal = record;
-    } else {
-      if (invocation.tombstone !== undefined) return { kind: 'unreadable', reason: 'invalid-shape' };
-      invocation.tombstone = record;
-    }
-    invocations.set(record.invocationId, invocation);
+    const decoded = decodeAndValidateStatusRow(rawRow);
+    if (decoded.kind === 'unreadable') return decoded;
+    if (!admitStatusRecord(invocations, decoded.record)) return { kind: 'unreadable', reason: 'invalid-shape' };
   }
 
   const closingReserves = new Map<string, ClosingReserveReadRow>();
   for (const rawReserve of reserves) {
-    const parsedReserve = closingReserveReadRowSchema.safeParse(rawReserve);
-    if (!parsedReserve.success) return { kind: 'unreadable', reason: 'invalid-shape' };
-    const reserve = parsedReserve.data;
-    if (reserve.allocation_bytes !== MAX_LEGAL_CLOSING_RECORD_BYTES || closingReserves.has(reserve.invocation_id)) {
+    if (!admitClosingReserve(rawReserve, closingReserves)) {
       return { kind: 'unreadable', reason: 'invalid-shape' };
     }
-    closingReserves.set(reserve.invocation_id, reserve);
   }
 
   const statuses: HandoffRoutingInvocationStatus[] = [];
   for (const invocation of invocations.values()) {
-    if (invocation.tombstone !== undefined) {
-      if (
-        invocation.selection !== undefined ||
-        invocation.terminal !== undefined ||
-        closingReserves.has(invocation.tombstone.invocationId)
-      ) {
-        return { kind: 'unreadable', reason: 'invalid-shape' };
-      }
-      statuses.push({ kind: 'retired', tombstone: invocation.tombstone });
-      continue;
-    }
-    if (invocation.terminal !== undefined) {
-      if (closingReserves.has(invocation.terminal.invocationId)) {
-        return { kind: 'unreadable', reason: 'invalid-shape' };
-      }
-      if (invocation.selection !== undefined) {
-        if (
-          invocation.terminal.selection.kind !== 'with-selection-sequence' ||
-          invocation.terminal.selection.selectionSequence !== invocation.selection.sequence
-        ) {
-          return { kind: 'unreadable', reason: 'invalid-shape' };
-        }
-      } else if (
-        invocation.terminal.selection.kind === 'with-selection-sequence' &&
-        invocation.terminal.disposition.kind !== 'terminal-without-retained-selection' &&
-        invocation.terminal.disposition.kind !== 'terminal-after-operator-resolution'
-      ) {
-        return { kind: 'unreadable', reason: 'invalid-shape' };
-      }
-      statuses.push({ kind: 'terminal', selection: invocation.selection ?? null, terminal: invocation.terminal });
-      continue;
-    }
-    if (invocation.selection !== undefined) {
-      const reserve = closingReserves.get(invocation.selection.invocationId);
-      if (
-        reserve === undefined ||
-        reserve.event_id !== invocation.selection.eventId ||
-        reserve.observed_at !== invocation.selection.observedAt
-      ) {
-        return { kind: 'unreadable', reason: 'invalid-shape' };
-      }
-      closingReserves.delete(invocation.selection.invocationId);
-      statuses.push({
-        kind: 'unresolved',
-        selection: invocation.selection,
-        ownerLiveness: ownerLiveness(invocation.selection.owner, probe),
-      });
-    }
+    const projected = projectInvocationStatus(invocation, closingReserves, probe);
+    if (projected.kind === 'unreadable') return projected;
+    if (projected.kind === 'projected') statuses.push(projected.status);
   }
   if (closingReserves.size !== 0) return { kind: 'unreadable', reason: 'invalid-shape' };
   return { kind: 'projected', statuses: Object.freeze(statuses) };
 }
 
-export function readHandoffRoutingStatus(
-  path: string,
-  probe?: HandoffRoutingOwnerLivenessProbe,
-): HandoffRoutingStatusReadResult {
-  try {
-    accessSync(path, fsConstants.R_OK);
-  } catch (error) {
-    const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
-    if (code === 'ENOENT' || code === 'ENOTDIR') return { kind: 'absent' };
-    return { kind: 'undeterminable', cause: 'io-failed', errcode: errorNumber(error, SQLITE_CANTOPEN) };
+function classifyStatusSnapshotError(error: unknown): StatusSnapshotReadResult {
+  const errcode = errorNumber(error, SQLITE_ERROR);
+  const primaryErrcode = errcode & 0xff;
+  if (primaryErrcode === SQLITE_ERROR || primaryErrcode === SQLITE_NOTADB || primaryErrcode === SQLITE_CORRUPT) {
+    return { kind: 'unreadable', reason: 'invalid-shape' };
   }
+  return { kind: 'undeterminable', cause: 'io-failed', errcode };
+}
 
+function readStatusSnapshot(path: string): StatusSnapshotReadResult {
   let db: DatabaseSync | undefined;
   let transactionOpen = false;
-  let rows: readonly unknown[];
-  let reserves: readonly unknown[];
-  let retirement: RetirementHistoryRow | undefined;
   try {
     db = new DatabaseSync(path, { readOnly: true });
     db.exec('PRAGMA busy_timeout=0');
@@ -1828,7 +1946,7 @@ export function readHandoffRoutingStatus(
       transactionOpen = false;
       return { kind: 'unsupported-generation', generation };
     }
-    retirement = db
+    const retirement = db
       .prepare(
         `SELECT
           generation,
@@ -1843,7 +1961,7 @@ export function readHandoffRoutingStatus(
         FROM handoff_routing_metadata WHERE singleton = 1`,
       )
       .get() as RetirementHistoryRow | undefined;
-    rows = db
+    const rows = db
       .prepare(
         `SELECT
           sequence,
@@ -1861,7 +1979,7 @@ export function readHandoffRoutingStatus(
         FROM handoff_routing_records ORDER BY sequence`,
       )
       .all();
-    reserves = db
+    const reserves = db
       .prepare(
         `SELECT
           invocation_id,
@@ -1873,6 +1991,7 @@ export function readHandoffRoutingStatus(
       .all();
     db.exec('COMMIT');
     transactionOpen = false;
+    return { kind: 'snapshot', rows, reserves, retirement };
   } catch (error) {
     if (transactionOpen && db !== undefined) {
       try {
@@ -1881,12 +2000,7 @@ export function readHandoffRoutingStatus(
         void rollbackError;
       }
     }
-    const errcode = errorNumber(error, SQLITE_ERROR);
-    const primaryErrcode = errcode & 0xff;
-    if (primaryErrcode === SQLITE_ERROR || primaryErrcode === SQLITE_NOTADB || primaryErrcode === SQLITE_CORRUPT) {
-      return { kind: 'unreadable', reason: 'invalid-shape' };
-    }
-    return { kind: 'undeterminable', cause: 'io-failed', errcode };
+    return classifyStatusSnapshotError(error);
   } finally {
     if (db !== undefined) {
       try {
@@ -1896,25 +2010,41 @@ export function readHandoffRoutingStatus(
       }
     }
   }
+}
+
+export function readHandoffRoutingStatus(
+  path: string,
+  probe?: HandoffRoutingOwnerLivenessProbe,
+): HandoffRoutingStatusReadResult {
+  try {
+    accessSync(path, fsConstants.R_OK);
+  } catch (error) {
+    const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return { kind: 'absent' };
+    return { kind: 'undeterminable', cause: 'io-failed', errcode: errorNumber(error, SQLITE_CANTOPEN) };
+  }
+
+  const snapshot = readStatusSnapshot(path);
+  if (snapshot.kind !== 'snapshot') return snapshot;
 
   const retirementHistory = retirementHistoryTruncatedSchema.safeParse({
     kind: 'retirement-history-truncated',
-    expiredIdentityCount: retirement?.expired_identity_count,
+    expiredIdentityCount: snapshot.retirement?.expired_identity_count,
     causes: {
-      'selection-evicted-at-capacity': retirement?.capacity_eviction_count,
-      'completed-pair-compaction': retirement?.completed_pair_compaction_count,
-      'operator-resolved': retirement?.operator_resolved_count,
+      'selection-evicted-at-capacity': snapshot.retirement?.capacity_eviction_count,
+      'completed-pair-compaction': snapshot.retirement?.completed_pair_compaction_count,
+      'operator-resolved': snapshot.retirement?.operator_resolved_count,
     },
-    minSelectionSequence: retirement?.min_selection_sequence,
-    maxSelectionSequence: retirement?.max_selection_sequence,
-    earliestSelectedAt: retirement?.earliest_selected_at,
-    latestSelectedAt: retirement?.latest_selected_at,
+    minSelectionSequence: snapshot.retirement?.min_selection_sequence,
+    maxSelectionSequence: snapshot.retirement?.max_selection_sequence,
+    earliestSelectedAt: snapshot.retirement?.earliest_selected_at,
+    latestSelectedAt: snapshot.retirement?.latest_selected_at,
   });
-  if (retirement?.generation !== HANDOFF_ROUTING_STATUS_GENERATION || !retirementHistory.success) {
+  if (snapshot.retirement?.generation !== HANDOFF_ROUTING_STATUS_GENERATION || !retirementHistory.success) {
     return { kind: 'unreadable', reason: 'invalid-shape' };
   }
 
-  const projection = projectInvocationStatuses(rows, reserves, probe);
+  const projection = projectInvocationStatuses(snapshot.rows, snapshot.reserves, probe);
   if (projection.kind === 'unreadable') return projection;
   return {
     kind: 'current',

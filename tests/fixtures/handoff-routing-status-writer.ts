@@ -89,120 +89,133 @@ function insertGapRecord(db: DatabaseSync, sequence: number): void {
   ).run(sequence, HANDOFF_ROUTING_STATUS_GENERATION, eventId, invocationId, event.observedAt, JSON.stringify(event));
 }
 
+function runValidateStop(): void {
+  const db = new DatabaseSync(path);
+  try {
+    db.exec('PRAGMA busy_timeout=0');
+    db.exec('PRAGMA synchronous=FULL');
+    db.exec('BEGIN IMMEDIATE');
+    insertGapRecord(db, 2);
+    stopAt('inside-transaction');
+    db.exec('COMMIT');
+  } finally {
+    db.close();
+  }
+  emit('committed');
+}
+
+function runBetweenStatements(): void {
+  const db = new DatabaseSync(path);
+  try {
+    db.exec('PRAGMA busy_timeout=0');
+    db.exec('PRAGMA synchronous=FULL');
+    db.exec('BEGIN IMMEDIATE');
+    insertGapRecord(db, 2);
+    stopAt('between-statements');
+    insertGapRecord(db, 3);
+    db.exec('COMMIT');
+  } finally {
+    db.close();
+  }
+  emit('committed');
+}
+
+async function runAfterCommit(): Promise<void> {
+  const outcome = await publishHandoffRoutingTransitions(time, path, [selection(identity, 1)]);
+  if (outcome.kind !== 'committed') throw new Error(`Expected committed outcome, received ${outcome.kind}`);
+  stopAt('after-commit');
+}
+
+function runHoldingTransaction(): void {
+  const db = new DatabaseSync(path);
+  try {
+    db.exec('PRAGMA busy_timeout=0');
+    db.exec('PRAGMA synchronous=FULL');
+    db.exec('BEGIN IMMEDIATE');
+    stopAt('holding-transaction');
+    db.exec('ROLLBACK');
+  } finally {
+    db.close();
+  }
+  emit('released');
+}
+
+async function runContendedSelection(): Promise<void> {
+  if (process.platform === 'win32') emit('ready');
+  else stopAt('ready');
+  const keepAlive = setInterval(() => undefined, 1_000);
+  let reportedContention = false;
+  try {
+    const contentionTime = {
+      monotonicNow: time.monotonicNow,
+      sleep: async (ms: number, options?: { signal?: AbortSignal }): Promise<void> => {
+        if (!reportedContention) {
+          reportedContention = true;
+          emit('contended');
+        }
+        await time.sleep(ms, options);
+      },
+    };
+    const started = performance.now();
+    const outcome = await publishHandoffRoutingTransitions(contentionTime, path, [selection(identity, 1)]);
+    emit({ kind: 'contention-result', outcome, elapsedMs: performance.now() - started });
+  } finally {
+    clearInterval(keepAlive);
+  }
+}
+
+async function runLifecycle(): Promise<void> {
+  if (process.platform === 'win32') emit('ready');
+  else stopAt('ready');
+  const keepAlive = setInterval(() => undefined, 1_000);
+  try {
+    const lifecycleStarted = performance.now();
+    const selectionStarted = performance.now();
+    const selected = await publishHandoffRoutingTransitions(time, path, [selection(identity, 1)]);
+    const selectionMs = performance.now() - selectionStarted;
+    let terminalOutcome: PublicationOutcome | undefined;
+    let terminalMs: number | undefined;
+    if (selected.kind === 'committed') {
+      const terminalStarted = performance.now();
+      terminalOutcome = await publishHandoffRoutingTransitions(time, path, [terminal(identity, 2, selected.sequence)]);
+      terminalMs = performance.now() - terminalStarted;
+    }
+    emit({
+      kind: 'benchmark-result',
+      selection: selected,
+      terminal: terminalOutcome,
+      selectionMs,
+      terminalMs,
+      lifecycleMs: performance.now() - lifecycleStarted,
+    });
+  } finally {
+    clearInterval(keepAlive);
+  }
+}
+
 async function run(): Promise<void> {
-  if (mode === 'validate-stop') {
-    const db = new DatabaseSync(path);
-    try {
-      db.exec('PRAGMA busy_timeout=0');
-      db.exec('PRAGMA synchronous=FULL');
-      db.exec('BEGIN IMMEDIATE');
-      insertGapRecord(db, 2);
-      stopAt('inside-transaction');
-      db.exec('COMMIT');
-    } finally {
-      db.close();
-    }
-    emit('committed');
-    return;
+  switch (mode) {
+    case 'validate-stop':
+      runValidateStop();
+      return;
+    case 'between-statements':
+      runBetweenStatements();
+      return;
+    case 'after-commit':
+      await runAfterCommit();
+      return;
+    case 'hold-transaction':
+      runHoldingTransaction();
+      return;
+    case 'contended-selection':
+      await runContendedSelection();
+      return;
+    case 'lifecycle':
+      await runLifecycle();
+      return;
+    default:
+      throw new Error(`Unknown mode: ${mode}`);
   }
-
-  if (mode === 'between-statements') {
-    const db = new DatabaseSync(path);
-    try {
-      db.exec('PRAGMA busy_timeout=0');
-      db.exec('PRAGMA synchronous=FULL');
-      db.exec('BEGIN IMMEDIATE');
-      insertGapRecord(db, 2);
-      stopAt('between-statements');
-      insertGapRecord(db, 3);
-      db.exec('COMMIT');
-    } finally {
-      db.close();
-    }
-    emit('committed');
-    return;
-  }
-
-  if (mode === 'after-commit') {
-    const outcome = await publishHandoffRoutingTransitions(time, path, [selection(identity, 1)]);
-    if (outcome.kind !== 'committed') throw new Error(`Expected committed outcome, received ${outcome.kind}`);
-    stopAt('after-commit');
-    return;
-  }
-
-  if (mode === 'hold-transaction') {
-    const db = new DatabaseSync(path);
-    try {
-      db.exec('PRAGMA busy_timeout=0');
-      db.exec('PRAGMA synchronous=FULL');
-      db.exec('BEGIN IMMEDIATE');
-      stopAt('holding-transaction');
-      db.exec('ROLLBACK');
-    } finally {
-      db.close();
-    }
-    emit('released');
-    return;
-  }
-
-  if (mode === 'contended-selection') {
-    if (process.platform === 'win32') emit('ready');
-    else stopAt('ready');
-    const keepAlive = setInterval(() => undefined, 1_000);
-    let reportedContention = false;
-    try {
-      const contentionTime = {
-        monotonicNow: time.monotonicNow,
-        sleep: async (ms: number, options?: { signal?: AbortSignal }): Promise<void> => {
-          if (!reportedContention) {
-            reportedContention = true;
-            emit('contended');
-          }
-          await time.sleep(ms, options);
-        },
-      };
-      const started = performance.now();
-      const outcome = await publishHandoffRoutingTransitions(contentionTime, path, [selection(identity, 1)]);
-      emit({ kind: 'contention-result', outcome, elapsedMs: performance.now() - started });
-    } finally {
-      clearInterval(keepAlive);
-    }
-    return;
-  }
-
-  if (mode === 'lifecycle') {
-    if (process.platform === 'win32') emit('ready');
-    else stopAt('ready');
-    const keepAlive = setInterval(() => undefined, 1_000);
-    try {
-      const lifecycleStarted = performance.now();
-      const selectionStarted = performance.now();
-      const selected = await publishHandoffRoutingTransitions(time, path, [selection(identity, 1)]);
-      const selectionMs = performance.now() - selectionStarted;
-      let terminalOutcome: PublicationOutcome | undefined;
-      let terminalMs: number | undefined;
-      if (selected.kind === 'committed') {
-        const terminalStarted = performance.now();
-        terminalOutcome = await publishHandoffRoutingTransitions(time, path, [
-          terminal(identity, 2, selected.sequence),
-        ]);
-        terminalMs = performance.now() - terminalStarted;
-      }
-      emit({
-        kind: 'benchmark-result',
-        selection: selected,
-        terminal: terminalOutcome,
-        selectionMs,
-        terminalMs,
-        lifecycleMs: performance.now() - lifecycleStarted,
-      });
-    } finally {
-      clearInterval(keepAlive);
-    }
-    return;
-  }
-
-  throw new Error(`Unknown mode: ${mode}`);
 }
 
 await run();

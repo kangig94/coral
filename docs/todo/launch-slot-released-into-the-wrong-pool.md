@@ -65,6 +65,38 @@ of about three hours and still holding `/tmp/coral-cli-test-*/…/coordinator.so
 are not reproducible now. They indicate a test-run cleanup leak rather than this defect and are noted only
 because the same census surfaced both.
 
+## A second, much larger observation — 2026-08-24
+
+The first observation was two slots and was correctly called evidence rather than proof. This one is harder to
+explain away:
+
+```
+active = 15   activeJobs = 2   queueDepth = 0        coordinator uptime 5.2 h
+CORAL_MAX_WORKERS = 20
+```
+
+Two jobs were actually running, one per project, and thirteen slots were held. The coordinator had been up
+5.2 hours since a deliberate restart, so this accumulated during ordinary use, and it did not clear: the same
+gap stood across repeated reads minutes apart, which rules out the transient internal-permit window that
+weakened the first observation. With the limit at 20 there were five admissions left before launches begin
+queueing and then being refused outright.
+
+**It is not every job.** One of those two jobs completed while this was being measured, and the count moved
+exactly with it — `active` 15 → 14 as `activeJobs` 2 → 1. That release was clean. So whatever leaks is
+narrower than "the completion path", which is why the two candidate causes in the section above still both
+stand.
+
+**The internal-permit release is not obviously the culprit either.** `spawnDurableJobTransport`
+(`src/coordinator/live/durable-transport.ts`) releases its `spawndurable` permit inside a `finally`, so it runs
+on normal return and on throw alike. What a `finally` does not survive is a `try` block that never exits, and
+the poll loop it wraps is exactly the shape that would not — but no evidence here distinguishes that from a
+release aimed at the wrong pool.
+
+**There is no audit trail to settle it with.** Grepping the coordinator log for admission, release, permit, or
+`spawndurable` records returns nothing: the count is published, the held identities are not, and no event is
+written when a slot is taken or freed. Anyone diagnosing this has the same three facts available that this
+entry has, which is the argument for exposing `getActiveJobIds` before arguing about causes.
+
 ## Why it is not cosmetic
 
 Slots are finite. `hasLaunchCapacity` admits only while `pools[pool].active.size` is below

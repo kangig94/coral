@@ -8,11 +8,9 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   ABSENT_HANDOFF_RESULT_POLICY_PROJECTION,
   HANDOFF_CONTINUATION_REASON_POLICY_PROJECTIONS,
-  HANDOFF_ROUTING_BASIS_POLICIES,
   HANDOFF_ROUTING_COMPLETED_RETENTION_MS,
   HANDOFF_ROUTING_STATUS_GENERATION,
   MAX_COMPLETED_HANDOFF_ROUTING_PAIRS,
-  MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES,
   MAX_ENCODED_RETIREMENT_TOMBSTONE_BYTES,
   MAX_HANDOFF_ROUTING_STATUS_BYTES,
   MAX_LEGAL_CLOSING_RECORD_BYTES,
@@ -32,7 +30,6 @@ import {
   type PublicationOutcome,
   type RetirementTombstone,
 } from '#src/coordinator/handoff-routing-status.js';
-import { HANDOFF_ROUTING_BASIS_OBLIGATIONS } from '#src/coordinator/handoff-routing.js';
 import { createRealTimePort } from '#src/infra/time.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
@@ -154,7 +151,7 @@ function insertTombstoneFixture(db: DatabaseSync, tombstone: RetirementTombstone
 
 function createReadFixtureDatabase(
   path: string,
-  rows: readonly Readonly<{ recordKind: string; bodyJson: string | null }>[],
+  rows: readonly Readonly<{ recordKind: 'selection'; bodyJson: string | null }>[],
 ): void {
   const db = new DatabaseSync(path);
   try {
@@ -218,16 +215,14 @@ function createReadFixtureDatabase(
         `fixture-invocation-${index}`,
         at(index),
         row.recordKind,
-        row.recordKind === 'retirement' ? 'retirement-tombstone' : 'routing-selected',
+        'routing-selected',
         row.bodyJson,
         typeof row.bodyJson === 'string' ? Buffer.byteLength(row.bodyJson, 'utf8') : null,
       );
-      if (row.recordKind === 'selection') {
-        db.prepare(
-          `INSERT INTO handoff_routing_closing_reserve (invocation_id, event_id, observed_at, allocation)
+      db.prepare(
+        `INSERT INTO handoff_routing_closing_reserve (invocation_id, event_id, observed_at, allocation)
           VALUES (?, ?, ?, zeroblob(?))`,
-        ).run(`fixture-invocation-${index}`, `fixture-event-${index}`, at(index), MAX_LEGAL_CLOSING_RECORD_BYTES);
-      }
+      ).run(`fixture-invocation-${index}`, `fixture-event-${index}`, at(index), MAX_LEGAL_CLOSING_RECORD_BYTES);
     });
   } finally {
     db.close();
@@ -239,13 +234,7 @@ afterEach(() => {
 });
 
 describe('handoff routing status', () => {
-  it('projects all three obligation sources without inventing persisted status for ephemeral bindings', () => {
-    expect(Object.keys(HANDOFF_ROUTING_BASIS_POLICIES).sort()).toEqual(
-      Object.keys(HANDOFF_ROUTING_BASIS_OBLIGATIONS).sort(),
-    );
-    expect(
-      Object.values(HANDOFF_ROUTING_BASIS_POLICIES).every((policy) => policy.durability === 'lifecycle-journal'),
-    ).toBe(true);
+  it('projects continuation and absent obligations without inventing persisted status for ephemeral bindings', () => {
     expect(HANDOFF_CONTINUATION_REASON_POLICY_PROJECTIONS).toEqual({
       'handoff-not-applicable': {
         kind: 'ephemeral',
@@ -267,15 +256,10 @@ describe('handoff routing status', () => {
     });
   });
 
-  it('keeps bounded projections and derives per-row encoded limits from maximum legal fixtures', () => {
+  it('keeps bounded projections within maximum legal fixture limits', () => {
     expect(
       invalidTargetSummarySchema.safeParse({ failure: 'bundle-dir-unavailable', bundleDir: '/tmp/x' }).success,
     ).toBe(false);
-    expect(Object.keys(MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES).sort()).toEqual([
-      'continuation-finalized',
-      'execution-failed',
-      'routing-selected',
-    ]);
     expect(MAX_LEGAL_RETIREMENT_TOMBSTONE_BYTES).toBeLessThanOrEqual(MAX_ENCODED_RETIREMENT_TOMBSTONE_BYTES);
     expect(MAX_LEGAL_RETIREMENT_TOMBSTONE_BYTES).toBeLessThanOrEqual(MAX_LEGAL_CLOSING_RECORD_BYTES);
     expect(MAX_RETIREMENT_TOMBSTONES * MAX_LEGAL_RETIREMENT_TOMBSTONE_BYTES).toBeLessThanOrEqual(

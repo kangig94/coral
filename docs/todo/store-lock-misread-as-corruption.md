@@ -90,8 +90,8 @@ on the way out.
 This also explains the sibling failure without a second cause: an incumbent stuck in an ext4 journal commit
 is a machine under heavy fsync load, which is when a concurrent opener meets `database is locked`.
 
-**A cooldown is announced as manual repair.** `assertSignalCooldown` in the same file refuses a repeated
-handoff signal within `DEFAULT_SIGNAL_COOLDOWN_MS` and phrases the refusal as
+**A cooldown is announced as manual repair.** `assertSignalCooldown` in `src/coordinator/handoff.ts` refuses
+a repeated handoff signal within `DEFAULT_SIGNAL_COOLDOWN_MS` and phrases the refusal as
 `Manual repair required: refusing repeated handoff …`. The exit is waiting for the cooldown, and in this
 incident that is exactly what happened: the retained `KANG-HOME` startup diagnostics timestamped the SIGKILL
 at 06:44:11, the successful startup at 06:45:04, and counted three intervening manual-repair messages. This is
