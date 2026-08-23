@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { chmodSync, mkdirSync } from 'node:fs';
+import { accessSync, chmodSync, constants as fsConstants, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
@@ -577,8 +577,8 @@ type TombstoneBoundsRow = Readonly<{
 type GenerationRow = Readonly<{ user_version: number }>;
 
 const SQLITE_BUSY = 5;
+const SQLITE_CANTOPEN = 14;
 const SQLITE_FULL = 13;
-const SQLITE_CONSTRAINT = 19;
 const SQLITE_NOTADB = 26;
 const SQLITE_CORRUPT = 11;
 const SQLITE_ERROR = 1;
@@ -587,7 +587,14 @@ const PUBLICATION_RETRY_DELAY_MS = 10;
 
 class RejectedTransitionError extends Error {}
 
-class UnreadableStatusError extends Error {}
+class UnreadableStatusError extends Error {
+  readonly errcode: number;
+
+  constructor(errcode = SQLITE_CORRUPT) {
+    super();
+    this.errcode = errcode;
+  }
+}
 
 class UnsupportedGenerationError extends Error {}
 
@@ -742,7 +749,7 @@ function initializeOrValidateDatabase(db: DatabaseSync): void {
     if (metadata?.generation !== HANDOFF_ROUTING_STATUS_GENERATION) throw new UnreadableStatusError();
   } catch (error) {
     if (error instanceof UnreadableStatusError) throw error;
-    throw new UnreadableStatusError();
+    throw new UnreadableStatusError(errorNumber(error, SQLITE_CORRUPT));
   }
 }
 
@@ -1199,6 +1206,7 @@ function evictOldestOpening(db: DatabaseSync, observedAt: string): void {
 function applySelection(db: DatabaseSync, transition: z.infer<typeof routingSelectedTransitionSchema>): number {
   if (
     selectionForInvocation(db, transition.invocationId) !== undefined ||
+    terminalForInvocation(db, transition.invocationId) !== undefined ||
     tombstoneForInvocation(db, transition.invocationId) !== undefined
   ) {
     throw new RejectedTransitionError();
@@ -1210,6 +1218,12 @@ function applySelection(db: DatabaseSync, transition: z.infer<typeof routingSele
 function applyTerminal(db: DatabaseSync, transition: z.infer<typeof terminalTransitionSchema>): number {
   if (terminalForInvocation(db, transition.invocationId) !== undefined) throw new RejectedTransitionError();
   if (transition.selection.kind === 'without-selection') {
+    if (
+      selectionForInvocation(db, transition.invocationId) !== undefined ||
+      tombstoneForInvocation(db, transition.invocationId) !== undefined
+    ) {
+      throw new RejectedTransitionError();
+    }
     return insertTerminal(db, transition, terminalGapDisposition(transition));
   }
 
@@ -1276,6 +1290,8 @@ function applyResolution(db: DatabaseSync, transition: z.infer<typeof operatorRe
 }
 
 function applyTransition(db: DatabaseSync, transition: HandoffRoutingTransition): number {
+  const duplicate = db.prepare('SELECT 1 FROM handoff_routing_records WHERE event_id = ?').get(transition.eventId);
+  if (duplicate !== undefined) throw new RejectedTransitionError();
   switch (transition.kind) {
     case 'routing-selected':
       return applySelection(db, transition);
@@ -1342,14 +1358,11 @@ function publishOnce(path: string, transitions: readonly HandoffRoutingTransitio
       return { kind: 'undeterminable', cause: 'unsupported-generation', errcode: SQLITE_ERROR };
     }
     if (error instanceof UnreadableStatusError) {
-      return { kind: 'undeterminable', cause: 'unreadable', errcode: SQLITE_CORRUPT };
+      return { kind: 'undeterminable', cause: 'unreadable', errcode: error.errcode };
     }
     const errcode = errorNumber(error, SQLITE_ERROR);
     const primaryErrcode = errcode & 0xff;
     if (primaryErrcode === SQLITE_FULL) return { kind: 'not-published', cause: 'capacity-exhausted' };
-    if (primaryErrcode === SQLITE_CONSTRAINT && !commitStarted) {
-      return { kind: 'not-published', cause: 'rejected-transition' };
-    }
     if (primaryErrcode === SQLITE_BUSY && !commitStarted) return { kind: 'not-published', cause: 'contended' };
     if (primaryErrcode === SQLITE_NOTADB || primaryErrcode === SQLITE_CORRUPT) {
       return { kind: 'undeterminable', cause: 'unreadable', errcode };
@@ -1484,12 +1497,304 @@ export type HandoffRoutingStatusReadResult =
   | Readonly<{
       kind: 'current';
       generation: typeof HANDOFF_ROUTING_STATUS_GENERATION;
-      sequenceHighWater: number;
       statuses: readonly HandoffRoutingInvocationStatus[];
       retirementHistoryTruncated: RetirementHistoryTruncated;
     }>
-  | Readonly<{ kind: 'unreadable'; reason: 'invalid-json' | 'invalid-shape' | 'too-large' | 'recovery-conflict' }>
-  | Readonly<{ kind: 'unsupported-generation'; generation: number }>;
+  | Readonly<{ kind: 'unreadable'; reason: 'invalid-json' | 'invalid-shape' | 'too-large' }>
+  | Readonly<{ kind: 'unsupported-generation'; generation: number }>
+  | Readonly<{ kind: 'undeterminable'; cause: 'io-failed'; errcode: number }>;
+
+export type HandoffRoutingOwnerLivenessProbe = (owner: RecordedProcessIdentity) => OwnerLiveness;
+
+type StatusReadRow = Readonly<{
+  sequence: number;
+  generation: number;
+  event_id: string;
+  invocation_id: string;
+  observed_at: string;
+  record_kind: string;
+  event_kind: string;
+  selection_sequence: number | null;
+  retirement_cause: string | null;
+  terminal_existed: number | null;
+  body_json: string;
+  encoded_bytes: number;
+}>;
+
+type RetirementHistoryRow = Readonly<{
+  generation: number;
+  expired_identity_count: number;
+  capacity_eviction_count: number;
+  completed_pair_compaction_count: number;
+  operator_resolved_count: number;
+  min_selection_sequence: number | null;
+  max_selection_sequence: number | null;
+  earliest_selected_at: string | null;
+  latest_selected_at: string | null;
+}>;
+
+type InvocationRecords = {
+  selection?: RoutingSelectedEvent;
+  terminal?: HandoffRoutingTerminalEvent;
+  tombstone?: RetirementTombstone;
+};
+
+type StatusProjection =
+  | Readonly<{ kind: 'projected'; statuses: readonly HandoffRoutingInvocationStatus[] }>
+  | Extract<HandoffRoutingStatusReadResult, { kind: 'unreadable' }>;
+
+function statusRowByteLimit(recordKind: string): number | undefined {
+  switch (recordKind) {
+    case 'selection':
+      return MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES['routing-selected'];
+    case 'terminal':
+      return Math.max(
+        MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES['execution-failed'],
+        MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES['continuation-finalized'],
+      );
+    case 'retirement':
+      return MAX_ENCODED_RETIREMENT_TOMBSTONE_BYTES;
+    default:
+      return undefined;
+  }
+}
+
+function ownerLiveness(
+  owner: RecordedProcessIdentity,
+  probe: HandoffRoutingOwnerLivenessProbe | undefined,
+): OwnerLiveness {
+  if (probe === undefined) return { kind: 'unobservable', cause: 'probe-not-available' };
+  try {
+    return probe(owner);
+  } catch {
+    return { kind: 'unobservable', cause: 'probe-failed' };
+  }
+}
+
+function projectInvocationStatuses(
+  rows: readonly StatusReadRow[],
+  probe: HandoffRoutingOwnerLivenessProbe | undefined,
+): StatusProjection {
+  const invocations = new Map<string, InvocationRecords>();
+  for (const row of rows) {
+    const byteLimit = statusRowByteLimit(row.record_kind);
+    if (byteLimit === undefined) return { kind: 'unreadable', reason: 'invalid-shape' };
+    const bodyBytes = Buffer.byteLength(row.body_json, 'utf8');
+    if (bodyBytes > byteLimit) return { kind: 'unreadable', reason: 'too-large' };
+
+    let body: unknown;
+    try {
+      body = JSON.parse(row.body_json);
+    } catch {
+      return { kind: 'unreadable', reason: 'invalid-json' };
+    }
+
+    const parsed =
+      row.record_kind === 'selection'
+        ? routingSelectedEventSchema.safeParse(body)
+        : row.record_kind === 'terminal'
+          ? terminalEventSchema.safeParse(body)
+          : retirementTombstoneSchema.safeParse(body);
+    if (!parsed.success) return { kind: 'unreadable', reason: 'invalid-shape' };
+
+    const record = parsed.data;
+    if (
+      row.encoded_bytes !== bodyBytes ||
+      row.sequence !== record.sequence ||
+      row.generation !== record.generation ||
+      row.event_id !== record.eventId ||
+      row.invocation_id !== record.invocationId ||
+      row.observed_at !== record.observedAt ||
+      row.event_kind !== record.eventKind
+    ) {
+      return { kind: 'unreadable', reason: 'invalid-shape' };
+    }
+    if (record.phase === 'selection') {
+      if (row.selection_sequence !== null || row.retirement_cause !== null || row.terminal_existed !== null) {
+        return { kind: 'unreadable', reason: 'invalid-shape' };
+      }
+    } else if (record.phase === 'terminal') {
+      const selectionSequence =
+        record.selection.kind === 'with-selection-sequence' ? record.selection.selectionSequence : null;
+      if (
+        row.selection_sequence !== selectionSequence ||
+        row.retirement_cause !== null ||
+        row.terminal_existed !== null
+      ) {
+        return { kind: 'unreadable', reason: 'invalid-shape' };
+      }
+    } else if (
+      row.selection_sequence !== record.selectionSequence ||
+      row.retirement_cause !== record.retirementCause ||
+      row.terminal_existed !== Number(record.terminalExisted)
+    ) {
+      return { kind: 'unreadable', reason: 'invalid-shape' };
+    }
+
+    const invocation = invocations.get(record.invocationId) ?? {};
+    if (record.phase === 'selection') {
+      if (invocation.selection !== undefined) return { kind: 'unreadable', reason: 'invalid-shape' };
+      invocation.selection = record;
+    } else if (record.phase === 'terminal') {
+      if (invocation.terminal !== undefined) return { kind: 'unreadable', reason: 'invalid-shape' };
+      invocation.terminal = record;
+    } else {
+      if (invocation.tombstone !== undefined) return { kind: 'unreadable', reason: 'invalid-shape' };
+      invocation.tombstone = record;
+    }
+    invocations.set(record.invocationId, invocation);
+  }
+
+  const statuses: HandoffRoutingInvocationStatus[] = [];
+  for (const invocation of invocations.values()) {
+    if (invocation.tombstone !== undefined) {
+      if (invocation.selection !== undefined || invocation.terminal !== undefined) {
+        return { kind: 'unreadable', reason: 'invalid-shape' };
+      }
+      statuses.push({ kind: 'retired', tombstone: invocation.tombstone });
+      continue;
+    }
+    if (invocation.terminal !== undefined) {
+      if (invocation.selection !== undefined) {
+        if (
+          invocation.terminal.selection.kind !== 'with-selection-sequence' ||
+          invocation.terminal.selection.selectionSequence !== invocation.selection.sequence
+        ) {
+          return { kind: 'unreadable', reason: 'invalid-shape' };
+        }
+      } else if (
+        invocation.terminal.selection.kind === 'with-selection-sequence' &&
+        invocation.terminal.disposition.kind !== 'terminal-without-retained-selection' &&
+        invocation.terminal.disposition.kind !== 'terminal-after-operator-resolution'
+      ) {
+        return { kind: 'unreadable', reason: 'invalid-shape' };
+      }
+      statuses.push({ kind: 'terminal', selection: invocation.selection ?? null, terminal: invocation.terminal });
+      continue;
+    }
+    if (invocation.selection !== undefined) {
+      statuses.push({
+        kind: 'unresolved',
+        selection: invocation.selection,
+        ownerLiveness: ownerLiveness(invocation.selection.owner, probe),
+      });
+    }
+  }
+  return { kind: 'projected', statuses: Object.freeze(statuses) };
+}
+
+export function readHandoffRoutingStatus(
+  path: string,
+  probe?: HandoffRoutingOwnerLivenessProbe,
+): HandoffRoutingStatusReadResult {
+  try {
+    accessSync(path, fsConstants.R_OK);
+  } catch (error) {
+    const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return { kind: 'absent' };
+    return { kind: 'undeterminable', cause: 'io-failed', errcode: errorNumber(error, SQLITE_CANTOPEN) };
+  }
+
+  let db: DatabaseSync | undefined;
+  let transactionOpen = false;
+  let rows: readonly StatusReadRow[];
+  let retirement: RetirementHistoryRow | undefined;
+  try {
+    db = new DatabaseSync(path, { readOnly: true });
+    db.exec('PRAGMA busy_timeout=0');
+    db.exec('BEGIN');
+    transactionOpen = true;
+    const generation = (db.prepare('PRAGMA user_version').get() as GenerationRow).user_version;
+    if (generation !== HANDOFF_ROUTING_STATUS_GENERATION) {
+      db.exec('COMMIT');
+      transactionOpen = false;
+      return { kind: 'unsupported-generation', generation };
+    }
+    retirement = db
+      .prepare(
+        `SELECT
+          generation,
+          expired_identity_count,
+          capacity_eviction_count,
+          completed_pair_compaction_count,
+          operator_resolved_count,
+          min_selection_sequence,
+          max_selection_sequence,
+          earliest_selected_at,
+          latest_selected_at
+        FROM handoff_routing_metadata WHERE singleton = 1`,
+      )
+      .get() as RetirementHistoryRow | undefined;
+    rows = db
+      .prepare(
+        `SELECT
+          sequence,
+          generation,
+          event_id,
+          invocation_id,
+          observed_at,
+          record_kind,
+          event_kind,
+          selection_sequence,
+          retirement_cause,
+          terminal_existed,
+          body_json,
+          encoded_bytes
+        FROM handoff_routing_records ORDER BY sequence`,
+      )
+      .all() as StatusReadRow[];
+    db.exec('COMMIT');
+    transactionOpen = false;
+  } catch (error) {
+    if (transactionOpen && db !== undefined) {
+      try {
+        db.exec('ROLLBACK');
+      } catch (rollbackError) {
+        void rollbackError;
+      }
+    }
+    const errcode = errorNumber(error, SQLITE_ERROR);
+    const primaryErrcode = errcode & 0xff;
+    if (primaryErrcode === SQLITE_ERROR || primaryErrcode === SQLITE_NOTADB || primaryErrcode === SQLITE_CORRUPT) {
+      return { kind: 'unreadable', reason: 'invalid-shape' };
+    }
+    return { kind: 'undeterminable', cause: 'io-failed', errcode };
+  } finally {
+    if (db !== undefined) {
+      try {
+        db.close();
+      } catch (closeError) {
+        void closeError;
+      }
+    }
+  }
+
+  const retirementHistory = retirementHistoryTruncatedSchema.safeParse({
+    kind: 'retirement-history-truncated',
+    expiredIdentityCount: retirement?.expired_identity_count,
+    causes: {
+      'selection-evicted-at-capacity': retirement?.capacity_eviction_count,
+      'completed-pair-compaction': retirement?.completed_pair_compaction_count,
+      'operator-resolved': retirement?.operator_resolved_count,
+    },
+    minSelectionSequence: retirement?.min_selection_sequence,
+    maxSelectionSequence: retirement?.max_selection_sequence,
+    earliestSelectedAt: retirement?.earliest_selected_at,
+    latestSelectedAt: retirement?.latest_selected_at,
+  });
+  if (retirement?.generation !== HANDOFF_ROUTING_STATUS_GENERATION || !retirementHistory.success) {
+    return { kind: 'unreadable', reason: 'invalid-shape' };
+  }
+
+  const projection = projectInvocationStatuses(rows, probe);
+  if (projection.kind === 'unreadable') return projection;
+  return {
+    kind: 'current',
+    generation: HANDOFF_ROUTING_STATUS_GENERATION,
+    statuses: projection.statuses,
+    retirementHistoryTruncated: retirementHistory.data,
+  };
+}
 
 const MAX_TEXT = '\u0800';
 const MAX_VERSION = `1.0.0-${'x'.repeat(MAX_VERSION_LENGTH - 6)}`;

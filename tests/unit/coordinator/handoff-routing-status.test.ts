@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -24,6 +24,7 @@ import {
   invalidTargetSummarySchema,
   persistedHandoffDispositionPolicy,
   publishHandoffRoutingTransitions,
+  readHandoffRoutingStatus,
   retirementTombstoneSchema,
   type DurableHandoffRoutingBasis,
   type HandoffRoutingTransition,
@@ -150,6 +151,76 @@ function insertTombstoneFixture(db: DatabaseSync, tombstone: RetirementTombstone
   );
 }
 
+function createReadFixtureDatabase(
+  path: string,
+  rows: readonly Readonly<{ recordKind: string; bodyJson: string }>[],
+): void {
+  const db = new DatabaseSync(path);
+  try {
+    db.exec(`
+      CREATE TABLE handoff_routing_metadata (
+        singleton INTEGER PRIMARY KEY,
+        generation INTEGER NOT NULL,
+        expired_identity_count INTEGER NOT NULL,
+        capacity_eviction_count INTEGER NOT NULL,
+        completed_pair_compaction_count INTEGER NOT NULL,
+        operator_resolved_count INTEGER NOT NULL,
+        min_selection_sequence INTEGER,
+        max_selection_sequence INTEGER,
+        earliest_selected_at TEXT,
+        latest_selected_at TEXT
+      );
+      CREATE TABLE handoff_routing_records (
+        sequence INTEGER PRIMARY KEY,
+        generation INTEGER NOT NULL,
+        event_id TEXT NOT NULL,
+        invocation_id TEXT NOT NULL,
+        observed_at TEXT NOT NULL,
+        record_kind TEXT NOT NULL,
+        event_kind TEXT NOT NULL,
+        selection_sequence INTEGER,
+        retirement_cause TEXT,
+        terminal_existed INTEGER,
+        body_json TEXT NOT NULL,
+        encoded_bytes INTEGER NOT NULL
+      );
+      INSERT INTO handoff_routing_metadata VALUES (${HANDOFF_ROUTING_STATUS_GENERATION}, ${HANDOFF_ROUTING_STATUS_GENERATION}, 0, 0, 0, 0, NULL, NULL, NULL, NULL);
+      PRAGMA user_version=${HANDOFF_ROUTING_STATUS_GENERATION};
+    `);
+    const insert = db.prepare(
+      `INSERT INTO handoff_routing_records (
+        sequence,
+        generation,
+        event_id,
+        invocation_id,
+        observed_at,
+        record_kind,
+        event_kind,
+        selection_sequence,
+        retirement_cause,
+        terminal_existed,
+        body_json,
+        encoded_bytes
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)`,
+    );
+    rows.forEach((row, index) =>
+      insert.run(
+        index + 1,
+        HANDOFF_ROUTING_STATUS_GENERATION,
+        `fixture-event-${index}`,
+        `fixture-invocation-${index}`,
+        at(index),
+        row.recordKind,
+        row.recordKind === 'retirement' ? 'retirement-tombstone' : 'routing-selected',
+        row.bodyJson,
+        Buffer.byteLength(row.bodyJson, 'utf8'),
+      ),
+    );
+  } finally {
+    db.close();
+  }
+}
+
 afterEach(() => {
   for (const directory of temporaryDirectories.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
@@ -269,6 +340,180 @@ describe('handoff routing status', () => {
     }
   });
 
+  it('reads one stable projection with unresolved liveness, paired and gap terminals, and retirement', async () => {
+    const path = databasePath();
+    const alive = { ...selection('alive', 1), owner: { pid: 101, incarnation: testIncarnation(101) } } as const;
+    const absent = { ...selection('absent', 2), owner: { pid: 102, incarnation: testIncarnation(102) } } as const;
+    const incarnationUnavailable = {
+      ...selection('incarnation-unavailable', 3),
+      owner: { pid: 103, incarnation: testIncarnation(103) },
+    } as const;
+    const deadlineExpired = {
+      ...selection('deadline-expired', 4),
+      owner: { pid: 104, incarnation: testIncarnation(104) },
+    } as const;
+    const probeFailed = {
+      ...selection('probe-failed', 5),
+      owner: { pid: 105, incarnation: testIncarnation(105) },
+    } as const;
+    await committed(path, [alive, absent, incarnationUnavailable, deadlineExpired, probeFailed]);
+    const paired = await committed(path, [selection('paired', 6)]);
+    await committed(path, [terminal('paired', 7, paired.sequence)]);
+    await committed(path, [
+      {
+        kind: 'execution-failed',
+        eventId: 'gap-terminal',
+        invocationId: 'gap',
+        observedAt: at(8),
+        selection: { kind: 'without-selection' },
+        disposition: { kind: 'execution-failed', throwPhase: 'child-spawn' },
+      },
+    ]);
+    const retired = await committed(path, [selection('retired', 9)]);
+    await committed(path, [
+      {
+        kind: 'operator-resolved',
+        eventId: 'retired-resolution',
+        invocationId: 'retired',
+        observedAt: at(10),
+        selectionSequence: retired.sequence,
+        reason: 'owner-absent',
+      },
+    ]);
+
+    const result = readHandoffRoutingStatus(path, (owner) => {
+      switch (owner.pid) {
+        case 101:
+          return { kind: 'alive' };
+        case 102:
+          return { kind: 'absent' };
+        case 103:
+          return { kind: 'unobservable', cause: 'incarnation-unavailable' };
+        case 104:
+          return { kind: 'unobservable', cause: 'deadline-expired' };
+        case 105:
+          throw new Error('probe failed');
+        default:
+          return { kind: 'alive' };
+      }
+    });
+
+    expect(result).toMatchObject({
+      kind: 'current',
+      generation: HANDOFF_ROUTING_STATUS_GENERATION,
+      retirementHistoryTruncated: { expiredIdentityCount: 0 },
+    });
+    if (result.kind !== 'current') throw new Error(`Expected current status, received ${result.kind}`);
+    const status = (invocationId: string) =>
+      result.statuses.find((candidate) =>
+        candidate.kind === 'retired'
+          ? candidate.tombstone.invocationId === invocationId
+          : candidate.kind === 'unresolved'
+            ? candidate.selection.invocationId === invocationId
+            : candidate.terminal.invocationId === invocationId,
+      );
+    expect(status('alive')).toMatchObject({ kind: 'unresolved', ownerLiveness: { kind: 'alive' } });
+    expect(status('absent')).toMatchObject({ kind: 'unresolved', ownerLiveness: { kind: 'absent' } });
+    expect(status('incarnation-unavailable')).toMatchObject({
+      kind: 'unresolved',
+      ownerLiveness: { kind: 'unobservable', cause: 'incarnation-unavailable' },
+    });
+    expect(status('deadline-expired')).toMatchObject({
+      kind: 'unresolved',
+      ownerLiveness: { kind: 'unobservable', cause: 'deadline-expired' },
+    });
+    expect(status('probe-failed')).toMatchObject({
+      kind: 'unresolved',
+      ownerLiveness: { kind: 'unobservable', cause: 'probe-failed' },
+    });
+    expect(status('paired')).toMatchObject({
+      kind: 'terminal',
+      selection: { invocationId: 'paired' },
+      terminal: { invocationId: 'paired' },
+    });
+    expect(status('gap')).toMatchObject({
+      kind: 'terminal',
+      selection: null,
+      terminal: { selection: { kind: 'without-selection' } },
+    });
+    expect(status('retired')).toMatchObject({ kind: 'retired', tombstone: { invocationId: 'retired' } });
+
+    const withoutProbe = readHandoffRoutingStatus(path);
+    expect(withoutProbe).toMatchObject({ kind: 'current' });
+    if (withoutProbe.kind !== 'current') throw new Error(`Expected current status, received ${withoutProbe.kind}`);
+    expect(
+      withoutProbe.statuses.find(
+        (candidate) => candidate.kind === 'unresolved' && candidate.selection.invocationId === 'alive',
+      ),
+    ).toMatchObject({ ownerLiveness: { kind: 'unobservable', cause: 'probe-not-available' } });
+  });
+
+  it('returns distinct absent, unsupported-generation, unreadable, and I/O-failure results', async () => {
+    const absentPath = databasePath();
+    expect(readHandoffRoutingStatus(absentPath)).toEqual({ kind: 'absent' });
+
+    const unsupportedPath = databasePath();
+    const unsupported = new DatabaseSync(unsupportedPath);
+    unsupported.exec(`PRAGMA user_version=${HANDOFF_ROUTING_STATUS_GENERATION + 1}`);
+    unsupported.close();
+    expect(readHandoffRoutingStatus(unsupportedPath)).toEqual({
+      kind: 'unsupported-generation',
+      generation: HANDOFF_ROUTING_STATUS_GENERATION + 1,
+    });
+
+    const invalidJsonPath = databasePath();
+    createReadFixtureDatabase(invalidJsonPath, [{ recordKind: 'selection', bodyJson: '{' }]);
+    expect(readHandoffRoutingStatus(invalidJsonPath)).toEqual({ kind: 'unreadable', reason: 'invalid-json' });
+
+    const invalidShapePath = databasePath();
+    createReadFixtureDatabase(invalidShapePath, [{ recordKind: 'selection', bodyJson: '{}' }]);
+    expect(readHandoffRoutingStatus(invalidShapePath)).toEqual({ kind: 'unreadable', reason: 'invalid-shape' });
+
+    const tooLargePath = databasePath();
+    createReadFixtureDatabase(tooLargePath, [
+      { recordKind: 'selection', bodyJson: JSON.stringify({ padding: 'x'.repeat(10_000) }) },
+    ]);
+    expect(readHandoffRoutingStatus(tooLargePath)).toEqual({ kind: 'unreadable', reason: 'too-large' });
+
+    const permissionDeniedPath = databasePath();
+    await committed(permissionDeniedPath, [selection('permission-denied', 1)]);
+    chmodSync(permissionDeniedPath, 0o000);
+    try {
+      if (process.platform !== 'win32') {
+        expect(readHandoffRoutingStatus(permissionDeniedPath)).toEqual({
+          kind: 'undeterminable',
+          cause: 'io-failed',
+          errcode: -13,
+        });
+      }
+    } finally {
+      chmodSync(permissionDeniedPath, 0o600);
+    }
+  });
+
+  it('reads the previous committed snapshot while a writer holds an immediate transaction', async () => {
+    const path = databasePath();
+    await committed(path, [selection('visible', 1)]);
+    const writer = new DatabaseSync(path);
+    try {
+      writer.exec('BEGIN IMMEDIATE');
+      writer.prepare("DELETE FROM handoff_routing_records WHERE invocation_id = 'visible'").run();
+      const result = readHandoffRoutingStatus(path);
+      expect(result).toMatchObject({ kind: 'current' });
+      if (result.kind !== 'current') throw new Error(`Expected current status, received ${result.kind}`);
+      expect(result.statuses).toContainEqual(
+        expect.objectContaining({
+          kind: 'unresolved',
+          selection: expect.objectContaining({ invocationId: 'visible' }),
+        }),
+      );
+      writer.exec('ROLLBACK');
+    } finally {
+      if (writer.isTransaction) writer.exec('ROLLBACK');
+      writer.close();
+    }
+  });
+
   it('rejects invalid batches before creating their durable address', async () => {
     const root = mkdtempSync(join(tmpdir(), 'coral-handoff-routing-invalid-'));
     temporaryDirectories.push(root);
@@ -378,6 +623,51 @@ describe('handoff routing status', () => {
     ]);
     expect(records(path).find((event) => event.invocationId === 'gap')).toMatchObject({
       disposition: { kind: 'failed-without-selection' },
+    });
+  });
+
+  it('attributes domain conflicts before SQLite and does not call an unexpected constraint a rejected transition', async () => {
+    const path = databasePath();
+    await committed(path, [selection('seed', 1)]);
+    await expect(publish(path, [{ ...selection('duplicate-event', 2), eventId: 'event-1' }])).resolves.toEqual({
+      kind: 'not-published',
+      cause: 'rejected-transition',
+    });
+
+    const db = new DatabaseSync(path);
+    try {
+      db.exec(`
+        CREATE TRIGGER reject_handoff_routing_insert
+        BEFORE INSERT ON handoff_routing_records
+        BEGIN
+          SELECT RAISE(ABORT, 'unexpected durable shape');
+        END
+      `);
+    } finally {
+      db.close();
+    }
+
+    await expect(publish(path, [selection('valid-transition', 3)])).resolves.toEqual({
+      kind: 'undeterminable',
+      cause: 'io-failed',
+      errcode: 1_811,
+    });
+  });
+
+  it('preserves the SQLite code that makes a generation-matching artifact unreadable', async () => {
+    const path = databasePath();
+    await committed(path, [selection('seed', 1)]);
+    const db = new DatabaseSync(path);
+    try {
+      db.exec('DROP TABLE handoff_routing_metadata');
+    } finally {
+      db.close();
+    }
+
+    await expect(publish(path, [selection('next', 2)])).resolves.toEqual({
+      kind: 'undeterminable',
+      cause: 'unreadable',
+      errcode: 1,
     });
   });
 
