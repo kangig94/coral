@@ -90,7 +90,7 @@ export const providerHandoffCapsuleRetirementOutcomeSchema = z.discriminatedUnio
 ]);
 
 export function retireProviderHandoffCapsule(
-  storage: StoragePort,
+  storage: Pick<StoragePort, 'syncDirectoryDurableSync' | 'unlinkSync'>,
   path: string,
 ): ProviderHandoffCapsuleRetirementOutcome {
   try {

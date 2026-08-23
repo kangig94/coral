@@ -11,7 +11,7 @@ vi.mock('node:os', async () => {
   return { ...actual, platform: () => mockState.platform };
 });
 
-import { coordinatorPaths } from '#src/infra/path/coordinator.js';
+import { coordinatorPaths, handoffRoutingStatusPath } from '#src/infra/path/coordinator.js';
 import { socketFallbackDir } from '#src/infra/path/unix-socket.js';
 
 function baseDirOfLength(length: number): string {
@@ -32,6 +32,13 @@ afterEach(() => {
 });
 
 describe('coordinatorPaths', () => {
+  it('addresses the routing status database by required generation', () => {
+    const options = { baseDir: '/var/lib/coral' };
+
+    expect(handoffRoutingStatusPath('prod', 1, options)).toBe('/var/lib/coral/gen2/run/handoff-routing.1.db');
+    expect(handoffRoutingStatusPath('prod', 2, options)).not.toBe(handoffRoutingStatusPath('prod', 1, options));
+  });
+
   it.each([
     { socketBytes: 103, fallback: false },
     { socketBytes: 104, fallback: true },

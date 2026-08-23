@@ -56,7 +56,7 @@ export interface Database extends Omit<DatabaseSync, 'prepare'> {
 
 type ReadonlyStoreOptions = {
   readonly path: string;
-  readonly storage: StoragePort;
+  readonly storage: Pick<StoragePort, 'existsSync'>;
   readonly storeFormat: StoreFormatDescription;
   readonly flavor?: BuildFlavor;
   readonly readonly: true;
@@ -298,7 +298,7 @@ export function openStoreDatabase(options: OpenStoreOptions): Database {
     throw documentedCoralSetupError('store_not_initialized', { path: options.path });
   }
 
-  if (!readonly && options.path !== ':memory:') {
+  if (options.readonly !== true && options.path !== ':memory:') {
     options.storage.mkdirSync(dirname(options.path), { recursive: true });
   }
 
@@ -314,8 +314,7 @@ export function openStoreDatabase(options: OpenStoreOptions): Database {
 
     const classification = classifyStoreFormat(db, options.storeFormat);
     if (classification.kind === 'legacy-adoptable') {
-      // Only explicit adoption may stamp this state, and it does so in the legacy
-      // tree before the atomic flavor-root rename. Ordinary opens never write it.
+      // Only explicit adoption may stamp legacy metadata.
       throw storeSchemaOutdatedError(options.path, classification, options.storeFormat, options.flavor);
     }
     if (classification.kind === 'compatible') {

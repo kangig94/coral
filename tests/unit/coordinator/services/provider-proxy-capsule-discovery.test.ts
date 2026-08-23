@@ -13,6 +13,7 @@ import {
   discoverProviderHandoffCapsules,
   retireProviderHandoffCapsule,
 } from '#src/coordinator/services/provider-proxy-capsule-discovery.js';
+import { handoffRoutingStatusPath } from '#src/infra/path/coordinator.js';
 import {
   CURRENT_HANDOFF_CAPSULE_VERSION,
   SUPPORTED_HANDOFF_CAPSULE_VERSIONS,
@@ -26,8 +27,11 @@ const FIXTURE_BUILD_SET_ID = '22222222-2222-4222-8222-222222222222';
 /** Nothing observed is never absence, so every discovered capsule is retained and no retirement begins. */
 const retainsEveryCapsule = { observeRecordedProcess: () => 'unknown' as const };
 
-function retirementStorage(unlinkSync: () => void, syncDirectoryDurableSync: () => boolean): StoragePort {
-  return { unlinkSync, syncDirectoryDurableSync } as unknown as StoragePort;
+function retirementStorage(
+  unlinkSync: () => void,
+  syncDirectoryDurableSync: () => boolean,
+): Pick<StoragePort, 'syncDirectoryDurableSync' | 'unlinkSync'> {
+  return { unlinkSync, syncDirectoryDurableSync };
 }
 
 describe('provider proxy capsule discovery', () => {
@@ -145,7 +149,7 @@ describe('provider proxy capsule discovery', () => {
     ).toEqual([]);
   });
 
-  it('represents a canonical real-storage capsule it cannot inherit without blocking fresh admission', () => {
+  it('represents a canonical real-storage capsule while ignoring routing status artifacts', () => {
     const baseDir = mkdtempSync(join(tmpdir(), 'coral-provider-capsule-discovery-'));
     const runtime = createRealRuntime('prod', { baseDir });
     const runDir = runtime.paths.coral.coordinator.runDir;
@@ -170,10 +174,11 @@ describe('provider proxy capsule discovery', () => {
     const path = providerHandoffCapsulePath(capsule, capsule.version, { baseDir });
     const stat = runtime.storage.statSync(baseDir, { bigint: true });
     if (stat.uid === undefined) throw new Error('real storage did not report the temporary directory owner');
-    // Placed as bytes rather than through `writeHandoffCapsuleFile`, which now accepts V3 alone. This case is
-    // discovery finding a capsule an *older* build left behind, so producing it with the current writer would
-    // be testing a file production can no longer create.
     runtime.storage.writeAtomicDurableSync(path, JSON.stringify(capsule), { encoding: 'utf-8', mode: 0o600 });
+    runtime.storage.writeAtomicDurableSync(handoffRoutingStatusPath('prod', 1, { baseDir }), '', {
+      encoding: 'utf-8',
+      mode: 0o600,
+    });
 
     const discovered = discoverProviderHandoffCapsules({
       runDir,
@@ -201,10 +206,6 @@ describe('provider proxy capsule discovery', () => {
       hostFingerprint: capsule.hostFingerprint,
     });
 
-    // Represented, and deliberately not blocking. A generation this build cannot name a set from is held only
-    // so its address cannot be aliased — it has no identity to compare an acquisition against, so denying one
-    // on its account would deny service over a capsule this build may not touch. The roles behind it are
-    // bounded by their own orphan deadline, which is what makes the overlap safe rather than merely tolerated.
     expect({
       canonicalBasename: /^provider-1[0-9a-f]{23}\.handoff\.json$/u.test(basename(path)),
       discovered,
