@@ -13,6 +13,7 @@ import {
   discoverProviderHandoffCapsules,
   retireProviderHandoffCapsule,
 } from '#src/coordinator/services/provider-proxy-capsule-discovery.js';
+import { handoffRoutingJournalPath, handoffRoutingRecoveryPath } from '#src/infra/path/coordinator.js';
 import {
   CURRENT_HANDOFF_CAPSULE_VERSION,
   SUPPORTED_HANDOFF_CAPSULE_VERSIONS,
@@ -145,7 +146,7 @@ describe('provider proxy capsule discovery', () => {
     ).toEqual([]);
   });
 
-  it('represents a canonical real-storage capsule it cannot inherit without blocking fresh admission', () => {
+  it('represents a canonical real-storage capsule while ignoring routing status artifacts', () => {
     const baseDir = mkdtempSync(join(tmpdir(), 'coral-provider-capsule-discovery-'));
     const runtime = createRealRuntime('prod', { baseDir });
     const runDir = runtime.paths.coral.coordinator.runDir;
@@ -174,6 +175,12 @@ describe('provider proxy capsule discovery', () => {
     // discovery finding a capsule an *older* build left behind, so producing it with the current writer would
     // be testing a file production can no longer create.
     runtime.storage.writeAtomicDurableSync(path, JSON.stringify(capsule), { encoding: 'utf-8', mode: 0o600 });
+    for (const routingPath of [
+      handoffRoutingJournalPath('prod', 1, { baseDir }),
+      handoffRoutingRecoveryPath('prod', 1, { baseDir }),
+    ]) {
+      runtime.storage.writeAtomicDurableSync(routingPath, '{}', { encoding: 'utf-8', mode: 0o600 });
+    }
 
     const discovered = discoverProviderHandoffCapsules({
       runDir,

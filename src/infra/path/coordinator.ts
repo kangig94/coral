@@ -29,6 +29,22 @@ export function generationRunDir(flavor: BuildFlavor, opts?: CoordinatorPathOpti
   return join(generationRoot(opts), flavor === 'dev' ? 'run-dev' : 'run');
 }
 
+export function handoffRoutingJournalPath(
+  flavor: BuildFlavor,
+  generation: number,
+  opts?: CoordinatorPathOptions,
+): string {
+  return join(generationRunDir(flavor, opts), `handoff-routing.${generation}.json`);
+}
+
+export function handoffRoutingRecoveryPath(
+  flavor: BuildFlavor,
+  generation: number,
+  opts?: CoordinatorPathOptions,
+): string {
+  return join(generationRunDir(flavor, opts), `handoff-routing-recovery.${generation}.json`);
+}
+
 export function socketPathForRunDir(runDir: string, flavor: BuildFlavor, env: SocketPathEnvironment): string {
   const candidateSocket = join(runDir, 'coordinator.sock');
   const limit = socketPathByteLimit(env.platform);
