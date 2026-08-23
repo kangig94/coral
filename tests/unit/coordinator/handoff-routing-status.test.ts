@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -15,6 +15,7 @@ import {
   MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES,
   MAX_ENCODED_RETIREMENT_TOMBSTONE_BYTES,
   MAX_HANDOFF_ROUTING_STATUS_BYTES,
+  MAX_LEGAL_CLOSING_RECORD_BYTES,
   MAX_LEGAL_RETIREMENT_TOMBSTONE_BYTES,
   MAX_RETIREMENT_TOMBSTONE_BYTES,
   MAX_RETIREMENT_TOMBSTONES,
@@ -206,6 +207,7 @@ describe('handoff routing status', () => {
       'routing-selected',
     ]);
     expect(MAX_LEGAL_RETIREMENT_TOMBSTONE_BYTES).toBeLessThanOrEqual(MAX_ENCODED_RETIREMENT_TOMBSTONE_BYTES);
+    expect(MAX_LEGAL_RETIREMENT_TOMBSTONE_BYTES).toBeLessThanOrEqual(MAX_LEGAL_CLOSING_RECORD_BYTES);
     expect(MAX_RETIREMENT_TOMBSTONES * MAX_LEGAL_RETIREMENT_TOMBSTONE_BYTES).toBeLessThanOrEqual(
       MAX_RETIREMENT_TOMBSTONE_BYTES,
     );
@@ -229,11 +231,21 @@ describe('handoff routing status', () => {
         )
         .all() as Array<{ name: string }>;
       expect(objects.map((row) => row.name)).toEqual([
+        'handoff_routing_closing_reserve',
+        'handoff_routing_gap_terminal_or_selection_per_invocation',
         'handoff_routing_metadata',
         'handoff_routing_records',
         'handoff_routing_selection_or_retirement_per_invocation',
         'handoff_routing_terminal_or_retirement_per_invocation',
       ]);
+      expect(
+        db
+          .prepare(
+            `SELECT invocation_id, length(allocation) AS bytes
+          FROM handoff_routing_closing_reserve`,
+          )
+          .all(),
+      ).toEqual([{ invocation_id: 'active', bytes: MAX_LEGAL_CLOSING_RECORD_BYTES }]);
 
       const active = records(path)[0];
       const forgedRetirement = retirementTombstoneSchema.parse({
@@ -255,6 +267,19 @@ describe('handoff routing status', () => {
     } finally {
       db.close();
     }
+  });
+
+  it('rejects invalid batches before creating their durable address', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'coral-handoff-routing-invalid-'));
+    temporaryDirectories.push(root);
+    const directory = join(root, 'absent', 'nested');
+    const path = join(directory, 'handoff-routing.1.db');
+
+    await expect(publish(path, [])).resolves.toEqual({
+      kind: 'not-published',
+      cause: 'rejected-transition',
+    });
+    expect(existsSync(directory)).toBe(false);
   });
 
   it('keeps the event loop responsive while a writer holds the database', async () => {
@@ -354,6 +379,41 @@ describe('handoff routing status', () => {
     expect(records(path).find((event) => event.invocationId === 'gap')).toMatchObject({
       disposition: { kind: 'failed-without-selection' },
     });
+  });
+
+  it('rejects a recording-gap terminal and selection for the same invocation in either order', async () => {
+    const selectedFirstPath = databasePath();
+    await committed(selectedFirstPath, [selection('same', 1)]);
+    await expect(
+      publish(selectedFirstPath, [
+        {
+          kind: 'execution-failed',
+          eventId: 'gap-after-selection',
+          invocationId: 'same',
+          observedAt: at(2),
+          selection: { kind: 'without-selection' },
+          disposition: { kind: 'execution-failed', throwPhase: 'child-spawn' },
+        },
+      ]),
+    ).resolves.toEqual({ kind: 'not-published', cause: 'rejected-transition' });
+    expect(records(selectedFirstPath).filter((event) => event.invocationId === 'same')).toHaveLength(1);
+
+    const gapFirstPath = databasePath();
+    await committed(gapFirstPath, [
+      {
+        kind: 'execution-failed',
+        eventId: 'gap-before-selection',
+        invocationId: 'same',
+        observedAt: at(3),
+        selection: { kind: 'without-selection' },
+        disposition: { kind: 'execution-failed', throwPhase: 'child-spawn' },
+      },
+    ]);
+    await expect(publish(gapFirstPath, [selection('same', 4)])).resolves.toEqual({
+      kind: 'not-published',
+      cause: 'rejected-transition',
+    });
+    expect(records(gapFirstPath).filter((event) => event.invocationId === 'same')).toHaveLength(1);
   });
 
   it('admits a multi-eviction selection batch and keeps engine-allocated sequences ordered', async () => {

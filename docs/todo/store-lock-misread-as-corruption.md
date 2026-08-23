@@ -1,13 +1,15 @@
 # A locked store is reported as a corrupt one, with a destructive remediation
 
-**Observed in the field, 2026-08-23, on a working `gen2` store.** A coordinator startup failed with
+**One-time field measurement, 2026-08-23, on host `KANG-HOME` and a working `gen2` store.** A coordinator
+startup failed with
 `store_corrupt_or_unsupported`, `retryable: false`, and this remediation:
 
 > Run `coral-cli backend store-reset discard --target gen2 --flavor prod` to quarantine it before this
 > build initializes an empty store.
 
 The cause recorded in the same `startup-diagnostic.json` was `database is locked`. `PRAGMA integrity_check`
-on that exact file, run after the incident, returns `ok`. The store was never corrupt. An operator who
+on that exact file, run after the incident, returned `ok`. The diagnostic and post-incident check are retained
+incident measurements; the original lock state cannot be re-run. The store was never corrupt. An operator who
 followed the remediation would have discarded a healthy store because SQLite was momentarily busy.
 
 ## What produces it
@@ -33,12 +35,15 @@ finalization — it is what justifies discarding the store.
   `classifyStoreForProtocol` and the open/reset path in `src/store/backend-store-reset.ts`. Both produce an
   identical payload (`code`, `path`, `flavor`, `cause`), so the recorded diagnostic cannot distinguish them.
   Both need the fix; only one is proven to have run.
-**Established after the fact: the harm is confined to advice.** No reset ran. `store-reset-quarantine/`
-holds nothing newer than 2026-08-14; `recovery_quarantine` still carries rows detected 2026-08-15; the
-`events` table is unbroken from sequence 1; and `PRAGMA integrity_check` returns `ok`. Two sessions met this
-error independently and neither acted on the remediation, so nothing in the classification path resets a
-store on its own — it only tells an operator to. That is the difference between a bad afternoon and lost
-data, and it is why the fix is urgent rather than an emergency.
+
+**Established after the fact: the harm is confined to advice.** A one-time filesystem and SQL inspection on
+`KANG-HOME` found no reset: `store-reset-quarantine/` held nothing newer than 2026-08-14;
+`recovery_quarantine` still carried rows detected 2026-08-15; the `events` table was unbroken from sequence 1;
+and `PRAGMA integrity_check` returned `ok`. The retained session diagnostics counted two independent sessions
+that met this error, and neither acted on the remediation. Those incident-state measurements cannot be
+reconstructed once the live store and session history advance. Nothing in the classification path resets a
+store on its own — it only tells an operator to. That is the difference between a bad afternoon and lost data,
+and it is why the fix is urgent rather than an emergency.
 
 ## The shape of the fix
 
@@ -59,7 +64,8 @@ signals the incumbent, waits out `SIGKILL_GRACE_MS`, finds the socket still boun
 `Incumbent socket remained bound after SIGKILL grace for pid=<pid>`, which reads as an anomaly about the
 socket.
 
-**Corrected 2026-08-23 by measuring a live occurrence — the first version of this entry was wrong.** It said
+**Corrected 2026-08-23 from a one-time live measurement on `KANG-HOME` — the first version of this entry was
+wrong.** It said
 a dead pid was being named as the holder, and guessed that a child had inherited the listening descriptor.
 Neither is so. `ss -xlp` showed exactly one holder of that socket, the accused pid itself, and the pid was
 alive:
@@ -71,11 +77,13 @@ wchan:   jbd2_log_wait_commit ← blocked in the ext4 journal commit
 ```
 
 A process in uninterruptible sleep does not receive `SIGKILL`; the kernel queues it until the process leaves
-`D`. `kill(2)` returned success, the signal was never delivered, and the process held its socket for minutes
-while blocked on an fsync. The message is therefore *literally accurate* and the conclusion drawn from it is
-not: what was observed is "the target did not die within the grace", and what cannot be concluded is that
-anything is wrong with the socket. The honest disposition is the third answer — the target could not be
-observed to have died, because right now it cannot be killed — which is the same disposition
+`D`. In that live capture, `kill(2)` returned success, the pending-signal mask remained set, and repeated
+`ss -xlp`/`/proc/<pid>` observations showed the process holding its socket for minutes while blocked on an
+fsync. That transient process state is gone and cannot be re-run. The message is therefore *literally
+accurate* and the conclusion drawn from it is not: what was observed is "the target did not die within the
+grace", and what cannot be concluded is that anything is wrong with the socket. The honest disposition is the
+third answer — the target could not be observed to have died, because right now it cannot be killed — which is
+the same disposition
 `.claude/rules/validation.md` already requires on the way in ("only `alive` may authorize SIGKILL"), missing
 on the way out.
 
@@ -85,9 +93,9 @@ is a machine under heavy fsync load, which is when a concurrent opener meets `da
 **A cooldown is announced as manual repair.** `assertSignalCooldown` in the same file refuses a repeated
 handoff signal within `DEFAULT_SIGNAL_COOLDOWN_MS` and phrases the refusal as
 `Manual repair required: refusing repeated handoff …`. The exit is waiting for the cooldown, and in this
-incident that is exactly what happened: the SIGKILL was at 06:44:11 and the next startup succeeded at
-06:45:04. The operator was told three times that manual repair was required while the system was in the
-process of healing itself on a timer.
+incident that is exactly what happened: the retained `KANG-HOME` startup diagnostics timestamped the SIGKILL
+at 06:44:11, the successful startup at 06:45:04, and counted three intervening manual-repair messages. This is
+a one-time incident measurement, not a repeatable timing fixture; it shows the system healing on a timer.
 
 The escalation path itself is sound and should not be changed on this evidence: `verifySignalTarget` throws
 through `refuseSignal` when liveness is anything but observed, so an unobservable pid is never escalated to.

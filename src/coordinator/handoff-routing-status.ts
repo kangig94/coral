@@ -591,6 +591,10 @@ class UnreadableStatusError extends Error {}
 
 class UnsupportedGenerationError extends Error {}
 
+class CapacityExhaustedError extends Error {
+  readonly errcode = SQLITE_FULL;
+}
+
 function schemaSql(): string {
   return `
     CREATE TABLE handoff_routing_metadata (
@@ -674,6 +678,13 @@ function schemaSql(): string {
       )
     ) STRICT;
 
+    CREATE TABLE handoff_routing_closing_reserve (
+      invocation_id TEXT PRIMARY KEY CHECK (length(invocation_id) BETWEEN 1 AND ${MAX_IDENTIFIER_LENGTH}),
+      event_id TEXT NOT NULL UNIQUE CHECK (length(event_id) BETWEEN 1 AND ${MAX_IDENTIFIER_LENGTH}),
+      observed_at TEXT NOT NULL CHECK (length(observed_at) BETWEEN 1 AND ${MAX_OBSERVED_AT_LENGTH}),
+      allocation BLOB NOT NULL CHECK (length(allocation) = ${MAX_LEGAL_CLOSING_RECORD_BYTES})
+    ) STRICT;
+
     CREATE UNIQUE INDEX handoff_routing_selection_or_retirement_per_invocation
       ON handoff_routing_records(invocation_id)
       WHERE record_kind IN ('selection', 'retirement');
@@ -681,6 +692,12 @@ function schemaSql(): string {
     CREATE UNIQUE INDEX handoff_routing_terminal_or_retirement_per_invocation
       ON handoff_routing_records(invocation_id)
       WHERE record_kind IN ('terminal', 'retirement');
+
+    CREATE UNIQUE INDEX handoff_routing_gap_terminal_or_selection_per_invocation
+      ON handoff_routing_records(invocation_id)
+      WHERE record_kind = 'selection' OR (
+        record_kind = 'terminal' AND json_extract(body_json, '$.selection.kind') = 'without-selection'
+      );
   `;
 }
 
@@ -821,7 +838,17 @@ function insertSelection(db: DatabaseSync, transition: z.infer<typeof routingSel
     owner: transition.owner,
     disposition: transition.disposition,
   });
-  return insertRecord(db, 'selection', event);
+  const inserted = insertRecord(db, 'selection', event);
+  db.prepare(
+    `INSERT INTO handoff_routing_closing_reserve (invocation_id, event_id, observed_at, allocation)
+    VALUES (?, ?, ?, zeroblob(?))`,
+  ).run(event.invocationId, event.eventId, event.observedAt, MAX_LEGAL_CLOSING_RECORD_BYTES);
+  return inserted;
+}
+
+function releaseClosingReserve(db: DatabaseSync, invocationId: string): void {
+  const released = db.prepare('DELETE FROM handoff_routing_closing_reserve WHERE invocation_id = ?').run(invocationId);
+  if (released.changes !== 1) throw new UnreadableStatusError();
 }
 
 function terminalGapDisposition(
@@ -1005,10 +1032,92 @@ function retireSelection(
   resolutionReason?: RetirementTombstone['resolutionReason'],
   eventId?: string,
 ): number {
+  if (!terminalExisted) releaseClosingReserve(db, selection.invocationId);
   db.prepare('DELETE FROM handoff_routing_records WHERE invocation_id = ?').run(selection.invocationId);
   const sequence = insertTombstone(db, selection, cause, terminalExisted, observedAt, resolutionReason, eventId);
   enforceTombstoneBounds(db);
   return sequence;
+}
+
+function retireOldestCompletedPairForCapacity(db: DatabaseSync, observedAt: string): boolean {
+  const row = db
+    .prepare(
+      `WITH latest_stable_pair AS (
+        SELECT selection.sequence
+        FROM handoff_routing_records AS selection
+        JOIN handoff_routing_records AS terminal ON terminal.invocation_id = selection.invocation_id
+        WHERE selection.record_kind = 'selection'
+          AND terminal.record_kind = 'terminal'
+          AND (selection.completed_pair_stable OR terminal.completed_pair_stable)
+        ORDER BY selection.sequence DESC
+        LIMIT 1
+      )
+      SELECT selection.body_json
+      FROM handoff_routing_records AS selection
+      JOIN handoff_routing_records AS terminal ON terminal.invocation_id = selection.invocation_id
+      WHERE selection.record_kind = 'selection'
+        AND terminal.record_kind = 'terminal'
+        AND selection.sequence != COALESCE((SELECT sequence FROM latest_stable_pair), 0)
+      ORDER BY selection.sequence
+      LIMIT 1`,
+    )
+    .get() as StatusRow | undefined;
+  const selection = parseRow(row, routingSelectedEventSchema);
+  if (selection === undefined) return false;
+  retireSelection(db, selection, 'completed-pair-compaction', observedAt, true);
+  return true;
+}
+
+function rollUpOldestTombstone(db: DatabaseSync): boolean {
+  const row = db
+    .prepare(
+      `SELECT body_json FROM handoff_routing_records
+      WHERE record_kind = 'retirement'
+      ORDER BY selection_sequence, invocation_id
+      LIMIT 1`,
+    )
+    .get() as StatusRow | undefined;
+  const tombstone = parseRow(row, retirementTombstoneSchema);
+  if (tombstone === undefined) return false;
+  rollUpTombstone(db, tombstone);
+  return true;
+}
+
+function pragmaNumber(db: DatabaseSync, name: 'page_size' | 'page_count' | 'max_page_count'): number {
+  const row = db.prepare(`PRAGMA ${name}`).get() as Record<string, number>;
+  const value = row[name];
+  if (!Number.isSafeInteger(value) || value <= 0) throw new UnreadableStatusError();
+  return value;
+}
+
+function hasSelectionAdmissionCapacity(db: DatabaseSync): boolean {
+  const pageSize = pragmaNumber(db, 'page_size');
+  const pageCount = pragmaNumber(db, 'page_count');
+  const freeListCount = db.prepare('PRAGMA freelist_count').get() as Readonly<{ freelist_count: number }>;
+  const maxPageCount = pragmaNumber(db, 'max_page_count');
+  const availableBytes = (maxPageCount - pageCount + freeListCount.freelist_count) * pageSize;
+  const maximumIdentifierBytes = Buffer.byteLength('\u0800'.repeat(MAX_IDENTIFIER_LENGTH), 'utf8');
+  const indexedEnvelopeBytes = maximumIdentifierBytes * 4 + MAX_OBSERVED_AT_LENGTH * 2;
+  const btreeAllocationMarginBytes = pageSize * 8;
+  const requiredBytes =
+    MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES['routing-selected'] +
+    MAX_LEGAL_CLOSING_RECORD_BYTES +
+    indexedEnvelopeBytes +
+    btreeAllocationMarginBytes;
+  return availableBytes >= requiredBytes;
+}
+
+function makeSelectionAdmissionRoom(db: DatabaseSync, observedAt: string): void {
+  while (unresolvedCount(db) >= MAX_UNRESOLVED_INVOCATIONS) evictOldestOpening(db, observedAt);
+  while (!hasSelectionAdmissionCapacity(db)) {
+    if (retireOldestCompletedPairForCapacity(db, observedAt)) continue;
+    if (rollUpOldestTombstone(db)) continue;
+    if (unresolvedCount(db) > 0) {
+      evictOldestOpening(db, observedAt);
+      continue;
+    }
+    throw new CapacityExhaustedError();
+  }
 }
 
 function compactExpiredCompletedPairs(db: DatabaseSync, observedAt: string): void {
@@ -1094,7 +1203,7 @@ function applySelection(db: DatabaseSync, transition: z.infer<typeof routingSele
   ) {
     throw new RejectedTransitionError();
   }
-  if (unresolvedCount(db) >= MAX_UNRESOLVED_INVOCATIONS) evictOldestOpening(db, transition.observedAt);
+  makeSelectionAdmissionRoom(db, transition.observedAt);
   return insertSelection(db, transition);
 }
 
@@ -1107,6 +1216,7 @@ function applyTerminal(db: DatabaseSync, transition: z.infer<typeof terminalTran
   const selection = selectionForInvocation(db, transition.invocationId);
   if (selection !== undefined) {
     if (selection.sequence !== transition.selection.selectionSequence) throw new RejectedTransitionError();
+    releaseClosingReserve(db, selection.invocationId);
     return insertTerminal(db, transition, transition.disposition);
   }
 
@@ -1193,6 +1303,9 @@ function errorNumber(error: unknown, fallback: number): number {
 }
 
 function publishOnce(path: string, transitions: readonly HandoffRoutingTransition[]): PublicationOutcome {
+  const parsed = z.array(handoffRoutingTransitionSchema).min(1).safeParse(transitions);
+  if (!parsed.success) return { kind: 'not-published', cause: 'rejected-transition' };
+
   let db: DatabaseSync | undefined;
   let transactionOpen = false;
   let commitStarted = false;
@@ -1205,8 +1318,6 @@ function publishOnce(path: string, transitions: readonly HandoffRoutingTransitio
     transactionOpen = true;
     initializeOrValidateDatabase(db);
 
-    const parsed = z.array(handoffRoutingTransitionSchema).min(1).safeParse(transitions);
-    if (!parsed.success) throw new RejectedTransitionError();
     const observedAt = transitionObservedAt(parsed.data);
     compactExpiredCompletedPairs(db, observedAt);
     let publishedSequence = 0;
@@ -1500,6 +1611,15 @@ const MAX_RESOLVED_FINALIZED_TERMINAL = terminalEventSchema.parse({
     terminal: { kind: 'continued-current', reason: { kind: 'routing', basis: MAX_BASIS } },
   },
 });
+
+const MAX_LEGAL_TERMINAL_BYTES = Math.max(
+  encodedBytes(MAX_EXECUTION_TERMINAL),
+  encodedBytes(MAX_FINALIZED_TERMINAL),
+  encodedBytes(MAX_RESOLVED_EXECUTION_TERMINAL),
+  encodedBytes(MAX_RESOLVED_FINALIZED_TERMINAL),
+);
+
+export const MAX_LEGAL_CLOSING_RECORD_BYTES = Math.max(MAX_LEGAL_RETIREMENT_TOMBSTONE_BYTES, MAX_LEGAL_TERMINAL_BYTES);
 
 export const MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES = Object.freeze({
   'routing-selected': encodedBytes(MAX_SELECTION),

@@ -18,6 +18,7 @@ import {
   type HandoffRoutingTransition,
   type PublicationOutcome,
 } from '#src/coordinator/handoff-routing-status.js';
+import { processIncarnationSchema } from '#src/infra/node-process.js';
 import { createRealTimePort } from '#src/infra/time.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
@@ -31,6 +32,8 @@ const LIFECYCLE_MAX_GATE_MS = 250;
 const PUBLICATION_CONTENTION_TIMEOUT_MS = 1_000;
 const BENCHMARK_LIFECYCLES = 100;
 const CONCURRENT_WRITERS = 2;
+const BYTE_PRESSURE_COMPLETED_PAIRS = 204;
+const BYTE_PRESSURE_BATCHED_PAIRS = 180;
 const time = createRealTimePort();
 const temporaryDirectories: string[] = [];
 const children = new Set<ChildProcessWithoutNullStreams>();
@@ -98,6 +101,48 @@ function terminal(identity: string, offset: number, selectionSequence: number): 
         kind: 'routing',
         basis: { kind: 'same-build-set', buildSetId: '123e4567-e89b-42d3-a456-426614174000' },
       },
+    },
+  };
+}
+
+function maximumIdentifier(identity: string): string {
+  return `${identity}-${'\u0800'.repeat(58)}`.slice(0, 58);
+}
+
+function maximumSelection(identity: string, offset: number): HandoffRoutingTransition {
+  const build = {
+    version: `1.0.0-${'x'.repeat(58)}`,
+    buildSetId: 'ffffffff-ffff-4fff-bfff-ffffffffffff',
+    bundleHash: 'f'.repeat(16),
+    flavor: 'prod' as const,
+  };
+  return {
+    kind: 'routing-selected',
+    eventId: maximumIdentifier(`s${identity}`),
+    invocationId: maximumIdentifier(`i${identity}`),
+    observedAt: observedAt(offset),
+    owner: { pid: Number.MAX_SAFE_INTEGER, incarnation: processIncarnationSchema.parse('\u0800'.repeat(256)) },
+    disposition: {
+      kind: 'continue-current',
+      basis: { kind: 'invoking-build-not-older', comparison: 'newer-version', invoking: build, incumbent: build },
+    },
+  };
+}
+
+function maximumTerminal(identity: string, offset: number, selectionSequence: number): HandoffRoutingTransition {
+  const selected = maximumSelection(identity, offset);
+  if (selected.kind !== 'routing-selected' || selected.disposition.kind !== 'continue-current') {
+    throw new Error('Maximum selection fixture is not continue-current');
+  }
+  return {
+    kind: 'continuation-finalized',
+    eventId: maximumIdentifier(`t${identity}`),
+    invocationId: selected.invocationId,
+    observedAt: observedAt(offset),
+    selection: { kind: 'with-selection-sequence', selectionSequence },
+    disposition: {
+      kind: 'continued-current',
+      reason: { kind: 'routing', basis: selected.disposition.basis },
     },
   };
 }
@@ -322,6 +367,37 @@ afterAll(() => {
 });
 
 describe('handoff routing status transaction durability', () => {
+  it('reserves byte capacity for selection admission and retained-opening closure', async () => {
+    const path = databasePath();
+    const opening = maximumSelection('opening', 0);
+    const fill = Array.from({ length: BYTE_PRESSURE_BATCHED_PAIRS }, (_, index) => {
+      const selectionSequence = 2 + index * 2;
+      const identity = `pair-${index}`;
+      return [maximumSelection(identity, index * 2 + 1), maximumTerminal(identity, index * 2 + 2, selectionSequence)];
+    }).flat();
+    await committed(path, opening);
+    const fillOutcome = await publishHandoffRoutingTransitions(time, path, fill);
+    expect(fillOutcome).toEqual({ kind: 'committed', sequence: expect.any(Number) });
+    for (let index = BYTE_PRESSURE_BATCHED_PAIRS; index < BYTE_PRESSURE_COMPLETED_PAIRS; index += 1) {
+      const identity = `pair-${index}`;
+      const selected = await committed(path, maximumSelection(identity, index * 2 + 1));
+      await committed(path, maximumTerminal(identity, index * 2 + 2, selected));
+    }
+
+    const admitted = await publishHandoffRoutingTransitions(time, path, [maximumSelection('admitted', 1_000)]);
+    const closedOpening = await publishHandoffRoutingTransitions(time, path, [maximumTerminal('opening', 1_001, 1)]);
+    const closedAdmission =
+      admitted.kind === 'committed'
+        ? await publishHandoffRoutingTransitions(time, path, [maximumTerminal('admitted', 1_002, admitted.sequence)])
+        : undefined;
+
+    expect({ admitted, closedOpening, closedAdmission }).toEqual({
+      admitted: expect.objectContaining({ kind: 'committed' }),
+      closedOpening: expect.objectContaining({ kind: 'committed' }),
+      closedAdmission: expect.objectContaining({ kind: 'committed' }),
+    });
+  });
+
   it.skipIf(process.platform !== 'linux')(
     'retains exclusion past the former stale threshold, releases on death, and recovers an in-transaction cut',
     async () => {

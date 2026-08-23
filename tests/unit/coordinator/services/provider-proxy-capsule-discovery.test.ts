@@ -174,9 +174,6 @@ describe('provider proxy capsule discovery', () => {
     const path = providerHandoffCapsulePath(capsule, capsule.version, { baseDir });
     const stat = runtime.storage.statSync(baseDir, { bigint: true });
     if (stat.uid === undefined) throw new Error('real storage did not report the temporary directory owner');
-    // Placed as bytes rather than through `writeHandoffCapsuleFile`, which now accepts V3 alone. This case is
-    // discovery finding a capsule an *older* build left behind, so producing it with the current writer would
-    // be testing a file production can no longer create.
     runtime.storage.writeAtomicDurableSync(path, JSON.stringify(capsule), { encoding: 'utf-8', mode: 0o600 });
     runtime.storage.writeAtomicDurableSync(handoffRoutingStatusPath('prod', 1, { baseDir }), '', {
       encoding: 'utf-8',
@@ -209,10 +206,6 @@ describe('provider proxy capsule discovery', () => {
       hostFingerprint: capsule.hostFingerprint,
     });
 
-    // Represented, and deliberately not blocking. A generation this build cannot name a set from is held only
-    // so its address cannot be aliased — it has no identity to compare an acquisition against, so denying one
-    // on its account would deny service over a capsule this build may not touch. The roles behind it are
-    // bounded by their own orphan deadline, which is what makes the overlap safe rather than merely tolerated.
     expect({
       canonicalBasename: /^provider-1[0-9a-f]{23}\.handoff\.json$/u.test(basename(path)),
       discovered,

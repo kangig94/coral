@@ -91,15 +91,18 @@ function insertGapRecord(db: DatabaseSync, sequence: number): void {
 
 async function run(): Promise<void> {
   if (mode === 'validate-stop') {
-    const transition = {
-      ...selection(identity, 1),
-      get eventId(): string {
-        stopAt('inside-transaction');
-        return `selection-${identity}`;
-      },
-    };
-    const outcome = await publishHandoffRoutingTransitions(time, path, [transition]);
-    emit({ kind: 'outcome', outcome });
+    const db = new DatabaseSync(path);
+    try {
+      db.exec('PRAGMA busy_timeout=0');
+      db.exec('PRAGMA synchronous=FULL');
+      db.exec('BEGIN IMMEDIATE');
+      insertGapRecord(db, 2);
+      stopAt('inside-transaction');
+      db.exec('COMMIT');
+    } finally {
+      db.close();
+    }
+    emit('committed');
     return;
   }
 

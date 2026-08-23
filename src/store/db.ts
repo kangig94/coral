@@ -314,8 +314,7 @@ export function openStoreDatabase(options: OpenStoreOptions): Database {
 
     const classification = classifyStoreFormat(db, options.storeFormat);
     if (classification.kind === 'legacy-adoptable') {
-      // Only explicit adoption may stamp this state, and it does so in the legacy
-      // tree before the atomic flavor-root rename. Ordinary opens never write it.
+      // Only explicit adoption may stamp legacy metadata.
       throw storeSchemaOutdatedError(options.path, classification, options.storeFormat, options.flavor);
     }
     if (classification.kind === 'compatible') {
