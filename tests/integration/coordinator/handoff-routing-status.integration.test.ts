@@ -581,7 +581,10 @@ describe('handoff routing status transaction durability', () => {
     },
   );
 
-  it.skipIf(process.platform === 'win32')(
+  // The retention bounds this asserts are each proven per-rule by the unit suite; what only this can show is
+  // that they still hold after a hundred maximum-sized lifecycles. It is gated because that costs ~70s of
+  // `synchronous=FULL` commits, which is the heaviest I/O in the repository and starves a loaded host.
+  it.skipIf(process.platform === 'win32' || process.env.CORAL_TEST_CAPACITY !== '1')(
     'commits maximum-retained-store lifecycles and reports sequential and concurrent timings',
     async () => {
       const path = databasePath();
