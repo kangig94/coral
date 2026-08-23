@@ -25,7 +25,7 @@ function withReadonlyStore<T>(read: (db: ReturnType<typeof openStoreDatabase>) =
   const db = openStoreDatabase({
     storeFormat: currentCoralStoreFormat(),
     path: dbPath,
-    storage: nodeStoreReaderStorage as StoragePort,
+    storage: nodeStoreReaderStorage,
     readonly: true,
   });
 

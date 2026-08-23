@@ -1,4 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { DatabaseSync } from 'node:sqlite';
+import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   ABSENT_HANDOFF_RESULT_POLICY_PROJECTION,
@@ -6,41 +11,42 @@ import {
   HANDOFF_ROUTING_BASIS_POLICIES,
   HANDOFF_ROUTING_COMPLETED_RETENTION_MS,
   HANDOFF_ROUTING_STATUS_GENERATION,
+  MAX_COMPLETED_HANDOFF_ROUTING_PAIRS,
   MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES,
   MAX_ENCODED_RETIREMENT_TOMBSTONE_BYTES,
-  MAX_HANDOFF_ROUTING_JOURNAL_BYTES,
-  MAX_LEGAL_CLOSING_REPLACEMENT_BYTES,
+  MAX_HANDOFF_ROUTING_STATUS_BYTES,
   MAX_LEGAL_RETIREMENT_TOMBSTONE_BYTES,
   MAX_RETIREMENT_TOMBSTONE_BYTES,
   MAX_RETIREMENT_TOMBSTONES,
   MAX_UNRESOLVED_INVOCATIONS,
   durableHandoffRoutingBasisSchema,
-  emptyHandoffRoutingJournal,
-  handoffRoutingJournalSchema,
   invalidTargetSummarySchema,
   persistedHandoffDispositionPolicy,
-  reduceHandoffRoutingJournal,
+  publishHandoffRoutingTransitions,
   retirementTombstoneSchema,
-  routingSelectedEventSchema,
-  serializeHandoffRoutingJournal,
   type DurableHandoffRoutingBasis,
-  type HandoffRoutingJournal,
-  type HandoffRoutingReductionResult,
   type HandoffRoutingTransition,
+  type PublicationOutcome,
+  type RetirementTombstone,
 } from '#src/coordinator/handoff-routing-status.js';
 import { HANDOFF_ROUTING_BASIS_OBLIGATIONS } from '#src/coordinator/handoff-routing.js';
+import { createRealTimePort } from '#src/infra/time.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
 const BASE_TIME = Date.parse('2026-01-01T00:00:00.000Z');
 const BUILD_SET_ID = '123e4567-e89b-42d3-a456-426614174000';
 const OWNER = { pid: 101, incarnation: testIncarnation(101) } as const;
+const temporaryDirectories: string[] = [];
+const time = createRealTimePort();
 
 function at(offsetMs: number): string {
   return new Date(BASE_TIME + offsetMs).toISOString();
 }
 
-function eventId(index: number): string {
-  return `event-${index}`;
+function databasePath(): string {
+  const directory = mkdtempSync(join(tmpdir(), 'coral-handoff-routing-'));
+  temporaryDirectories.push(directory);
+  return join(directory, 'handoff-routing.1.db');
 }
 
 function selection(
@@ -50,7 +56,7 @@ function selection(
 ): HandoffRoutingTransition {
   return {
     kind: 'routing-selected',
-    eventId: eventId(index),
+    eventId: `event-${index}`,
     invocationId,
     observedAt: at(index),
     owner: OWNER,
@@ -61,7 +67,7 @@ function selection(
 function terminal(invocationId: string, index: number, selectionSequence: number): HandoffRoutingTransition {
   return {
     kind: 'continuation-finalized',
-    eventId: eventId(index),
+    eventId: `event-${index}`,
     invocationId,
     observedAt: at(index),
     selection: { kind: 'with-selection-sequence', selectionSequence },
@@ -72,86 +78,80 @@ function terminal(invocationId: string, index: number, selectionSequence: number
   };
 }
 
-function accept(result: HandoffRoutingReductionResult): HandoffRoutingJournal {
-  expect(result.kind).toBe('accepted');
-  if (result.kind !== 'accepted') throw new Error(`Expected acceptance, received ${result.reason}`);
-  return result.journal;
+async function committed(
+  path: string,
+  transitions: readonly HandoffRoutingTransition[],
+): Promise<Extract<PublicationOutcome, { kind: 'committed' }>> {
+  const outcome = await publish(path, transitions);
+  expect(outcome.kind).toBe('committed');
+  if (outcome.kind !== 'committed') throw new Error(`Expected a commit, received ${outcome.kind}`);
+  return outcome;
 }
 
-function selectionSequence(journal: HandoffRoutingJournal, invocationId: string): number {
-  const selected = journal.events.find(
-    (event) => event.eventKind === 'routing-selected' && event.invocationId === invocationId,
-  );
-  if (selected === undefined) throw new Error(`Missing selection for ${invocationId}`);
-  return selected.sequence;
+function publish(
+  path: string,
+  transitions: readonly HandoffRoutingTransition[],
+  signal?: AbortSignal,
+): Promise<PublicationOutcome> {
+  return publishHandoffRoutingTransitions(time, path, transitions, signal);
 }
 
-function completePair(
-  journal: HandoffRoutingJournal,
-  invocationId: string,
-  eventIndex: number,
-  basis?: DurableHandoffRoutingBasis,
-): HandoffRoutingJournal {
-  const selected = accept(reduceHandoffRoutingJournal(journal, [selection(invocationId, eventIndex, basis)]));
-  return accept(
-    reduceHandoffRoutingJournal(selected, [
-      terminal(invocationId, eventIndex + 1, selectionSequence(selected, invocationId)),
-    ]),
-  );
-}
-
-function denseJournalNearByteLimit(openingCount = 3): HandoffRoutingJournal {
-  const gapEvents = Array.from({ length: 5_000 }, (_, index) => {
-    const sequence = index + 1;
-    return {
-      generation: HANDOFF_ROUTING_STATUS_GENERATION,
-      sequence,
-      eventId: `gap-event-${sequence}`,
-      invocationId: `gap-${sequence}`,
-      observedAt: at(sequence),
-      eventKind: 'execution-failed',
-      phase: 'terminal',
-      selection: { kind: 'without-selection' },
-      disposition: { kind: 'failed-without-selection', throwPhase: 'child-spawn' },
-    } as const;
-  });
-  const journalWithGapCount = (gapCount: number) => {
-    const openings = Array.from({ length: openingCount }, (_, index) => {
-      const sequence = gapCount + index + 1;
-      return routingSelectedEventSchema.parse({
-        generation: HANDOFF_ROUTING_STATUS_GENERATION,
-        sequence,
-        eventId: `opening-event-${index}`,
-        invocationId: `opening-${index}`,
-        observedAt: at(sequence),
-        eventKind: 'routing-selected',
-        phase: 'selection',
-        owner: OWNER,
-        disposition: { kind: 'continue-current', basis: { kind: 'same-build-set', buildSetId: BUILD_SET_ID } },
-      });
-    });
-    return {
-      generation: HANDOFF_ROUTING_STATUS_GENERATION,
-      sequenceHighWater: gapCount + openings.length,
-      events: [...gapEvents.slice(0, gapCount), ...openings],
-      retirementTombstones: [],
-      retirementHistoryTruncated: emptyHandoffRoutingJournal().retirementHistoryTruncated,
-    };
-  };
-
-  let lower = 0;
-  let upper = gapEvents.length;
-  while (lower < upper) {
-    const candidate = Math.ceil((lower + upper) / 2);
-    const bytes = Buffer.byteLength(JSON.stringify(journalWithGapCount(candidate)), 'utf8');
-    if (bytes + openingCount * MAX_LEGAL_CLOSING_REPLACEMENT_BYTES <= MAX_HANDOFF_ROUTING_JOURNAL_BYTES) {
-      lower = candidate;
-    } else {
-      upper = candidate - 1;
-    }
+function records(path: string): Array<Record<string, unknown>> {
+  const db = new DatabaseSync(path);
+  try {
+    return (
+      db.prepare('SELECT body_json FROM handoff_routing_records ORDER BY sequence').all() as Array<{
+        body_json: string;
+      }>
+    ).map((row) => JSON.parse(row.body_json) as Record<string, unknown>);
+  } finally {
+    db.close();
   }
-  return handoffRoutingJournalSchema.parse(journalWithGapCount(lower));
 }
+
+function metadata(path: string): Record<string, number | string | null> {
+  const db = new DatabaseSync(path);
+  try {
+    return db.prepare('SELECT * FROM handoff_routing_metadata WHERE singleton = 1').get() as Record<
+      string,
+      number | string | null
+    >;
+  } finally {
+    db.close();
+  }
+}
+
+function insertTombstoneFixture(db: DatabaseSync, tombstone: RetirementTombstone): void {
+  db.prepare(
+    `INSERT INTO handoff_routing_records (
+      sequence,
+      generation,
+      event_id,
+      invocation_id,
+      observed_at,
+      record_kind,
+      event_kind,
+      selection_sequence,
+      retirement_cause,
+      terminal_existed,
+      body_json
+    ) VALUES (?, ?, ?, ?, ?, 'retirement', 'retirement-tombstone', ?, ?, ?, ?)`,
+  ).run(
+    tombstone.sequence,
+    tombstone.generation,
+    tombstone.eventId,
+    tombstone.invocationId,
+    tombstone.observedAt,
+    tombstone.selectionSequence,
+    tombstone.retirementCause,
+    Number(tombstone.terminalExisted),
+    JSON.stringify(tombstone),
+  );
+}
+
+afterEach(() => {
+  for (const directory of temporaryDirectories.splice(0)) rmSync(directory, { recursive: true, force: true });
+});
 
 describe('handoff routing status', () => {
   it('projects all three obligation sources without inventing persisted status for ephemeral bindings', () => {
@@ -182,7 +182,7 @@ describe('handoff routing status', () => {
     });
   });
 
-  it('persists bounded projections without paths, complete manifests, target handles, or raw errors', () => {
+  it('keeps bounded projections and derives per-row encoded limits from maximum legal fixtures', () => {
     const basis = durableHandoffRoutingBasisSchema.parse({
       kind: 'invalid-incumbent-target',
       evidence: {
@@ -195,18 +195,11 @@ describe('handoff routing status', () => {
         },
       },
     });
-    const encoded = JSON.stringify(basis);
 
-    expect(encoded).not.toContain('bundleDir');
-    expect(encoded).not.toContain('expectedManifest');
-    expect(encoded).not.toContain('cliBundleHash');
-    expect(encoded).not.toContain('storeFormatFingerprint');
+    expect(JSON.stringify(basis)).not.toMatch(/bundleDir|expectedManifest|cliBundleHash|storeFormatFingerprint/);
     expect(
       invalidTargetSummarySchema.safeParse({ failure: 'bundle-dir-unavailable', bundleDir: '/tmp/x' }).success,
     ).toBe(false);
-  });
-
-  it('derives and enforces the exact tombstone item bound without truncation', () => {
     expect(Object.keys(MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES).sort()).toEqual([
       'continuation-finalized',
       'execution-failed',
@@ -216,433 +209,392 @@ describe('handoff routing status', () => {
     expect(MAX_RETIREMENT_TOMBSTONES * MAX_LEGAL_RETIREMENT_TOMBSTONE_BYTES).toBeLessThanOrEqual(
       MAX_RETIREMENT_TOMBSTONE_BYTES,
     );
-    expect(MAX_LEGAL_CLOSING_REPLACEMENT_BYTES).toBe(
-      Math.max(
-        MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES['execution-failed'],
-        MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES['continuation-finalized'],
-        MAX_LEGAL_RETIREMENT_TOMBSTONE_BYTES,
-      ),
-    );
-    expect(
-      invalidTargetSummarySchema.safeParse({
-        failure: 'adjacent-bundle-mismatch',
-        expectedBuild: {
-          version: `1.0.0-${'x'.repeat(65)}`,
-          buildSetId: BUILD_SET_ID,
-          bundleHash: 'a'.repeat(16),
-          flavor: 'prod',
-        },
-      }).success,
-    ).toBe(false);
-    expect(
-      reduceHandoffRoutingJournal(emptyHandoffRoutingJournal(), [selection('\u0800'.repeat(59), 1)]),
-    ).toMatchObject({ kind: 'rejected', reason: 'invalid-transition' });
   });
 
-  it('admits a selection at the unresolved count bound by retiring the oldest opening atomically', () => {
-    const initial = Array.from({ length: MAX_UNRESOLVED_INVOCATIONS }, (_, index) =>
-      selection(`invocation-${index}`, index + 1),
-    );
-    const full = accept(reduceHandoffRoutingJournal(emptyHandoffRoutingJournal(), initial));
-    const admitted = accept(
-      reduceHandoffRoutingJournal(full, [selection('invocation-new', MAX_UNRESOLVED_INVOCATIONS + 1)]),
-    );
+  it('creates the bounded schema with nonblocking immediate-write pragmas and relational uniqueness', async () => {
+    const path = databasePath();
+    await committed(path, [selection('active', 1)]);
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+    const db = new DatabaseSync(path);
+    try {
+      expect(db.prepare('PRAGMA user_version').get()).toEqual({ user_version: HANDOFF_ROUTING_STATUS_GENERATION });
+      expect(db.prepare('PRAGMA busy_timeout').get()).toEqual({ timeout: 0 });
+      expect(db.prepare('PRAGMA synchronous').get()).toEqual({ synchronous: 2 });
+      expect(db.prepare('PRAGMA journal_mode').get()).toEqual({ journal_mode: 'wal' });
+      const objects = db
+        .prepare(
+          `SELECT name FROM sqlite_master
+          WHERE name LIKE 'handoff_routing_%'
+          ORDER BY name`,
+        )
+        .all() as Array<{ name: string }>;
+      expect(objects.map((row) => row.name)).toEqual([
+        'handoff_routing_metadata',
+        'handoff_routing_records',
+        'handoff_routing_selection_or_retirement_per_invocation',
+        'handoff_routing_terminal_or_retirement_per_invocation',
+      ]);
 
-    expect(admitted.events.filter((event) => event.eventKind === 'routing-selected')).toHaveLength(
-      MAX_UNRESOLVED_INVOCATIONS,
-    );
-    expect(admitted.events.some((event) => event.invocationId === 'invocation-0')).toBe(false);
-    expect(admitted.retirementTombstones).toContainEqual(
-      expect.objectContaining({
-        invocationId: 'invocation-0',
-        retirementCause: 'selection-evicted-at-capacity',
-        terminalExisted: false,
-      }),
-    );
-    expect(admitted.sequenceHighWater).toBe(full.sequenceHighWater + 2);
-  });
-
-  it('keeps encoded state plus every unresolved closing reserve within the byte bound', () => {
-    const largeBasis: DurableHandoffRoutingBasis = {
-      kind: 'invoking-build-not-older',
-      comparison: 'newer-version',
-      invoking: {
-        version: `1.0.0-${'a'.repeat(50)}`,
-        buildSetId: BUILD_SET_ID,
-        bundleHash: 'a'.repeat(16),
-        flavor: 'prod',
-      },
-      incumbent: {
-        version: `2.0.0-${'b'.repeat(50)}`,
-        buildSetId: '223e4567-e89b-42d3-a456-426614174000',
-        bundleHash: 'b'.repeat(16),
-        flavor: 'prod',
-      },
-    };
-    const transitions = Array.from({ length: MAX_UNRESOLVED_INVOCATIONS }, (_, index) =>
-      selection(`large-${index}`, index + 1, largeBasis),
-    );
-    const journal = accept(reduceHandoffRoutingJournal(emptyHandoffRoutingJournal(), transitions));
-    const serialized = serializeHandoffRoutingJournal(journal);
-    expect(serialized.kind).toBe('serialized');
-    if (serialized.kind !== 'serialized') return;
-    expect(serialized.bytes + MAX_UNRESOLVED_INVOCATIONS * MAX_LEGAL_CLOSING_REPLACEMENT_BYTES).toBeLessThanOrEqual(
-      MAX_HANDOFF_ROUTING_JOURNAL_BYTES,
-    );
-  });
-
-  it('allocates multiple byte-pressure eviction replacements before admitting a selection', () => {
-    const full = denseJournalNearByteLimit();
-    const before = JSON.stringify(full);
-    const result = reduceHandoffRoutingJournal(full, [
-      selection('\u0800'.repeat(58), full.sequenceHighWater + 1, {
-        kind: 'invoking-build-not-older',
-        comparison: 'newer-version',
-        invoking: {
-          version: `1.0.0-${'a'.repeat(58)}`,
-          buildSetId: BUILD_SET_ID,
-          bundleHash: 'a'.repeat(16),
-          flavor: 'prod',
-        },
-        incumbent: {
-          version: `2.0.0-${'b'.repeat(58)}`,
-          buildSetId: '223e4567-e89b-42d3-a456-426614174000',
-          bundleHash: 'b'.repeat(16),
-          flavor: 'prod',
-        },
-      }),
-    ]);
-    const admitted = accept(result);
-    const admittedSelection = admitted.events.find(
-      (event) => event.eventKind === 'routing-selected' && event.invocationId === '\u0800'.repeat(58),
-    );
-    const evictions = admitted.retirementTombstones.filter(
-      (tombstone) => tombstone.retirementCause === 'selection-evicted-at-capacity',
-    );
-    const evictionCount =
-      evictions.length + admitted.retirementHistoryTruncated.causes['selection-evicted-at-capacity'];
-
-    expect(evictionCount).toBeGreaterThan(1);
-    expect(admittedSelection).toBeDefined();
-    expect(evictions.every((tombstone) => tombstone.sequence < (admittedSelection?.sequence ?? 0))).toBe(true);
-    expect(result.kind === 'accepted' ? result.committedSequences : []).toEqual(
-      Array.from(
-        { length: admitted.sequenceHighWater - full.sequenceHighWater },
-        (_, index) => full.sequenceHighWater + index + 1,
-      ),
-    );
-    expect(JSON.stringify(full)).toBe(before);
-  });
-
-  it('retires an old selection when its terminal arrives out of order beyond the completed window', () => {
-    let journal = accept(
-      reduceHandoffRoutingJournal(emptyHandoffRoutingJournal(), [
-        selection('old', 1, { kind: 'incumbent-unresolved', cause: 'health-request-failed' }),
-      ]),
-    );
-    journal = accept(
-      reduceHandoffRoutingJournal(
-        journal,
-        Array.from({ length: 256 }, (_, index) => {
-          const sequence = 2 + index * 2;
-          return [
-            selection(`new-${index}`, sequence, { kind: 'incumbent-unresolved', cause: 'health-request-failed' }),
-            terminal(`new-${index}`, sequence + 1, sequence),
-          ];
-        }).flat(),
-      ),
-    );
-    journal = accept(reduceHandoffRoutingJournal(journal, [terminal('old', 600, selectionSequence(journal, 'old'))]));
-
-    expect(journal.events.some((event) => event.invocationId === 'old')).toBe(false);
-    expect(journal.retirementTombstones).toContainEqual(
-      expect.objectContaining({ invocationId: 'old', retirementCause: 'completed-pair-compaction' }),
-    );
-  });
-
-  it('rolls expired exact capacity identity into the cumulative aggregate', () => {
-    let journal = accept(
-      reduceHandoffRoutingJournal(
-        emptyHandoffRoutingJournal(),
-        Array.from({ length: MAX_UNRESOLVED_INVOCATIONS }, (_, index) => selection(`opening-${index}`, index + 1)),
-      ),
-    );
-    for (let index = 0; index <= MAX_RETIREMENT_TOMBSTONES; index += 1) {
-      journal = accept(
-        reduceHandoffRoutingJournal(journal, [
-          selection(`replacement-${index}`, MAX_UNRESOLVED_INVOCATIONS + index + 1),
-        ]),
-      );
-    }
-
-    expect(journal.retirementTombstones.length).toBeLessThanOrEqual(MAX_RETIREMENT_TOMBSTONES);
-    expect(journal.retirementHistoryTruncated.expiredIdentityCount).toBeGreaterThan(0);
-    expect(journal.retirementHistoryTruncated.causes['selection-evicted-at-capacity']).toBe(
-      journal.retirementHistoryTruncated.expiredIdentityCount,
-    );
-    expect(journal.retirementHistoryTruncated.minSelectionSequence).not.toBeNull();
-    expect(journal.retirementHistoryTruncated.maxSelectionSequence).not.toBeNull();
-
-    const late = accept(reduceHandoffRoutingJournal(journal, [terminal('opening-0', 400, 1)]));
-    expect(late.events.at(-1)).toMatchObject({
-      invocationId: 'opening-0',
-      disposition: { kind: 'terminal-without-retained-selection' },
-    });
-  });
-
-  it('rolls up a newly created tombstone immediately when it is the oldest identity beyond the exact window', () => {
-    const opening = routingSelectedEventSchema.parse({
-      generation: HANDOFF_ROUTING_STATUS_GENERATION,
-      sequence: 1,
-      eventId: 'opening-event',
-      invocationId: 'opening',
-      observedAt: at(1),
-      eventKind: 'routing-selected',
-      phase: 'selection',
-      owner: OWNER,
-      disposition: { kind: 'continue-current', basis: { kind: 'same-build-set', buildSetId: BUILD_SET_ID } },
-    });
-    const retirementTombstones = Array.from({ length: MAX_RETIREMENT_TOMBSTONES }, (_, index) => {
-      const sequence = index + 2;
-      return retirementTombstoneSchema.parse({
+      const active = records(path)[0];
+      const forgedRetirement = retirementTombstoneSchema.parse({
         generation: HANDOFF_ROUTING_STATUS_GENERATION,
-        sequence,
-        eventId: `retirement-${index}`,
-        invocationId: `retired-${index}`,
-        observedAt: at(sequence),
+        sequence: 2,
+        eventId: 'retirement-for-active',
+        invocationId: 'active',
+        observedAt: at(2),
         eventKind: 'retirement-tombstone',
         phase: 'retirement',
-        selectionSequence: sequence,
-        selectedAt: at(sequence),
+        selectionSequence: active.sequence,
+        selectedAt: active.observedAt,
         owner: OWNER,
-        selectedDisposition: { kind: 'continue-current', basis: { kind: 'same-build-set', buildSetId: BUILD_SET_ID } },
+        selectedDisposition: active.disposition,
         retirementCause: 'selection-evicted-at-capacity',
         terminalExisted: false,
       });
+      expect(() => insertTombstoneFixture(db, forgedRetirement)).toThrow();
+    } finally {
+      db.close();
+    }
+  });
+
+  it('keeps the event loop responsive while a writer holds the database', async () => {
+    const path = databasePath();
+    await committed(path, [selection('holder-seed', 1)]);
+    const holder = new DatabaseSync(path);
+    holder.exec('BEGIN IMMEDIATE');
+    let publication: Promise<PublicationOutcome>;
+    try {
+      const eventLoopTick = new Promise<'event-loop-tick'>((resolve) => {
+        setTimeout(() => resolve('event-loop-tick'), 0);
+      });
+      publication = publish(path, [selection('contended', 2)]);
+
+      await expect(
+        Promise.race([eventLoopTick, publication.then(() => 'publication-finished' as const)]),
+      ).resolves.toBe('event-loop-tick');
+    } finally {
+      holder.exec('ROLLBACK');
+      holder.close();
+    }
+
+    await expect(publication).resolves.toMatchObject({ kind: 'committed' });
+  });
+
+  it('publishes all transition statements atomically and rejects every illegal transition row', async () => {
+    const path = databasePath();
+    await expect(publish(path, [])).resolves.toEqual({
+      kind: 'not-published',
+      cause: 'rejected-transition',
     });
-    const journal = handoffRoutingJournalSchema.parse({
-      generation: HANDOFF_ROUTING_STATUS_GENERATION,
-      sequenceHighWater: MAX_RETIREMENT_TOMBSTONES + 1,
-      events: [opening],
-      retirementTombstones,
-      retirementHistoryTruncated: emptyHandoffRoutingJournal().retirementHistoryTruncated,
+    await expect(
+      publish(path, [{ ...selection('invalid', 1), invocationId: '' } as HandoffRoutingTransition]),
+    ).resolves.toEqual({ kind: 'not-published', cause: 'rejected-transition' });
+
+    const selected = await committed(path, [selection('active', 2)]);
+    await expect(publish(path, [{ ...selection('other', 3), eventId: 'event-2' }])).resolves.toEqual({
+      kind: 'not-published',
+      cause: 'rejected-transition',
     });
-    const resolved = accept(
-      reduceHandoffRoutingJournal(journal, [
+    await expect(publish(path, [selection('active', 4)])).resolves.toEqual({
+      kind: 'not-published',
+      cause: 'rejected-transition',
+    });
+    await expect(publish(path, [terminal('active', 5, 999)])).resolves.toEqual({
+      kind: 'not-published',
+      cause: 'rejected-transition',
+    });
+
+    await committed(path, [terminal('active', 6, selected.sequence)]);
+    await expect(publish(path, [terminal('active', 7, selected.sequence)])).resolves.toEqual({
+      kind: 'not-published',
+      cause: 'rejected-transition',
+    });
+    await expect(
+      publish(path, [
         {
           kind: 'operator-resolved',
-          eventId: 'resolve-opening',
-          invocationId: 'opening',
-          observedAt: at(500),
-          selectionSequence: opening.sequence,
+          eventId: 'event-8',
+          invocationId: 'active',
+          observedAt: at(8),
+          selectionSequence: selected.sequence,
           reason: 'owner-absent',
         },
       ]),
-    );
+    ).resolves.toEqual({ kind: 'not-published', cause: 'rejected-transition' });
+    await expect(
+      publish(path, [
+        {
+          kind: 'operator-resolved',
+          eventId: 'event-9',
+          invocationId: 'missing',
+          observedAt: at(9),
+          selectionSequence: 1,
+          reason: 'owner-absent',
+        },
+      ]),
+    ).resolves.toEqual({ kind: 'not-published', cause: 'rejected-transition' });
 
-    expect(resolved.retirementTombstones).toHaveLength(MAX_RETIREMENT_TOMBSTONES);
-    expect(resolved.retirementTombstones.some((tombstone) => tombstone.invocationId === 'opening')).toBe(false);
-    expect(resolved.retirementHistoryTruncated).toMatchObject({
-      expiredIdentityCount: 1,
-      causes: { 'operator-resolved': 1 },
-      minSelectionSequence: opening.sequence,
-      maxSelectionSequence: opening.sequence,
+    const before = records(path);
+    await expect(publish(path, [selection('rolled-back', 10), selection('active', 11)])).resolves.toEqual({
+      kind: 'not-published',
+      cause: 'rejected-transition',
+    });
+    expect(records(path)).toEqual(before);
+
+    await committed(path, [
+      {
+        kind: 'execution-failed',
+        eventId: 'event-12',
+        invocationId: 'gap',
+        observedAt: at(12),
+        selection: { kind: 'without-selection' },
+        disposition: { kind: 'execution-failed', throwPhase: 'child-spawn' },
+      },
+    ]);
+    expect(records(path).find((event) => event.invocationId === 'gap')).toMatchObject({
+      disposition: { kind: 'failed-without-selection' },
     });
   });
 
-  it('retains capacity-eviction identity for a late terminal and rejects the next duplicate', () => {
-    const full = accept(
-      reduceHandoffRoutingJournal(
-        emptyHandoffRoutingJournal(),
-        Array.from({ length: MAX_UNRESOLVED_INVOCATIONS }, (_, index) => selection(`opening-${index}`, index + 1)),
-      ),
+  it('admits a multi-eviction selection batch and keeps engine-allocated sequences ordered', async () => {
+    const path = databasePath();
+    const transitions = Array.from({ length: MAX_UNRESOLVED_INVOCATIONS + 3 }, (_, index) =>
+      selection(`invocation-${index}`, index + 1),
     );
-    const retired = accept(
-      reduceHandoffRoutingJournal(full, [selection('replacement', MAX_UNRESOLVED_INVOCATIONS + 1)]),
-    );
-    const late = accept(reduceHandoffRoutingJournal(retired, [terminal('opening-0', 200, 1)]));
+    await committed(path, transitions);
+    const retained = records(path);
+    const selections = retained.filter((event) => event.eventKind === 'routing-selected');
+    const tombstones = retained.filter((event) => event.eventKind === 'retirement-tombstone');
 
-    expect(late.retirementTombstones).toContainEqual(
+    expect(selections).toHaveLength(MAX_UNRESOLVED_INVOCATIONS);
+    expect(tombstones).toHaveLength(3);
+    expect(tombstones.map((event) => event.invocationId)).toEqual(['invocation-0', 'invocation-1', 'invocation-2']);
+    const sequences = retained.map((event) => event.sequence as number);
+    expect(new Set(sequences).size).toBe(sequences.length);
+    expect(sequences).toEqual([...sequences].sort((left, right) => left - right));
+  });
+
+  it('keeps the latest stable completed pair after the age window expires', async () => {
+    const path = databasePath();
+    const unstable: DurableHandoffRoutingBasis = { kind: 'incumbent-unresolved', cause: 'unreadable-record' };
+    const stable = await committed(path, [selection('stable', 1)]);
+    await committed(path, [terminal('stable', 2, stable.sequence)]);
+    const expired = await committed(path, [selection('expired', 3, unstable)]);
+    await committed(path, [terminal('expired', 4, expired.sequence)]);
+
+    await committed(path, [selection('current', HANDOFF_ROUTING_COMPLETED_RETENTION_MS + 10)]);
+
+    expect(records(path).filter((event) => event.invocationId === 'stable')).toHaveLength(2);
+    expect(records(path).filter((event) => event.invocationId === 'expired')).toEqual([
       expect.objectContaining({
-        invocationId: 'opening-0',
+        eventKind: 'retirement-tombstone',
+        retirementCause: 'completed-pair-compaction',
+        terminalExisted: true,
+      }),
+    ]);
+  });
+
+  it('retires an out-of-order completed pair outside the newest completed window', async () => {
+    const path = databasePath();
+    const unstable: DurableHandoffRoutingBasis = { kind: 'incumbent-unresolved', cause: 'health-request-failed' };
+    await committed(path, [selection('old', 1, unstable)]);
+    const pairs = Array.from({ length: MAX_COMPLETED_HANDOFF_ROUTING_PAIRS }, (_, index) => {
+      const selectionSequence = 2 + index * 2;
+      return [
+        selection(`new-${index}`, selectionSequence, unstable),
+        terminal(`new-${index}`, selectionSequence + 1, selectionSequence),
+      ];
+    }).flat();
+    await committed(path, pairs);
+    await committed(path, [terminal('old', 1_000, 1)]);
+
+    const retained = records(path);
+    expect(retained.filter((event) => event.invocationId === 'old')).toEqual([
+      expect.objectContaining({
+        eventKind: 'retirement-tombstone',
+        retirementCause: 'completed-pair-compaction',
+        terminalExisted: true,
+      }),
+    ]);
+  });
+
+  it('classifies late terminals while capacity identity is retained and after it expires', async () => {
+    const path = databasePath();
+    const transitions = Array.from({ length: MAX_UNRESOLVED_INVOCATIONS + MAX_RETIREMENT_TOMBSTONES + 1 }, (_, index) =>
+      selection(`opening-${index}`, index + 1),
+    );
+    await committed(path, transitions);
+    const aggregate = metadata(path);
+    expect(aggregate.expired_identity_count).toBe(1);
+    expect(aggregate.capacity_eviction_count).toBe(1);
+
+    await committed(path, [terminal('opening-0', 1_000, 1)]);
+    expect(records(path).find((event) => event.invocationId === 'opening-0')).toMatchObject({
+      disposition: { kind: 'terminal-without-retained-selection' },
+    });
+
+    await committed(path, [terminal('opening-1', 1_001, 2)]);
+    expect(records(path)).toContainEqual(
+      expect.objectContaining({
+        invocationId: 'opening-1',
+        eventKind: 'retirement-tombstone',
         retirementCause: 'selection-evicted-at-capacity',
         terminalExisted: true,
       }),
     );
-    expect(reduceHandoffRoutingJournal(late, [terminal('opening-0', 201, 1)])).toMatchObject({
-      kind: 'rejected',
-      reason: 'duplicate-terminal',
+    await expect(publish(path, [terminal('opening-1', 1_002, 2)])).resolves.toEqual({
+      kind: 'not-published',
+      cause: 'rejected-transition',
     });
   });
 
-  it('rejects a duplicate terminal after completed-pair compaction', () => {
-    const completed = completePair(emptyHandoffRoutingJournal(), 'completed', 1, {
-      kind: 'incumbent-unresolved',
-      cause: 'health-request-failed',
-    });
-    const compacted = accept(
-      reduceHandoffRoutingJournal(completed, [selection('current', HANDOFF_ROUTING_COMPLETED_RETENTION_MS + 10)]),
-    );
+  it('rolls up a newly created oldest tombstone immediately', async () => {
+    const path = databasePath();
+    const selected = await committed(path, [selection('opening', 1)]);
+    const db = new DatabaseSync(path);
+    try {
+      db.exec('BEGIN IMMEDIATE');
+      for (let index = 0; index < MAX_RETIREMENT_TOMBSTONES; index += 1) {
+        insertTombstoneFixture(
+          db,
+          retirementTombstoneSchema.parse({
+            generation: HANDOFF_ROUTING_STATUS_GENERATION,
+            sequence: index + 2,
+            eventId: `seed-retirement-${index}`,
+            invocationId: `seed-retired-${index}`,
+            observedAt: at(index + 2),
+            eventKind: 'retirement-tombstone',
+            phase: 'retirement',
+            selectionSequence: 1_000 + index,
+            selectedAt: at(1_000 + index),
+            owner: OWNER,
+            selectedDisposition: {
+              kind: 'continue-current',
+              basis: { kind: 'same-build-set', buildSetId: BUILD_SET_ID },
+            },
+            retirementCause: 'selection-evicted-at-capacity',
+            terminalExisted: false,
+          }),
+        );
+      }
+      db.exec('COMMIT');
+    } finally {
+      db.close();
+    }
 
-    expect(compacted.retirementTombstones).toContainEqual(
+    await committed(path, [
+      {
+        kind: 'operator-resolved',
+        eventId: 'resolve-opening',
+        invocationId: 'opening',
+        observedAt: at(2_000),
+        selectionSequence: selected.sequence,
+        reason: 'owner-absent',
+      },
+    ]);
+    expect(records(path).some((event) => event.invocationId === 'opening')).toBe(false);
+    expect(metadata(path)).toMatchObject({
+      expired_identity_count: 1,
+      operator_resolved_count: 1,
+      min_selection_sequence: selected.sequence,
+      max_selection_sequence: selected.sequence,
+    });
+  });
+
+  it('rejects a duplicate terminal after completed-pair compaction', async () => {
+    const path = databasePath();
+    const unstable: DurableHandoffRoutingBasis = { kind: 'incumbent-unresolved', cause: 'unreadable-record' };
+    const selected = await committed(path, [selection('completed', 1, unstable)]);
+    await committed(path, [terminal('completed', 2, selected.sequence)]);
+    await committed(path, [selection('current', HANDOFF_ROUTING_COMPLETED_RETENTION_MS + 10)]);
+    expect(records(path)).toContainEqual(
       expect.objectContaining({
         invocationId: 'completed',
         retirementCause: 'completed-pair-compaction',
         terminalExisted: true,
       }),
     );
-    expect(reduceHandoffRoutingJournal(compacted, [terminal('completed', 500, 1)])).toMatchObject({
-      kind: 'rejected',
-      reason: 'duplicate-terminal',
+    await expect(publish(path, [terminal('completed', 3, selected.sequence)])).resolves.toEqual({
+      kind: 'not-published',
+      cause: 'rejected-transition',
     });
   });
 
-  it('implements the legal and rejected transition table', () => {
-    const empty = emptyHandoffRoutingJournal();
-    expect(reduceHandoffRoutingJournal(empty, [])).toMatchObject({ kind: 'rejected', reason: 'empty-transaction' });
-    expect(
-      reduceHandoffRoutingJournal({ ...empty, sequenceHighWater: -1 } as HandoffRoutingJournal, [selection('x', 1)]),
-    ).toMatchObject({ kind: 'rejected', reason: 'invalid-journal' });
-    expect(
-      reduceHandoffRoutingJournal(empty, [
-        {
-          ...terminal('invalid', 1, 1),
-          selection: { kind: 'with-selection-sequence' },
-        } as HandoffRoutingTransition,
-      ]),
-    ).toMatchObject({ kind: 'rejected', reason: 'invalid-transition' });
+  it('replaces operator resolution with a terminal that preserves both facts', async () => {
+    const path = databasePath();
+    const selected = await committed(path, [selection('resolved', 1)]);
+    await committed(path, [
+      {
+        kind: 'operator-resolved',
+        eventId: 'resolve-event',
+        invocationId: 'resolved',
+        observedAt: at(2),
+        selectionSequence: selected.sequence,
+        reason: 'operator-abandoned-unobservable',
+      },
+    ]);
+    await committed(path, [terminal('resolved', 3, selected.sequence)]);
 
-    const selected = accept(reduceHandoffRoutingJournal(empty, [selection('active', 1)]));
-    expect(reduceHandoffRoutingJournal(selected, [{ ...selection('other', 2), eventId: eventId(1) }])).toMatchObject({
-      kind: 'rejected',
-      reason: 'duplicate-event-id',
-    });
-    expect(reduceHandoffRoutingJournal(selected, [selection('active', 2)])).toMatchObject({
-      kind: 'rejected',
-      reason: 'duplicate-selection',
-    });
-    expect(reduceHandoffRoutingJournal(selected, [terminal('active', 3, 999)])).toMatchObject({
-      kind: 'rejected',
-      reason: 'selection-sequence-mismatch',
+    expect(records(path).filter((event) => event.invocationId === 'resolved')).toEqual([
+      expect.objectContaining({
+        eventKind: 'continuation-finalized',
+        disposition: expect.objectContaining({
+          kind: 'terminal-after-operator-resolution',
+          resolutionReason: 'operator-abandoned-unobservable',
+          retiredSelection: expect.objectContaining({ selectionSequence: selected.sequence }),
+        }),
+      }),
+    ]);
+  });
+
+  it('distinguishes unsupported, corrupt, and capacity-exhausted stores by outcome', async () => {
+    const unsupportedPath = databasePath();
+    await committed(unsupportedPath, [selection('supported', 1)]);
+    const unsupported = new DatabaseSync(unsupportedPath);
+    unsupported.exec(`PRAGMA user_version=${HANDOFF_ROUTING_STATUS_GENERATION + 1}`);
+    unsupported.close();
+    await expect(publish(unsupportedPath, [selection('next', 2)])).resolves.toEqual({
+      kind: 'undeterminable',
+      cause: 'unsupported-generation',
+      errcode: 1,
     });
 
-    const completed = accept(
-      reduceHandoffRoutingJournal(selected, [terminal('active', 4, selectionSequence(selected, 'active'))]),
-    );
-    expect(
-      reduceHandoffRoutingJournal(completed, [terminal('active', 5, selectionSequence(selected, 'active'))]),
-    ).toMatchObject({ kind: 'rejected', reason: 'duplicate-terminal' });
-    expect(
-      reduceHandoffRoutingJournal(completed, [
-        {
-          kind: 'operator-resolved',
-          eventId: eventId(6),
-          invocationId: 'active',
-          observedAt: at(6),
-          selectionSequence: 1,
-          reason: 'owner-absent',
-        },
-      ]),
-    ).toMatchObject({ kind: 'rejected', reason: 'resolution-after-terminal' });
-    expect(
-      reduceHandoffRoutingJournal(empty, [
-        {
-          kind: 'operator-resolved',
-          eventId: eventId(7),
-          invocationId: 'missing',
-          observedAt: at(7),
-          selectionSequence: 1,
-          reason: 'owner-absent',
-        },
-      ]),
-    ).toMatchObject({ kind: 'rejected', reason: 'resolution-without-opening' });
+    const corruptPath = databasePath();
+    writeFileSync(corruptPath, 'not a sqlite database');
+    await expect(publish(corruptPath, [selection('corrupt', 3)])).resolves.toEqual({
+      kind: 'undeterminable',
+      cause: 'unreadable',
+      errcode: 26,
+    });
 
-    const gap = accept(
-      reduceHandoffRoutingJournal(empty, [
+    const fullPath = databasePath();
+    await committed(fullPath, [selection('seed', 4)]);
+    const full = new DatabaseSync(fullPath);
+    try {
+      full.exec('PRAGMA synchronous=OFF');
+      full.exec(`PRAGMA max_page_count=${MAX_HANDOFF_ROUTING_STATUS_BYTES / 4096}`);
+      full.exec('CREATE TABLE padding (value BLOB NOT NULL)');
+      const pad = full.prepare('INSERT INTO padding VALUES (?)');
+      while (true) pad.run(Buffer.alloc(512));
+    } catch (error) {
+      expect(error).toMatchObject({ errcode: 13 });
+    } finally {
+      full.close();
+    }
+    let capacity: PublicationOutcome = { kind: 'committed', sequence: 0 };
+    for (let index = 0; index < 10 && capacity.kind === 'committed'; index += 1) {
+      capacity = await publish(fullPath, [
         {
           kind: 'execution-failed',
-          eventId: eventId(8),
-          invocationId: 'gap',
-          observedAt: at(8),
+          eventId: `full-event-${index}`,
+          invocationId: `full-gap-${index}`,
+          observedAt: at(100 + index),
           selection: { kind: 'without-selection' },
           disposition: { kind: 'execution-failed', throwPhase: 'child-spawn' },
         },
-      ]),
-    );
-    expect(gap.events[0]).toMatchObject({ disposition: { kind: 'failed-without-selection' } });
-
-    const opening = accept(reduceHandoffRoutingJournal(empty, [selection('resolved', 9)]));
-    const resolved = accept(
-      reduceHandoffRoutingJournal(opening, [
-        {
-          kind: 'operator-resolved',
-          eventId: eventId(10),
-          invocationId: 'resolved',
-          observedAt: at(10),
-          selectionSequence: selectionSequence(opening, 'resolved'),
-          reason: 'operator-abandoned-unobservable',
-        },
-      ]),
-    );
-    expect(resolved.retirementTombstones[0]).toMatchObject({ retirementCause: 'operator-resolved' });
-    const late = accept(
-      reduceHandoffRoutingJournal(resolved, [
-        terminal('resolved', 11, resolved.retirementTombstones[0].selectionSequence),
-      ]),
-    );
-    expect(late.retirementTombstones).toHaveLength(0);
-    expect(late.events[0]).toMatchObject({
-      disposition: {
-        kind: 'terminal-after-operator-resolution',
-        resolutionReason: 'operator-abandoned-unobservable',
-      },
-    });
-
-    const saturated = denseJournalNearByteLimit(0);
-    const capacity = reduceHandoffRoutingJournal(saturated, [
-      {
-        kind: 'execution-failed',
-        eventId: 'capacity-terminal',
-        invocationId: 'capacity-gap',
-        observedAt: at(saturated.sequenceHighWater + 1),
-        selection: { kind: 'without-selection' },
-        disposition: { kind: 'execution-failed', throwPhase: 'child-spawn' },
-      },
-    ]);
-    expect(capacity).toMatchObject({ kind: 'rejected', reason: 'journal-capacity-exceeded', journal: saturated });
-  });
-
-  it('keeps the non-compactable sequence high-water after age compaction', () => {
-    let journal = completePair(emptyHandoffRoutingJournal(), 'old', 1, {
-      kind: 'incumbent-unresolved',
-      cause: 'unreadable-record',
-    });
-    const highWater = journal.sequenceHighWater;
-    journal = accept(
-      reduceHandoffRoutingJournal(journal, [selection('new', HANDOFF_ROUTING_COMPLETED_RETENTION_MS + 10)]),
-    );
-
-    expect(journal.sequenceHighWater).toBeGreaterThan(highWater);
-    expect(handoffRoutingJournalSchema.parse(journal).sequenceHighWater).toBe(journal.sequenceHighWater);
-  });
-
-  it('keeps unresolved selection pins and the latest stable pair across age compaction', () => {
-    let journal = accept(reduceHandoffRoutingJournal(emptyHandoffRoutingJournal(), [selection('unresolved', 1)]));
-    journal = completePair(journal, 'stable', 2);
-    journal = completePair(journal, 'unstable', 4, {
-      kind: 'incumbent-unresolved',
-      cause: 'unreadable-record',
-    });
-    journal = accept(
-      reduceHandoffRoutingJournal(journal, [selection('current', HANDOFF_ROUTING_COMPLETED_RETENTION_MS + 10)]),
-    );
-
-    expect(journal.events.some((event) => event.invocationId === 'unresolved')).toBe(true);
-    expect(journal.events.some((event) => event.invocationId === 'stable')).toBe(true);
-    expect(journal.events.some((event) => event.invocationId === 'unstable')).toBe(false);
-    expect(journal.retirementTombstones).toContainEqual(
-      expect.objectContaining({ invocationId: 'unstable', retirementCause: 'completed-pair-compaction' }),
-    );
+      ]);
+    }
+    expect(capacity).toEqual({ kind: 'not-published', cause: 'capacity-exhausted' });
   });
 
   it('assigns total policy to repair, gap, rollup, and lifecycle dispositions', () => {

@@ -13,7 +13,7 @@ import {
   discoverProviderHandoffCapsules,
   retireProviderHandoffCapsule,
 } from '#src/coordinator/services/provider-proxy-capsule-discovery.js';
-import { handoffRoutingJournalPath, handoffRoutingRecoveryPath } from '#src/infra/path/coordinator.js';
+import { handoffRoutingStatusPath } from '#src/infra/path/coordinator.js';
 import {
   CURRENT_HANDOFF_CAPSULE_VERSION,
   SUPPORTED_HANDOFF_CAPSULE_VERSIONS,
@@ -27,8 +27,11 @@ const FIXTURE_BUILD_SET_ID = '22222222-2222-4222-8222-222222222222';
 /** Nothing observed is never absence, so every discovered capsule is retained and no retirement begins. */
 const retainsEveryCapsule = { observeRecordedProcess: () => 'unknown' as const };
 
-function retirementStorage(unlinkSync: () => void, syncDirectoryDurableSync: () => boolean): StoragePort {
-  return { unlinkSync, syncDirectoryDurableSync } as unknown as StoragePort;
+function retirementStorage(
+  unlinkSync: () => void,
+  syncDirectoryDurableSync: () => boolean,
+): Pick<StoragePort, 'syncDirectoryDurableSync' | 'unlinkSync'> {
+  return { unlinkSync, syncDirectoryDurableSync };
 }
 
 describe('provider proxy capsule discovery', () => {
@@ -175,12 +178,10 @@ describe('provider proxy capsule discovery', () => {
     // discovery finding a capsule an *older* build left behind, so producing it with the current writer would
     // be testing a file production can no longer create.
     runtime.storage.writeAtomicDurableSync(path, JSON.stringify(capsule), { encoding: 'utf-8', mode: 0o600 });
-    for (const routingPath of [
-      handoffRoutingJournalPath('prod', 1, { baseDir }),
-      handoffRoutingRecoveryPath('prod', 1, { baseDir }),
-    ]) {
-      runtime.storage.writeAtomicDurableSync(routingPath, '{}', { encoding: 'utf-8', mode: 0o600 });
-    }
+    runtime.storage.writeAtomicDurableSync(handoffRoutingStatusPath('prod', 1, { baseDir }), '', {
+      encoding: 'utf-8',
+      mode: 0o600,
+    });
 
     const discovered = discoverProviderHandoffCapsules({
       runDir,

@@ -29,20 +29,12 @@ export function generationRunDir(flavor: BuildFlavor, opts?: CoordinatorPathOpti
   return join(generationRoot(opts), flavor === 'dev' ? 'run-dev' : 'run');
 }
 
-export function handoffRoutingJournalPath(
+export function handoffRoutingStatusPath(
   flavor: BuildFlavor,
   generation: number,
   opts?: CoordinatorPathOptions,
 ): string {
-  return join(generationRunDir(flavor, opts), `handoff-routing.${generation}.json`);
-}
-
-export function handoffRoutingRecoveryPath(
-  flavor: BuildFlavor,
-  generation: number,
-  opts?: CoordinatorPathOptions,
-): string {
-  return join(generationRunDir(flavor, opts), `handoff-routing-recovery.${generation}.json`);
+  return join(generationRunDir(flavor, opts), `handoff-routing.${generation}.db`);
 }
 
 export function socketPathForRunDir(runDir: string, flavor: BuildFlavor, env: SocketPathEnvironment): string {

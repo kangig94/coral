@@ -11,11 +11,7 @@ vi.mock('node:os', async () => {
   return { ...actual, platform: () => mockState.platform };
 });
 
-import {
-  coordinatorPaths,
-  handoffRoutingJournalPath,
-  handoffRoutingRecoveryPath,
-} from '#src/infra/path/coordinator.js';
+import { coordinatorPaths, handoffRoutingStatusPath } from '#src/infra/path/coordinator.js';
 import { socketFallbackDir } from '#src/infra/path/unix-socket.js';
 
 function baseDirOfLength(length: number): string {
@@ -36,14 +32,11 @@ afterEach(() => {
 });
 
 describe('coordinatorPaths', () => {
-  it('addresses the routing journal and recovery record distinctly by required generation', () => {
+  it('addresses the routing status database by required generation', () => {
     const options = { baseDir: '/var/lib/coral' };
 
-    expect(handoffRoutingJournalPath('prod', 1, options)).toBe('/var/lib/coral/gen2/run/handoff-routing.1.json');
-    expect(handoffRoutingRecoveryPath('prod', 1, options)).toBe(
-      '/var/lib/coral/gen2/run/handoff-routing-recovery.1.json',
-    );
-    expect(handoffRoutingJournalPath('prod', 2, options)).not.toBe(handoffRoutingJournalPath('prod', 1, options));
+    expect(handoffRoutingStatusPath('prod', 1, options)).toBe('/var/lib/coral/gen2/run/handoff-routing.1.db');
+    expect(handoffRoutingStatusPath('prod', 2, options)).not.toBe(handoffRoutingStatusPath('prod', 1, options));
   });
 
   it.each([

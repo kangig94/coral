@@ -1,9 +1,15 @@
+import { randomUUID } from 'node:crypto';
+import { chmodSync, mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+
 import { z } from 'zod';
 
 import { strictBundleManifestSchema, type StrictBundleIdentityFailure } from '../infra/bundle-manifest.js';
 import { assertNever } from '../infra/error-format.js';
 import type { InvalidTargetFailure } from '../infra/handoff-target.js';
 import { processIncarnationSchema } from '../infra/node-process.js';
+import type { TimePort } from '../infra/port-types.js';
 import type { RecordedProcessIdentity } from '../infra/process-containment.js';
 import {
   HANDOFF_ROUTING_BASIS_OBLIGATIONS,
@@ -19,7 +25,7 @@ import {
 } from './handoff-runner.js';
 
 export const HANDOFF_ROUTING_STATUS_GENERATION = 1;
-export const MAX_HANDOFF_ROUTING_JOURNAL_BYTES = 1_048_576;
+export const MAX_HANDOFF_ROUTING_STATUS_BYTES = 1_048_576;
 export const MAX_RETIREMENT_TOMBSTONES = 128;
 export const MAX_RETIREMENT_TOMBSTONE_BYTES = 262_144;
 export const MAX_ENCODED_RETIREMENT_TOMBSTONE_BYTES = 2_048;
@@ -495,128 +501,8 @@ export const retirementHistoryTruncatedSchema = z
 
 export type RetirementHistoryTruncated = z.infer<typeof retirementHistoryTruncatedSchema>;
 
-const emptyRetirementHistory: RetirementHistoryTruncated = Object.freeze({
-  kind: 'retirement-history-truncated',
-  expiredIdentityCount: 0,
-  causes: Object.freeze({
-    'selection-evicted-at-capacity': 0,
-    'completed-pair-compaction': 0,
-    'operator-resolved': 0,
-  }),
-  minSelectionSequence: null,
-  maxSelectionSequence: null,
-  earliestSelectedAt: null,
-  latestSelectedAt: null,
-});
-
 function encodedBytes(value: unknown): number {
   return Buffer.byteLength(JSON.stringify(value), 'utf8');
-}
-
-function validateJournalRelationships(
-  journal: {
-    sequenceHighWater: number;
-    events: readonly HandoffRoutingJournalEvent[];
-    retirementTombstones: readonly RetirementTombstone[];
-  },
-  context: z.RefinementCtx,
-): void {
-  const envelopes = [...journal.events, ...journal.retirementTombstones];
-  const sequences = new Set<number>();
-  const eventIds = new Set<string>();
-  for (const envelope of envelopes) {
-    if (envelope.sequence > journal.sequenceHighWater) {
-      context.addIssue({ code: z.ZodIssueCode.custom, message: 'entry sequence exceeds journal high-water' });
-    }
-    if (sequences.has(envelope.sequence)) {
-      context.addIssue({ code: z.ZodIssueCode.custom, message: 'entry sequences must be unique' });
-    }
-    if (eventIds.has(envelope.eventId)) {
-      context.addIssue({ code: z.ZodIssueCode.custom, message: 'event IDs must be unique' });
-    }
-    sequences.add(envelope.sequence);
-    eventIds.add(envelope.eventId);
-  }
-  if (journal.events.some((event, index) => index > 0 && journal.events[index - 1].sequence >= event.sequence)) {
-    context.addIssue({ code: z.ZodIssueCode.custom, message: 'journal events must be sequence ordered' });
-  }
-  if (journal.retirementTombstones.length > MAX_RETIREMENT_TOMBSTONES) {
-    context.addIssue({ code: z.ZodIssueCode.custom, message: 'retirement tombstone count exceeds its bound' });
-  }
-  const tombstoneBytes = journal.retirementTombstones.reduce((sum, tombstone) => sum + encodedBytes(tombstone), 0);
-  if (tombstoneBytes > MAX_RETIREMENT_TOMBSTONE_BYTES) {
-    context.addIssue({ code: z.ZodIssueCode.custom, message: 'retirement tombstone bytes exceed their bound' });
-  }
-  if (
-    journal.retirementTombstones.some((tombstone) => encodedBytes(tombstone) > MAX_ENCODED_RETIREMENT_TOMBSTONE_BYTES)
-  ) {
-    context.addIssue({ code: z.ZodIssueCode.custom, message: 'retirement tombstone exceeds its item bound' });
-  }
-
-  const selections = journal.events.filter(
-    (event): event is RoutingSelectedEvent => event.eventKind === 'routing-selected',
-  );
-  const terminals = journal.events.filter((event): event is HandoffRoutingTerminalEvent => event.phase === 'terminal');
-  const selectionInvocations = new Set<string>();
-  const terminalInvocations = new Set<string>();
-  const tombstoneInvocations = new Set<string>();
-  for (const selection of selections) {
-    if (selectionInvocations.has(selection.invocationId)) {
-      context.addIssue({ code: z.ZodIssueCode.custom, message: 'an invocation may retain only one selection' });
-    }
-    selectionInvocations.add(selection.invocationId);
-  }
-  for (const terminal of terminals) {
-    if (terminalInvocations.has(terminal.invocationId)) {
-      context.addIssue({ code: z.ZodIssueCode.custom, message: 'an invocation may retain only one terminal' });
-    }
-    terminalInvocations.add(terminal.invocationId);
-    const selection = selections.find((candidate) => candidate.invocationId === terminal.invocationId);
-    if (
-      selection !== undefined &&
-      terminal.selection.kind === 'with-selection-sequence' &&
-      terminal.selection.selectionSequence !== selection.sequence
-    ) {
-      context.addIssue({ code: z.ZodIssueCode.custom, message: 'terminal references another selection sequence' });
-    }
-  }
-  for (const tombstone of journal.retirementTombstones) {
-    if (tombstoneInvocations.has(tombstone.invocationId)) {
-      context.addIssue({ code: z.ZodIssueCode.custom, message: 'an invocation may retain only one tombstone' });
-    }
-    if (selectionInvocations.has(tombstone.invocationId) || terminalInvocations.has(tombstone.invocationId)) {
-      context.addIssue({ code: z.ZodIssueCode.custom, message: 'retired identity cannot also remain active' });
-    }
-    tombstoneInvocations.add(tombstone.invocationId);
-  }
-  const unresolvedCount = selections.filter((selection) => !terminalInvocations.has(selection.invocationId)).length;
-  if (unresolvedCount > MAX_UNRESOLVED_INVOCATIONS) {
-    context.addIssue({ code: z.ZodIssueCode.custom, message: 'unresolved invocation window exceeds its bound' });
-  }
-}
-
-export const handoffRoutingJournalSchema = z
-  .object({
-    generation: z.literal(HANDOFF_ROUTING_STATUS_GENERATION),
-    sequenceHighWater: sequenceSchema,
-    events: z.array(z.union([routingSelectedEventSchema, terminalEventSchema])).readonly(),
-    retirementTombstones: z.array(retirementTombstoneSchema).readonly(),
-    retirementHistoryTruncated: retirementHistoryTruncatedSchema,
-  })
-  .strict()
-  .superRefine(validateJournalRelationships)
-  .readonly();
-
-export type HandoffRoutingJournal = z.infer<typeof handoffRoutingJournalSchema>;
-
-export function emptyHandoffRoutingJournal(): HandoffRoutingJournal {
-  return handoffRoutingJournalSchema.parse({
-    generation: HANDOFF_ROUTING_STATUS_GENERATION,
-    sequenceHighWater: 0,
-    events: [],
-    retirementTombstones: [],
-    retirementHistoryTruncated: emptyRetirementHistory,
-  });
 }
 
 const transitionEnvelopeSchema = z
@@ -667,108 +553,319 @@ export const handoffRoutingTransitionSchema = z.union([
 
 export type HandoffRoutingTransition = z.infer<typeof handoffRoutingTransitionSchema>;
 
-type MutableJournal = {
-  generation: typeof HANDOFF_ROUTING_STATUS_GENERATION;
-  sequenceHighWater: number;
-  events: HandoffRoutingJournalEvent[];
-  retirementTombstones: RetirementTombstone[];
-  retirementHistoryTruncated: RetirementHistoryTruncated;
-};
-
-export type HandoffRoutingReductionRejection =
-  | 'empty-transaction'
-  | 'invalid-journal'
-  | 'invalid-transition'
-  | 'duplicate-event-id'
-  | 'duplicate-selection'
-  | 'selection-sequence-mismatch'
-  | 'duplicate-terminal'
-  | 'resolution-without-opening'
-  | 'resolution-after-terminal'
-  | 'journal-capacity-exceeded';
-
-export type HandoffRoutingReductionResult =
+export type PublicationOutcome =
+  | Readonly<{ kind: 'committed'; sequence: number }>
   | Readonly<{
-      kind: 'accepted';
-      journal: HandoffRoutingJournal;
-      committedSequences: readonly number[];
+      kind: 'not-published';
+      cause: 'contended' | 'capacity-exhausted' | 'rejected-transition';
     }>
   | Readonly<{
-      kind: 'rejected';
-      reason: HandoffRoutingReductionRejection;
-      journal: HandoffRoutingJournal;
+      kind: 'undeterminable';
+      cause: 'io-failed' | 'unreadable' | 'unsupported-generation';
+      errcode: number;
     }>;
 
-function mutableJournal(journal: HandoffRoutingJournal): MutableJournal {
-  return {
+type StatusRow = Readonly<{
+  body_json: string;
+}>;
+
+type TombstoneBoundsRow = Readonly<{
+  count: number;
+  bytes: number;
+}>;
+
+type GenerationRow = Readonly<{ user_version: number }>;
+
+const SQLITE_BUSY = 5;
+const SQLITE_FULL = 13;
+const SQLITE_CONSTRAINT = 19;
+const SQLITE_NOTADB = 26;
+const SQLITE_CORRUPT = 11;
+const SQLITE_ERROR = 1;
+const PUBLICATION_CONTENTION_TIMEOUT_MS = 1_000;
+const PUBLICATION_RETRY_DELAY_MS = 10;
+
+class RejectedTransitionError extends Error {}
+
+class UnreadableStatusError extends Error {}
+
+class UnsupportedGenerationError extends Error {}
+
+function schemaSql(): string {
+  return `
+    CREATE TABLE handoff_routing_metadata (
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+      generation INTEGER NOT NULL CHECK (generation = ${HANDOFF_ROUTING_STATUS_GENERATION}),
+      expired_identity_count INTEGER NOT NULL CHECK (expired_identity_count >= 0),
+      capacity_eviction_count INTEGER NOT NULL CHECK (capacity_eviction_count >= 0),
+      completed_pair_compaction_count INTEGER NOT NULL CHECK (completed_pair_compaction_count >= 0),
+      operator_resolved_count INTEGER NOT NULL CHECK (operator_resolved_count >= 0),
+      min_selection_sequence INTEGER CHECK (min_selection_sequence > 0),
+      max_selection_sequence INTEGER CHECK (max_selection_sequence > 0),
+      earliest_selected_at TEXT,
+      latest_selected_at TEXT,
+      CHECK (
+        capacity_eviction_count + completed_pair_compaction_count + operator_resolved_count =
+          expired_identity_count
+      ),
+      CHECK (
+        (expired_identity_count = 0 AND min_selection_sequence IS NULL AND max_selection_sequence IS NULL AND
+          earliest_selected_at IS NULL AND latest_selected_at IS NULL) OR
+        (expired_identity_count > 0 AND min_selection_sequence IS NOT NULL AND max_selection_sequence IS NOT NULL AND
+          earliest_selected_at IS NOT NULL AND latest_selected_at IS NOT NULL)
+      )
+    ) STRICT;
+
+    CREATE TABLE handoff_routing_records (
+      sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+      generation INTEGER NOT NULL CHECK (generation = ${HANDOFF_ROUTING_STATUS_GENERATION}),
+      event_id TEXT NOT NULL UNIQUE CHECK (length(event_id) BETWEEN 1 AND ${MAX_IDENTIFIER_LENGTH}),
+      invocation_id TEXT NOT NULL CHECK (length(invocation_id) BETWEEN 1 AND ${MAX_IDENTIFIER_LENGTH}),
+      observed_at TEXT NOT NULL CHECK (length(observed_at) BETWEEN 1 AND ${MAX_OBSERVED_AT_LENGTH}),
+      record_kind TEXT NOT NULL CHECK (record_kind IN ('selection', 'terminal', 'retirement')),
+      event_kind TEXT NOT NULL CHECK (
+        event_kind IN ('routing-selected', 'execution-failed', 'continuation-finalized', 'retirement-tombstone')
+      ),
+      selection_sequence INTEGER CHECK (selection_sequence > 0),
+      retirement_cause TEXT CHECK (
+        retirement_cause IN ('selection-evicted-at-capacity', 'completed-pair-compaction', 'operator-resolved')
+      ),
+      terminal_existed INTEGER CHECK (terminal_existed IN (0, 1)),
+      body_json TEXT NOT NULL CHECK (json_valid(body_json)),
+      encoded_bytes INTEGER GENERATED ALWAYS AS (length(CAST(body_json AS BLOB))) STORED,
+      completed_pair_stable INTEGER GENERATED ALWAYS AS (
+        CASE
+          WHEN record_kind = 'terminal' AND json_extract(body_json, '$.disposition.kind') = 'delegated-success'
+            THEN 1
+          WHEN record_kind = 'selection' AND
+            json_extract(body_json, '$.disposition.kind') = 'continue-current' AND
+            json_extract(body_json, '$.disposition.basis.kind') IN ('same-build-set', 'incumbent-absent')
+            THEN 1
+          ELSE 0
+        END
+      ) STORED,
+      CHECK (
+        (record_kind = 'selection' AND event_kind = 'routing-selected' AND selection_sequence IS NULL AND
+          retirement_cause IS NULL AND terminal_existed IS NULL) OR
+        (record_kind = 'terminal' AND event_kind IN ('execution-failed', 'continuation-finalized') AND
+          retirement_cause IS NULL AND terminal_existed IS NULL) OR
+        (record_kind = 'retirement' AND event_kind = 'retirement-tombstone' AND selection_sequence IS NOT NULL AND
+          retirement_cause IS NOT NULL AND terminal_existed IS NOT NULL)
+      ),
+      CHECK (json_extract(body_json, '$.generation') = generation),
+      CHECK (json_extract(body_json, '$.sequence') = sequence),
+      CHECK (json_extract(body_json, '$.eventId') = event_id),
+      CHECK (json_extract(body_json, '$.invocationId') = invocation_id),
+      CHECK (json_extract(body_json, '$.observedAt') = observed_at),
+      CHECK (json_extract(body_json, '$.eventKind') = event_kind),
+      CHECK (
+        (record_kind = 'selection' AND json_extract(body_json, '$.phase') = 'selection' AND
+          encoded_bytes <= ${MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES['routing-selected']}) OR
+        (record_kind = 'terminal' AND json_extract(body_json, '$.phase') = 'terminal' AND
+          ((event_kind = 'execution-failed' AND
+            encoded_bytes <= ${MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES['execution-failed']}) OR
+           (event_kind = 'continuation-finalized' AND
+            encoded_bytes <= ${MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES['continuation-finalized']}))) OR
+        (record_kind = 'retirement' AND json_extract(body_json, '$.phase') = 'retirement' AND
+          json_extract(body_json, '$.selectionSequence') = selection_sequence AND
+          json_extract(body_json, '$.retirementCause') = retirement_cause AND
+          json_extract(body_json, '$.terminalExisted') = terminal_existed AND
+          encoded_bytes <= ${MAX_ENCODED_RETIREMENT_TOMBSTONE_BYTES})
+      )
+    ) STRICT;
+
+    CREATE UNIQUE INDEX handoff_routing_selection_or_retirement_per_invocation
+      ON handoff_routing_records(invocation_id)
+      WHERE record_kind IN ('selection', 'retirement');
+
+    CREATE UNIQUE INDEX handoff_routing_terminal_or_retirement_per_invocation
+      ON handoff_routing_records(invocation_id)
+      WHERE record_kind IN ('terminal', 'retirement');
+  `;
+}
+
+function configureDatabase(db: DatabaseSync): void {
+  db.exec('PRAGMA busy_timeout=0');
+  db.exec('PRAGMA journal_mode=WAL');
+  db.exec('PRAGMA synchronous=FULL');
+  db.exec('PRAGMA foreign_keys=ON');
+  const pageSize = Number((db.prepare('PRAGMA page_size').get() as Readonly<{ page_size: number }>).page_size);
+  const maxPageCount = Math.floor(MAX_HANDOFF_ROUTING_STATUS_BYTES / pageSize);
+  db.exec(`PRAGMA max_page_count=${maxPageCount}`);
+}
+
+function initializeOrValidateDatabase(db: DatabaseSync): void {
+  const generation = db.prepare('PRAGMA user_version').get() as GenerationRow;
+  if (generation.user_version === 0) {
+    const existing = db
+      .prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'")
+      .get() as Readonly<{ count: number }>;
+    if (existing.count !== 0) throw new UnsupportedGenerationError();
+    db.exec(schemaSql());
+    db.prepare(
+      `INSERT INTO handoff_routing_metadata (
+        singleton,
+        generation,
+        expired_identity_count,
+        capacity_eviction_count,
+        completed_pair_compaction_count,
+        operator_resolved_count
+      ) VALUES (1, ?, 0, 0, 0, 0)`,
+    ).run(HANDOFF_ROUTING_STATUS_GENERATION);
+    db.exec(`PRAGMA user_version=${HANDOFF_ROUTING_STATUS_GENERATION}`);
+    return;
+  }
+  if (generation.user_version !== HANDOFF_ROUTING_STATUS_GENERATION) {
+    throw new UnsupportedGenerationError();
+  }
+  try {
+    const metadata = db.prepare('SELECT generation FROM handoff_routing_metadata WHERE singleton = 1').get() as
+      | Readonly<{ generation: number }>
+      | undefined;
+    if (metadata?.generation !== HANDOFF_ROUTING_STATUS_GENERATION) throw new UnreadableStatusError();
+  } catch (error) {
+    if (error instanceof UnreadableStatusError) throw error;
+    throw new UnreadableStatusError();
+  }
+}
+
+function nextRecordSequence(db: DatabaseSync): number {
+  const row = db
+    .prepare("SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'handoff_routing_records'), 0) + 1 AS next")
+    .get() as Readonly<{ next: number }>;
+  return row.next;
+}
+
+function insertRecord(
+  db: DatabaseSync,
+  recordKind: 'selection' | 'terminal' | 'retirement',
+  event: HandoffRoutingJournalEvent | RetirementTombstone,
+): number {
+  const retirement = event.eventKind === 'retirement-tombstone' ? event : null;
+  const selectionSequence =
+    retirement?.selectionSequence ??
+    (event.phase === 'terminal' && event.selection.kind === 'with-selection-sequence'
+      ? event.selection.selectionSequence
+      : null);
+  const inserted = db
+    .prepare(
+      `INSERT INTO handoff_routing_records (
+        generation,
+        event_id,
+        invocation_id,
+        observed_at,
+        record_kind,
+        event_kind,
+        selection_sequence,
+        retirement_cause,
+        terminal_existed,
+        body_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING sequence`,
+    )
+    .get(
+      event.generation,
+      event.eventId,
+      event.invocationId,
+      event.observedAt,
+      recordKind,
+      event.eventKind,
+      selectionSequence,
+      retirement?.retirementCause ?? null,
+      retirement === null ? null : Number(retirement.terminalExisted),
+      JSON.stringify(event),
+    ) as Readonly<{ sequence: number }> | undefined;
+  if (inserted?.sequence !== event.sequence) throw new UnreadableStatusError();
+  return inserted.sequence;
+}
+
+function parseRow<T>(row: StatusRow | undefined, schema: z.ZodType<T>): T | undefined {
+  if (row === undefined) return undefined;
+  try {
+    return schema.parse(JSON.parse(row.body_json));
+  } catch {
+    throw new UnreadableStatusError();
+  }
+}
+
+function selectionForInvocation(db: DatabaseSync, invocationId: string): RoutingSelectedEvent | undefined {
+  const row = db
+    .prepare("SELECT body_json FROM handoff_routing_records WHERE invocation_id = ? AND record_kind = 'selection'")
+    .get(invocationId) as StatusRow | undefined;
+  return parseRow(row, routingSelectedEventSchema);
+}
+
+function terminalForInvocation(db: DatabaseSync, invocationId: string): HandoffRoutingTerminalEvent | undefined {
+  const row = db
+    .prepare("SELECT body_json FROM handoff_routing_records WHERE invocation_id = ? AND record_kind = 'terminal'")
+    .get(invocationId) as StatusRow | undefined;
+  return parseRow(row, terminalEventSchema);
+}
+
+function tombstoneForInvocation(db: DatabaseSync, invocationId: string): RetirementTombstone | undefined {
+  const row = db
+    .prepare("SELECT body_json FROM handoff_routing_records WHERE invocation_id = ? AND record_kind = 'retirement'")
+    .get(invocationId) as StatusRow | undefined;
+  return parseRow(row, retirementTombstoneSchema);
+}
+
+function insertSelection(db: DatabaseSync, transition: z.infer<typeof routingSelectedTransitionSchema>): number {
+  const sequence = nextRecordSequence(db);
+  const event = routingSelectedEventSchema.parse({
     generation: HANDOFF_ROUTING_STATUS_GENERATION,
-    sequenceHighWater: journal.sequenceHighWater,
-    events: [...journal.events],
-    retirementTombstones: [...journal.retirementTombstones],
-    retirementHistoryTruncated: journal.retirementHistoryTruncated,
-  };
+    sequence,
+    eventId: transition.eventId,
+    invocationId: transition.invocationId,
+    observedAt: transition.observedAt,
+    eventKind: 'routing-selected',
+    phase: 'selection',
+    owner: transition.owner,
+    disposition: transition.disposition,
+  });
+  return insertRecord(db, 'selection', event);
 }
 
-function nextSequence(journal: MutableJournal, committedSequences: number[]): number {
-  journal.sequenceHighWater += 1;
-  committedSequences.push(journal.sequenceHighWater);
-  return journal.sequenceHighWater;
+function terminalGapDisposition(
+  transition: z.infer<typeof terminalTransitionSchema>,
+): Extract<StoredTerminalDisposition, { kind: 'failed-without-selection' | 'finalized-without-selection' }> {
+  return transition.disposition.kind === 'execution-failed'
+    ? { kind: 'failed-without-selection', throwPhase: transition.disposition.throwPhase }
+    : { kind: 'finalized-without-selection', terminal: transition.disposition };
 }
 
-function selectionForInvocation(journal: MutableJournal, invocationId: string): RoutingSelectedEvent | undefined {
-  return journal.events.find(
-    (event): event is RoutingSelectedEvent =>
-      event.eventKind === 'routing-selected' && event.invocationId === invocationId,
-  );
+function insertTerminal(
+  db: DatabaseSync,
+  transition: z.infer<typeof terminalTransitionSchema>,
+  disposition: StoredTerminalDisposition,
+): number {
+  const sequence = nextRecordSequence(db);
+  const event = terminalEventSchema.parse({
+    generation: HANDOFF_ROUTING_STATUS_GENERATION,
+    sequence,
+    eventId: transition.eventId,
+    invocationId: transition.invocationId,
+    observedAt: transition.observedAt,
+    eventKind: transition.kind,
+    phase: 'terminal',
+    selection: transition.selection,
+    disposition,
+  });
+  return insertRecord(db, 'terminal', event);
 }
 
-function terminalForInvocation(journal: MutableJournal, invocationId: string): HandoffRoutingTerminalEvent | undefined {
-  return journal.events.find(
-    (event): event is HandoffRoutingTerminalEvent => event.phase === 'terminal' && event.invocationId === invocationId,
-  );
-}
-
-function tombstoneForInvocation(journal: MutableJournal, invocationId: string): RetirementTombstone | undefined {
-  return journal.retirementTombstones.find((tombstone) => tombstone.invocationId === invocationId);
-}
-
-function unresolvedSelections(journal: MutableJournal): RoutingSelectedEvent[] {
-  return journal.events
-    .filter(
-      (event): event is RoutingSelectedEvent =>
-        event.eventKind === 'routing-selected' && terminalForInvocation(journal, event.invocationId) === undefined,
-    )
-    .sort((left, right) => left.sequence - right.sequence);
-}
-
-function completedPairs(
-  journal: MutableJournal,
-): Array<Readonly<{ selection: RoutingSelectedEvent; terminal: HandoffRoutingTerminalEvent }>> {
-  return journal.events
-    .filter((event): event is RoutingSelectedEvent => event.eventKind === 'routing-selected')
-    .map((selection) => ({ selection, terminal: terminalForInvocation(journal, selection.invocationId) }))
-    .filter(
-      (pair): pair is Readonly<{ selection: RoutingSelectedEvent; terminal: HandoffRoutingTerminalEvent }> =>
-        pair.terminal !== undefined,
-    )
-    .sort((left, right) => left.selection.sequence - right.selection.sequence);
-}
-
-function createTombstone(
-  journal: MutableJournal,
-  committedSequences: number[],
+function insertTombstone(
+  db: DatabaseSync,
   selection: RoutingSelectedEvent,
   retirementCause: RetirementTombstone['retirementCause'],
   terminalExisted: boolean,
   observedAt: string,
   resolutionReason?: RetirementTombstone['resolutionReason'],
-  eventId?: string,
-): RetirementTombstone {
-  const sequence = nextSequence(journal, committedSequences);
-  return retirementTombstoneSchema.parse({
+  eventId = `retirement-${randomUUID()}`,
+): number {
+  const sequence = nextRecordSequence(db);
+  const tombstone = retirementTombstoneSchema.parse({
     generation: HANDOFF_ROUTING_STATUS_GENERATION,
     sequence,
-    eventId: eventId ?? `retirement-${sequence}`,
+    eventId,
     invocationId: selection.invocationId,
     observedAt,
     eventKind: 'retirement-tombstone',
@@ -781,40 +878,56 @@ function createTombstone(
     terminalExisted,
     ...(resolutionReason === undefined ? {} : { resolutionReason }),
   });
+  return insertRecord(db, 'retirement', tombstone);
 }
 
-function removePair(journal: MutableJournal, invocationId: string): void {
-  journal.events = journal.events.filter((event) => event.invocationId !== invocationId);
-}
-
-function retireSelection(
-  journal: MutableJournal,
-  committedSequences: number[],
-  selection: RoutingSelectedEvent,
-  cause: RetirementTombstone['retirementCause'],
-  observedAt: string,
-  resolutionReason?: RetirementTombstone['resolutionReason'],
-): void {
-  const terminalExisted = terminalForInvocation(journal, selection.invocationId) !== undefined;
-  const tombstone = createTombstone(
-    journal,
-    committedSequences,
-    selection,
-    cause,
-    terminalExisted,
-    observedAt,
-    resolutionReason,
-  );
-  removePair(journal, selection.invocationId);
-  journal.retirementTombstones.push(tombstone);
-}
-
-function rollUpTombstone(journal: MutableJournal, tombstone: RetirementTombstone): void {
-  const aggregate = journal.retirementHistoryTruncated;
-  const count = aggregate.expiredIdentityCount + 1;
-  journal.retirementHistoryTruncated = retirementHistoryTruncatedSchema.parse({
+function readRetirementHistory(db: DatabaseSync): RetirementHistoryTruncated {
+  const row = db
+    .prepare(
+      `SELECT
+        expired_identity_count,
+        capacity_eviction_count,
+        completed_pair_compaction_count,
+        operator_resolved_count,
+        min_selection_sequence,
+        max_selection_sequence,
+        earliest_selected_at,
+        latest_selected_at
+      FROM handoff_routing_metadata WHERE singleton = 1`,
+    )
+    .get() as
+    | Readonly<{
+        expired_identity_count: number;
+        capacity_eviction_count: number;
+        completed_pair_compaction_count: number;
+        operator_resolved_count: number;
+        min_selection_sequence: number | null;
+        max_selection_sequence: number | null;
+        earliest_selected_at: string | null;
+        latest_selected_at: string | null;
+      }>
+    | undefined;
+  if (row === undefined) throw new UnreadableStatusError();
+  return retirementHistoryTruncatedSchema.parse({
     kind: 'retirement-history-truncated',
-    expiredIdentityCount: count,
+    expiredIdentityCount: row.expired_identity_count,
+    causes: {
+      'selection-evicted-at-capacity': row.capacity_eviction_count,
+      'completed-pair-compaction': row.completed_pair_compaction_count,
+      'operator-resolved': row.operator_resolved_count,
+    },
+    minSelectionSequence: row.min_selection_sequence,
+    maxSelectionSequence: row.max_selection_sequence,
+    earliestSelectedAt: row.earliest_selected_at,
+    latestSelectedAt: row.latest_selected_at,
+  });
+}
+
+function rollUpTombstone(db: DatabaseSync, tombstone: RetirementTombstone): void {
+  const aggregate = readRetirementHistory(db);
+  const next = retirementHistoryTruncatedSchema.parse({
+    kind: 'retirement-history-truncated',
+    expiredIdentityCount: aggregate.expiredIdentityCount + 1,
     causes: {
       ...aggregate.causes,
       [tombstone.retirementCause]: aggregate.causes[tombstone.retirementCause] + 1,
@@ -836,382 +949,329 @@ function rollUpTombstone(journal: MutableJournal, tombstone: RetirementTombstone
         ? tombstone.selectedAt
         : aggregate.latestSelectedAt,
   });
-}
-
-function tombstoneBytes(journal: MutableJournal): number {
-  return journal.retirementTombstones.reduce((sum, tombstone) => sum + encodedBytes(tombstone), 0);
-}
-
-function expireOldestTombstone(journal: MutableJournal): boolean {
-  if (journal.retirementTombstones.length === 0) return false;
-  journal.retirementTombstones.sort(
-    (left, right) =>
-      left.selectionSequence - right.selectionSequence || left.invocationId.localeCompare(right.invocationId),
+  db.prepare(
+    `UPDATE handoff_routing_metadata SET
+      expired_identity_count = ?,
+      capacity_eviction_count = ?,
+      completed_pair_compaction_count = ?,
+      operator_resolved_count = ?,
+      min_selection_sequence = ?,
+      max_selection_sequence = ?,
+      earliest_selected_at = ?,
+      latest_selected_at = ?
+    WHERE singleton = 1`,
+  ).run(
+    next.expiredIdentityCount,
+    next.causes['selection-evicted-at-capacity'],
+    next.causes['completed-pair-compaction'],
+    next.causes['operator-resolved'],
+    next.minSelectionSequence,
+    next.maxSelectionSequence,
+    next.earliestSelectedAt,
+    next.latestSelectedAt,
   );
-  const expired = journal.retirementTombstones.shift();
-  if (expired === undefined) return false;
-  rollUpTombstone(journal, expired);
-  return true;
+  db.prepare('DELETE FROM handoff_routing_records WHERE sequence = ?').run(tombstone.sequence);
 }
 
-function enforceTombstoneBounds(journal: MutableJournal): void {
-  while (
-    journal.retirementTombstones.length > MAX_RETIREMENT_TOMBSTONES ||
-    tombstoneBytes(journal) > MAX_RETIREMENT_TOMBSTONE_BYTES ||
-    journal.retirementTombstones.some((tombstone) => encodedBytes(tombstone) > MAX_ENCODED_RETIREMENT_TOMBSTONE_BYTES)
-  ) {
-    if (!expireOldestTombstone(journal)) return;
+function enforceTombstoneBounds(db: DatabaseSync): void {
+  while (true) {
+    const bounds = db
+      .prepare(
+        `SELECT COUNT(*) AS count, COALESCE(SUM(encoded_bytes), 0) AS bytes
+        FROM handoff_routing_records WHERE record_kind = 'retirement'`,
+      )
+      .get() as TombstoneBoundsRow;
+    if (bounds.count <= MAX_RETIREMENT_TOMBSTONES && bounds.bytes <= MAX_RETIREMENT_TOMBSTONE_BYTES) return;
+    const oldest = db
+      .prepare(
+        `SELECT body_json FROM handoff_routing_records
+        WHERE record_kind = 'retirement'
+        ORDER BY selection_sequence, invocation_id
+        LIMIT 1`,
+      )
+      .get() as StatusRow | undefined;
+    const tombstone = parseRow(oldest, retirementTombstoneSchema);
+    if (tombstone === undefined) throw new UnreadableStatusError();
+    rollUpTombstone(db, tombstone);
   }
 }
 
-function isStableCompletedPair(pair: {
-  selection: RoutingSelectedEvent;
-  terminal: HandoffRoutingTerminalEvent;
-}): boolean {
-  if (pair.terminal.disposition.kind === 'delegated-success') return true;
-  return (
-    pair.selection.disposition.kind === 'continue-current' &&
-    (pair.selection.disposition.basis.kind === 'same-build-set' ||
-      pair.selection.disposition.basis.kind === 'incumbent-absent')
-  );
-}
-
-function compactExpiredCompletedPairs(
-  journal: MutableJournal,
-  committedSequences: number[],
-  nowMs: number,
+function retireSelection(
+  db: DatabaseSync,
+  selection: RoutingSelectedEvent,
+  cause: RetirementTombstone['retirementCause'],
   observedAt: string,
-): void {
-  const pairs = completedPairs(journal);
-  const latestStable = [...pairs].reverse().find(isStableCompletedPair);
-  const newestSequences = new Set(
-    pairs.slice(-MAX_COMPLETED_HANDOFF_ROUTING_PAIRS).map((pair) => pair.selection.sequence),
-  );
-  const cutoff = nowMs - HANDOFF_ROUTING_COMPLETED_RETENTION_MS;
-  for (const pair of pairs) {
-    if (pair === latestStable) continue;
-    const selectedAtMs = Date.parse(pair.selection.observedAt);
-    if (selectedAtMs >= cutoff && newestSequences.has(pair.selection.sequence)) continue;
-    retireSelection(journal, committedSequences, pair.selection, 'completed-pair-compaction', observedAt);
-    enforceTombstoneBounds(journal);
+  terminalExisted: boolean,
+  resolutionReason?: RetirementTombstone['resolutionReason'],
+  eventId?: string,
+): number {
+  db.prepare('DELETE FROM handoff_routing_records WHERE invocation_id = ?').run(selection.invocationId);
+  const sequence = insertTombstone(db, selection, cause, terminalExisted, observedAt, resolutionReason, eventId);
+  enforceTombstoneBounds(db);
+  return sequence;
+}
+
+function compactExpiredCompletedPairs(db: DatabaseSync, observedAt: string): void {
+  const cutoff = new Date(Date.parse(observedAt) - HANDOFF_ROUTING_COMPLETED_RETENTION_MS).toISOString();
+  const selections = db
+    .prepare(
+      `WITH completed_pairs AS MATERIALIZED (
+        SELECT
+          selection.sequence,
+          selection.observed_at,
+          selection.body_json,
+          selection.completed_pair_stable OR terminal.completed_pair_stable AS stable
+        FROM handoff_routing_records AS selection
+        JOIN handoff_routing_records AS terminal ON terminal.invocation_id = selection.invocation_id
+        WHERE selection.record_kind = 'selection' AND terminal.record_kind = 'terminal'
+      ),
+      newest_pairs AS (
+        SELECT sequence FROM completed_pairs
+        ORDER BY sequence DESC
+        LIMIT ?
+      ),
+      latest_stable_pair AS (
+        SELECT sequence FROM completed_pairs
+        WHERE stable
+        ORDER BY sequence DESC
+        LIMIT 1
+      )
+      SELECT body_json
+      FROM completed_pairs
+      WHERE sequence != COALESCE((SELECT sequence FROM latest_stable_pair), 0)
+        AND (
+          julianday(observed_at) < julianday(?) OR
+          sequence NOT IN (SELECT sequence FROM newest_pairs)
+        )
+      ORDER BY sequence`,
+    )
+    .all(MAX_COMPLETED_HANDOFF_ROUTING_PAIRS, cutoff) as StatusRow[];
+  for (const row of selections) {
+    const selection = parseRow(row, routingSelectedEventSchema);
+    if (selection === undefined) throw new UnreadableStatusError();
+    retireSelection(db, selection, 'completed-pair-compaction', observedAt, true);
   }
 }
 
-function journalWithoutByteRefinement(journal: MutableJournal): HandoffRoutingJournal | null {
-  const parsed = handoffRoutingJournalSchema.safeParse(journal);
-  return parsed.success ? parsed.data : null;
+function unresolvedCount(db: DatabaseSync): number {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS count
+      FROM handoff_routing_records AS selection
+      WHERE selection.record_kind = 'selection'
+        AND NOT EXISTS (
+          SELECT 1 FROM handoff_routing_records AS terminal
+          WHERE terminal.invocation_id = selection.invocation_id AND terminal.record_kind = 'terminal'
+        )`,
+    )
+    .get() as Readonly<{ count: number }>;
+  return row.count;
 }
 
-export type HandoffRoutingSerializationResult =
-  | Readonly<{ kind: 'serialized'; serialized: string; bytes: number }>
-  | Readonly<{ kind: 'rejected'; reason: 'invalid-journal' | 'journal-too-large' }>;
-
-export function serializeHandoffRoutingJournal(journal: HandoffRoutingJournal): HandoffRoutingSerializationResult {
-  const parsed = handoffRoutingJournalSchema.safeParse(journal);
-  if (!parsed.success) return { kind: 'rejected', reason: 'invalid-journal' };
-  const serialized = JSON.stringify(parsed.data);
-  const bytes = Buffer.byteLength(serialized, 'utf8');
-  return bytes <= MAX_HANDOFF_ROUTING_JOURNAL_BYTES
-    ? { kind: 'serialized', serialized, bytes }
-    : { kind: 'rejected', reason: 'journal-too-large' };
+function evictOldestOpening(db: DatabaseSync, observedAt: string): void {
+  const row = db
+    .prepare(
+      `SELECT selection.body_json
+      FROM handoff_routing_records AS selection
+      WHERE selection.record_kind = 'selection'
+        AND NOT EXISTS (
+          SELECT 1 FROM handoff_routing_records AS terminal
+          WHERE terminal.invocation_id = selection.invocation_id AND terminal.record_kind = 'terminal'
+        )
+      ORDER BY selection.sequence
+      LIMIT 1`,
+    )
+    .get() as StatusRow | undefined;
+  const selection = parseRow(row, routingSelectedEventSchema);
+  if (selection === undefined) throw new RejectedTransitionError();
+  retireSelection(db, selection, 'selection-evicted-at-capacity', observedAt, false);
 }
 
-function journalFitsWithClosingReserve(journal: MutableJournal): boolean {
-  const parsed = journalWithoutByteRefinement(journal);
-  if (parsed === null) return false;
-  const serialized = serializeHandoffRoutingJournal(parsed);
-  if (serialized.kind === 'rejected') return false;
-  return (
-    serialized.bytes + unresolvedSelections(journal).length * MAX_LEGAL_CLOSING_REPLACEMENT_BYTES <=
-    MAX_HANDOFF_ROUTING_JOURNAL_BYTES
-  );
-}
-
-function compactOldestCompletedPair(
-  journal: MutableJournal,
-  committedSequences: number[],
-  observedAt: string,
-): boolean {
-  const pairs = completedPairs(journal);
-  const latestStable = [...pairs].reverse().find(isStableCompletedPair);
-  const pair = pairs.find((candidate) => candidate !== latestStable);
-  if (pair === undefined) return false;
-  retireSelection(journal, committedSequences, pair.selection, 'completed-pair-compaction', observedAt);
-  enforceTombstoneBounds(journal);
-  return true;
-}
-
-function evictOldestOpening(journal: MutableJournal, committedSequences: number[], observedAt: string): boolean {
-  const opening = unresolvedSelections(journal)[0];
-  if (opening === undefined) return false;
-  retireSelection(journal, committedSequences, opening, 'selection-evicted-at-capacity', observedAt);
-  enforceTombstoneBounds(journal);
-  return true;
-}
-
-function admitWithinBounds(journal: MutableJournal, committedSequences: number[], observedAt: string): boolean {
-  while (unresolvedSelections(journal).length > MAX_UNRESOLVED_INVOCATIONS) {
-    if (!evictOldestOpening(journal, committedSequences, observedAt)) return false;
-  }
-  enforceTombstoneBounds(journal);
-  while (!journalFitsWithClosingReserve(journal)) {
-    if (compactOldestCompletedPair(journal, committedSequences, observedAt)) continue;
-    if (expireOldestTombstone(journal)) continue;
-    if (evictOldestOpening(journal, committedSequences, observedAt)) continue;
-    return false;
-  }
-  return true;
-}
-
-function createRoutingSelectedEvent(
-  transition: z.infer<typeof routingSelectedTransitionSchema>,
-  sequence: number,
-): RoutingSelectedEvent {
-  return routingSelectedEventSchema.parse({
-    generation: HANDOFF_ROUTING_STATUS_GENERATION,
-    sequence,
-    eventId: transition.eventId,
-    invocationId: transition.invocationId,
-    observedAt: transition.observedAt,
-    eventKind: 'routing-selected',
-    phase: 'selection',
-    owner: transition.owner,
-    disposition: transition.disposition,
-  });
-}
-
-function selectionFitsWithClosingReserve(
-  journal: MutableJournal,
-  transition: z.infer<typeof routingSelectedTransitionSchema>,
-): boolean {
-  const sequence = journal.sequenceHighWater + 1;
-  return journalFitsWithClosingReserve({
-    ...journal,
-    sequenceHighWater: sequence,
-    events: [...journal.events, createRoutingSelectedEvent(transition, sequence)],
-  });
-}
-
-function appendSelection(
-  journal: MutableJournal,
-  transition: z.infer<typeof routingSelectedTransitionSchema>,
-  committedSequences: number[],
-): HandoffRoutingReductionRejection | null {
+function applySelection(db: DatabaseSync, transition: z.infer<typeof routingSelectedTransitionSchema>): number {
   if (
-    selectionForInvocation(journal, transition.invocationId) !== undefined ||
-    tombstoneForInvocation(journal, transition.invocationId) !== undefined
+    selectionForInvocation(db, transition.invocationId) !== undefined ||
+    tombstoneForInvocation(db, transition.invocationId) !== undefined
   ) {
-    return 'duplicate-selection';
+    throw new RejectedTransitionError();
   }
-  if (unresolvedSelections(journal).length >= MAX_UNRESOLVED_INVOCATIONS) {
-    if (!evictOldestOpening(journal, committedSequences, transition.observedAt)) {
-      return 'journal-capacity-exceeded';
-    }
-  }
-  while (!selectionFitsWithClosingReserve(journal, transition)) {
-    if (compactOldestCompletedPair(journal, committedSequences, transition.observedAt)) continue;
-    if (expireOldestTombstone(journal)) continue;
-    if (evictOldestOpening(journal, committedSequences, transition.observedAt)) continue;
-    return 'journal-capacity-exceeded';
-  }
-  const sequence = nextSequence(journal, committedSequences);
-  journal.events.push(createRoutingSelectedEvent(transition, sequence));
-  return null;
+  if (unresolvedCount(db) >= MAX_UNRESOLVED_INVOCATIONS) evictOldestOpening(db, transition.observedAt);
+  return insertSelection(db, transition);
 }
 
-function terminalGapDisposition(
-  transition: z.infer<typeof terminalTransitionSchema>,
-): Extract<StoredTerminalDisposition, { kind: 'failed-without-selection' | 'finalized-without-selection' }> {
-  if (transition.disposition.kind === 'execution-failed') {
-    return { kind: 'failed-without-selection', throwPhase: transition.disposition.throwPhase };
-  }
-  return { kind: 'finalized-without-selection', terminal: transition.disposition };
-}
-
-function appendTerminalEvent(
-  journal: MutableJournal,
-  transition: z.infer<typeof terminalTransitionSchema>,
-  disposition: StoredTerminalDisposition,
-  committedSequences: number[],
-): void {
-  const sequence = nextSequence(journal, committedSequences);
-  journal.events.push(
-    terminalEventSchema.parse({
-      generation: HANDOFF_ROUTING_STATUS_GENERATION,
-      sequence,
-      eventId: transition.eventId,
-      invocationId: transition.invocationId,
-      observedAt: transition.observedAt,
-      eventKind: transition.kind,
-      phase: 'terminal',
-      selection: transition.selection,
-      disposition,
-    }),
-  );
-}
-
-function appendTerminal(
-  journal: MutableJournal,
-  transition: z.infer<typeof terminalTransitionSchema>,
-  committedSequences: number[],
-): HandoffRoutingReductionRejection | null {
-  if (terminalForInvocation(journal, transition.invocationId) !== undefined) return 'duplicate-terminal';
+function applyTerminal(db: DatabaseSync, transition: z.infer<typeof terminalTransitionSchema>): number {
+  if (terminalForInvocation(db, transition.invocationId) !== undefined) throw new RejectedTransitionError();
   if (transition.selection.kind === 'without-selection') {
-    appendTerminalEvent(journal, transition, terminalGapDisposition(transition), committedSequences);
-    return null;
+    return insertTerminal(db, transition, terminalGapDisposition(transition));
   }
 
-  const selection = selectionForInvocation(journal, transition.invocationId);
+  const selection = selectionForInvocation(db, transition.invocationId);
   if (selection !== undefined) {
-    if (selection.sequence !== transition.selection.selectionSequence) return 'selection-sequence-mismatch';
-    appendTerminalEvent(journal, transition, transition.disposition, committedSequences);
-    return null;
+    if (selection.sequence !== transition.selection.selectionSequence) throw new RejectedTransitionError();
+    return insertTerminal(db, transition, transition.disposition);
   }
 
-  const tombstone = tombstoneForInvocation(journal, transition.invocationId);
+  const tombstone = tombstoneForInvocation(db, transition.invocationId);
   if (tombstone === undefined || tombstone.selectionSequence !== transition.selection.selectionSequence) {
-    appendTerminalEvent(
-      journal,
-      transition,
-      {
-        kind: 'terminal-without-retained-selection',
-        knowledge: 'identity-expired-or-selection-unavailable',
-        terminal: transition.disposition,
-      },
-      committedSequences,
-    );
-    return null;
+    return insertTerminal(db, transition, {
+      kind: 'terminal-without-retained-selection',
+      knowledge: 'identity-expired-or-selection-unavailable',
+      terminal: transition.disposition,
+    });
   }
   if (tombstone.retirementCause === 'completed-pair-compaction' || tombstone.terminalExisted) {
-    return 'duplicate-terminal';
+    throw new RejectedTransitionError();
   }
+  db.prepare('DELETE FROM handoff_routing_records WHERE sequence = ?').run(tombstone.sequence);
   if (tombstone.retirementCause === 'operator-resolved') {
-    if (tombstone.resolutionReason === undefined) {
-      throw new Error('An operator-resolution tombstone must carry its resolution reason.');
-    }
-    journal.retirementTombstones = journal.retirementTombstones.filter((candidate) => candidate !== tombstone);
-    appendTerminalEvent(
-      journal,
-      transition,
-      {
-        kind: 'terminal-after-operator-resolution',
-        resolutionReason: tombstone.resolutionReason,
-        retiredSelection: {
-          selectionSequence: tombstone.selectionSequence,
-          selectedAt: tombstone.selectedAt,
-          owner: tombstone.owner,
-          selectedDisposition: tombstone.selectedDisposition,
-        },
-        terminal: transition.disposition,
+    if (tombstone.resolutionReason === undefined) throw new UnreadableStatusError();
+    return insertTerminal(db, transition, {
+      kind: 'terminal-after-operator-resolution',
+      resolutionReason: tombstone.resolutionReason,
+      retiredSelection: {
+        selectionSequence: tombstone.selectionSequence,
+        selectedAt: tombstone.selectedAt,
+        owner: tombstone.owner,
+        selectedDisposition: tombstone.selectedDisposition,
       },
-      committedSequences,
-    );
-    return null;
+      terminal: transition.disposition,
+    });
   }
-  const replacementSequence = nextSequence(journal, committedSequences);
-  journal.retirementTombstones = journal.retirementTombstones.map((candidate) =>
-    candidate === tombstone
-      ? retirementTombstoneSchema.parse({
-          ...candidate,
-          sequence: replacementSequence,
-          eventId: transition.eventId,
-          observedAt: transition.observedAt,
-          terminalExisted: true,
-        })
-      : candidate,
-  );
-  return null;
+  const replacement = retirementTombstoneSchema.parse({
+    ...tombstone,
+    sequence: nextRecordSequence(db),
+    eventId: transition.eventId,
+    observedAt: transition.observedAt,
+    terminalExisted: true,
+  });
+  const sequence = insertRecord(db, 'retirement', replacement);
+  enforceTombstoneBounds(db);
+  return sequence;
 }
 
-function resolveOpening(
-  journal: MutableJournal,
-  transition: z.infer<typeof operatorResolvedTransitionSchema>,
-  committedSequences: number[],
-): HandoffRoutingReductionRejection | null {
-  const selection = selectionForInvocation(journal, transition.invocationId);
-  if (selection === undefined) return 'resolution-without-opening';
-  if (selection.sequence !== transition.selectionSequence) return 'selection-sequence-mismatch';
-  if (terminalForInvocation(journal, transition.invocationId) !== undefined) return 'resolution-after-terminal';
-  const tombstone = createTombstone(
-    journal,
-    committedSequences,
+function applyResolution(db: DatabaseSync, transition: z.infer<typeof operatorResolvedTransitionSchema>): number {
+  const selection = selectionForInvocation(db, transition.invocationId);
+  if (selection === undefined || selection.sequence !== transition.selectionSequence) {
+    throw new RejectedTransitionError();
+  }
+  if (terminalForInvocation(db, transition.invocationId) !== undefined) throw new RejectedTransitionError();
+  return retireSelection(
+    db,
     selection,
     'operator-resolved',
-    false,
     transition.observedAt,
+    false,
     transition.reason,
     transition.eventId,
   );
-  removePair(journal, selection.invocationId);
-  journal.retirementTombstones.push(tombstone);
-  return null;
+}
+
+function applyTransition(db: DatabaseSync, transition: HandoffRoutingTransition): number {
+  switch (transition.kind) {
+    case 'routing-selected':
+      return applySelection(db, transition);
+    case 'execution-failed':
+    case 'continuation-finalized':
+      return applyTerminal(db, transition);
+    case 'operator-resolved':
+      return applyResolution(db, transition);
+    default:
+      return assertNever(transition);
+  }
 }
 
 function transitionObservedAt(transitions: readonly HandoffRoutingTransition[]): string {
   return transitions.reduce(
-    (latest, transition) => (transition.observedAt > latest ? transition.observedAt : latest),
+    (latest, transition) => (Date.parse(transition.observedAt) > Date.parse(latest) ? transition.observedAt : latest),
     transitions[0].observedAt,
   );
 }
 
-export function reduceHandoffRoutingJournal(
-  current: HandoffRoutingJournal,
+function errorNumber(error: unknown, fallback: number): number {
+  if (typeof error !== 'object' || error === null) return fallback;
+  const candidate = 'errcode' in error ? error.errcode : 'errno' in error ? error.errno : fallback;
+  return typeof candidate === 'number' && Number.isInteger(candidate) ? candidate : fallback;
+}
+
+function publishOnce(path: string, transitions: readonly HandoffRoutingTransition[]): PublicationOutcome {
+  let db: DatabaseSync | undefined;
+  let transactionOpen = false;
+  let commitStarted = false;
+  try {
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    db = new DatabaseSync(path);
+    chmodSync(path, 0o600);
+    configureDatabase(db);
+    db.exec('BEGIN IMMEDIATE');
+    transactionOpen = true;
+    initializeOrValidateDatabase(db);
+
+    const parsed = z.array(handoffRoutingTransitionSchema).min(1).safeParse(transitions);
+    if (!parsed.success) throw new RejectedTransitionError();
+    const observedAt = transitionObservedAt(parsed.data);
+    compactExpiredCompletedPairs(db, observedAt);
+    let publishedSequence = 0;
+    for (const transition of parsed.data) publishedSequence = applyTransition(db, transition);
+    compactExpiredCompletedPairs(db, observedAt);
+    commitStarted = true;
+    db.exec('COMMIT');
+    transactionOpen = false;
+    return { kind: 'committed', sequence: publishedSequence };
+  } catch (error) {
+    if (transactionOpen && !commitStarted && db !== undefined) {
+      try {
+        db.exec('ROLLBACK');
+      } catch (rollbackError) {
+        void rollbackError;
+      }
+    }
+    if (error instanceof RejectedTransitionError) {
+      return { kind: 'not-published', cause: 'rejected-transition' };
+    }
+    if (error instanceof UnsupportedGenerationError) {
+      return { kind: 'undeterminable', cause: 'unsupported-generation', errcode: SQLITE_ERROR };
+    }
+    if (error instanceof UnreadableStatusError) {
+      return { kind: 'undeterminable', cause: 'unreadable', errcode: SQLITE_CORRUPT };
+    }
+    const errcode = errorNumber(error, SQLITE_ERROR);
+    const primaryErrcode = errcode & 0xff;
+    if (primaryErrcode === SQLITE_FULL) return { kind: 'not-published', cause: 'capacity-exhausted' };
+    if (primaryErrcode === SQLITE_CONSTRAINT && !commitStarted) {
+      return { kind: 'not-published', cause: 'rejected-transition' };
+    }
+    if (primaryErrcode === SQLITE_BUSY && !commitStarted) return { kind: 'not-published', cause: 'contended' };
+    if (primaryErrcode === SQLITE_NOTADB || primaryErrcode === SQLITE_CORRUPT) {
+      return { kind: 'undeterminable', cause: 'unreadable', errcode };
+    }
+    return { kind: 'undeterminable', cause: 'io-failed', errcode };
+  } finally {
+    if (db !== undefined) {
+      try {
+        db.close();
+      } catch (closeError) {
+        void closeError;
+      }
+    }
+  }
+}
+
+export async function publishHandoffRoutingTransitions(
+  time: Pick<TimePort, 'now' | 'sleep'>,
+  path: string,
   transitions: readonly HandoffRoutingTransition[],
-): HandoffRoutingReductionResult {
-  const parsedJournal = handoffRoutingJournalSchema.safeParse(current);
-  if (!parsedJournal.success) return { kind: 'rejected', reason: 'invalid-journal', journal: current };
-  if (transitions.length === 0) return { kind: 'rejected', reason: 'empty-transaction', journal: parsedJournal.data };
-  const parsedTransitions = z.array(handoffRoutingTransitionSchema).safeParse(transitions);
-  if (!parsedTransitions.success) {
-    return { kind: 'rejected', reason: 'invalid-transition', journal: parsedJournal.data };
-  }
-
-  const journal = mutableJournal(parsedJournal.data);
-  const committedSequences: number[] = [];
-  const observedAt = transitionObservedAt(parsedTransitions.data);
-  const nowMs = Date.parse(observedAt);
-  compactExpiredCompletedPairs(journal, committedSequences, nowMs, observedAt);
-
-  const existingEventIds = new Set([...journal.events, ...journal.retirementTombstones].map((event) => event.eventId));
-  for (const transition of parsedTransitions.data) {
-    if (existingEventIds.has(transition.eventId)) {
-      return { kind: 'rejected', reason: 'duplicate-event-id', journal: parsedJournal.data };
+  signal?: AbortSignal,
+): Promise<PublicationOutcome> {
+  const deadline = time.now() + PUBLICATION_CONTENTION_TIMEOUT_MS;
+  while (true) {
+    const outcome = publishOnce(path, transitions);
+    if (outcome.kind !== 'not-published' || outcome.cause !== 'contended') return outcome;
+    if (signal?.aborted === true || time.now() >= deadline) return outcome;
+    try {
+      await time.sleep(PUBLICATION_RETRY_DELAY_MS, signal === undefined ? undefined : { signal });
+    } catch {
+      return outcome;
     }
-    existingEventIds.add(transition.eventId);
-    let rejection: HandoffRoutingReductionRejection | null;
-    switch (transition.kind) {
-      case 'routing-selected':
-        rejection = appendSelection(journal, transition, committedSequences);
-        break;
-      case 'execution-failed':
-      case 'continuation-finalized':
-        rejection = appendTerminal(journal, transition, committedSequences);
-        break;
-      case 'operator-resolved':
-        rejection = resolveOpening(journal, transition, committedSequences);
-        break;
-      default:
-        return assertNever(transition);
-    }
-    if (rejection !== null) return { kind: 'rejected', reason: rejection, journal: parsedJournal.data };
   }
-
-  compactExpiredCompletedPairs(journal, committedSequences, nowMs, observedAt);
-  if (!admitWithinBounds(journal, committedSequences, observedAt)) {
-    return { kind: 'rejected', reason: 'journal-capacity-exceeded', journal: parsedJournal.data };
-  }
-  journal.events.sort((left, right) => left.sequence - right.sequence);
-  journal.retirementTombstones.sort(
-    (left, right) =>
-      left.selectionSequence - right.selectionSequence || left.invocationId.localeCompare(right.invocationId),
-  );
-  const accepted = handoffRoutingJournalSchema.safeParse(journal);
-  if (!accepted.success) return { kind: 'rejected', reason: 'journal-capacity-exceeded', journal: parsedJournal.data };
-  const serialized = serializeHandoffRoutingJournal(accepted.data);
-  if (serialized.kind === 'rejected') {
-    return { kind: 'rejected', reason: 'journal-capacity-exceeded', journal: parsedJournal.data };
-  }
-  return { kind: 'accepted', journal: accepted.data, committedSequences: Object.freeze(committedSequences) };
 }
 
 export type PersistedHandoffDisposition =
@@ -1449,9 +1509,3 @@ export const MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES = Object.freeze({
     encodedBytes(MAX_RESOLVED_FINALIZED_TERMINAL),
   ),
 });
-
-export const MAX_LEGAL_CLOSING_REPLACEMENT_BYTES = Math.max(
-  MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES['execution-failed'],
-  MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES['continuation-finalized'],
-  MAX_LEGAL_RETIREMENT_TOMBSTONE_BYTES,
-);
