@@ -26,6 +26,20 @@ export interface DirentLike {
 
 export type StorageData = string | Uint8Array;
 
+export type SqliteValue = null | number | bigint | string | Uint8Array;
+
+export interface SqliteStatementPort {
+  all(...values: SqliteValue[]): unknown[];
+  get(...values: SqliteValue[]): unknown;
+  run(...values: SqliteValue[]): { readonly changes: number; readonly lastInsertRowid: number | bigint };
+}
+
+export interface SqliteDatabasePort {
+  exec(sql: string): void;
+  prepare(sql: string): SqliteStatementPort;
+  close(): void;
+}
+
 export type StorageBigIntStat = {
   readonly dev: bigint;
   readonly ino: bigint;
@@ -41,6 +55,7 @@ export type StorageBigIntStat = {
 export type StorageEntryKind = { isDirectory(): boolean; isFile(): boolean; isSymbolicLink(): boolean };
 
 export interface StoragePort {
+  assertReadableSync(path: string): void;
   readFile(path: string, encoding: 'utf-8'): Promise<string>;
   readFileSync(path: string, encoding: 'utf-8'): string;
   writeFileSync(
@@ -91,6 +106,7 @@ export interface StoragePort {
   ): boolean;
   syncDirectoryDurableSync(path: string): boolean;
   chmodSync(path: string, mode: number): void;
+  openSqliteDatabaseSync(path: string, options?: { readOnly?: boolean }): SqliteDatabasePort;
 }
 
 export interface EnvPort {

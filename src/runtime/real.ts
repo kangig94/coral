@@ -1,6 +1,7 @@
 import { spawn as spawnChild, spawnSync } from 'node:child_process';
 import { createHash, randomBytes as randomBytesNode, randomUUID } from 'node:crypto';
 import {
+  accessSync,
   appendFileSync,
   chmodSync,
   closeSync,
@@ -24,14 +25,23 @@ import {
   unlinkSync,
   writeFileSync,
   writeSync,
+  constants as fsConstants,
 } from 'node:fs';
 import { readFile as readFileAsync } from 'node:fs/promises';
 import { homedir as osHomedir, tmpdir as osTmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { composeCoralPaths } from '../infra/path/index.js';
 import { resolveProjectSource } from '../infra/project-source.js';
 import type { BuildFlavor } from '../infra/build-flavor.js';
-import type { ChildProcessLike, EnvPort, StorageData, StoragePort, TimePort } from '../infra/port-types.js';
+import type {
+  ChildProcessLike,
+  EnvPort,
+  SqliteDatabasePort,
+  StorageData,
+  StoragePort,
+  TimePort,
+} from '../infra/port-types.js';
 import type {
   DurableExecutionTransport,
   IdPort,
@@ -58,6 +68,26 @@ const DURABLE_POLL_INTERVAL_MS = 100;
 const DURABLE_POLL_TIMEOUT_MS = 5_000;
 const DURABLE_EXIT_GRACE_MS = 5_000;
 const ENV_RECORD_FILE = 'env.json';
+
+function openSqliteDatabaseSync(path: string, options?: { readOnly?: boolean }): SqliteDatabasePort {
+  const database = new DatabaseSync(path, { readOnly: options?.readOnly ?? false });
+  return {
+    exec: (sql) => database.exec(sql),
+    prepare: (sql) => {
+      const statement = database.prepare(sql);
+      return {
+        all: (...values) => statement.all(...values),
+        get: (...values) => statement.get(...values),
+        run: (...values) => {
+          const result = statement.run(...values);
+          return { changes: Number(result.changes), lastInsertRowid: result.lastInsertRowid };
+        },
+      };
+    },
+    close: () => database.close(),
+  };
+}
+
 const WRAPPER_SCRIPT = `
 const { spawn } = require('child_process');
 const { openSync, closeSync, readFileSync } = require('fs');
@@ -146,6 +176,7 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
   const time: TimePort = createRealTimePort();
 
   const storage: StoragePort = {
+    assertReadableSync: (path) => accessSync(path, fsConstants.R_OK),
     readFile: (path, encoding) => readFileAsync(path, encoding),
     readFileSync: (path, encoding) => readFileSync(path, encoding),
     writeFileSync: (path, data, options) => writeFileSync(path, data, options),
@@ -255,6 +286,7 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
     writeAtomicDurableSync: (path, data, options) => writeAtomicDurableSyncNode(path, data, options),
     syncDirectoryDurableSync: (path) => syncDirectoryDurable(path),
     chmodSync: (path, mode) => chmodSync(path, mode),
+    openSqliteDatabaseSync,
   };
 
   const customKbRoot = capturedEnv.coralEnv.CORAL_KB_PATH;

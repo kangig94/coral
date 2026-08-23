@@ -1,6 +1,8 @@
 import { dirname, normalize } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import type {
   DirentLike,
+  SqliteDatabasePort,
   StorageBigIntStat,
   StorageData,
   StorageEntryKind,
@@ -166,6 +168,7 @@ export class InMemoryStorage implements StoragePort {
   private readonly directories = new Map<string, DirectoryNode>();
   private readonly childIndex = new Map<string, Set<string>>();
   private readonly openFiles = new Map<number, OpenFile>();
+  private readonly sqliteDatabases = new Map<string, SqliteDatabasePort>();
   private nextFd = 100;
   private nextIno = 1;
   private lastStamp: number;
@@ -220,6 +223,17 @@ export class InMemoryStorage implements StoragePort {
     this.lastStamp = snapshot.lastStamp;
     this.subTickCounter = snapshot.subTickCounter;
     this.rebuildChildIndex();
+  }
+
+  assertReadableSync(path: string): void {
+    const normalized = normalizePathForStorage(path);
+    const node = this.files.get(normalized) ?? this.directories.get(normalized);
+    if (node === undefined) throw createErrnoError('ENOENT', normalized);
+    if ((node.mode & 0o444) === 0) {
+      const error = createErrnoError('EACCES', normalized);
+      error.errno = -13;
+      throw error;
+    }
   }
 
   async readFile(path: string, encoding: 'utf-8'): Promise<string> {
@@ -915,6 +929,33 @@ export class InMemoryStorage implements StoragePort {
       return;
     }
     throw createErrnoError('ENOENT', normalized);
+  }
+
+  openSqliteDatabaseSync(path: string, options?: { readOnly?: boolean }): SqliteDatabasePort {
+    const normalized = normalizePathForStorage(path);
+    const existing = this.sqliteDatabases.get(normalized);
+    if (existing !== undefined) return existing;
+    if (options?.readOnly === true) throw createErrnoError('ENOENT', normalized);
+
+    this.writeFileSync(normalized, Buffer.alloc(0), { mode: 0o600, flag: 'wx' });
+    const database = new DatabaseSync(':memory:');
+    const port: SqliteDatabasePort = {
+      exec: (sql) => database.exec(sql),
+      prepare: (sql) => {
+        const statement = database.prepare(sql);
+        return {
+          all: (...values) => statement.all(...values),
+          get: (...values) => statement.get(...values),
+          run: (...values) => {
+            const result = statement.run(...values);
+            return { changes: Number(result.changes), lastInsertRowid: result.lastInsertRowid };
+          },
+        };
+      },
+      close: () => undefined,
+    };
+    this.sqliteDatabases.set(normalized, port);
+    return port;
   }
 
   private appendAndCheckCanonical(

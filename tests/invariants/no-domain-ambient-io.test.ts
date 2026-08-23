@@ -1,12 +1,9 @@
 // Cluster K invariant — domain modules must reach I/O / randomness / env /
 // subprocess through Runtime ports. This is the structural complement to the
-// per-method ambient-runtime check in architecture-boundary.test.ts; this one
-// scans imports of `node:fs`, `node:os`, `node:child_process`, and the
-// randomness surface of `node:crypto` (`randomUUID`, `randomBytes`) under
-// `src/kb/`, `src/providers/`, and `src/jobs/`. The composition root for the
-// claude appserver subprocess (`src/providers/claude/appserver/server.ts`) is
-// exempt: it is its own subprocess bootstrap and may import ambient I/O
-// directly.
+// per-method ambient-runtime check in architecture-boundary.test.ts. The
+// composition root for the claude appserver subprocess
+// (`src/providers/claude/appserver/server.ts`) is exempt: it is its own
+// subprocess bootstrap and may import ambient I/O directly.
 //
 // `createHash` from `node:crypto` is pure compute (deterministic, no I/O, no
 // randomness) and stays — the invariant does not flag it.
@@ -27,7 +24,7 @@ import { describe, expect, it } from 'vitest';
 import { codeTextOnly } from '../helpers/ts-code-text.js';
 
 const REPO_ROOT = join(__dirname, '..', '..');
-const SCOPED_ROOTS = ['src/kb', 'src/providers', 'src/jobs', 'src/store'] as const;
+const SCOPED_ROOTS = ['src/kb', 'src/providers', 'src/jobs', 'src/store', 'src/coordinator'] as const;
 const TIMER_SCOPED_ROOTS = [
   'src/kb',
   'src/jobs',
@@ -43,6 +40,14 @@ const EXEMPT_FILES = new Set([
   // Subprocess composition root — its own bootstrap entrypoint.
   'src/providers/claude/appserver/server.ts',
   'src/providers/claude/appserver/controller.ts',
+]);
+const CHILD_PROCESS_EXEMPT_FILES = new Set([
+  // The handoff execution boundary owns the delegated CLI process it launches.
+  'src/coordinator/handoff-runner.ts',
+]);
+const SQLITE_EXEMPT_FILES = new Set([
+  // The Journal store owns the SQLite engine used for its database.
+  'src/store/db.ts',
 ]);
 const TIMER_EXEMPT_FILES = new Set<string>([
   // Local port interface: the `setTimeout` / `clearTimeout` identifiers here
@@ -112,6 +117,10 @@ function importsNodeOs(source: string): boolean {
 
 function importsNodeChildProcess(source: string): boolean {
   return /from\s+['"]node:child_process['"]/u.test(source) || /import\s+['"]node:child_process['"]/u.test(source);
+}
+
+function importsNodeSqlite(source: string): boolean {
+  return /from\s+['"]node:sqlite['"]/u.test(source) || /import\s+['"]node:sqlite['"]/u.test(source);
 }
 
 /**
@@ -200,8 +209,22 @@ describe('domain modules use Runtime ports for ambient I/O', () => {
     for (const root of SCOPED_ROOTS) {
       for (const filePath of listSourceFiles(root)) {
         const canonical = canonicalSrcPath(filePath);
-        if (EXEMPT_FILES.has(canonical)) continue;
+        if (EXEMPT_FILES.has(canonical) || CHILD_PROCESS_EXEMPT_FILES.has(canonical)) continue;
         if (importsNodeChildProcess(readSource(filePath))) {
+          violations.push(canonical);
+        }
+      }
+    }
+    expect(violations).toEqual([]);
+  });
+
+  it('no domain file imports node:sqlite (use a runtime-supplied store port)', () => {
+    const violations: string[] = [];
+    for (const root of SCOPED_ROOTS) {
+      for (const filePath of listSourceFiles(root)) {
+        const canonical = canonicalSrcPath(filePath);
+        if (EXEMPT_FILES.has(canonical) || SQLITE_EXEMPT_FILES.has(canonical)) continue;
+        if (importsNodeSqlite(readSource(filePath))) {
           violations.push(canonical);
         }
       }

@@ -22,7 +22,7 @@ import {
   invalidTargetSummarySchema,
   persistedHandoffDispositionPolicy,
   publishHandoffRoutingTransitions,
-  readHandoffRoutingStatus,
+  readHandoffRoutingStatus as readHandoffRoutingStatusWithRuntime,
   retirementTombstoneSchema,
   terminalEventSchema,
   type DurableHandoffRoutingBasis,
@@ -30,14 +30,15 @@ import {
   type PublicationOutcome,
   type RetirementTombstone,
 } from '#src/coordinator/handoff-routing-status.js';
-import { createRealTimePort } from '#src/infra/time.js';
+import { createRealRuntime } from '#src/runtime/real.js';
+import { SimulationRuntime } from '../../../tools/simulation/runtime.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
 const BASE_TIME = Date.parse('2026-01-01T00:00:00.000Z');
 const BUILD_SET_ID = '123e4567-e89b-42d3-a456-426614174000';
 const OWNER = { pid: 101, incarnation: testIncarnation(101) } as const;
 const temporaryDirectories: string[] = [];
-const time = createRealTimePort();
+const runtime = createRealRuntime('prod');
 
 function at(offsetMs: number): string {
   return new Date(BASE_TIME + offsetMs).toISOString();
@@ -93,7 +94,14 @@ function publish(
   transitions: readonly HandoffRoutingTransition[],
   signal?: AbortSignal,
 ): Promise<PublicationOutcome> {
-  return publishHandoffRoutingTransitions(time, path, transitions, signal);
+  return publishHandoffRoutingTransitions(runtime, path, transitions, signal);
+}
+
+function readHandoffRoutingStatus(
+  path: string,
+  probe?: Parameters<typeof readHandoffRoutingStatusWithRuntime>[2],
+): ReturnType<typeof readHandoffRoutingStatusWithRuntime> {
+  return readHandoffRoutingStatusWithRuntime(runtime, path, probe);
 }
 
 function records(path: string): Array<Record<string, unknown>> {
@@ -265,6 +273,23 @@ describe('handoff routing status', () => {
     expect(MAX_RETIREMENT_TOMBSTONES * MAX_LEGAL_RETIREMENT_TOMBSTONE_BYTES).toBeLessThanOrEqual(
       MAX_RETIREMENT_TOMBSTONE_BYTES,
     );
+  });
+
+  it('publishes through simulation storage without touching the host path', async () => {
+    const simulation = new SimulationRuntime();
+    const path = '/simulation-only/handoff-routing.1.db';
+
+    expect(existsSync(path)).toBe(false);
+    await expect(publishHandoffRoutingTransitions(simulation, path, [selection('simulated', 1)])).resolves.toEqual({
+      kind: 'committed',
+      sequence: 1,
+    });
+    expect(simulation.storage.existsSync(path)).toBe(true);
+    expect(existsSync(path)).toBe(false);
+    expect(readHandoffRoutingStatusWithRuntime(simulation, path)).toMatchObject({
+      kind: 'current',
+      statuses: [{ kind: 'unresolved', selection: { invocationId: 'simulated' } }],
+    });
   });
 
   it('creates the bounded schema with persistent settings and relational uniqueness', async () => {
@@ -612,7 +637,9 @@ describe('handoff routing status', () => {
     };
     try {
       await expect(
-        publishHandoffRoutingTransitions(jumpingWallClock, path, [selection('monotonic-contender', 2)]),
+        publishHandoffRoutingTransitions({ ...runtime, time: jumpingWallClock }, path, [
+          selection('monotonic-contender', 2),
+        ]),
       ).resolves.toEqual({ kind: 'not-published', cause: 'contended' });
     } finally {
       holder.exec('ROLLBACK');
