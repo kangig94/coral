@@ -12,6 +12,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 import {
   MAX_COMPLETED_HANDOFF_ROUTING_PAIRS,
+  MAX_HANDOFF_ROUTING_STATUS_BYTES,
   MAX_LEGAL_CONTINUATION_FINALIZED_TRANSITION,
   MAX_LEGAL_ROUTING_SELECTED_TRANSITION,
   MAX_RETIREMENT_TOMBSTONES,
@@ -133,6 +134,26 @@ function maximumTerminal(identity: string, selectionSequence: number): HandoffRo
   };
 }
 
+function maximumGapTerminal(identity: string): HandoffRoutingTransition {
+  return {
+    ...MAX_LEGAL_CONTINUATION_FINALIZED_TRANSITION,
+    eventId: maximumIdentifier(`g${identity}`),
+    invocationId: maximumIdentifier(`x${identity}`),
+    selection: { kind: 'without-selection' },
+  };
+}
+
+function maximumResolution(identity: string, selectionSequence: number): HandoffRoutingTransition {
+  return {
+    kind: 'operator-resolved',
+    eventId: maximumIdentifier(`r${identity}`),
+    invocationId: maximumIdentifier(`i${identity}`),
+    observedAt: MAX_LEGAL_ROUTING_SELECTED_TRANSITION.observedAt,
+    selectionSequence,
+    reason: 'operator-abandoned-unobservable',
+  };
+}
+
 async function committed(path: string, transition: HandoffRoutingTransition): Promise<number> {
   const outcome = await publishHandoffRoutingTransitions(time, path, [transition]);
   expect(outcome.kind).toBe('committed');
@@ -173,6 +194,20 @@ function retainedRecordCounts(path: string): Readonly<{
         FROM handoff_routing_records`,
       )
       .get() as Readonly<{ completedPairs: number; unresolved: number; tombstones: number }>;
+  } finally {
+    db.close();
+  }
+}
+
+function databaseCapacity(path: string): Readonly<{ pageCount: number; freeListCount: number; maxPageCount: number }> {
+  const db = new DatabaseSync(path);
+  try {
+    const pageSize = (db.prepare('PRAGMA page_size').get() as Readonly<{ page_size: number }>).page_size;
+    return {
+      pageCount: (db.prepare('PRAGMA page_count').get() as Readonly<{ page_count: number }>).page_count,
+      freeListCount: (db.prepare('PRAGMA freelist_count').get() as Readonly<{ freelist_count: number }>).freelist_count,
+      maxPageCount: Math.floor(MAX_HANDOFF_ROUTING_STATUS_BYTES / pageSize),
+    };
   } finally {
     db.close();
   }
@@ -402,6 +437,73 @@ describe('handoff routing status transaction durability', () => {
       closedOpening: expect.objectContaining({ kind: 'committed' }),
       closedAdmission: expect.objectContaining({ kind: 'committed' }),
     });
+  });
+
+  it('bounds gap-terminal-only history without consuming retained-opening closure capacity', async () => {
+    const path = databasePath();
+    const opening = await committed(path, maximumSelection('gap-opening'));
+    const gapHistory = Array.from({ length: 376 }, (_, index) => maximumGapTerminal(`only-${index}`));
+    await expect(publishHandoffRoutingTransitions(time, path, gapHistory)).resolves.toEqual({
+      kind: 'committed',
+      sequence: expect.any(Number),
+    });
+    expect(retainedRecordCounts(path).completedPairs).toBeLessThanOrEqual(MAX_COMPLETED_HANDOFF_ROUTING_PAIRS);
+
+    await expect(
+      publishHandoffRoutingTransitions(time, path, [maximumTerminal('gap-opening', opening)]),
+    ).resolves.toEqual({ kind: 'committed', sequence: expect.any(Number) });
+    await expect(publishHandoffRoutingTransitions(time, path, [maximumSelection('after-gaps')])).resolves.toEqual({
+      kind: 'committed',
+      sequence: expect.any(Number),
+    });
+  });
+
+  it('admits a late terminal from a retained operator tombstone under completed-history pressure', async () => {
+    const path = databasePath();
+    for (let index = 0; index < 68; index += 1) {
+      const identity = `late-pair-${index}`;
+      const pairSelection = await committed(path, maximumSelection(identity));
+      await committed(path, maximumTerminal(identity, pairSelection));
+    }
+    const selected = await committed(path, maximumSelection('resolved-under-pressure'));
+    await committed(path, maximumResolution('resolved-under-pressure', selected));
+    const db = new DatabaseSync(path);
+    try {
+      db.exec('PRAGMA synchronous=OFF');
+      db.exec(`PRAGMA max_page_count=${MAX_HANDOFF_ROUTING_STATUS_BYTES / 4096}`);
+      db.exec('CREATE TABLE pressure_padding (value BLOB NOT NULL)');
+      const insert = db.prepare('INSERT INTO pressure_padding VALUES (?)');
+      while (true) insert.run(Buffer.alloc(512));
+    } catch (error) {
+      expect(error).toMatchObject({ errcode: 13 });
+    } finally {
+      db.close();
+    }
+    const capacity = databaseCapacity(path);
+    expect(capacity).toMatchObject({ pageCount: capacity.maxPageCount, freeListCount: 0 });
+    expect(storeSnapshot(path).invocations).toContain(maximumIdentifier('iresolved-under-pressure'));
+
+    await expect(
+      publishHandoffRoutingTransitions(time, path, [maximumTerminal('resolved-under-pressure', selected)]),
+    ).resolves.toEqual({ kind: 'committed', sequence: expect.any(Number) });
+    expect(retainedRecordCounts(path).completedPairs).toBeLessThan(69);
+  });
+
+  it('keeps tombstone-only history bounded while admitting later selections', async () => {
+    const path = databasePath();
+    const tombstoneHistory = Array.from({ length: MAX_RETIREMENT_TOMBSTONES + 32 }, (_, index) => {
+      const identity = `tombstone-only-${index}`;
+      return [maximumSelection(identity), maximumResolution(identity, index * 2 + 1)];
+    }).flat();
+    await expect(publishHandoffRoutingTransitions(time, path, tombstoneHistory)).resolves.toEqual({
+      kind: 'committed',
+      sequence: expect.any(Number),
+    });
+
+    await expect(publishHandoffRoutingTransitions(time, path, [maximumSelection('after-tombstones')])).resolves.toEqual(
+      { kind: 'committed', sequence: expect.any(Number) },
+    );
+    expect(retainedRecordCounts(path).tombstones).toBeLessThanOrEqual(MAX_RETIREMENT_TOMBSTONES);
   });
 
   it.skipIf(process.platform !== 'linux')(

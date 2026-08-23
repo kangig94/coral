@@ -34,6 +34,8 @@ export const MAX_UNRESOLVED_INVOCATIONS = 64;
 export const MAX_COMPLETED_HANDOFF_ROUTING_PAIRS = 256;
 export const HANDOFF_ROUTING_COMPLETED_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 
+const MAX_BOUNDED_TERMINAL_HISTORY = MAX_COMPLETED_HANDOFF_ROUTING_PAIRS;
+
 const MAX_IDENTIFIER_LENGTH = 58;
 const MAX_INSTANCE_ID_LENGTH = 64;
 const MAX_VERSION_LENGTH = 64;
@@ -701,10 +703,16 @@ function schemaSql(): string {
       ON handoff_routing_records(invocation_id)
       WHERE record_kind IN ('terminal', 'retirement');
 
-    CREATE UNIQUE INDEX handoff_routing_gap_terminal_or_selection_per_invocation
+    CREATE UNIQUE INDEX handoff_routing_selection_or_unretained_terminal_per_invocation
       ON handoff_routing_records(invocation_id)
       WHERE record_kind = 'selection' OR (
-        record_kind = 'terminal' AND json_extract(body_json, '$.selection.kind') = 'without-selection'
+        record_kind = 'terminal' AND (
+          json_extract(body_json, '$.selection.kind') = 'without-selection' OR
+          json_extract(body_json, '$.disposition.kind') IN (
+            'terminal-without-retained-selection',
+            'terminal-after-operator-resolution'
+          )
+        )
       );
   `;
 }
@@ -1098,7 +1106,7 @@ function pragmaNumber(db: DatabaseSync, name: 'page_size' | 'page_count' | 'max_
   return value;
 }
 
-function hasSelectionAdmissionCapacity(db: DatabaseSync): boolean {
+function hasAdmissionCapacity(db: DatabaseSync, recordBytes: number): boolean {
   const pageSize = pragmaNumber(db, 'page_size');
   const pageCount = pragmaNumber(db, 'page_count');
   const freeListCount = db.prepare('PRAGMA freelist_count').get() as Readonly<{ freelist_count: number }>;
@@ -1107,19 +1115,66 @@ function hasSelectionAdmissionCapacity(db: DatabaseSync): boolean {
   const maximumIdentifierBytes = Buffer.byteLength('\u0800'.repeat(MAX_IDENTIFIER_LENGTH), 'utf8');
   const indexedEnvelopeBytes = maximumIdentifierBytes * 4 + MAX_OBSERVED_AT_LENGTH * 2;
   const btreeAllocationMarginBytes = pageSize * 8;
-  const requiredBytes =
-    MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES['routing-selected'] +
-    MAX_LEGAL_CLOSING_RECORD_BYTES +
-    indexedEnvelopeBytes +
-    btreeAllocationMarginBytes;
+  const requiredBytes = recordBytes + indexedEnvelopeBytes + btreeAllocationMarginBytes;
   return availableBytes >= requiredBytes;
+}
+
+function deleteOldestBoundedTerminal(db: DatabaseSync): boolean {
+  const deleted = db
+    .prepare(
+      `DELETE FROM handoff_routing_records
+      WHERE sequence = (
+        SELECT terminal.sequence
+        FROM handoff_routing_records AS terminal
+        WHERE terminal.record_kind = 'terminal'
+          AND NOT EXISTS (
+            SELECT 1 FROM handoff_routing_records AS selection
+            WHERE selection.invocation_id = terminal.invocation_id AND selection.record_kind = 'selection'
+          )
+        ORDER BY terminal.sequence
+        LIMIT 1
+      )`,
+    )
+    .run();
+  return deleted.changes === 1;
+}
+
+function boundedTerminalCount(db: DatabaseSync): number {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS count
+      FROM handoff_routing_records AS terminal
+      WHERE terminal.record_kind = 'terminal'
+        AND NOT EXISTS (
+          SELECT 1 FROM handoff_routing_records AS selection
+          WHERE selection.invocation_id = terminal.invocation_id AND selection.record_kind = 'selection'
+        )`,
+    )
+    .get() as Readonly<{ count: number }>;
+  return row.count;
+}
+
+function reclaimBoundedHistoryForAdmission(db: DatabaseSync, observedAt: string): boolean {
+  if (deleteOldestBoundedTerminal(db)) return true;
+  if (retireOldestCompletedPairForCapacity(db, observedAt)) return true;
+  return rollUpOldestTombstone(db);
+}
+
+function makeClosingAdmissionRoom(db: DatabaseSync, observedAt: string, capacity: 'reserved' | 'unreserved'): void {
+  if (capacity === 'reserved') return;
+  while (boundedTerminalCount(db) >= MAX_BOUNDED_TERMINAL_HISTORY) deleteOldestBoundedTerminal(db);
+  while (!hasAdmissionCapacity(db, MAX_LEGAL_CLOSING_RECORD_BYTES)) {
+    if (reclaimBoundedHistoryForAdmission(db, observedAt)) continue;
+    throw new CapacityExhaustedError();
+  }
 }
 
 function makeSelectionAdmissionRoom(db: DatabaseSync, observedAt: string): void {
   while (unresolvedCount(db) >= MAX_UNRESOLVED_INVOCATIONS) evictOldestOpening(db, observedAt);
-  while (!hasSelectionAdmissionCapacity(db)) {
-    if (retireOldestCompletedPairForCapacity(db, observedAt)) continue;
-    if (rollUpOldestTombstone(db)) continue;
+  const selectionAndReserveBytes =
+    MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES['routing-selected'] + MAX_LEGAL_CLOSING_RECORD_BYTES;
+  while (!hasAdmissionCapacity(db, selectionAndReserveBytes)) {
+    if (reclaimBoundedHistoryForAdmission(db, observedAt)) continue;
     if (unresolvedCount(db) > 0) {
       evictOldestOpening(db, observedAt);
       continue;
@@ -1225,6 +1280,7 @@ function applyTerminal(db: DatabaseSync, transition: z.infer<typeof terminalTran
     ) {
       throw new RejectedTransitionError();
     }
+    makeClosingAdmissionRoom(db, transition.observedAt, 'unreserved');
     return insertTerminal(db, transition, terminalGapDisposition(transition));
   }
 
@@ -1232,11 +1288,13 @@ function applyTerminal(db: DatabaseSync, transition: z.infer<typeof terminalTran
   if (selection !== undefined) {
     if (selection.sequence !== transition.selection.selectionSequence) throw new RejectedTransitionError();
     releaseClosingReserve(db, selection.invocationId);
+    makeClosingAdmissionRoom(db, transition.observedAt, 'reserved');
     return insertTerminal(db, transition, transition.disposition);
   }
 
   const tombstone = tombstoneForInvocation(db, transition.invocationId);
   if (tombstone === undefined || tombstone.selectionSequence !== transition.selection.selectionSequence) {
+    makeClosingAdmissionRoom(db, transition.observedAt, 'unreserved');
     return insertTerminal(db, transition, {
       kind: 'terminal-without-retained-selection',
       knowledge: 'identity-expired-or-selection-unavailable',
@@ -1247,6 +1305,7 @@ function applyTerminal(db: DatabaseSync, transition: z.infer<typeof terminalTran
     throw new RejectedTransitionError();
   }
   db.prepare('DELETE FROM handoff_routing_records WHERE sequence = ?').run(tombstone.sequence);
+  makeClosingAdmissionRoom(db, transition.observedAt, 'unreserved');
   if (tombstone.retirementCause === 'operator-resolved') {
     if (tombstone.resolutionReason === undefined) throw new UnreadableStatusError();
     return insertTerminal(db, transition, {
@@ -1279,15 +1338,20 @@ function applyResolution(db: DatabaseSync, transition: z.infer<typeof operatorRe
     throw new RejectedTransitionError();
   }
   if (terminalForInvocation(db, transition.invocationId) !== undefined) throw new RejectedTransitionError();
-  return retireSelection(
+  releaseClosingReserve(db, selection.invocationId);
+  db.prepare('DELETE FROM handoff_routing_records WHERE invocation_id = ?').run(selection.invocationId);
+  makeClosingAdmissionRoom(db, transition.observedAt, 'reserved');
+  const sequence = insertTombstone(
     db,
     selection,
     'operator-resolved',
-    transition.observedAt,
     false,
+    transition.observedAt,
     transition.reason,
     transition.eventId,
   );
+  enforceTombstoneBounds(db);
+  return sequence;
 }
 
 function applyTransition(db: DatabaseSync, transition: HandoffRoutingTransition): number {
@@ -1510,20 +1574,37 @@ export type HandoffRoutingStatusReadResult =
 
 export type HandoffRoutingOwnerLivenessProbe = (owner: RecordedProcessIdentity) => OwnerLiveness;
 
-type StatusReadRow = Readonly<{
-  sequence: number;
-  generation: number;
-  event_id: string;
-  invocation_id: string;
-  observed_at: string;
-  record_kind: string;
-  event_kind: string;
-  selection_sequence: number | null;
-  retirement_cause: string | null;
-  terminal_existed: number | null;
-  body_json: string;
-  encoded_bytes: number;
-}>;
+const statusReadRowSchema = z
+  .object({
+    sequence: positiveSequenceSchema,
+    generation: sequenceSchema,
+    event_id: z.string(),
+    invocation_id: z.string(),
+    observed_at: z.string(),
+    record_kind: z.string(),
+    event_kind: z.string(),
+    selection_sequence: positiveSequenceSchema.nullable(),
+    retirement_cause: z.string().nullable(),
+    terminal_existed: z.number().int().nullable(),
+    body_json: z.string(),
+    encoded_bytes: sequenceSchema,
+  })
+  .strict()
+  .readonly();
+
+type StatusReadRow = z.infer<typeof statusReadRowSchema>;
+
+const closingReserveReadRowSchema = z
+  .object({
+    invocation_id: z.string(),
+    event_id: z.string(),
+    observed_at: z.string(),
+    allocation_bytes: z.number().int().nonnegative(),
+  })
+  .strict()
+  .readonly();
+
+type ClosingReserveReadRow = z.infer<typeof closingReserveReadRowSchema>;
 
 type RetirementHistoryRow = Readonly<{
   generation: number;
@@ -1576,11 +1657,15 @@ function ownerLiveness(
 }
 
 function projectInvocationStatuses(
-  rows: readonly StatusReadRow[],
+  rows: readonly unknown[],
+  reserves: readonly unknown[],
   probe: HandoffRoutingOwnerLivenessProbe | undefined,
 ): StatusProjection {
   const invocations = new Map<string, InvocationRecords>();
-  for (const row of rows) {
+  for (const rawRow of rows) {
+    const parsedRow = statusReadRowSchema.safeParse(rawRow);
+    if (!parsedRow.success) return { kind: 'unreadable', reason: 'invalid-shape' };
+    const row: StatusReadRow = parsedRow.data;
     const byteLimit = statusRowByteLimit(row.record_kind);
     if (byteLimit === undefined) return { kind: 'unreadable', reason: 'invalid-shape' };
     const bodyBytes = Buffer.byteLength(row.body_json, 'utf8');
@@ -1649,16 +1734,34 @@ function projectInvocationStatuses(
     invocations.set(record.invocationId, invocation);
   }
 
+  const closingReserves = new Map<string, ClosingReserveReadRow>();
+  for (const rawReserve of reserves) {
+    const parsedReserve = closingReserveReadRowSchema.safeParse(rawReserve);
+    if (!parsedReserve.success) return { kind: 'unreadable', reason: 'invalid-shape' };
+    const reserve = parsedReserve.data;
+    if (reserve.allocation_bytes !== MAX_LEGAL_CLOSING_RECORD_BYTES || closingReserves.has(reserve.invocation_id)) {
+      return { kind: 'unreadable', reason: 'invalid-shape' };
+    }
+    closingReserves.set(reserve.invocation_id, reserve);
+  }
+
   const statuses: HandoffRoutingInvocationStatus[] = [];
   for (const invocation of invocations.values()) {
     if (invocation.tombstone !== undefined) {
-      if (invocation.selection !== undefined || invocation.terminal !== undefined) {
+      if (
+        invocation.selection !== undefined ||
+        invocation.terminal !== undefined ||
+        closingReserves.has(invocation.tombstone.invocationId)
+      ) {
         return { kind: 'unreadable', reason: 'invalid-shape' };
       }
       statuses.push({ kind: 'retired', tombstone: invocation.tombstone });
       continue;
     }
     if (invocation.terminal !== undefined) {
+      if (closingReserves.has(invocation.terminal.invocationId)) {
+        return { kind: 'unreadable', reason: 'invalid-shape' };
+      }
       if (invocation.selection !== undefined) {
         if (
           invocation.terminal.selection.kind !== 'with-selection-sequence' ||
@@ -1677,6 +1780,15 @@ function projectInvocationStatuses(
       continue;
     }
     if (invocation.selection !== undefined) {
+      const reserve = closingReserves.get(invocation.selection.invocationId);
+      if (
+        reserve === undefined ||
+        reserve.event_id !== invocation.selection.eventId ||
+        reserve.observed_at !== invocation.selection.observedAt
+      ) {
+        return { kind: 'unreadable', reason: 'invalid-shape' };
+      }
+      closingReserves.delete(invocation.selection.invocationId);
       statuses.push({
         kind: 'unresolved',
         selection: invocation.selection,
@@ -1684,6 +1796,7 @@ function projectInvocationStatuses(
       });
     }
   }
+  if (closingReserves.size !== 0) return { kind: 'unreadable', reason: 'invalid-shape' };
   return { kind: 'projected', statuses: Object.freeze(statuses) };
 }
 
@@ -1701,7 +1814,8 @@ export function readHandoffRoutingStatus(
 
   let db: DatabaseSync | undefined;
   let transactionOpen = false;
-  let rows: readonly StatusReadRow[];
+  let rows: readonly unknown[];
+  let reserves: readonly unknown[];
   let retirement: RetirementHistoryRow | undefined;
   try {
     db = new DatabaseSync(path, { readOnly: true });
@@ -1746,7 +1860,17 @@ export function readHandoffRoutingStatus(
           encoded_bytes
         FROM handoff_routing_records ORDER BY sequence`,
       )
-      .all() as StatusReadRow[];
+      .all();
+    reserves = db
+      .prepare(
+        `SELECT
+          invocation_id,
+          event_id,
+          observed_at,
+          length(allocation) AS allocation_bytes
+        FROM handoff_routing_closing_reserve ORDER BY invocation_id`,
+      )
+      .all();
     db.exec('COMMIT');
     transactionOpen = false;
   } catch (error) {
@@ -1790,7 +1914,7 @@ export function readHandoffRoutingStatus(
     return { kind: 'unreadable', reason: 'invalid-shape' };
   }
 
-  const projection = projectInvocationStatuses(rows, probe);
+  const projection = projectInvocationStatuses(rows, reserves, probe);
   if (projection.kind === 'unreadable') return projection;
   return {
     kind: 'current',

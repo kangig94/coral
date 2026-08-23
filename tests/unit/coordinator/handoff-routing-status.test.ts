@@ -26,6 +26,7 @@ import {
   publishHandoffRoutingTransitions,
   readHandoffRoutingStatus,
   retirementTombstoneSchema,
+  terminalEventSchema,
   type DurableHandoffRoutingBasis,
   type HandoffRoutingTransition,
   type PublicationOutcome,
@@ -153,7 +154,7 @@ function insertTombstoneFixture(db: DatabaseSync, tombstone: RetirementTombstone
 
 function createReadFixtureDatabase(
   path: string,
-  rows: readonly Readonly<{ recordKind: string; bodyJson: string }>[],
+  rows: readonly Readonly<{ recordKind: string; bodyJson: string | null }>[],
 ): void {
   const db = new DatabaseSync(path);
   try {
@@ -181,8 +182,14 @@ function createReadFixtureDatabase(
         selection_sequence INTEGER,
         retirement_cause TEXT,
         terminal_existed INTEGER,
-        body_json TEXT NOT NULL,
-        encoded_bytes INTEGER NOT NULL
+        body_json TEXT,
+        encoded_bytes INTEGER
+      );
+      CREATE TABLE handoff_routing_closing_reserve (
+        invocation_id TEXT PRIMARY KEY,
+        event_id TEXT NOT NULL,
+        observed_at TEXT NOT NULL,
+        allocation BLOB NOT NULL
       );
       INSERT INTO handoff_routing_metadata VALUES (${HANDOFF_ROUTING_STATUS_GENERATION}, ${HANDOFF_ROUTING_STATUS_GENERATION}, 0, 0, 0, 0, NULL, NULL, NULL, NULL);
       PRAGMA user_version=${HANDOFF_ROUTING_STATUS_GENERATION};
@@ -203,7 +210,7 @@ function createReadFixtureDatabase(
         encoded_bytes
       ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)`,
     );
-    rows.forEach((row, index) =>
+    rows.forEach((row, index) => {
       insert.run(
         index + 1,
         HANDOFF_ROUTING_STATUS_GENERATION,
@@ -213,9 +220,15 @@ function createReadFixtureDatabase(
         row.recordKind,
         row.recordKind === 'retirement' ? 'retirement-tombstone' : 'routing-selected',
         row.bodyJson,
-        Buffer.byteLength(row.bodyJson, 'utf8'),
-      ),
-    );
+        typeof row.bodyJson === 'string' ? Buffer.byteLength(row.bodyJson, 'utf8') : null,
+      );
+      if (row.recordKind === 'selection') {
+        db.prepare(
+          `INSERT INTO handoff_routing_closing_reserve (invocation_id, event_id, observed_at, allocation)
+          VALUES (?, ?, ?, zeroblob(?))`,
+        ).run(`fixture-invocation-${index}`, `fixture-event-${index}`, at(index), MAX_LEGAL_CLOSING_RECORD_BYTES);
+      }
+    });
   } finally {
     db.close();
   }
@@ -304,6 +317,61 @@ describe('handoff routing status', () => {
         terminalExisted: false,
       });
       expect(() => insertTombstoneFixture(db, forgedRetirement)).toThrow();
+
+      const activeSequence = active.sequence;
+      if (typeof activeSequence !== 'number') throw new Error('Active fixture has no numeric sequence');
+      const contradictoryTerminal = terminalEventSchema.parse({
+        generation: HANDOFF_ROUTING_STATUS_GENERATION,
+        sequence: 2,
+        eventId: 'terminal-for-retained-selection',
+        invocationId: 'active',
+        observedAt: at(2),
+        eventKind: 'continuation-finalized',
+        phase: 'terminal',
+        selection: { kind: 'with-selection-sequence', selectionSequence: activeSequence },
+        disposition: {
+          kind: 'terminal-after-operator-resolution',
+          resolutionReason: 'owner-absent',
+          retiredSelection: {
+            selectionSequence: activeSequence,
+            selectedAt: active.observedAt,
+            owner: active.owner,
+            selectedDisposition: active.disposition,
+          },
+          terminal: {
+            kind: 'continued-current',
+            reason: { kind: 'routing', basis: { kind: 'same-build-set', buildSetId: BUILD_SET_ID } },
+          },
+        },
+      });
+      expect(() =>
+        db
+          .prepare(
+            `INSERT INTO handoff_routing_records (
+              sequence,
+              generation,
+              event_id,
+              invocation_id,
+              observed_at,
+              record_kind,
+              event_kind,
+              selection_sequence,
+              retirement_cause,
+              terminal_existed,
+              body_json
+            ) VALUES (?, ?, ?, ?, ?, 'terminal', ?, ?, NULL, NULL, ?)`,
+          )
+          .run(
+            contradictoryTerminal.sequence,
+            contradictoryTerminal.generation,
+            contradictoryTerminal.eventId,
+            contradictoryTerminal.invocationId,
+            contradictoryTerminal.observedAt,
+            contradictoryTerminal.eventKind,
+            activeSequence,
+            JSON.stringify(contradictoryTerminal),
+          ),
+      ).toThrow();
     } finally {
       db.close();
     }
@@ -438,6 +506,10 @@ describe('handoff routing status', () => {
     createReadFixtureDatabase(invalidShapePath, [{ recordKind: 'selection', bodyJson: '{}' }]);
     expect(readHandoffRoutingStatus(invalidShapePath)).toEqual({ kind: 'unreadable', reason: 'invalid-shape' });
 
+    const nullBodyPath = databasePath();
+    createReadFixtureDatabase(nullBodyPath, [{ recordKind: 'selection', bodyJson: null }]);
+    expect(readHandoffRoutingStatus(nullBodyPath)).toEqual({ kind: 'unreadable', reason: 'invalid-shape' });
+
     const tooLargePath = databasePath();
     createReadFixtureDatabase(tooLargePath, [
       { recordKind: 'selection', bodyJson: JSON.stringify({ padding: 'x'.repeat(10_000) }) },
@@ -458,6 +530,24 @@ describe('handoff routing status', () => {
     } finally {
       chmodSync(permissionDeniedPath, 0o600);
     }
+  });
+
+  it('does not certify an unresolved selection whose closing reserve is missing', async () => {
+    const path = databasePath();
+    const selected = await committed(path, [selection('missing-reserve', 1)]);
+    const db = new DatabaseSync(path);
+    try {
+      db.prepare("DELETE FROM handoff_routing_closing_reserve WHERE invocation_id = 'missing-reserve'").run();
+    } finally {
+      db.close();
+    }
+
+    expect(readHandoffRoutingStatus(path)).toEqual({ kind: 'unreadable', reason: 'invalid-shape' });
+    await expect(publish(path, [terminal('missing-reserve', 2, selected.sequence)])).resolves.toEqual({
+      kind: 'undeterminable',
+      cause: 'unreadable',
+      errcode: 11,
+    });
   });
 
   it('reads the previous committed snapshot while a writer holds an immediate transaction', async () => {
