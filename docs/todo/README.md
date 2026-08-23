@@ -60,8 +60,11 @@ signal a correctly identified target, they are about there being no party left t
 | 6     | `coordinator-process-disposition`                           | After `provider-operation-admission-hold` has settled the recovery boundary the custody transfer has to attach to.                                                                          |
 | 7     | `foreign-capsule-retirement-terminal-recovery`              | After `provider-operation-admission-hold` or `coordinator-process-disposition`, and only if one of them lands: it wants a recovery boundary that nothing about its own residue justifies introducing.                       |
 
-**Not yet, and why it is not laziness.** `wedged-coordinator-self-drain` has never been observed and
-asks for a reachable cause before either half is built. `proxy-set-acquisition`'s clock-drift symptom
+**Not yet, and why it is not laziness.** `wedged-coordinator-self-drain` **was observed on 2026-08-23** and
+its start condition is met — a coordinator held in uninterruptible sleep on an ext4 journal commit, long
+enough that a provider control lease lapsed and the reaper terminated healthy jobs. The cause is a third one
+neither half of that entry was designed against, so what it now asks for is which half the observed cause
+argues for, not another reproduction. `proxy-set-acquisition`'s clock-drift symptom
 closed with #324, the same fix that closed the coordinator's own paths; what is left is a narrower
 comparison-shape decision, not a reproduction. `store-format-routing`
 is dormant. `cli-terminal-width-layout` and `export-lifetime` wait on product decisions, not on code.
