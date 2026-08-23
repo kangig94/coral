@@ -54,13 +54,33 @@ about the bytes on disk.
 Recorded here because they came from one startup sequence and share its evidence, not because they share a
 cause with the above. Each stands alone.
 
-**A dead pid is named as the holder of a bound socket.** `bindWithHandoff` in `src/coordinator/handoff.ts`
-throws `Incumbent socket remained bound after SIGKILL grace for pid=<pid>` after it has confirmed that pid
-alive, signalled it, and killed it. What it observed at that point is that the *socket* is still bound;
-it reports it as a fact about the *process*. A listening socket outlives the process that bound it when a
-child inherited the descriptor, which is the ordinary case for a coordinator that spawns proxies — so the
-state this message cannot express is the state most likely to produce it. The operator is directed at a pid
-that no longer exists.
+**`SIGKILL` is treated as decisive, and it is not.** `bindWithHandoff` in `src/coordinator/handoff.ts`
+signals the incumbent, waits out `SIGKILL_GRACE_MS`, finds the socket still bound, and throws
+`Incumbent socket remained bound after SIGKILL grace for pid=<pid>`, which reads as an anomaly about the
+socket.
+
+**Corrected 2026-08-23 by measuring a live occurrence — the first version of this entry was wrong.** It said
+a dead pid was being named as the holder, and guessed that a child had inherited the listening descriptor.
+Neither is so. `ss -xlp` showed exactly one holder of that socket, the accused pid itself, and the pid was
+alive:
+
+```
+State:   D (disk sleep)
+SigPnd:  0000000000000100     ← SIGKILL(9) pending, undelivered
+wchan:   jbd2_log_wait_commit ← blocked in the ext4 journal commit
+```
+
+A process in uninterruptible sleep does not receive `SIGKILL`; the kernel queues it until the process leaves
+`D`. `kill(2)` returned success, the signal was never delivered, and the process held its socket for minutes
+while blocked on an fsync. The message is therefore *literally accurate* and the conclusion drawn from it is
+not: what was observed is "the target did not die within the grace", and what cannot be concluded is that
+anything is wrong with the socket. The honest disposition is the third answer — the target could not be
+observed to have died, because right now it cannot be killed — which is the same disposition
+`.claude/rules/validation.md` already requires on the way in ("only `alive` may authorize SIGKILL"), missing
+on the way out.
+
+This also explains the sibling failure without a second cause: an incumbent stuck in an ext4 journal commit
+is a machine under heavy fsync load, which is when a concurrent opener meets `database is locked`.
 
 **A cooldown is announced as manual repair.** `assertSignalCooldown` in the same file refuses a repeated
 handoff signal within `DEFAULT_SIGNAL_COOLDOWN_MS` and phrases the refusal as
