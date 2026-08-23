@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { strictBundleManifestSchema, type StrictBundleIdentityFailure } from '../infra/bundle-manifest.js';
 import { assertNever } from '../infra/error-format.js';
 import type { InvalidTargetFailure } from '../infra/handoff-target.js';
+import { createMonotonicClock } from '../infra/monotonic-clock.js';
 import { processIncarnationSchema } from '../infra/node-process.js';
 import type { TimePort } from '../infra/port-types.js';
 import type { RecordedProcessIdentity } from '../infra/process-containment.js';
@@ -36,13 +37,13 @@ export const HANDOFF_ROUTING_COMPLETED_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 const MAX_IDENTIFIER_LENGTH = 58;
 const MAX_INSTANCE_ID_LENGTH = 64;
 const MAX_VERSION_LENGTH = 64;
-const MAX_OBSERVED_AT_LENGTH = 40;
+const MAX_OBSERVED_AT_LENGTH = 24;
 const MAX_SIGNAL_LENGTH = 16;
 
 const sequenceSchema = z.number().int().nonnegative().safe();
 const positiveSequenceSchema = z.number().int().positive().safe();
 const identifierSchema = z.string().min(1).max(MAX_IDENTIFIER_LENGTH);
-const observedAtSchema = z.string().datetime({ offset: true }).max(MAX_OBSERVED_AT_LENGTH);
+const observedAtSchema = z.string().datetime({ offset: false, precision: 3 }).length(MAX_OBSERVED_AT_LENGTH);
 const boundedVersionSchema = strictBundleManifestSchema.shape.version.max(MAX_VERSION_LENGTH);
 
 export const buildSummarySchema = z
@@ -1380,16 +1381,19 @@ function publishOnce(path: string, transitions: readonly HandoffRoutingTransitio
 }
 
 export async function publishHandoffRoutingTransitions(
-  time: Pick<TimePort, 'now' | 'sleep'>,
+  time: Pick<TimePort, 'monotonicNow' | 'sleep'>,
   path: string,
   transitions: readonly HandoffRoutingTransition[],
   signal?: AbortSignal,
 ): Promise<PublicationOutcome> {
-  const deadline = time.now() + PUBLICATION_CONTENTION_TIMEOUT_MS;
+  const clock = createMonotonicClock(Symbol('handoff-routing-status-publication-contention'), {
+    readMilliseconds: time.monotonicNow,
+  });
+  const deadline = clock.shiftMilliseconds(clock.now(), PUBLICATION_CONTENTION_TIMEOUT_MS);
   while (true) {
     const outcome = publishOnce(path, transitions);
     if (outcome.kind !== 'not-published' || outcome.cause !== 'contended') return outcome;
-    if (signal?.aborted === true || time.now() >= deadline) return outcome;
+    if (signal?.aborted === true || clock.compare(clock.now(), deadline) >= 0) return outcome;
     try {
       await time.sleep(PUBLICATION_RETRY_DELAY_MS, signal === undefined ? undefined : { signal });
     } catch {
@@ -1800,6 +1804,7 @@ const MAX_TEXT = '\u0800';
 const MAX_VERSION = `1.0.0-${'x'.repeat(MAX_VERSION_LENGTH - 6)}`;
 const MAX_ID = MAX_TEXT.repeat(MAX_IDENTIFIER_LENGTH);
 const MAX_INCARNATION = MAX_TEXT.repeat(256);
+const MAX_OBSERVED_AT = '9999-12-31T23:59:59.999Z';
 const MAX_BUILD: BuildSummary = {
   version: MAX_VERSION,
   buildSetId: 'ffffffff-ffff-4fff-bfff-ffffffffffff',
@@ -1817,7 +1822,7 @@ const MAX_SELECTION: RoutingSelectedEvent = routingSelectedEventSchema.parse({
   sequence: Number.MAX_SAFE_INTEGER,
   eventId: MAX_ID,
   invocationId: MAX_ID,
-  observedAt: '9999-12-31T23:59:59.999+23:59',
+  observedAt: MAX_OBSERVED_AT,
   eventKind: 'routing-selected',
   phase: 'selection',
   owner: { pid: Number.MAX_SAFE_INTEGER, incarnation: MAX_INCARNATION },
@@ -1831,11 +1836,11 @@ const MAX_TOMBSTONE_FIXTURES = (
     sequence: Number.MAX_SAFE_INTEGER,
     eventId: MAX_ID,
     invocationId: MAX_ID,
-    observedAt: '9999-12-31T23:59:59.999+23:59',
+    observedAt: MAX_OBSERVED_AT,
     eventKind: 'retirement-tombstone',
     phase: 'retirement',
     selectionSequence: Number.MAX_SAFE_INTEGER,
-    selectedAt: '9999-12-31T23:59:59.999+23:59',
+    selectedAt: MAX_OBSERVED_AT,
     owner: MAX_SELECTION.owner,
     selectedDisposition: MAX_SELECTION.disposition,
     retirementCause,
@@ -1857,7 +1862,7 @@ const MAX_EXECUTION_TERMINAL = terminalEventSchema.parse({
   sequence: Number.MAX_SAFE_INTEGER,
   eventId: MAX_ID,
   invocationId: MAX_ID,
-  observedAt: '9999-12-31T23:59:59.999+23:59',
+  observedAt: MAX_OBSERVED_AT,
   eventKind: 'execution-failed',
   phase: 'terminal',
   selection: { kind: 'with-selection-sequence', selectionSequence: Number.MAX_SAFE_INTEGER },
@@ -1868,7 +1873,7 @@ const MAX_FINALIZED_TERMINAL = terminalEventSchema.parse({
   sequence: Number.MAX_SAFE_INTEGER,
   eventId: MAX_ID,
   invocationId: MAX_ID,
-  observedAt: '9999-12-31T23:59:59.999+23:59',
+  observedAt: MAX_OBSERVED_AT,
   eventKind: 'continuation-finalized',
   phase: 'terminal',
   selection: { kind: 'with-selection-sequence', selectionSequence: Number.MAX_SAFE_INTEGER },
@@ -1879,7 +1884,7 @@ const MAX_RESOLVED_EXECUTION_TERMINAL = terminalEventSchema.parse({
   sequence: Number.MAX_SAFE_INTEGER,
   eventId: MAX_ID,
   invocationId: MAX_ID,
-  observedAt: '9999-12-31T23:59:59.999+23:59',
+  observedAt: MAX_OBSERVED_AT,
   eventKind: 'execution-failed',
   phase: 'terminal',
   selection: { kind: 'with-selection-sequence', selectionSequence: Number.MAX_SAFE_INTEGER },
@@ -1888,7 +1893,7 @@ const MAX_RESOLVED_EXECUTION_TERMINAL = terminalEventSchema.parse({
     resolutionReason: 'operator-abandoned-unobservable',
     retiredSelection: {
       selectionSequence: Number.MAX_SAFE_INTEGER,
-      selectedAt: '9999-12-31T23:59:59.999+23:59',
+      selectedAt: MAX_OBSERVED_AT,
       owner: MAX_SELECTION.owner,
       selectedDisposition: MAX_SELECTION.disposition,
     },
@@ -1900,7 +1905,7 @@ const MAX_RESOLVED_FINALIZED_TERMINAL = terminalEventSchema.parse({
   sequence: Number.MAX_SAFE_INTEGER,
   eventId: MAX_ID,
   invocationId: MAX_ID,
-  observedAt: '9999-12-31T23:59:59.999+23:59',
+  observedAt: MAX_OBSERVED_AT,
   eventKind: 'continuation-finalized',
   phase: 'terminal',
   selection: { kind: 'with-selection-sequence', selectionSequence: Number.MAX_SAFE_INTEGER },
@@ -1909,7 +1914,7 @@ const MAX_RESOLVED_FINALIZED_TERMINAL = terminalEventSchema.parse({
     resolutionReason: 'operator-abandoned-unobservable',
     retiredSelection: {
       selectionSequence: Number.MAX_SAFE_INTEGER,
-      selectedAt: '9999-12-31T23:59:59.999+23:59',
+      selectedAt: MAX_OBSERVED_AT,
       owner: MAX_SELECTION.owner,
       selectedDisposition: MAX_SELECTION.disposition,
     },
@@ -1923,6 +1928,24 @@ const MAX_LEGAL_TERMINAL_BYTES = Math.max(
   encodedBytes(MAX_RESOLVED_EXECUTION_TERMINAL),
   encodedBytes(MAX_RESOLVED_FINALIZED_TERMINAL),
 );
+
+export const MAX_LEGAL_ROUTING_SELECTED_TRANSITION = routingSelectedTransitionSchema.parse({
+  kind: 'routing-selected',
+  eventId: MAX_SELECTION.eventId,
+  invocationId: MAX_SELECTION.invocationId,
+  observedAt: MAX_SELECTION.observedAt,
+  owner: MAX_SELECTION.owner,
+  disposition: MAX_SELECTION.disposition,
+});
+
+export const MAX_LEGAL_CONTINUATION_FINALIZED_TRANSITION = terminalTransitionSchema.parse({
+  kind: 'continuation-finalized',
+  eventId: MAX_FINALIZED_TERMINAL.eventId,
+  invocationId: MAX_FINALIZED_TERMINAL.invocationId,
+  observedAt: MAX_FINALIZED_TERMINAL.observedAt,
+  selection: MAX_FINALIZED_TERMINAL.selection,
+  disposition: MAX_FINALIZED_TERMINAL.disposition,
+});
 
 export const MAX_LEGAL_CLOSING_RECORD_BYTES = Math.max(MAX_LEGAL_RETIREMENT_TOMBSTONE_BYTES, MAX_LEGAL_TERMINAL_BYTES);
 

@@ -152,7 +152,7 @@ async function run(): Promise<void> {
     let reportedContention = false;
     try {
       const contentionTime = {
-        now: time.now,
+        monotonicNow: time.monotonicNow,
         sleep: async (ms: number, options?: { signal?: AbortSignal }): Promise<void> => {
           if (!reportedContention) {
             reportedContention = true;

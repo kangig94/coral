@@ -12,13 +12,14 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 import {
   MAX_COMPLETED_HANDOFF_ROUTING_PAIRS,
+  MAX_LEGAL_CONTINUATION_FINALIZED_TRANSITION,
+  MAX_LEGAL_ROUTING_SELECTED_TRANSITION,
   MAX_RETIREMENT_TOMBSTONES,
   MAX_UNRESOLVED_INVOCATIONS,
   publishHandoffRoutingTransitions,
   type HandoffRoutingTransition,
   type PublicationOutcome,
 } from '#src/coordinator/handoff-routing-status.js';
-import { processIncarnationSchema } from '#src/infra/node-process.js';
 import { createRealTimePort } from '#src/infra/time.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
@@ -29,6 +30,9 @@ const PUBLICATION_P95_GATE_MS = 50;
 // regression. Set so a doubling of the observed p95 fails it.
 const CONCURRENT_PUBLICATION_P95_GATE_MS = 125;
 const LIFECYCLE_MAX_GATE_MS = 250;
+// A maximum here measures host scheduler and journal-commit extremes rather than the steady contention cost,
+// so the concurrent lifecycle must be gated at p95.
+const CONCURRENT_LIFECYCLE_P95_GATE_MS = 135;
 const PUBLICATION_CONTENTION_TIMEOUT_MS = 1_000;
 const BENCHMARK_LIFECYCLES = 100;
 const CONCURRENT_WRITERS = 2;
@@ -106,44 +110,26 @@ function terminal(identity: string, offset: number, selectionSequence: number): 
 }
 
 function maximumIdentifier(identity: string): string {
-  return `${identity}-${'\u0800'.repeat(58)}`.slice(0, 58);
+  const encodedIdentity = [...identity]
+    .map((character) => String.fromCharCode(0x0800 + character.charCodeAt(0)))
+    .join('');
+  return `${encodedIdentity}${'\u0800'.repeat(58)}`.slice(0, 58);
 }
 
-function maximumSelection(identity: string, offset: number): HandoffRoutingTransition {
-  const build = {
-    version: `1.0.0-${'x'.repeat(58)}`,
-    buildSetId: 'ffffffff-ffff-4fff-bfff-ffffffffffff',
-    bundleHash: 'f'.repeat(16),
-    flavor: 'prod' as const,
-  };
+function maximumSelection(identity: string): HandoffRoutingTransition {
   return {
-    kind: 'routing-selected',
+    ...MAX_LEGAL_ROUTING_SELECTED_TRANSITION,
     eventId: maximumIdentifier(`s${identity}`),
     invocationId: maximumIdentifier(`i${identity}`),
-    observedAt: observedAt(offset),
-    owner: { pid: Number.MAX_SAFE_INTEGER, incarnation: processIncarnationSchema.parse('\u0800'.repeat(256)) },
-    disposition: {
-      kind: 'continue-current',
-      basis: { kind: 'invoking-build-not-older', comparison: 'newer-version', invoking: build, incumbent: build },
-    },
   };
 }
 
-function maximumTerminal(identity: string, offset: number, selectionSequence: number): HandoffRoutingTransition {
-  const selected = maximumSelection(identity, offset);
-  if (selected.kind !== 'routing-selected' || selected.disposition.kind !== 'continue-current') {
-    throw new Error('Maximum selection fixture is not continue-current');
-  }
+function maximumTerminal(identity: string, selectionSequence: number): HandoffRoutingTransition {
   return {
-    kind: 'continuation-finalized',
+    ...MAX_LEGAL_CONTINUATION_FINALIZED_TRANSITION,
     eventId: maximumIdentifier(`t${identity}`),
-    invocationId: selected.invocationId,
-    observedAt: observedAt(offset),
+    invocationId: maximumIdentifier(`i${identity}`),
     selection: { kind: 'with-selection-sequence', selectionSequence },
-    disposition: {
-      kind: 'continued-current',
-      reason: { kind: 'routing', basis: selected.disposition.basis },
-    },
   };
 }
 
@@ -162,6 +148,31 @@ function storeSnapshot(path: string): Readonly<{ integrity: string; invocations:
       .prepare('SELECT invocation_id FROM handoff_routing_records ORDER BY sequence')
       .all() as Array<Readonly<{ invocation_id: string }>>;
     return { integrity: integrity.integrity_check, invocations: invocations.map((row) => row.invocation_id) };
+  } finally {
+    db.close();
+  }
+}
+
+function retainedRecordCounts(path: string): Readonly<{
+  completedPairs: number;
+  unresolved: number;
+  tombstones: number;
+}> {
+  const db = new DatabaseSync(path);
+  try {
+    return db
+      .prepare(
+        `SELECT
+          COUNT(*) FILTER (WHERE record_kind = 'terminal') AS completedPairs,
+          COUNT(*) FILTER (WHERE record_kind = 'selection' AND NOT EXISTS (
+            SELECT 1 FROM handoff_routing_records AS terminal
+            WHERE terminal.invocation_id = handoff_routing_records.invocation_id
+              AND terminal.record_kind = 'terminal'
+          )) AS unresolved,
+          COUNT(*) FILTER (WHERE record_kind = 'retirement') AS tombstones
+        FROM handoff_routing_records`,
+      )
+      .get() as Readonly<{ completedPairs: number; unresolved: number; tombstones: number }>;
   } finally {
     db.close();
   }
@@ -238,11 +249,11 @@ function percentile95(values: readonly number[]): number {
 async function populateMaximumRetainedStore(path: string): Promise<void> {
   for (let index = 0; index < MAX_COMPLETED_HANDOFF_ROUTING_PAIRS; index += 1) {
     const identity = `retained-pair-${index}`;
-    const selected = await committed(path, selection(identity, index * 2));
-    await committed(path, terminal(identity, index * 2 + 1, selected));
+    const selected = await committed(path, maximumSelection(identity));
+    await committed(path, maximumTerminal(identity, selected));
   }
   const openings = Array.from({ length: MAX_UNRESOLVED_INVOCATIONS + MAX_RETIREMENT_TOMBSTONES }, (_, index) =>
-    selection(`retained-opening-${index}`, 1_000 + index),
+    maximumSelection(`retained-opening-${index}`),
   );
   const outcome = await publishHandoffRoutingTransitions(time, path, openings);
   expect(outcome.kind).toBe('committed');
@@ -270,8 +281,7 @@ async function benchmarkSequential(
 async function benchmarkConcurrent(path: string): Promise<
   Readonly<{
     publicationP95Ms: number;
-    lifecycleMaxMs: number;
-    refusalCount: number;
+    lifecycleP95Ms: number;
     retryCommitMs: number;
     refusalMs: number;
   }>
@@ -321,24 +331,20 @@ async function benchmarkConcurrent(path: string): Promise<
   }
   const publications: number[] = [];
   const lifecycles: number[] = [];
-  let refusalCount = 1;
+  expect(results).toHaveLength(BENCHMARK_LIFECYCLES);
   for (const result of results) {
-    if (result.selection.kind === 'committed') publications.push(result.selectionMs);
-    else refusalCount += 1;
-
-    if (result.terminal?.kind === 'committed') {
-      expect(result.terminalMs).toBeTypeOf('number');
-      if (result.terminalMs === undefined) throw new Error('Committed terminal publication has no timing');
-      publications.push(result.terminalMs);
-      lifecycles.push(result.lifecycleMs);
-    } else if (result.terminal !== undefined) {
-      refusalCount += 1;
-    }
+    expect(result.selection.kind).toBe('committed');
+    expect(result.terminal?.kind).toBe('committed');
+    expect(result.terminalMs).toBeTypeOf('number');
+    if (result.selection.kind !== 'committed') throw new Error('Benchmark selection did not commit');
+    if (result.terminal?.kind !== 'committed') throw new Error('Benchmark terminal did not commit');
+    if (result.terminalMs === undefined) throw new Error('Committed terminal publication has no timing');
+    publications.push(result.selectionMs, result.terminalMs);
+    lifecycles.push(result.lifecycleMs);
   }
   return {
     publicationP95Ms: percentile95(publications),
-    lifecycleMaxMs: Math.max(...lifecycles),
-    refusalCount,
+    lifecycleP95Ms: percentile95(lifecycles),
     retryCommitMs: retried.elapsedMs,
     refusalMs: refused.elapsedMs,
   };
@@ -369,26 +375,26 @@ afterAll(() => {
 describe('handoff routing status transaction durability', () => {
   it('reserves byte capacity for selection admission and retained-opening closure', async () => {
     const path = databasePath();
-    const opening = maximumSelection('opening', 0);
+    const opening = maximumSelection('opening');
     const fill = Array.from({ length: BYTE_PRESSURE_BATCHED_PAIRS }, (_, index) => {
       const selectionSequence = 2 + index * 2;
       const identity = `pair-${index}`;
-      return [maximumSelection(identity, index * 2 + 1), maximumTerminal(identity, index * 2 + 2, selectionSequence)];
+      return [maximumSelection(identity), maximumTerminal(identity, selectionSequence)];
     }).flat();
     await committed(path, opening);
     const fillOutcome = await publishHandoffRoutingTransitions(time, path, fill);
     expect(fillOutcome).toEqual({ kind: 'committed', sequence: expect.any(Number) });
     for (let index = BYTE_PRESSURE_BATCHED_PAIRS; index < BYTE_PRESSURE_COMPLETED_PAIRS; index += 1) {
       const identity = `pair-${index}`;
-      const selected = await committed(path, maximumSelection(identity, index * 2 + 1));
-      await committed(path, maximumTerminal(identity, index * 2 + 2, selected));
+      const selected = await committed(path, maximumSelection(identity));
+      await committed(path, maximumTerminal(identity, selected));
     }
 
-    const admitted = await publishHandoffRoutingTransitions(time, path, [maximumSelection('admitted', 1_000)]);
-    const closedOpening = await publishHandoffRoutingTransitions(time, path, [maximumTerminal('opening', 1_001, 1)]);
+    const admitted = await publishHandoffRoutingTransitions(time, path, [maximumSelection('admitted')]);
+    const closedOpening = await publishHandoffRoutingTransitions(time, path, [maximumTerminal('opening', 1)]);
     const closedAdmission =
       admitted.kind === 'committed'
-        ? await publishHandoffRoutingTransitions(time, path, [maximumTerminal('admitted', 1_002, admitted.sequence)])
+        ? await publishHandoffRoutingTransitions(time, path, [maximumTerminal('admitted', admitted.sequence)])
         : undefined;
 
     expect({ admitted, closedOpening, closedAdmission }).toEqual({
@@ -476,6 +482,11 @@ describe('handoff routing status transaction durability', () => {
     async () => {
       const path = databasePath();
       await populateMaximumRetainedStore(path);
+      const retained = retainedRecordCounts(path);
+      expect(retained.unresolved).toBe(MAX_UNRESOLVED_INVOCATIONS);
+      expect(retained.completedPairs).toBeLessThan(MAX_COMPLETED_HANDOFF_ROUTING_PAIRS);
+      expect(retained.tombstones).toBeGreaterThan(0);
+      expect(retained.tombstones).toBeLessThanOrEqual(MAX_RETIREMENT_TOMBSTONES);
       const sequential = await benchmarkSequential(path);
       const concurrent = await benchmarkConcurrent(path);
       const measurements = { platform: process.platform, sequential, concurrent };
@@ -484,9 +495,8 @@ describe('handoff routing status transaction durability', () => {
       if (process.platform === 'linux') {
         expect(sequential.publicationP95Ms).toBeLessThanOrEqual(PUBLICATION_P95_GATE_MS);
         expect(sequential.lifecycleMaxMs).toBeLessThanOrEqual(LIFECYCLE_MAX_GATE_MS);
-        expect(concurrent.refusalCount).toBeGreaterThan(0);
         expect(concurrent.publicationP95Ms).toBeLessThanOrEqual(CONCURRENT_PUBLICATION_P95_GATE_MS);
-        expect(concurrent.lifecycleMaxMs).toBeLessThanOrEqual(LIFECYCLE_MAX_GATE_MS);
+        expect(concurrent.lifecycleP95Ms).toBeLessThanOrEqual(CONCURRENT_LIFECYCLE_P95_GATE_MS);
       }
     },
     300_000,

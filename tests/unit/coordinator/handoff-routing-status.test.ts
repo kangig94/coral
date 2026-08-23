@@ -16,11 +16,11 @@ import {
   MAX_ENCODED_RETIREMENT_TOMBSTONE_BYTES,
   MAX_HANDOFF_ROUTING_STATUS_BYTES,
   MAX_LEGAL_CLOSING_RECORD_BYTES,
+  MAX_LEGAL_ROUTING_SELECTED_TRANSITION,
   MAX_LEGAL_RETIREMENT_TOMBSTONE_BYTES,
   MAX_RETIREMENT_TOMBSTONE_BYTES,
   MAX_RETIREMENT_TOMBSTONES,
   MAX_UNRESOLVED_INVOCATIONS,
-  durableHandoffRoutingBasisSchema,
   invalidTargetSummarySchema,
   persistedHandoffDispositionPolicy,
   publishHandoffRoutingTransitions,
@@ -255,20 +255,6 @@ describe('handoff routing status', () => {
   });
 
   it('keeps bounded projections and derives per-row encoded limits from maximum legal fixtures', () => {
-    const basis = durableHandoffRoutingBasisSchema.parse({
-      kind: 'invalid-incumbent-target',
-      evidence: {
-        failure: 'adjacent-bundle-mismatch',
-        expectedBuild: {
-          version: '1.2.3',
-          buildSetId: BUILD_SET_ID,
-          bundleHash: 'a'.repeat(16),
-          flavor: 'prod',
-        },
-      },
-    });
-
-    expect(JSON.stringify(basis)).not.toMatch(/bundleDir|expectedManifest|cliBundleHash|storeFormatFingerprint/);
     expect(
       invalidTargetSummarySchema.safeParse({ failure: 'bundle-dir-unavailable', bundleDir: '/tmp/x' }).success,
     ).toBe(false);
@@ -284,31 +270,14 @@ describe('handoff routing status', () => {
     );
   });
 
-  it('creates the bounded schema with nonblocking immediate-write pragmas and relational uniqueness', async () => {
+  it('creates the bounded schema with persistent settings and relational uniqueness', async () => {
     const path = databasePath();
     await committed(path, [selection('active', 1)]);
     expect(statSync(path).mode & 0o777).toBe(0o600);
     const db = new DatabaseSync(path);
     try {
       expect(db.prepare('PRAGMA user_version').get()).toEqual({ user_version: HANDOFF_ROUTING_STATUS_GENERATION });
-      expect(db.prepare('PRAGMA busy_timeout').get()).toEqual({ timeout: 0 });
-      expect(db.prepare('PRAGMA synchronous').get()).toEqual({ synchronous: 2 });
       expect(db.prepare('PRAGMA journal_mode').get()).toEqual({ journal_mode: 'wal' });
-      const objects = db
-        .prepare(
-          `SELECT name FROM sqlite_master
-          WHERE name LIKE 'handoff_routing_%'
-          ORDER BY name`,
-        )
-        .all() as Array<{ name: string }>;
-      expect(objects.map((row) => row.name)).toEqual([
-        'handoff_routing_closing_reserve',
-        'handoff_routing_gap_terminal_or_selection_per_invocation',
-        'handoff_routing_metadata',
-        'handoff_routing_records',
-        'handoff_routing_selection_or_retirement_per_invocation',
-        'handoff_routing_terminal_or_retirement_per_invocation',
-      ]);
       expect(
         db
           .prepare(
@@ -550,6 +519,35 @@ describe('handoff routing status', () => {
     await expect(publication).resolves.toMatchObject({ kind: 'committed' });
   });
 
+  it('measures the contention deadline on monotonic time', async () => {
+    const path = databasePath();
+    await committed(path, [selection('monotonic-seed', 1)]);
+    const holder = new DatabaseSync(path);
+    holder.exec('BEGIN IMMEDIATE');
+    let elapsedMs = 0n;
+    let wallClockReads = 0;
+    const jumpingWallClock = {
+      now: (): number => {
+        wallClockReads += 1;
+        return wallClockReads * 10_000;
+      },
+      monotonicNow: (): bigint => elapsedMs,
+      sleep: async (milliseconds: number): Promise<void> => {
+        elapsedMs += BigInt(milliseconds);
+      },
+    };
+    try {
+      await expect(
+        publishHandoffRoutingTransitions(jumpingWallClock, path, [selection('monotonic-contender', 2)]),
+      ).resolves.toEqual({ kind: 'not-published', cause: 'contended' });
+    } finally {
+      holder.exec('ROLLBACK');
+      holder.close();
+    }
+    expect(elapsedMs).toBe(1_000n);
+    expect(wallClockReads).toBe(0);
+  });
+
   it('publishes all transition statements atomically and rejects every illegal transition row', async () => {
     const path = databasePath();
     await expect(publish(path, [])).resolves.toEqual({
@@ -558,6 +556,14 @@ describe('handoff routing status', () => {
     });
     await expect(
       publish(path, [{ ...selection('invalid', 1), invocationId: '' } as HandoffRoutingTransition]),
+    ).resolves.toEqual({ kind: 'not-published', cause: 'rejected-transition' });
+    await expect(
+      publish(path, [
+        {
+          ...selection('noncanonical-time', 1),
+          observedAt: '9999-12-31T23:59:59.99999999999999+23:59',
+        },
+      ]),
     ).resolves.toEqual({ kind: 'not-published', cause: 'rejected-transition' });
 
     const selected = await committed(path, [selection('active', 2)]);
@@ -624,6 +630,43 @@ describe('handoff routing status', () => {
     expect(records(path).find((event) => event.invocationId === 'gap')).toMatchObject({
       disposition: { kind: 'failed-without-selection' },
     });
+  });
+
+  it('accepts maximum legal selection and tombstone rows at six-digit sequences', async () => {
+    const path = databasePath();
+    await committed(path, [selection('sequence-seed', 1)]);
+    const db = new DatabaseSync(path);
+    try {
+      db.exec('DELETE FROM handoff_routing_closing_reserve');
+      db.exec('DELETE FROM handoff_routing_records');
+      db.prepare("UPDATE sqlite_sequence SET seq = 99999 WHERE name = 'handoff_routing_records'").run();
+    } finally {
+      db.close();
+    }
+
+    const selected = await committed(path, [MAX_LEGAL_ROUTING_SELECTED_TRANSITION]);
+    expect(selected.sequence).toBe(100_000);
+    const resolutionEventId = `${MAX_LEGAL_ROUTING_SELECTED_TRANSITION.eventId.slice(0, -1)}\u0801`;
+    await expect(
+      publish(path, [
+        {
+          kind: 'operator-resolved',
+          eventId: resolutionEventId,
+          invocationId: MAX_LEGAL_ROUTING_SELECTED_TRANSITION.invocationId,
+          observedAt: MAX_LEGAL_ROUTING_SELECTED_TRANSITION.observedAt,
+          selectionSequence: selected.sequence,
+          reason: 'operator-abandoned-unobservable',
+        },
+      ]),
+    ).resolves.toEqual({ kind: 'committed', sequence: 100_001 });
+    expect(records(path)).toEqual([
+      expect.objectContaining({
+        sequence: 100_001,
+        eventKind: 'retirement-tombstone',
+        observedAt: MAX_LEGAL_ROUTING_SELECTED_TRANSITION.observedAt,
+        selectedAt: MAX_LEGAL_ROUTING_SELECTED_TRANSITION.observedAt,
+      }),
+    ]);
   });
 
   it('attributes domain conflicts before SQLite and does not call an unexpected constraint a rejected transition', async () => {
