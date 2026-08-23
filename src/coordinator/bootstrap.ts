@@ -78,12 +78,6 @@ export async function handoffStartupToSelectedBuild(
       { kind: 'backend-startup' },
       { pluginRoot, activeSelectionTarget: startupError.target },
     );
-    if (continuation.kind === 'run-current') {
-      return {
-        kind: 'failed',
-        error: new Error('Validated active-store startup handoff did not start the selected backend.'),
-      };
-    }
     switch (continuation.outcome.kind) {
       case 'handoff-success':
         return { kind: 'started' };

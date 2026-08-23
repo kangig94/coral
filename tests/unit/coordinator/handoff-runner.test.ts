@@ -6,7 +6,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { runHandoff, validateForeignHandoffTarget, type HandoffOperation } from '#src/coordinator/handoff-runner.js';
+import {
+  ABSENT_HANDOFF_RESULT_OBLIGATION,
+  HANDOFF_CONTINUATION_REASON_OBLIGATIONS,
+  resolveHandoffRoutingForOperation,
+  routeAuthenticatedHealth,
+  runHandoff,
+  validateForeignHandoffTarget,
+  type HandoffOperation,
+} from '#src/coordinator/handoff-runner.js';
 import { backendLog } from '#src/infra/backend-log.js';
 import type * as BackendDiscoveryMod from '#src/infra/backend-discovery.js';
 import type * as BundleManifestMod from '#src/infra/bundle-manifest.js';
@@ -14,6 +22,8 @@ import type { TimePort } from '#src/infra/port-types.js';
 import { serializeWaitCursor } from '#src/jobs/wait.js';
 
 type StrictBundleManifest = BundleManifestMod.StrictBundleManifest;
+type StrictBundleIdentityFailure = BundleManifestMod.StrictBundleIdentityFailure;
+type LiveIncumbentHealth = Parameters<typeof routeAuthenticatedHealth>[0];
 
 const mockState = vi.hoisted(() => ({
   createIpcClient: vi.fn(),
@@ -99,6 +109,19 @@ function createBundle(): string {
   return root;
 }
 
+function liveHealth(bundleDir?: string): LiveIncumbentHealth {
+  return {
+    status: 'ok',
+    version: manifest.version,
+    bundleHash: manifest.bundleHash,
+    flavor: manifest.flavor,
+    namespace: 'handoff-runner',
+    instanceId: 'incumbent-1',
+    pid: 4242,
+    ...(bundleDir === undefined ? {} : { manifest, bundleDir }),
+  };
+}
+
 function configureNewerIncumbent(bundleDir = createBundle()): string {
   mockState.probeCoordinator.mockReturnValue({
     kind: 'live',
@@ -111,17 +134,7 @@ function configureNewerIncumbent(bundleDir = createBundle()): string {
       bootToken: 'boot-token',
     },
   });
-  mockState.health.mockResolvedValue({
-    status: 'ok',
-    version: manifest.version,
-    bundleHash: manifest.bundleHash,
-    flavor: manifest.flavor,
-    namespace: 'handoff-runner',
-    instanceId: 'incumbent-1',
-    pid: 4242,
-    manifest,
-    bundleDir,
-  });
+  mockState.health.mockResolvedValue(liveHealth(bundleDir));
   return bundleDir;
 }
 
@@ -187,6 +200,29 @@ afterEach(() => {
 });
 
 describe('handoff-runner', () => {
+  it('binds every continuation reason and the absent result to an obligation', () => {
+    expect(HANDOFF_CONTINUATION_REASON_OBLIGATIONS).toEqual({
+      'handoff-not-applicable': {
+        requiredDurability: 'ephemeral-allowed',
+        requiredRetention: 'until-superseded',
+        severity: 'info',
+        exitContribution: 0,
+      },
+      'handoff-abandoned': {
+        requiredDurability: 'durable-status-required',
+        requiredRetention: 'bounded-history',
+        severity: 'warning',
+        exitContribution: 75,
+      },
+    });
+    expect(ABSENT_HANDOFF_RESULT_OBLIGATION).toEqual({
+      requiredDurability: 'ephemeral-allowed',
+      requiredRetention: 'until-superseded',
+      severity: 'info',
+      exitContribution: 0,
+    });
+  });
+
   it.each([
     ['absent', undefined],
     ['zero', '0'],
@@ -235,6 +271,7 @@ describe('handoff-runner', () => {
 
     await expect(runHandoff(cliOperation('run'), { pluginRoot: '/plugin/root' })).resolves.toEqual({
       kind: 'run-current',
+      reason: { kind: 'routing', basis: { kind: 'incumbent-absent' } },
     });
 
     expect(mockState.health).not.toHaveBeenCalled();
@@ -246,6 +283,7 @@ describe('handoff-runner', () => {
     async (flag) => {
       await expect(runHandoff(cliOperation(flag), { pluginRoot: '/plugin/root' })).resolves.toEqual({
         kind: 'run-current',
+        reason: { kind: 'handoff-not-applicable', reason: 'display-only' },
       });
 
       expect(mockState.createRealRuntime).not.toHaveBeenCalled();
@@ -333,6 +371,105 @@ describe('handoff-runner', () => {
     expect(time.clearTimeout).toHaveBeenCalledWith(confirmationTimer);
   });
 
+  it('refuses to continue-current for a startup handoff whose stdout drain would fail', async () => {
+    const bundleDir = roots[0];
+    const target = validatedTarget(bundleDir);
+    let child: ChildProcess | undefined;
+    let confirmAlive: (() => void) | undefined;
+    const time: TimePort = {
+      now: () => 0,
+      monotonicNow: () => 0n,
+      sleep: async () => {},
+      setTimeout: vi.fn((fn: () => void) => {
+        confirmAlive = fn;
+        return {};
+      }),
+      clearTimeout: vi.fn(),
+      setInterval: vi.fn(() => ({})),
+      clearInterval: vi.fn(),
+    };
+    mockState.spawn.mockImplementationOnce(() => {
+      child = childThatStaysAlive();
+      return child;
+    });
+
+    // An aborted signal is the one input that makes `drainStdoutBeforeHandoff` answer false without waiting.
+    const aborted = AbortSignal.abort();
+    const result = runHandoff(
+      { kind: 'backend-startup' },
+      { pluginRoot: '/plugin/root', activeSelectionTarget: target, time, signal: aborted },
+    );
+    await vi.waitFor(() => expect(child?.unref).toHaveBeenCalledOnce());
+    confirmAlive?.();
+
+    await expect(result).resolves.toMatchObject({ kind: 'delegated' });
+
+    // The same signal abandons a CLI handoff, which is what makes the assertion above about the operation
+    // rather than about the signal.
+    mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
+    await expect(
+      runHandoff(cliOperation('run'), { pluginRoot: '/plugin/root', activeSelectionTarget: target, signal: aborted }),
+    ).resolves.toEqual({
+      kind: 'run-current',
+      reason: { kind: 'handoff-abandoned', reason: 'stdout-drain-incomplete' },
+    });
+  });
+
+  it('should produce the active-selection source before backend startup delegation', async () => {
+    const target = validatedTarget(roots[0]);
+
+    const resolution = await resolveHandoffRoutingForOperation(
+      { kind: 'backend-startup' },
+      { pluginRoot: '/plugin/root', activeSelectionTarget: target },
+    );
+
+    expect(resolution.routing).toEqual({ kind: 'handoff', target, source: 'active-selection' });
+  });
+
+  it.each<StrictBundleIdentityFailure>([
+    'embedded_identity_unavailable',
+    'adjacent_manifest_unavailable',
+    'adjacent_manifest_invalid',
+    'adjacent_manifest_mismatch',
+  ])('should produce invoking-identity-unavailable with failure %s', (failure) => {
+    mockState.resolveStrictBundleIdentity.mockReturnValue({ ok: false, reason: failure });
+
+    expect(routeAuthenticatedHealth(liveHealth(roots[0]))).toEqual({
+      kind: 'continue-current',
+      basis: { kind: 'invoking-identity-unavailable', failure },
+    });
+  });
+
+  it('should produce incumbent-identity-unavailable when authenticated health omits its target identity', () => {
+    expect(routeAuthenticatedHealth(liveHealth())).toEqual({
+      kind: 'continue-current',
+      basis: {
+        kind: 'incumbent-identity-unavailable',
+        incumbent: {
+          version: manifest.version,
+          bundleHash: manifest.bundleHash,
+          flavor: manifest.flavor,
+          instanceId: 'incumbent-1',
+        },
+      },
+    });
+  });
+
+  it('should prefer invoking-identity-unavailable when both authenticated identities are unavailable', () => {
+    mockState.resolveStrictBundleIdentity.mockReturnValue({
+      ok: false,
+      reason: 'embedded_identity_unavailable',
+    });
+
+    expect(routeAuthenticatedHealth(liveHealth())).toEqual({
+      kind: 'continue-current',
+      basis: {
+        kind: 'invoking-identity-unavailable',
+        failure: 'embedded_identity_unavailable',
+      },
+    });
+  });
+
   it('should reject backend startup without a validated active-selection target instead of probing live health', async () => {
     process.env[GUARD_ENV] = 'not-a-cli-guard';
 
@@ -402,6 +539,10 @@ describe('handoff-runner', () => {
 
     await expect(runHandoff(cliOperation('backend', 'status'), { pluginRoot: '/plugin/root' })).resolves.toEqual({
       kind: 'run-current',
+      reason: {
+        kind: 'routing',
+        basis: { kind: 'incumbent-unresolved', cause: 'unreadable-record' },
+      },
     });
     expect(mockState.health, 'there is no socket path or boot token to ask with').not.toHaveBeenCalled();
   });
@@ -429,6 +570,10 @@ describe('handoff-runner', () => {
 
     await expect(runHandoff(cliOperation('run'), { pluginRoot: '/plugin/root' })).resolves.toEqual({
       kind: 'run-current',
+      reason: {
+        kind: 'routing',
+        basis: { kind: 'incumbent-unresolved', cause: 'health-request-failed' },
+      },
     });
 
     expect(
@@ -459,6 +604,10 @@ describe('handoff-runner', () => {
 
     await expect(runHandoff(cliOperation('run'), { pluginRoot: '/plugin/root' })).resolves.toEqual({
       kind: 'run-current',
+      reason: {
+        kind: 'routing',
+        basis: { kind: 'incumbent-unresolved', cause: 'health-shape-rejected' },
+      },
     });
 
     expect(
@@ -474,6 +623,7 @@ describe('handoff-runner', () => {
 
     await expect(runHandoff(cliOperation('run'), { pluginRoot: '/plugin/root' })).resolves.toEqual({
       kind: 'run-current',
+      reason: { kind: 'routing', basis: { kind: 'incumbent-absent' } },
     });
 
     expect(mockState.health).not.toHaveBeenCalled();
@@ -512,6 +662,7 @@ describe('handoff-runner', () => {
 
     await expect(runHandoff(cliOperation('run'), { pluginRoot: '/plugin/root' })).resolves.toEqual({
       kind: 'run-current',
+      reason: { kind: 'routing', basis: { kind: 'incumbent-unusable', cause: 'draining' } },
     });
 
     expect(mockState.spawn, 'a draining incumbent answered but is not a usable handoff target').not.toHaveBeenCalled();
@@ -546,6 +697,7 @@ describe('handoff-runner', () => {
 
     await expect(runHandoff(cliOperation('run'), { pluginRoot: '/plugin/root' })).resolves.toEqual({
       kind: 'run-current',
+      reason: { kind: 'routing', basis: { kind: 'incumbent-unusable', cause: 'identity-mismatch' } },
     });
 
     expect(
@@ -647,7 +799,10 @@ describe('handoff-runner', () => {
     await drainStarted;
     await vi.advanceTimersByTimeAsync(3_000);
 
-    await expect(result).resolves.toEqual({ kind: 'run-current' });
+    await expect(result).resolves.toEqual({
+      kind: 'run-current',
+      reason: { kind: 'handoff-abandoned', reason: 'stdout-drain-incomplete' },
+    });
     expect(mockState.spawn).not.toHaveBeenCalled();
   });
 
@@ -665,6 +820,7 @@ describe('handoff-runner', () => {
 
     await expect(runHandoff(cliOperation('run'), { pluginRoot: '/plugin/root' })).resolves.toEqual({
       kind: 'run-current',
+      reason: { kind: 'handoff-abandoned', reason: 'stdout-drain-incomplete' },
     });
     await expect(runHandoff(cliOperation('run'), { pluginRoot: '/plugin/root' })).resolves.toMatchObject({
       kind: 'delegated',

@@ -58,6 +58,11 @@ describe('cli errors', () => {
       });
     });
 
+    it('retries a still-starting backend over IPC, where no HTTP status accompanies the code', () => {
+      // The HTTP mapping cannot reach this path: IPC carries the code and no status.
+      expect(errorCodeToExit('startup_not_ready')).toBe(75);
+    });
+
     it('maps TransientHttpError to transient and exit 75', () => {
       expect(buildErrorEnvelope(new TransientHttpError(503, 'Backend shutting down'))).toEqual({
         envelope: {

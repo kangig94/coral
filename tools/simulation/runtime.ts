@@ -69,6 +69,7 @@ export class SimulationRuntime implements Runtime {
         cwd: execOptions.cwd,
         env: execOptions.env,
         inheritEnv: execOptions.inheritEnv,
+        shell: execOptions.shell,
         timeoutMs: execOptions.timeout,
         maxBuffer: execOptions.maxBuffer,
         encoding: execOptions.encoding ?? 'utf-8',

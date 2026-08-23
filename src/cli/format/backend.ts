@@ -1,4 +1,6 @@
 import { assertNever } from '../../infra/error-format.js';
+import type { HandoffRoutingBasis } from '../../coordinator/handoff-routing.js';
+import type { HandoffContinuationReason, LiveHandoffContinuationResult } from '../../coordinator/handoff-runner.js';
 import type { RecoveryQuarantineEntry } from '../../recovery/quarantine.js';
 import type { BackendHealth } from '../../transport/http/backend/health.js';
 import type { BackendStatusFull } from '../../transport/http/backend/status.js';
@@ -7,6 +9,162 @@ import type { RecoveryQuarantineClearResult } from '../../recovery/source-regist
 
 export const RECOVERY_REVISION_UNTIL_CLEARED = 'until-cleared';
 export const RECOVERY_REVISION_FINGERPRINT_PREFIX = 'fingerprint:';
+
+export function formatLiveHandoffResult(result: LiveHandoffContinuationResult | null): string | null {
+  return result === null ? null : formatHandoffContinuationReason(result.reason);
+}
+
+export function formatHandoffContinuationReason(reason: HandoffContinuationReason): string {
+  switch (reason.kind) {
+    case 'routing':
+      return formatHandoffRoutingBasis(reason.basis);
+    case 'handoff-not-applicable':
+      return 'Handoff: not applicable — this is a display-only invocation.';
+    case 'handoff-abandoned':
+      return [
+        'Handoff: continuing current build — delegation was abandoned because stdout did not finish draining.',
+        "Next step: retry; if stdout still does not drain, preserve the output and inspect the invoking process's stdout consumer.",
+      ].join('\n');
+    default:
+      return assertNever(reason);
+  }
+}
+
+export function formatHandoffRoutingBasis(basis: HandoffRoutingBasis): string {
+  switch (basis.kind) {
+    case 'incumbent-absent':
+      return 'Handoff: continuing current build — no incumbent coordinator was observed.';
+    case 'incumbent-unresolved':
+      return [
+        `Handoff: continuing current build — the incumbent coordinator could not be resolved because ${formatUnresolvedIncumbentCause(basis.cause)}.`,
+        'Next step: follow the daemon-status remediation above; do not proceed while coral-cli backend status exits 75.',
+      ].join('\n');
+    case 'incumbent-unusable':
+      return formatUnusableIncumbent(basis);
+    case 'invoking-identity-unavailable':
+      return [
+        `Handoff: continuing current build — ${formatInvokingIdentityFailure(basis.failure)}.`,
+        'Next step: repair or reinstall this Coral bundle, then retry.',
+      ].join('\n');
+    case 'incumbent-identity-unavailable':
+      return [
+        `Handoff: continuing current build — incumbent ${basis.incumbent.version} did not report a complete bundle identity.`,
+        'Next step: run coral-cli backend shutdown, then rerun a mutating command to relaunch from this installation.',
+      ].join('\n');
+    case 'same-build-set':
+      return `Handoff: continuing current build — invoking and incumbent builds share build set ${basis.buildSetId}.`;
+    case 'invoking-build-not-older':
+      return formatInvokingBuildNotOlder(basis);
+    case 'invalid-incumbent-target':
+      return formatInvalidIncumbentTarget(basis);
+    default:
+      return assertNever(basis);
+  }
+}
+
+function formatInvokingBuildNotOlder(
+  basis: Extract<HandoffRoutingBasis, { kind: 'invoking-build-not-older' }>,
+): string {
+  const nextStep =
+    'Next step: run coral-cli backend shutdown, then rerun a mutating command to relaunch from this installation.';
+  switch (basis.comparison) {
+    case 'same-version':
+      return [
+        `Handoff: continuing current build — the CLI and running backend are both version ${basis.invoking.version} but come from different builds, so guarded operations will not proceed.`,
+        nextStep,
+      ].join('\n');
+    case 'newer-version':
+      return [
+        `Handoff: continuing current build — CLI version ${basis.invoking.version} is newer than running backend ${basis.incumbent.version}, so guarded operations will not proceed across these builds.`,
+        nextStep,
+      ].join('\n');
+    default:
+      return assertNever(basis.comparison);
+  }
+}
+
+function formatUnresolvedIncumbentCause(
+  cause: Extract<HandoffRoutingBasis, { kind: 'incumbent-unresolved' }>['cause'],
+): string {
+  switch (cause) {
+    case 'unreadable-record':
+      return 'its coordinator record could not be read';
+    case 'health-request-failed':
+      return 'its authenticated health request did not complete';
+    case 'health-shape-rejected':
+      return 'its authenticated health reply was not recognized';
+    default:
+      return assertNever(cause);
+  }
+}
+
+function formatUnusableIncumbent(basis: Extract<HandoffRoutingBasis, { kind: 'incumbent-unusable' }>): string {
+  switch (basis.cause) {
+    case 'draining':
+      return [
+        'Handoff: continuing current build — the incumbent coordinator is shutting down.',
+        'Next step: wait for backend shutdown to finish, then retry.',
+      ].join('\n');
+    case 'identity-mismatch':
+      return [
+        'Handoff: continuing current build — the authenticated coordinator identity does not match its discovery record.',
+        'Next step: run coral-cli backend shutdown, wait for shutdown to finish, then retry.',
+      ].join('\n');
+    default:
+      return assertNever(basis.cause);
+  }
+}
+
+function formatInvokingIdentityFailure(
+  failure: Extract<HandoffRoutingBasis, { kind: 'invoking-identity-unavailable' }>['failure'],
+): string {
+  switch (failure) {
+    case 'embedded_identity_unavailable':
+      return 'this CLI has no embedded build identity';
+    case 'adjacent_manifest_unavailable':
+      return "this CLI's bundle manifest could not be read";
+    case 'adjacent_manifest_invalid':
+      return "this CLI's bundle manifest is invalid";
+    case 'adjacent_manifest_mismatch':
+      return 'this CLI does not match its bundle manifest';
+    default:
+      return assertNever(failure);
+  }
+}
+
+function formatInvalidIncumbentTarget(
+  basis: Extract<HandoffRoutingBasis, { kind: 'invalid-incumbent-target' }>,
+): string {
+  const incumbent =
+    basis.evidence.expectedManifest === null ? 'the incumbent' : `incumbent ${basis.evidence.expectedManifest.version}`;
+  return [
+    `Handoff: continuing current build — ${incumbent} handoff target at ${basis.evidence.bundleDir} is invalid because ${formatInvalidTargetFailure(basis.evidence.failure)}.`,
+    `Next step: repair or reinstall the Coral installation at ${basis.evidence.bundleDir}, then retry.`,
+  ].join('\n');
+}
+
+function formatInvalidTargetFailure(
+  failure: Extract<HandoffRoutingBasis, { kind: 'invalid-incumbent-target' }>['evidence']['failure'],
+): string {
+  switch (failure) {
+    case 'bundle-dir-not-canonical':
+      return 'its bundle directory is not canonical';
+    case 'bundle-dir-unavailable':
+      return 'its bundle directory is unavailable';
+    case 'expected-manifest-invalid':
+      return 'its reported bundle manifest is invalid';
+    case 'adjacent-manifest-unavailable':
+      return 'its bundle manifest could not be read';
+    case 'adjacent-manifest-invalid':
+      return 'its bundle manifest is invalid';
+    case 'adjacent-manifest-mismatch':
+      return 'its bundle manifest does not match the expected build';
+    case 'adjacent-bundle-mismatch':
+      return 'its executable bundle does not match its manifest';
+    default:
+      return assertNever(failure);
+  }
+}
 
 // Shared by every shutdown disposition this run could not resolve either way: none of them may tell an
 // operator to do anything but ask again.

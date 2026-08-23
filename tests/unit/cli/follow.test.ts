@@ -7,7 +7,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AcceptedLaunchResponse } from '#src/jobs/launch.js';
 import { type WaitStreamEvent, serializeWaitCursor } from '#src/jobs/wait.js';
-import type { BackendRoutingResult } from '#src/infra/backend-routing.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 import { openStoreDatabase } from '#src/store/db.js';
@@ -38,9 +37,6 @@ function toText(chunk: string | Uint8Array): string {
 }
 
 function makeBackend(instanceId = 'backend-1') {
-  const routing = {
-    kind: 'use-current',
-  } satisfies BackendRoutingResult;
   return {
     socketPath: '/tmp/coordinator.sock',
     instanceId,
@@ -51,7 +47,6 @@ function makeBackend(instanceId = 'backend-1') {
     port: 4100,
     token: 'backend-token',
     version: '0.5.2',
-    routing,
     request: vi.fn(),
     subscribe: mockState.subscribe,
     health: vi.fn(),
@@ -294,7 +289,9 @@ describe('cli follow', () => {
     sigintHandler = null;
     process.exitCode = undefined;
     mockState.ensure.mockReset();
-    mockState.runHandoff.mockReset().mockResolvedValue({ kind: 'run-current' });
+    mockState.runHandoff
+      .mockReset()
+      .mockResolvedValue({ kind: 'run-current', reason: { kind: 'routing', basis: { kind: 'incumbent-absent' } } });
     mockState.subscribe.mockReset();
 
     vi.spyOn(process.stdout, 'write').mockImplementation(((

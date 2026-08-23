@@ -3,11 +3,6 @@ import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
 import { isAbsolute, join, resolve } from 'node:path';
 import { z } from 'zod';
 
-import {
-  createUseCurrentBackendRouting,
-  routeLiveIncumbent,
-  type BackendRoutingResult,
-} from '../infra/backend-routing.js';
 import { backendLog } from '../infra/backend-log.js';
 import { probeCoordinator, type CoordinatorDiscoveryRecord } from '../infra/backend-discovery.js';
 import { resolveBuildFlavor } from '../infra/build-flavor.js';
@@ -24,10 +19,20 @@ import {
   type ForeignTargetValidationResult,
   type ValidatedHandoffTarget,
 } from '../infra/handoff-target.js';
+import { assertNever } from '../infra/error-format.js';
 import type { TimePort, TimerHandle } from '../infra/port-types.js';
 import type { Runtime } from '../runtime/ports.js';
 import { createRealRuntime } from '../runtime/real.js';
 import { createIpcClient } from '../transport/ipc/client.js';
+import {
+  HANDOFF_ROUTING_BASIS_OBLIGATIONS,
+  routeLiveIncumbent,
+  type HandoffRoutingBasis,
+  type HandoffRoutingResult,
+  type IncumbentIdentitySummary,
+  type RoutingBasisObligation,
+  type UnresolvedIncumbentCause,
+} from './handoff-routing.js';
 
 // The pre-flight's own probe budget. Not `HEALTH_TIMEOUT_MS` from `transport/http/sse.ts`: the coordinator
 // topology invariant forbids a coordinator module depending on the HTTP transport, and this bound answers a
@@ -95,25 +100,11 @@ const liveIncumbentHealthSchema = z
 
 type LiveIncumbentHealth = z.infer<typeof liveIncumbentHealthSchema>;
 
-/**
- * What this preflight learned about a live incumbent, kept apart because `'not-observed'` and
- * `'observed-unusable'` are not the same statement. `'not-observed'` means this probe never got a usable
- * answer at all: `'absent'` is decisive (`probeCoordinator` itself directly observed no incumbent),
- * `'unresolved'` is everything else that kept this file from deciding — a connect failure, a timed-out
- * round-trip, or a reply that failed `liveIncumbentHealthSchema` all land here alike, because none of the
- * three is evidence that nobody answered; they are evidence that this probe did not get a usable answer.
- *
- * `'observed-unusable'` is the opposite: a live incumbent answered and decoded, and is disqualified — reporting
- * its own shutdown, or naming a different pid, bundle, or namespace than the discovery record this probe asked
- * — rather than absent. Filing that under `'not-observed'` would claim nobody answered when someone did.
- * `backendLog.warn` (below) records which disqualifying reason applied at the point it was observed; every
- * consumer of this type routes `'observed-unusable'` and `'not-observed'` to the same non-usable outcome, so
- * neither carries a payload past that point.
- */
 type LiveIncumbentReading =
   | Readonly<{ kind: 'observed'; health: LiveIncumbentHealth }>
-  | Readonly<{ kind: 'observed-unusable' }>
-  | Readonly<{ kind: 'not-observed'; reason: 'absent' | 'unresolved' }>;
+  | Readonly<{ kind: 'observed-unusable'; cause: 'draining' | 'identity-mismatch' }>
+  | Readonly<{ kind: 'not-observed'; reason: 'absent' }>
+  | Readonly<{ kind: 'not-observed'; reason: 'unresolved'; cause: UnresolvedIncumbentCause }>;
 
 export type HandoffOperation =
   | Readonly<{ kind: 'cli-invocation'; argv: readonly string[] }>
@@ -131,9 +122,50 @@ export type HandoffOutcome =
   | Readonly<{ kind: 'handoff-exit'; exitCode: number }>
   | Readonly<{ kind: 'handoff-signal'; signal: NodeJS.Signals }>;
 
+export type HandoffContinuationReason =
+  | Readonly<{ kind: 'routing'; basis: HandoffRoutingBasis }>
+  | Readonly<{ kind: 'handoff-not-applicable'; reason: 'display-only' }>
+  | Readonly<{ kind: 'handoff-abandoned'; reason: 'stdout-drain-incomplete' }>;
+
+// A routing continuation must resolve its obligation through its basis table.
+export const HANDOFF_CONTINUATION_REASON_OBLIGATIONS: Readonly<
+  Record<Exclude<HandoffContinuationReason['kind'], 'routing'>, RoutingBasisObligation>
+> = {
+  'handoff-not-applicable': {
+    requiredDurability: 'ephemeral-allowed',
+    requiredRetention: 'until-superseded',
+    severity: 'info',
+    exitContribution: 0,
+  },
+  'handoff-abandoned': {
+    requiredDurability: 'durable-status-required',
+    requiredRetention: 'bounded-history',
+    severity: 'warning',
+    exitContribution: 75,
+  },
+};
+
+export const ABSENT_HANDOFF_RESULT_OBLIGATION: RoutingBasisObligation = {
+  requiredDurability: 'ephemeral-allowed',
+  requiredRetention: 'until-superseded',
+  severity: 'info',
+  exitContribution: 0,
+};
+
 export type HandoffContinuationResult =
-  | Readonly<{ kind: 'run-current' }>
+  | Readonly<{ kind: 'run-current'; reason: HandoffContinuationReason }>
   | Readonly<{ kind: 'delegated'; version: string; outcome: HandoffOutcome }>;
+
+export type LiveHandoffContinuationResult = Extract<HandoffContinuationResult, { kind: 'run-current' }>;
+export type DelegatedHandoffContinuationResult = Extract<HandoffContinuationResult, { kind: 'delegated' }>;
+
+export function liveHandoffResultObligation(result: LiveHandoffContinuationResult | null): RoutingBasisObligation {
+  if (result === null) return ABSENT_HANDOFF_RESULT_OBLIGATION;
+  if (result.reason.kind === 'routing') {
+    return HANDOFF_ROUTING_BASIS_OBLIGATIONS[result.reason.basis.kind];
+  }
+  return HANDOFF_CONTINUATION_REASON_OBLIGATIONS[result.reason.kind];
+}
 
 export type RunHandoffOptions = Readonly<{
   pluginRoot?: string;
@@ -153,7 +185,7 @@ type ObservedChild = Readonly<{
 }>;
 
 type RoutingResolution = Readonly<{
-  routing: BackendRoutingResult;
+  routing: HandoffRoutingResult;
   runtime: Pick<Runtime, 'env' | 'paths' | 'storage'>;
   time: TimePort;
 }>;
@@ -216,8 +248,6 @@ function discoveryMatchesHealth(
   );
 }
 
-// Never returns `'observed-unusable'`: that disposition belongs to `readLiveCoordinatorHealth` below, which is
-// the one place a decoded reply is checked against `draining` and the discovery record's own identity.
 async function readAuthenticatedHealth(
   discovery: CoordinatorDiscoveryRecord,
   time: TimePort,
@@ -228,28 +258,41 @@ async function readAuthenticatedHealth(
       token: discovery.bootToken,
     }).health<unknown>({ timeoutMs: INCUMBENT_HEALTH_PROBE_TIMEOUT_MS });
     const parsed = liveIncumbentHealthSchema.safeParse(value);
-    // A connect failure, a timed-out round-trip, and a reply that failed this schema are three different
-    // events, but none of them is a positive observation of absence — the socket may be held by a live
-    // incumbent that was merely slow, or answering a shape this build does not recognize. `'unresolved'` is
-    // the disposition all three share; `readLiveCoordinatorHealth` is where it is kept apart from `'absent'`.
-    return parsed.success ? { kind: 'observed', health: parsed.data } : { kind: 'not-observed', reason: 'unresolved' };
+    // Failing to obtain a valid authenticated reply is not evidence that no incumbent exists.
+    return parsed.success
+      ? { kind: 'observed', health: parsed.data }
+      : { kind: 'not-observed', reason: 'unresolved', cause: 'health-shape-rejected' };
   } catch {
-    return { kind: 'not-observed', reason: 'unresolved' };
+    return { kind: 'not-observed', reason: 'unresolved', cause: 'health-request-failed' };
   }
 }
 
-function routeAuthenticatedHealth(health: LiveIncumbentHealth): BackendRoutingResult {
-  const candidate =
-    health.manifest === undefined || health.bundleDir === undefined
-      ? null
-      : Object.freeze({ bundleDir: health.bundleDir, expectedManifest: health.manifest });
+function summarizeIncumbentIdentity(health: LiveIncumbentHealth): IncumbentIdentitySummary {
+  return {
+    version: health.version,
+    bundleHash: health.bundleHash,
+    flavor: health.flavor,
+    instanceId: health.instanceId,
+  };
+}
+
+export function routeAuthenticatedHealth(health: LiveIncumbentHealth): HandoffRoutingResult {
   const invokingIdentity = resolveStrictBundleIdentity();
-  if (!invokingIdentity.ok || candidate === null) {
-    return createUseCurrentBackendRouting();
+  if (!invokingIdentity.ok) {
+    return {
+      kind: 'continue-current',
+      basis: { kind: 'invoking-identity-unavailable', failure: invokingIdentity.reason },
+    };
+  }
+  if (health.manifest === undefined || health.bundleDir === undefined) {
+    return {
+      kind: 'continue-current',
+      basis: { kind: 'incumbent-identity-unavailable', incumbent: summarizeIncumbentIdentity(health) },
+    };
   }
   return routeLiveIncumbent({
     invokingManifest: invokingIdentity.manifest,
-    incumbent: candidate,
+    incumbent: Object.freeze({ bundleDir: health.bundleDir, expectedManifest: health.manifest }),
     validateForeignTarget: foreignTargetValidator,
   });
 }
@@ -259,24 +302,14 @@ async function readLiveCoordinatorHealth(
   time: TimePort,
 ): Promise<LiveIncumbentReading> {
   const probe = probeCoordinator({ storage: runtime.storage, env: runtime.env, paths: runtime.paths });
-  // A fifth `CoordinatorProbe` shape without a record joins the `null` that means "nobody is there", and one
-  // with a record joins the branch that asks health, neither on purpose. Definite assignment is what the
-  // switch buys: a new shape leaves `discovery` unassigned and fails the build here until someone says which
-  // of the two answers below it is.
+  // Every probe disposition must explicitly decide whether authenticated health can be requested.
   let discovery: CoordinatorDiscoveryRecord;
   switch (probe.kind) {
     case 'absent':
-      // The only decisive short-circuit: `probeCoordinator` itself directly observed no incumbent (no record,
-      // or a pid it confirmed gone). Every other reading below — observed-unusable or not-observed alike —
-      // also reaches `use-current` (`resolveHandoffRouting`), but none of them is this one — see
-      // `LiveIncumbentReading`.
       return { kind: 'not-observed', reason: 'absent' };
     case 'unobservable':
       if (probe.reason === 'unreadable-record') {
-        // An undecodable record leaves nothing to ask with — no socket path, no `bootToken` — so 'unresolved'
-        // is the only answer available here, not a judgement that none exists. It is reported rather than
-        // inferred: `probeCoordinator` warns on this branch.
-        return { kind: 'not-observed', reason: 'unresolved' };
+        return { kind: 'not-observed', reason: 'unresolved', cause: 'unreadable-record' };
       }
       // An unobservable pid still has a record, and authenticated health is a stronger statement about whether
       // an incumbent is serving than a pid probe ever was — so ask it rather than concluding nobody is there.
@@ -289,24 +322,15 @@ async function readLiveCoordinatorHealth(
 
   const reading = await readAuthenticatedHealth(discovery, time);
   if (reading.kind === 'not-observed') {
-    // Said out loud for the same reason `probeCoordinator` says it for an undecodable record: a caller that
-    // reads this warning-free would have no way to tell a refused connection apart from a busy one. What
-    // bounds the cost of treating it as `use-current` anyway lives outside this function: the kernel's
-    // exclusive bind on the IPC socket (`transport/ipc/ensure.ts`) rules out a second daemon regardless of
-    // what this probe concluded, and that same file's `ensure()` already reuses a healthy incumbent "Healthy
-    // → return it regardless of build" for every same-or-older incumbent. A false negative here costs the
-    // version-upgrade handoff this mechanism exists to deliver, not a second coordinator or a protocol break.
     backendLog.warn(
       `Authenticated health from ${discovery.socketPath} did not resolve; treating the incumbent as unobserved, not absent.`,
     );
     return reading;
   }
   if (reading.health.status === 'draining') {
-    // A positive observation, not an absence: something answered, decoded, and named its own shutdown. Its
-    // own wording, so a caller cannot mistake this for the unresolved probe above or the identity mismatch
-    // below.
+    // A positive observation, not an absence: something answered, decoded, and named its own shutdown.
     backendLog.warn(`Live incumbent at ${discovery.socketPath} reported status draining; treating it as unusable.`);
-    return { kind: 'observed-unusable' };
+    return { kind: 'observed-unusable', cause: 'draining' };
   }
   if (!discoveryMatchesHealth(discovery, runtime.paths.coral.coordinator.socketPath, reading.health)) {
     // Also a positive observation: something answered and decoded, naming an identity the discovery record
@@ -314,7 +338,7 @@ async function readLiveCoordinatorHealth(
     backendLog.warn(
       `Authenticated health from ${discovery.socketPath} named a different coordinator identity than the discovery record; treating it as unusable.`,
     );
-    return { kind: 'observed-unusable' };
+    return { kind: 'observed-unusable', cause: 'identity-mismatch' };
   }
   return reading;
 }
@@ -324,17 +348,35 @@ async function resolveHandoffRouting(pluginRoot?: string, timePort?: TimePort): 
   const runtime = createRealRuntime(flavor);
   const time = timePort ?? runtime.time;
   const reading = await readLiveCoordinatorHealth(runtime, time);
-  // `readLiveCoordinatorHealth` distinguishes a decisive absence, an unresolved probe, and a live-but-unusable
-  // incumbent (draining, or a foreign identity) from a usable `'observed'` reply, and logs each one under its
-  // own wording as it is produced. Only the usable reply carries anything to route against here; every other
-  // reading reaches `use-current` regardless of which of the three it is, which is why the branch below reads
-  // `reading.kind`, not a boolean folded out of it.
-  return reading.kind === 'observed'
-    ? { routing: routeAuthenticatedHealth(reading.health), runtime, time }
-    : { routing: createUseCurrentBackendRouting(), runtime, time };
+  return {
+    routing:
+      reading.kind === 'observed'
+        ? routeAuthenticatedHealth(reading.health)
+        : { kind: 'continue-current', basis: routingBasisForReading(reading) },
+    runtime,
+    time,
+  };
 }
 
-async function resolveHandoffRoutingForOperation(
+function routingBasisForReading(reading: Exclude<LiveIncumbentReading, { kind: 'observed' }>): HandoffRoutingBasis {
+  switch (reading.kind) {
+    case 'observed-unusable':
+      return { kind: 'incumbent-unusable', cause: reading.cause };
+    case 'not-observed':
+      switch (reading.reason) {
+        case 'absent':
+          return { kind: 'incumbent-absent' };
+        case 'unresolved':
+          return { kind: 'incumbent-unresolved', cause: reading.cause };
+        default:
+          return assertNever(reading);
+      }
+    default:
+      return assertNever(reading);
+  }
+}
+
+export async function resolveHandoffRoutingForOperation(
   operation: HandoffOperation,
   options: RunHandoffOptions,
 ): Promise<RoutingResolution> {
@@ -479,6 +521,16 @@ function drainStdoutBeforeHandoff(time: TimePort, signal?: AbortSignal): Promise
   });
 }
 
+// A startup handoff delegates or throws; `refuses to continue-current for a startup handoff whose stdout drain
+// would fail` enforces this contract.
+export function runHandoff(
+  operationInput: Readonly<{ kind: 'backend-startup' }>,
+  options: RunHandoffOptions & Readonly<{ activeSelectionTarget: ValidatedHandoffTarget }>,
+): Promise<DelegatedHandoffContinuationResult>;
+export function runHandoff(
+  operationInput: HandoffOperation,
+  options?: RunHandoffOptions,
+): Promise<HandoffContinuationResult>;
 export async function runHandoff(
   operationInput: HandoffOperation,
   options: RunHandoffOptions = {},
@@ -486,14 +538,13 @@ export async function runHandoff(
   const operation = handoffOperationSchema.parse(operationInput) as HandoffOperation;
   const guard = operation.kind === 'backend-startup' ? undefined : readCliHandoffGuard();
   if (isDisplayOnlyInvocation(operation)) {
-    return { kind: 'run-current' };
+    return { kind: 'run-current', reason: { kind: 'handoff-not-applicable', reason: 'display-only' } };
   }
 
   const { routing, runtime, time } = await resolveHandoffRoutingForOperation(operation, options);
   switch (routing.kind) {
-    case 'use-current':
-    case 'reset-newer-invalid':
-      return { kind: 'run-current' };
+    case 'continue-current':
+      return { kind: 'run-current', reason: { kind: 'routing', basis: routing.basis } };
     case 'handoff': {
       if (guard === '1') {
         throw new Error(
@@ -504,7 +555,10 @@ export async function runHandoff(
       }
 
       if (operation.kind !== 'backend-startup' && !(await drainStdoutBeforeHandoff(time, options.signal))) {
-        return { kind: 'run-current' };
+        return {
+          kind: 'run-current',
+          reason: { kind: 'handoff-abandoned', reason: 'stdout-drain-incomplete' },
+        };
       }
 
       const execution = withValidatedHandoffTarget(routing.target);
@@ -550,5 +604,7 @@ export async function runHandoff(
       const outcome = handoffOutcome(execution.manifest.version, await childObservation.outcome);
       return { kind: 'delegated', version: execution.manifest.version, outcome };
     }
+    default:
+      return assertNever(routing);
   }
 }

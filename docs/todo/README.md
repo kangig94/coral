@@ -52,11 +52,12 @@ signal a correctly identified target, they are about there being no party left t
 
 | Order | Entry                                                       | Why here                                                                                                                                                  |
 | ----- | ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1     | the compatibility policy, then `build-identity-and-upgrade` | Unblocks three others. Its own first step is small and blocks nothing: carry the routing reason instead of collapsing four situations into `use-current`. |
-| 2     | `darwin-signal-authority` + `durable-cli-signal-authority`  | Needs a synchronous exit state on `ChildProcessLike`, which touches every fake in the suite. Do it when nothing else is in flight.                        |
-| 3     | `provider-operation-admission-hold`                         | Design complete and recorded; ships as one unit or not at all.                                                                                            |
-| 4     | `coordinator-process-disposition`                           | After 3 has settled the recovery boundary the custody transfer has to attach to.                                                                          |
-| 5     | `foreign-capsule-retirement-terminal-recovery`              | After 3 or 4, and only if one of them lands: it wants a recovery boundary that nothing about its own residue justifies introducing.                       |
+| 1     | [`session-start-context-truncated`](./session-start-context-truncated.md) | Measured on one configuration: the SessionStart packet was persisted at 11,320 bytes against a threshold that shows the first 2 KB, so the session read the general advice and lost the operative rules. Its static fragments alone sum to 9,740 bytes before any runtime content. Option 1 is a reordering inside one file. Everything else in this directory assumes an agent that read them. |
+| 2     | the compatibility policy, then `build-identity-and-upgrade` | Unblocks three others. The routing-reason step is closed; this entry still carries the record direction behind the compatibility policy and the independent output direction. |
+| 3     | `darwin-signal-authority` + `durable-cli-signal-authority`  | Needs a synchronous exit state on `ChildProcessLike`, which touches every fake in the suite. Do it when nothing else is in flight.                        |
+| 4     | `provider-operation-admission-hold`                         | Design complete and recorded; ships as one unit or not at all.                                                                                            |
+| 5     | `coordinator-process-disposition`                           | After 4 has settled the recovery boundary the custody transfer has to attach to.                                                                          |
+| 6     | `foreign-capsule-retirement-terminal-recovery`              | After 4 or 5, and only if one of them lands: it wants a recovery boundary that nothing about its own residue justifies introducing.                       |
 
 **Not yet, and why it is not laziness.** `wedged-coordinator-self-drain` has never been observed and
 asks for a reachable cause before either half is built. `proxy-set-acquisition`'s clock-drift symptom
@@ -254,6 +255,18 @@ a file nobody reads.
 |                                                                            |                                                                                                                                                                                                                                                                                                                                          |
 | -------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [`comment-sweep-bug-ledger.md`](./comment-sweep-bug-ledger.md)             | **Open and accumulating.** Defects the comment-rot sweep found in code it walked for other reasons, recorded rather than fixed so a comment-only diff stays reviewable. A flat list of unrelated findings across fourteen sectors, most documentation-only or latent. An entry someone acts on is struck; one that needs its own argument graduates to a conforming entry. |
+
+---
+
+## One sweep, many instances
+
+A file that is not a concept but a batch, kept together because splitting it per-file would lose the one
+observation all of it shares. Grouped separately for the same reason the ledger below is: an unindexed file
+in a corpus whose index is the entry point is a file nobody reads.
+
+|                                                                            |                                                                                                                                                                                                                                                                                                          |
+| -------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`six-reviewer-sweep-backlog.md`](./six-reviewer-sweep-backlog.md)         | **Scheduled after PR3 of the handoff-routing work.** Six reviewers aimed at one branch were asked to sweep the repository for the classes it had just closed in itself. One BLOCKING — a cast asserts a `WorkflowExecutionPort` on an object that does not implement it, and recovery calls the missing method directly. Then branches the call graph cannot reach, places that admit two answers where the evidence has three, contracts weaker than they read, and assertions that pass when their subject is absent. One observation with many instances: a value that decides something is written once and then re-derived, widened, or discarded by the next reader. |
 
 ---
 

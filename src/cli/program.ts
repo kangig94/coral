@@ -2,12 +2,16 @@ declare const __VERSION__: string;
 
 import { Command } from 'commander';
 
-import { runHandoff, type HandoffOutcome } from '../coordinator/handoff-runner.js';
+import { runHandoff, type HandoffOutcome, type LiveHandoffContinuationResult } from '../coordinator/handoff-runner.js';
 import { assertNever } from '../infra/error-format.js';
 import { createBuiltInProviderRegistry } from '../providers/bootstrap.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import { assertCommandClassCoverage } from './classify.js';
-import { createRecoveryQuarantineCommandOperations, registerBackendCommands } from './commands/backend.js';
+import {
+  createBackendStatusCommandOperations,
+  createRecoveryQuarantineCommandOperations,
+  registerBackendCommands,
+} from './commands/backend.js';
 import { createStoreResetCommandOperations } from './store-reset.js';
 import { registerDiscussCommands } from './commands/discuss.js';
 import { registerExpansionCommands } from './commands/expansion.js';
@@ -19,11 +23,13 @@ import { renderHandoffNotice } from './handoff-notice.js';
 import { resolvePluginRoot } from './plugin-root.js';
 
 let cliHandoffPreflightPromise: Promise<HandoffOutcome | null> | null = null;
+let cliHandoffPreflightResult: LiveHandoffContinuationResult | null = null;
 
 async function executeCliHandoffPreflight(argv: readonly string[]): Promise<HandoffOutcome | null> {
   const continuation = await runHandoff({ kind: 'cli-invocation', argv }, { pluginRoot: resolvePluginRoot() });
   switch (continuation.kind) {
     case 'run-current':
+      cliHandoffPreflightResult = continuation;
       return null;
     case 'delegated': {
       const { outcome } = continuation;
@@ -46,6 +52,10 @@ async function executeCliHandoffPreflight(argv: readonly string[]): Promise<Hand
 export function runCliHandoffPreflight(argv: readonly string[] = process.argv): Promise<HandoffOutcome | null> {
   cliHandoffPreflightPromise ??= executeCliHandoffPreflight(argv);
   return cliHandoffPreflightPromise;
+}
+
+export function peekCliHandoffPreflightResult(): LiveHandoffContinuationResult | null {
+  return cliHandoffPreflightResult;
 }
 
 export async function parseProgramWithHandoff(
@@ -78,6 +88,7 @@ export function buildProgram(
   registerWorkflowCommands(program);
   registerBackendCommands(program, {
     storeReset: createStoreResetCommandOperations(options.shutdownSignal),
+    backendStatus: createBackendStatusCommandOperations(() => peekCliHandoffPreflightResult()),
     recoveryQuarantine: createRecoveryQuarantineCommandOperations(options.shutdownSignal),
   });
   registerDiscussCommands(program);

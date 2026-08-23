@@ -467,7 +467,7 @@ function refuseSignal(incumbent: IncumbentIdentity, reason: string): never {
  * transport.shutdown; if the incumbent outranks this contender (`incumbentOutranksContender`: matching
  * flavor/namespace, same-or-newer product version) and is not draining, throw IncumbentMatchesError
  * (we're redundant) instead of requesting shutdown. This is the only version comparison on the bind path,
- * and it is the same precedence rule the CLI target-routing path uses (`src/infra/backend-routing.ts`) — a
+ * and it is the same precedence rule the CLI target-routing path uses (`src/coordinator/handoff-routing.ts`) — a
  * contender never evicts a live incumbent for a version difference alone, so two same-version builds with
  * different bundle hashes cannot both conclude the other side should step down.
  */

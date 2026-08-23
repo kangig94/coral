@@ -1,16 +1,30 @@
 import { Command } from 'commander';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type * as HandoffNoticeMod from '#src/cli/handoff-notice.js';
+import type * as GenerationMutationMod from '#src/store/generation-mutation-coordination.js';
+import type * as BackendStatusMod from '#src/transport/http/backend/status.js';
 import type * as ProgramMod from '#src/cli/program.js';
 import type * as HandoffRunnerMod from '#src/coordinator/handoff-runner.js';
 import { filterForwardableCoralEnv } from '#src/infra/env-sanitize.js';
 
 const mockState = vi.hoisted(() => ({
+  getBackendStatusFull: vi.fn(),
+  inspectGenerationReadiness: vi.fn(),
   renderHandoffNotice: vi.fn(),
   resolvePluginRoot: vi.fn(),
   runHandoff: vi.fn(),
 }));
+
+vi.mock('#src/store/generation-mutation-coordination.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof GenerationMutationMod>();
+  return { ...actual, inspectGenerationReadiness: mockState.inspectGenerationReadiness };
+});
+
+vi.mock('#src/transport/http/backend/status.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof BackendStatusMod>();
+  return { ...actual, getBackendStatusFull: mockState.getBackendStatusFull };
+});
 
 vi.mock('#src/coordinator/handoff-runner.js', async (importOriginal) => {
   const actual = await importOriginal<typeof HandoffRunnerMod>();
@@ -48,17 +62,74 @@ async function loadProgramFresh(): Promise<ProgramModule> {
 }
 
 beforeEach(() => {
+  process.exitCode = undefined;
+  mockState.getBackendStatusFull.mockReset().mockResolvedValue({ status: 'not_running' });
+  mockState.inspectGenerationReadiness.mockReset().mockReturnValue({ kind: 'no-legacy' });
   mockState.renderHandoffNotice.mockReset();
   mockState.resolvePluginRoot.mockReset().mockReturnValue('/plugin/root');
   mockState.runHandoff.mockReset();
 });
 
+afterEach(() => {
+  process.exitCode = undefined;
+  vi.restoreAllMocks();
+});
+
 describe('program', () => {
+  it('should omit a live handoff line when the production status action runs before preflight', async () => {
+    const stdout: string[] = [];
+    vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: string | Uint8Array) => {
+      stdout.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'));
+      return true;
+    }) as typeof process.stdout.write);
+    const { buildProgram } = await loadProgramFresh();
+
+    await buildProgram().parseAsync(['node', 'coral-cli', 'backend', 'status']);
+
+    expect(stdout.join('')).toBe(
+      'Backend not running. Any coral-cli mutating command (or a Claude Code session start) relaunches it.\n',
+    );
+  });
+
+  it('should expose the completed preflight to the production status action', async () => {
+    const stdout: string[] = [];
+    vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: string | Uint8Array) => {
+      stdout.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'));
+      return true;
+    }) as typeof process.stdout.write);
+    mockState.runHandoff.mockResolvedValue({
+      kind: 'run-current',
+      reason: {
+        kind: 'routing',
+        basis: {
+          kind: 'invoking-build-not-older',
+          comparison: 'newer-version',
+          invoking: { version: '2.0.0', buildSetId: 'invoking', bundleHash: 'invoking-hash', flavor: 'prod' },
+          incumbent: { version: '1.0.0', buildSetId: 'incumbent', bundleHash: 'incumbent-hash', flavor: 'prod' },
+        },
+      },
+    });
+    const { buildProgram, parseProgramWithHandoff } = await loadProgramFresh();
+    const program = buildProgram();
+
+    await parseProgramWithHandoff(program, ['node', 'coral-cli', 'backend', 'status']);
+
+    expect(stdout.join('')).toBe(
+      [
+        'Backend not running. Any coral-cli mutating command (or a Claude Code session start) relaunches it.',
+        'Handoff: continuing current build — CLI version 2.0.0 is newer than running backend 1.0.0, so guarded operations will not proceed across these builds.',
+        'Next step: run coral-cli backend shutdown, then rerun a mutating command to relaunch from this installation.',
+        '',
+      ].join('\n'),
+    );
+    expect(process.exitCode).toBe(75);
+  });
+
   it('should complete the run-current decision once before dispatching the current command', async () => {
     const order: string[] = [];
     mockState.runHandoff.mockImplementation(async () => {
       order.push('preflight');
-      return { kind: 'run-current' };
+      return { kind: 'run-current', reason: { kind: 'routing', basis: { kind: 'incumbent-absent' } } };
     });
     const { parseProgramWithHandoff, runCliHandoffPreflight } = await loadProgramFresh();
     const program = commandWithAction(() => order.push('dispatch'));
