@@ -1,0 +1,78 @@
+# A locked store is reported as a corrupt one, with a destructive remediation
+
+**Observed in the field, 2026-08-23, on a working `gen2` store.** A coordinator startup failed with
+`store_corrupt_or_unsupported`, `retryable: false`, and this remediation:
+
+> Run `coral-cli backend store-reset discard --target gen2 --flavor prod` to quarantine it before this
+> build initializes an empty store.
+
+The cause recorded in the same `startup-diagnostic.json` was `database is locked`. `PRAGMA integrity_check`
+on that exact file, run after the incident, returns `ok`. The store was never corrupt. An operator who
+followed the remediation would have discarded a healthy store because SQLite was momentarily busy.
+
+## What produces it
+
+`classifyStoreForProtocol` in `src/store/active-store-selection-coordination.ts` asks
+`corruptBackendStoreClassificationFromFailure` (`src/store/backend-store-reset.ts`) whether a thrown error
+is corruption. That function is written correctly and narrowly: it matches only `file is not a database`,
+`database disk image is malformed`, and `malformed database schema`, and returns `null` for anything else.
+`database is locked` is correctly **not** corruption, so it returns `null`.
+
+The caller then reads that `null` as a reason to declare corruption anyway, through
+`documentedBackendStoreClassificationFailure`, which emits `store_corrupt_or_unsupported` for whatever
+error it is handed. The discriminator's "this is not corruption" and its "I could not classify this" are
+the same value, and the call site resolves both to the destructive one.
+
+This is principle 11 in `.claude/rules/design-philosophy.md`, in the form that principle names explicitly:
+`null` carrying two dispositions, and an unknown authorizing a finalization. Declaring corruption is a
+finalization — it is what justifies discarding the store.
+
+## Not yet established
+
+- **Which call site fired.** `documentedBackendStoreClassificationFailure` has two callers,
+  `classifyStoreForProtocol` and the open/reset path in `src/store/backend-store-reset.ts`. Both produce an
+  identical payload (`code`, `path`, `flavor`, `cause`), so the recorded diagnostic cannot distinguish them.
+  Both need the fix; only one is proven to have run.
+**Established after the fact: the harm is confined to advice.** No reset ran. `store-reset-quarantine/`
+holds nothing newer than 2026-08-14; `recovery_quarantine` still carries rows detected 2026-08-15; the
+`events` table is unbroken from sequence 1; and `PRAGMA integrity_check` returns `ok`. Two sessions met this
+error independently and neither acted on the remediation, so nothing in the classification path resets a
+store on its own — it only tells an operator to. That is the difference between a bad afternoon and lost
+data, and it is why the fix is urgent rather than an emergency.
+
+## The shape of the fix
+
+A third answer, in the return type. The classifier already distinguishes corruption from non-corruption;
+what it cannot say is "this error is about availability, not content". `database is locked` / `SQLITE_BUSY`
+is retryable and must reach an outcome that says so — `retryable: true`, and a remediation that names
+waiting or retrying rather than discarding. What must never happen is an unrecognized error resolving to
+the destructive branch by default: an error this build cannot classify is a refusal to start, not a verdict
+about the bytes on disk.
+
+## Two more defects from the same incident
+
+Recorded here because they came from one startup sequence and share its evidence, not because they share a
+cause with the above. Each stands alone.
+
+**A dead pid is named as the holder of a bound socket.** `bindWithHandoff` in `src/coordinator/handoff.ts`
+throws `Incumbent socket remained bound after SIGKILL grace for pid=<pid>` after it has confirmed that pid
+alive, signalled it, and killed it. What it observed at that point is that the *socket* is still bound;
+it reports it as a fact about the *process*. A listening socket outlives the process that bound it when a
+child inherited the descriptor, which is the ordinary case for a coordinator that spawns proxies — so the
+state this message cannot express is the state most likely to produce it. The operator is directed at a pid
+that no longer exists.
+
+**A cooldown is announced as manual repair.** `assertSignalCooldown` in the same file refuses a repeated
+handoff signal within `DEFAULT_SIGNAL_COOLDOWN_MS` and phrases the refusal as
+`Manual repair required: refusing repeated handoff …`. The exit is waiting for the cooldown, and in this
+incident that is exactly what happened: the SIGKILL was at 06:44:11 and the next startup succeeded at
+06:45:04. The operator was told three times that manual repair was required while the system was in the
+process of healing itself on a timer.
+
+The escalation path itself is sound and should not be changed on this evidence: `verifySignalTarget` throws
+through `refuseSignal` when liveness is anything but observed, so an unobservable pid is never escalated to.
+
+## Start condition
+
+After PR2 and PR3 of `backend-routing-disposition`. Nothing here blocks that work, and the store
+misclassification predates it.
