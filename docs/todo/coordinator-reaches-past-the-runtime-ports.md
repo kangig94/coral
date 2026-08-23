@@ -58,6 +58,8 @@ the scope should delete that sentence rather than extend it.
 
 ## Start condition
 
-Before PR3 of `backend-routing-disposition` activates a production caller, because that is when the bypass
-becomes reachable through the simulation runtime rather than a latent property of an inert module. The scan
-widening can go first on its own and will produce the inventory the relocation decision needs.
+**Met and scheduled.** This is step 18 of `backend-routing-disposition`, the first step of PR3, folded in
+after PR2 landed. The reason it is a precondition rather than a follow-up is the ordering: step 20 wires the
+first production caller, and from that point a simulation runtime cannot intercept an ambient engine, so a run
+that wrote to the host reports success. The scan widening goes first within that step and produces the
+inventory the relocation decision needs.
