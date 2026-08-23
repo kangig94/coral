@@ -6,12 +6,14 @@ import type * as GenerationMutationMod from '#src/store/generation-mutation-coor
 import type * as BackendStatusMod from '#src/transport/http/backend/status.js';
 import type * as ProgramMod from '#src/cli/program.js';
 import type * as HandoffRunnerMod from '#src/coordinator/handoff-runner.js';
+import type * as HandoffRoutingStatusMod from '#src/coordinator/handoff-routing-status.js';
 import { filterForwardableCoralEnv } from '#src/infra/env-sanitize.js';
 
 const mockState = vi.hoisted(() => ({
   getBackendStatusFull: vi.fn(),
   inspectGenerationReadiness: vi.fn(),
   renderHandoffNotice: vi.fn(),
+  readHandoffRoutingStatusWithOwnerObservations: vi.fn(),
   resolvePluginRoot: vi.fn(),
   runHandoff: vi.fn(),
 }));
@@ -29,6 +31,14 @@ vi.mock('#src/transport/http/backend/status.js', async (importOriginal) => {
 vi.mock('#src/coordinator/handoff-runner.js', async (importOriginal) => {
   const actual = await importOriginal<typeof HandoffRunnerMod>();
   return { ...actual, runHandoff: mockState.runHandoff };
+});
+
+vi.mock('#src/coordinator/handoff-routing-status.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof HandoffRoutingStatusMod>();
+  return {
+    ...actual,
+    readHandoffRoutingStatusWithOwnerObservations: mockState.readHandoffRoutingStatusWithOwnerObservations,
+  };
 });
 
 vi.mock('#src/cli/handoff-notice.js', async (importOriginal) => {
@@ -71,6 +81,7 @@ beforeEach(() => {
   mockState.getBackendStatusFull.mockReset().mockResolvedValue({ status: 'not_running' });
   mockState.inspectGenerationReadiness.mockReset().mockReturnValue({ kind: 'no-legacy' });
   mockState.renderHandoffNotice.mockReset();
+  mockState.readHandoffRoutingStatusWithOwnerObservations.mockReset().mockResolvedValue({ kind: 'absent' });
   mockState.resolvePluginRoot.mockReset().mockReturnValue('/plugin/root');
   mockState.runHandoff.mockReset();
 });
@@ -110,8 +121,8 @@ describe('program', () => {
           basis: {
             kind: 'invoking-build-not-older',
             comparison: 'newer-version',
-            invoking: { version: '2.0.0', buildSetId: 'invoking', bundleHash: 'invoking-hash', flavor: 'prod' },
-            incumbent: { version: '1.0.0', buildSetId: 'incumbent', bundleHash: 'incumbent-hash', flavor: 'prod' },
+            invoking: { version: '0.10.8', buildSetId: 'invoking', bundleHash: 'invoking-hash', flavor: 'prod' },
+            incumbent: { version: '0.10.6', buildSetId: 'incumbent', bundleHash: 'incumbent-hash', flavor: 'prod' },
           },
         },
       }),
@@ -124,11 +135,29 @@ describe('program', () => {
     expect(stdout.join('')).toBe(
       [
         'Backend not running. Any coral-cli mutating command (or a Claude Code session start) relaunches it.',
-        'Handoff: continuing current build — CLI version 2.0.0 is newer than running backend 1.0.0, so guarded operations will not proceed across these builds.',
+        'Handoff: continuing current build — invoking build 0.10.8 is newer than incumbent 0.10.6.',
         'Next step: run coral-cli backend shutdown, then rerun a mutating command to relaunch from this installation.',
         '',
       ].join('\n'),
     );
+    expect(process.exitCode).toBe(75);
+  });
+
+  it('should retain a local status publication incident through production dispatch', async () => {
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    mockState.runHandoff.mockResolvedValue({
+      kind: 'recording-incidents',
+      observedWork: {
+        kind: 'run-current',
+        reason: { kind: 'routing', basis: { kind: 'incumbent-absent' } },
+      },
+      publicationIncidents: [{ phase: 'selection', kind: 'not-published', cause: 'contended' }],
+    });
+    const { buildProgram, parseProgramWithHandoff } = await loadProgramFresh();
+
+    await parseProgramWithHandoff(buildProgram(), ['node', 'coral-cli', 'backend', 'status']);
+
     expect(process.exitCode).toBe(75);
   });
 

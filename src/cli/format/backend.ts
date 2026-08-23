@@ -1,11 +1,18 @@
 import { assertNever } from '../../infra/error-format.js';
 import type { HandoffRoutingBasis } from '../../coordinator/handoff-routing.js';
 import type {
+  HandoffRoutingInvocationStatus,
   HandoffRoutingResolveResult,
   HandoffRoutingStatusReadResult,
   OwnerLiveness,
+  RetirementHistoryTruncated,
+  StoredTerminalDisposition,
 } from '../../coordinator/handoff-routing-status.js';
-import type { HandoffContinuationReason, LiveHandoffContinuationResult } from '../../coordinator/handoff-runner.js';
+import {
+  liveHandoffResultObligation,
+  type HandoffContinuationReason,
+  type LiveHandoffResult,
+} from '../../coordinator/handoff-runner.js';
 import type { RecoveryQuarantineEntry } from '../../recovery/quarantine.js';
 import type { BackendHealth } from '../../transport/http/backend/health.js';
 import type { BackendStatusFull } from '../../transport/http/backend/status.js';
@@ -15,8 +22,8 @@ import type { RecoveryQuarantineClearResult } from '../../recovery/source-regist
 export const RECOVERY_REVISION_UNTIL_CLEARED = 'until-cleared';
 export const RECOVERY_REVISION_FINGERPRINT_PREFIX = 'fingerprint:';
 
-export function formatLiveHandoffResult(result: LiveHandoffContinuationResult | null): string | null {
-  return result === null ? null : formatHandoffContinuationReason(result.reason);
+function formatLiveHandoffResult(result: LiveHandoffResult | null): string | null {
+  return result === null ? null : formatHandoffContinuationReason(result.continuation.reason);
 }
 
 export function formatHandoffContinuationReason(reason: HandoffContinuationReason): string {
@@ -79,8 +86,11 @@ function formatInvokingBuildNotOlder(
         nextStep,
       ].join('\n');
     case 'newer-version':
+      // This wording is limited to `routeLiveIncumbent` in src/coordinator/handoff-routing.ts.
+      // `routeOrOpenBackendStoreAtStartup` in src/store/startup-store-routing.ts owns the separate
+      // `reset-newer-invalid` decision, which is outside this live-incumbent result.
       return [
-        `Handoff: continuing current build — CLI version ${basis.invoking.version} is newer than running backend ${basis.incumbent.version}, so guarded operations will not proceed across these builds.`,
+        `Handoff: continuing current build — invoking build ${basis.invoking.version} is newer than incumbent ${basis.incumbent.version}.`,
         nextStep,
       ].join('\n');
     default:
@@ -175,7 +185,22 @@ function formatInvalidTargetFailure(
 // operator to do anything but ask again.
 const SHUTDOWN_RETRY_NEXT_STEP = 'Next step: run coral-cli backend status, then retry the shutdown.';
 
-export function formatBackendStatus(result: BackendStatusFull): string {
+export function formatBackendStatus(
+  daemonStatus: BackendStatusFull,
+  routingStatus: HandoffRoutingStatusReadResult,
+  liveHandoffResult: LiveHandoffResult | null,
+): string {
+  const sections = [formatDaemonStatus(daemonStatus)];
+  const routingStatusText = formatHandoffRoutingStatus(routingStatus);
+  if (routingStatusText !== null) sections.push(routingStatusText);
+  if (liveHandoffResultObligation(liveHandoffResult).severity === 'warning') {
+    const liveHandoffText = formatLiveHandoffResult(liveHandoffResult);
+    if (liveHandoffText !== null) sections.push(liveHandoffText);
+  }
+  return sections.join('\n');
+}
+
+function formatDaemonStatus(result: BackendStatusFull): string {
   switch (result.status) {
     case 'ok':
       return formatRunningStatus(result.health);
@@ -222,6 +247,76 @@ function formatRoutingOwnerLiveness(invocationId: string, liveness: OwnerLivenes
   }
 }
 
+type FinalizedDisposition = Extract<
+  StoredTerminalDisposition,
+  { kind: 'continued-current' | 'delegated-success' | 'delegated-exit' | 'delegated-signal' }
+>;
+
+function formatFinalizedDisposition(disposition: FinalizedDisposition): string {
+  switch (disposition.kind) {
+    case 'continued-current':
+      switch (disposition.reason.kind) {
+        case 'routing':
+          return `continued current (${disposition.reason.basis.kind})`;
+        case 'handoff-abandoned-stdout':
+          return 'continued current after stdout drain prevented delegation';
+        default:
+          return assertNever(disposition.reason);
+      }
+    case 'delegated-success':
+      return `delegated successfully to ${disposition.version}`;
+    case 'delegated-exit':
+      return `delegated to ${disposition.version}, which exited ${disposition.exitCode}`;
+    case 'delegated-signal':
+      return `delegated to ${disposition.version}, which exited on ${disposition.signal}`;
+    default:
+      return assertNever(disposition);
+  }
+}
+
+function formatStoredTerminalDisposition(disposition: StoredTerminalDisposition): string {
+  switch (disposition.kind) {
+    case 'execution-failed':
+      return `execution failed during ${disposition.throwPhase}`;
+    case 'continued-current':
+    case 'delegated-success':
+    case 'delegated-exit':
+    case 'delegated-signal':
+      return formatFinalizedDisposition(disposition);
+    case 'failed-without-selection':
+      return `execution failed during ${disposition.throwPhase} without a retained selection`;
+    case 'finalized-without-selection':
+      return `${formatFinalizedDisposition(disposition.terminal)} without a retained selection`;
+    case 'terminal-without-retained-selection':
+      return `${formatStoredTerminalDisposition(disposition.terminal)} after its selection identity expired or was unavailable`;
+    case 'terminal-after-operator-resolution':
+      return `${formatStoredTerminalDisposition(disposition.terminal)} after operator resolution (${disposition.resolutionReason})`;
+    default:
+      return assertNever(disposition);
+  }
+}
+
+function formatRoutingInvocationStatus(status: HandoffRoutingInvocationStatus): string {
+  switch (status.kind) {
+    case 'unresolved':
+      return formatRoutingOwnerLiveness(status.selection.invocationId, status.ownerLiveness);
+    case 'terminal':
+      return `Routing invocation ${status.terminal.invocationId}: terminal; ${formatStoredTerminalDisposition(status.terminal.disposition)}.`;
+    case 'retired':
+      return `Routing invocation ${status.tombstone.invocationId}: retired (${status.tombstone.retirementCause}).`;
+    default:
+      return assertNever(status);
+  }
+}
+
+function formatRetirementHistoryTruncated(history: RetirementHistoryTruncated): string | null {
+  if (history.expiredIdentityCount === 0) return null;
+  const causes = Object.entries(history.causes)
+    .map(([cause, count]) => `${cause}=${count}`)
+    .join(', ');
+  return `Routing retirement history: ${history.expiredIdentityCount} exact invocation identities expired (${causes}); observed selection sequence range ${history.minSelectionSequence}-${history.maxSelectionSequence}, selected ${history.earliestSelectedAt} through ${history.latestSelectedAt}.`;
+}
+
 export function formatHandoffRoutingStatus(result: HandoffRoutingStatusReadResult): string | null {
   switch (result.kind) {
     case 'absent':
@@ -233,12 +328,10 @@ export function formatHandoffRoutingStatus(result: HandoffRoutingStatusReadResul
     case 'undeterminable':
       return `Routing status could not be read (${result.cause}, errcode ${result.errcode}).`;
     case 'current': {
-      const unresolved = result.statuses.flatMap((status) =>
-        status.kind === 'unresolved'
-          ? [formatRoutingOwnerLiveness(status.selection.invocationId, status.ownerLiveness)]
-          : [],
-      );
-      return unresolved.length === 0 ? null : unresolved.join('\n');
+      const sections = result.statuses.map(formatRoutingInvocationStatus);
+      const truncatedHistory = formatRetirementHistoryTruncated(result.retirementHistoryTruncated);
+      if (truncatedHistory !== null) sections.push(truncatedHistory);
+      return sections.length === 0 ? null : sections.join('\n');
     }
     default:
       return assertNever(result);

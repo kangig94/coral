@@ -1,10 +1,11 @@
 import { InvalidArgumentError, type Command } from 'commander';
 
 import {
+  HANDOFF_PUBLICATION_INCIDENT_EXIT_CONTRIBUTIONS,
   HandoffRunError,
   liveHandoffResultObligation,
   runHandoff,
-  type LiveHandoffContinuationResult,
+  type LiveHandoffResult,
 } from '../../coordinator/handoff-runner.js';
 import {
   parseHandoffRepairOperation,
@@ -67,8 +68,6 @@ import { renderHandoffNotice, renderHandoffPublicationIncidents } from '../hando
 import {
   formatBackendStatus,
   formatHandoffRoutingResolveResult,
-  formatHandoffRoutingStatus,
-  formatLiveHandoffResult,
   formatRecoveryQuarantineClear,
   formatRecoveryQuarantineList,
   formatShutdown,
@@ -166,7 +165,7 @@ export interface KbCommitCommandOperations {
 export interface BackendStatusCommandOperations {
   inspectReadiness(): GenerationReadiness;
   getStatus(): Promise<BackendStatusFull>;
-  getLiveHandoffResult(): LiveHandoffContinuationResult | null;
+  getLiveHandoffResult(): LiveHandoffResult | null;
   getRoutingStatus(): Promise<HandoffRoutingStatusReadResult>;
 }
 
@@ -334,21 +333,16 @@ export function registerBackendCommands(program: Command, operations: BackendCom
       ]);
       const liveHandoffResult = backendStatus.getLiveHandoffResult();
       const liveHandoffObligation = liveHandoffResultObligation(liveHandoffResult);
-      process.stdout.write(formatBackendStatus(status) + '\n');
-      const routingStatusText = formatHandoffRoutingStatus(routingStatusRead);
-      if (routingStatusText !== null) process.stdout.write(`${routingStatusText}\n`);
-      if (liveHandoffObligation.severity === 'warning') {
-        const liveHandoffLine = formatLiveHandoffResult(liveHandoffResult);
-        if (liveHandoffLine !== null) {
-          process.stdout.write(`${liveHandoffLine}\n`);
-        }
-      }
-      process.exitCode =
-        BACKEND_STATUS_EXIT_CODES[status.status] === 75 ||
-        liveHandoffObligation.exitContribution === 75 ||
-        handoffRoutingStatusExitContribution(routingStatusRead) === 75
-          ? 75
-          : 0;
+      process.stdout.write(`${formatBackendStatus(status, routingStatusRead, liveHandoffResult)}\n`);
+      const localExitContributions: readonly (0 | 75)[] = [
+        BACKEND_STATUS_EXIT_CODES[status.status],
+        liveHandoffObligation.exitContribution,
+        handoffRoutingStatusExitContribution(routingStatusRead),
+        ...(liveHandoffResult?.publicationIncidents.map(
+          (incident) => HANDOFF_PUBLICATION_INCIDENT_EXIT_CONTRIBUTIONS[incident.kind],
+        ) ?? []),
+      ];
+      process.exitCode = localExitContributions.includes(75) ? 75 : 0;
     } catch (error) {
       emitError(error);
     }

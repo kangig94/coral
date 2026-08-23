@@ -7,7 +7,12 @@ import {
   type StoreResetCommandOperations,
 } from '#src/cli/commands/backend.js';
 import { formatBackendStatus, formatHandoffContinuationReason } from '#src/cli/format/backend.js';
-import type { HandoffContinuationReason } from '#src/coordinator/handoff-runner.js';
+import type {
+  HandoffContinuationReason,
+  HandoffPublicationIncident,
+  LiveHandoffContinuationResult,
+  LiveHandoffResult,
+} from '#src/coordinator/handoff-runner.js';
 import type { HandoffRoutingStatusReadResult } from '#src/coordinator/handoff-routing-status.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { createRecoveryComponent } from '#src/coordinator/runtime-components/recovery-component.js';
@@ -21,6 +26,13 @@ import type { HealthSnapshot } from '#src/transport/server-ports.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 
 const TEST_TIME = { now: () => Date.parse('2026-08-03T00:00:00.000Z') };
+
+function liveHandoffResult(
+  continuation: LiveHandoffContinuationResult,
+  publicationIncidents: readonly HandoffPublicationIncident[] = [],
+): LiveHandoffResult {
+  return { continuation, publicationIncidents };
+}
 
 const storeReset: StoreResetCommandOperations = {
   list: () => ({ incidents: [] }),
@@ -111,28 +123,29 @@ describe('backend status live handoff disposition', () => {
     const status: BackendStatusCommandOperations = {
       inspectReadiness: () => ({ kind: 'no-legacy' }),
       getStatus: async () => ({ status: 'not_running' }),
-      getLiveHandoffResult: () => ({
-        kind: 'run-current',
-        reason: {
-          kind: 'routing',
-          basis: {
-            kind: 'invoking-build-not-older',
-            comparison: 'same-version',
-            invoking: {
-              version: '0.10.9',
-              buildSetId: '123e4567-e89b-42d3-a456-426614174000',
-              bundleHash: 'invoking-bundle',
-              flavor: 'prod',
-            },
-            incumbent: {
-              version: '0.10.9',
-              buildSetId: '223e4567-e89b-42d3-a456-426614174000',
-              bundleHash: 'incumbent-bundle',
-              flavor: 'prod',
+      getLiveHandoffResult: () =>
+        liveHandoffResult({
+          kind: 'run-current',
+          reason: {
+            kind: 'routing',
+            basis: {
+              kind: 'invoking-build-not-older',
+              comparison: 'same-version',
+              invoking: {
+                version: '0.10.9',
+                buildSetId: '123e4567-e89b-42d3-a456-426614174000',
+                bundleHash: 'invoking-bundle',
+                flavor: 'prod',
+              },
+              incumbent: {
+                version: '0.10.9',
+                buildSetId: '223e4567-e89b-42d3-a456-426614174000',
+                bundleHash: 'incumbent-bundle',
+                flavor: 'prod',
+              },
             },
           },
-        },
-      }),
+        }),
       getRoutingStatus: async () => ({ kind: 'absent' }),
     };
     const program = new Command();
@@ -156,16 +169,17 @@ describe('backend status live handoff disposition', () => {
     const status: BackendStatusCommandOperations = {
       inspectReadiness: () => ({ kind: 'no-legacy' }),
       getStatus: async () => ({ status: 'not_running' }),
-      getLiveHandoffResult: () => ({
-        kind: 'run-current',
-        reason: {
-          kind: 'routing',
-          basis: {
-            kind: 'same-build-set',
-            buildSetId: '123e4567-e89b-42d3-a456-426614174000',
+      getLiveHandoffResult: () =>
+        liveHandoffResult({
+          kind: 'run-current',
+          reason: {
+            kind: 'routing',
+            basis: {
+              kind: 'same-build-set',
+              buildSetId: '123e4567-e89b-42d3-a456-426614174000',
+            },
           },
-        },
-      }),
+        }),
       getRoutingStatus: async () => ({ kind: 'absent' }),
     };
     const program = new Command();
@@ -179,6 +193,103 @@ describe('backend status live handoff disposition', () => {
     );
     expect(process.exitCode).toBe(0);
   });
+
+  it('renders the live-incumbent newer-build line exactly', async () => {
+    const status: BackendStatusCommandOperations = {
+      inspectReadiness: () => ({ kind: 'no-legacy' }),
+      getStatus: async () => ({ status: 'not_running' }),
+      getLiveHandoffResult: () =>
+        liveHandoffResult({
+          kind: 'run-current',
+          reason: {
+            kind: 'routing',
+            basis: {
+              kind: 'invoking-build-not-older',
+              comparison: 'newer-version',
+              invoking: {
+                version: '0.10.8',
+                buildSetId: '123e4567-e89b-42d3-a456-426614174000',
+                bundleHash: 'invoking-bundle',
+                flavor: 'prod',
+              },
+              incumbent: {
+                version: '0.10.6',
+                buildSetId: '223e4567-e89b-42d3-a456-426614174000',
+                bundleHash: 'incumbent-bundle',
+                flavor: 'prod',
+              },
+            },
+          },
+        }),
+      getRoutingStatus: async () => ({ kind: 'absent' }),
+    };
+    const program = new Command();
+    program.exitOverride();
+    registerBackendCommands(program, { storeReset, backendStatus: status });
+
+    await program.parseAsync(['node', 'coral-cli', 'backend', 'status']);
+
+    expect(stdout).toContain(
+      'Handoff: continuing current build — invoking build 0.10.8 is newer than incumbent 0.10.6.',
+    );
+  });
+});
+
+describe('backend status local exit combination', () => {
+  const contributions = [0, 75] as const;
+  const cases = contributions.flatMap((daemonContribution) =>
+    contributions.flatMap((liveContribution) =>
+      contributions.flatMap((routingContribution) =>
+        contributions.map((publicationContribution) => ({
+          daemonContribution,
+          liveContribution,
+          routingContribution,
+          publicationContribution,
+          expected:
+            daemonContribution === 75 ||
+            liveContribution === 75 ||
+            routingContribution === 75 ||
+            publicationContribution === 75
+              ? 75
+              : 0,
+        })),
+      ),
+    ),
+  );
+
+  it.each(cases)(
+    'combines daemon=$daemonContribution live=$liveContribution routing=$routingContribution publication=$publicationContribution as $expected',
+    async ({ daemonContribution, liveContribution, routingContribution, publicationContribution, expected }) => {
+      const continuation: LiveHandoffContinuationResult =
+        liveContribution === 75
+          ? { kind: 'run-current', reason: { kind: 'handoff-abandoned', reason: 'stdout-drain-incomplete' } }
+          : { kind: 'run-current', reason: { kind: 'routing', basis: { kind: 'incumbent-absent' } } };
+      const live =
+        liveContribution === 0 && publicationContribution === 0
+          ? null
+          : liveHandoffResult(
+              continuation,
+              publicationContribution === 75 ? [{ phase: 'selection', kind: 'not-published', cause: 'contended' }] : [],
+            );
+      const status: BackendStatusCommandOperations = {
+        inspectReadiness: () => ({ kind: 'no-legacy' }),
+        getStatus: async () =>
+          daemonContribution === 75
+            ? { status: 'undecodable_record', reason: 'corrupt-json', path: '/run/coordinator.json' }
+            : { status: 'not_running' },
+        getLiveHandoffResult: () => live,
+        getRoutingStatus: async () =>
+          routingContribution === 75 ? { kind: 'unreadable', reason: 'invalid-json' } : { kind: 'absent' },
+      };
+      const program = new Command();
+      program.exitOverride();
+      registerBackendCommands(program, { storeReset, backendStatus: status });
+
+      await program.parseAsync(['node', 'coral-cli', 'backend', 'status']);
+
+      expect(process.exitCode).toBe(expected);
+    },
+  );
 });
 
 describe('backend routing status', () => {
@@ -235,6 +346,41 @@ describe('backend routing status', () => {
 
     expect(stdout).toContain(`Routing invocation ${invocationId}: unresolved; its recorded owner is absent.`);
     expect(stdout).toContain(`backend routing-status resolve --invocation ${invocationId}`);
+    expect(process.exitCode).toBe(75);
+  });
+
+  it('always renders truncated retirement history', async () => {
+    const status: BackendStatusCommandOperations = {
+      inspectReadiness: () => ({ kind: 'no-legacy' }),
+      getStatus: async () => ({ status: 'not_running' }),
+      getLiveHandoffResult: () => null,
+      getRoutingStatus: async () => ({
+        kind: 'current',
+        generation: 1,
+        statuses: [],
+        retirementHistoryTruncated: {
+          kind: 'retirement-history-truncated',
+          expiredIdentityCount: 3,
+          causes: {
+            'selection-evicted-at-capacity': 1,
+            'completed-pair-compaction': 2,
+            'operator-resolved': 0,
+          },
+          minSelectionSequence: 7,
+          maxSelectionSequence: 11,
+          earliestSelectedAt: '2026-08-01T00:00:00.000Z',
+          latestSelectedAt: '2026-08-03T00:00:00.000Z',
+        },
+      }),
+    };
+    const program = new Command();
+    program.exitOverride();
+    registerBackendCommands(program, { storeReset, backendStatus: status });
+
+    await program.parseAsync(['node', 'coral-cli', 'backend', 'status']);
+
+    expect(stdout).toContain('Routing retirement history: 3 exact invocation identities expired');
+    expect(stdout).toContain('selection-evicted-at-capacity=1');
     expect(process.exitCode).toBe(75);
   });
 });
@@ -416,7 +562,7 @@ describe('backend status recovery quarantine propagation', () => {
       const { namespace: _namespace, status: _status, ...health } = produced;
       const status = { status: 'ok', health: { ...health, status: 'ok' } } satisfies BackendStatusFull;
 
-      expect(formatBackendStatus(status)).toContain(
+      expect(formatBackendStatus(status, { kind: 'absent' }, null)).toContain(
         [
           '  recovery: degraded',
           '    reason: recovery-quarantine (1 unresolved row)',
@@ -461,7 +607,9 @@ describe('backend status recovery quarantine propagation', () => {
     const { namespace: _namespace, status: _status, ...health } = produced;
     const status = { status: 'ok', health: { ...health, status: 'ok' } } satisfies BackendStatusFull;
 
-    expect(formatBackendStatus(status)).toContain('  recovery: offline\n    reason: Status unavailable:');
+    expect(formatBackendStatus(status, { kind: 'absent' }, null)).toContain(
+      '  recovery: offline\n    reason: Status unavailable:',
+    );
   });
 });
 

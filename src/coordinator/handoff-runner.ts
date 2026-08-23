@@ -203,6 +203,13 @@ export type HandoffPublicationIncident =
   | (PublicationFailure & Readonly<{ phase: HandoffRecordingPhase }>)
   | HandoffRefusalIncident;
 
+export const HANDOFF_PUBLICATION_INCIDENT_EXIT_CONTRIBUTIONS: Readonly<Record<HandoffPublicationIncident['kind'], 75>> =
+  Object.freeze({
+    'not-published': 75,
+    undeterminable: 75,
+    refused: 75,
+  });
+
 export type NonEmptyReadonlyArray<T> = readonly [T, ...T[]];
 
 export type HandoffRunResult =
@@ -235,12 +242,17 @@ export class HandoffRunError extends Error {
 
 export type LiveHandoffContinuationResult = Extract<HandoffContinuationResult, { kind: 'run-current' }>;
 
-export function liveHandoffResultObligation(result: LiveHandoffContinuationResult | null): RoutingBasisObligation {
+export type LiveHandoffResult = Readonly<{
+  continuation: LiveHandoffContinuationResult;
+  publicationIncidents: readonly HandoffPublicationIncident[];
+}>;
+
+export function liveHandoffResultObligation(result: LiveHandoffResult | null): RoutingBasisObligation {
   if (result === null) return ABSENT_HANDOFF_RESULT_OBLIGATION;
-  if (result.reason.kind === 'routing') {
-    return HANDOFF_ROUTING_BASIS_OBLIGATIONS[result.reason.basis.kind];
+  if (result.continuation.reason.kind === 'routing') {
+    return HANDOFF_ROUTING_BASIS_OBLIGATIONS[result.continuation.reason.basis.kind];
   }
-  return HANDOFF_CONTINUATION_REASON_OBLIGATIONS[result.reason.kind];
+  return HANDOFF_CONTINUATION_REASON_OBLIGATIONS[result.continuation.reason.kind];
 }
 
 export type RunHandoffOptions = Readonly<{

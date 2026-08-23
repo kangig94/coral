@@ -8,7 +8,7 @@ import {
   type HandoffOutcome,
   type HandoffPublicationIncident,
   type HandoffRunResult,
-  type LiveHandoffContinuationResult,
+  type LiveHandoffResult,
 } from '../coordinator/handoff-runner.js';
 import { assertNever } from '../infra/error-format.js';
 import { createBuiltInProviderRegistry } from '../providers/bootstrap.js';
@@ -30,7 +30,7 @@ import { renderHandoffNotice, renderHandoffPublicationIncidents } from './handof
 import { resolvePluginRoot } from './plugin-root.js';
 
 let cliHandoffPreflightPromise: Promise<HandoffOutcome | null> | null = null;
-let cliHandoffPreflightResult: LiveHandoffContinuationResult | null = null;
+let cliHandoffPreflightResult: LiveHandoffResult | null = null;
 
 async function executeCliHandoffPreflight(argv: readonly string[]): Promise<HandoffOutcome | null> {
   const statusInvocation = argv[2] === 'backend' && argv[3] === 'status';
@@ -77,7 +77,7 @@ async function executeCliHandoffPreflight(argv: readonly string[]): Promise<Hand
 
   switch (continuation.kind) {
     case 'run-current':
-      cliHandoffPreflightResult = continuation;
+      cliHandoffPreflightResult = { continuation, publicationIncidents };
       return null;
     case 'delegated': {
       const { outcome } = continuation;
@@ -102,7 +102,7 @@ export function runCliHandoffPreflight(argv: readonly string[] = process.argv): 
   return cliHandoffPreflightPromise;
 }
 
-export function peekCliHandoffPreflightResult(): LiveHandoffContinuationResult | null {
+export function peekCliHandoffPreflightResult(): LiveHandoffResult | null {
   return cliHandoffPreflightResult;
 }
 
