@@ -1532,7 +1532,12 @@ export type HandoffRoutingResolveResult =
   | Readonly<{
       kind: 'not-published';
       invocationId: string;
-      outcome: Exclude<PublicationOutcome, { kind: 'committed' }>;
+      outcome: Extract<PublicationOutcome, { kind: 'not-published' }>;
+    }>
+  | Readonly<{
+      kind: 'undeterminable';
+      invocationId: string;
+      outcome: Extract<PublicationOutcome, { kind: 'undeterminable' }>;
     }>;
 
 const statusReadRowSchema = z
@@ -1947,13 +1952,16 @@ export async function resolveHandoffRoutingStatus(
         ],
         signal,
       );
-      return outcome.kind === 'committed'
-        ? {
-            kind: 'acknowledged-capacity-eviction',
-            invocationId: request.invocationId,
-            selectionSequence: status.tombstone.selectionSequence,
-          }
-        : { kind: 'not-published', invocationId: request.invocationId, outcome };
+      if (outcome.kind === 'committed') {
+        return {
+          kind: 'acknowledged-capacity-eviction',
+          invocationId: request.invocationId,
+          selectionSequence: status.tombstone.selectionSequence,
+        };
+      }
+      return outcome.kind === 'not-published'
+        ? { kind: 'not-published', invocationId: request.invocationId, outcome }
+        : { kind: 'undeterminable', invocationId: request.invocationId, outcome };
     }
     return status.tombstone.retirementCause === 'operator-resolved' || status.tombstone.terminalExisted
       ? { kind: 'already-terminal', invocationId: request.invocationId }
@@ -1996,9 +2004,12 @@ export async function resolveHandoffRoutingStatus(
     ],
     signal,
   );
-  return outcome.kind === 'committed'
-    ? { kind: 'resolved', invocationId: request.invocationId, reason, sequence: outcome.sequence }
-    : { kind: 'not-published', invocationId: request.invocationId, outcome };
+  if (outcome.kind === 'committed') {
+    return { kind: 'resolved', invocationId: request.invocationId, reason, sequence: outcome.sequence };
+  }
+  return outcome.kind === 'not-published'
+    ? { kind: 'not-published', invocationId: request.invocationId, outcome }
+    : { kind: 'undeterminable', invocationId: request.invocationId, outcome };
 }
 
 export function handoffRoutingStatusExitContribution(result: HandoffRoutingStatusReadResult): 0 | 75 {

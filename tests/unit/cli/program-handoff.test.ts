@@ -279,7 +279,7 @@ describe('program', () => {
       );
       expect(stderr).toContain('Handoff routing-status terminal publication was not published (contended).');
       expect(stderr).toContain(
-        'Next step: rerun coral-cli backend status, then retry the operation if the invocation is still unresolved.',
+        'Next step: rerun coral-cli backend status; if the original invocation is still unresolved, resolve that retained opening with coral-cli backend routing-status resolve --invocation <id>. The operation already completed; do not rerun it.',
       );
     },
   );

@@ -87,10 +87,10 @@ export class IpcDeadlineExceededError extends Error {
  * Bundle hashes do not order builds: same-version contenders must not evict the incumbent, and older contenders
  * must not evict a healthy newer incumbent.
  *
- * `compareProductVersions` cannot make both directions of the same ordered pair positive, so of two contenders
- * racing for one incumbent, at most one can conclude the other side is upgradeable. At equal version neither can,
- * so both defer: an equal-version rebuild with a different bundle hash converges on whichever build bound the
- * socket first instead of alternating SIGTERM/SIGKILL evictions that reset the store on every lap.
+ * Of two contenders racing for one incumbent, at most one may conclude the other side is upgradeable. At equal
+ * version neither may, so both defer: an equal-version rebuild with a different bundle hash converges on
+ * whichever build bound the socket first instead of alternating SIGTERM/SIGKILL evictions that reset the store
+ * on every lap.
  */
 export function incumbentOutranksContender(health: IncumbentHealth, desired: DesiredIncumbentIdentity): boolean {
   if (health.version === undefined || health.flavor !== desired.flavor || health.namespace !== desired.namespace) {

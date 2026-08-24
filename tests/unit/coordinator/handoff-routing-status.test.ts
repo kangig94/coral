@@ -120,6 +120,9 @@ function storageFailingOnSqliteStatement(storage: StoragePort, failingStatement:
       if (property !== 'openSqliteDatabaseSync') return Reflect.get(target, property, target);
       return (path: string, options?: { readOnly?: boolean }): SqliteDatabasePort => {
         const database = target.openSqliteDatabaseSync(path, options);
+        // Publication opens read-write and reading opens read-only, so sparing read-only connections aims
+        // the injection at the publication even when a caller reads first.
+        if (options?.readOnly === true) return database;
         return {
           exec(sql) {
             if (sql === failingStatement) {
@@ -1544,6 +1547,63 @@ describe('handoff routing status', () => {
     if (status.kind !== 'current') throw new Error(`Expected current status, received ${status.kind}`);
     expect(status.statuses.some((candidate) => candidate.kind === 'retired')).toBe(false);
     expect(handoffRoutingStatusExitContribution(status)).toBe(0);
+  });
+
+  it('preserves an undeterminable operator-resolution publication at the resolve boundary', async () => {
+    const invocationId = '123e4567-e89b-42d3-a456-426614174009';
+    const path = databasePath();
+    await committed(path, [selection(invocationId, 1)]);
+    const repairRuntime = {
+      ...runtime,
+      storage: storageFailingOnSqliteStatement(runtime.storage, 'COMMIT'),
+      process: {
+        ...runtime.process,
+        observeProcessIdentities: async (owners: readonly (typeof OWNER)[]) =>
+          owners.map((owner) => ({ owner, evidence: { kind: 'pid-absent' as const } })),
+      },
+    };
+
+    await expect(
+      resolveHandoffRoutingStatus(repairRuntime, path, {
+        invocationId,
+        forceUnobservable: false,
+      }),
+    ).resolves.toEqual({
+      kind: 'undeterminable',
+      invocationId,
+      outcome: { kind: 'undeterminable', cause: 'capacity-exhausted', errcode: SQLITE_FULL },
+    });
+  });
+
+  it('preserves an undeterminable capacity-acknowledgement publication at the resolve boundary', async () => {
+    const invocationId = 'capacity-opening-0';
+    const path = databasePath();
+    await committed(
+      path,
+      Array.from({ length: MAX_UNRESOLVED_INVOCATIONS + 1 }, (_, index) =>
+        selection(`capacity-opening-${index}`, index + 1),
+      ),
+    );
+    const repairRuntime = {
+      ...runtime,
+      storage: storageFailingOnSqliteStatement(runtime.storage, 'COMMIT'),
+      process: {
+        ...runtime.process,
+        observeProcessIdentities: async (owners: readonly (typeof OWNER)[]) =>
+          owners.map((owner) => ({ owner, evidence: { kind: 'pid-absent' as const } })),
+      },
+    };
+
+    await expect(
+      resolveHandoffRoutingStatus(repairRuntime, path, {
+        invocationId,
+        forceUnobservable: false,
+      }),
+    ).resolves.toEqual({
+      kind: 'undeterminable',
+      invocationId,
+      outcome: { kind: 'undeterminable', cause: 'capacity-exhausted', errcode: SQLITE_FULL },
+    });
   });
 
   it('refuses operator resolution while generation maintenance is held', async () => {

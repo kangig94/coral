@@ -138,7 +138,10 @@ export const BACKEND_STATUS_EXIT_CODES: Readonly<Record<BackendStatusFull['statu
   no_record_socket_present: 75,
 };
 
-type HandoffRoutingResolveKindWithoutPublication = Exclude<HandoffRoutingResolveResult['kind'], 'not-published'>;
+type HandoffRoutingResolveKindWithoutPublication = Exclude<
+  HandoffRoutingResolveResult['kind'],
+  'not-published' | 'undeterminable'
+>;
 type HandoffRoutingNotPublishedCause = Extract<
   Extract<HandoffRoutingResolveResult, { kind: 'not-published' }>['outcome'],
   { kind: 'not-published' }
@@ -181,8 +184,9 @@ function handoffPublicationIncidentExitContribution(incident: HandoffPublication
 }
 
 function handoffRoutingResolveExitCode(result: HandoffRoutingResolveResult): 0 | 1 | 70 | 75 {
-  if (result.kind !== 'not-published') return HANDOFF_ROUTING_RESOLVE_EXIT_CODES[result.kind];
-  return result.outcome.kind === 'undeterminable' ? 75 : HANDOFF_ROUTING_NOT_PUBLISHED_EXIT_CODES[result.outcome.cause];
+  if (result.kind === 'not-published') return HANDOFF_ROUTING_NOT_PUBLISHED_EXIT_CODES[result.outcome.cause];
+  if (result.kind === 'undeterminable') return 75;
+  return HANDOFF_ROUTING_RESOLVE_EXIT_CODES[result.kind];
 }
 
 type BackendStatusLocalExitContribution = 0 | 70 | 75;

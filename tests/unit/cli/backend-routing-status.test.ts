@@ -166,6 +166,14 @@ describe('backend routing-status resolve grammar', () => {
       },
       exitCode: 75,
     },
+    {
+      result: {
+        kind: 'undeterminable',
+        invocationId: INVOCATION_ID,
+        outcome: { kind: 'undeterminable', cause: 'io-failed', errcode: 5 },
+      },
+      exitCode: 75,
+    },
   ])('maps $result.kind to command exit $exitCode', async ({ result, exitCode }) => {
     const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
@@ -295,7 +303,7 @@ describe('backend routing-status resolve grammar', () => {
     ],
     [
       {
-        kind: 'not-published',
+        kind: 'undeterminable',
         invocationId: INVOCATION_ID,
         outcome: { kind: 'undeterminable', cause: 'io-failed', errcode: 5 },
       },
@@ -303,7 +311,7 @@ describe('backend routing-status resolve grammar', () => {
     ],
     [
       {
-        kind: 'not-published',
+        kind: 'undeterminable',
         invocationId: INVOCATION_ID,
         outcome: { kind: 'undeterminable', cause: 'contended', errcode: 5 },
       },
@@ -311,7 +319,7 @@ describe('backend routing-status resolve grammar', () => {
     ],
     [
       {
-        kind: 'not-published',
+        kind: 'undeterminable',
         invocationId: INVOCATION_ID,
         outcome: { kind: 'undeterminable', cause: 'capacity-exhausted', errcode: 13 },
       },
@@ -319,14 +327,16 @@ describe('backend routing-status resolve grammar', () => {
     ],
     [
       {
-        kind: 'not-published',
+        kind: 'undeterminable',
         invocationId: INVOCATION_ID,
         outcome: { kind: 'undeterminable', cause: 'unreadable', errcode: 26 },
       },
       'if the journal is unreadable',
     ],
   ])('renders an outcome-specific successor for $0.kind', (result, expected) => {
-    expect(formatHandoffRoutingResolveResult(result)).toContain(expected);
+    const rendered = formatHandoffRoutingResolveResult(result);
+    expect(rendered).toContain(expected);
+    if (result.kind === 'undeterminable') expect(rendered).not.toContain('was not published');
   });
 
   it('dispatches operator discard and reports its retained address', async () => {

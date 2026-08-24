@@ -2,7 +2,8 @@ import type { PublicationOutcome } from '../../coordinator/handoff-routing-statu
 import type { HandoffPublicationIncident } from '../../coordinator/handoff-runner.js';
 import { assertNever } from '../../infra/error-format.js';
 
-type HandoffPublicationFailure = Exclude<PublicationOutcome, { kind: 'committed' }>;
+type HandoffPublicationFailure = Exclude<PublicationOutcome, { kind: 'committed' }> &
+  Readonly<{ phase?: HandoffPublicationIncident['phase'] }>;
 
 type HandoffRoutingResolutionContext = Readonly<{
   invocationId: string;
@@ -67,6 +68,13 @@ export function formatHandoffPublicationFailureSuccessor(
   outcome: HandoffPublicationFailure,
   context?: HandoffRoutingResolutionContext,
 ): string {
+  if (context === undefined && outcome.phase === 'terminal') {
+    return (
+      'Next step: rerun coral-cli backend status; if the original invocation is still unresolved, resolve that ' +
+      'retained opening with coral-cli backend routing-status resolve --invocation <id>. The operation already ' +
+      'completed; do not rerun it.'
+    );
+  }
   const retryTarget = context === undefined ? 'the operation' : 'this resolve command';
   switch (outcome.kind) {
     case 'not-published': {

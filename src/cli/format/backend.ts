@@ -50,7 +50,9 @@ export function formatHandoffRoutingBasis(basis: HandoffRoutingBasis): string {
     case 'incumbent-unresolved':
       return [
         `Handoff: continuing current build — the incumbent coordinator could not be resolved because ${formatUnresolvedIncumbentCause(basis.cause)}.`,
-        'Next step: follow the daemon-status remediation above; do not proceed while coral-cli backend status exits 75.',
+        basis.cause === 'health-shape-rejected'
+          ? 'Next step: run coral-cli backend shutdown, then rerun the command to relaunch the peer from the current installation.'
+          : 'Next step: follow the daemon-status remediation above; do not proceed while coral-cli backend status exits 75.',
       ].join('\n');
     case 'incumbent-unusable':
       return formatUnusableIncumbent(basis);
@@ -373,8 +375,8 @@ function formatUnavailableRoutingResolution(
   }
 }
 
-function formatUnpublishedRoutingResolution(
-  result: Extract<HandoffRoutingResolveResult, { kind: 'not-published' }>,
+function formatRoutingResolutionPublicationSuccessor(
+  result: Extract<HandoffRoutingResolveResult, { kind: 'not-published' | 'undeterminable' }>,
 ): string {
   return formatHandoffPublicationFailureSuccessor(result.outcome, {
     invocationId: result.invocationId,
@@ -402,7 +404,12 @@ export function formatHandoffRoutingResolveResult(result: HandoffRoutingResolveR
     case 'not-published':
       return (
         `Routing resolution was not published (${result.outcome.kind}:${result.outcome.cause}).\n` +
-        formatUnpublishedRoutingResolution(result)
+        formatRoutingResolutionPublicationSuccessor(result)
+      );
+    case 'undeterminable':
+      return (
+        `Routing resolution publication could not be determined (${result.outcome.cause}, errcode ${result.outcome.errcode}).\n` +
+        formatRoutingResolutionPublicationSuccessor(result)
       );
     default:
       return assertNever(result);

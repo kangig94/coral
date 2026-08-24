@@ -718,13 +718,35 @@ describe('handoff continuation remediation', () => {
     expected: string;
   }> = [
     {
-      name: 'unresolved incumbent',
+      name: 'unrecognized incumbent health',
       reason: {
         kind: 'routing',
         basis: { kind: 'incumbent-unresolved', cause: 'health-shape-rejected' },
       },
       expected: [
         'Handoff: continuing current build — the incumbent coordinator could not be resolved because its authenticated health reply was not recognized.',
+        'Next step: run coral-cli backend shutdown, then rerun the command to relaunch the peer from the current installation.',
+      ].join('\n'),
+    },
+    {
+      name: 'unreadable incumbent record',
+      reason: {
+        kind: 'routing',
+        basis: { kind: 'incumbent-unresolved', cause: 'unreadable-record' },
+      },
+      expected: [
+        'Handoff: continuing current build — the incumbent coordinator could not be resolved because its coordinator record could not be read.',
+        'Next step: follow the daemon-status remediation above; do not proceed while coral-cli backend status exits 75.',
+      ].join('\n'),
+    },
+    {
+      name: 'failed incumbent health request',
+      reason: {
+        kind: 'routing',
+        basis: { kind: 'incumbent-unresolved', cause: 'health-request-failed' },
+      },
+      expected: [
+        'Handoff: continuing current build — the incumbent coordinator could not be resolved because its authenticated health request did not complete.',
         'Next step: follow the daemon-status remediation above; do not proceed while coral-cli backend status exits 75.',
       ].join('\n'),
     },
@@ -823,7 +845,6 @@ describe('handoff continuation remediation', () => {
     },
   ];
 
-  // A raw one reaching this list is the defect these strings were written to remove.
   const RAW_ENUM_TOKENS = [
     'health-shape-rejected',
     'health-request-failed',
