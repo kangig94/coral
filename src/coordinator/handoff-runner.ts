@@ -29,6 +29,8 @@ import { createRealRuntime } from '../runtime/real.js';
 import { createIpcClient } from '../transport/ipc/client.js';
 import {
   HANDOFF_ROUTING_BASIS_OBLIGATIONS,
+  buildSummarySchema,
+  incumbentIdentitySummarySchema,
   routeLiveIncumbent,
   type BuildSummary,
   type HandoffRoutingBasis,
@@ -56,6 +58,7 @@ const CLI_HANDOFF_GUARD_ENV = 'CORAL_CLI_HANDOFF_DELEGATED';
 
 const handoffSuccessBrand: unique symbol = Symbol('HandoffSuccess');
 const cliHandoffGuardSchema = z.enum(['0', '1']).optional();
+const incumbentIdentityShape = incumbentIdentitySummarySchema.unwrap().unwrap().shape;
 
 const handoffOperationSchema = z.discriminatedUnion('kind', [
   z
@@ -76,14 +79,14 @@ const handoffOperationSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('backend-startup') }).strict(),
 ]);
 
-const liveIncumbentHealthSchema = z
+export const liveIncumbentHealthSchema = z
   .object({
     status: z.enum(['starting', 'ok', 'draining']),
-    version: z.string().min(1),
-    bundleHash: z.string().min(1),
-    flavor: z.enum(['prod', 'dev']),
+    version: incumbentIdentityShape.version,
+    bundleHash: incumbentIdentityShape.bundleHash,
+    flavor: incumbentIdentityShape.flavor,
     namespace: z.string().min(1),
-    instanceId: z.string().min(1),
+    instanceId: incumbentIdentityShape.instanceId,
     pid: z.number().int().positive(),
     incarnation: processIncarnationSchema.optional(),
     manifest: strictBundleManifestSchema.optional(),
@@ -392,12 +395,12 @@ async function readAuthenticatedHealth(
 }
 
 function summarizeIncumbentIdentity(health: LiveIncumbentHealth): IncumbentIdentitySummary {
-  return {
+  return incumbentIdentitySummarySchema.parse({
     version: health.version,
     bundleHash: health.bundleHash,
     flavor: health.flavor,
     instanceId: health.instanceId,
-  };
+  });
 }
 
 export function routeAuthenticatedHealth(health: LiveIncumbentHealth): HandoffRoutingResult {
@@ -650,12 +653,12 @@ type ExecutionThrowPhase = Extract<DirectTerminalDisposition, { kind: 'execution
 type SelectionPublication = PublicationOutcome | Readonly<{ kind: 'refused'; refusal: HandoffRecordingRefusal }>;
 
 function summarizeBuild(manifest: StrictBundleManifest): BuildSummary {
-  return {
+  return buildSummarySchema.parse({
     version: manifest.version,
     buildSetId: manifest.buildSetId,
     bundleHash: manifest.bundleHash,
     flavor: manifest.flavor,
-  };
+  });
 }
 
 function durableRoutingBasis(basis: HandoffRoutingBasis): DurableHandoffRoutingBasis {

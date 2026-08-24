@@ -2,7 +2,6 @@ import { z } from 'zod';
 
 import { strictBundleManifestSchema, type StrictBundleIdentityFailure } from '../infra/bundle-manifest.js';
 import { assertNever } from '../infra/error-format.js';
-import type { InvalidTargetFailure } from '../infra/handoff-target.js';
 import { createMonotonicClock } from '../infra/monotonic-clock.js';
 import { processIncarnationSchema } from '../infra/node-process.js';
 import type { IdPort, Runtime } from '../runtime/ports.js';
@@ -30,9 +29,10 @@ import {
 } from '../store/generation-mutation-coordination.js';
 import {
   HANDOFF_ROUTING_BASIS_OBLIGATIONS,
+  buildSummarySchema,
+  incumbentIdentitySummarySchema,
   type BuildSummary,
   type HandoffRoutingBasis,
-  type IncumbentIdentitySummary,
   type RoutingBasisObligation,
 } from './handoff-routing.js';
 import type { ABSENT_HANDOFF_RESULT_OBLIGATION, HANDOFF_CONTINUATION_REASON_OBLIGATIONS } from './handoff-runner.js';
@@ -40,8 +40,8 @@ import type { ABSENT_HANDOFF_RESULT_OBLIGATION, HANDOFF_CONTINUATION_REASON_OBLI
 export const HANDOFF_ROUTING_STATUS_GENERATION = 1;
 export const MAX_HANDOFF_ROUTING_STATUS_BYTES = 1_048_576;
 export const MAX_RETIREMENT_TOMBSTONES = 128;
-export const MAX_RETIREMENT_TOMBSTONE_BYTES = 262_144;
-export const MAX_ENCODED_RETIREMENT_TOMBSTONE_BYTES = 2_048;
+export const MAX_ENCODED_RETIREMENT_TOMBSTONE_BYTES = 2_161;
+export const MAX_RETIREMENT_TOMBSTONE_BYTES = MAX_RETIREMENT_TOMBSTONES * MAX_ENCODED_RETIREMENT_TOMBSTONE_BYTES;
 export const MAX_UNRESOLVED_INVOCATIONS = 64;
 export const MAX_HANDOFF_ROUTING_OWNER_SWEEP_MS = 500;
 export const MAX_COMPLETED_HANDOFF_ROUTING_PAIRS = 256;
@@ -50,8 +50,6 @@ export const HANDOFF_ROUTING_COMPLETED_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 const MAX_BOUNDED_TERMINAL_HISTORY = MAX_COMPLETED_HANDOFF_ROUTING_PAIRS;
 
 const MAX_IDENTIFIER_LENGTH = 58;
-const MAX_INSTANCE_ID_LENGTH = 64;
-const MAX_VERSION_LENGTH = 64;
 const MAX_OBSERVED_AT_LENGTH = 24;
 const MAX_SIGNAL_LENGTH = 16;
 
@@ -59,39 +57,10 @@ const sequenceSchema = z.number().int().nonnegative().safe();
 const positiveSequenceSchema = z.number().int().positive().safe();
 const identifierSchema = z.string().min(1).max(MAX_IDENTIFIER_LENGTH);
 const observedAtSchema = z.string().datetime({ offset: false, precision: 3 }).length(MAX_OBSERVED_AT_LENGTH);
-const boundedVersionSchema = strictBundleManifestSchema.shape.version.max(MAX_VERSION_LENGTH);
 
-export const buildSummarySchema = z
-  .object({
-    version: boundedVersionSchema,
-    buildSetId: strictBundleManifestSchema.shape.buildSetId,
-    bundleHash: strictBundleManifestSchema.shape.bundleHash,
-    flavor: strictBundleManifestSchema.shape.flavor,
-  })
-  .strict()
-  .readonly();
+export const validatedTargetSummarySchema = z.object({ build: buildSummarySchema }).strict().readonly();
 
-export const incumbentIdentitySummarySchema = z
-  .object({
-    version: boundedVersionSchema,
-    bundleHash: strictBundleManifestSchema.shape.bundleHash,
-    flavor: strictBundleManifestSchema.shape.flavor,
-    instanceId: z.string().min(1).max(MAX_INSTANCE_ID_LENGTH),
-  })
-  .strict()
-  .readonly();
-
-export type ValidatedTargetSummary = Readonly<{ build: BuildSummary }>;
-
-export const validatedTargetSummarySchema: z.ZodType<ValidatedTargetSummary> = z
-  .object({ build: buildSummarySchema })
-  .strict()
-  .readonly();
-
-export type InvalidTargetSummary = Readonly<{
-  failure: InvalidTargetFailure;
-  expectedBuild?: BuildSummary;
-}>;
+export type ValidatedTargetSummary = z.infer<typeof validatedTargetSummarySchema>;
 
 const invalidTargetFailureSchema = z.enum([
   'bundle-dir-not-canonical',
@@ -103,13 +72,15 @@ const invalidTargetFailureSchema = z.enum([
   'adjacent-bundle-mismatch',
 ]);
 
-export const invalidTargetSummarySchema: z.ZodType<InvalidTargetSummary> = z
+export const invalidTargetSummarySchema = z
   .object({
     failure: invalidTargetFailureSchema,
     expectedBuild: buildSummarySchema.optional(),
   })
   .strict()
   .readonly();
+
+export type InvalidTargetSummary = z.infer<typeof invalidTargetSummarySchema>;
 
 const strictBundleIdentityFailureSchema: z.ZodType<StrictBundleIdentityFailure> = z.enum([
   'embedded_identity_unavailable',
@@ -118,25 +89,7 @@ const strictBundleIdentityFailureSchema: z.ZodType<StrictBundleIdentityFailure> 
   'adjacent_manifest_mismatch',
 ]);
 
-export type DurableHandoffRoutingBasis =
-  | Readonly<{ kind: 'incumbent-absent' }>
-  | Readonly<{
-      kind: 'incumbent-unresolved';
-      cause: 'unreadable-record' | 'health-request-failed' | 'health-shape-rejected';
-    }>
-  | Readonly<{ kind: 'incumbent-unusable'; cause: 'draining' | 'identity-mismatch' }>
-  | Readonly<{ kind: 'invoking-identity-unavailable'; failure: StrictBundleIdentityFailure }>
-  | Readonly<{ kind: 'incumbent-identity-unavailable'; incumbent: IncumbentIdentitySummary }>
-  | Readonly<{ kind: 'same-build-set'; buildSetId: string }>
-  | Readonly<{
-      kind: 'invoking-build-not-older';
-      comparison: 'same-version' | 'newer-version';
-      invoking: BuildSummary;
-      incumbent: BuildSummary;
-    }>
-  | Readonly<{ kind: 'invalid-incumbent-target'; evidence: InvalidTargetSummary }>;
-
-export const durableHandoffRoutingBasisSchema: z.ZodType<DurableHandoffRoutingBasis> = z.union([
+export const durableHandoffRoutingBasisSchema = z.union([
   z
     .object({ kind: z.literal('incumbent-absent') })
     .strict()
@@ -178,6 +131,8 @@ export const durableHandoffRoutingBasisSchema: z.ZodType<DurableHandoffRoutingBa
     .strict()
     .readonly(),
 ]);
+
+export type DurableHandoffRoutingBasis = z.infer<typeof durableHandoffRoutingBasisSchema>;
 
 export type RoutingStatusPolicy =
   | Readonly<{ durability: 'ephemeral'; severity: 'info' | 'warning'; exitContribution: 0 | 75 }>
@@ -346,19 +301,23 @@ const finalizedDispositionSchema = z.union([
     .strict()
     .readonly(),
   z
-    .object({ kind: z.literal('delegated-success'), version: boundedVersionSchema })
+    .object({ kind: z.literal('delegated-success'), version: strictBundleManifestSchema.shape.version })
     .strict()
     .readonly(),
   z
     .object({
       kind: z.literal('delegated-exit'),
-      version: boundedVersionSchema,
+      version: strictBundleManifestSchema.shape.version,
       exitCode: z.number().int().min(0).max(255),
     })
     .strict()
     .readonly(),
   z
-    .object({ kind: z.literal('delegated-signal'), version: boundedVersionSchema, signal: signalSchema })
+    .object({
+      kind: z.literal('delegated-signal'),
+      version: strictBundleManifestSchema.shape.version,
+      signal: signalSchema,
+    })
     .strict()
     .readonly(),
 ]);
@@ -777,7 +736,10 @@ function insertRecord(
   });
 }
 
-function parseRecordBody<T>(bodyJson: string | undefined, schema: z.ZodType<T>): T | undefined {
+function parseRecordBody<Schema extends z.ZodTypeAny>(
+  bodyJson: string | undefined,
+  schema: Schema,
+): z.output<Schema> | undefined {
   if (bodyJson === undefined) return undefined;
   try {
     return schema.parse(JSON.parse(bodyJson));
@@ -1989,6 +1951,8 @@ export function handoffRoutingStatusExitContribution(result: HandoffRoutingStatu
 }
 
 const MAX_TEXT = '\u0800';
+const MAX_VERSION_LENGTH = strictBundleManifestSchema.shape.version.maxLength;
+if (MAX_VERSION_LENGTH === null) throw new Error('The bundle manifest version must remain bounded.');
 const MAX_VERSION = `1.0.0-${'x'.repeat(MAX_VERSION_LENGTH - 6)}`;
 const MAX_ID = MAX_TEXT.repeat(MAX_IDENTIFIER_LENGTH);
 const MAX_INCARNATION = MAX_TEXT.repeat(256);

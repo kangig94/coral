@@ -19,6 +19,7 @@ import type {
   LiveHandoffResult,
 } from '#src/coordinator/handoff-runner.js';
 import type { HandoffRoutingStatusReadResult } from '#src/coordinator/handoff-routing-status.js';
+import { incumbentIdentitySummarySchema } from '#src/coordinator/handoff-routing.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { createRecoveryComponent } from '#src/coordinator/runtime-components/recovery-component.js';
 import { createRuntimeComponentRegistry } from '#src/coordinator/runtime-components/registry.js';
@@ -607,12 +608,12 @@ describe('handoff continuation remediation', () => {
         kind: 'routing',
         basis: {
           kind: 'incumbent-identity-unavailable',
-          incumbent: {
+          incumbent: incumbentIdentitySummarySchema.parse({
             version: '2.1.0',
-            bundleHash: 'incumbent-bundle',
+            bundleHash: 'f'.repeat(16),
             flavor: 'prod',
             instanceId: 'incumbent-1',
-          },
+          }),
         },
       },
       expected: [

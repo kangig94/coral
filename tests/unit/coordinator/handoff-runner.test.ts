@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -10,6 +10,7 @@ import {
   ABSENT_HANDOFF_RESULT_OBLIGATION,
   HANDOFF_CONTINUATION_REASON_OBLIGATIONS,
   HandoffRunError,
+  liveIncumbentHealthSchema,
   projectHandoffRunResult,
   resolveHandoffRoutingForOperation,
   routeAuthenticatedHealth,
@@ -109,9 +110,9 @@ const readProcessIncarnation = vi.fn<(pid: number, platform: NodeJS.Platform) =>
 );
 let runtime: Runtime;
 
-async function createHandoffRuntime(): Promise<Runtime> {
+async function createHandoffRuntime(baseDir?: string): Promise<Runtime> {
   const { createRealRuntime } = await vi.importActual<typeof RealRuntimeMod>('#src/runtime/real.js');
-  const actual = createRealRuntime('prod');
+  const actual = createRealRuntime('prod', baseDir === undefined ? undefined : { baseDir });
   return {
     ...actual,
     ids: { ...actual.ids, uuid: runtimeUuid },
@@ -137,7 +138,11 @@ async function createHandoffRuntime(): Promise<Runtime> {
       ...actual.paths,
       coral: {
         ...actual.paths.coral,
-        coordinator: { ...actual.paths.coral.coordinator, runDir: '/handoff/run', socketPath },
+        coordinator: {
+          ...actual.paths.coral.coordinator,
+          runDir: baseDir === undefined ? '/handoff/run' : actual.paths.coral.coordinator.runDir,
+          socketPath,
+        },
       },
     },
   };
@@ -358,6 +363,102 @@ describe('handoff-runner', () => {
         kind: 'continued-current',
         reason: { kind: 'routing', basis: { kind: 'incumbent-absent' } },
       },
+    });
+  });
+
+  it('should commit the full lifecycle for a live peer identity at the ingress maximum', async () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'coral-handoff-runner-routing-'));
+    roots.push(baseDir);
+    const isolatedRuntime = await createHandoffRuntime(baseDir);
+    mkdirSync(isolatedRuntime.paths.coral.coordinator.runDir, { recursive: true });
+    mockState.createRealRuntime.mockReturnValue(isolatedRuntime);
+    const status = await vi.importActual<typeof HandoffRoutingStatusMod>('#src/coordinator/handoff-routing-status.js');
+    mockState.publishHandoffRoutingTransitions.mockImplementation(
+      status.publishGenerationCoordinatedHandoffRoutingTransitions,
+    );
+
+    const healthProducerSchema = liveIncumbentHealthSchema.innerType();
+    const maximumVersionLength = healthProducerSchema.shape.version.maxLength;
+    const maximumInstanceIdLength = healthProducerSchema.shape.instanceId.maxLength;
+    if (maximumVersionLength === null || maximumInstanceIdLength === null) {
+      throw new Error('Expected the live identity producer to be bounded.');
+    }
+    const versionPrefix = '1.0.0+';
+    const maximumHealth = {
+      status: 'ok',
+      version: `${versionPrefix}${'x'.repeat(maximumVersionLength - versionPrefix.length)}`,
+      bundleHash: 'f'.repeat(16),
+      flavor: 'prod',
+      namespace: 'handoff-runner',
+      instanceId: '\u0800'.repeat(maximumInstanceIdLength),
+      pid: 4242,
+    } as const;
+    const maximumIncumbent = {
+      version: maximumHealth.version,
+      bundleHash: maximumHealth.bundleHash,
+      flavor: maximumHealth.flavor,
+      instanceId: maximumHealth.instanceId,
+    };
+    mockState.probeCoordinator.mockReturnValue({
+      kind: 'live',
+      record: {
+        socketPath,
+        pid: maximumHealth.pid,
+        bundleHash: maximumHealth.bundleHash,
+        flavor: maximumHealth.flavor,
+        namespace: maximumHealth.namespace,
+        bootToken: 'boot-token',
+      },
+    });
+    mockState.health.mockResolvedValue(maximumHealth);
+    let nextId = 0;
+    runtimeUuid.mockImplementation(() => `maximum-peer-${++nextId}`);
+
+    await expect(runHandoffResult(cliOperation('run'), { pluginRoot: '/plugin/root' })).resolves.toMatchObject({
+      kind: 'recorded',
+      continuation: {
+        kind: 'run-current',
+        reason: {
+          kind: 'routing',
+          basis: {
+            kind: 'incumbent-identity-unavailable',
+            incumbent: maximumIncumbent,
+          },
+        },
+      },
+      publicationIncidents: [],
+    });
+    expect(mockState.publishHandoffRoutingTransitions).toHaveBeenCalledTimes(2);
+    expect(mockState.publishHandoffRoutingTransitions.mock.calls[0]?.[2][0]).toMatchObject({
+      kind: 'routing-selected',
+      disposition: {
+        kind: 'continue-current',
+        basis: { kind: 'incumbent-identity-unavailable', incumbent: maximumIncumbent },
+      },
+    });
+    expect(mockState.publishHandoffRoutingTransitions.mock.calls[1]?.[2][0]).toMatchObject({
+      kind: 'continuation-finalized',
+      selection: { kind: 'with-selection-sequence', selectionSequence: 1 },
+    });
+
+    const path = join(
+      isolatedRuntime.paths.coral.coordinator.runDir,
+      `handoff-routing.${status.HANDOFF_ROUTING_STATUS_GENERATION}.db`,
+    );
+    expect(status.readHandoffRoutingStatus(isolatedRuntime, path)).toMatchObject({
+      kind: 'current',
+      statuses: [
+        {
+          kind: 'terminal',
+          selection: {
+            disposition: {
+              kind: 'continue-current',
+              basis: { kind: 'incumbent-identity-unavailable', incumbent: maximumIncumbent },
+            },
+          },
+          terminal: { disposition: { kind: 'continued-current' } },
+        },
+      ],
     });
   });
 
@@ -998,6 +1099,31 @@ describe('handoff-runner', () => {
       'a reply this build cannot validate must not be read as an observed incumbent',
     ).not.toHaveBeenCalled();
     expect(warnSpy).toHaveBeenCalled();
+  });
+
+  it('should route a non-canonical peer identity to the ingress rejection basis', async () => {
+    const healthProducerSchema = liveIncumbentHealthSchema.innerType();
+    const maximumInstanceIdLength = healthProducerSchema.shape.instanceId.maxLength;
+    if (maximumInstanceIdLength === null) throw new Error('Expected the live identity producer to be bounded.');
+    mockState.health.mockResolvedValue({
+      ...liveHealth(),
+      instanceId: 'x'.repeat(maximumInstanceIdLength + 1),
+    });
+
+    await expect(runHandoff(cliOperation('run'), { pluginRoot: '/plugin/root' })).resolves.toEqual({
+      kind: 'run-current',
+      reason: {
+        kind: 'routing',
+        basis: { kind: 'incumbent-unresolved', cause: 'health-shape-rejected' },
+      },
+    });
+    expect(mockState.publishHandoffRoutingTransitions).toHaveBeenCalledTimes(2);
+    expect(mockState.publishHandoffRoutingTransitions.mock.calls[0]?.[2][0]).toMatchObject({
+      disposition: {
+        kind: 'continue-current',
+        basis: { kind: 'incumbent-unresolved', cause: 'health-shape-rejected' },
+      },
+    });
   });
 
   it('should not warn when the probe itself observed absence', async () => {
