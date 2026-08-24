@@ -37,7 +37,7 @@ import {
   type RoutingBasisObligation,
   type UnresolvedIncumbentCause,
 } from './handoff-routing.js';
-import { parseHandoffRepairOperation } from './handoff-repair-operation.js';
+import { isHandoffRoutingStatusDiscardOperation, parseHandoffRepairOperation } from './handoff-repair-operation.js';
 import type {
   DirectTerminalDisposition,
   DurableHandoffRoutingBasis,
@@ -942,7 +942,8 @@ export async function runHandoff(
 
   const { routing, runtime, time } = await resolveHandoffRoutingForOperation(operation, options);
   const recordingApplicable =
-    operation.kind !== 'cli-invocation' || parseHandoffRepairOperation(operation.argv) === null;
+    operation.kind !== 'cli-invocation' ||
+    (parseHandoffRepairOperation(operation.argv) === null && !isHandoffRoutingStatusDiscardOperation(operation.argv));
   const executionPhase: { current: ExecutionThrowPhase } = { current: 'double-delegation-guard' };
   if (!recordingApplicable) {
     return {

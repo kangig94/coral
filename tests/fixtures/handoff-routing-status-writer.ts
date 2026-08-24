@@ -84,8 +84,9 @@ function insertGapRecord(db: DatabaseSync, sequence: number): void {
       selection_sequence,
       retirement_cause,
       terminal_existed,
+      completed_pair_stable,
       body_json
-    ) VALUES (?, ?, ?, ?, ?, 'terminal', 'execution-failed', NULL, NULL, NULL, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, 'terminal', 'execution-failed', NULL, NULL, NULL, 0, ?)`,
   ).run(sequence, HANDOFF_ROUTING_STATUS_GENERATION, eventId, invocationId, event.observedAt, JSON.stringify(event));
 }
 

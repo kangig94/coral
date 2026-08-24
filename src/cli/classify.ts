@@ -134,6 +134,7 @@ export const commandClassExemptions = {
   'backend store-reset report': 'local operational incident inspection',
   'backend store-reset discard': 'operator-only direct-filesystem store quarantine',
   'backend routing-status resolve': 'operator-only local routing journal repair',
+  'backend routing-status discard': 'operator-only derived routing-history quarantine',
 } as const;
 
 const providerCommandFamily = new WeakSet<Command>();

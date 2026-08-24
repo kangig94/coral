@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { chmodSync, existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -35,6 +35,7 @@ import {
 } from '#src/coordinator/handoff-routing-status.js';
 import type { ProcessIdentityObservation } from '#src/infra/port-types.js';
 import { createRealRuntime } from '#src/runtime/real.js';
+import { discardHandoffRoutingStatus } from '#src/cli/routing-status-discard.js';
 import { SimulationRuntime } from '../../../tools/simulation/runtime.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
@@ -146,8 +147,9 @@ function insertTombstoneFixture(db: DatabaseSync, tombstone: RetirementTombstone
       selection_sequence,
       retirement_cause,
       terminal_existed,
+      completed_pair_stable,
       body_json
-    ) VALUES (?, ?, ?, ?, ?, 'retirement', 'retirement-tombstone', ?, ?, ?, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, 'retirement', 'retirement-tombstone', ?, ?, ?, 0, ?)`,
   ).run(
     tombstone.sequence,
     tombstone.generation,
@@ -296,6 +298,113 @@ describe('handoff routing status', () => {
     });
   });
 
+  it('restores, unlinks, and recreates the simulated SQLite artifact with the virtual filesystem', async () => {
+    const simulation = new SimulationRuntime();
+    const path = '/simulation-only/handoff-routing.1.db';
+    await expect(
+      publishHandoffRoutingTransitions(simulation, path, [selection('before-snapshot', 1)]),
+    ).resolves.toMatchObject({
+      kind: 'committed',
+    });
+    const snapshot = simulation.storage.snapshot();
+    await expect(
+      publishHandoffRoutingTransitions(simulation, path, [selection('after-snapshot', 2)]),
+    ).resolves.toMatchObject({
+      kind: 'committed',
+    });
+
+    simulation.storage.restore(snapshot);
+    expect(readHandoffRoutingStatusWithRuntime(simulation, path)).toMatchObject({
+      kind: 'current',
+      statuses: [{ selection: { invocationId: 'before-snapshot' } }],
+    });
+
+    const renamedPath = '/simulation-only/renamed-handoff-routing.1.db';
+    simulation.storage.renameSync(path, renamedPath);
+    expect(readHandoffRoutingStatusWithRuntime(simulation, path)).toEqual({ kind: 'absent' });
+    expect(readHandoffRoutingStatusWithRuntime(simulation, renamedPath)).toMatchObject({
+      kind: 'current',
+      statuses: [{ selection: { invocationId: 'before-snapshot' } }],
+    });
+    simulation.storage.renameSync(renamedPath, path);
+
+    simulation.storage.unlinkSync(path);
+    expect(readHandoffRoutingStatusWithRuntime(simulation, path)).toEqual({ kind: 'absent' });
+    await expect(
+      publishHandoffRoutingTransitions(simulation, path, [selection('after-unlink', 3)]),
+    ).resolves.toMatchObject({
+      kind: 'committed',
+    });
+    expect(readHandoffRoutingStatusWithRuntime(simulation, path)).toMatchObject({
+      kind: 'current',
+      statuses: [{ selection: { invocationId: 'after-unlink' } }],
+    });
+  });
+
+  it('stores coordinator-computed stability without SQL disposition vocabulary', async () => {
+    const path = databasePath();
+    await committed(path, [selection('stable', 1)]);
+    const db = new DatabaseSync(path);
+    try {
+      const table = db
+        .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'handoff_routing_records'")
+        .get() as {
+        sql: string;
+      };
+      const columns = db.prepare("PRAGMA table_xinfo('handoff_routing_records')").all() as Array<{
+        name: string;
+        hidden: number;
+      }>;
+      expect(table.sql).not.toContain('delegated-success');
+      expect(table.sql).not.toContain('same-build-set');
+      expect(table.sql).not.toContain('incumbent-absent');
+      expect(columns.find((column) => column.name === 'completed_pair_stable')).toMatchObject({ hidden: 0 });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('quarantines an unreadable artifact, permits a clean publication, and refuses a current journal', async () => {
+    const path = databasePath();
+    writeFileSync(path, 'not a sqlite database', { mode: 0o600 });
+    writeFileSync(`${path}-wal`, 'retained wal');
+    writeFileSync(`${path}-shm`, 'retained shm');
+
+    const discarded = discardHandoffRoutingStatus(runtime, path);
+    expect(discarded).toMatchObject({
+      kind: 'discarded',
+      artifactPath: path,
+      previousStatus: { kind: 'unreadable' },
+    });
+    if (discarded.kind !== 'discarded') throw new Error(`Expected discard, received ${discarded.kind}`);
+    expect(existsSync(path)).toBe(false);
+    expect(readFileSync(discarded.quarantinePath, 'utf-8')).toBe('not a sqlite database');
+    expect(readFileSync(`${discarded.quarantinePath}-wal`, 'utf-8')).toBe('retained wal');
+    expect(statSync(`${discarded.quarantinePath}-shm`).size).toBeGreaterThan(0);
+
+    await expect(publish(path, [selection('clean-generation', 1)])).resolves.toMatchObject({ kind: 'committed' });
+    chmodSync(path, 0o000);
+    try {
+      if (process.platform !== 'win32') {
+        expect(discardHandoffRoutingStatus(runtime, path)).toMatchObject({
+          kind: 'refused',
+          status: { kind: 'undeterminable', cause: 'io-failed' },
+        });
+        expect(existsSync(path)).toBe(true);
+      }
+    } finally {
+      chmodSync(path, 0o600);
+    }
+    expect(discardHandoffRoutingStatus(runtime, path)).toMatchObject({
+      kind: 'refused',
+      status: { kind: 'current' },
+    });
+    expect(readHandoffRoutingStatus(path)).toMatchObject({
+      kind: 'current',
+      statuses: [{ selection: { invocationId: 'clean-generation' } }],
+    });
+  });
+
   it('creates the bounded schema with persistent settings and relational uniqueness', async () => {
     const path = databasePath();
     await committed(path, [selection('active', 1)]);
@@ -371,8 +480,9 @@ describe('handoff routing status', () => {
               selection_sequence,
               retirement_cause,
               terminal_existed,
+              completed_pair_stable,
               body_json
-            ) VALUES (?, ?, ?, ?, ?, 'terminal', ?, ?, NULL, NULL, ?)`,
+            ) VALUES (?, ?, ?, ?, ?, 'terminal', ?, ?, NULL, NULL, 0, ?)`,
           )
           .run(
             contradictoryTerminal.sequence,

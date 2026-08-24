@@ -6,7 +6,11 @@ import {
   type BackendStatusCommandOperations,
   type StoreResetCommandOperations,
 } from '#src/cli/commands/backend.js';
-import { formatBackendStatus, formatHandoffContinuationReason } from '#src/cli/format/backend.js';
+import {
+  formatBackendStatus,
+  formatHandoffContinuationReason,
+  formatHandoffRoutingStatus,
+} from '#src/cli/format/backend.js';
 import type {
   HandoffContinuationReason,
   HandoffPublicationIncident,
@@ -66,6 +70,18 @@ afterEach(() => {
 });
 
 describe('backend status generation readiness', () => {
+  it.each([
+    [{ kind: 'unreadable', reason: 'invalid-json' } as const, 'Routing status is unreadable (invalid-json).'],
+    [
+      { kind: 'unsupported-generation', generation: 2 } as const,
+      'Routing status generation 2 is not supported by this build.',
+    ],
+  ])('names discard as the successor for a durable routing-status hold', (status, summary) => {
+    expect(formatHandoffRoutingStatus(status)).toBe(
+      `${summary}\nNext step: run coral-cli backend routing-status discard.`,
+    );
+  });
+
   it('prints the ignored-legacy-generation notice directly in the CLI', async () => {
     const status: BackendStatusCommandOperations = {
       inspectReadiness: () => ({

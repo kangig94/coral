@@ -431,12 +431,14 @@ describe('handoff-runner', () => {
     expect(mockState.publishHandoffRoutingTransitions).toHaveBeenCalledTimes(2);
   });
 
-  it('should route and execute repair without opening a lifecycle', async () => {
+  it.each([
+    ['resolve', ['resolve', '--invocation', '123e4567-e89b-42d3-a456-426614174000']],
+    ['discard', ['discard']],
+  ])('should route and execute routing-status %s without opening a lifecycle', async (_name, args) => {
     mockState.spawn.mockImplementationOnce(() => childThatExits(0, null));
-    const result = await runHandoffResult(
-      cliOperation('backend', 'routing-status', 'resolve', '--invocation', '123e4567-e89b-42d3-a456-426614174000'),
-      { pluginRoot: '/plugin/root' },
-    );
+    const result = await runHandoffResult(cliOperation('backend', 'routing-status', ...args), {
+      pluginRoot: '/plugin/root',
+    });
 
     expect(result).toMatchObject({
       kind: 'recording-not-applicable',

@@ -1,6 +1,17 @@
+import type * as NodeFsPromises from 'node:fs/promises';
 import { describe, expect, it, vi } from 'vitest';
 
-import { observeProcessIdentitiesWithoutSubprocesses } from '#src/runtime/real.js';
+const { readFileAsync } = vi.hoisted(() => ({
+  readFileAsync: vi.fn<typeof NodeFsPromises.readFile>(),
+}));
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof NodeFsPromises>();
+  readFileAsync.mockImplementation(actual.readFile);
+  return { ...actual, readFile: readFileAsync };
+});
+
+import { createRealRuntime, observeProcessIdentitiesWithoutSubprocesses } from '#src/runtime/real.js';
 import type { TimePort } from '#src/infra/port-types.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
@@ -59,28 +70,55 @@ describe('process identity batch observation', () => {
     expect(readFile.mock.calls.filter(([path]) => path === '/proc/sys/kernel/random/boot_id')).toHaveLength(1);
   });
 
-  it('aborts unfinished production reads at the shared deadline', async () => {
-    const owner = { pid: 31, incarnation: testIncarnation(31) };
-    const readFile = vi.fn(
-      (_path: string, options: { signal: AbortSignal }) =>
-        new Promise<string>((_resolve, reject) => {
-          options.signal.addEventListener(
-            'abort',
-            () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })),
-            { once: true },
-          );
-        }),
-    );
+  it.runIf(process.platform === 'linux')(
+    'forwards the deadline signal through the production Linux read binding',
+    async () => {
+      readFileAsync.mockImplementationOnce(async (_path, options) => {
+        if (typeof options !== 'object' || options === null || options.signal === undefined) {
+          throw new Error('Production process observation did not forward an AbortSignal.');
+        }
 
-    const startedAt = Date.now();
-    await expect(
-      observeProcessIdentitiesWithoutSubprocesses([owner], 20, {
-        platform: 'linux',
-        observeLiveness: () => 'alive',
-        readFile,
-        time,
-      }),
-    ).resolves.toEqual([{ owner, evidence: { kind: 'unobservable', cause: 'deadline-expired' } }]);
-    expect(Date.now() - startedAt).toBeLessThan(500);
-  });
+        await new Promise<void>((_resolve, reject) => {
+          const rejectAsAborted = () => reject(new DOMException('The operation was aborted', 'AbortError'));
+          if (options.signal?.aborted) rejectAsAborted();
+          else options.signal?.addEventListener('abort', rejectAsAborted, { once: true });
+        });
+        throw new Error('Aborted process observation unexpectedly resumed.');
+      });
+
+      const runtime = createRealRuntime('dev');
+      const owner = { pid: process.pid, incarnation: testIncarnation(process.pid) };
+
+      await expect(runtime.process.observeProcessIdentities([owner], 1)).resolves.toEqual([
+        { owner, evidence: { kind: 'unobservable', cause: 'deadline-expired' } },
+      ]);
+      expect(readFileAsync).toHaveBeenCalledWith(
+        '/proc/sys/kernel/random/boot_id',
+        expect.objectContaining({ encoding: 'utf-8', signal: expect.any(AbortSignal) }),
+      );
+    },
+  );
+
+  it.runIf(process.platform === 'linux')(
+    'settles the production Linux observer within its deadline budget',
+    async () => {
+      const runtime = createRealRuntime('dev');
+      const incarnation = runtime.process.readProcessIncarnation(process.pid, 'linux');
+      expect(incarnation).not.toBeNull();
+      if (incarnation === null) throw new Error('Expected the current Linux process to have an incarnation.');
+      const owners = Array.from({ length: 64 }, () => ({ pid: process.pid, incarnation }));
+      const startedAt = Date.now();
+      const observations = await runtime.process.observeProcessIdentities(owners, 500);
+
+      expect(observations).toHaveLength(owners.length);
+      expect(
+        observations.every(
+          (observation) =>
+            observation.evidence.kind === 'incarnation' ||
+            (observation.evidence.kind === 'unobservable' && observation.evidence.cause === 'deadline-expired'),
+        ),
+      ).toBe(true);
+      expect(Date.now() - startedAt).toBeLessThan(750);
+    },
+  );
 });

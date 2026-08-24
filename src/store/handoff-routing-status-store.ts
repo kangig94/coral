@@ -1,4 +1,4 @@
-import { dirname } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 
 import type { SqliteDatabasePort, StoragePort } from '../infra/port-types.js';
 
@@ -7,6 +7,7 @@ export const SQLITE_FULL = 13;
 export const SQLITE_NOTADB = 26;
 export const SQLITE_CORRUPT = 11;
 export const SQLITE_ERROR = 1;
+const HANDOFF_ROUTING_STATUS_QUARANTINE_DIRECTORY = 'handoff-routing-quarantine';
 
 export type HandoffRoutingStatusStoreSchema = Readonly<{
   generation: number;
@@ -33,6 +34,7 @@ export type HandoffRoutingRecordInput = Readonly<{
   selectionSequence: number | null;
   retirementCause: 'selection-evicted-at-capacity' | 'completed-pair-compaction' | 'operator-resolved' | null;
   terminalExisted: boolean | null;
+  completedPairStable: boolean;
   bodyJson: string;
 }>;
 
@@ -101,8 +103,9 @@ export class HandoffRoutingStatusTransaction {
           selection_sequence,
           retirement_cause,
           terminal_existed,
+          completed_pair_stable,
           body_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING sequence`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING sequence`,
       )
       .get(
         record.generation,
@@ -114,6 +117,7 @@ export class HandoffRoutingStatusTransaction {
         record.selectionSequence,
         record.retirementCause,
         record.terminalExisted === null ? null : Number(record.terminalExisted),
+        Number(record.completedPairStable),
         record.bodyJson,
       ) as Readonly<{ sequence: number }> | undefined;
     if (inserted?.sequence !== record.sequence) throw new HandoffRoutingStoreUnreadableError();
@@ -365,6 +369,29 @@ export type HandoffRoutingStorePublication<T> =
   | Readonly<{ kind: 'committed'; value: T }>
   | Readonly<{ kind: 'failed'; error: unknown; commitStarted: boolean }>;
 
+export function quarantineHandoffRoutingStoreArtifact(
+  storage: StoragePort,
+  path: string,
+  quarantineId: string,
+): string {
+  const sourceDirectory = dirname(path);
+  const quarantineRoot = join(sourceDirectory, HANDOFF_ROUTING_STATUS_QUARANTINE_DIRECTORY);
+  const quarantinePath = join(quarantineRoot, `${basename(path)}.${quarantineId}`);
+  storage.mkdirSync(quarantineRoot, { recursive: true, mode: 0o700 });
+  storage.renameSync(path, quarantinePath);
+  for (const suffix of ['-wal', '-shm'] as const) {
+    try {
+      storage.renameSync(`${path}${suffix}`, `${quarantinePath}${suffix}`);
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+  }
+  if (!storage.syncDirectoryDurableSync(sourceDirectory) || !storage.syncDirectoryDurableSync(quarantineRoot)) {
+    throw new Error('Routing-status quarantine directory sync failed.');
+  }
+  return quarantinePath;
+}
+
 export function publishHandoffRoutingStoreTransaction<T>(
   storage: StoragePort,
   path: string,
@@ -577,17 +604,7 @@ function schemaSql(schema: HandoffRoutingStatusStoreSchema): string {
       terminal_existed INTEGER CHECK (terminal_existed IN (0, 1)),
       body_json TEXT NOT NULL CHECK (json_valid(body_json)),
       encoded_bytes INTEGER GENERATED ALWAYS AS (length(CAST(body_json AS BLOB))) STORED,
-      completed_pair_stable INTEGER GENERATED ALWAYS AS (
-        CASE
-          WHEN record_kind = 'terminal' AND json_extract(body_json, '$.disposition.kind') = 'delegated-success'
-            THEN 1
-          WHEN record_kind = 'selection' AND
-            json_extract(body_json, '$.disposition.kind') = 'continue-current' AND
-            json_extract(body_json, '$.disposition.basis.kind') IN ('same-build-set', 'incumbent-absent')
-            THEN 1
-          ELSE 0
-        END
-      ) STORED,
+      completed_pair_stable INTEGER NOT NULL CHECK (completed_pair_stable IN (0, 1)),
       CHECK (
         (record_kind = 'selection' AND event_kind = 'routing-selected' AND selection_sequence IS NULL AND
           retirement_cause IS NULL AND terminal_existed IS NULL) OR

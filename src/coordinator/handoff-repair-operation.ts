@@ -19,22 +19,26 @@ export function parseHandoffRepairOperation(argv: readonly string[]): HandoffRep
   let forceUnobservable = false;
   for (let index = 3; index < tokens.length; index += 1) {
     const token = tokens[index];
+    if (token === '--') {
+      if (index !== tokens.length - 1) return null;
+      break;
+    }
     if (token === '--force-unobservable') {
-      if (forceUnobservable) return null;
       forceUnobservable = true;
       continue;
     }
     if (token === '--invocation') {
-      if (invocationId !== undefined) return null;
       const value = tokens[index + 1];
-      if (value === undefined || value.startsWith('--')) return null;
-      invocationId = value;
+      const parsed = parseHandoffRoutingInvocationId(value);
+      if (parsed === null) return null;
+      invocationId = parsed;
       index += 1;
       continue;
     }
     if (token.startsWith('--invocation=')) {
-      if (invocationId !== undefined) return null;
-      invocationId = token.slice('--invocation='.length);
+      const parsed = parseHandoffRoutingInvocationId(token.slice('--invocation='.length));
+      if (parsed === null) return null;
+      invocationId = parsed;
       continue;
     }
     return null;
@@ -47,4 +51,14 @@ export function parseHandoffRepairOperation(argv: readonly string[]): HandoffRep
     invocationId: parsedInvocationId,
     forceUnobservable,
   };
+}
+
+export function isHandoffRoutingStatusDiscardOperation(argv: readonly string[]): boolean {
+  const tokens = argv.slice(2);
+  return (
+    tokens[0] === 'backend' &&
+    tokens[1] === 'routing-status' &&
+    tokens[2] === 'discard' &&
+    (tokens.length === 3 || (tokens.length === 4 && tokens[3] === '--'))
+  );
 }

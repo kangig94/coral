@@ -322,9 +322,15 @@ export function formatHandoffRoutingStatus(result: HandoffRoutingStatusReadResul
     case 'absent':
       return null;
     case 'unreadable':
-      return `Routing status is unreadable (${result.reason}).`;
+      return [
+        `Routing status is unreadable (${result.reason}).`,
+        'Next step: run coral-cli backend routing-status discard.',
+      ].join('\n');
     case 'unsupported-generation':
-      return `Routing status generation ${result.generation} is not supported by this build.`;
+      return [
+        `Routing status generation ${result.generation} is not supported by this build.`,
+        'Next step: run coral-cli backend routing-status discard.',
+      ].join('\n');
     case 'undeterminable':
       return `Routing status could not be read (${result.cause}, errcode ${result.errcode}).`;
     case 'current': {

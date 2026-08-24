@@ -8,7 +8,6 @@ import {
   type LiveHandoffResult,
 } from '../../coordinator/handoff-runner.js';
 import {
-  parseHandoffRepairOperation,
   parseHandoffRoutingInvocationId,
   type HandoffRepairOperation,
 } from '../../coordinator/handoff-repair-operation.js';
@@ -75,6 +74,7 @@ import {
   RECOVERY_REVISION_UNTIL_CLEARED,
 } from '../format/backend.js';
 import { formatStoreResetList, formatStoreResetReport } from '../format/store-reset.js';
+import { discardHandoffRoutingStatus, type HandoffRoutingStatusDiscardResult } from '../routing-status-discard.js';
 
 /**
  * What each `backend shutdown` refusal means to a script, as an exit code.
@@ -171,6 +171,7 @@ export interface BackendStatusCommandOperations {
 
 export interface HandoffRoutingStatusCommandOperations {
   resolve(request: HandoffRoutingResolveRequest): Promise<HandoffRoutingResolveResult>;
+  discard(): HandoffRoutingStatusDiscardResult | Promise<HandoffRoutingStatusDiscardResult>;
 }
 
 export interface RecoveryQuarantineCommandOperations {
@@ -215,22 +216,31 @@ export function createHandoffRoutingStatusCommandOperations(): HandoffRoutingSta
     runtime.paths.coral.coordinator.runDir,
     HANDOFF_ROUTING_STATUS_GENERATION,
   );
-  return { resolve: (request) => resolveHandoffRoutingStatus(runtime, path, request) };
+  return {
+    resolve: (request) => resolveHandoffRoutingStatus(runtime, path, request),
+    discard: () => discardHandoffRoutingStatus(runtime, path),
+  };
+}
+
+function formatRoutingStatusDiscardRefusal(
+  status: Extract<HandoffRoutingStatusDiscardResult, { kind: 'refused' }>,
+): string {
+  switch (status.status.kind) {
+    case 'absent':
+      return 'Refusing to discard routing status: no journal exists at this address.';
+    case 'current':
+      return 'Refusing to discard routing status: the journal is current.';
+    case 'undeterminable':
+      return `Refusing to discard routing status: the journal read was undeterminable (${status.status.cause}, errcode ${status.status.errcode}). Retry without discarding.`;
+    default:
+      return assertNever(status.status);
+  }
 }
 
 function commanderInvocationId(value: string): string {
   const invocationId = parseHandoffRoutingInvocationId(value);
   if (invocationId === null) throw new InvalidArgumentError('Invocation must be a canonical lowercase UUID.');
   return invocationId;
-}
-
-function sameRepairRequest(
-  parsed: HandoffRepairOperation,
-  options: Readonly<{ invocation: string; forceUnobservable?: boolean }>,
-): boolean {
-  return (
-    parsed.invocationId === options.invocation && parsed.forceUnobservable === (options.forceUnobservable ?? false)
-  );
 }
 
 type RecoveryQuarantineReadRuntime = Pick<Runtime, 'flavor' | 'paths' | 'storage'>;
@@ -356,16 +366,34 @@ export function registerBackendCommands(program: Command, operations: BackendCom
     .option('--force-unobservable', 'Abandon an owner whose incarnation cannot be observed')
     .action(async (options: { invocation: string; forceUnobservable?: boolean }) => {
       try {
-        const request = parseHandoffRepairOperation(
-          (program as Command & { readonly rawArgs: readonly string[] }).rawArgs,
-        );
-        if (request === null || !sameRepairRequest(request, options)) {
-          throw new InvalidArgumentError('Invalid backend routing-status resolve invocation.');
-        }
+        const request: HandoffRepairOperation = {
+          kind: 'routing-status-resolve',
+          invocationId: options.invocation,
+          forceUnobservable: options.forceUnobservable ?? false,
+        };
         const result = await routingStatus.resolve(request);
         const rendered = formatHandoffRoutingResolveResult(result);
         (result.kind === 'resolved' ? process.stdout : process.stderr).write(`${rendered}\n`);
         process.exitCode = result.kind === 'resolved' ? 0 : 75;
+      } catch (error: unknown) {
+        emitError(error);
+      }
+    });
+  routingStatusCommand
+    .command('discard')
+    .description(
+      'Quarantine derived routing history so the next publication can replace it; Journal and Corpus authority are unchanged',
+    )
+    .action(async () => {
+      try {
+        const result = await routingStatus.discard();
+        if (result.kind === 'refused') {
+          process.stderr.write(`${formatRoutingStatusDiscardRefusal(result)}\n`);
+          process.exitCode = 75;
+          return;
+        }
+        process.stdout.write(`Quarantined routing status from ${result.artifactPath} at ${result.quarantinePath}.\n`);
+        process.exitCode = 0;
       } catch (error: unknown) {
         emitError(error);
       }

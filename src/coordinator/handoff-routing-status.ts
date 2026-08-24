@@ -549,6 +549,35 @@ function encodedBytes(value: unknown): number {
   return Buffer.byteLength(JSON.stringify(value), 'utf8');
 }
 
+function completedPairIsStable(event: HandoffRoutingJournalEvent | RetirementTombstone): boolean {
+  switch (event.phase) {
+    case 'selection': {
+      const policy = persistedHandoffDispositionPolicy(event.disposition);
+      return policy.durability === 'lifecycle-journal' && policy.retention === 'until-superseded';
+    }
+    case 'terminal':
+      switch (event.disposition.kind) {
+        case 'delegated-success':
+          return true;
+        case 'continued-current':
+        case 'delegated-exit':
+        case 'delegated-signal':
+        case 'execution-failed':
+        case 'failed-without-selection':
+        case 'finalized-without-selection':
+        case 'terminal-without-retained-selection':
+        case 'terminal-after-operator-resolution':
+          return false;
+        default:
+          return assertNever(event.disposition);
+      }
+    case 'retirement':
+      return false;
+    default:
+      return assertNever(event);
+  }
+}
+
 const transitionEnvelopeSchema = z
   .object({
     eventId: identifierSchema,
@@ -646,6 +675,7 @@ function insertRecord(
     selectionSequence,
     retirementCause: retirement?.retirementCause ?? null,
     terminalExisted: retirement?.terminalExisted ?? null,
+    completedPairStable: completedPairIsStable(event),
     bodyJson: JSON.stringify(event),
   });
 }
