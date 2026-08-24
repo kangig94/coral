@@ -888,8 +888,6 @@ describe('handoff-runner', () => {
 
     await expect(result).resolves.toMatchObject({ kind: 'delegated' });
 
-    // The same signal abandons a CLI handoff, which is what makes the assertion above about the operation
-    // rather than about the signal.
     mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
     await expect(
       runHandoff(cliOperation('run'), { pluginRoot: '/plugin/root', activeSelectionTarget: target, signal: aborted }),

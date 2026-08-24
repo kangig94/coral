@@ -60,6 +60,7 @@ describe('cli errors', () => {
 
     it('retries a still-starting backend over IPC, where no HTTP status accompanies the code', () => {
       // The HTTP mapping cannot reach this path: IPC carries the code and no status.
+      // Its own remediation says to retry, and 500 drives the CLI to the permanent internal exit instead.
       expect(errorCodeToExit('startup_not_ready')).toBe(75);
     });
 

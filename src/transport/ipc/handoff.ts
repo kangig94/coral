@@ -84,22 +84,13 @@ export class IpcDeadlineExceededError extends Error {
 }
 
 /**
- * True when the live incumbent already covers everything the contender's own
- * build would provide, so evicting it would trade a healthy coordinator for
- * one that is not an upgrade. This is the daemon-side half of the precedence
- * rule V1.1 already applies on the CLI path (`routeLiveIncumbent` in
- * `src/coordinator/handoff-routing.ts`): a version difference alone is never a
- * replacement reason, and there is no arbitrary tie-break at equal version —
- * the incumbent keeps the socket. `bundleHash` identifies a build, it does
- * not order one.
+ * Bundle hashes do not order builds: same-version contenders must not evict the incumbent, and older contenders
+ * must not evict a healthy newer incumbent.
  *
- * Total by construction: `compareProductVersions` cannot make both
- * directions of the same ordered pair positive, so of two contenders racing
- * for one incumbent, at most one can conclude the other side is upgradeable.
- * At equal version neither can, so both defer — an equal-version rebuild
- * with a different bundle hash converges on whichever build bound the
- * socket first instead of alternating SIGTERM/SIGKILL evictions that reset
- * the store on every lap.
+ * `compareProductVersions` cannot make both directions of the same ordered pair positive, so of two contenders
+ * racing for one incumbent, at most one can conclude the other side is upgradeable. At equal version neither can,
+ * so both defer: an equal-version rebuild with a different bundle hash converges on whichever build bound the
+ * socket first instead of alternating SIGTERM/SIGKILL evictions that reset the store on every lap.
  */
 export function incumbentOutranksContender(health: IncumbentHealth, desired: DesiredIncumbentIdentity): boolean {
   if (health.version === undefined || health.flavor !== desired.flavor || health.namespace !== desired.namespace) {

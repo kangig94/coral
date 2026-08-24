@@ -156,7 +156,7 @@ describe('cli follow handoff', () => {
       .mockImplementationOnce(async (operation) => {
         secondRunStarted.resolve();
         expect(progressAcknowledged).toBe(false);
-        // The runner takes the cursor as the opaque string the CLI already holds; base64url of {"afterSeq":4}.
+        // The serialized cursor is base64url of {"afterSeq":4}.
         expect(operation).toEqual({
           kind: 'wait-jobs',
           jobId: 'job-1',

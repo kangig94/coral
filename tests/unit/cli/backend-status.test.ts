@@ -675,8 +675,7 @@ describe('handoff continuation remediation', () => {
     },
   ];
 
-  // Machine identifiers the formatter translates rather than prints. A raw one reaching this list is the
-  // defect these strings were written to remove.
+  // A raw one reaching this list is the defect these strings were written to remove.
   const RAW_ENUM_TOKENS = [
     'health-shape-rejected',
     'health-request-failed',

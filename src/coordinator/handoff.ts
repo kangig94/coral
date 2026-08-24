@@ -463,13 +463,8 @@ function refuseSignal(incumbent: IncumbentIdentity, reason: string): never {
 }
 
 /**
- * Repeatedly attempt socket bind. On 'incumbent' result, requestIncumbentShutdown() → health +
- * transport.shutdown; if the incumbent outranks this contender (`incumbentOutranksContender`: matching
- * flavor/namespace, same-or-newer product version) and is not draining, throw IncumbentMatchesError
- * (we're redundant) instead of requesting shutdown. This is the only version comparison on the bind path,
- * and it is the same precedence rule the CLI target-routing path uses (`src/coordinator/handoff-routing.ts`) — a
- * contender never evicts a live incumbent for a version difference alone, so two same-version builds with
- * different bundle hashes cannot both conclude the other side should step down.
+ * A contender must not evict a same-version incumbent solely because their bundle hashes differ, and an
+ * older contender must not evict a healthy newer incumbent.
  */
 export async function bindWithHandoff(opts: HandoffOptions): Promise<BoundCoordinator> {
   const deadline = opts.runtime.time.now() + opts.totalBudgetMs;
