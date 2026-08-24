@@ -6,7 +6,6 @@ import { BackendAlreadyRunningError } from './handoff.js';
 import {
   HandoffRunError,
   consumeHandoffRunResult,
-  formatHandoffPublicationIncident,
   runHandoff,
   type HandoffPublicationIncident,
 } from './handoff-runner.js';
@@ -125,7 +124,7 @@ export async function handoffStartupToSelectedBuild(
 }
 
 function logStartupHandoffPublicationIncident(incident: HandoffPublicationIncident): void {
-  backendLog.warn(`Backend startup: ${formatHandoffPublicationIncident(incident)}`);
+  backendLog.warn(`Backend startup handoff routing-status publication incident: ${JSON.stringify(incident)}`);
 }
 
 export async function main(): Promise<number> {

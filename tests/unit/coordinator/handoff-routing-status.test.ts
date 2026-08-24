@@ -1567,6 +1567,7 @@ describe('handoff routing status', () => {
         }),
       ).resolves.toEqual({
         kind: 'not-published',
+        invocationId,
         outcome: { kind: 'not-published', cause: 'generation-maintenance' },
       });
       expect(readHandoffRoutingStatus(path)).toMatchObject({

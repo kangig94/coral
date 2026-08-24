@@ -219,38 +219,70 @@ describe('program', () => {
   });
 
   it.each([
-    { childOutcome: { kind: 'handoff-success' as const, version: '2.3.4' }, expectedExit: 75 },
-    { childOutcome: { kind: 'handoff-exit' as const, exitCode: 69 }, expectedExit: 69 },
-    { childOutcome: { kind: 'handoff-exit' as const, exitCode: 70 }, expectedExit: 70 },
-    { childOutcome: { kind: 'handoff-exit' as const, exitCode: 77 }, expectedExit: 77 },
-  ])('should preserve delegated status exit arbitration at $expectedExit', async ({ childOutcome, expectedExit }) => {
-    let stderr = '';
-    vi.spyOn(process.stderr, 'write').mockImplementation(((chunk: string | Uint8Array) => {
-      stderr += chunk.toString();
-      return true;
-    }) as typeof process.stderr.write);
-    mockState.runHandoff.mockResolvedValue({
-      kind: 'recording-incidents',
-      observedWork: { kind: 'delegated', version: '2.3.4', outcome: childOutcome },
-      publicationIncidents: [{ phase: 'terminal', kind: 'not-published', cause: 'contended' }],
-    });
-    const { parseProgramWithHandoff } = await loadProgramFresh();
+    {
+      childOutcome: { kind: 'handoff-success' as const, version: '2.3.4' },
+      publicationIncidents: [{ phase: 'terminal', kind: 'not-published', cause: 'contended' }] as const,
+      expectedExit: 75,
+    },
+    {
+      childOutcome: { kind: 'handoff-success' as const, version: '2.3.4' },
+      publicationIncidents: [
+        { phase: 'terminal', kind: 'not-published', cause: 'contended' },
+        {
+          phase: 'terminal',
+          kind: 'not-published',
+          cause: 'invalid-record',
+          validation: { kind: 'schema-violation' },
+        },
+      ] as const,
+      expectedExit: 70,
+    },
+    {
+      childOutcome: { kind: 'handoff-exit' as const, exitCode: 69 },
+      publicationIncidents: [{ phase: 'terminal', kind: 'not-published', cause: 'contended' }] as const,
+      expectedExit: 69,
+    },
+    {
+      childOutcome: { kind: 'handoff-exit' as const, exitCode: 70 },
+      publicationIncidents: [{ phase: 'terminal', kind: 'not-published', cause: 'contended' }] as const,
+      expectedExit: 70,
+    },
+    {
+      childOutcome: { kind: 'handoff-exit' as const, exitCode: 77 },
+      publicationIncidents: [{ phase: 'terminal', kind: 'not-published', cause: 'contended' }] as const,
+      expectedExit: 77,
+    },
+  ])(
+    'should preserve delegated status exit arbitration at $expectedExit',
+    async ({ childOutcome, publicationIncidents, expectedExit }) => {
+      let stderr = '';
+      vi.spyOn(process.stderr, 'write').mockImplementation(((chunk: string | Uint8Array) => {
+        stderr += chunk.toString();
+        return true;
+      }) as typeof process.stderr.write);
+      mockState.runHandoff.mockResolvedValue({
+        kind: 'recording-incidents',
+        observedWork: { kind: 'delegated', version: '2.3.4', outcome: childOutcome },
+        publicationIncidents,
+      });
+      const { parseProgramWithHandoff } = await loadProgramFresh();
 
-    const outcome = await parseProgramWithHandoff(commandWithAction(vi.fn()), [
-      'node',
-      'coral-cli',
-      'backend',
-      'status',
-    ]);
+      const outcome = await parseProgramWithHandoff(commandWithAction(vi.fn()), [
+        'node',
+        'coral-cli',
+        'backend',
+        'status',
+      ]);
 
-    expect(outcome).toEqual(
-      expectedExit === 75 ? { kind: 'handoff-exit', exitCode: 75 } : { kind: 'handoff-exit', exitCode: expectedExit },
-    );
-    expect(stderr).toContain('Handoff routing-status terminal publication was not published (contended).');
-    expect(stderr).toContain(
-      'Next step: rerun coral-cli backend status, then retry the operation if the invocation is still unresolved.',
-    );
-  });
+      expect(outcome).toEqual(
+        expectedExit === 75 ? { kind: 'handoff-exit', exitCode: 75 } : { kind: 'handoff-exit', exitCode: expectedExit },
+      );
+      expect(stderr).toContain('Handoff routing-status terminal publication was not published (contended).');
+      expect(stderr).toContain(
+        'Next step: rerun coral-cli backend status, then retry the operation if the invocation is still unresolved.',
+      );
+    },
+  );
 
   it('should append delegated status publication notices after the child exits', async () => {
     const order: string[] = [];

@@ -708,7 +708,7 @@ export type PublicationOutcome =
     }>
   | Readonly<{
       kind: 'undeterminable';
-      cause: 'contended' | 'capacity-exhausted' | 'io-failed' | 'unreadable' | 'unsupported-generation';
+      cause: 'contended' | 'capacity-exhausted' | 'io-failed' | 'unreadable';
       errcode: number;
     }>;
 
@@ -1221,25 +1221,22 @@ function classifyPublicationError(error: unknown, commitStarted: boolean): Publi
   if (error instanceof RejectedTransitionError) {
     return { kind: 'not-published', cause: 'rejected-transition' };
   }
+  if (error instanceof UnsupportedGenerationError) {
+    return { kind: 'not-published', cause: 'unsupported-generation' };
+  }
   const errcode =
-    error instanceof UnsupportedGenerationError
-      ? SQLITE_ERROR
-      : error instanceof HandoffRoutingStoreUnreadableError
-        ? error.errcode
-        : errorNumber(error, SQLITE_ERROR);
+    error instanceof HandoffRoutingStoreUnreadableError ? error.errcode : errorNumber(error, SQLITE_ERROR);
   const primaryErrcode = errcode & 0xff;
   const cause =
-    error instanceof UnsupportedGenerationError
-      ? 'unsupported-generation'
-      : error instanceof HandoffRoutingStoreUnreadableError ||
-          primaryErrcode === SQLITE_NOTADB ||
-          primaryErrcode === SQLITE_CORRUPT
-        ? 'unreadable'
-        : primaryErrcode === SQLITE_FULL
-          ? 'capacity-exhausted'
-          : primaryErrcode === SQLITE_BUSY
-            ? 'contended'
-            : 'io-failed';
+    error instanceof HandoffRoutingStoreUnreadableError ||
+    primaryErrcode === SQLITE_NOTADB ||
+    primaryErrcode === SQLITE_CORRUPT
+      ? 'unreadable'
+      : primaryErrcode === SQLITE_FULL
+        ? 'capacity-exhausted'
+        : primaryErrcode === SQLITE_BUSY
+          ? 'contended'
+          : 'io-failed';
   return commitStarted ? { kind: 'undeterminable', cause, errcode } : { kind: 'not-published', cause };
 }
 
@@ -1532,7 +1529,11 @@ export type HandoffRoutingResolveResult =
         { kind: 'unreadable' | 'unsupported-generation' | 'undeterminable' }
       >;
     }>
-  | Readonly<{ kind: 'not-published'; outcome: Exclude<PublicationOutcome, { kind: 'committed' }> }>;
+  | Readonly<{
+      kind: 'not-published';
+      invocationId: string;
+      outcome: Exclude<PublicationOutcome, { kind: 'committed' }>;
+    }>;
 
 const statusReadRowSchema = z
   .object({
@@ -1952,7 +1953,7 @@ export async function resolveHandoffRoutingStatus(
             invocationId: request.invocationId,
             selectionSequence: status.tombstone.selectionSequence,
           }
-        : { kind: 'not-published', outcome };
+        : { kind: 'not-published', invocationId: request.invocationId, outcome };
     }
     return status.tombstone.retirementCause === 'operator-resolved' || status.tombstone.terminalExisted
       ? { kind: 'already-terminal', invocationId: request.invocationId }
@@ -1997,7 +1998,7 @@ export async function resolveHandoffRoutingStatus(
   );
   return outcome.kind === 'committed'
     ? { kind: 'resolved', invocationId: request.invocationId, reason, sequence: outcome.sequence }
-    : { kind: 'not-published', outcome };
+    : { kind: 'not-published', invocationId: request.invocationId, outcome };
 }
 
 export function handoffRoutingStatusExitContribution(result: HandoffRoutingStatusReadResult): 0 | 75 {

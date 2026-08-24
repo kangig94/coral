@@ -202,6 +202,16 @@ function combineBackendStatusLocalExitContributions(
       : selected,
   );
 }
+
+export function handoffPublicationIncidentsExitContribution(
+  incidents: readonly HandoffPublicationIncident[],
+): 0 | 70 | 75 {
+  const contributions: NonEmptyReadonlyArray<BackendStatusLocalExitContribution> = [
+    0,
+    ...incidents.map(handoffPublicationIncidentExitContribution),
+  ];
+  return combineBackendStatusLocalExitContributions(contributions);
+}
 import { quarantineKbCommitLocal } from '../kb-commit-quarantine.js';
 import type { StoreResetTarget } from '../../store/operator-store-reset.js';
 import {
@@ -310,8 +320,17 @@ function formatRoutingStatusDiscardRefusal(
       return `Routing-status discard could not determine whether the coordinator socket is available (${result.cause}).\nNext step: run coral-cli backend shutdown, repair the coordinator socket path if it cannot be observed, then rerun coral-cli backend routing-status discard.`;
     case 'coordinator-socket-insecure':
       return 'Refusing to discard routing status: the coordinator socket directory is insecure.\nNext step: repair the reported socket-directory ownership or permissions, run coral-cli backend shutdown, then rerun coral-cli backend routing-status discard.';
-    case 'generation-maintenance-unavailable':
-      return `Refusing to discard routing status: generation maintenance is unavailable (${result.cause}).\nNext step: wait for generation maintenance to finish, then rerun coral-cli backend routing-status discard.`;
+    case 'generation-maintenance-unavailable': {
+      const cause = result.cause;
+      switch (cause) {
+        case 'contended':
+          return 'Refusing to discard routing status: generation maintenance is unavailable (contended).\nNext step: wait for generation maintenance to finish, then rerun coral-cli backend routing-status discard.';
+        case 'ownership-lost':
+          return 'Refusing to discard routing status: generation maintenance ownership was lost.\nNext step: repair the generation coordination root, rerun coral-cli backend status, then retry coral-cli backend routing-status discard.';
+        default:
+          return assertNever(cause);
+      }
+    }
     default:
       return assertNever(result);
   }
@@ -435,7 +454,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
         BACKEND_STATUS_EXIT_CODES[status.status],
         liveHandoffObligation.exitContribution,
         handoffRoutingStatusExitContribution(routingStatusRead),
-        ...(liveHandoffResult?.publicationIncidents.map(handoffPublicationIncidentExitContribution) ?? []),
+        handoffPublicationIncidentsExitContribution(liveHandoffResult?.publicationIncidents ?? []),
       ];
       process.exitCode = combineBackendStatusLocalExitContributions(localExitContributions);
     } catch (error) {

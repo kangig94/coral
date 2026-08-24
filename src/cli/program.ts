@@ -18,6 +18,7 @@ import { assertCommandClassCoverage } from './classify.js';
 import {
   createBackendStatusCommandOperations,
   createRecoveryQuarantineCommandOperations,
+  handoffPublicationIncidentsExitContribution,
   registerBackendCommands,
 } from './commands/backend.js';
 import { createStoreResetCommandOperations } from './store-reset.js';
@@ -71,7 +72,9 @@ async function executeCliHandoffPreflight(argv: readonly string[]): Promise<Hand
       switch (outcome.kind) {
         case 'handoff-success':
           renderHandoffNotice(outcome);
-          return statusInvocation && publicationIncidents.length > 0 ? { kind: 'handoff-exit', exitCode: 75 } : outcome;
+          return statusInvocation && publicationIncidents.length > 0
+            ? { kind: 'handoff-exit', exitCode: handoffPublicationIncidentsExitContribution(publicationIncidents) }
+            : outcome;
         case 'handoff-exit':
         case 'handoff-signal':
           return outcome;

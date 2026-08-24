@@ -1,8 +1,5 @@
-import {
-  formatHandoffPublicationIncident,
-  type HandoffPublicationIncident,
-  type HandoffSuccess,
-} from '../coordinator/handoff-runner.js';
+import type { HandoffPublicationIncident, HandoffSuccess } from '../coordinator/handoff-runner.js';
+import { formatHandoffPublicationIncident } from './format/handoff-publication.js';
 
 let noticeRendered = false;
 

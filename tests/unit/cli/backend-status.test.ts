@@ -11,7 +11,7 @@ import {
   formatHandoffContinuationReason,
   formatHandoffRoutingStatus,
 } from '#src/cli/format/backend.js';
-import { formatHandoffPublicationIncident } from '#src/coordinator/handoff-runner.js';
+import { formatHandoffPublicationIncident } from '#src/cli/format/handoff-publication.js';
 import type {
   HandoffContinuationReason,
   HandoffPublicationIncident,
@@ -314,9 +314,10 @@ describe('backend status local exit combination', () => {
       },
       'run coral-cli backend status before repair',
     ],
-  ])('renders an actionable successor without exposing the refusal token', (incident, expected) => {
+  ])('renders an actionable successor without exposing refusal tokens', (incident, expected) => {
     const rendered = formatHandoffPublicationIncident(incident);
     expect(rendered).toContain(`Next step: ${expected}`);
+    expect(rendered).not.toContain(incident.refusal.reason);
     expect(rendered).not.toContain(incident.refusal.remediation);
   });
 

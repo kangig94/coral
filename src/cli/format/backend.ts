@@ -18,7 +18,7 @@ import type { BackendHealth } from '../../transport/http/backend/health.js';
 import type { BackendStatusFull } from '../../transport/http/backend/status.js';
 import type { ShutdownResult } from '../../transport/http/backend/shutdown.js';
 import type { RecoveryQuarantineClearResult } from '../../recovery/source-registry.js';
-import { formatHandoffPublicationFailureSuccessor } from '../../coordinator/handoff-runner.js';
+import { formatHandoffPublicationFailureSuccessor } from './handoff-publication.js';
 
 export const RECOVERY_REVISION_UNTIL_CLEARED = 'until-cleared';
 export const RECOVERY_REVISION_FINGERPRINT_PREFIX = 'fingerprint:';
@@ -374,9 +374,11 @@ function formatUnavailableRoutingResolution(
 }
 
 function formatUnpublishedRoutingResolution(
-  outcome: Extract<HandoffRoutingResolveResult, { kind: 'not-published' }>['outcome'],
+  result: Extract<HandoffRoutingResolveResult, { kind: 'not-published' }>,
 ): string {
-  return formatHandoffPublicationFailureSuccessor(outcome, 'routing-resolution');
+  return formatHandoffPublicationFailureSuccessor(result.outcome, {
+    invocationId: result.invocationId,
+  });
 }
 
 export function formatHandoffRoutingResolveResult(result: HandoffRoutingResolveResult): string {
@@ -400,7 +402,7 @@ export function formatHandoffRoutingResolveResult(result: HandoffRoutingResolveR
     case 'not-published':
       return (
         `Routing resolution was not published (${result.outcome.kind}:${result.outcome.cause}).\n` +
-        formatUnpublishedRoutingResolution(result.outcome)
+        formatUnpublishedRoutingResolution(result)
       );
     default:
       return assertNever(result);
