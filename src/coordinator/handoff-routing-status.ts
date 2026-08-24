@@ -21,6 +21,10 @@ import {
   type HandoffRoutingStatusStoreSchema,
 } from '../store/handoff-routing-status-store.js';
 import {
+  tryAcquireGenerationWriterLease,
+  type GenerationWriterLease,
+} from '../store/generation-mutation-coordination.js';
+import {
   HANDOFF_ROUTING_BASIS_OBLIGATIONS,
   type BuildSummary,
   type HandoffRoutingBasis,
@@ -630,7 +634,7 @@ export type PublicationOutcome =
   | Readonly<{ kind: 'committed'; sequence: number }>
   | Readonly<{
       kind: 'not-published';
-      cause: 'contended' | 'capacity-exhausted' | 'rejected-transition';
+      cause: 'contended' | 'generation-maintenance' | 'capacity-exhausted' | 'rejected-transition';
     }>
   | Readonly<{
       kind: 'undeterminable';
@@ -1203,6 +1207,34 @@ export async function publishHandoffRoutingTransitions(
   }
 }
 
+export async function publishGenerationCoordinatedHandoffRoutingTransitions(
+  runtime: Runtime,
+  path: string,
+  transitions: readonly HandoffRoutingTransition[],
+  signal?: AbortSignal,
+): Promise<PublicationOutcome> {
+  let writer: GenerationWriterLease;
+  try {
+    const attempt = tryAcquireGenerationWriterLease(runtime, {
+      kind: 'routing-status',
+      name: 'handoff-routing-status',
+    });
+    if (attempt.kind === 'maintenance-active') {
+      return { kind: 'not-published', cause: 'generation-maintenance' };
+    }
+    if (attempt.kind === 'contended') return { kind: 'not-published', cause: 'contended' };
+    writer = attempt.lease;
+  } catch {
+    return { kind: 'not-published', cause: 'contended' };
+  }
+  try {
+    writer.assertOwned();
+    return await publishHandoffRoutingTransitions(runtime, path, transitions, signal);
+  } finally {
+    writer.release();
+  }
+}
+
 export type PersistedHandoffDisposition =
   | DurableHandoffRoutingBasis
   | SelectedHandoffDisposition
@@ -1328,8 +1360,8 @@ export function persistedHandoffDispositionPolicy(disposition: PersistedHandoffD
       return {
         durability: 'lifecycle-journal',
         retention: 'bounded-history',
-        severity: 'warning',
-        exitContribution: disposition.causes['selection-evicted-at-capacity'] > 0 ? 75 : 0,
+        severity: 'info',
+        exitContribution: 0,
       };
     default:
       return assertNever(disposition);
@@ -1385,7 +1417,10 @@ export type HandoffRoutingResolveResult =
     }>
   | Readonly<{
       kind: 'status-unavailable';
-      status: Exclude<HandoffRoutingStatusReadResult, { kind: 'current' }>;
+      status: Extract<
+        HandoffRoutingStatusReadResult,
+        { kind: 'unreadable' | 'unsupported-generation' | 'undeterminable' }
+      >;
     }>
   | Readonly<{ kind: 'not-published'; outcome: Exclude<PublicationOutcome, { kind: 'committed' }> }>;
 
@@ -1795,7 +1830,7 @@ function statusInvocationId(status: HandoffRoutingInvocationStatus): string {
 }
 
 export async function resolveHandoffRoutingStatus(
-  runtime: Pick<Runtime, 'storage' | 'process' | 'time' | 'ids'>,
+  runtime: Runtime,
   path: string,
   request: HandoffRoutingResolveRequest,
   signal?: AbortSignal,
@@ -1837,7 +1872,7 @@ export async function resolveHandoffRoutingStatus(
       return assertNever(status.ownerLiveness);
   }
 
-  const outcome = await publishHandoffRoutingTransitions(
+  const outcome = await publishGenerationCoordinatedHandoffRoutingTransitions(
     runtime,
     path,
     [
@@ -1860,7 +1895,6 @@ export async function resolveHandoffRoutingStatus(
 export function handoffRoutingStatusExitContribution(result: HandoffRoutingStatusReadResult): 0 | 75 {
   if (result.kind === 'absent') return 0;
   if (result.kind !== 'current') return 75;
-  if (result.retirementHistoryTruncated.causes['selection-evicted-at-capacity'] > 0) return 75;
   for (const status of result.statuses) {
     if (status.kind === 'unresolved') {
       if (status.ownerLiveness.kind === 'absent') return 75;

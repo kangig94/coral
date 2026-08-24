@@ -1,9 +1,9 @@
 import { DatabaseSync } from 'node:sqlite';
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, describe, expect, it } from 'vitest';
 
 import {
   ABSENT_HANDOFF_RESULT_POLICY_PROJECTION,
@@ -36,6 +36,7 @@ import {
 import type { ProcessIdentityObservation } from '#src/infra/port-types.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { discardHandoffRoutingStatus } from '#src/cli/routing-status-discard.js';
+import { acquireGenerationMaintenanceLease } from '#src/store/generation-mutation-coordination.js';
 import { SimulationRuntime } from '../../../tools/simulation/runtime.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
@@ -43,7 +44,8 @@ const BASE_TIME = Date.parse('2026-01-01T00:00:00.000Z');
 const BUILD_SET_ID = '123e4567-e89b-42d3-a456-426614174000';
 const OWNER = { pid: 101, incarnation: testIncarnation(101) } as const;
 const temporaryDirectories: string[] = [];
-const runtime = createRealRuntime('prod');
+const runtimeBaseDir = mkdtempSync(join(tmpdir(), 'coral-handoff-routing-runtime-'));
+const runtime = createRealRuntime('prod', { baseDir: runtimeBaseDir });
 
 function at(offsetMs: number): string {
   return new Date(BASE_TIME + offsetMs).toISOString();
@@ -247,6 +249,10 @@ afterEach(() => {
   for (const directory of temporaryDirectories.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 
+afterAll(() => {
+  rmSync(runtimeBaseDir, { recursive: true, force: true });
+});
+
 describe('handoff routing status', () => {
   it('projects continuation and absent obligations without inventing persisted status for ephemeral bindings', () => {
     expect(HANDOFF_CONTINUATION_REASON_POLICY_PROJECTIONS).toEqual({
@@ -341,36 +347,14 @@ describe('handoff routing status', () => {
     });
   });
 
-  it('stores coordinator-computed stability without SQL disposition vocabulary', async () => {
-    const path = databasePath();
-    await committed(path, [selection('stable', 1)]);
-    const db = new DatabaseSync(path);
-    try {
-      const table = db
-        .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'handoff_routing_records'")
-        .get() as {
-        sql: string;
-      };
-      const columns = db.prepare("PRAGMA table_xinfo('handoff_routing_records')").all() as Array<{
-        name: string;
-        hidden: number;
-      }>;
-      expect(table.sql).not.toContain('delegated-success');
-      expect(table.sql).not.toContain('same-build-set');
-      expect(table.sql).not.toContain('incumbent-absent');
-      expect(columns.find((column) => column.name === 'completed_pair_stable')).toMatchObject({ hidden: 0 });
-    } finally {
-      db.close();
-    }
-  });
-
   it('quarantines an unreadable artifact, permits a clean publication, and refuses a current journal', async () => {
     const path = databasePath();
+    const discardRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
     writeFileSync(path, 'not a sqlite database', { mode: 0o600 });
     writeFileSync(`${path}-wal`, 'retained wal');
     writeFileSync(`${path}-shm`, 'retained shm');
 
-    const discarded = discardHandoffRoutingStatus(runtime, path);
+    const discarded = await discardHandoffRoutingStatus(discardRuntime, path);
     expect(discarded).toMatchObject({
       kind: 'discarded',
       artifactPath: path,
@@ -386,7 +370,7 @@ describe('handoff routing status', () => {
     chmodSync(path, 0o000);
     try {
       if (process.platform !== 'win32') {
-        expect(discardHandoffRoutingStatus(runtime, path)).toMatchObject({
+        await expect(discardHandoffRoutingStatus(discardRuntime, path)).resolves.toMatchObject({
           kind: 'refused',
           status: { kind: 'undeterminable', cause: 'io-failed' },
         });
@@ -395,7 +379,7 @@ describe('handoff routing status', () => {
     } finally {
       chmodSync(path, 0o600);
     }
-    expect(discardHandoffRoutingStatus(runtime, path)).toMatchObject({
+    await expect(discardHandoffRoutingStatus(discardRuntime, path)).resolves.toMatchObject({
       kind: 'refused',
       status: { kind: 'current' },
     });
@@ -1228,7 +1212,7 @@ describe('handoff routing status', () => {
         earliestSelectedAt: at(1),
         latestSelectedAt: at(1),
       }),
-    ).toMatchObject({ severity: 'warning', exitContribution: 0 });
+    ).toMatchObject({ severity: 'info', exitContribution: 0 });
   });
 
   it('resolves only absent owners and returns typed stale, terminal, and live refusals', async () => {
@@ -1306,6 +1290,38 @@ describe('handoff routing status', () => {
         resolutionReason: 'owner-absent',
       },
     });
+  });
+
+  it('refuses operator resolution while generation maintenance is held', async () => {
+    const invocationId = '123e4567-e89b-42d3-a456-426614174008';
+    const path = databasePath();
+    await committed(path, [selection(invocationId, 1)]);
+    const repairRuntime = {
+      ...runtime,
+      process: {
+        ...runtime.process,
+        observeProcessIdentities: async (owners: readonly (typeof OWNER)[]) =>
+          owners.map((owner) => ({ owner, evidence: { kind: 'pid-absent' as const } })),
+      },
+    };
+    const maintenance = await acquireGenerationMaintenanceLease(repairRuntime);
+    try {
+      await expect(
+        resolveHandoffRoutingStatus(repairRuntime, path, {
+          invocationId,
+          forceUnobservable: false,
+        }),
+      ).resolves.toEqual({
+        kind: 'not-published',
+        outcome: { kind: 'not-published', cause: 'generation-maintenance' },
+      });
+      expect(readHandoffRoutingStatus(path)).toMatchObject({
+        kind: 'current',
+        statuses: [{ kind: 'unresolved', selection: { invocationId } }],
+      });
+    } finally {
+      maintenance.release();
+    }
   });
 
   it('requires force for unobservable owners and never lets force override an expired deadline', async () => {

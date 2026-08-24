@@ -82,6 +82,15 @@ describe('backend status generation readiness', () => {
     );
   });
 
+  it('refuses discard after an undeterminable read and names a non-destructive successor', () => {
+    expect(formatHandoffRoutingStatus({ kind: 'undeterminable', cause: 'io-failed', errcode: 5 })).toBe(
+      [
+        'Routing status could not be read (io-failed, errcode 5).',
+        'Next step: retry coral-cli backend status without discarding. If this persists, repair the reported storage condition; discard is not permitted because this read did not establish that the journal is unreadable or unsupported.',
+      ].join('\n'),
+    );
+  });
+
   it('prints the ignored-legacy-generation notice directly in the CLI', async () => {
     const status: BackendStatusCommandOperations = {
       inspectReadiness: () => ({
@@ -252,26 +261,13 @@ describe('backend status live handoff disposition', () => {
 });
 
 describe('backend status local exit combination', () => {
-  const contributions = [0, 75] as const;
-  const cases = contributions.flatMap((daemonContribution) =>
-    contributions.flatMap((liveContribution) =>
-      contributions.flatMap((routingContribution) =>
-        contributions.map((publicationContribution) => ({
-          daemonContribution,
-          liveContribution,
-          routingContribution,
-          publicationContribution,
-          expected:
-            daemonContribution === 75 ||
-            liveContribution === 75 ||
-            routingContribution === 75 ||
-            publicationContribution === 75
-              ? 75
-              : 0,
-        })),
-      ),
-    ),
-  );
+  const cases = [
+    { daemonContribution: 0, liveContribution: 0, routingContribution: 0, publicationContribution: 0, expected: 0 },
+    { daemonContribution: 75, liveContribution: 0, routingContribution: 0, publicationContribution: 0, expected: 75 },
+    { daemonContribution: 0, liveContribution: 75, routingContribution: 0, publicationContribution: 0, expected: 75 },
+    { daemonContribution: 0, liveContribution: 0, routingContribution: 75, publicationContribution: 0, expected: 75 },
+    { daemonContribution: 0, liveContribution: 0, routingContribution: 0, publicationContribution: 75, expected: 75 },
+  ] as const;
 
   it.each(cases)(
     'combines daemon=$daemonContribution live=$liveContribution routing=$routingContribution publication=$publicationContribution as $expected',
@@ -365,7 +361,7 @@ describe('backend routing status', () => {
     expect(process.exitCode).toBe(75);
   });
 
-  it('always renders truncated retirement history', async () => {
+  it('renders aggregate-only retirement history without keeping the expired capacity gate', async () => {
     const status: BackendStatusCommandOperations = {
       inspectReadiness: () => ({ kind: 'no-legacy' }),
       getStatus: async () => ({ status: 'not_running' }),
@@ -397,6 +393,62 @@ describe('backend routing status', () => {
 
     expect(stdout).toContain('Routing retirement history: 3 exact invocation identities expired');
     expect(stdout).toContain('selection-evicted-at-capacity=1');
+    expect(process.exitCode).toBe(0);
+  });
+
+  it('keeps the capacity gate while the exact retirement tombstone is retained', async () => {
+    const status: BackendStatusCommandOperations = {
+      inspectReadiness: () => ({ kind: 'no-legacy' }),
+      getStatus: async () => ({ status: 'not_running' }),
+      getLiveHandoffResult: () => null,
+      getRoutingStatus: async () => ({
+        kind: 'current',
+        generation: 1,
+        statuses: [
+          {
+            kind: 'retired',
+            tombstone: {
+              generation: 1,
+              sequence: 2,
+              eventId: 'retirement-event',
+              invocationId: 'routing-invocation',
+              observedAt: '2026-08-03T00:00:00.000Z',
+              eventKind: 'retirement-tombstone',
+              phase: 'retirement',
+              selectionSequence: 1,
+              selectedAt: '2026-08-02T00:00:00.000Z',
+              owner: { pid: 101, incarnation: testIncarnation(101) },
+              selectedDisposition: {
+                kind: 'continue-current',
+                basis: { kind: 'same-build-set', buildSetId: '123e4567-e89b-42d3-a456-426614174000' },
+              },
+              retirementCause: 'selection-evicted-at-capacity',
+              terminalExisted: false,
+            },
+          },
+        ],
+        retirementHistoryTruncated: {
+          kind: 'retirement-history-truncated',
+          expiredIdentityCount: 0,
+          causes: {
+            'selection-evicted-at-capacity': 0,
+            'completed-pair-compaction': 0,
+            'operator-resolved': 0,
+          },
+          minSelectionSequence: null,
+          maxSelectionSequence: null,
+          earliestSelectedAt: null,
+          latestSelectedAt: null,
+        },
+      }),
+    };
+    const program = new Command();
+    program.exitOverride();
+    registerBackendCommands(program, { storeReset, backendStatus: status });
+
+    await program.parseAsync(['node', 'coral-cli', 'backend', 'status']);
+
+    expect(stdout).toContain('Routing invocation routing-invocation: retired (selection-evicted-at-capacity).');
     expect(process.exitCode).toBe(75);
   });
 });

@@ -4,9 +4,9 @@ import { Command } from 'commander';
 
 import {
   HandoffRunError,
+  projectHandoffRunResult,
   runHandoff,
   type HandoffOutcome,
-  type HandoffPublicationIncident,
   type HandoffRunResult,
   type LiveHandoffResult,
 } from '../coordinator/handoff-runner.js';
@@ -53,26 +53,13 @@ async function executeCliHandoffPreflight(argv: readonly string[]): Promise<Hand
     throw error.originalError;
   }
 
-  let continuation;
-  let publicationIncidents: readonly HandoffPublicationIncident[] = [];
-  switch (result.kind) {
-    case 'recorded':
-      continuation = result.continuation;
-      break;
-    case 'recording-not-applicable':
-      continuation = result.continuationWithoutRecording;
-      break;
-    case 'recording-incidents':
-      continuation = result.observedWork;
-      publicationIncidents = result.publicationIncidents;
-      renderHandoffPublicationIncidents(
-        statusInvocation
-          ? result.publicationIncidents
-          : result.publicationIncidents.filter((incident) => incident.phase === 'terminal'),
-      );
-      break;
-    default:
-      return assertNever(result);
+  const { continuation, publicationIncidents } = projectHandoffRunResult(result);
+  if (publicationIncidents.length > 0) {
+    renderHandoffPublicationIncidents(
+      statusInvocation
+        ? publicationIncidents
+        : publicationIncidents.filter((incident) => incident.phase === 'terminal'),
+    );
   }
 
   switch (continuation.kind) {

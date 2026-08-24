@@ -13,7 +13,12 @@ import { assertNever } from '../infra/error-format.js';
 import { isRecord } from '../infra/json.js';
 import { ensure } from '../transport/ipc/ensure.js';
 import { childPrincipalAuthFromEnv, childPrincipalAuthOptions } from '../transport/ipc/child-principal-auth.js';
-import { HandoffRunError, runHandoff, type HandoffOutcome } from '../coordinator/handoff-runner.js';
+import {
+  HandoffRunError,
+  projectHandoffRunResult,
+  runHandoff,
+  type HandoffOutcome,
+} from '../coordinator/handoff-runner.js';
 import { formatLaunch, formatWorkflowSlot } from './format/jobs.js';
 import { openCliCauseRefRenderer } from './cause-renderer.js';
 import { getSharedReadCoralStore } from './read-store.js';
@@ -566,23 +571,8 @@ export async function launchAndFollow(options: FollowOptions): Promise<number> {
             onSelectionPublicationIncident: (incident) => renderHandoffPublicationIncidents([incident]),
           },
         );
-        let continuation;
-        switch (result.kind) {
-          case 'recorded':
-            continuation = result.continuation;
-            break;
-          case 'recording-not-applicable':
-            continuation = result.continuationWithoutRecording;
-            break;
-          case 'recording-incidents':
-            continuation = result.observedWork;
-            renderHandoffPublicationIncidents(
-              result.publicationIncidents.filter((incident) => incident.phase === 'terminal'),
-            );
-            break;
-          default:
-            return assertNever(result);
-        }
+        const { continuation, publicationIncidents } = projectHandoffRunResult(result);
+        renderHandoffPublicationIncidents(publicationIncidents.filter((incident) => incident.phase === 'terminal'));
         if (continuation.kind === 'delegated') {
           return continuation;
         }

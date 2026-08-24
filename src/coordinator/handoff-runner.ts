@@ -228,6 +228,24 @@ export type HandoffRunResult =
       publicationIncidents: NonEmptyReadonlyArray<HandoffPublicationIncident>;
     }>;
 
+export type HandoffRunProjection = Readonly<{
+  continuation: HandoffContinuationResult;
+  publicationIncidents: readonly HandoffPublicationIncident[];
+}>;
+
+export function projectHandoffRunResult(result: HandoffRunResult): HandoffRunProjection {
+  switch (result.kind) {
+    case 'recorded':
+      return { continuation: result.continuation, publicationIncidents: result.publicationIncidents };
+    case 'recording-not-applicable':
+      return { continuation: result.continuationWithoutRecording, publicationIncidents: [] };
+    case 'recording-incidents':
+      return { continuation: result.observedWork, publicationIncidents: result.publicationIncidents };
+    default:
+      return assertNever(result);
+  }
+}
+
 export class HandoffRunError extends Error {
   readonly originalError: unknown;
   readonly incidents: NonEmptyReadonlyArray<HandoffPublicationIncident>;
@@ -684,8 +702,8 @@ async function publishHandoffTransition(
   signal?: AbortSignal,
 ): Promise<PublicationOutcome> {
   const status = await import('./handoff-routing-status.js');
-  return status.publishHandoffRoutingTransitions(
-    { storage: runtime.storage, ids: runtime.ids, time },
+  return status.publishGenerationCoordinatedHandoffRoutingTransitions(
+    { ...runtime, time },
     handoffRoutingStatusPathForRunDir(runtime.paths.coral.coordinator.runDir, status.HANDOFF_ROUTING_STATUS_GENERATION),
     [transition],
     signal,

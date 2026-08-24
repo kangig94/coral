@@ -4,6 +4,7 @@ import {
   HANDOFF_PUBLICATION_INCIDENT_EXIT_CONTRIBUTIONS,
   HandoffRunError,
   liveHandoffResultObligation,
+  projectHandoffRunResult,
   runHandoff,
   type LiveHandoffResult,
 } from '../../coordinator/handoff-runner.js';
@@ -135,6 +136,16 @@ export const BACKEND_STATUS_EXIT_CODES: Readonly<Record<BackendStatusFull['statu
   unreachable: 75,
   no_record_socket_present: 75,
 };
+
+export const HANDOFF_ROUTING_RESOLVE_EXIT_CODES: Readonly<Record<HandoffRoutingResolveResult['kind'], 0 | 1 | 75>> = {
+  resolved: 0,
+  'already-terminal': 0,
+  stale: 1,
+  'live-owner': 1,
+  'unauthorized-unobservable': 75,
+  'status-unavailable': 75,
+  'not-published': 75,
+};
 import { quarantineKbCommitLocal } from '../kb-commit-quarantine.js';
 import type { StoreResetTarget } from '../../store/operator-store-reset.js';
 import {
@@ -227,17 +238,18 @@ function formatRoutingStatusDiscardRefusal(
 ): string {
   switch (status.status.kind) {
     case 'absent':
-      return 'Refusing to discard routing status: no journal exists at this address.';
+      return 'Refusing to discard routing status: no journal exists at this address.\nNext step: no action is needed.';
     case 'current':
-      return 'Refusing to discard routing status: the journal is current.';
+      return 'Refusing to discard routing status: the journal is current.\nNext step: run coral-cli backend status and follow whatever successor it shows.';
     case 'undeterminable':
-      return `Refusing to discard routing status: the journal read was undeterminable (${status.status.cause}, errcode ${status.status.errcode}). Retry without discarding.`;
+      return `Refusing to discard routing status: the journal read was undeterminable (${status.status.cause}, errcode ${status.status.errcode}).\nNext step: retry coral-cli backend status without discarding and repair the reported storage condition if it persists; an ambiguous read cannot authorize quarantine.`;
     default:
       return assertNever(status.status);
   }
 }
 
-function commanderInvocationId(value: string): string {
+function commanderInvocationId(value: string, previous: string | undefined): string {
+  if (previous !== undefined) throw new InvalidArgumentError('Option --invocation may only be specified once.');
   const invocationId = parseHandoffRoutingInvocationId(value);
   if (invocationId === null) throw new InvalidArgumentError('Invocation must be a canonical lowercase UUID.');
   return invocationId;
@@ -359,26 +371,36 @@ export function registerBackendCommands(program: Command, operations: BackendCom
   });
 
   const routingStatusCommand = backend.command('routing-status').description('Inspect and repair routing status');
-  routingStatusCommand
+  const resolveRoutingStatusCommand = routingStatusCommand
     .command('resolve')
     .description('Resolve one retained routing invocation after its owner is no longer authoritative')
     .requiredOption('--invocation <id>', 'Canonical invocation ID shown by backend status', commanderInvocationId)
-    .option('--force-unobservable', 'Abandon an owner whose incarnation cannot be observed')
-    .action(async (options: { invocation: string; forceUnobservable?: boolean }) => {
-      try {
-        const request: HandoffRepairOperation = {
-          kind: 'routing-status-resolve',
-          invocationId: options.invocation,
-          forceUnobservable: options.forceUnobservable ?? false,
-        };
-        const result = await routingStatus.resolve(request);
-        const rendered = formatHandoffRoutingResolveResult(result);
-        (result.kind === 'resolved' ? process.stdout : process.stderr).write(`${rendered}\n`);
-        process.exitCode = result.kind === 'resolved' ? 0 : 75;
-      } catch (error: unknown) {
-        emitError(error);
-      }
-    });
+    .option(
+      '--force-unobservable',
+      'Default: false; requires external owner verification and cannot override deadline-expired',
+    );
+  let forceUnobservableSeen = false;
+  resolveRoutingStatusCommand.on('option:force-unobservable', () => {
+    if (forceUnobservableSeen) {
+      throw new InvalidArgumentError('Option --force-unobservable may only be specified once.');
+    }
+    forceUnobservableSeen = true;
+  });
+  resolveRoutingStatusCommand.action(async (options: { invocation: string; forceUnobservable?: boolean }) => {
+    try {
+      const request: HandoffRepairOperation = {
+        kind: 'routing-status-resolve',
+        invocationId: options.invocation,
+        forceUnobservable: options.forceUnobservable ?? false,
+      };
+      const result = await routingStatus.resolve(request);
+      const rendered = formatHandoffRoutingResolveResult(result);
+      (HANDOFF_ROUTING_RESOLVE_EXIT_CODES[result.kind] === 0 ? process.stdout : process.stderr).write(`${rendered}\n`);
+      process.exitCode = HANDOFF_ROUTING_RESOLVE_EXIT_CODES[result.kind];
+    } catch (error: unknown) {
+      emitError(error);
+    }
+  });
   routingStatusCommand
     .command('discard')
     .description(
@@ -543,23 +565,8 @@ export function registerBackendCommands(program: Command, operations: BackendCom
               onSelectionPublicationIncident: (incident) => renderHandoffPublicationIncidents([incident]),
             },
           );
-          let continuation;
-          switch (handoffResult.kind) {
-            case 'recorded':
-              continuation = handoffResult.continuation;
-              break;
-            case 'recording-not-applicable':
-              continuation = handoffResult.continuationWithoutRecording;
-              break;
-            case 'recording-incidents':
-              continuation = handoffResult.observedWork;
-              renderHandoffPublicationIncidents(
-                handoffResult.publicationIncidents.filter((incident) => incident.phase === 'terminal'),
-              );
-              break;
-            default:
-              return assertNever(handoffResult);
-          }
+          const { continuation, publicationIncidents } = projectHandoffRunResult(handoffResult);
+          renderHandoffPublicationIncidents(publicationIncidents.filter((incident) => incident.phase === 'terminal'));
           if (continuation.kind === 'run-current') {
             process.stderr.write(
               'This Coral process could not finish draining stdout, so store-reset delegation was abandoned before any destructive step. Nothing was changed. Retry the command.\n',

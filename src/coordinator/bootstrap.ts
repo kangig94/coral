@@ -3,7 +3,12 @@ declare const __PLUGIN_ROOT__: string | undefined;
 
 import { auditBootstrapFailure, writeBootstrapDiagnostic, writeStartupErrorSentinel } from './bootstrap-diagnostics.js';
 import { BackendAlreadyRunningError } from './handoff.js';
-import { HandoffRunError, runHandoff, type HandoffPublicationIncident } from './handoff-runner.js';
+import {
+  HandoffRunError,
+  projectHandoffRunResult,
+  runHandoff,
+  type HandoffPublicationIncident,
+} from './handoff-runner.js';
 import { createCoordinatorServer } from './index.js';
 import { StartupStoreHandoffError } from './lifecycle.js';
 import { runKbDaemonMain } from '../kb-daemon/daemon-main.js';
@@ -82,21 +87,10 @@ export async function handoffStartupToSelectedBuild(
         onSelectionPublicationIncident: logStartupHandoffPublicationIncident,
       },
     );
-    let continuation;
-    switch (result.kind) {
-      case 'recorded':
-        continuation = result.continuation;
-        break;
-      case 'recording-not-applicable':
-        continuation = result.continuationWithoutRecording;
-        break;
-      case 'recording-incidents':
-        continuation = result.observedWork;
-        result.publicationIncidents
-          .filter((incident) => incident.phase === 'terminal')
-          .forEach(logStartupHandoffPublicationIncident);
-        break;
-    }
+    const { continuation, publicationIncidents } = projectHandoffRunResult(result);
+    publicationIncidents
+      .filter((incident) => incident.phase === 'terminal')
+      .forEach(logStartupHandoffPublicationIncident);
     if (continuation.kind === 'run-current') {
       return {
         kind: 'failed',

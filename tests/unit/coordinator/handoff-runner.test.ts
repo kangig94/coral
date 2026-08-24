@@ -10,6 +10,7 @@ import {
   ABSENT_HANDOFF_RESULT_OBLIGATION,
   HANDOFF_CONTINUATION_REASON_OBLIGATIONS,
   HandoffRunError,
+  projectHandoffRunResult,
   resolveHandoffRoutingForOperation,
   routeAuthenticatedHealth,
   runHandoff as runHandoffResult,
@@ -71,7 +72,10 @@ vi.mock('#src/runtime/real.js', () => ({
 
 vi.mock('#src/coordinator/handoff-routing-status.js', async (importOriginal) => {
   const actual = await importOriginal<typeof HandoffRoutingStatusMod>();
-  return { ...actual, publishHandoffRoutingTransitions: mockState.publishHandoffRoutingTransitions };
+  return {
+    ...actual,
+    publishGenerationCoordinatedHandoffRoutingTransitions: mockState.publishHandoffRoutingTransitions,
+  };
 });
 
 vi.mock('#src/transport/ipc/client.js', () => ({
@@ -117,7 +121,6 @@ async function createHandoffRuntime(): Promise<Runtime> {
       now: () => 1_700_000_000_000,
       monotonicNow: () => 0n,
       sleep: async () => {},
-      // The drain arms a real timer through the port, so the double must actually schedule.
       setTimeout: (fn: () => void, ms: number) => setTimeout(fn, ms),
       clearTimeout: (handle: { unref?(): void } | null) => {
         clearTimeout(handle as unknown as NodeJS.Timeout);
@@ -141,14 +144,7 @@ async function createHandoffRuntime(): Promise<Runtime> {
 }
 
 function observedContinuation(result: HandoffRunResult): HandoffContinuationResult {
-  switch (result.kind) {
-    case 'recorded':
-      return result.continuation;
-    case 'recording-not-applicable':
-      return result.continuationWithoutRecording;
-    case 'recording-incidents':
-      return result.observedWork;
-  }
+  return projectHandoffRunResult(result).continuation;
 }
 
 async function runHandoff(
@@ -272,6 +268,42 @@ afterEach(() => {
 });
 
 describe('handoff-runner', () => {
+  it('projects every recording state onto its observed work and incidents', () => {
+    const recordedContinuation = {
+      kind: 'run-current',
+      reason: { kind: 'routing', basis: { kind: 'incumbent-absent' } },
+    } as const;
+    const notApplicableContinuation = {
+      kind: 'run-current',
+      reason: { kind: 'handoff-not-applicable', reason: 'display-only' },
+    } as const;
+    const incidentContinuation = {
+      kind: 'run-current',
+      reason: { kind: 'handoff-abandoned', reason: 'stdout-drain-incomplete' },
+    } as const;
+    const incidents = [{ phase: 'selection', kind: 'not-published', cause: 'contended' }] as const;
+
+    expect(
+      projectHandoffRunResult({
+        kind: 'recorded',
+        continuation: recordedContinuation,
+        publicationIncidents: [],
+      }),
+    ).toEqual({ continuation: recordedContinuation, publicationIncidents: [] });
+    expect(
+      projectHandoffRunResult({
+        kind: 'recording-not-applicable',
+        continuationWithoutRecording: notApplicableContinuation,
+      }),
+    ).toEqual({ continuation: notApplicableContinuation, publicationIncidents: [] });
+    expect(
+      projectHandoffRunResult({
+        kind: 'recording-incidents',
+        observedWork: incidentContinuation,
+        publicationIncidents: incidents,
+      }),
+    ).toEqual({ continuation: incidentContinuation, publicationIncidents: incidents });
+  });
   it('binds every continuation reason and the absent result to an obligation', () => {
     expect(HANDOFF_CONTINUATION_REASON_OBLIGATIONS).toEqual({
       'handoff-not-applicable': {
@@ -401,6 +433,24 @@ describe('handoff-runner', () => {
     });
   });
 
+  it('should surface generation maintenance refusals for both lifecycle publications', async () => {
+    mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
+    mockState.publishHandoffRoutingTransitions.mockResolvedValue({
+      kind: 'not-published',
+      cause: 'generation-maintenance',
+    });
+    mockState.spawn.mockImplementationOnce(() => childThatExits(0, null));
+
+    await expect(runHandoffResult(cliOperation('run'), { pluginRoot: '/plugin/root' })).resolves.toMatchObject({
+      kind: 'recording-incidents',
+      publicationIncidents: [
+        { phase: 'selection', kind: 'not-published', cause: 'generation-maintenance' },
+        { phase: 'terminal', kind: 'not-published', cause: 'generation-maintenance' },
+      ],
+    });
+    expect(mockState.publishHandoffRoutingTransitions).toHaveBeenCalledTimes(2);
+  });
+
   it('should report a selection incident before spawning delegated work', async () => {
     const order: string[] = [];
     mockState.publishHandoffRoutingTransitions
@@ -447,6 +497,33 @@ describe('handoff-runner', () => {
     expect(mockState.health).toHaveBeenCalledOnce();
     expect(mockState.spawn).toHaveBeenCalledOnce();
     expect(mockState.publishHandoffRoutingTransitions).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      'invocation',
+      ['--invocation', '123e4567-e89b-42d3-a456-426614174000', '--invocation', '223e4567-e89b-42d3-a456-426614174000'],
+    ],
+    [
+      'force override',
+      ['--invocation', '123e4567-e89b-42d3-a456-426614174000', '--force-unobservable', '--force-unobservable'],
+    ],
+  ])('should keep lifecycle recording enabled for duplicate %s options', async (_name, options) => {
+    mockState.spawn.mockImplementationOnce(() => childThatExits(0, null));
+
+    await expect(
+      runHandoffResult(cliOperation('backend', 'routing-status', 'resolve', ...options), {
+        pluginRoot: '/plugin/root',
+      }),
+    ).resolves.toMatchObject({ kind: 'recorded' });
+
+    expect(mockState.publishHandoffRoutingTransitions).toHaveBeenCalledTimes(2);
+    expect(mockState.publishHandoffRoutingTransitions.mock.calls[0]?.[2][0]).toMatchObject({
+      kind: 'routing-selected',
+    });
+    expect(mockState.publishHandoffRoutingTransitions.mock.calls[1]?.[2][0]).toMatchObject({
+      kind: 'continuation-finalized',
+    });
   });
 
   it.each(['forged', 'consumed'])('should persist no selection for a %s target', async (authority) => {
@@ -677,7 +754,6 @@ describe('handoff-runner', () => {
       return child;
     });
 
-    // An aborted signal is the one input that makes `drainStdoutBeforeHandoff` answer false without waiting.
     const aborted = AbortSignal.abort();
     const result = runHandoff(
       { kind: 'backend-startup' },

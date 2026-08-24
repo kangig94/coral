@@ -1,5 +1,5 @@
 import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
@@ -17,11 +17,15 @@ import {
   MAX_LEGAL_ROUTING_SELECTED_TRANSITION,
   MAX_RETIREMENT_TOMBSTONES,
   MAX_UNRESOLVED_INVOCATIONS,
+  publishGenerationCoordinatedHandoffRoutingTransitions,
   publishHandoffRoutingTransitions,
+  readHandoffRoutingStatus,
   type HandoffRoutingTransition,
   type PublicationOutcome,
 } from '#src/coordinator/handoff-routing-status.js';
+import { discardHandoffRoutingStatus } from '#src/cli/routing-status-discard.js';
 import { createRealRuntime } from '#src/runtime/real.js';
+import { acquireGenerationMaintenanceLease } from '#src/store/generation-mutation-coordination.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
 const FORMER_DIRECTORY_LOCK_STALE_MS = 30_000;
@@ -205,10 +209,12 @@ function databaseCapacity(path: string): Readonly<{ pageCount: number; freeListC
   }
 }
 
-function spawnWriter(mode: string, path: string, identity?: string): Writer {
-  const child = spawn(process.execPath, [workerBundlePath, mode, path, identity ?? 'worker'], {
-    stdio: ['pipe', 'pipe', 'pipe'],
-  });
+function spawnWriter(mode: string, path: string, identity?: string, baseDir?: string): Writer {
+  const child = spawn(
+    process.execPath,
+    [workerBundlePath, mode, path, identity ?? 'worker', ...(baseDir === undefined ? [] : [baseDir])],
+    { stdio: ['pipe', 'pipe', 'pipe'] },
+  );
   children.add(child);
   child.once('exit', () => children.delete(child));
   let stderr = '';
@@ -411,6 +417,63 @@ afterAll(() => {
 });
 
 describe('handoff routing status transaction durability', () => {
+  it('refuses publication while generation maintenance is held', async () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'coral-handoff-routing-maintenance-'));
+    temporaryDirectories.push(baseDir);
+    const isolatedRuntime = createRealRuntime('prod', { baseDir });
+    const path = join(isolatedRuntime.paths.coral.coordinator.runDir, 'handoff-routing.1.db');
+    const maintenance = await acquireGenerationMaintenanceLease(isolatedRuntime);
+    const writer = spawnWriter('coordinated-publication', path, 'after-maintenance', baseDir);
+    try {
+      expect(JSON.parse(await nextLine(writer))).toEqual({
+        kind: 'not-published',
+        cause: 'generation-maintenance',
+      });
+      expect(existsSync(path)).toBe(false);
+    } finally {
+      maintenance.release();
+    }
+
+    await expect(
+      publishGenerationCoordinatedHandoffRoutingTransitions(isolatedRuntime, path, [selection('after-maintenance', 1)]),
+    ).resolves.toMatchObject({ kind: 'committed' });
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'refuses a stale discard after another process quarantines and recreates the journal',
+    async () => {
+      const baseDir = mkdtempSync(join(tmpdir(), 'coral-handoff-routing-discard-race-'));
+      temporaryDirectories.push(baseDir);
+      const isolatedRuntime = createRealRuntime('prod', { baseDir });
+      const path = join(isolatedRuntime.paths.coral.coordinator.runDir, 'handoff-routing.1.db');
+      mkdirSync(isolatedRuntime.paths.coral.coordinator.runDir, { recursive: true });
+      writeFileSync(path, 'not a sqlite database', { mode: 0o600 });
+
+      const staleDiscard = spawnWriter('stale-discard', path, 'stale', baseDir);
+      expect(await nextLine(staleDiscard)).toBe('discardable-observed');
+
+      const discarded = await discardHandoffRoutingStatus(isolatedRuntime, path);
+      expect(discarded.kind).toBe('discarded');
+      if (discarded.kind !== 'discarded') throw new Error(`Expected discard, received ${discarded.kind}`);
+      expect(existsSync(discarded.quarantinePath)).toBe(true);
+      expect(existsSync(path)).toBe(false);
+
+      await expect(
+        publishGenerationCoordinatedHandoffRoutingTransitions(isolatedRuntime, path, [selection('recreated', 1)]),
+      ).resolves.toMatchObject({ kind: 'committed' });
+      resumeWriter(staleDiscard);
+
+      expect(JSON.parse(await nextLine(staleDiscard))).toMatchObject({
+        kind: 'refused',
+        status: { kind: 'current' },
+      });
+      expect(readHandoffRoutingStatus(isolatedRuntime, path)).toMatchObject({
+        kind: 'current',
+        statuses: [{ selection: { invocationId: 'invocation-recreated' } }],
+      });
+      expect(existsSync(discarded.quarantinePath)).toBe(true);
+    },
+  );
   it('reserves byte capacity for selection admission and retained-opening closure', async () => {
     const path = databasePath();
     const opening = maximumSelection('opening');
@@ -582,9 +645,6 @@ describe('handoff routing status transaction durability', () => {
     },
   );
 
-  // The retention bounds this asserts are each proven per-rule by the unit suite; what only this can show is
-  // that they still hold after a hundred maximum-sized lifecycles. It is gated because that costs ~70s of
-  // `synchronous=FULL` commits, which is the heaviest I/O in the repository and starves a loaded host.
   it.skipIf(process.platform === 'win32' || process.env.CORAL_TEST_CAPACITY !== '1')(
     'commits maximum-retained-store lifecycles and reports sequential and concurrent timings',
     async () => {

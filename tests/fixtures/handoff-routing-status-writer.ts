@@ -4,17 +4,20 @@ import { DatabaseSync } from 'node:sqlite';
 
 import {
   HANDOFF_ROUTING_STATUS_GENERATION,
+  publishGenerationCoordinatedHandoffRoutingTransitions,
   publishHandoffRoutingTransitions,
+  readHandoffRoutingStatus,
   type HandoffRoutingTransition,
   type PublicationOutcome,
 } from '#src/coordinator/handoff-routing-status.js';
+import { discardHandoffRoutingStatus } from '#src/cli/routing-status-discard.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
-const [, , mode, path, identity = 'worker'] = process.argv;
+const [, , mode, path, identity = 'worker', baseDir] = process.argv;
 if (mode === undefined || path === undefined) throw new Error('Expected mode and database path');
 
-const runtime = createRealRuntime('prod');
+const runtime = createRealRuntime('prod', baseDir === undefined ? undefined : { baseDir });
 const owner = { pid: process.pid, incarnation: testIncarnation(process.pid) } as const;
 const observedAt = (offset: number): string => new Date(Date.parse('2026-02-01T00:00:00.000Z') + offset).toISOString();
 
@@ -198,6 +201,19 @@ async function runLifecycle(): Promise<void> {
   }
 }
 
+async function runStaleDiscard(): Promise<void> {
+  const observed = readHandoffRoutingStatus(runtime, path);
+  if (observed.kind !== 'unreadable' && observed.kind !== 'unsupported-generation') {
+    throw new Error(`Expected a discardable observation, received ${observed.kind}`);
+  }
+  stopAt('discardable-observed');
+  emit(await discardHandoffRoutingStatus(runtime, path));
+}
+
+async function runCoordinatedPublication(): Promise<void> {
+  emit(await publishGenerationCoordinatedHandoffRoutingTransitions(runtime, path, [selection(identity, 1)]));
+}
+
 async function run(): Promise<void> {
   switch (mode) {
     case 'validate-stop':
@@ -217,6 +233,12 @@ async function run(): Promise<void> {
       return;
     case 'lifecycle':
       await runLifecycle();
+      return;
+    case 'stale-discard':
+      await runStaleDiscard();
+      return;
+    case 'coordinated-publication':
+      await runCoordinatedPublication();
       return;
     default:
       throw new Error(`Unknown mode: ${mode}`);

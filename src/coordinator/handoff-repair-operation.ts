@@ -17,6 +17,8 @@ export function parseHandoffRepairOperation(argv: readonly string[]): HandoffRep
 
   let invocationId: string | undefined;
   let forceUnobservable = false;
+  let invocationOptionSeen = false;
+  let forceUnobservableOptionSeen = false;
   for (let index = 3; index < tokens.length; index += 1) {
     const token = tokens[index];
     if (token === '--') {
@@ -24,10 +26,14 @@ export function parseHandoffRepairOperation(argv: readonly string[]): HandoffRep
       break;
     }
     if (token === '--force-unobservable') {
+      if (forceUnobservableOptionSeen) return null;
+      forceUnobservableOptionSeen = true;
       forceUnobservable = true;
       continue;
     }
     if (token === '--invocation') {
+      if (invocationOptionSeen) return null;
+      invocationOptionSeen = true;
       const value = tokens[index + 1];
       const parsed = parseHandoffRoutingInvocationId(value);
       if (parsed === null) return null;
@@ -36,6 +42,8 @@ export function parseHandoffRepairOperation(argv: readonly string[]): HandoffRep
       continue;
     }
     if (token.startsWith('--invocation=')) {
+      if (invocationOptionSeen) return null;
+      invocationOptionSeen = true;
       const parsed = parseHandoffRoutingInvocationId(token.slice('--invocation='.length));
       if (parsed === null) return null;
       invocationId = parsed;

@@ -1,21 +1,4 @@
-// Cluster K invariant — domain modules must reach I/O / randomness / env /
-// subprocess through Runtime ports. This is the structural complement to the
-// per-method ambient-runtime check in architecture-boundary.test.ts. The
-// composition root for the claude appserver subprocess
-// (`src/providers/claude/appserver/server.ts`) is exempt: it is its own
-// subprocess bootstrap and may import ambient I/O directly.
-//
-// `createHash` from `node:crypto` is pure compute (deterministic, no I/O, no
-// randomness) and stays — the invariant does not flag it.
-//
-// Bare-global timers (`setTimeout`, `setInterval`, `clearTimeout`,
-// `clearInterval`) are also forbidden: domain modules must reach the time
-// port (`kb.time.setTimeout`, `runtime.time.setInterval`, etc.). Member
-// access on `.time.` is allowed; bare identifiers leak ambient timer state
-// past the Runtime boundary.
-//
-// Transport IPC also owns no ambient clock reads. Bare `Date.now()` under
-// `src/transport/` must be routed through an injected time port.
+// Domain modules must reach ambient capabilities through Runtime ports.
 
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, relative } from 'node:path';

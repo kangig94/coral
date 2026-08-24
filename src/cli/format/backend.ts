@@ -86,9 +86,7 @@ function formatInvokingBuildNotOlder(
         nextStep,
       ].join('\n');
     case 'newer-version':
-      // This wording is limited to `routeLiveIncumbent` in src/coordinator/handoff-routing.ts.
-      // `routeOrOpenBackendStoreAtStartup` in src/store/startup-store-routing.ts owns the separate
-      // `reset-newer-invalid` decision, which is outside this live-incumbent result.
+      // See routeOrOpenBackendStoreAtStartup in src/store/startup-store-routing.ts.
       return [
         `Handoff: continuing current build — invoking build ${basis.invoking.version} is newer than incumbent ${basis.incumbent.version}.`,
         nextStep,
@@ -332,7 +330,10 @@ export function formatHandoffRoutingStatus(result: HandoffRoutingStatusReadResul
         'Next step: run coral-cli backend routing-status discard.',
       ].join('\n');
     case 'undeterminable':
-      return `Routing status could not be read (${result.cause}, errcode ${result.errcode}).`;
+      return [
+        `Routing status could not be read (${result.cause}, errcode ${result.errcode}).`,
+        'Next step: retry coral-cli backend status without discarding. If this persists, repair the reported storage condition; discard is not permitted because this read did not establish that the journal is unreadable or unsupported.',
+      ].join('\n');
     case 'current': {
       const sections = result.statuses.map(formatRoutingInvocationStatus);
       const truncatedHistory = formatRetirementHistoryTruncated(result.retirementHistoryTruncated);
@@ -344,24 +345,75 @@ export function formatHandoffRoutingStatus(result: HandoffRoutingStatusReadResul
   }
 }
 
+function formatUnavailableRoutingResolution(
+  status: Extract<HandoffRoutingResolveResult, { kind: 'status-unavailable' }>['status'],
+): string {
+  switch (status.kind) {
+    case 'unreadable':
+    case 'unsupported-generation':
+      return 'Next step: run coral-cli backend status, then run the routing-status discard command it reports before attempting another resolution.';
+    case 'undeterminable':
+      return 'Next step: retry coral-cli backend status without discarding and repair the reported storage condition if it persists; resolution requires a current journal.';
+    default:
+      return assertNever(status);
+  }
+}
+
+function formatUnpublishedRoutingResolution(
+  outcome: Extract<HandoffRoutingResolveResult, { kind: 'not-published' }>['outcome'],
+): string {
+  switch (outcome.kind) {
+    case 'not-published': {
+      const cause = outcome.cause;
+      switch (cause) {
+        case 'contended':
+          return 'Next step: rerun coral-cli backend status, then retry this resolve command if the invocation is still unresolved.';
+        case 'generation-maintenance':
+          return 'Next step: wait for generation maintenance to finish, rerun coral-cli backend status, then retry this resolve command if the invocation is still unresolved.';
+        case 'capacity-exhausted':
+          return 'Next step: repair the reported storage-capacity condition, rerun coral-cli backend status, then retry this resolve command if the invocation is still unresolved.';
+        case 'rejected-transition':
+          return 'Next step: rerun coral-cli backend status and follow the successor shown for the invocation; do not assume resolution occurred.';
+        default:
+          return assertNever(cause);
+      }
+    }
+    case 'undeterminable': {
+      const cause = outcome.cause;
+      switch (cause) {
+        case 'io-failed':
+          return 'Next step: rerun coral-cli backend status before acting and repair the reported storage condition if it persists; this attempt could not determine whether it committed.';
+        case 'unreadable':
+          return 'Next step: run coral-cli backend status and follow its routing-status discard successor if the journal is unreadable; this attempt could not determine whether it committed.';
+        case 'unsupported-generation':
+          return 'Next step: run coral-cli backend status and follow its routing-status discard successor if the generation is unsupported; this attempt could not determine whether it committed.';
+        default:
+          return assertNever(cause);
+      }
+    }
+    default:
+      return assertNever(outcome);
+  }
+}
+
 export function formatHandoffRoutingResolveResult(result: HandoffRoutingResolveResult): string {
   switch (result.kind) {
     case 'resolved':
       return `Resolved routing invocation ${result.invocationId} (${result.reason}).`;
     case 'stale':
-      return `Routing invocation ${result.invocationId} is stale or no longer retained.`;
+      return `Routing invocation ${result.invocationId} is stale or no longer retained.\nNext step: rerun coral-cli backend status and copy an invocation still shown as unresolved.`;
     case 'already-terminal':
-      return `Routing invocation ${result.invocationId} is already terminal.`;
+      return `Routing invocation ${result.invocationId} is already terminal. No resolution is needed.\nNext step: no action is needed.`;
     case 'live-owner':
-      return `Refusing to resolve routing invocation ${result.invocationId}: its recorded owner is alive.`;
+      return `Refusing to resolve routing invocation ${result.invocationId}: its recorded owner is alive.\nNext step: wait for the owner to finish, then rerun coral-cli backend status.`;
     case 'unauthorized-unobservable':
       return result.cause === 'deadline-expired'
-        ? `Refusing to resolve routing invocation ${result.invocationId}: the owner sweep deadline expired; rerun the command.`
-        : `Refusing to resolve routing invocation ${result.invocationId}: owner observation is unobservable (${result.cause}); pass --force-unobservable only after external verification.`;
+        ? `Refusing to resolve routing invocation ${result.invocationId}: the owner sweep deadline expired.\nNext step: rerun coral-cli backend status, then retry without --force-unobservable; the flag cannot override an expired observation budget.`
+        : `Refusing to resolve routing invocation ${result.invocationId}: owner observation is unobservable (${result.cause}).\nNext step: verify the owner externally, then rerun this command with --force-unobservable only if abandoning it is safe.`;
     case 'status-unavailable':
-      return `Refusing to resolve routing status because the authoritative journal is ${result.status.kind}.`;
+      return `Refusing to resolve routing status because the authoritative journal is ${result.status.kind}.\n${formatUnavailableRoutingResolution(result.status)}`;
     case 'not-published':
-      return `Routing resolution was not published (${result.outcome.kind}:${result.outcome.cause}).`;
+      return `Routing resolution was not published (${result.outcome.kind}:${result.outcome.cause}).\n${formatUnpublishedRoutingResolution(result.outcome)}`;
     default:
       return assertNever(result);
   }
