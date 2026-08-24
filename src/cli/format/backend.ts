@@ -18,6 +18,7 @@ import type { BackendHealth } from '../../transport/http/backend/health.js';
 import type { BackendStatusFull } from '../../transport/http/backend/status.js';
 import type { ShutdownResult } from '../../transport/http/backend/shutdown.js';
 import type { RecoveryQuarantineClearResult } from '../../recovery/source-registry.js';
+import { formatHandoffPublicationFailureSuccessor } from '../../coordinator/handoff-runner.js';
 
 export const RECOVERY_REVISION_UNTIL_CLEARED = 'until-cleared';
 export const RECOVERY_REVISION_FINGERPRINT_PREFIX = 'fingerprint:';
@@ -301,7 +302,16 @@ function formatRoutingInvocationStatus(status: HandoffRoutingInvocationStatus): 
     case 'terminal':
       return `Routing invocation ${status.terminal.invocationId}: terminal; ${formatStoredTerminalDisposition(status.terminal.disposition)}.`;
     case 'retired':
-      return `Routing invocation ${status.tombstone.invocationId}: retired (${status.tombstone.retirementCause}).`;
+      switch (status.tombstone.retirementCause) {
+        case 'selection-evicted-at-capacity':
+          return `Routing invocation ${status.tombstone.invocationId}: retired (selection-evicted-at-capacity).\nNext step: run coral-cli backend routing-status resolve --invocation ${status.tombstone.invocationId} to acknowledge the retained capacity eviction.`;
+        case 'completed-pair-compaction':
+          return `Routing invocation ${status.tombstone.invocationId}: retired (completed-pair-compaction). No action is needed.`;
+        case 'operator-resolved':
+          return `Routing invocation ${status.tombstone.invocationId}: retired (operator-resolved). No action is needed.`;
+        default:
+          return assertNever(status.tombstone.retirementCause);
+      }
     default:
       return assertNever(status);
   }
@@ -362,62 +372,15 @@ function formatUnavailableRoutingResolution(
 function formatUnpublishedRoutingResolution(
   outcome: Extract<HandoffRoutingResolveResult, { kind: 'not-published' }>['outcome'],
 ): string {
-  switch (outcome.kind) {
-    case 'not-published': {
-      const cause = outcome.cause;
-      switch (cause) {
-        case 'contended':
-          return 'Next step: rerun coral-cli backend status, then retry this resolve command if the invocation is still unresolved.';
-        case 'generation-maintenance':
-          return 'Next step: wait for generation maintenance to finish, rerun coral-cli backend status, then retry this resolve command if the invocation is still unresolved.';
-        case 'capacity-exhausted':
-          return 'Next step: repair the reported storage-capacity condition, rerun coral-cli backend status, then retry this resolve command if the invocation is still unresolved.';
-        case 'io-failed':
-          return 'Next step: repair the reported storage condition, rerun coral-cli backend status, then retry this resolve command if the invocation is still unresolved.';
-        case 'unreadable':
-          return 'Next step: run coral-cli backend status and follow its routing-status discard successor before retrying this resolve command.';
-        case 'unsupported-generation':
-          return 'Next step: run coral-cli backend status and follow its routing-status discard successor before retrying this resolve command.';
-        case 'invalid-record':
-          return (
-            `Next step: report the invalid routing-status record (${outcome.validation.kind}) as a Coral defect; ` +
-            `the journal is unaffected, and no storage action is appropriate. After installing corrected Coral ` +
-            'software, rerun coral-cli backend routing-status resolve --invocation <id>.'
-          );
-        case 'rejected-transition':
-          return 'Next step: rerun coral-cli backend status and follow the successor shown for the invocation; do not assume resolution occurred.';
-        case 'coordination-unavailable':
-          return 'Next step: make the generation coordination root writable again, then run coral-cli backend status.';
-        default:
-          return assertNever(cause);
-      }
-    }
-    case 'undeterminable': {
-      const cause = outcome.cause;
-      switch (cause) {
-        case 'contended':
-          return 'Next step: rerun coral-cli backend status before acting; this attempt could not determine whether the contended commit completed.';
-        case 'capacity-exhausted':
-          return 'Next step: rerun coral-cli backend status before acting and repair the storage-capacity condition; this attempt could not determine whether it committed.';
-        case 'io-failed':
-          return 'Next step: rerun coral-cli backend status before acting and repair the reported storage condition if it persists; this attempt could not determine whether it committed.';
-        case 'unreadable':
-          return 'Next step: run coral-cli backend status and follow its routing-status discard successor if the journal is unreadable; this attempt could not determine whether it committed.';
-        case 'unsupported-generation':
-          return 'Next step: run coral-cli backend status and follow its routing-status discard successor if the generation is unsupported; this attempt could not determine whether it committed.';
-        default:
-          return assertNever(cause);
-      }
-    }
-    default:
-      return assertNever(outcome);
-  }
+  return formatHandoffPublicationFailureSuccessor(outcome, 'routing-resolution');
 }
 
 export function formatHandoffRoutingResolveResult(result: HandoffRoutingResolveResult): string {
   switch (result.kind) {
     case 'resolved':
       return `Resolved routing invocation ${result.invocationId} (${result.reason}).`;
+    case 'acknowledged-capacity-eviction':
+      return `Acknowledged capacity eviction for routing invocation ${result.invocationId} (selection sequence ${result.selectionSequence}).`;
     case 'stale':
       return `Routing invocation ${result.invocationId} is stale or no longer retained.\nNext step: rerun coral-cli backend status and copy an invocation still shown as unresolved.`;
     case 'already-terminal':

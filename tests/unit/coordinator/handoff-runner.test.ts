@@ -11,7 +11,7 @@ import {
   HANDOFF_CONTINUATION_REASON_OBLIGATIONS,
   HandoffRunError,
   liveIncumbentHealthSchema,
-  projectHandoffRunResult,
+  consumeHandoffRunResult,
   resolveHandoffRoutingForOperation,
   routeAuthenticatedHealth,
   runHandoff as runHandoffResult,
@@ -149,7 +149,7 @@ async function createHandoffRuntime(baseDir?: string): Promise<Runtime> {
 }
 
 function observedContinuation(result: HandoffRunResult): HandoffContinuationResult {
-  return projectHandoffRunResult(result).continuation;
+  return consumeHandoffRunResult(result, () => undefined);
 }
 
 async function runHandoff(
@@ -273,7 +273,7 @@ afterEach(() => {
 });
 
 describe('handoff-runner', () => {
-  it('projects every recording state onto its observed work and incidents', () => {
+  it('requires recording incidents to be handled before returning observed work', () => {
     const recordedContinuation = {
       kind: 'run-current',
       reason: { kind: 'routing', basis: { kind: 'incumbent-absent' } },
@@ -288,27 +288,41 @@ describe('handoff-runner', () => {
     } as const;
     const incidents = [{ phase: 'selection', kind: 'not-published', cause: 'contended' }] as const;
 
+    const handleRecordingIncidents = vi.fn();
+
     expect(
-      projectHandoffRunResult({
-        kind: 'recorded',
-        continuation: recordedContinuation,
-        publicationIncidents: [],
-      }),
-    ).toEqual({ continuation: recordedContinuation, publicationIncidents: [] });
+      consumeHandoffRunResult(
+        {
+          kind: 'recorded',
+          continuation: recordedContinuation,
+          publicationIncidents: [],
+        },
+        handleRecordingIncidents,
+      ),
+    ).toEqual(recordedContinuation);
     expect(
-      projectHandoffRunResult({
-        kind: 'recording-not-applicable',
-        continuationWithoutRecording: notApplicableContinuation,
-      }),
-    ).toEqual({ continuation: notApplicableContinuation, publicationIncidents: [] });
+      consumeHandoffRunResult(
+        {
+          kind: 'recording-not-applicable',
+          continuationWithoutRecording: notApplicableContinuation,
+        },
+        handleRecordingIncidents,
+      ),
+    ).toEqual(notApplicableContinuation);
+    expect(handleRecordingIncidents).not.toHaveBeenCalled();
     expect(
-      projectHandoffRunResult({
-        kind: 'recording-incidents',
-        observedWork: incidentContinuation,
-        publicationIncidents: incidents,
-      }),
-    ).toEqual({ continuation: incidentContinuation, publicationIncidents: incidents });
+      consumeHandoffRunResult(
+        {
+          kind: 'recording-incidents',
+          observedWork: incidentContinuation,
+          publicationIncidents: incidents,
+        },
+        handleRecordingIncidents,
+      ),
+    ).toEqual(incidentContinuation);
+    expect(handleRecordingIncidents).toHaveBeenCalledWith(incidents);
   });
+
   it('binds every continuation reason and the absent result to an obligation', () => {
     expect(HANDOFF_CONTINUATION_REASON_OBLIGATIONS).toEqual({
       'handoff-not-applicable': {

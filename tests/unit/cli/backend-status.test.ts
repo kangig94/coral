@@ -11,7 +11,7 @@ import {
   formatHandoffContinuationReason,
   formatHandoffRoutingStatus,
 } from '#src/cli/format/backend.js';
-import { formatHandoffPublicationIncident } from '#src/cli/handoff-notice.js';
+import { formatHandoffPublicationIncident } from '#src/coordinator/handoff-runner.js';
 import type {
   HandoffContinuationReason,
   HandoffPublicationIncident,
@@ -264,14 +264,57 @@ describe('backend status live handoff disposition', () => {
 
 describe('backend status local exit combination', () => {
   it('renders the invalid-record validation category on the publication-incident surface', () => {
-    expect(
-      formatHandoffPublicationIncident({
+    const rendered = formatHandoffPublicationIncident({
+      phase: 'selection',
+      kind: 'not-published',
+      cause: 'invalid-record',
+      validation: { kind: 'schema-violation' },
+    });
+    expect(rendered).toContain('invalid-record, schema-violation');
+    expect(rendered).toContain('After installing corrected Coral software, rerun coral-cli backend status.');
+  });
+
+  it.each<readonly [Extract<HandoffPublicationIncident, { kind: 'refused' }>, string]>([
+    [
+      {
         phase: 'selection',
-        kind: 'not-published',
-        cause: 'invalid-record',
-        validation: { kind: 'schema-violation' },
-      }),
-    ).toContain('invalid-record, schema-violation');
+        kind: 'refused',
+        refusal: {
+          reason: 'owner-identity-unavailable',
+          remediation: 'retry-when-process-identity-is-readable',
+          attemptedPhase: 'selection',
+        },
+      },
+      'wait until this process identity is readable',
+    ],
+    [
+      {
+        phase: 'selection',
+        kind: 'refused',
+        refusal: {
+          reason: 'invalid-target-authority',
+          remediation: 'retry-with-live-target-authority',
+          attemptedPhase: 'selection',
+        },
+      },
+      'wait until live target authority is available',
+    ],
+    [
+      {
+        phase: 'terminal',
+        kind: 'refused',
+        refusal: {
+          reason: 'selection-publication-undeterminable',
+          remediation: 'inspect-routing-status-before-repair',
+          attemptedPhase: 'terminal',
+        },
+      },
+      'run coral-cli backend status before repair',
+    ],
+  ])('renders an actionable successor without exposing the refusal token', (incident, expected) => {
+    const rendered = formatHandoffPublicationIncident(incident);
+    expect(rendered).toContain(`Next step: ${expected}`);
+    expect(rendered).not.toContain(incident.refusal.remediation);
   });
 
   const cases = [
@@ -390,6 +433,28 @@ describe('backend routing status', () => {
             terminalExisted: true,
           },
         },
+        {
+          kind: 'retired',
+          tombstone: {
+            generation: 1,
+            sequence: 4,
+            eventId: 'operator-resolved-event',
+            invocationId: 'operator-resolved-invocation',
+            observedAt: '2026-08-04T00:00:00.000Z',
+            eventKind: 'retirement-tombstone',
+            phase: 'retirement',
+            selectionSequence: 3,
+            selectedAt: '2026-08-02T00:00:00.000Z',
+            owner: { pid: 103, incarnation: testIncarnation(103) },
+            selectedDisposition: {
+              kind: 'continue-current',
+              basis: { kind: 'same-build-set', buildSetId: '323e4567-e89b-42d3-a456-426614174000' },
+            },
+            retirementCause: 'operator-resolved',
+            terminalExisted: false,
+            resolutionReason: 'owner-absent',
+          },
+        },
       ],
       retirementHistoryTruncated: {
         kind: 'retirement-history-truncated',
@@ -410,7 +475,8 @@ describe('backend routing status', () => {
       'Routing invocation unresolved-invocation: unresolved; its recorded owner is absent.',
       'Next step: run coral-cli backend routing-status resolve --invocation unresolved-invocation.',
       'Routing invocation terminal-invocation: terminal; delegated to 0.10.9, which exited 7.',
-      'Routing invocation retired-invocation: retired (completed-pair-compaction).',
+      'Routing invocation retired-invocation: retired (completed-pair-compaction). No action is needed.',
+      'Routing invocation operator-resolved-invocation: retired (operator-resolved). No action is needed.',
       'Routing retirement history: 2 exact invocation identities expired (selection-evicted-at-capacity=1, completed-pair-compaction=1, operator-resolved=0); observed selection sequence range 4-8, selected 2026-07-01T00:00:00.000Z through 2026-07-03T00:00:00.000Z.',
     ]);
   });
@@ -559,6 +625,9 @@ describe('backend routing status', () => {
     await program.parseAsync(['node', 'coral-cli', 'backend', 'status']);
 
     expect(stdout).toContain('Routing invocation routing-invocation: retired (selection-evicted-at-capacity).');
+    expect(stdout).toContain(
+      'coral-cli backend routing-status resolve --invocation routing-invocation to acknowledge the retained capacity eviction',
+    );
     expect(process.exitCode).toBe(75);
   });
 });

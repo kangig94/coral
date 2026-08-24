@@ -20,6 +20,7 @@ import {
   MAX_RETIREMENT_TOMBSTONE_BYTES,
   MAX_RETIREMENT_TOMBSTONES,
   MAX_UNRESOLVED_INVOCATIONS,
+  handoffRoutingStatusExitContribution,
   invalidTargetSummarySchema,
   persistedHandoffDispositionPolicy,
   publishGenerationCoordinatedHandoffRoutingTransitions,
@@ -37,6 +38,7 @@ import {
 import type { ProcessIdentityObservation } from '#src/infra/port-types.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { discardHandoffRoutingStatus } from '#src/cli/routing-status-discard.js';
+import { acquireOperatorSocketGuard } from '#src/cli/operator-socket-guard.js';
 import {
   acquireGenerationMaintenanceLease,
   resolveGenerationBoundaryPaths,
@@ -380,6 +382,66 @@ describe('handoff routing status', () => {
     writeFileSync(path, 'not a sqlite database', { mode: 0o600 });
     writeFileSync(`${path}-wal`, 'retained wal');
     writeFileSync(`${path}-shm`, 'retained shm');
+
+    const socket = await acquireOperatorSocketGuard({
+      socketPath: discardRuntime.paths.coral.coordinator.socketPath,
+      flavor: discardRuntime.flavor,
+      operation: 'routing-status discard test',
+      retryCommand: 'coral-cli backend routing-status discard',
+    });
+    try {
+      await expect(discardHandoffRoutingStatus(discardRuntime, path)).resolves.toEqual({
+        kind: 'coordinator-running',
+        socketPath: discardRuntime.paths.coral.coordinator.socketPath,
+      });
+    } finally {
+      await socket.release();
+    }
+
+    const maintenance = await acquireGenerationMaintenanceLease(discardRuntime);
+    let fastNow = discardRuntime.time.now();
+    try {
+      await expect(
+        discardHandoffRoutingStatus(
+          {
+            ...discardRuntime,
+            time: {
+              ...discardRuntime.time,
+              now: () => fastNow,
+              sleep: async (ms: number) => {
+                fastNow += ms;
+              },
+            },
+          },
+          path,
+        ),
+      ).resolves.toEqual({ kind: 'generation-maintenance-unavailable', cause: 'contended' });
+    } finally {
+      maintenance.release();
+    }
+
+    const ownershipLostRuntime = {
+      ...discardRuntime,
+      storage: {
+        ...discardRuntime.storage,
+        renameSync: (oldPath: string, newPath: string) => {
+          if (newPath.includes('claim-refresh-')) throw new Error('injected maintenance lease loss');
+          discardRuntime.storage.renameSync(oldPath, newPath);
+        },
+      },
+      time: {
+        ...discardRuntime.time,
+        setInterval: (fn: () => void) => {
+          fn();
+          return {};
+        },
+        clearInterval: () => undefined,
+      },
+    };
+    await expect(discardHandoffRoutingStatus(ownershipLostRuntime, path)).resolves.toEqual({
+      kind: 'generation-maintenance-unavailable',
+      cause: 'ownership-lost',
+    });
 
     const discarded = await discardHandoffRoutingStatus(discardRuntime, path);
     expect(discarded).toMatchObject({
@@ -1256,6 +1318,12 @@ describe('handoff routing status', () => {
       severity: 'warning',
       exitContribution: 75,
     });
+    expect(persistedHandoffDispositionPolicy({ kind: 'operator-resolved', terminalExisted: false })).toEqual({
+      durability: 'lifecycle-journal',
+      retention: 'bounded-history',
+      severity: 'info',
+      exitContribution: 0,
+    });
     expect(
       persistedHandoffDispositionPolicy({
         kind: 'retirement-history-truncated',
@@ -1348,6 +1416,48 @@ describe('handoff routing status', () => {
         resolutionReason: 'owner-absent',
       },
     });
+    expect(handoffRoutingStatusExitContribution(status)).toBe(0);
+  });
+
+  it('acknowledges an exact capacity eviction through routing-status resolve', async () => {
+    const path = databasePath();
+    await committed(
+      path,
+      Array.from({ length: MAX_UNRESOLVED_INVOCATIONS + 1 }, (_, index) =>
+        selection(`capacity-opening-${index}`, index + 1),
+      ),
+    );
+    const repairRuntime = {
+      ...runtime,
+      process: {
+        ...runtime.process,
+        observeProcessIdentities: async (owners: readonly (typeof OWNER)[]) =>
+          owners.map((owner) => ({ owner, evidence: { kind: 'pid-absent' as const } })),
+      },
+    };
+
+    await expect(
+      resolveHandoffRoutingStatus(repairRuntime, path, {
+        invocationId: 'capacity-opening-0',
+        forceUnobservable: false,
+      }),
+    ).resolves.toEqual({
+      kind: 'acknowledged-capacity-eviction',
+      invocationId: 'capacity-opening-0',
+      selectionSequence: 1,
+    });
+
+    const status = readHandoffRoutingStatus(path);
+    expect(status).toMatchObject({
+      kind: 'current',
+      retirementHistoryTruncated: {
+        expiredIdentityCount: 1,
+        causes: { 'selection-evicted-at-capacity': 1 },
+      },
+    });
+    if (status.kind !== 'current') throw new Error(`Expected current status, received ${status.kind}`);
+    expect(status.statuses.some((candidate) => candidate.kind === 'retired')).toBe(false);
+    expect(handoffRoutingStatusExitContribution(status)).toBe(0);
   });
 
   it('refuses operator resolution while generation maintenance is held', async () => {

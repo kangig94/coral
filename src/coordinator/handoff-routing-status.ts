@@ -664,6 +664,14 @@ const operatorResolvedTransitionSchema = transitionEnvelopeSchema
   .strict()
   .readonly();
 
+const capacityEvictionAcknowledgedTransitionSchema = transitionEnvelopeSchema
+  .extend({
+    kind: z.literal('capacity-eviction-acknowledged'),
+    selectionSequence: positiveSequenceSchema,
+  })
+  .strict()
+  .readonly();
+
 export const handoffRoutingTransitionSchema = z.union([
   routingSelectedTransitionSchema,
   terminalTransitionSchema,
@@ -671,6 +679,13 @@ export const handoffRoutingTransitionSchema = z.union([
 ]);
 
 export type HandoffRoutingTransition = z.infer<typeof handoffRoutingTransitionSchema>;
+
+const handoffRoutingMutationSchema = z.union([
+  handoffRoutingTransitionSchema,
+  capacityEvictionAcknowledgedTransitionSchema,
+]);
+
+type HandoffRoutingMutation = z.infer<typeof handoffRoutingMutationSchema>;
 
 export type PublicationOutcome =
   | Readonly<{ kind: 'committed'; sequence: number }>
@@ -1149,10 +1164,26 @@ function applyResolution(
   return sequence;
 }
 
-function applyTransition(
+function applyCapacityEvictionAcknowledgement(
+  transaction: HandoffRoutingStatusTransaction,
+  transition: z.infer<typeof capacityEvictionAcknowledgedTransitionSchema>,
+): number {
+  const tombstone = tombstoneForInvocation(transaction, transition.invocationId);
+  if (
+    tombstone === undefined ||
+    tombstone.retirementCause !== 'selection-evicted-at-capacity' ||
+    tombstone.selectionSequence !== transition.selectionSequence
+  ) {
+    throw new RejectedTransitionError();
+  }
+  rollUpTombstone(transaction, tombstone);
+  return tombstone.sequence;
+}
+
+function applyRoutingMutation(
   transaction: HandoffRoutingStatusTransaction,
   ids: Pick<IdPort, 'uuid'>,
-  transition: HandoffRoutingTransition,
+  transition: HandoffRoutingMutation,
 ): number {
   if (transaction.eventExists(transition.eventId)) throw new RejectedTransitionError();
   switch (transition.kind) {
@@ -1163,12 +1194,14 @@ function applyTransition(
       return applyTerminal(transaction, ids, transition);
     case 'operator-resolved':
       return applyResolution(transaction, ids, transition);
+    case 'capacity-eviction-acknowledged':
+      return applyCapacityEvictionAcknowledgement(transaction, transition);
     default:
       return assertNever(transition);
   }
 }
 
-function transitionObservedAt(transitions: readonly HandoffRoutingTransition[]): string {
+function mutationObservedAt(transitions: readonly HandoffRoutingMutation[]): string {
   return transitions.reduce(
     (latest, transition) => (Date.parse(transition.observedAt) > Date.parse(latest) ? transition.observedAt : latest),
     transitions[0].observedAt,
@@ -1228,9 +1261,9 @@ function handoffRoutingStatusStoreSchema(): HandoffRoutingStatusStoreSchema {
 function publishOnce(
   runtime: Pick<HandoffRoutingPublicationPorts, 'storage' | 'ids'>,
   path: string,
-  transitions: readonly HandoffRoutingTransition[],
+  transitions: readonly HandoffRoutingMutation[],
 ): PublicationOutcome {
-  const parsed = z.array(handoffRoutingTransitionSchema).min(1).safeParse(transitions);
+  const parsed = z.array(handoffRoutingMutationSchema).min(1).safeParse(transitions);
   if (!parsed.success) return { kind: 'not-published', cause: 'rejected-transition' };
 
   const publication = publishHandoffRoutingStoreTransaction(
@@ -1238,11 +1271,11 @@ function publishOnce(
     path,
     handoffRoutingStatusStoreSchema(),
     (transaction) => {
-      const observedAt = transitionObservedAt(parsed.data);
+      const observedAt = mutationObservedAt(parsed.data);
       compactExpiredCompletedPairs(transaction, runtime.ids, observedAt);
       let publishedSequence = 0;
       for (const transition of parsed.data) {
-        publishedSequence = applyTransition(transaction, runtime.ids, transition);
+        publishedSequence = applyRoutingMutation(transaction, runtime.ids, transition);
       }
       compactExpiredCompletedPairs(transaction, runtime.ids, observedAt);
       return publishedSequence;
@@ -1256,7 +1289,7 @@ function publishOnce(
 export async function publishHandoffRoutingTransitions(
   runtime: HandoffRoutingPublicationPorts,
   path: string,
-  transitions: readonly HandoffRoutingTransition[],
+  transitions: readonly HandoffRoutingMutation[],
   signal?: AbortSignal,
 ): Promise<PublicationOutcome> {
   const clock = createMonotonicClock(Symbol('handoff-routing-status-publication-contention'), {
@@ -1278,7 +1311,7 @@ export async function publishHandoffRoutingTransitions(
 export async function publishGenerationCoordinatedHandoffRoutingTransitions(
   runtime: Runtime,
   path: string,
-  transitions: readonly HandoffRoutingTransition[],
+  transitions: readonly HandoffRoutingMutation[],
   signal?: AbortSignal,
 ): Promise<PublicationOutcome> {
   let writer: GenerationWriterLease;
@@ -1396,8 +1429,8 @@ function selectedDispositionPolicy(disposition: SelectedHandoffDisposition): Rou
 function retirementDispositionPolicy(disposition: RetirementDisposition): RoutingStatusPolicy {
   switch (disposition.kind) {
     case 'selection-evicted-at-capacity':
-    case 'operator-resolved':
       return boundedWarningPolicy;
+    case 'operator-resolved':
     case 'completed-pair-compaction':
       return {
         durability: 'lifecycle-journal',
@@ -1478,6 +1511,11 @@ export type HandoffRoutingResolveResult =
       invocationId: string;
       reason: 'owner-absent' | 'operator-abandoned-unobservable';
       sequence: number;
+    }>
+  | Readonly<{
+      kind: 'acknowledged-capacity-eviction';
+      invocationId: string;
+      selectionSequence: number;
     }>
   | Readonly<{ kind: 'stale'; invocationId: string }>
   | Readonly<{ kind: 'already-terminal'; invocationId: string }>
@@ -1893,6 +1931,29 @@ export async function resolveHandoffRoutingStatus(
   if (status === undefined) return { kind: 'stale', invocationId: request.invocationId };
   if (status.kind === 'terminal') return { kind: 'already-terminal', invocationId: request.invocationId };
   if (status.kind === 'retired') {
+    if (status.tombstone.retirementCause === 'selection-evicted-at-capacity') {
+      const outcome = await publishGenerationCoordinatedHandoffRoutingTransitions(
+        runtime,
+        path,
+        [
+          {
+            kind: 'capacity-eviction-acknowledged',
+            eventId: runtime.ids.uuid(),
+            invocationId: request.invocationId,
+            observedAt: new Date(runtime.time.now()).toISOString(),
+            selectionSequence: status.tombstone.selectionSequence,
+          },
+        ],
+        signal,
+      );
+      return outcome.kind === 'committed'
+        ? {
+            kind: 'acknowledged-capacity-eviction',
+            invocationId: request.invocationId,
+            selectionSequence: status.tombstone.selectionSequence,
+          }
+        : { kind: 'not-published', outcome };
+    }
     return status.tombstone.retirementCause === 'operator-resolved' || status.tombstone.terminalExisted
       ? { kind: 'already-terminal', invocationId: request.invocationId }
       : { kind: 'stale', invocationId: request.invocationId };
@@ -1951,7 +2012,14 @@ export function handoffRoutingStatusExitContribution(result: HandoffRoutingStatu
       continue;
     }
     if (status.kind === 'retired') {
-      if (status.tombstone.retirementCause !== 'completed-pair-compaction') return 75;
+      if (
+        persistedHandoffDispositionPolicy({
+          kind: status.tombstone.retirementCause,
+          terminalExisted: status.tombstone.terminalExisted,
+        }).exitContribution === 75
+      ) {
+        return 75;
+      }
       continue;
     }
     if (persistedHandoffDispositionPolicy(status.terminal.disposition).exitContribution === 75) return 75;

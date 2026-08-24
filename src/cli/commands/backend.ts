@@ -3,7 +3,7 @@ import { InvalidArgumentError, type Command } from 'commander';
 import {
   HandoffRunError,
   liveHandoffResultObligation,
-  projectHandoffRunResult,
+  consumeHandoffRunResult,
   runHandoff,
   type HandoffPublicationIncident,
   type LiveHandoffResult,
@@ -148,6 +148,7 @@ export const HANDOFF_ROUTING_RESOLVE_EXIT_CODES: Readonly<
   Record<HandoffRoutingResolveKindWithoutPublication, 0 | 1 | 75>
 > = {
   resolved: 0,
+  'acknowledged-capacity-eviction': 0,
   'already-terminal': 0,
   stale: 1,
   'live-owner': 1,
@@ -289,18 +290,37 @@ export function createHandoffRoutingStatusCommandOperations(): HandoffRoutingSta
 }
 
 function formatRoutingStatusDiscardRefusal(
-  status: Extract<HandoffRoutingStatusDiscardResult, { kind: 'refused' }>,
+  result: Exclude<HandoffRoutingStatusDiscardResult, { kind: 'discarded' }>,
 ): string {
-  switch (status.status.kind) {
-    case 'absent':
-      return 'Refusing to discard routing status: no journal exists at this address.\nNext step: no action is needed.';
-    case 'current':
-      return 'Refusing to discard routing status: the journal is current.\nNext step: run coral-cli backend status and follow whatever successor it shows.';
-    case 'undeterminable':
-      return `Refusing to discard routing status: the journal read was undeterminable (${status.status.cause}, errcode ${status.status.errcode}).\nNext step: retry coral-cli backend status without discarding and repair the reported storage condition if it persists; an ambiguous read cannot authorize quarantine.`;
+  switch (result.kind) {
+    case 'refused':
+      switch (result.status.kind) {
+        case 'absent':
+          return 'Refusing to discard routing status: no journal exists at this address.\nNext step: no action is needed.';
+        case 'current':
+          return 'Refusing to discard routing status: the journal is current.\nNext step: run coral-cli backend status and follow whatever successor it shows.';
+        case 'undeterminable':
+          return `Refusing to discard routing status: the journal read was undeterminable (${result.status.cause}, errcode ${result.status.errcode}).\nNext step: retry coral-cli backend status without discarding and repair the reported storage condition if it persists; an ambiguous read cannot authorize quarantine.`;
+        default:
+          return assertNever(result.status);
+      }
+    case 'coordinator-running':
+      return 'Refusing to discard routing status: the coordinator owns the live socket.\nNext step: run coral-cli backend shutdown, wait for the coordinator to exit, then rerun coral-cli backend routing-status discard.';
+    case 'coordinator-socket-unobservable':
+      return `Routing-status discard could not determine whether the coordinator socket is available (${result.cause}).\nNext step: run coral-cli backend shutdown, repair the coordinator socket path if it cannot be observed, then rerun coral-cli backend routing-status discard.`;
+    case 'coordinator-socket-insecure':
+      return 'Refusing to discard routing status: the coordinator socket directory is insecure.\nNext step: repair the reported socket-directory ownership or permissions, run coral-cli backend shutdown, then rerun coral-cli backend routing-status discard.';
+    case 'generation-maintenance-unavailable':
+      return `Refusing to discard routing status: generation maintenance is unavailable (${result.cause}).\nNext step: wait for generation maintenance to finish, then rerun coral-cli backend routing-status discard.`;
     default:
-      return assertNever(status.status);
+      return assertNever(result);
   }
+}
+
+function handoffRoutingStatusDiscardExitContribution(result: HandoffRoutingStatusDiscardResult): 0 | 75 {
+  if (result.kind === 'discarded') return 0;
+  if (result.kind === 'refused' && result.status.kind === 'absent') return 0;
+  return 75;
 }
 
 function commanderInvocationId(value: string, previous: string | undefined): string {
@@ -426,7 +446,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
   const routingStatusCommand = backend.command('routing-status').description('Inspect and repair routing status');
   const resolveRoutingStatusCommand = routingStatusCommand
     .command('resolve')
-    .description('Resolve one retained routing invocation after its owner is no longer authoritative')
+    .description('Resolve one retained opening or acknowledge one retained capacity eviction')
     .requiredOption('--invocation <id>', 'Canonical invocation ID shown by backend status', commanderInvocationId)
     .option(
       '--force-unobservable',
@@ -463,8 +483,8 @@ export function registerBackendCommands(program: Command, operations: BackendCom
     .action(async () => {
       try {
         const result = await routingStatus.discard();
-        if (result.kind === 'refused') {
-          const exitCode = result.status.kind === 'absent' ? 0 : 75;
+        if (result.kind !== 'discarded') {
+          const exitCode = handoffRoutingStatusDiscardExitContribution(result);
           process.stderr.write(`${formatRoutingStatusDiscardRefusal(result)}\n`);
           process.exitCode = exitCode;
           return;
@@ -620,8 +640,9 @@ export function registerBackendCommands(program: Command, operations: BackendCom
               onSelectionPublicationIncident: (incident) => renderHandoffPublicationIncidents([incident]),
             },
           );
-          const { continuation, publicationIncidents } = projectHandoffRunResult(handoffResult);
-          renderHandoffPublicationIncidents(publicationIncidents.filter((incident) => incident.phase === 'terminal'));
+          const continuation = consumeHandoffRunResult(handoffResult, (incidents) =>
+            renderHandoffPublicationIncidents(incidents.filter((incident) => incident.phase === 'terminal')),
+          );
           if (continuation.kind === 'run-current') {
             process.stderr.write(
               'This Coral process could not finish draining stdout, so store-reset delegation was abandoned before any destructive step. Nothing was changed. Retry the command.\n',

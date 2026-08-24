@@ -5,7 +5,8 @@ import { auditBootstrapFailure, writeBootstrapDiagnostic, writeStartupErrorSenti
 import { BackendAlreadyRunningError } from './handoff.js';
 import {
   HandoffRunError,
-  projectHandoffRunResult,
+  consumeHandoffRunResult,
+  formatHandoffPublicationIncident,
   runHandoff,
   type HandoffPublicationIncident,
 } from './handoff-runner.js';
@@ -87,10 +88,9 @@ export async function handoffStartupToSelectedBuild(
         onSelectionPublicationIncident: logStartupHandoffPublicationIncident,
       },
     );
-    const { continuation, publicationIncidents } = projectHandoffRunResult(result);
-    publicationIncidents
-      .filter((incident) => incident.phase === 'terminal')
-      .forEach(logStartupHandoffPublicationIncident);
+    const continuation = consumeHandoffRunResult(result, (incidents) =>
+      incidents.filter((incident) => incident.phase === 'terminal').forEach(logStartupHandoffPublicationIncident),
+    );
     if (continuation.kind === 'run-current') {
       return {
         kind: 'failed',
@@ -125,7 +125,7 @@ export async function handoffStartupToSelectedBuild(
 }
 
 function logStartupHandoffPublicationIncident(incident: HandoffPublicationIncident): void {
-  backendLog.warn(`Backend startup handoff routing-status publication incident: ${JSON.stringify(incident)}`);
+  backendLog.warn(`Backend startup: ${formatHandoffPublicationIncident(incident)}`);
 }
 
 export async function main(): Promise<number> {

@@ -104,3 +104,32 @@ through `refuseSignal` when liveness is anything but observed, so an unobservabl
 
 After PR2 and PR3 of `backend-routing-disposition`. Nothing here blocks that work, and the store
 misclassification predates it.
+
+## Reproduced in the field, 2026-08-24
+
+Not a reconstruction this time. A coordinator died mid-session; the next startup wrote
+`~/.coral/gen2/run/startup-diagnostic.json` with:
+
+    "code": "store_corrupt_or_unsupported",
+    "userMessage": "The current-generation store is corrupt or uses an unsupported format.",
+    "remediation": "Run 'coral-cli backend store-reset discard --target gen2 --flavor prod' to quarantine it",
+    "context": { "cause": "database is locked" }
+
+`retryable` was recorded as `false`. Both claims were checked and both were wrong. `PRAGMA integrity_check`
+on that database answered `ok`, and its `store.db.format` sentinel was byte-identical to the fingerprint
+`--print-store-reset-build-identity` reports for the build that refused it. The store was neither corrupt nor
+of an unsupported format, and nothing was done to it: the backend started on its own a few minutes later.
+
+So the destructive remedy was offered, as the only named next step, for a database that was healthy and for a
+condition that cleared itself. An operator who followed the instruction would have quarantined a 329 MB store
+to fix a lock.
+
+The start condition below is now met — PR2 and PR3 have merged.
+
+## A second defect surfaced with it
+
+`tests/unit/hooks/hooks.test.ts` reads the host's live backend state. While the daemon was refusing to start,
+the session-start hook prepended this diagnostic to its output and two assertions that pin the output's first
+line failed; both passed again once the daemon recovered, with no code change. A unit test whose result depends
+on whether the developer's own daemon happens to be healthy cannot distinguish a regression from a busy
+machine. It belongs with the entries in `unit-suite-concurrency-and-real-time-tests.md`.

@@ -1,4 +1,6 @@
 import type { Runtime } from '../runtime/ports.js';
+import { DirectoryLockOwnershipLostError, isDirectoryLockTimeoutError } from '../infra/fs-lock.js';
+import { CoralSetupError } from '../runtime/errors.js';
 import {
   readHandoffRoutingStatus,
   type HandoffRoutingStatusReadResult,
@@ -21,7 +23,54 @@ export type HandoffRoutingStatusDiscardResult =
       quarantinePath: string;
       previousStatus: DiscardableRoutingStatus;
     }>
-  | Readonly<{ kind: 'refused'; status: RefusedRoutingStatus }>;
+  | Readonly<{ kind: 'refused'; status: RefusedRoutingStatus }>
+  | Readonly<{ kind: 'coordinator-running'; socketPath: string }>
+  | Readonly<{
+      kind: 'coordinator-socket-unobservable';
+      socketPath: string;
+      cause: 'bind-failed' | 'directory-unverified';
+    }>
+  | Readonly<{ kind: 'coordinator-socket-insecure'; socketPath: string }>
+  | Readonly<{
+      kind: 'generation-maintenance-unavailable';
+      cause: 'contended' | 'ownership-lost';
+    }>;
+
+type OperatorSocketRefusal = Extract<
+  HandoffRoutingStatusDiscardResult,
+  { kind: 'coordinator-running' | 'coordinator-socket-unobservable' | 'coordinator-socket-insecure' }
+>;
+
+function operatorSocketRefusal(error: unknown, socketPath: string): OperatorSocketRefusal | null {
+  if (!(error instanceof CoralSetupError)) return null;
+  switch (error.code) {
+    case 'coordinator_socket_in_use':
+      return { kind: 'coordinator-running', socketPath };
+    case 'coordinator_socket_bind_failed':
+      return { kind: 'coordinator-socket-unobservable', socketPath, cause: 'bind-failed' };
+    case 'coordinator_socket_dir_unverified':
+      return { kind: 'coordinator-socket-unobservable', socketPath, cause: 'directory-unverified' };
+    case 'coordinator_socket_dir_insecure':
+      return { kind: 'coordinator-socket-insecure', socketPath };
+    default:
+      return null;
+  }
+}
+
+function generationMaintenanceRefusal(
+  error: unknown,
+): Extract<HandoffRoutingStatusDiscardResult, { kind: 'generation-maintenance-unavailable' }> | null {
+  if (isDirectoryLockTimeoutError(error)) {
+    return { kind: 'generation-maintenance-unavailable', cause: 'contended' };
+  }
+  if (error instanceof CoralSetupError && error.code === 'legacy_source_not_quiescent') {
+    return { kind: 'generation-maintenance-unavailable', cause: 'contended' };
+  }
+  if (error instanceof DirectoryLockOwnershipLostError) {
+    return { kind: 'generation-maintenance-unavailable', cause: 'ownership-lost' };
+  }
+  return null;
+}
 
 export async function discardHandoffRoutingStatus(
   runtime: Runtime,
@@ -32,16 +81,37 @@ export async function discardHandoffRoutingStatus(
     return { kind: 'refused', status: observedStatus };
   }
 
-  const socket = await acquireOperatorSocketGuard({
-    socketPath: runtime.paths.coral.coordinator.socketPath,
-    flavor: runtime.flavor,
-    operation: 'routing-status discard',
-    retryCommand: 'coral-cli backend routing-status discard',
-  });
+  const socketPath = runtime.paths.coral.coordinator.socketPath;
+  let socket: Awaited<ReturnType<typeof acquireOperatorSocketGuard>>;
   try {
-    const maintenance = await acquireGenerationMaintenanceLease(runtime);
+    socket = await acquireOperatorSocketGuard({
+      socketPath,
+      flavor: runtime.flavor,
+      operation: 'routing-status discard',
+      retryCommand: 'coral-cli backend routing-status discard',
+    });
+  } catch (error: unknown) {
+    const refusal = operatorSocketRefusal(error, socketPath);
+    if (refusal !== null) return refusal;
+    throw error;
+  }
+  try {
+    let maintenance: Awaited<ReturnType<typeof acquireGenerationMaintenanceLease>>;
     try {
-      maintenance.assertOwned();
+      maintenance = await acquireGenerationMaintenanceLease(runtime);
+    } catch (error: unknown) {
+      const refusal = generationMaintenanceRefusal(error);
+      if (refusal !== null) return refusal;
+      throw error;
+    }
+    try {
+      try {
+        maintenance.assertOwned();
+      } catch (error: unknown) {
+        const refusal = generationMaintenanceRefusal(error);
+        if (refusal !== null) return refusal;
+        throw error;
+      }
       const currentStatus = readHandoffRoutingStatus(runtime, path);
       if (currentStatus.kind !== 'unreadable' && currentStatus.kind !== 'unsupported-generation') {
         return { kind: 'refused', status: currentStatus };

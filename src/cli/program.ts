@@ -4,9 +4,10 @@ import { Command } from 'commander';
 
 import {
   HandoffRunError,
-  projectHandoffRunResult,
+  consumeHandoffRunResult,
   runHandoff,
   type HandoffOutcome,
+  type HandoffPublicationIncident,
   type HandoffRunResult,
   type LiveHandoffResult,
 } from '../coordinator/handoff-runner.js';
@@ -53,14 +54,13 @@ async function executeCliHandoffPreflight(argv: readonly string[]): Promise<Hand
     throw error.originalError;
   }
 
-  const { continuation, publicationIncidents } = projectHandoffRunResult(result);
-  if (publicationIncidents.length > 0) {
+  let publicationIncidents: readonly HandoffPublicationIncident[] = [];
+  const continuation = consumeHandoffRunResult(result, (incidents) => {
+    publicationIncidents = incidents;
     renderHandoffPublicationIncidents(
-      statusInvocation
-        ? publicationIncidents
-        : publicationIncidents.filter((incident) => incident.phase === 'terminal'),
+      statusInvocation ? incidents : incidents.filter((incident) => incident.phase === 'terminal'),
     );
-  }
+  });
 
   switch (continuation.kind) {
     case 'run-current':

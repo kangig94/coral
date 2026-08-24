@@ -411,7 +411,9 @@ describe('cli follow', () => {
 
     expect(stderr).toBe(
       'Handoff routing-status selection publication was not published (contended).\n' +
-        'Handoff routing-status terminal publication could not be determined (io-failed, errcode 5).\n',
+        'Next step: rerun coral-cli backend status, then retry the operation if the invocation is still unresolved.\n' +
+        'Handoff routing-status terminal publication could not be determined (io-failed, errcode 5).\n' +
+        'Next step: rerun coral-cli backend status before acting and repair the reported storage condition if it persists; this attempt could not determine whether it committed.\n',
     );
     expect(mockState.subscribe).toHaveBeenCalledOnce();
   });

@@ -247,6 +247,9 @@ describe('program', () => {
       expectedExit === 75 ? { kind: 'handoff-exit', exitCode: 75 } : { kind: 'handoff-exit', exitCode: expectedExit },
     );
     expect(stderr).toContain('Handoff routing-status terminal publication was not published (contended).');
+    expect(stderr).toContain(
+      'Next step: rerun coral-cli backend status, then retry the operation if the invocation is still unresolved.',
+    );
   });
 
   it('should append delegated status publication notices after the child exits', async () => {

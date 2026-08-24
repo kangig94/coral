@@ -123,6 +123,10 @@ describe('backend routing-status resolve grammar', () => {
       result: { kind: 'resolved', invocationId: INVOCATION_ID, reason: 'owner-absent', sequence: 1 },
       exitCode: 0,
     },
+    {
+      result: { kind: 'acknowledged-capacity-eviction', invocationId: INVOCATION_ID, selectionSequence: 1 },
+      exitCode: 0,
+    },
     { result: { kind: 'already-terminal', invocationId: INVOCATION_ID }, exitCode: 0 },
     { result: { kind: 'stale', invocationId: INVOCATION_ID }, exitCode: 1 },
     { result: { kind: 'live-owner', invocationId: INVOCATION_ID }, exitCode: 1 },
@@ -295,42 +299,69 @@ describe('backend routing-status resolve grammar', () => {
   });
 
   it.each([
-    [{ kind: 'absent' } as const, 'Next step: no action is needed.', 0],
+    [{ kind: 'refused', status: { kind: 'absent' } } as const, 'Next step: no action is needed.', 0],
     [
       {
-        kind: 'current',
-        generation: 1,
-        statuses: [],
-        retirementHistoryTruncated: {
-          kind: 'retirement-history-truncated',
-          expiredIdentityCount: 0,
-          causes: {
-            'selection-evicted-at-capacity': 0,
-            'completed-pair-compaction': 0,
-            'operator-resolved': 0,
+        kind: 'refused',
+        status: {
+          kind: 'current',
+          generation: 1,
+          statuses: [],
+          retirementHistoryTruncated: {
+            kind: 'retirement-history-truncated',
+            expiredIdentityCount: 0,
+            causes: {
+              'selection-evicted-at-capacity': 0,
+              'completed-pair-compaction': 0,
+              'operator-resolved': 0,
+            },
+            minSelectionSequence: null,
+            maxSelectionSequence: null,
+            earliestSelectedAt: null,
+            latestSelectedAt: null,
           },
-          minSelectionSequence: null,
-          maxSelectionSequence: null,
-          earliestSelectedAt: null,
-          latestSelectedAt: null,
         },
       } as const,
       'Next step: run coral-cli backend status and follow whatever successor it shows.',
       75,
     ],
     [
-      { kind: 'undeterminable', cause: 'io-failed', errcode: 5 } as const,
+      { kind: 'refused', status: { kind: 'undeterminable', cause: 'io-failed', errcode: 5 } } as const,
       'Next step: retry coral-cli backend status without discarding',
       75,
     ],
-  ])('renders the refusal successor for a $kind journal with exit $2', async (status, expected, exitCode) => {
+    [
+      { kind: 'coordinator-running', socketPath: '/state/run/coordinator.sock' } as const,
+      'Next step: run coral-cli backend shutdown',
+      75,
+    ],
+    [
+      {
+        kind: 'coordinator-socket-unobservable',
+        socketPath: '/state/run/coordinator.sock',
+        cause: 'bind-failed',
+      } as const,
+      'could not determine whether the coordinator socket is available',
+      75,
+    ],
+    [
+      { kind: 'coordinator-socket-insecure', socketPath: '/state/run/coordinator.sock' } as const,
+      'repair the reported socket-directory ownership or permissions',
+      75,
+    ],
+    [
+      { kind: 'generation-maintenance-unavailable', cause: 'ownership-lost' } as const,
+      'wait for generation maintenance to finish',
+      75,
+    ],
+  ])('renders the discard refusal successor for $0.kind with exit $2', async (result, expected, exitCode) => {
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     const routingStatus: HandoffRoutingStatusCommandOperations = {
       resolve: async () => {
         throw new Error('not used');
       },
-      discard: async () => ({ kind: 'refused', status }),
+      discard: async () => result,
     };
     const program = new Command();
     program.exitOverride();

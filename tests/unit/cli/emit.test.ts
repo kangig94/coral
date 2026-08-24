@@ -165,6 +165,9 @@ describe('handoff publication error emission', () => {
     emitError(new HandoffRunError(error(), [{ phase: 'selection', kind: 'not-published', cause: 'contended' }]));
 
     expect(stderr).toContain('Handoff routing-status selection publication was not published (contended).\n');
+    expect(stderr).toContain(
+      'Next step: rerun coral-cli backend status, then retry the operation if the invocation is still unresolved.\n',
+    );
     expect(stderr).toContain(`[${errorTag}]`);
     expect(process.exitCode).toBe(exitCode);
   });

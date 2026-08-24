@@ -87,15 +87,15 @@ describe('backend bootstrap store handoff', () => {
       error: handoffError,
     });
     expect(warn).toHaveBeenCalledWith(
-      'Backend startup handoff routing-status publication incident: ' +
-        '{"phase":"terminal","kind":"not-published","cause":"contended"}',
+      'Backend startup: Handoff routing-status terminal publication was not published (contended).\n' +
+        'Next step: rerun coral-cli backend status, then retry the operation if the invocation is still unresolved.',
     );
   });
 
   it('should log selection telemetry before startup work and finalization telemetry after it', async () => {
     const order: string[] = [];
     vi.spyOn(backendLog, 'warn').mockImplementation((message) => {
-      order.push(message.includes('"phase":"selection"') ? 'selection' : 'terminal');
+      order.push(message.includes('selection publication') ? 'selection' : 'terminal');
     });
     mockState.runHandoff.mockImplementation(async (_operation, options) => {
       options.onSelectionPublicationIncident({

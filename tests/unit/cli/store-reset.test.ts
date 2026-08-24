@@ -901,7 +901,9 @@ describe('backend store-reset commands', () => {
 
     expect(stderr).toBe(
       'Handoff routing-status selection publication was not published (contended).\n' +
+        'Next step: rerun coral-cli backend status, then retry the operation if the invocation is still unresolved.\n' +
         'Handoff routing-status terminal publication could not be determined (io-failed, errcode 5).\n' +
+        'Next step: rerun coral-cli backend status before acting and repair the reported storage condition if it persists; this attempt could not determine whether it committed.\n' +
         'Coral 2.0.0 ran the delegated store-reset command.\n',
     );
     expect(process.exitCode).toBe(23);
