@@ -138,6 +138,10 @@ describe('backend routing-status resolve grammar', () => {
       result: { kind: 'not-published', outcome: { kind: 'not-published', cause: 'contended' } },
       exitCode: 75,
     },
+    {
+      result: { kind: 'not-published', outcome: { kind: 'not-published', cause: 'coordination-unavailable' } },
+      exitCode: 75,
+    },
   ])('maps $result.kind to command exit $exitCode', async ({ result, exitCode }) => {
     const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
@@ -201,6 +205,10 @@ describe('backend routing-status resolve grammar', () => {
     [
       { kind: 'not-published', outcome: { kind: 'not-published', cause: 'rejected-transition' } },
       'do not assume resolution occurred',
+    ],
+    [
+      { kind: 'not-published', outcome: { kind: 'not-published', cause: 'coordination-unavailable' } },
+      'make the generation coordination root writable again, then run coral-cli backend status',
     ],
     [
       { kind: 'not-published', outcome: { kind: 'undeterminable', cause: 'io-failed', errcode: 5 } },

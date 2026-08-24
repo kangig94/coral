@@ -19,6 +19,7 @@ export type HandoffRoutingStatusStoreSchema = Readonly<{
   maximumContinuationFinalizedBytes: number;
   maximumRetirementTombstoneBytes: number;
   closingRecordBytes: number;
+  validateRecordBody: (record: HandoffRoutingRecordInput) => boolean;
 }>;
 
 export type HandoffRoutingRecordKind = 'selection' | 'terminal' | 'retirement';
@@ -91,6 +92,7 @@ export class HandoffRoutingStatusTransaction {
   }
 
   insertRecord(record: HandoffRoutingRecordInput): number {
+    if (!this.#schema.validateRecordBody(record)) throw new HandoffRoutingStoreUnreadableError();
     const inserted = this.#database
       .prepare(
         `INSERT INTO handoff_routing_records (

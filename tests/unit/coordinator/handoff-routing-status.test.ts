@@ -22,6 +22,7 @@ import {
   MAX_UNRESOLVED_INVOCATIONS,
   invalidTargetSummarySchema,
   persistedHandoffDispositionPolicy,
+  publishGenerationCoordinatedHandoffRoutingTransitions,
   publishHandoffRoutingTransitions,
   readHandoffRoutingStatus as readHandoffRoutingStatusWithRuntime,
   readHandoffRoutingStatusWithOwnerObservations,
@@ -36,7 +37,10 @@ import {
 import type { ProcessIdentityObservation } from '#src/infra/port-types.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { discardHandoffRoutingStatus } from '#src/cli/routing-status-discard.js';
-import { acquireGenerationMaintenanceLease } from '#src/store/generation-mutation-coordination.js';
+import {
+  acquireGenerationMaintenanceLease,
+  resolveGenerationBoundaryPaths,
+} from '#src/store/generation-mutation-coordination.js';
 import { SimulationRuntime } from '../../../tools/simulation/runtime.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
@@ -1322,6 +1326,45 @@ describe('handoff routing status', () => {
     } finally {
       maintenance.release();
     }
+  });
+
+  it('reports a coordination-root I/O failure without calling it contention', async () => {
+    const path = databasePath();
+    const writersRoot = resolveGenerationBoundaryPaths(runtime).writersRoot;
+    const failedStorage = {
+      ...runtime.storage,
+      mkdirSync: (candidate: string, options?: { recursive?: boolean; mode?: number }) => {
+        if (candidate === writersRoot) {
+          throw Object.assign(new Error('coordination root is not writable'), { code: 'EACCES' });
+        }
+        runtime.storage.mkdirSync(candidate, options);
+      },
+    };
+
+    await expect(
+      publishGenerationCoordinatedHandoffRoutingTransitions({ ...runtime, storage: failedStorage }, path, [
+        selection('coordination-io-failure', 1),
+      ]),
+    ).resolves.toEqual({ kind: 'not-published', cause: 'coordination-unavailable' });
+  });
+
+  it('resolves a lost writer lease as coordination unavailable', async () => {
+    const path = databasePath();
+    const failedStorage = {
+      ...runtime.storage,
+      renameSync: (oldPath: string, newPath: string) => {
+        if (newPath.includes('claim-refresh-')) {
+          throw Object.assign(new Error('writer lease refresh failed'), { code: 'EIO' });
+        }
+        runtime.storage.renameSync(oldPath, newPath);
+      },
+    };
+
+    await expect(
+      publishGenerationCoordinatedHandoffRoutingTransitions({ ...runtime, storage: failedStorage }, path, [
+        selection('lost-writer-lease', 1),
+      ]),
+    ).resolves.toEqual({ kind: 'not-published', cause: 'coordination-unavailable' });
   });
 
   it('requires force for unobservable owners and never lets force override an expired deadline', async () => {

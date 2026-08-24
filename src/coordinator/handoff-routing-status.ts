@@ -17,6 +17,7 @@ import {
   SQLITE_ERROR,
   SQLITE_FULL,
   SQLITE_NOTADB,
+  type HandoffRoutingRecordInput,
   type HandoffRoutingStatusTransaction,
   type HandoffRoutingStatusStoreSchema,
 } from '../store/handoff-routing-status-store.js';
@@ -509,6 +510,73 @@ export const retirementTombstoneSchema = eventEnvelopeSchema
 
 export type RetirementTombstone = z.infer<typeof retirementTombstoneSchema>;
 
+type StoredStatusRecord = RoutingSelectedEvent | HandoffRoutingTerminalEvent | RetirementTombstone;
+
+type HandoffRoutingRecordEnvelope = Readonly<{
+  generation: number;
+  sequence: number;
+  eventId: string;
+  invocationId: string;
+  observedAt: string;
+  recordKind: string;
+  eventKind: string;
+  selectionSequence: number | null;
+  retirementCause: string | null;
+  terminalExisted: boolean | number | null;
+}>;
+
+function decodeStatusRecordBody(record: HandoffRoutingRecordEnvelope, body: unknown): StoredStatusRecord | null {
+  const parsed =
+    record.recordKind === 'selection'
+      ? routingSelectedEventSchema.safeParse(body)
+      : record.recordKind === 'terminal'
+        ? terminalEventSchema.safeParse(body)
+        : record.recordKind === 'retirement'
+          ? retirementTombstoneSchema.safeParse(body)
+          : null;
+  if (parsed === null || !parsed.success) return null;
+
+  const decoded = parsed.data;
+  if (
+    record.sequence !== decoded.sequence ||
+    record.generation !== decoded.generation ||
+    record.eventId !== decoded.eventId ||
+    record.invocationId !== decoded.invocationId ||
+    record.observedAt !== decoded.observedAt ||
+    record.eventKind !== decoded.eventKind
+  ) {
+    return null;
+  }
+  if (decoded.phase === 'selection') {
+    return record.selectionSequence === null && record.retirementCause === null && record.terminalExisted === null
+      ? decoded
+      : null;
+  }
+  if (decoded.phase === 'terminal') {
+    const selectionSequence =
+      decoded.selection.kind === 'with-selection-sequence' ? decoded.selection.selectionSequence : null;
+    return record.selectionSequence === selectionSequence &&
+      record.retirementCause === null &&
+      record.terminalExisted === null
+      ? decoded
+      : null;
+  }
+  return record.selectionSequence === decoded.selectionSequence &&
+    record.retirementCause === decoded.retirementCause &&
+    record.terminalExisted !== null &&
+    Number(record.terminalExisted) === Number(decoded.terminalExisted)
+    ? decoded
+    : null;
+}
+
+function validateStatusRecordBody(record: HandoffRoutingRecordInput): boolean {
+  try {
+    return decodeStatusRecordBody(record, JSON.parse(record.bodyJson)) !== null;
+  } catch {
+    return false;
+  }
+}
+
 export const retirementHistoryTruncatedSchema = z
   .object({
     kind: z.literal('retirement-history-truncated'),
@@ -634,7 +702,12 @@ export type PublicationOutcome =
   | Readonly<{ kind: 'committed'; sequence: number }>
   | Readonly<{
       kind: 'not-published';
-      cause: 'contended' | 'generation-maintenance' | 'capacity-exhausted' | 'rejected-transition';
+      cause:
+        | 'contended'
+        | 'generation-maintenance'
+        | 'capacity-exhausted'
+        | 'rejected-transition'
+        | 'coordination-unavailable';
     }>
   | Readonly<{
       kind: 'undeterminable';
@@ -1154,6 +1227,7 @@ function handoffRoutingStatusStoreSchema(): HandoffRoutingStatusStoreSchema {
     maximumContinuationFinalizedBytes: MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES['continuation-finalized'],
     maximumRetirementTombstoneBytes: MAX_ENCODED_RETIREMENT_TOMBSTONE_BYTES,
     closingRecordBytes: MAX_LEGAL_CLOSING_RECORD_BYTES,
+    validateRecordBody: validateStatusRecordBody,
   };
 }
 
@@ -1225,10 +1299,14 @@ export async function publishGenerationCoordinatedHandoffRoutingTransitions(
     if (attempt.kind === 'contended') return { kind: 'not-published', cause: 'contended' };
     writer = attempt.lease;
   } catch {
-    return { kind: 'not-published', cause: 'contended' };
+    return { kind: 'not-published', cause: 'coordination-unavailable' };
   }
   try {
-    writer.assertOwned();
+    try {
+      writer.assertOwned();
+    } catch {
+      return { kind: 'not-published', cause: 'coordination-unavailable' };
+    }
     return await publishHandoffRoutingTransitions(runtime, path, transitions, signal);
   } finally {
     writer.release();
@@ -1486,8 +1564,6 @@ type InvocationRecords = {
   tombstone?: RetirementTombstone;
 };
 
-type StoredStatusRecord = RoutingSelectedEvent | HandoffRoutingTerminalEvent | RetirementTombstone;
-
 type UnreadableStatus = Extract<HandoffRoutingStatusReadResult, { kind: 'unreadable' }>;
 
 type StatusProjection =
@@ -1545,45 +1621,22 @@ function decodeAndValidateStatusRow(rawRow: unknown): DecodedStatusRow {
     return { kind: 'unreadable', reason: 'invalid-json' };
   }
 
-  const parsed =
-    row.record_kind === 'selection'
-      ? routingSelectedEventSchema.safeParse(body)
-      : row.record_kind === 'terminal'
-        ? terminalEventSchema.safeParse(body)
-        : retirementTombstoneSchema.safeParse(body);
-  if (!parsed.success) return { kind: 'unreadable', reason: 'invalid-shape' };
-
-  const record = parsed.data;
-  if (
-    row.encoded_bytes !== bodyBytes ||
-    row.sequence !== record.sequence ||
-    row.generation !== record.generation ||
-    row.event_id !== record.eventId ||
-    row.invocation_id !== record.invocationId ||
-    row.observed_at !== record.observedAt ||
-    row.event_kind !== record.eventKind
-  ) {
-    return { kind: 'unreadable', reason: 'invalid-shape' };
-  }
-  if (record.phase === 'selection') {
-    if (row.selection_sequence !== null || row.retirement_cause !== null || row.terminal_existed !== null) {
-      return { kind: 'unreadable', reason: 'invalid-shape' };
-    }
-  } else if (record.phase === 'terminal') {
-    const selectionSequence =
-      record.selection.kind === 'with-selection-sequence' ? record.selection.selectionSequence : null;
-    if (
-      row.selection_sequence !== selectionSequence ||
-      row.retirement_cause !== null ||
-      row.terminal_existed !== null
-    ) {
-      return { kind: 'unreadable', reason: 'invalid-shape' };
-    }
-  } else if (
-    row.selection_sequence !== record.selectionSequence ||
-    row.retirement_cause !== record.retirementCause ||
-    row.terminal_existed !== Number(record.terminalExisted)
-  ) {
+  const record = decodeStatusRecordBody(
+    {
+      generation: row.generation,
+      sequence: row.sequence,
+      eventId: row.event_id,
+      invocationId: row.invocation_id,
+      observedAt: row.observed_at,
+      recordKind: row.record_kind,
+      eventKind: row.event_kind,
+      selectionSequence: row.selection_sequence,
+      retirementCause: row.retirement_cause,
+      terminalExisted: row.terminal_existed,
+    },
+    body,
+  );
+  if (row.encoded_bytes !== bodyBytes || record === null) {
     return { kind: 'unreadable', reason: 'invalid-shape' };
   }
 

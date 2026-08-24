@@ -281,7 +281,9 @@ describe('backend status local exit combination', () => {
           ? null
           : liveHandoffResult(
               continuation,
-              publicationContribution === 75 ? [{ phase: 'selection', kind: 'not-published', cause: 'contended' }] : [],
+              publicationContribution === 75
+                ? [{ phase: 'selection', kind: 'not-published', cause: 'coordination-unavailable' }]
+                : [],
             );
       const status: BackendStatusCommandOperations = {
         inspectReadiness: () => ({ kind: 'no-legacy' }),
@@ -305,6 +307,90 @@ describe('backend status local exit combination', () => {
 });
 
 describe('backend routing status', () => {
+  it('renders invocation dispositions and aggregate retirement history in journal order', () => {
+    const routingStatus = {
+      kind: 'current',
+      generation: 1,
+      statuses: [
+        {
+          kind: 'unresolved',
+          selection: {
+            generation: 1,
+            sequence: 1,
+            eventId: 'unresolved-event',
+            invocationId: 'unresolved-invocation',
+            observedAt: '2026-08-01T00:00:00.000Z',
+            eventKind: 'routing-selected',
+            phase: 'selection',
+            owner: { pid: 101, incarnation: testIncarnation(101) },
+            disposition: {
+              kind: 'continue-current',
+              basis: { kind: 'same-build-set', buildSetId: '123e4567-e89b-42d3-a456-426614174000' },
+            },
+          },
+          ownerLiveness: { kind: 'absent' },
+        },
+        {
+          kind: 'terminal',
+          selection: null,
+          terminal: {
+            generation: 1,
+            sequence: 2,
+            eventId: 'terminal-event',
+            invocationId: 'terminal-invocation',
+            observedAt: '2026-08-02T00:00:00.000Z',
+            eventKind: 'continuation-finalized',
+            phase: 'terminal',
+            selection: { kind: 'with-selection-sequence', selectionSequence: 1 },
+            disposition: { kind: 'delegated-exit', version: '0.10.9', exitCode: 7 },
+          },
+        },
+        {
+          kind: 'retired',
+          tombstone: {
+            generation: 1,
+            sequence: 3,
+            eventId: 'retired-event',
+            invocationId: 'retired-invocation',
+            observedAt: '2026-08-03T00:00:00.000Z',
+            eventKind: 'retirement-tombstone',
+            phase: 'retirement',
+            selectionSequence: 2,
+            selectedAt: '2026-08-01T00:00:00.000Z',
+            owner: { pid: 102, incarnation: testIncarnation(102) },
+            selectedDisposition: {
+              kind: 'continue-current',
+              basis: { kind: 'same-build-set', buildSetId: '223e4567-e89b-42d3-a456-426614174000' },
+            },
+            retirementCause: 'completed-pair-compaction',
+            terminalExisted: true,
+          },
+        },
+      ],
+      retirementHistoryTruncated: {
+        kind: 'retirement-history-truncated',
+        expiredIdentityCount: 2,
+        causes: {
+          'selection-evicted-at-capacity': 1,
+          'completed-pair-compaction': 1,
+          'operator-resolved': 0,
+        },
+        minSelectionSequence: 4,
+        maxSelectionSequence: 8,
+        earliestSelectedAt: '2026-07-01T00:00:00.000Z',
+        latestSelectedAt: '2026-07-03T00:00:00.000Z',
+      },
+    } satisfies HandoffRoutingStatusReadResult;
+
+    expect(formatHandoffRoutingStatus(routingStatus)?.split('\n')).toEqual([
+      'Routing invocation unresolved-invocation: unresolved; its recorded owner is absent.',
+      'Next step: run coral-cli backend routing-status resolve --invocation unresolved-invocation.',
+      'Routing invocation terminal-invocation: terminal; delegated to 0.10.9, which exited 7.',
+      'Routing invocation retired-invocation: retired (completed-pair-compaction).',
+      'Routing retirement history: 2 exact invocation identities expired (selection-evicted-at-capacity=1, completed-pair-compaction=1, operator-resolved=0); observed selection sequence range 4-8, selected 2026-07-01T00:00:00.000Z through 2026-07-03T00:00:00.000Z.',
+    ]);
+  });
+
   it('renders an unresolved invocation ID and contributes exit 75 for an absent owner', async () => {
     const invocationId = '123e4567-e89b-42d3-a456-426614174000';
     const routingStatus: HandoffRoutingStatusReadResult = {

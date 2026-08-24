@@ -374,6 +374,8 @@ function formatUnpublishedRoutingResolution(
           return 'Next step: repair the reported storage-capacity condition, rerun coral-cli backend status, then retry this resolve command if the invocation is still unresolved.';
         case 'rejected-transition':
           return 'Next step: rerun coral-cli backend status and follow the successor shown for the invocation; do not assume resolution occurred.';
+        case 'coordination-unavailable':
+          return 'Next step: make the generation coordination root writable again, then run coral-cli backend status.';
         default:
           return assertNever(cause);
       }
