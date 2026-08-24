@@ -282,7 +282,7 @@ describe('backend status local exit combination', () => {
           : liveHandoffResult(
               continuation,
               publicationContribution === 75
-                ? [{ phase: 'selection', kind: 'not-published', cause: 'coordination-unavailable' }]
+                ? [{ phase: 'selection', kind: 'not-published', cause: 'invalid-record' }]
                 : [],
             );
       const status: BackendStatusCommandOperations = {

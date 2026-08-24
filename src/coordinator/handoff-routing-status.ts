@@ -8,7 +8,8 @@ import { processIncarnationSchema } from '../infra/node-process.js';
 import type { IdPort, Runtime } from '../runtime/ports.js';
 import type { RecordedProcessIdentity } from '../infra/process-containment.js';
 import {
-  HandoffRoutingStoreUnreadableError as UnreadableStatusError,
+  HandoffRoutingStoreInvalidRecordError,
+  HandoffRoutingStoreUnreadableError,
   HandoffRoutingStoreUnsupportedGenerationError as UnsupportedGenerationError,
   publishHandoffRoutingStoreTransaction,
   readHandoffRoutingStoreSnapshot,
@@ -569,7 +570,7 @@ function decodeStatusRecordBody(record: HandoffRoutingRecordEnvelope, body: unkn
     : null;
 }
 
-function validateStatusRecordBody(record: HandoffRoutingRecordInput): boolean {
+export function validateStatusRecordBody(record: HandoffRoutingRecordInput): boolean {
   try {
     return decodeStatusRecordBody(record, JSON.parse(record.bodyJson)) !== null;
   } catch {
@@ -706,6 +707,7 @@ export type PublicationOutcome =
         | 'contended'
         | 'generation-maintenance'
         | 'capacity-exhausted'
+        | 'invalid-record'
         | 'rejected-transition'
         | 'coordination-unavailable';
     }>
@@ -762,7 +764,7 @@ function parseRecordBody<T>(bodyJson: string | undefined, schema: z.ZodType<T>):
   try {
     return schema.parse(JSON.parse(bodyJson));
   } catch {
-    throw new UnreadableStatusError();
+    throw new HandoffRoutingStoreUnreadableError();
   }
 }
 
@@ -809,7 +811,7 @@ function insertSelection(
 }
 
 function releaseClosingReserve(transaction: HandoffRoutingStatusTransaction, invocationId: string): void {
-  if (!transaction.releaseClosingReserve(invocationId)) throw new UnreadableStatusError();
+  if (!transaction.releaseClosingReserve(invocationId)) throw new HandoffRoutingStoreUnreadableError();
 }
 
 function terminalGapDisposition(
@@ -872,7 +874,7 @@ function insertTombstone(
 
 function readRetirementHistory(transaction: HandoffRoutingStatusTransaction): RetirementHistoryTruncated {
   const row = transaction.readRetirementHistory();
-  if (row === undefined) throw new UnreadableStatusError();
+  if (row === undefined) throw new HandoffRoutingStoreUnreadableError();
   return retirementHistoryTruncatedSchema.parse({
     kind: 'retirement-history-truncated',
     expiredIdentityCount: row.expired_identity_count,
@@ -932,7 +934,7 @@ function enforceTombstoneBounds(transaction: HandoffRoutingStatusTransaction): v
     const bounds = transaction.tombstoneBounds();
     if (bounds.count <= MAX_RETIREMENT_TOMBSTONES && bounds.bytes <= MAX_RETIREMENT_TOMBSTONE_BYTES) return;
     const tombstone = parseRecordBody(transaction.oldestTombstoneBody(), retirementTombstoneSchema);
-    if (tombstone === undefined) throw new UnreadableStatusError();
+    if (tombstone === undefined) throw new HandoffRoutingStoreUnreadableError();
     rollUpTombstone(transaction, tombstone);
   }
 }
@@ -1039,7 +1041,7 @@ function compactExpiredCompletedPairs(
   );
   for (const body of selectionBodies) {
     const selection = parseRecordBody(body, routingSelectedEventSchema);
-    if (selection === undefined) throw new UnreadableStatusError();
+    if (selection === undefined) throw new HandoffRoutingStoreUnreadableError();
     retireSelection(transaction, ids, selection, 'completed-pair-compaction', observedAt, true);
   }
 }
@@ -1112,7 +1114,7 @@ function applyTerminal(
   transaction.deleteRecord(tombstone.sequence);
   makeClosingAdmissionRoom(transaction, ids, transition.observedAt, 'unreserved');
   if (tombstone.retirementCause === 'operator-resolved') {
-    if (tombstone.resolutionReason === undefined) throw new UnreadableStatusError();
+    if (tombstone.resolutionReason === undefined) throw new HandoffRoutingStoreUnreadableError();
     return insertTerminal(transaction, transition, {
       kind: 'terminal-after-operator-resolution',
       resolutionReason: tombstone.resolutionReason,
@@ -1197,13 +1199,16 @@ function errorNumber(error: unknown, fallback: number): number {
 }
 
 function classifyPublicationError(error: unknown, commitStarted: boolean): PublicationOutcome {
+  if (error instanceof HandoffRoutingStoreInvalidRecordError) {
+    return { kind: 'not-published', cause: 'invalid-record' };
+  }
   if (error instanceof RejectedTransitionError) {
     return { kind: 'not-published', cause: 'rejected-transition' };
   }
   if (error instanceof UnsupportedGenerationError) {
     return { kind: 'undeterminable', cause: 'unsupported-generation', errcode: SQLITE_ERROR };
   }
-  if (error instanceof UnreadableStatusError) {
+  if (error instanceof HandoffRoutingStoreUnreadableError) {
     return { kind: 'undeterminable', cause: 'unreadable', errcode: error.errcode };
   }
   const errcode = errorNumber(error, SQLITE_ERROR);

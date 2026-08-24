@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, wri
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import { afterAll, afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   ABSENT_HANDOFF_RESULT_POLICY_PROJECTION,
@@ -695,6 +695,26 @@ describe('handoff routing status', () => {
       cause: 'rejected-transition',
     });
     expect(existsSync(directory)).toBe(false);
+  });
+
+  it('returns a decisive invalid-record outcome when the production body validator rejects an append', async () => {
+    const path = databasePath();
+    await committed(path, [selection('valid-record', 1)]);
+    const before = records(path);
+    const stringifyJson = JSON.stringify;
+    const stringify = vi
+      .spyOn(JSON, 'stringify')
+      .mockImplementation((value) =>
+        typeof value === 'object' && value !== null && 'eventId' in value && value.eventId === 'event-2'
+          ? '{'
+          : stringifyJson(value),
+      );
+    const outcome = await publish(path, [selection('malformed-record', 2)]).finally(() => stringify.mockRestore());
+
+    expect(outcome).toEqual({ kind: 'not-published', cause: 'invalid-record' });
+    expect(outcome.kind).not.toBe('undeterminable');
+    expect(outcome).not.toMatchObject({ cause: 'unreadable' });
+    expect(records(path)).toEqual(before);
   });
 
   it('keeps the event loop responsive while a writer holds the database', async () => {

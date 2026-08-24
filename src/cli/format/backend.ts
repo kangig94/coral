@@ -372,6 +372,8 @@ function formatUnpublishedRoutingResolution(
           return 'Next step: wait for generation maintenance to finish, rerun coral-cli backend status, then retry this resolve command if the invocation is still unresolved.';
         case 'capacity-exhausted':
           return 'Next step: repair the reported storage-capacity condition, rerun coral-cli backend status, then retry this resolve command if the invocation is still unresolved.';
+        case 'invalid-record':
+          return 'Next step: report the invalid routing-status record as a Coral defect; the journal is unaffected, and no storage action or retry is appropriate.';
         case 'rejected-transition':
           return 'Next step: rerun coral-cli backend status and follow the successor shown for the invocation; do not assume resolution occurred.';
         case 'coordination-unavailable':

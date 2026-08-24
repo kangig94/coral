@@ -139,6 +139,10 @@ describe('backend routing-status resolve grammar', () => {
       exitCode: 75,
     },
     {
+      result: { kind: 'not-published', outcome: { kind: 'not-published', cause: 'invalid-record' } },
+      exitCode: 75,
+    },
+    {
       result: { kind: 'not-published', outcome: { kind: 'not-published', cause: 'coordination-unavailable' } },
       exitCode: 75,
     },
@@ -201,6 +205,10 @@ describe('backend routing-status resolve grammar', () => {
     [
       { kind: 'not-published', outcome: { kind: 'not-published', cause: 'capacity-exhausted' } },
       'storage-capacity condition',
+    ],
+    [
+      { kind: 'not-published', outcome: { kind: 'not-published', cause: 'invalid-record' } },
+      'journal is unaffected, and no storage action or retry is appropriate',
     ],
     [
       { kind: 'not-published', outcome: { kind: 'not-published', cause: 'rejected-transition' } },

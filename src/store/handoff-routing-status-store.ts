@@ -62,6 +62,8 @@ export type HandoffRoutingRetirementHistoryUpdate = Readonly<{
   latestSelectedAt: string | null;
 }>;
 
+export class HandoffRoutingStoreInvalidRecordError extends Error {}
+
 export class HandoffRoutingStoreUnreadableError extends Error {
   readonly errcode: number;
 
@@ -92,7 +94,7 @@ export class HandoffRoutingStatusTransaction {
   }
 
   insertRecord(record: HandoffRoutingRecordInput): number {
-    if (!this.#schema.validateRecordBody(record)) throw new HandoffRoutingStoreUnreadableError();
+    if (!this.#schema.validateRecordBody(record)) throw new HandoffRoutingStoreInvalidRecordError();
     const inserted = this.#database
       .prepare(
         `INSERT INTO handoff_routing_records (
