@@ -214,6 +214,18 @@ describe('backend routing-status resolve grammar', () => {
       'storage-capacity condition',
     ],
     [
+      { kind: 'not-published', outcome: { kind: 'not-published', cause: 'io-failed' } },
+      'repair the reported storage condition',
+    ],
+    [
+      { kind: 'not-published', outcome: { kind: 'not-published', cause: 'unreadable' } },
+      'routing-status discard successor',
+    ],
+    [
+      { kind: 'not-published', outcome: { kind: 'not-published', cause: 'unsupported-generation' } },
+      'routing-status discard successor',
+    ],
+    [
       {
         kind: 'not-published',
         outcome: {
@@ -235,6 +247,14 @@ describe('backend routing-status resolve grammar', () => {
     [
       { kind: 'not-published', outcome: { kind: 'undeterminable', cause: 'io-failed', errcode: 5 } },
       'could not determine whether it committed',
+    ],
+    [
+      { kind: 'not-published', outcome: { kind: 'undeterminable', cause: 'contended', errcode: 5 } },
+      'contended commit completed',
+    ],
+    [
+      { kind: 'not-published', outcome: { kind: 'undeterminable', cause: 'capacity-exhausted', errcode: 13 } },
+      'storage-capacity condition',
     ],
     [
       { kind: 'not-published', outcome: { kind: 'undeterminable', cause: 'unreadable', errcode: 26 } },
@@ -275,7 +295,7 @@ describe('backend routing-status resolve grammar', () => {
   });
 
   it.each([
-    [{ kind: 'absent' } as const, 'Next step: no action is needed.'],
+    [{ kind: 'absent' } as const, 'Next step: no action is needed.', 0],
     [
       {
         kind: 'current',
@@ -296,12 +316,14 @@ describe('backend routing-status resolve grammar', () => {
         },
       } as const,
       'Next step: run coral-cli backend status and follow whatever successor it shows.',
+      75,
     ],
     [
       { kind: 'undeterminable', cause: 'io-failed', errcode: 5 } as const,
       'Next step: retry coral-cli backend status without discarding',
+      75,
     ],
-  ])('renders the refusal successor for a $kind journal', async (status, expected) => {
+  ])('renders the refusal successor for a $kind journal with exit $2', async (status, expected, exitCode) => {
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     const routingStatus: HandoffRoutingStatusCommandOperations = {
@@ -317,6 +339,6 @@ describe('backend routing-status resolve grammar', () => {
     await program.parseAsync(['node', 'coral-cli', 'backend', 'routing-status', 'discard']);
 
     expect(stderr).toHaveBeenCalledWith(expect.stringContaining(expected));
-    expect(process.exitCode).toBe(75);
+    expect(process.exitCode).toBe(exitCode);
   });
 });

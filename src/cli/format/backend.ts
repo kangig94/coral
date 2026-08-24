@@ -372,6 +372,12 @@ function formatUnpublishedRoutingResolution(
           return 'Next step: wait for generation maintenance to finish, rerun coral-cli backend status, then retry this resolve command if the invocation is still unresolved.';
         case 'capacity-exhausted':
           return 'Next step: repair the reported storage-capacity condition, rerun coral-cli backend status, then retry this resolve command if the invocation is still unresolved.';
+        case 'io-failed':
+          return 'Next step: repair the reported storage condition, rerun coral-cli backend status, then retry this resolve command if the invocation is still unresolved.';
+        case 'unreadable':
+          return 'Next step: run coral-cli backend status and follow its routing-status discard successor before retrying this resolve command.';
+        case 'unsupported-generation':
+          return 'Next step: run coral-cli backend status and follow its routing-status discard successor before retrying this resolve command.';
         case 'invalid-record':
           return (
             `Next step: report the invalid routing-status record (${outcome.validation.kind}) as a Coral defect; ` +
@@ -389,6 +395,10 @@ function formatUnpublishedRoutingResolution(
     case 'undeterminable': {
       const cause = outcome.cause;
       switch (cause) {
+        case 'contended':
+          return 'Next step: rerun coral-cli backend status before acting; this attempt could not determine whether the contended commit completed.';
+        case 'capacity-exhausted':
+          return 'Next step: rerun coral-cli backend status before acting and repair the storage-capacity condition; this attempt could not determine whether it committed.';
         case 'io-failed':
           return 'Next step: rerun coral-cli backend status before acting and repair the reported storage condition if it persists; this attempt could not determine whether it committed.';
         case 'unreadable':

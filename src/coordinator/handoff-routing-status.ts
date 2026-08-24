@@ -685,12 +685,15 @@ export type PublicationOutcome =
         | 'contended'
         | 'generation-maintenance'
         | 'capacity-exhausted'
+        | 'io-failed'
+        | 'unreadable'
+        | 'unsupported-generation'
         | 'rejected-transition'
         | 'coordination-unavailable';
     }>
   | Readonly<{
       kind: 'undeterminable';
-      cause: 'io-failed' | 'unreadable' | 'unsupported-generation';
+      cause: 'contended' | 'capacity-exhausted' | 'io-failed' | 'unreadable' | 'unsupported-generation';
       errcode: number;
     }>;
 
@@ -1185,20 +1188,26 @@ function classifyPublicationError(error: unknown, commitStarted: boolean): Publi
   if (error instanceof RejectedTransitionError) {
     return { kind: 'not-published', cause: 'rejected-transition' };
   }
-  if (error instanceof UnsupportedGenerationError) {
-    return { kind: 'undeterminable', cause: 'unsupported-generation', errcode: SQLITE_ERROR };
-  }
-  if (error instanceof HandoffRoutingStoreUnreadableError) {
-    return { kind: 'undeterminable', cause: 'unreadable', errcode: error.errcode };
-  }
-  const errcode = errorNumber(error, SQLITE_ERROR);
+  const errcode =
+    error instanceof UnsupportedGenerationError
+      ? SQLITE_ERROR
+      : error instanceof HandoffRoutingStoreUnreadableError
+        ? error.errcode
+        : errorNumber(error, SQLITE_ERROR);
   const primaryErrcode = errcode & 0xff;
-  if (primaryErrcode === SQLITE_FULL) return { kind: 'not-published', cause: 'capacity-exhausted' };
-  if (primaryErrcode === SQLITE_BUSY && !commitStarted) return { kind: 'not-published', cause: 'contended' };
-  if (primaryErrcode === SQLITE_NOTADB || primaryErrcode === SQLITE_CORRUPT) {
-    return { kind: 'undeterminable', cause: 'unreadable', errcode };
-  }
-  return { kind: 'undeterminable', cause: 'io-failed', errcode };
+  const cause =
+    error instanceof UnsupportedGenerationError
+      ? 'unsupported-generation'
+      : error instanceof HandoffRoutingStoreUnreadableError ||
+          primaryErrcode === SQLITE_NOTADB ||
+          primaryErrcode === SQLITE_CORRUPT
+        ? 'unreadable'
+        : primaryErrcode === SQLITE_FULL
+          ? 'capacity-exhausted'
+          : primaryErrcode === SQLITE_BUSY
+            ? 'contended'
+            : 'io-failed';
+  return commitStarted ? { kind: 'undeterminable', cause, errcode } : { kind: 'not-published', cause };
 }
 
 function handoffRoutingStatusStoreSchema(): HandoffRoutingStatusStoreSchema {

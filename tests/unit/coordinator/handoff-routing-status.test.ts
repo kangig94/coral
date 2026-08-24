@@ -43,6 +43,8 @@ import {
 } from '#src/store/generation-mutation-coordination.js';
 import { SimulationRuntime } from '../../../tools/simulation/runtime.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
+import type { SqliteDatabasePort, StoragePort } from '#src/infra/port-types.js';
+import { SQLITE_FULL } from '#src/store/handoff-routing-status-store.js';
 
 const BASE_TIME = Date.parse('2026-01-01T00:00:00.000Z');
 const BUILD_SET_ID = '123e4567-e89b-42d3-a456-426614174000';
@@ -106,6 +108,27 @@ function publish(
   signal?: AbortSignal,
 ): Promise<PublicationOutcome> {
   return publishHandoffRoutingTransitions(runtime, path, transitions, signal);
+}
+
+function storageFailingOnSqliteStatement(storage: StoragePort, failingStatement: string): StoragePort {
+  return new Proxy(storage, {
+    get(target, property) {
+      if (property !== 'openSqliteDatabaseSync') return Reflect.get(target, property, target);
+      return (path: string, options?: { readOnly?: boolean }): SqliteDatabasePort => {
+        const database = target.openSqliteDatabaseSync(path, options);
+        return {
+          exec(sql) {
+            if (sql === failingStatement) {
+              throw Object.assign(new Error(`injected ${failingStatement} failure`), { errcode: SQLITE_FULL });
+            }
+            database.exec(sql);
+          },
+          prepare: database.prepare.bind(database),
+          close: database.close.bind(database),
+        };
+      };
+    },
+  });
 }
 
 function readHandoffRoutingStatus(
@@ -655,9 +678,8 @@ describe('handoff routing status', () => {
 
     expect(readHandoffRoutingStatus(path)).toEqual({ kind: 'unreadable', reason: 'invalid-shape' });
     await expect(publish(path, [terminal('missing-reserve', 2, selected.sequence)])).resolves.toEqual({
-      kind: 'undeterminable',
+      kind: 'not-published',
       cause: 'unreadable',
-      errcode: 11,
     });
   });
 
@@ -918,9 +940,8 @@ describe('handoff routing status', () => {
     }
 
     await expect(publish(path, [selection('valid-transition', 3)])).resolves.toEqual({
-      kind: 'undeterminable',
+      kind: 'not-published',
       cause: 'io-failed',
-      errcode: 1_811,
     });
   });
 
@@ -935,9 +956,8 @@ describe('handoff routing status', () => {
     }
 
     await expect(publish(path, [selection('next', 2)])).resolves.toEqual({
-      kind: 'undeterminable',
+      kind: 'not-published',
       cause: 'unreadable',
-      errcode: 1,
     });
   });
 
@@ -1174,17 +1194,15 @@ describe('handoff routing status', () => {
     unsupported.exec(`PRAGMA user_version=${HANDOFF_ROUTING_STATUS_GENERATION + 1}`);
     unsupported.close();
     await expect(publish(unsupportedPath, [selection('next', 2)])).resolves.toEqual({
-      kind: 'undeterminable',
+      kind: 'not-published',
       cause: 'unsupported-generation',
-      errcode: 1,
     });
 
     const corruptPath = databasePath();
     writeFileSync(corruptPath, 'not a sqlite database');
     await expect(publish(corruptPath, [selection('corrupt', 3)])).resolves.toEqual({
-      kind: 'undeterminable',
+      kind: 'not-published',
       cause: 'unreadable',
-      errcode: 26,
     });
 
     const fullPath = databasePath();
@@ -1215,6 +1233,18 @@ describe('handoff routing status', () => {
       ]);
     }
     expect(capacity).toEqual({ kind: 'not-published', cause: 'capacity-exhausted' });
+  });
+
+  it.each([
+    ['BEGIN IMMEDIATE', { kind: 'not-published', cause: 'capacity-exhausted' }],
+    ['COMMIT', { kind: 'undeterminable', cause: 'capacity-exhausted', errcode: SQLITE_FULL }],
+  ] as const)('uses the COMMIT attempt boundary when SQLITE_FULL is raised by %s', async (statement, expected) => {
+    const path = databasePath();
+    const failingRuntime = { ...runtime, storage: storageFailingOnSqliteStatement(runtime.storage, statement) };
+
+    await expect(
+      publishHandoffRoutingTransitions(failingRuntime, path, [selection(`full-at-${statement}`, 1)]),
+    ).resolves.toEqual(expected);
   });
 
   it('assigns total policy to repair, gap, rollup, and lifecycle dispositions', () => {

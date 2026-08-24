@@ -206,30 +206,6 @@ export type HandoffPublicationIncident =
   | (PublicationFailure & Readonly<{ phase: HandoffRecordingPhase }>)
   | HandoffRefusalIncident;
 
-type HandoffNotPublishedCause = Extract<PublicationFailure, { kind: 'not-published' }>['cause'];
-
-export const HANDOFF_PUBLICATION_INCIDENT_EXIT_CONTRIBUTIONS: Readonly<Record<HandoffNotPublishedCause, 70 | 75>> =
-  Object.freeze({
-    contended: 75,
-    'generation-maintenance': 75,
-    'capacity-exhausted': 75,
-    'invalid-record': 70,
-    'rejected-transition': 75,
-    'coordination-unavailable': 75,
-  });
-
-export function handoffPublicationIncidentExitContribution(incident: HandoffPublicationIncident): 70 | 75 {
-  switch (incident.kind) {
-    case 'not-published':
-      return HANDOFF_PUBLICATION_INCIDENT_EXIT_CONTRIBUTIONS[incident.cause];
-    case 'undeterminable':
-    case 'refused':
-      return 75;
-    default:
-      return assertNever(incident);
-  }
-}
-
 export type NonEmptyReadonlyArray<T> = readonly [T, ...T[]];
 
 export type HandoffRunResult =

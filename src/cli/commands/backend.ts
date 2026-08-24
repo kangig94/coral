@@ -2,10 +2,10 @@ import { InvalidArgumentError, type Command } from 'commander';
 
 import {
   HandoffRunError,
-  handoffPublicationIncidentExitContribution,
   liveHandoffResultObligation,
   projectHandoffRunResult,
   runHandoff,
+  type HandoffPublicationIncident,
   type LiveHandoffResult,
   type NonEmptyReadonlyArray,
 } from '../../coordinator/handoff-runner.js';
@@ -155,14 +155,29 @@ export const HANDOFF_ROUTING_RESOLVE_EXIT_CODES: Readonly<
   'status-unavailable': 75,
 };
 
-const HANDOFF_ROUTING_NOT_PUBLISHED_EXIT_CODES: Readonly<Record<HandoffRoutingNotPublishedCause, 70 | 75>> = {
+export const HANDOFF_ROUTING_NOT_PUBLISHED_EXIT_CODES: Readonly<Record<HandoffRoutingNotPublishedCause, 70 | 75>> = {
   contended: 75,
   'generation-maintenance': 75,
   'capacity-exhausted': 75,
+  'io-failed': 75,
+  unreadable: 75,
+  'unsupported-generation': 75,
   'invalid-record': 70,
   'rejected-transition': 75,
   'coordination-unavailable': 75,
 };
+
+function handoffPublicationIncidentExitContribution(incident: HandoffPublicationIncident): 70 | 75 {
+  switch (incident.kind) {
+    case 'not-published':
+      return HANDOFF_ROUTING_NOT_PUBLISHED_EXIT_CODES[incident.cause];
+    case 'undeterminable':
+    case 'refused':
+      return 75;
+    default:
+      return assertNever(incident);
+  }
+}
 
 function handoffRoutingResolveExitCode(result: HandoffRoutingResolveResult): 0 | 1 | 70 | 75 {
   if (result.kind !== 'not-published') return HANDOFF_ROUTING_RESOLVE_EXIT_CODES[result.kind];
@@ -449,8 +464,9 @@ export function registerBackendCommands(program: Command, operations: BackendCom
       try {
         const result = await routingStatus.discard();
         if (result.kind === 'refused') {
+          const exitCode = result.status.kind === 'absent' ? 0 : 75;
           process.stderr.write(`${formatRoutingStatusDiscardRefusal(result)}\n`);
-          process.exitCode = 75;
+          process.exitCode = exitCode;
           return;
         }
         process.stdout.write(`Quarantined routing status from ${result.artifactPath} at ${result.quarantinePath}.\n`);
