@@ -249,9 +249,7 @@ beforeEach(() => {
   mockState.spawn.mockReset();
   mockState.publishHandoffRoutingTransitions.mockReset().mockResolvedValue({ kind: 'committed', sequence: 1 });
   readProcessIncarnation.mockReset().mockReturnValue(testIncarnation('handoff-runner'));
-  // A per-test `mockImplementation` on this standalone mock outlives `vi.restoreAllMocks`, which only
-  // undoes spies, so without this reset one test's id sequence decides every later test's ids.
-  runtimeUuid.mockReset().mockReturnValue('123e4567-e89b-42d3-a456-426614174000');
+  runtimeUuid.mockReset();
   configureNewerIncumbent();
   vi.spyOn(process.stdout, 'write').mockImplementation(((
     _chunk: string | Uint8Array,
