@@ -142,7 +142,7 @@ describe('backend routing-status resolve grammar', () => {
       result: {
         kind: 'not-published',
         invocationId: INVOCATION_ID,
-        outcome: { kind: 'not-published', cause: 'contended' },
+        cause: 'contended',
       },
       exitCode: 75,
     },
@@ -150,11 +150,8 @@ describe('backend routing-status resolve grammar', () => {
       result: {
         kind: 'not-published',
         invocationId: INVOCATION_ID,
-        outcome: {
-          kind: 'not-published',
-          cause: 'invalid-record',
-          validation: { kind: 'malformed-json' },
-        },
+        cause: 'invalid-record',
+        validation: { kind: 'malformed-json' },
       },
       exitCode: 70,
     },
@@ -162,7 +159,7 @@ describe('backend routing-status resolve grammar', () => {
       result: {
         kind: 'not-published',
         invocationId: INVOCATION_ID,
-        outcome: { kind: 'not-published', cause: 'coordination-unavailable' },
+        cause: 'coordination-unavailable',
       },
       exitCode: 75,
     },
@@ -170,7 +167,8 @@ describe('backend routing-status resolve grammar', () => {
       result: {
         kind: 'undeterminable',
         invocationId: INVOCATION_ID,
-        outcome: { kind: 'undeterminable', cause: 'io-failed', errcode: 5 },
+        cause: 'io-failed',
+        errcode: 5,
       },
       exitCode: 75,
     },
@@ -229,15 +227,15 @@ describe('backend routing-status resolve grammar', () => {
       {
         kind: 'not-published',
         invocationId: INVOCATION_ID,
-        outcome: { kind: 'not-published', cause: 'contended' },
+        cause: 'contended',
       },
-      'retry this resolve command',
+      `coral-cli backend routing-status resolve --invocation ${INVOCATION_ID}`,
     ],
     [
       {
         kind: 'not-published',
         invocationId: INVOCATION_ID,
-        outcome: { kind: 'not-published', cause: 'generation-maintenance' },
+        cause: 'generation-maintenance',
       },
       'wait for generation maintenance to finish',
     ],
@@ -245,7 +243,7 @@ describe('backend routing-status resolve grammar', () => {
       {
         kind: 'not-published',
         invocationId: INVOCATION_ID,
-        outcome: { kind: 'not-published', cause: 'capacity-exhausted' },
+        cause: 'capacity-exhausted',
       },
       'storage-capacity condition',
     ],
@@ -253,7 +251,7 @@ describe('backend routing-status resolve grammar', () => {
       {
         kind: 'not-published',
         invocationId: INVOCATION_ID,
-        outcome: { kind: 'not-published', cause: 'io-failed' },
+        cause: 'io-failed',
       },
       'repair the reported storage condition',
     ],
@@ -261,7 +259,7 @@ describe('backend routing-status resolve grammar', () => {
       {
         kind: 'not-published',
         invocationId: INVOCATION_ID,
-        outcome: { kind: 'not-published', cause: 'unreadable' },
+        cause: 'unreadable',
       },
       'routing-status discard successor',
     ],
@@ -269,7 +267,7 @@ describe('backend routing-status resolve grammar', () => {
       {
         kind: 'not-published',
         invocationId: INVOCATION_ID,
-        outcome: { kind: 'not-published', cause: 'unsupported-generation' },
+        cause: 'unsupported-generation',
       },
       'routing-status discard successor',
     ],
@@ -277,11 +275,8 @@ describe('backend routing-status resolve grammar', () => {
       {
         kind: 'not-published',
         invocationId: INVOCATION_ID,
-        outcome: {
-          kind: 'not-published',
-          cause: 'invalid-record',
-          validation: { kind: 'envelope-body-disagreement' },
-        },
+        cause: 'invalid-record',
+        validation: { kind: 'envelope-body-disagreement' },
       },
       `journal is unaffected, and no storage action is appropriate. After installing corrected Coral software, rerun coral-cli backend routing-status resolve --invocation ${INVOCATION_ID}`,
     ],
@@ -289,7 +284,7 @@ describe('backend routing-status resolve grammar', () => {
       {
         kind: 'not-published',
         invocationId: INVOCATION_ID,
-        outcome: { kind: 'not-published', cause: 'rejected-transition' },
+        cause: 'rejected-transition',
       },
       'do not assume resolution occurred',
     ],
@@ -297,15 +292,16 @@ describe('backend routing-status resolve grammar', () => {
       {
         kind: 'not-published',
         invocationId: INVOCATION_ID,
-        outcome: { kind: 'not-published', cause: 'coordination-unavailable' },
+        cause: 'coordination-unavailable',
       },
-      'make the generation coordination root writable again, then run coral-cli backend status',
+      'make the generation coordination root writable again',
     ],
     [
       {
         kind: 'undeterminable',
         invocationId: INVOCATION_ID,
-        outcome: { kind: 'undeterminable', cause: 'io-failed', errcode: 5 },
+        cause: 'io-failed',
+        errcode: 5,
       },
       'could not determine whether it committed',
     ],
@@ -313,7 +309,8 @@ describe('backend routing-status resolve grammar', () => {
       {
         kind: 'undeterminable',
         invocationId: INVOCATION_ID,
-        outcome: { kind: 'undeterminable', cause: 'contended', errcode: 5 },
+        cause: 'contended',
+        errcode: 5,
       },
       'contended commit completed',
     ],
@@ -321,7 +318,8 @@ describe('backend routing-status resolve grammar', () => {
       {
         kind: 'undeterminable',
         invocationId: INVOCATION_ID,
-        outcome: { kind: 'undeterminable', cause: 'capacity-exhausted', errcode: 13 },
+        cause: 'capacity-exhausted',
+        errcode: 13,
       },
       'storage-capacity condition',
     ],
@@ -329,7 +327,8 @@ describe('backend routing-status resolve grammar', () => {
       {
         kind: 'undeterminable',
         invocationId: INVOCATION_ID,
-        outcome: { kind: 'undeterminable', cause: 'unreadable', errcode: 26 },
+        cause: 'unreadable',
+        errcode: 26,
       },
       'if the journal is unreadable',
     ],

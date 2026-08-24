@@ -169,8 +169,6 @@ export type HandoffContinuationResult =
   | Readonly<{ kind: 'run-current'; reason: HandoffContinuationReason }>
   | Readonly<{ kind: 'delegated'; version: string; outcome: HandoffOutcome }>;
 
-export type HandoffRecordingPhase = 'selection' | 'terminal';
-
 export type HandoffRecordingRefusal =
   | Readonly<{
       reason: 'owner-identity-unavailable';
@@ -190,21 +188,32 @@ export type HandoffRecordingRefusal =
 
 type PublicationFailure = Exclude<PublicationOutcome, { kind: 'committed' }>;
 
+type HandoffPublicationFailureIncident = PublicationFailure &
+  (
+    | Readonly<{ phase: 'selection'; invocationId: string }>
+    | Readonly<{
+        phase: 'terminal';
+        invocationId: string;
+        terminalDisposition: DirectTerminalDisposition;
+      }>
+  );
+
 type HandoffRefusalIncident =
   | Readonly<{
       phase: 'selection';
+      invocationId: string;
       kind: 'refused';
       refusal: Extract<HandoffRecordingRefusal, { attemptedPhase: 'selection' }>;
     }>
   | Readonly<{
       phase: 'terminal';
+      invocationId: string;
+      terminalDisposition: DirectTerminalDisposition;
       kind: 'refused';
       refusal: Extract<HandoffRecordingRefusal, { attemptedPhase: 'terminal' }>;
     }>;
 
-export type HandoffPublicationIncident =
-  | (PublicationFailure & Readonly<{ phase: HandoffRecordingPhase }>)
-  | HandoffRefusalIncident;
+export type HandoffPublicationIncident = HandoffPublicationFailureIncident | HandoffRefusalIncident;
 
 export type NonEmptyReadonlyArray<T> = readonly [T, ...T[]];
 
@@ -626,7 +635,19 @@ function drainStdoutBeforeHandoff(time: TimePort, signal?: AbortSignal): Promise
 
 type ExecutionThrowPhase = Extract<DirectTerminalDisposition, { kind: 'execution-failed' }>['throwPhase'];
 
-type SelectionPublication = PublicationOutcome | Readonly<{ kind: 'refused'; refusal: HandoffRecordingRefusal }>;
+type SelectionPublication =
+  | PublicationOutcome
+  | Readonly<{
+      kind: 'refused';
+      refusal: Extract<HandoffRecordingRefusal, { attemptedPhase: 'selection' }>;
+    }>;
+
+type TerminalPublication =
+  | PublicationOutcome
+  | Readonly<{
+      kind: 'refused';
+      refusal: Extract<HandoffRecordingRefusal, { attemptedPhase: 'terminal' }>;
+    }>;
 
 function summarizeBuild(manifest: StrictBundleManifest): BuildSummary {
   return buildSummarySchema.parse({
@@ -706,29 +727,29 @@ async function publishHandoffTransition(
   );
 }
 
+type HandoffPublicationAttempt =
+  | Readonly<{ phase: 'selection'; publication: SelectionPublication }>
+  | Readonly<{
+      phase: 'terminal';
+      publication: TerminalPublication;
+      terminalDisposition: DirectTerminalDisposition;
+    }>;
+
 function recordIncident(
   incidents: HandoffPublicationIncident[],
-  phase: HandoffRecordingPhase,
-  publication: SelectionPublication,
+  invocationId: string,
+  attempt: HandoffPublicationAttempt,
 ): HandoffPublicationIncident | null {
-  if (publication.kind === 'committed') return null;
-  let incident: HandoffPublicationIncident;
-  if (publication.kind === 'refused') {
-    if (publication.refusal.attemptedPhase === 'selection') {
-      incident = { phase: 'selection', kind: publication.kind, refusal: publication.refusal };
-    } else {
-      incident = { phase: 'terminal', kind: publication.kind, refusal: publication.refusal };
-    }
-  } else if (publication.kind === 'not-published') {
-    incident = { phase, ...publication };
-  } else {
-    incident = {
-      phase,
-      kind: publication.kind,
-      cause: publication.cause,
-      errcode: publication.errcode,
-    };
-  }
+  if (attempt.publication.kind === 'committed') return null;
+  const incident: HandoffPublicationIncident =
+    attempt.phase === 'selection'
+      ? { phase: 'selection', invocationId, ...attempt.publication }
+      : {
+          phase: 'terminal',
+          invocationId,
+          terminalDisposition: attempt.terminalDisposition,
+          ...attempt.publication,
+        };
   incidents.push(incident);
   return incident;
 }
@@ -820,7 +841,7 @@ async function recordTerminal(
   selection: SelectionPublication,
   disposition: DirectTerminalDisposition,
   signal?: AbortSignal,
-): Promise<SelectionPublication> {
+): Promise<TerminalPublication> {
   if (selection.kind === 'undeterminable') {
     return {
       kind: 'refused',
@@ -976,7 +997,7 @@ export async function runHandoff(
   const invocationId = runtime.ids.uuid();
   const incidents: HandoffPublicationIncident[] = [];
   const selection = await recordSelection(runtime, time, routing, invocationId, options.signal);
-  const selectionIncident = recordIncident(incidents, 'selection', selection);
+  const selectionIncident = recordIncident(incidents, invocationId, { phase: 'selection', publication: selection });
   if (selectionIncident?.phase === 'selection') {
     options.onSelectionPublicationIncident?.(selectionIncident);
   }
@@ -990,29 +1011,20 @@ export async function runHandoff(
       options.signal,
       executionPhase,
     );
-    const terminal = await recordTerminal(
-      runtime,
-      time,
-      invocationId,
-      selection,
-      finalizedDisposition(continuation),
-      options.signal,
-    );
-    recordIncident(incidents, 'terminal', terminal);
+    const terminalDisposition = finalizedDisposition(continuation);
+    const terminal = await recordTerminal(runtime, time, invocationId, selection, terminalDisposition, options.signal);
+    recordIncident(incidents, invocationId, { phase: 'terminal', terminalDisposition, publication: terminal });
     const publicationIncidents = collectedIncidents(incidents);
     return publicationIncidents === null
       ? { kind: 'recorded', continuation, publicationIncidents: [] }
       : { kind: 'recording-incidents', observedWork: continuation, publicationIncidents };
   } catch (originalError: unknown) {
-    const terminal = await recordTerminal(
-      runtime,
-      time,
-      invocationId,
-      selection,
-      { kind: 'execution-failed', throwPhase: executionPhase.current },
-      options.signal,
-    );
-    recordIncident(incidents, 'terminal', terminal);
+    const terminalDisposition: DirectTerminalDisposition = {
+      kind: 'execution-failed',
+      throwPhase: executionPhase.current,
+    };
+    const terminal = await recordTerminal(runtime, time, invocationId, selection, terminalDisposition, options.signal);
+    recordIncident(incidents, invocationId, { phase: 'terminal', terminalDisposition, publication: terminal });
     const publicationIncidents = collectedIncidents(incidents);
     if (publicationIncidents !== null) {
       throw new HandoffRunError(originalError, publicationIncidents);

@@ -51,7 +51,7 @@ export function formatHandoffRoutingBasis(basis: HandoffRoutingBasis): string {
       return [
         `Handoff: continuing current build — the incumbent coordinator could not be resolved because ${formatUnresolvedIncumbentCause(basis.cause)}.`,
         basis.cause === 'health-shape-rejected'
-          ? 'Next step: run coral-cli backend shutdown, then rerun the command to relaunch the peer from the current installation.'
+          ? 'Next step: run coral-cli backend shutdown, then run any coral-cli mutating command (or start a Claude Code session) to relaunch the backend from the current installation.'
           : 'Next step: follow the daemon-status remediation above; do not proceed while coral-cli backend status exits 75.',
       ].join('\n');
     case 'incumbent-unusable':
@@ -378,8 +378,10 @@ function formatUnavailableRoutingResolution(
 function formatRoutingResolutionPublicationSuccessor(
   result: Extract<HandoffRoutingResolveResult, { kind: 'not-published' | 'undeterminable' }>,
 ): string {
-  return formatHandoffPublicationFailureSuccessor(result.outcome, {
+  return formatHandoffPublicationFailureSuccessor({
+    kind: 'resolution',
     invocationId: result.invocationId,
+    outcome: result,
   });
 }
 
@@ -403,12 +405,12 @@ export function formatHandoffRoutingResolveResult(result: HandoffRoutingResolveR
       return `Refusing to resolve routing status because the authoritative journal is ${result.status.kind}.\n${formatUnavailableRoutingResolution(result.status)}`;
     case 'not-published':
       return (
-        `Routing resolution was not published (${result.outcome.kind}:${result.outcome.cause}).\n` +
+        `Routing resolution was not published (${result.kind}:${result.cause}).\n` +
         formatRoutingResolutionPublicationSuccessor(result)
       );
     case 'undeterminable':
       return (
-        `Routing resolution publication could not be determined (${result.outcome.cause}, errcode ${result.outcome.errcode}).\n` +
+        `Routing resolution publication could not be determined (${result.cause}, errcode ${result.errcode}).\n` +
         formatRoutingResolutionPublicationSuccessor(result)
       );
     default:

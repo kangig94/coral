@@ -142,10 +142,7 @@ type HandoffRoutingResolveKindWithoutPublication = Exclude<
   HandoffRoutingResolveResult['kind'],
   'not-published' | 'undeterminable'
 >;
-type HandoffRoutingNotPublishedCause = Extract<
-  Extract<HandoffRoutingResolveResult, { kind: 'not-published' }>['outcome'],
-  { kind: 'not-published' }
->['cause'];
+type HandoffRoutingNotPublishedCause = Extract<HandoffRoutingResolveResult, { kind: 'not-published' }>['cause'];
 
 export const HANDOFF_ROUTING_RESOLVE_EXIT_CODES: Readonly<
   Record<HandoffRoutingResolveKindWithoutPublication, 0 | 1 | 75>
@@ -184,7 +181,7 @@ function handoffPublicationIncidentExitContribution(incident: HandoffPublication
 }
 
 function handoffRoutingResolveExitCode(result: HandoffRoutingResolveResult): 0 | 1 | 70 | 75 {
-  if (result.kind === 'not-published') return HANDOFF_ROUTING_NOT_PUBLISHED_EXIT_CODES[result.outcome.cause];
+  if (result.kind === 'not-published') return HANDOFF_ROUTING_NOT_PUBLISHED_EXIT_CODES[result.cause];
   if (result.kind === 'undeterminable') return 75;
   return HANDOFF_ROUTING_RESOLVE_EXIT_CODES[result.kind];
 }

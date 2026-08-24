@@ -249,6 +249,9 @@ beforeEach(() => {
   mockState.spawn.mockReset();
   mockState.publishHandoffRoutingTransitions.mockReset().mockResolvedValue({ kind: 'committed', sequence: 1 });
   readProcessIncarnation.mockReset().mockReturnValue(testIncarnation('handoff-runner'));
+  // A per-test `mockImplementation` on this standalone mock outlives `vi.restoreAllMocks`, which only
+  // undoes spies, so without this reset one test's id sequence decides every later test's ids.
+  runtimeUuid.mockReset().mockReturnValue('123e4567-e89b-42d3-a456-426614174000');
   configureNewerIncumbent();
   vi.spyOn(process.stdout, 'write').mockImplementation(((
     _chunk: string | Uint8Array,
@@ -286,7 +289,14 @@ describe('handoff-runner', () => {
       kind: 'run-current',
       reason: { kind: 'handoff-abandoned', reason: 'stdout-drain-incomplete' },
     } as const;
-    const incidents = [{ phase: 'selection', kind: 'not-published', cause: 'contended' }] as const;
+    const incidents = [
+      {
+        phase: 'selection',
+        invocationId: '123e4567-e89b-42d3-a456-426614174000',
+        kind: 'not-published',
+        cause: 'contended',
+      },
+    ] as const;
 
     const handleRecordingIncidents = vi.fn();
 
@@ -489,6 +499,7 @@ describe('handoff-runner', () => {
       publicationIncidents: [
         {
           phase: 'selection',
+          invocationId: '123e4567-e89b-42d3-a456-426614174000',
           kind: 'refused',
           refusal: {
             reason: 'owner-identity-unavailable',
@@ -617,6 +628,32 @@ describe('handoff-runner', () => {
 
     expect(thrown).toBe(originalError);
     expect(mockState.publishHandoffRoutingTransitions).toHaveBeenCalledTimes(2);
+  });
+
+  it('should identify a failed operation when its execution-failed terminal is not published', async () => {
+    const originalError = new Error('spawn rejected');
+    mockState.spawn.mockImplementationOnce(() => childThatErrors(originalError));
+    mockState.publishHandoffRoutingTransitions
+      .mockResolvedValueOnce({ kind: 'committed', sequence: 1 })
+      .mockResolvedValueOnce({ kind: 'not-published', cause: 'capacity-exhausted' });
+
+    const thrown = await runHandoffResult(cliOperation('run'), { pluginRoot: '/plugin/root' }).catch(
+      (error: unknown) => error,
+    );
+
+    expect(thrown).toBeInstanceOf(HandoffRunError);
+    expect(thrown).toMatchObject({
+      originalError,
+      incidents: [
+        {
+          phase: 'terminal',
+          invocationId: '123e4567-e89b-42d3-a456-426614174000',
+          terminalDisposition: { kind: 'execution-failed', throwPhase: 'child-spawn' },
+          kind: 'not-published',
+          cause: 'capacity-exhausted',
+        },
+      ],
+    });
   });
 
   it.each([

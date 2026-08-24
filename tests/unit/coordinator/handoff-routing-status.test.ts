@@ -770,6 +770,27 @@ describe('handoff routing status', () => {
     },
   );
 
+  it('renders a completed warning routing basis without gating the current status exit', async () => {
+    const path = databasePath();
+    const invocationId = 'historical-health-shape-rejected';
+    const basis = { kind: 'incumbent-unresolved', cause: 'health-shape-rejected' } as const;
+    const selected = await committed(path, [selection(invocationId, 1, basis)]);
+    await committed(path, [
+      {
+        kind: 'continuation-finalized',
+        eventId: `${invocationId}-terminal`,
+        invocationId,
+        observedAt: at(2),
+        selection: { kind: 'with-selection-sequence', selectionSequence: selected.sequence },
+        disposition: { kind: 'continued-current', reason: { kind: 'routing', basis } },
+      },
+    ]);
+
+    const result = readHandoffRoutingStatus(path);
+    expect(formatHandoffRoutingStatus(result)).toContain('continued current (incumbent-unresolved)');
+    expect(handoffRoutingStatusExitContribution(result)).toBe(0);
+  });
+
   it('returns distinct absent, unsupported-generation, unreadable, and I/O-failure results', async () => {
     const absentPath = databasePath();
     expect(readHandoffRoutingStatus(absentPath)).toEqual({ kind: 'absent' });
@@ -1430,6 +1451,21 @@ describe('handoff routing status', () => {
     ).toMatchObject({ severity: 'info', exitContribution: 0 });
   });
 
+  it('keeps a warning routing basis actionable while selected but historical after its terminal', () => {
+    const basis = { kind: 'incumbent-unresolved', cause: 'health-shape-rejected' } as const;
+
+    expect(persistedHandoffDispositionPolicy({ kind: 'continue-current', basis })).toMatchObject({
+      severity: 'warning',
+      exitContribution: 75,
+    });
+    expect(
+      persistedHandoffDispositionPolicy({
+        kind: 'continued-current',
+        reason: { kind: 'routing', basis },
+      }),
+    ).toMatchObject({ severity: 'warning', exitContribution: 0 });
+  });
+
   it('resolves only absent owners and returns typed stale, terminal, and live refusals', async () => {
     const absentId = '123e4567-e89b-42d3-a456-426614174001';
     const liveId = '123e4567-e89b-42d3-a456-426614174002';
@@ -1571,7 +1607,8 @@ describe('handoff routing status', () => {
     ).resolves.toEqual({
       kind: 'undeterminable',
       invocationId,
-      outcome: { kind: 'undeterminable', cause: 'capacity-exhausted', errcode: SQLITE_FULL },
+      cause: 'capacity-exhausted',
+      errcode: SQLITE_FULL,
     });
   });
 
@@ -1602,7 +1639,8 @@ describe('handoff routing status', () => {
     ).resolves.toEqual({
       kind: 'undeterminable',
       invocationId,
-      outcome: { kind: 'undeterminable', cause: 'capacity-exhausted', errcode: SQLITE_FULL },
+      cause: 'capacity-exhausted',
+      errcode: SQLITE_FULL,
     });
   });
 
@@ -1628,7 +1666,7 @@ describe('handoff routing status', () => {
       ).resolves.toEqual({
         kind: 'not-published',
         invocationId,
-        outcome: { kind: 'not-published', cause: 'generation-maintenance' },
+        cause: 'generation-maintenance',
       });
       expect(readHandoffRoutingStatus(path)).toMatchObject({
         kind: 'current',

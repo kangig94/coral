@@ -35,6 +35,7 @@ import type { HealthSnapshot } from '#src/transport/server-ports.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 
 const TEST_TIME = { now: () => Date.parse('2026-08-03T00:00:00.000Z') };
+const PUBLICATION_INVOCATION_ID = '123e4567-e89b-42d3-a456-426614174000';
 
 function liveHandoffResult(
   continuation: LiveHandoffContinuationResult,
@@ -269,18 +270,86 @@ describe('backend status local exit combination', () => {
   it('renders the invalid-record validation category on the publication-incident surface', () => {
     const rendered = formatHandoffPublicationIncident({
       phase: 'selection',
+      invocationId: PUBLICATION_INVOCATION_ID,
       kind: 'not-published',
       cause: 'invalid-record',
       validation: { kind: 'schema-violation' },
     });
     expect(rendered).toContain('invalid-record, schema-violation');
-    expect(rendered).toContain('After installing corrected Coral software, rerun coral-cli backend status.');
+    expect(rendered).toContain(`invocation ${PUBLICATION_INVOCATION_ID}`);
+    expect(rendered).toContain('After installing corrected Coral software, rerun coral-cli backend status');
+  });
+
+  it.each([
+    ['contended', 'rerun coral-cli backend status'],
+    ['generation-maintenance', 'wait for generation maintenance to finish'],
+    ['capacity-exhausted', 'repair the reported storage-capacity condition'],
+    ['io-failed', 'repair the reported storage condition'],
+    ['unreadable', 'routing-status discard successor'],
+    ['unsupported-generation', 'routing-status discard successor'],
+    ['rejected-transition', 'do not assume publication occurred'],
+    ['coordination-unavailable', 'make the generation coordination root writable again'],
+  ] as const)('keeps the $0 prerequisite on a completed terminal publication incident', (cause, prerequisite) => {
+    const rendered = formatHandoffPublicationIncident({
+      phase: 'terminal',
+      invocationId: PUBLICATION_INVOCATION_ID,
+      terminalDisposition: {
+        kind: 'continued-current',
+        reason: { kind: 'routing', basis: { kind: 'incumbent-absent' } },
+      },
+      kind: 'not-published',
+      cause,
+    });
+
+    expect(rendered).toContain(prerequisite);
+    expect(rendered).toContain(`coral-cli backend routing-status resolve --invocation ${PUBLICATION_INVOCATION_ID}`);
+    expect(rendered).toContain('The operation finished; do not rerun it');
+  });
+
+  it.each([
+    ['contended', 'contended commit completed'],
+    ['capacity-exhausted', 'repair the storage-capacity condition'],
+    ['io-failed', 'repair the reported storage condition'],
+    ['unreadable', 'routing-status discard successor'],
+  ] as const)('keeps the $0 uncertainty on a completed terminal publication incident', (cause, prerequisite) => {
+    const rendered = formatHandoffPublicationIncident({
+      phase: 'terminal',
+      invocationId: PUBLICATION_INVOCATION_ID,
+      terminalDisposition: {
+        kind: 'continued-current',
+        reason: { kind: 'routing', basis: { kind: 'incumbent-absent' } },
+      },
+      kind: 'undeterminable',
+      cause,
+      errcode: 5,
+    });
+
+    expect(rendered).toContain(prerequisite);
+    expect(rendered).toContain('The operation finished; do not rerun it');
+  });
+
+  it('reports a terminal invalid-record defect and distinguishes failed work from its failed record', () => {
+    const rendered = formatHandoffPublicationIncident({
+      phase: 'terminal',
+      invocationId: PUBLICATION_INVOCATION_ID,
+      terminalDisposition: { kind: 'execution-failed', throwPhase: 'child-spawn' },
+      kind: 'not-published',
+      cause: 'invalid-record',
+      validation: { kind: 'schema-violation' },
+    });
+
+    expect(rendered).toContain('report the invalid routing-status record (schema-violation) as a Coral defect');
+    expect(rendered).toContain(`coral-cli backend routing-status resolve --invocation ${PUBLICATION_INVOCATION_ID}`);
+    expect(rendered).toContain("The operation failed; follow the original error's remediation, then retry it");
+    expect(rendered).not.toContain('<id>');
+    expect(rendered).not.toContain('do not rerun it');
   });
 
   it.each<readonly [Extract<HandoffPublicationIncident, { kind: 'refused' }>, string]>([
     [
       {
         phase: 'selection',
+        invocationId: PUBLICATION_INVOCATION_ID,
         kind: 'refused',
         refusal: {
           reason: 'owner-identity-unavailable',
@@ -293,6 +362,7 @@ describe('backend status local exit combination', () => {
     [
       {
         phase: 'selection',
+        invocationId: PUBLICATION_INVOCATION_ID,
         kind: 'refused',
         refusal: {
           reason: 'invalid-target-authority',
@@ -305,6 +375,11 @@ describe('backend status local exit combination', () => {
     [
       {
         phase: 'terminal',
+        invocationId: PUBLICATION_INVOCATION_ID,
+        terminalDisposition: {
+          kind: 'continued-current',
+          reason: { kind: 'routing', basis: { kind: 'incumbent-absent' } },
+        },
         kind: 'refused',
         refusal: {
           reason: 'selection-publication-undeterminable',
@@ -312,7 +387,7 @@ describe('backend status local exit combination', () => {
           attemptedPhase: 'terminal',
         },
       },
-      'run coral-cli backend status before repair',
+      'rerun coral-cli backend status',
     ],
   ])('renders an actionable successor without exposing refusal tokens', (incident, expected) => {
     const rendered = formatHandoffPublicationIncident(incident);
@@ -347,13 +422,21 @@ describe('backend status local exit combination', () => {
                 ? [
                     {
                       phase: 'selection',
+                      invocationId: PUBLICATION_INVOCATION_ID,
                       kind: 'not-published',
                       cause: 'invalid-record',
                       validation: { kind: 'schema-violation' },
                     },
                   ]
                 : publicationContribution === 75
-                  ? [{ phase: 'selection', kind: 'not-published', cause: 'contended' }]
+                  ? [
+                      {
+                        phase: 'selection',
+                        invocationId: PUBLICATION_INVOCATION_ID,
+                        kind: 'not-published',
+                        cause: 'contended',
+                      },
+                    ]
                   : [],
             );
       const status: BackendStatusCommandOperations = {
@@ -725,7 +808,7 @@ describe('handoff continuation remediation', () => {
       },
       expected: [
         'Handoff: continuing current build — the incumbent coordinator could not be resolved because its authenticated health reply was not recognized.',
-        'Next step: run coral-cli backend shutdown, then rerun the command to relaunch the peer from the current installation.',
+        'Next step: run coral-cli backend shutdown, then run any coral-cli mutating command (or start a Claude Code session) to relaunch the backend from the current installation.',
       ].join('\n'),
     },
     {
@@ -860,10 +943,10 @@ describe('handoff continuation remediation', () => {
     'expected-manifest-invalid',
   ];
 
-  it.each(cases)('authors a next step for $name', ({ reason }) => {
+  it.each(cases)('authors a next step for $name', ({ reason, expected }) => {
     const rendered = formatHandoffContinuationReason(reason);
 
-    expect(rendered).toContain('Next step:');
+    expect(rendered).toBe(expected);
     expect(RAW_ENUM_TOKENS.filter((token) => rendered.includes(token))).toEqual([]);
   });
 });

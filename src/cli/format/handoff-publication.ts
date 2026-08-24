@@ -2,32 +2,49 @@ import type { PublicationOutcome } from '../../coordinator/handoff-routing-statu
 import type { HandoffPublicationIncident } from '../../coordinator/handoff-runner.js';
 import { assertNever } from '../../infra/error-format.js';
 
-type HandoffPublicationFailure = Exclude<PublicationOutcome, { kind: 'committed' }> &
-  Readonly<{ phase?: HandoffPublicationIncident['phase'] }>;
+type HandoffPublicationActionContext =
+  | Readonly<{
+      kind: 'incident';
+      incident: HandoffPublicationIncident;
+    }>
+  | Readonly<{
+      kind: 'resolution';
+      invocationId: string;
+      outcome: Exclude<PublicationOutcome, { kind: 'committed' }>;
+    }>;
 
-type HandoffRoutingResolutionContext = Readonly<{
-  invocationId: string;
-}>;
+type HandoffPublicationFailure =
+  | Readonly<{
+      kind: 'incident';
+      incident:
+        | Extract<HandoffPublicationIncident, { kind: 'not-published' }>
+        | Extract<HandoffPublicationIncident, { kind: 'undeterminable' }>;
+    }>
+  | Readonly<{
+      kind: 'resolution';
+      invocationId: string;
+      outcome: Exclude<PublicationOutcome, { kind: 'committed' }>;
+    }>;
 
 export function formatHandoffPublicationIncident(incident: HandoffPublicationIncident): string {
   switch (incident.kind) {
     case 'refused':
       return [
-        `Handoff routing-status ${incident.phase} publication was refused because ${formatHandoffRecordingRefusalDiagnostic(incident.refusal)}.`,
-        formatHandoffRecordingRefusalSuccessor(incident.refusal),
+        `Handoff routing-status ${incident.phase} publication for invocation ${incident.invocationId} was refused because ${formatHandoffRecordingRefusalDiagnostic(incident.refusal)}.`,
+        formatHandoffRecordingRefusalSuccessor(incident),
       ].join('\n');
     case 'not-published':
       return [
         incident.cause === 'invalid-record'
-          ? `Handoff routing-status ${incident.phase} publication was not published (${incident.cause}, ${incident.validation.kind}).`
-          : `Handoff routing-status ${incident.phase} publication was not published (${incident.cause}).`,
-        formatHandoffPublicationFailureSuccessor(incident),
+          ? `Handoff routing-status ${incident.phase} publication for invocation ${incident.invocationId} was not published (${incident.cause}, ${incident.validation.kind}).`
+          : `Handoff routing-status ${incident.phase} publication for invocation ${incident.invocationId} was not published (${incident.cause}).`,
+        formatHandoffPublicationFailureSuccessor({ kind: 'incident', incident }),
       ].join('\n');
     case 'undeterminable':
       return [
-        `Handoff routing-status ${incident.phase} publication could not be determined ` +
+        `Handoff routing-status ${incident.phase} publication for invocation ${incident.invocationId} could not be determined ` +
           `(${incident.cause}, errcode ${incident.errcode}).`,
-        formatHandoffPublicationFailureSuccessor(incident),
+        formatHandoffPublicationFailureSuccessor({ kind: 'incident', incident }),
       ].join('\n');
     default:
       return assertNever(incident);
@@ -50,59 +67,84 @@ function formatHandoffRecordingRefusalDiagnostic(
 }
 
 function formatHandoffRecordingRefusalSuccessor(
-  refusal: Extract<HandoffPublicationIncident, { kind: 'refused' }>['refusal'],
+  incident: Extract<HandoffPublicationIncident, { kind: 'refused' }>,
 ): string {
+  const { refusal } = incident;
   switch (refusal.reason) {
     case 'owner-identity-unavailable':
       return 'Next step: wait until this process identity is readable, then rerun coral-cli backend status before retrying the operation.';
     case 'invalid-target-authority':
       return 'Next step: wait until live target authority is available, then rerun coral-cli backend status before retrying the operation.';
     case 'selection-publication-undeterminable':
-      return 'Next step: run coral-cli backend status before repair and follow the successor it shows for the invocation.';
+      return `Next step: ${formatPublicationNextAction({ kind: 'incident', incident })}`;
     default:
       return assertNever(refusal);
   }
 }
 
-export function formatHandoffPublicationFailureSuccessor(
-  outcome: HandoffPublicationFailure,
-  context?: HandoffRoutingResolutionContext,
-): string {
-  if (context === undefined && outcome.phase === 'terminal') {
+function formatPublicationAfterStatus(input: HandoffPublicationActionContext): string {
+  if (input.kind === 'resolution') {
     return (
-      'Next step: rerun coral-cli backend status; if the original invocation is still unresolved, resolve that ' +
-      'retained opening with coral-cli backend routing-status resolve --invocation <id>. The operation already ' +
-      'completed; do not rerun it.'
+      `retry coral-cli backend routing-status resolve --invocation ${input.invocationId} if routing invocation ` +
+      `${input.invocationId} is still unresolved`
     );
   }
-  const retryTarget = context === undefined ? 'the operation' : 'this resolve command';
+  const { incident } = input;
+  if (incident.phase === 'selection') {
+    return `retry the operation if routing invocation ${incident.invocationId} is still unresolved`;
+  }
+  const resolveOpening =
+    `if routing invocation ${incident.invocationId} is still unresolved, run coral-cli backend routing-status ` +
+    `resolve --invocation ${incident.invocationId}`;
+  return incident.terminalDisposition.kind === 'execution-failed'
+    ? `${resolveOpening}. The operation failed; follow the original error's remediation, then retry it`
+    : `${resolveOpening}. The operation finished; do not rerun it`;
+}
+
+function formatPublicationNextAction(input: HandoffPublicationActionContext): string {
+  const afterStatus = formatPublicationAfterStatus(input);
+  return input.kind === 'incident' && input.incident.phase === 'terminal'
+    ? `rerun coral-cli backend status; ${afterStatus}.`
+    : `rerun coral-cli backend status, then ${afterStatus}.`;
+}
+
+function publicationAttempt(input: HandoffPublicationFailure): 'publication' | 'resolution' {
+  return input.kind === 'incident' ? 'publication' : 'resolution';
+}
+
+export function formatHandoffPublicationFailureSuccessor(input: HandoffPublicationFailure): string {
+  const outcome = input.kind === 'incident' ? input.incident : input.outcome;
+  const nextAction = formatPublicationNextAction(input);
   switch (outcome.kind) {
     case 'not-published': {
       const cause = outcome.cause;
       switch (cause) {
         case 'contended':
-          return `Next step: rerun coral-cli backend status, then retry ${retryTarget} if the invocation is still unresolved.`;
+          return `Next step: ${nextAction}`;
         case 'generation-maintenance':
-          return `Next step: wait for generation maintenance to finish, rerun coral-cli backend status, then retry ${retryTarget} if the invocation is still unresolved.`;
+          return `Next step: wait for generation maintenance to finish, then ${nextAction}`;
         case 'capacity-exhausted':
-          return `Next step: repair the reported storage-capacity condition, rerun coral-cli backend status, then retry ${retryTarget} if the invocation is still unresolved.`;
+          return `Next step: repair the reported storage-capacity condition, then ${nextAction}`;
         case 'io-failed':
-          return `Next step: repair the reported storage condition, rerun coral-cli backend status, then retry ${retryTarget} if the invocation is still unresolved.`;
+          return `Next step: repair the reported storage condition, then ${nextAction}`;
         case 'unreadable':
         case 'unsupported-generation':
-          return `Next step: run coral-cli backend status and follow its routing-status discard successor before retrying ${retryTarget}.`;
+          return `Next step: run coral-cli backend status and follow its routing-status discard successor, then ${nextAction}`;
         case 'invalid-record':
           return (
             `Next step: report the invalid routing-status record (${outcome.validation.kind}) as a Coral defect; ` +
             'the journal is unaffected, and no storage action is appropriate. After installing corrected Coral software, ' +
-            (context === undefined
-              ? 'rerun coral-cli backend status.'
-              : `rerun coral-cli backend routing-status resolve --invocation ${context.invocationId}.`)
+            (input.kind === 'resolution'
+              ? `rerun coral-cli backend routing-status resolve --invocation ${input.invocationId}.`
+              : nextAction)
           );
         case 'rejected-transition':
-          return `Next step: rerun coral-cli backend status and follow the successor shown for the invocation; do not assume ${context === undefined ? 'publication' : 'resolution'} occurred.`;
+          return (
+            `Next step: rerun coral-cli backend status and follow the successor shown for this invocation; do not ` +
+            `assume ${publicationAttempt(input)} occurred. Then ${formatPublicationAfterStatus(input)}.`
+          );
         case 'coordination-unavailable':
-          return 'Next step: make the generation coordination root writable again, then run coral-cli backend status.';
+          return `Next step: make the generation coordination root writable again, then ${nextAction}`;
         default:
           return assertNever(cause);
       }
@@ -111,13 +153,13 @@ export function formatHandoffPublicationFailureSuccessor(
       const cause = outcome.cause;
       switch (cause) {
         case 'contended':
-          return 'Next step: rerun coral-cli backend status before acting; this attempt could not determine whether the contended commit completed.';
+          return `Next step: ${nextAction} This attempt could not determine whether the contended commit completed.`;
         case 'capacity-exhausted':
-          return 'Next step: rerun coral-cli backend status before acting and repair the storage-capacity condition; this attempt could not determine whether it committed.';
+          return `Next step: repair the storage-capacity condition, then ${nextAction} This attempt could not determine whether it committed.`;
         case 'io-failed':
-          return 'Next step: rerun coral-cli backend status before acting and repair the reported storage condition if it persists; this attempt could not determine whether it committed.';
+          return `Next step: repair the reported storage condition if it persists, then ${nextAction} This attempt could not determine whether it committed.`;
         case 'unreadable':
-          return 'Next step: run coral-cli backend status and follow its routing-status discard successor if the journal is unreadable; this attempt could not determine whether it committed.';
+          return `Next step: run coral-cli backend status and follow its routing-status discard successor if the journal is unreadable, then ${nextAction} This attempt could not determine whether it committed.`;
         default:
           return assertNever(cause);
       }

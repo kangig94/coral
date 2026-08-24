@@ -60,8 +60,6 @@ const observedAtSchema = z.string().datetime({ offset: false, precision: 3 }).le
 
 export const validatedTargetSummarySchema = z.object({ build: buildSummarySchema }).strict().readonly();
 
-export type ValidatedTargetSummary = z.infer<typeof validatedTargetSummarySchema>;
-
 const invalidTargetFailureSchema = z.enum([
   'bundle-dir-not-canonical',
   'bundle-dir-unavailable',
@@ -79,8 +77,6 @@ export const invalidTargetSummarySchema = z
   })
   .strict()
   .readonly();
-
-export type InvalidTargetSummary = z.infer<typeof invalidTargetSummarySchema>;
 
 const strictBundleIdentityFailureSchema: z.ZodType<StrictBundleIdentityFailure> = z.enum([
   'embedded_identity_unavailable',
@@ -1448,9 +1444,11 @@ export function persistedHandoffDispositionPolicy(disposition: PersistedHandoffD
 
   switch (disposition.kind) {
     case 'continued-current':
-      return disposition.reason.kind === 'routing'
-        ? HANDOFF_ROUTING_BASIS_POLICIES[disposition.reason.basis.kind]
-        : boundedWarningPolicy;
+      if (disposition.reason.kind !== 'routing') return boundedWarningPolicy;
+      return {
+        ...HANDOFF_ROUTING_BASIS_POLICIES[disposition.reason.basis.kind],
+        exitContribution: 0,
+      };
     case 'delegated-success':
       return {
         durability: 'lifecycle-journal',
@@ -1502,6 +1500,9 @@ export type HandoffRoutingResolveRequest = Readonly<{
   forceUnobservable: boolean;
 }>;
 
+type HandoffRoutingResolvePublicationFailure = Readonly<{ invocationId: string }> &
+  Exclude<PublicationOutcome, { kind: 'committed' }>;
+
 export type HandoffRoutingResolveResult =
   | Readonly<{
       kind: 'resolved';
@@ -1529,16 +1530,7 @@ export type HandoffRoutingResolveResult =
         { kind: 'unreadable' | 'unsupported-generation' | 'undeterminable' }
       >;
     }>
-  | Readonly<{
-      kind: 'not-published';
-      invocationId: string;
-      outcome: Extract<PublicationOutcome, { kind: 'not-published' }>;
-    }>
-  | Readonly<{
-      kind: 'undeterminable';
-      invocationId: string;
-      outcome: Extract<PublicationOutcome, { kind: 'undeterminable' }>;
-    }>;
+  | HandoffRoutingResolvePublicationFailure;
 
 const statusReadRowSchema = z
   .object({
@@ -1959,9 +1951,7 @@ export async function resolveHandoffRoutingStatus(
           selectionSequence: status.tombstone.selectionSequence,
         };
       }
-      return outcome.kind === 'not-published'
-        ? { kind: 'not-published', invocationId: request.invocationId, outcome }
-        : { kind: 'undeterminable', invocationId: request.invocationId, outcome };
+      return { invocationId: request.invocationId, ...outcome };
     }
     return status.tombstone.retirementCause === 'operator-resolved' || status.tombstone.terminalExisted
       ? { kind: 'already-terminal', invocationId: request.invocationId }
@@ -2007,9 +1997,7 @@ export async function resolveHandoffRoutingStatus(
   if (outcome.kind === 'committed') {
     return { kind: 'resolved', invocationId: request.invocationId, reason, sequence: outcome.sequence };
   }
-  return outcome.kind === 'not-published'
-    ? { kind: 'not-published', invocationId: request.invocationId, outcome }
-    : { kind: 'undeterminable', invocationId: request.invocationId, outcome };
+  return { invocationId: request.invocationId, ...outcome };
 }
 
 export function handoffRoutingStatusExitContribution(result: HandoffRoutingStatusReadResult): 0 | 75 {
