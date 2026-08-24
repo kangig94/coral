@@ -107,8 +107,31 @@ misclassification predates it.
 
 ## Reproduced in the field, 2026-08-24
 
-Not a reconstruction this time. A coordinator died mid-session; the next startup wrote
-`~/.coral/gen2/run/startup-diagnostic.json` with:
+Not a reconstruction this time, and the two halves of this entry were observed as one ordered sequence. An
+incumbent did not die — it became unkillable, which is the distinction the 2026-08-23 measurement above
+established and which the first draft of this section got wrong.
+
+`~/.coral/gen2/run/coordinator.log`, incumbent `pid=62492`:
+
+    13:32:12  control.heartbeat.v1 exceeded its 5000ms budget   (liveClaims=4)
+    13:32:50  Incumbent did not exit within 30000ms; sent SIGTERM to pid=62492
+    13:33:03  Incumbent did not exit after SIGTERM grace; sent SIGKILL to pid=62492
+    13:33:09  Incumbent socket remained bound after SIGKILL grace for pid=62492
+    13:34:07  Fatal startup error: The current-generation store is corrupt or unsupported
+    13:38:39  started, with no intervention
+
+The order is the evidence. The store error appears only *after* the kill fails, and outlives it by four
+minutes. **A surviving lock is itself proof the holder is not dead**: SQLite takes POSIX advisory locks, and
+the kernel drops those when a process exits, so a lock that outlives an accepted `kill(2)` says the
+signal was queued rather than taken — the process never left `D`. That is the sentence that joins this entry's two halves, and neither half stated it.
+
+The load that produced it was self-inflicted and will recur the same way. Five startup attempts landed in four
+seconds — 13:34:31.663, 13:34:31.791, 13:34:32.254, 13:34:35.839, 13:34:35.973 — because every mutating
+`coral-cli` command relaunches the backend, and a full gate run plus retried waits issues many. Contenders then
+pile onto a wedged incumbent and contend with each other, so the retry policy amplifies the window rather than
+shortening it. A fix that only corrects the classification leaves that amplification in place.
+
+The same startup wrote `startup-diagnostic.json` with:
 
     "code": "store_corrupt_or_unsupported",
     "userMessage": "The current-generation store is corrupt or uses an unsupported format.",
