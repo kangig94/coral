@@ -18,7 +18,10 @@ import type {
   LiveHandoffContinuationResult,
   LiveHandoffResult,
 } from '#src/coordinator/handoff-runner.js';
-import type { HandoffRoutingStatusReadResult } from '#src/coordinator/handoff-routing-status.js';
+import {
+  retirementTombstoneSchema,
+  type HandoffRoutingStatusReadResult,
+} from '#src/coordinator/handoff-routing-status.js';
 import { incumbentIdentitySummarySchema } from '#src/coordinator/handoff-routing.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { createRecoveryComponent } from '#src/coordinator/runtime-components/recovery-component.js';
@@ -476,9 +479,82 @@ describe('backend routing status', () => {
       'Next step: run coral-cli backend routing-status resolve --invocation unresolved-invocation.',
       'Routing invocation terminal-invocation: terminal; delegated to 0.10.9, which exited 7.',
       'Routing invocation retired-invocation: retired (completed-pair-compaction). No action is needed.',
-      'Routing invocation operator-resolved-invocation: retired (operator-resolved). No action is needed.',
+      'Routing invocation operator-resolved-invocation: retired (operator-resolved; reason: owner-absent). No action is needed.',
       'Routing retirement history: 2 exact invocation identities expired (selection-evicted-at-capacity=1, completed-pair-compaction=1, operator-resolved=0); observed selection sequence range 4-8, selected 2026-07-01T00:00:00.000Z through 2026-07-03T00:00:00.000Z.',
     ]);
+  });
+
+  it.each([
+    {
+      name: 'capacity eviction before a terminal',
+      retirementCause: 'selection-evicted-at-capacity',
+      terminalExisted: false,
+      expected:
+        'Routing invocation retired-invocation: retired (selection-evicted-at-capacity; terminal recorded: no).\nNext step: run coral-cli backend routing-status resolve --invocation retired-invocation to acknowledge the retained capacity eviction.',
+    },
+    {
+      name: 'capacity eviction with a terminal',
+      retirementCause: 'selection-evicted-at-capacity',
+      terminalExisted: true,
+      expected:
+        'Routing invocation retired-invocation: retired (selection-evicted-at-capacity; terminal recorded: yes).\nNext step: run coral-cli backend routing-status resolve --invocation retired-invocation to acknowledge the retained capacity eviction.',
+    },
+    {
+      name: 'absent-owner resolution',
+      retirementCause: 'operator-resolved',
+      terminalExisted: false,
+      resolutionReason: 'owner-absent',
+      expected:
+        'Routing invocation retired-invocation: retired (operator-resolved; reason: owner-absent). No action is needed.',
+    },
+    {
+      name: 'forced unobservable-owner resolution',
+      retirementCause: 'operator-resolved',
+      terminalExisted: false,
+      resolutionReason: 'operator-abandoned-unobservable',
+      expected:
+        'Routing invocation retired-invocation: retired (operator-resolved; reason: operator-abandoned-unobservable). No action is needed.',
+    },
+  ] as const)('renders retained evidence for $name', ({ retirementCause, terminalExisted, ...testCase }) => {
+    const tombstone = retirementTombstoneSchema.parse({
+      generation: 1,
+      sequence: 1,
+      eventId: 'retirement-event',
+      invocationId: 'retired-invocation',
+      observedAt: '2026-08-03T00:00:00.000Z',
+      eventKind: 'retirement-tombstone',
+      phase: 'retirement',
+      selectionSequence: 1,
+      selectedAt: '2026-08-02T00:00:00.000Z',
+      owner: { pid: 101, incarnation: testIncarnation(101) },
+      selectedDisposition: {
+        kind: 'continue-current',
+        basis: { kind: 'same-build-set', buildSetId: '123e4567-e89b-42d3-a456-426614174000' },
+      },
+      retirementCause,
+      terminalExisted,
+      ...('resolutionReason' in testCase ? { resolutionReason: testCase.resolutionReason } : {}),
+    });
+    const result: HandoffRoutingStatusReadResult = {
+      kind: 'current',
+      generation: 1,
+      statuses: [{ kind: 'retired', tombstone }],
+      retirementHistoryTruncated: {
+        kind: 'retirement-history-truncated',
+        expiredIdentityCount: 0,
+        causes: {
+          'selection-evicted-at-capacity': 0,
+          'completed-pair-compaction': 0,
+          'operator-resolved': 0,
+        },
+        minSelectionSequence: null,
+        maxSelectionSequence: null,
+        earliestSelectedAt: null,
+        latestSelectedAt: null,
+      },
+    };
+
+    expect(formatHandoffRoutingStatus(result)).toBe(testCase.expected);
   });
 
   it('renders an unresolved invocation ID and contributes exit 75 for an absent owner', async () => {
@@ -624,7 +700,9 @@ describe('backend routing status', () => {
 
     await program.parseAsync(['node', 'coral-cli', 'backend', 'status']);
 
-    expect(stdout).toContain('Routing invocation routing-invocation: retired (selection-evicted-at-capacity).');
+    expect(stdout).toContain(
+      'Routing invocation routing-invocation: retired (selection-evicted-at-capacity; terminal recorded: no).',
+    );
     expect(stdout).toContain(
       'coral-cli backend routing-status resolve --invocation routing-invocation to acknowledge the retained capacity eviction',
     );

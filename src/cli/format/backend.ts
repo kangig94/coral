@@ -303,12 +303,16 @@ function formatRoutingInvocationStatus(status: HandoffRoutingInvocationStatus): 
       return `Routing invocation ${status.terminal.invocationId}: terminal; ${formatStoredTerminalDisposition(status.terminal.disposition)}.`;
     case 'retired':
       switch (status.tombstone.retirementCause) {
-        case 'selection-evicted-at-capacity':
-          return `Routing invocation ${status.tombstone.invocationId}: retired (selection-evicted-at-capacity).\nNext step: run coral-cli backend routing-status resolve --invocation ${status.tombstone.invocationId} to acknowledge the retained capacity eviction.`;
+        case 'selection-evicted-at-capacity': {
+          const terminalEvidence = status.tombstone.terminalExisted
+            ? 'terminal recorded: yes'
+            : 'terminal recorded: no';
+          return `Routing invocation ${status.tombstone.invocationId}: retired (selection-evicted-at-capacity; ${terminalEvidence}).\nNext step: run coral-cli backend routing-status resolve --invocation ${status.tombstone.invocationId} to acknowledge the retained capacity eviction.`;
+        }
         case 'completed-pair-compaction':
           return `Routing invocation ${status.tombstone.invocationId}: retired (completed-pair-compaction). No action is needed.`;
         case 'operator-resolved':
-          return `Routing invocation ${status.tombstone.invocationId}: retired (operator-resolved). No action is needed.`;
+          return `Routing invocation ${status.tombstone.invocationId}: retired (operator-resolved; reason: ${status.tombstone.resolutionReason}). No action is needed.`;
         default:
           return assertNever(status.tombstone.retirementCause);
       }

@@ -21,6 +21,7 @@ import {
   MAX_RETIREMENT_TOMBSTONES,
   MAX_UNRESOLVED_INVOCATIONS,
   handoffRoutingStatusExitContribution,
+  handoffRoutingTransitionSchema,
   invalidTargetSummarySchema,
   persistedHandoffDispositionPolicy,
   publishGenerationCoordinatedHandoffRoutingTransitions,
@@ -35,6 +36,7 @@ import {
   type PublicationOutcome,
   type RetirementTombstone,
 } from '#src/coordinator/handoff-routing-status.js';
+import { formatHandoffRoutingStatus } from '#src/cli/format/backend.js';
 import type { ProcessIdentityObservation } from '#src/infra/port-types.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { discardHandoffRoutingStatus } from '#src/cli/routing-status-discard.js';
@@ -680,6 +682,90 @@ describe('handoff routing status', () => {
       ),
     ).toMatchObject({ ownerLiveness: { kind: 'unobservable', cause: 'probe-not-available' } });
   });
+
+  it.each([
+    {
+      name: 'handoff-abandoned-stdout',
+      retainSelection: true,
+      transitionDisposition: { kind: 'continued-current', reason: { kind: 'handoff-abandoned-stdout' } },
+      durableDisposition: { kind: 'continued-current', reason: { kind: 'handoff-abandoned-stdout' } },
+      rendered:
+        'Routing invocation handoff-abandoned-stdout: terminal; continued current after stdout drain prevented delegation.',
+      exitContribution: 75,
+    },
+    {
+      name: 'delegated-signal',
+      retainSelection: true,
+      transitionDisposition: { kind: 'delegated-signal', version: '0.10.9', signal: 'SIGTERM' },
+      durableDisposition: { kind: 'delegated-signal', version: '0.10.9', signal: 'SIGTERM' },
+      rendered: 'Routing invocation delegated-signal: terminal; delegated to 0.10.9, which exited on SIGTERM.',
+      exitContribution: 75,
+    },
+    {
+      name: 'finalized-without-selection',
+      retainSelection: false,
+      transitionDisposition: { kind: 'delegated-success', version: '0.10.9' },
+      durableDisposition: {
+        kind: 'finalized-without-selection',
+        terminal: { kind: 'delegated-success', version: '0.10.9' },
+      },
+      rendered:
+        'Routing invocation finalized-without-selection: terminal; delegated successfully to 0.10.9 without a retained selection.',
+      exitContribution: 75,
+    },
+  ] as const)(
+    'round-trips $name from the durable record through status rendering and exit policy',
+    async ({ name, retainSelection, transitionDisposition, durableDisposition, rendered, exitContribution }) => {
+      const path = databasePath();
+      const selected = retainSelection
+        ? await committed(path, [
+            handoffRoutingTransitionSchema.parse({
+              kind: 'routing-selected',
+              eventId: `${name}-selection`,
+              invocationId: name,
+              observedAt: at(1),
+              owner: OWNER,
+              disposition: {
+                kind: 'continue-current',
+                basis: { kind: 'same-build-set', buildSetId: BUILD_SET_ID },
+              },
+            }),
+          ])
+        : null;
+      await committed(path, [
+        handoffRoutingTransitionSchema.parse({
+          kind: 'continuation-finalized',
+          eventId: `${name}-terminal`,
+          invocationId: name,
+          observedAt: at(2),
+          selection:
+            selected === null
+              ? { kind: 'without-selection' }
+              : { kind: 'with-selection-sequence', selectionSequence: selected.sequence },
+          disposition: transitionDisposition,
+        }),
+      ]);
+
+      const durable = terminalEventSchema.parse(
+        records(path).find((record) => record.eventKind === 'continuation-finalized'),
+      );
+      expect(durable.disposition).toEqual(durableDisposition);
+
+      const result = readHandoffRoutingStatus(path);
+      expect(result).toMatchObject({
+        kind: 'current',
+        statuses: [
+          {
+            kind: 'terminal',
+            selection: retainSelection ? { invocationId: name } : null,
+            terminal: { invocationId: name, disposition: durableDisposition },
+          },
+        ],
+      });
+      expect(formatHandoffRoutingStatus(result)).toBe(rendered);
+      expect(handoffRoutingStatusExitContribution(result)).toBe(exitContribution);
+    },
+  );
 
   it('returns distinct absent, unsupported-generation, unreadable, and I/O-failure results', async () => {
     const absentPath = databasePath();
