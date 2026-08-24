@@ -1,6 +1,7 @@
 import { spawn as spawnChild, spawnSync } from 'node:child_process';
 import { createHash, randomBytes as randomBytesNode, randomUUID } from 'node:crypto';
 import {
+  accessSync,
   appendFileSync,
   chmodSync,
   closeSync,
@@ -24,14 +25,24 @@ import {
   unlinkSync,
   writeFileSync,
   writeSync,
+  constants as fsConstants,
 } from 'node:fs';
 import { readFile as readFileAsync } from 'node:fs/promises';
 import { homedir as osHomedir, tmpdir as osTmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { composeCoralPaths } from '../infra/path/index.js';
 import { resolveProjectSource } from '../infra/project-source.js';
 import type { BuildFlavor } from '../infra/build-flavor.js';
-import type { ChildProcessLike, EnvPort, StorageData, StoragePort, TimePort } from '../infra/port-types.js';
+import type {
+  ChildProcessLike,
+  EnvPort,
+  ProcessIdentityObservation,
+  SqliteDatabasePort,
+  StorageData,
+  StoragePort,
+  TimePort,
+} from '../infra/port-types.js';
 import type {
   DurableExecutionTransport,
   IdPort,
@@ -52,12 +63,126 @@ import { composeChildEnv, parsePassthrough, resolveEnvBudgetBytes } from '../inf
 import { isDurableCliRuntime, type DurableCliRuntimeRecord, type DurableProcessExit } from './durable-runtime.js';
 import { buildExecPromise } from './exec-builder.js';
 import { createRealTimePort } from '../infra/time.js';
-import { observeProcessLiveness, probeProcessIncarnation } from '../infra/node-process.js';
+import {
+  observeProcessLiveness,
+  parseLinuxProcessIncarnation,
+  probeProcessIncarnation,
+} from '../infra/node-process.js';
+import type { RecordedProcessIdentity } from '../infra/process-containment.js';
 
 const DURABLE_POLL_INTERVAL_MS = 100;
 const DURABLE_POLL_TIMEOUT_MS = 5_000;
 const DURABLE_EXIT_GRACE_MS = 5_000;
 const ENV_RECORD_FILE = 'env.json';
+
+type ProcessIdentityObservationEnvironment = Readonly<{
+  platform: string;
+  observeLiveness(pid: number): ReturnType<typeof observeProcessLiveness>;
+  readFile(path: string, options: { encoding: 'utf-8'; signal: AbortSignal }): Promise<string>;
+  time: Pick<TimePort, 'setTimeout' | 'clearTimeout'>;
+}>;
+
+function unobservable(
+  owner: RecordedProcessIdentity,
+  cause: Extract<ProcessIdentityObservation['evidence'], { kind: 'unobservable' }>['cause'],
+): ProcessIdentityObservation {
+  return { owner, evidence: { kind: 'unobservable', cause } };
+}
+
+function abortError(error: unknown, signal: AbortSignal): boolean {
+  return signal.aborted || (error instanceof Error && error.name === 'AbortError');
+}
+
+export async function observeProcessIdentitiesWithoutSubprocesses(
+  owners: readonly RecordedProcessIdentity[],
+  deadlineMs: number,
+  environment: ProcessIdentityObservationEnvironment,
+): Promise<readonly ProcessIdentityObservation[]> {
+  if (owners.length === 0) return [];
+  const controller = new AbortController();
+  const deadline = environment.time.setTimeout(() => controller.abort(), deadlineMs);
+  try {
+    const pendingOwners = owners.map((owner) => ({ owner, liveness: environment.observeLiveness(owner.pid) }));
+    if (environment.platform !== 'linux') {
+      return pendingOwners.map(({ owner, liveness }) =>
+        liveness === 'absent'
+          ? { owner, evidence: { kind: 'pid-absent' } }
+          : unobservable(owner, 'probe-not-available'),
+      );
+    }
+
+    let bootId: string;
+    try {
+      bootId = await environment.readFile('/proc/sys/kernel/random/boot_id', {
+        encoding: 'utf-8',
+        signal: controller.signal,
+      });
+    } catch (error: unknown) {
+      const cause = abortError(error, controller.signal) ? 'deadline-expired' : 'probe-failed';
+      return pendingOwners.map(({ owner, liveness }) =>
+        liveness === 'absent' ? { owner, evidence: { kind: 'pid-absent' } } : unobservable(owner, cause),
+      );
+    }
+
+    if (bootId.trim().length === 0) {
+      return pendingOwners.map(({ owner, liveness }) =>
+        liveness === 'absent'
+          ? { owner, evidence: { kind: 'pid-absent' } }
+          : unobservable(owner, 'incarnation-unavailable'),
+      );
+    }
+
+    return Promise.all(
+      pendingOwners.map(async ({ owner, liveness }): Promise<ProcessIdentityObservation> => {
+        if (liveness === 'absent') return { owner, evidence: { kind: 'pid-absent' } };
+        try {
+          const stat = await environment.readFile(`/proc/${owner.pid}/stat`, {
+            encoding: 'utf-8',
+            signal: controller.signal,
+          });
+          const incarnation = parseLinuxProcessIncarnation(bootId, stat);
+          return incarnation === null
+            ? unobservable(owner, 'incarnation-unavailable')
+            : { owner, evidence: { kind: 'incarnation', incarnation } };
+        } catch (error: unknown) {
+          if (abortError(error, controller.signal)) return unobservable(owner, 'deadline-expired');
+          if (
+            (error as NodeJS.ErrnoException).code === 'ENOENT' &&
+            environment.observeLiveness(owner.pid) === 'absent'
+          ) {
+            return { owner, evidence: { kind: 'pid-absent' } };
+          }
+          return unobservable(
+            owner,
+            (error as NodeJS.ErrnoException).code === 'ENOENT' ? 'incarnation-unavailable' : 'probe-failed',
+          );
+        }
+      }),
+    );
+  } finally {
+    environment.time.clearTimeout(deadline);
+  }
+}
+
+function openSqliteDatabaseSync(path: string, options?: { readOnly?: boolean }): SqliteDatabasePort {
+  const database = new DatabaseSync(path, { readOnly: options?.readOnly ?? false });
+  return {
+    exec: (sql) => database.exec(sql),
+    prepare: (sql) => {
+      const statement = database.prepare(sql);
+      return {
+        all: (...values) => statement.all(...values),
+        get: (...values) => statement.get(...values),
+        run: (...values) => {
+          const result = statement.run(...values);
+          return { changes: Number(result.changes), lastInsertRowid: result.lastInsertRowid };
+        },
+      };
+    },
+    close: () => database.close(),
+  };
+}
+
 const WRAPPER_SCRIPT = `
 const { spawn } = require('child_process');
 const { openSync, closeSync, readFileSync } = require('fs');
@@ -146,6 +271,7 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
   const time: TimePort = createRealTimePort();
 
   const storage: StoragePort = {
+    assertReadableSync: (path) => accessSync(path, fsConstants.R_OK),
     readFile: (path, encoding) => readFileAsync(path, encoding),
     readFileSync: (path, encoding) => readFileSync(path, encoding),
     writeFileSync: (path, data, options) => writeFileSync(path, data, options),
@@ -255,6 +381,7 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
     writeAtomicDurableSync: (path, data, options) => writeAtomicDurableSyncNode(path, data, options),
     syncDirectoryDurableSync: (path) => syncDirectoryDurable(path),
     chmodSync: (path, mode) => chmodSync(path, mode),
+    openSqliteDatabaseSync,
   };
 
   const customKbRoot = capturedEnv.coralEnv.CORAL_KB_PATH;
@@ -381,6 +508,13 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
     },
     observeLiveness: (pid) => observeProcessLiveness(pid),
     readProcessIncarnation: (pid, platform) => probeProcessIncarnation(pid, platform),
+    observeProcessIdentities: (owners, deadlineMs) =>
+      observeProcessIdentitiesWithoutSubprocesses(owners, deadlineMs, {
+        platform: capturedEnv.platform,
+        observeLiveness: observeProcessLiveness,
+        readFile: readFileAsync,
+        time,
+      }),
     durable,
   } as ProcessPort;
 

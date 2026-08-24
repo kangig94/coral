@@ -3,14 +3,19 @@ import { basename, dirname, join } from 'node:path';
 import { backendLog } from '../infra/backend-log.js';
 import { assertNever } from '../infra/error-format.js';
 import { isNoEntryError } from '../infra/fs-errors.js';
-import { acquireDirectoryLock, isDirectoryLockTimeoutError, type DirectoryLockLease } from '../infra/fs-lock.js';
+import {
+  acquireDirectoryLock,
+  isDirectoryLockTimeoutError,
+  tryAcquireDirectoryLock,
+  type DirectoryLockLease,
+} from '../infra/fs-lock.js';
 import { validateProductVersion } from '../infra/product-version.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
 import type { Runtime } from '../runtime/ports.js';
 import { classifyStoreFile } from './db.js';
 import type { StoreFormatClassification, StoreFormatDescription } from './format-fingerprint.js';
 
-export type GenerationMutationKind = 'install' | 'update' | 'uninstall' | 'kb-child';
+export type GenerationMutationKind = 'install' | 'update' | 'uninstall' | 'kb-child' | 'routing-status';
 
 export interface GenerationReadinessCompletion {
   release(): void;
@@ -20,6 +25,11 @@ export interface GenerationWriterLease {
   assertOwned(): void;
   release(): void;
 }
+
+export type GenerationWriterLeaseAttempt =
+  | Readonly<{ kind: 'acquired'; lease: GenerationWriterLease }>
+  | Readonly<{ kind: 'maintenance-active' }>
+  | Readonly<{ kind: 'contended' }>;
 
 export interface GenerationMutationCoordination {
   // `storeFormat` is threaded in rather than defaulted to `currentCoralStoreFormat()`:
@@ -231,7 +241,7 @@ function writerLeaseName(runtime: Runtime, mutation: { readonly kind: Generation
 }
 
 function writerHolder(entry: string): { readonly pid: number; readonly description: string } | null {
-  const match = /^(\d+)-(install|update|uninstall|kb-child)-(.+)\.lease-[^.]+\.lock$/u.exec(entry);
+  const match = /^(\d+)-(install|update|uninstall|kb-child|routing-status)-(.+)\.lease-[^.]+\.lock$/u.exec(entry);
   if (match === null) return null;
   const pid = Number(match[1]);
   if (!Number.isSafeInteger(pid) || pid <= 0) return null;
@@ -270,6 +280,42 @@ function removeDeadWriterLeases(runtime: Runtime, paths: GenerationBoundaryPaths
   return live;
 }
 
+function acquireWriterLeaseUnderAdmission(
+  runtime: Runtime,
+  paths: GenerationBoundaryPaths,
+  mutation: { readonly kind: GenerationMutationKind; readonly name: string },
+): GenerationWriterLeaseAttempt {
+  if (runtime.storage.existsSync(paths.maintenanceLock)) return { kind: 'maintenance-active' };
+  const releaseWriter = tryAcquireDirectoryLock(
+    join(paths.writersRoot, writerLeaseName(runtime, mutation)),
+    directoryLockDeps(runtime),
+  );
+  return releaseWriter === null
+    ? { kind: 'contended' }
+    : {
+        kind: 'acquired',
+        lease: {
+          assertOwned: releaseWriter.assertOwned,
+          release: releaseWriter,
+        },
+      };
+}
+
+export function tryAcquireGenerationWriterLease(
+  runtime: Runtime,
+  mutation: { readonly kind: GenerationMutationKind; readonly name: string },
+): GenerationWriterLeaseAttempt {
+  const paths = resolveGenerationBoundaryPaths(runtime);
+  ensureCoordinationRoot(runtime, paths);
+  const releaseAdmission = tryAcquireDirectoryLock(paths.admissionLock, directoryLockDeps(runtime));
+  if (releaseAdmission === null) return { kind: 'contended' };
+  try {
+    return acquireWriterLeaseUnderAdmission(runtime, paths, mutation);
+  } finally {
+    releaseAdmission();
+  }
+}
+
 export const generationMutationCoordinationSeam: GenerationMutationCoordination = {
   async completeReadiness(runtime, storeFormat) {
     return acquireGenerationAdoptionLease(runtime, storeFormat);
@@ -286,17 +332,8 @@ export const generationMutationCoordinationSeam: GenerationMutationCoordination 
         GENERATION_COORDINATION_TIMEOUT_MS,
       );
       try {
-        if (!runtime.storage.existsSync(paths.maintenanceLock)) {
-          const releaseWriter = await acquireDirectoryLock(
-            join(paths.writersRoot, writerLeaseName(runtime, mutation)),
-            directoryLockDeps(runtime),
-            GENERATION_COORDINATION_TIMEOUT_MS,
-          );
-          return {
-            assertOwned: releaseWriter.assertOwned,
-            release: releaseWriter,
-          };
-        }
+        const attempt = acquireWriterLeaseUnderAdmission(runtime, paths, mutation);
+        if (attempt.kind === 'acquired') return attempt.lease;
       } finally {
         releaseAdmission();
       }

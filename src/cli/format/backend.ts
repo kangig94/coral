@@ -1,6 +1,18 @@
 import { assertNever } from '../../infra/error-format.js';
 import type { HandoffRoutingBasis } from '../../coordinator/handoff-routing.js';
-import type { HandoffContinuationReason, LiveHandoffContinuationResult } from '../../coordinator/handoff-runner.js';
+import type {
+  HandoffRoutingInvocationStatus,
+  HandoffRoutingResolveResult,
+  HandoffRoutingStatusReadResult,
+  OwnerLiveness,
+  RetirementHistoryTruncated,
+  StoredTerminalDisposition,
+} from '../../coordinator/handoff-routing-status.js';
+import {
+  liveHandoffResultObligation,
+  type HandoffContinuationReason,
+  type LiveHandoffResult,
+} from '../../coordinator/handoff-runner.js';
 import type { RecoveryQuarantineEntry } from '../../recovery/quarantine.js';
 import type { BackendHealth } from '../../transport/http/backend/health.js';
 import type { BackendStatusFull } from '../../transport/http/backend/status.js';
@@ -10,8 +22,8 @@ import type { RecoveryQuarantineClearResult } from '../../recovery/source-regist
 export const RECOVERY_REVISION_UNTIL_CLEARED = 'until-cleared';
 export const RECOVERY_REVISION_FINGERPRINT_PREFIX = 'fingerprint:';
 
-export function formatLiveHandoffResult(result: LiveHandoffContinuationResult | null): string | null {
-  return result === null ? null : formatHandoffContinuationReason(result.reason);
+function formatLiveHandoffResult(result: LiveHandoffResult | null): string | null {
+  return result === null ? null : formatHandoffContinuationReason(result.continuation.reason);
 }
 
 export function formatHandoffContinuationReason(reason: HandoffContinuationReason): string {
@@ -74,8 +86,9 @@ function formatInvokingBuildNotOlder(
         nextStep,
       ].join('\n');
     case 'newer-version':
+      // See routeOrOpenBackendStoreAtStartup in src/store/startup-store-routing.ts.
       return [
-        `Handoff: continuing current build — CLI version ${basis.invoking.version} is newer than running backend ${basis.incumbent.version}, so guarded operations will not proceed across these builds.`,
+        `Handoff: continuing current build — invoking build ${basis.invoking.version} is newer than incumbent ${basis.incumbent.version}.`,
         nextStep,
       ].join('\n');
     default:
@@ -170,7 +183,22 @@ function formatInvalidTargetFailure(
 // operator to do anything but ask again.
 const SHUTDOWN_RETRY_NEXT_STEP = 'Next step: run coral-cli backend status, then retry the shutdown.';
 
-export function formatBackendStatus(result: BackendStatusFull): string {
+export function formatBackendStatus(
+  daemonStatus: BackendStatusFull,
+  routingStatus: HandoffRoutingStatusReadResult,
+  liveHandoffResult: LiveHandoffResult | null,
+): string {
+  const sections = [formatDaemonStatus(daemonStatus)];
+  const routingStatusText = formatHandoffRoutingStatus(routingStatus);
+  if (routingStatusText !== null) sections.push(routingStatusText);
+  if (liveHandoffResultObligation(liveHandoffResult).severity === 'warning') {
+    const liveHandoffText = formatLiveHandoffResult(liveHandoffResult);
+    if (liveHandoffText !== null) sections.push(liveHandoffText);
+  }
+  return sections.join('\n');
+}
+
+function formatDaemonStatus(result: BackendStatusFull): string {
   switch (result.status) {
     case 'ok':
       return formatRunningStatus(result.health);
@@ -188,6 +216,215 @@ export function formatBackendStatus(result: BackendStatusFull): string {
       return 'Backend shutting down';
     case 'unauthorized':
       return 'Backend unauthorized. The discovery record and daemon token disagree — run coral-cli backend shutdown, then retry to relaunch with a fresh token.';
+    default:
+      return assertNever(result);
+  }
+}
+
+function formatRoutingOwnerLiveness(invocationId: string, liveness: OwnerLiveness): string {
+  switch (liveness.kind) {
+    case 'alive':
+      return `Routing invocation ${invocationId}: in flight; its recorded owner is alive.`;
+    case 'absent':
+      return [
+        `Routing invocation ${invocationId}: unresolved; its recorded owner is absent.`,
+        `Next step: run coral-cli backend routing-status resolve --invocation ${invocationId}.`,
+      ].join('\n');
+    case 'unobservable':
+      return liveness.cause === 'deadline-expired'
+        ? [
+            `Routing invocation ${invocationId}: unresolved; owner observation was unobservable (${liveness.cause}).`,
+            'Next step: rerun coral-cli backend status; an expired sweep cannot authorize resolution.',
+          ].join('\n')
+        : [
+            `Routing invocation ${invocationId}: unresolved; owner observation was unobservable (${liveness.cause}).`,
+            `Next step: verify the owner externally, then run coral-cli backend routing-status resolve --invocation ${invocationId} --force-unobservable to abandon it.`,
+          ].join('\n');
+    default:
+      return assertNever(liveness);
+  }
+}
+
+type FinalizedDisposition = Extract<
+  StoredTerminalDisposition,
+  { kind: 'continued-current' | 'delegated-success' | 'delegated-exit' | 'delegated-signal' }
+>;
+
+function formatFinalizedDisposition(disposition: FinalizedDisposition): string {
+  switch (disposition.kind) {
+    case 'continued-current':
+      switch (disposition.reason.kind) {
+        case 'routing':
+          return `continued current (${disposition.reason.basis.kind})`;
+        case 'handoff-abandoned-stdout':
+          return 'continued current after stdout drain prevented delegation';
+        default:
+          return assertNever(disposition.reason);
+      }
+    case 'delegated-success':
+      return `delegated successfully to ${disposition.version}`;
+    case 'delegated-exit':
+      return `delegated to ${disposition.version}, which exited ${disposition.exitCode}`;
+    case 'delegated-signal':
+      return `delegated to ${disposition.version}, which exited on ${disposition.signal}`;
+    default:
+      return assertNever(disposition);
+  }
+}
+
+function formatStoredTerminalDisposition(disposition: StoredTerminalDisposition): string {
+  switch (disposition.kind) {
+    case 'execution-failed':
+      return `execution failed during ${disposition.throwPhase}`;
+    case 'continued-current':
+    case 'delegated-success':
+    case 'delegated-exit':
+    case 'delegated-signal':
+      return formatFinalizedDisposition(disposition);
+    case 'failed-without-selection':
+      return `execution failed during ${disposition.throwPhase} without a retained selection`;
+    case 'finalized-without-selection':
+      return `${formatFinalizedDisposition(disposition.terminal)} without a retained selection`;
+    case 'terminal-without-retained-selection':
+      return `${formatStoredTerminalDisposition(disposition.terminal)} after its selection identity expired or was unavailable`;
+    case 'terminal-after-operator-resolution':
+      return `${formatStoredTerminalDisposition(disposition.terminal)} after operator resolution (${disposition.resolutionReason})`;
+    default:
+      return assertNever(disposition);
+  }
+}
+
+function formatRoutingInvocationStatus(status: HandoffRoutingInvocationStatus): string {
+  switch (status.kind) {
+    case 'unresolved':
+      return formatRoutingOwnerLiveness(status.selection.invocationId, status.ownerLiveness);
+    case 'terminal':
+      return `Routing invocation ${status.terminal.invocationId}: terminal; ${formatStoredTerminalDisposition(status.terminal.disposition)}.`;
+    case 'retired':
+      return `Routing invocation ${status.tombstone.invocationId}: retired (${status.tombstone.retirementCause}).`;
+    default:
+      return assertNever(status);
+  }
+}
+
+function formatRetirementHistoryTruncated(history: RetirementHistoryTruncated): string | null {
+  if (history.expiredIdentityCount === 0) return null;
+  const causes = Object.entries(history.causes)
+    .map(([cause, count]) => `${cause}=${count}`)
+    .join(', ');
+  return `Routing retirement history: ${history.expiredIdentityCount} exact invocation identities expired (${causes}); observed selection sequence range ${history.minSelectionSequence}-${history.maxSelectionSequence}, selected ${history.earliestSelectedAt} through ${history.latestSelectedAt}.`;
+}
+
+export function formatHandoffRoutingStatus(result: HandoffRoutingStatusReadResult): string | null {
+  switch (result.kind) {
+    case 'absent':
+      return null;
+    case 'unreadable':
+      return [
+        `Routing status is unreadable (${result.reason}).`,
+        'Next step: run coral-cli backend routing-status discard.',
+      ].join('\n');
+    case 'unsupported-generation':
+      return [
+        `Routing status generation ${result.generation} is not supported by this build.`,
+        'Next step: run coral-cli backend routing-status discard.',
+      ].join('\n');
+    case 'undeterminable':
+      return [
+        `Routing status could not be read (${result.cause}, errcode ${result.errcode}).`,
+        'Next step: retry coral-cli backend status without discarding. If this persists, repair the reported storage condition; discard is not permitted because this read did not establish that the journal is unreadable or unsupported.',
+      ].join('\n');
+    case 'current': {
+      const sections = result.statuses.map(formatRoutingInvocationStatus);
+      const truncatedHistory = formatRetirementHistoryTruncated(result.retirementHistoryTruncated);
+      if (truncatedHistory !== null) sections.push(truncatedHistory);
+      return sections.length === 0 ? null : sections.join('\n');
+    }
+    default:
+      return assertNever(result);
+  }
+}
+
+function formatUnavailableRoutingResolution(
+  status: Extract<HandoffRoutingResolveResult, { kind: 'status-unavailable' }>['status'],
+): string {
+  switch (status.kind) {
+    case 'unreadable':
+    case 'unsupported-generation':
+      return 'Next step: run coral-cli backend status, then run the routing-status discard command it reports before attempting another resolution.';
+    case 'undeterminable':
+      return 'Next step: retry coral-cli backend status without discarding and repair the reported storage condition if it persists; resolution requires a current journal.';
+    default:
+      return assertNever(status);
+  }
+}
+
+function formatUnpublishedRoutingResolution(
+  outcome: Extract<HandoffRoutingResolveResult, { kind: 'not-published' }>['outcome'],
+): string {
+  switch (outcome.kind) {
+    case 'not-published': {
+      const cause = outcome.cause;
+      switch (cause) {
+        case 'contended':
+          return 'Next step: rerun coral-cli backend status, then retry this resolve command if the invocation is still unresolved.';
+        case 'generation-maintenance':
+          return 'Next step: wait for generation maintenance to finish, rerun coral-cli backend status, then retry this resolve command if the invocation is still unresolved.';
+        case 'capacity-exhausted':
+          return 'Next step: repair the reported storage-capacity condition, rerun coral-cli backend status, then retry this resolve command if the invocation is still unresolved.';
+        case 'invalid-record':
+          return (
+            `Next step: report the invalid routing-status record (${outcome.validation.kind}) as a Coral defect; ` +
+            `the journal is unaffected, and no storage action is appropriate. After installing corrected Coral ` +
+            'software, rerun coral-cli backend routing-status resolve --invocation <id>.'
+          );
+        case 'rejected-transition':
+          return 'Next step: rerun coral-cli backend status and follow the successor shown for the invocation; do not assume resolution occurred.';
+        case 'coordination-unavailable':
+          return 'Next step: make the generation coordination root writable again, then run coral-cli backend status.';
+        default:
+          return assertNever(cause);
+      }
+    }
+    case 'undeterminable': {
+      const cause = outcome.cause;
+      switch (cause) {
+        case 'io-failed':
+          return 'Next step: rerun coral-cli backend status before acting and repair the reported storage condition if it persists; this attempt could not determine whether it committed.';
+        case 'unreadable':
+          return 'Next step: run coral-cli backend status and follow its routing-status discard successor if the journal is unreadable; this attempt could not determine whether it committed.';
+        case 'unsupported-generation':
+          return 'Next step: run coral-cli backend status and follow its routing-status discard successor if the generation is unsupported; this attempt could not determine whether it committed.';
+        default:
+          return assertNever(cause);
+      }
+    }
+    default:
+      return assertNever(outcome);
+  }
+}
+
+export function formatHandoffRoutingResolveResult(result: HandoffRoutingResolveResult): string {
+  switch (result.kind) {
+    case 'resolved':
+      return `Resolved routing invocation ${result.invocationId} (${result.reason}).`;
+    case 'stale':
+      return `Routing invocation ${result.invocationId} is stale or no longer retained.\nNext step: rerun coral-cli backend status and copy an invocation still shown as unresolved.`;
+    case 'already-terminal':
+      return `Routing invocation ${result.invocationId} is already terminal. No resolution is needed.\nNext step: no action is needed.`;
+    case 'live-owner':
+      return `Refusing to resolve routing invocation ${result.invocationId}: its recorded owner is alive.\nNext step: wait for the owner to finish, then rerun coral-cli backend status.`;
+    case 'unauthorized-unobservable':
+      return result.cause === 'deadline-expired'
+        ? `Refusing to resolve routing invocation ${result.invocationId}: the owner sweep deadline expired.\nNext step: rerun coral-cli backend status, then retry without --force-unobservable; the flag cannot override an expired observation budget.`
+        : `Refusing to resolve routing invocation ${result.invocationId}: owner observation is unobservable (${result.cause}).\nNext step: verify the owner externally, then rerun this command with --force-unobservable only if abandoning it is safe.`;
+    case 'status-unavailable':
+      return `Refusing to resolve routing status because the authoritative journal is ${result.status.kind}.\n${formatUnavailableRoutingResolution(result.status)}`;
+    case 'not-published':
+      return (
+        `Routing resolution was not published (${result.outcome.kind}:${result.outcome.cause}).\n` +
+        formatUnpublishedRoutingResolution(result.outcome)
+      );
     default:
       return assertNever(result);
   }

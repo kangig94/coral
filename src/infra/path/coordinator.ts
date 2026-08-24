@@ -34,7 +34,11 @@ export function handoffRoutingStatusPath(
   generation: number,
   opts?: CoordinatorPathOptions,
 ): string {
-  return join(generationRunDir(flavor, opts), `handoff-routing.${generation}.db`);
+  return handoffRoutingStatusPathForRunDir(generationRunDir(flavor, opts), generation);
+}
+
+export function handoffRoutingStatusPathForRunDir(runDir: string, generation: number): string {
+  return join(runDir, `handoff-routing.${generation}.db`);
 }
 
 export function socketPathForRunDir(runDir: string, flavor: BuildFlavor, env: SocketPathEnvironment): string {

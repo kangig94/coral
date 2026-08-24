@@ -1,0 +1,711 @@
+import { basename, dirname, join } from 'node:path';
+
+import type { SqliteDatabasePort, StoragePort } from '../infra/port-types.js';
+
+export const SQLITE_BUSY = 5;
+export const SQLITE_FULL = 13;
+export const SQLITE_NOTADB = 26;
+export const SQLITE_CORRUPT = 11;
+export const SQLITE_ERROR = 1;
+const HANDOFF_ROUTING_STATUS_QUARANTINE_DIRECTORY = 'handoff-routing-quarantine';
+
+export type HandoffRoutingStatusStoreSchema = Readonly<{
+  generation: number;
+  maximumBytes: number;
+  maximumIdentifierLength: number;
+  maximumObservedAtLength: number;
+  maximumRoutingSelectedBytes: number;
+  maximumExecutionFailedBytes: number;
+  maximumContinuationFinalizedBytes: number;
+  maximumRetirementTombstoneBytes: number;
+  closingRecordBytes: number;
+  validateRecordBody: (record: HandoffRoutingRecordInput) => HandoffRoutingRecordValidationResult;
+}>;
+
+export type HandoffRoutingRecordValidationResult =
+  | Readonly<{ kind: 'valid' }>
+  | Readonly<{ kind: 'malformed-json' }>
+  | Readonly<{ kind: 'schema-violation' }>
+  | Readonly<{ kind: 'envelope-body-disagreement' }>;
+
+export type HandoffRoutingRecordValidationFailure = Exclude<
+  HandoffRoutingRecordValidationResult,
+  Readonly<{ kind: 'valid' }>
+>;
+
+export type HandoffRoutingRecordKind = 'selection' | 'terminal' | 'retirement';
+
+export type HandoffRoutingRecordInput = Readonly<{
+  generation: number;
+  sequence: number;
+  eventId: string;
+  invocationId: string;
+  observedAt: string;
+  recordKind: HandoffRoutingRecordKind;
+  eventKind: 'routing-selected' | 'execution-failed' | 'continuation-finalized' | 'retirement-tombstone';
+  selectionSequence: number | null;
+  retirementCause: 'selection-evicted-at-capacity' | 'completed-pair-compaction' | 'operator-resolved' | null;
+  terminalExisted: boolean | null;
+  completedPairStable: boolean;
+  bodyJson: string;
+}>;
+
+export type HandoffRoutingRetirementHistoryRow = Readonly<{
+  generation: number;
+  expired_identity_count: number;
+  capacity_eviction_count: number;
+  completed_pair_compaction_count: number;
+  operator_resolved_count: number;
+  min_selection_sequence: number | null;
+  max_selection_sequence: number | null;
+  earliest_selected_at: string | null;
+  latest_selected_at: string | null;
+}>;
+
+export type HandoffRoutingRetirementHistoryUpdate = Readonly<{
+  expiredIdentityCount: number;
+  capacityEvictionCount: number;
+  completedPairCompactionCount: number;
+  operatorResolvedCount: number;
+  minSelectionSequence: number | null;
+  maxSelectionSequence: number | null;
+  earliestSelectedAt: string | null;
+  latestSelectedAt: string | null;
+}>;
+
+export class HandoffRoutingStoreInvalidRecordError extends Error {
+  readonly validation: HandoffRoutingRecordValidationFailure;
+
+  constructor(validation: HandoffRoutingRecordValidationFailure) {
+    super();
+    this.validation = validation;
+  }
+}
+
+export class HandoffRoutingStoreUnreadableError extends Error {
+  readonly errcode: number;
+
+  constructor(errcode = SQLITE_CORRUPT) {
+    super();
+    this.errcode = errcode;
+  }
+}
+
+export class HandoffRoutingStoreUnsupportedGenerationError extends Error {}
+
+export class HandoffRoutingStatusTransaction {
+  readonly #database: SqliteDatabasePort;
+  readonly #schema: HandoffRoutingStatusStoreSchema;
+
+  constructor(database: SqliteDatabasePort, schema: HandoffRoutingStatusStoreSchema) {
+    this.#database = database;
+    this.#schema = schema;
+  }
+
+  nextRecordSequence(): number {
+    const row = this.#database
+      .prepare(
+        "SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'handoff_routing_records'), 0) + 1 AS next",
+      )
+      .get() as Readonly<{ next: number }>;
+    return row.next;
+  }
+
+  insertRecord(record: HandoffRoutingRecordInput): number {
+    const validation = this.#schema.validateRecordBody(record);
+    if (validation.kind !== 'valid') throw new HandoffRoutingStoreInvalidRecordError(validation);
+    const inserted = this.#database
+      .prepare(
+        `INSERT INTO handoff_routing_records (
+          generation,
+          event_id,
+          invocation_id,
+          observed_at,
+          record_kind,
+          event_kind,
+          selection_sequence,
+          retirement_cause,
+          terminal_existed,
+          completed_pair_stable,
+          body_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING sequence`,
+      )
+      .get(
+        record.generation,
+        record.eventId,
+        record.invocationId,
+        record.observedAt,
+        record.recordKind,
+        record.eventKind,
+        record.selectionSequence,
+        record.retirementCause,
+        record.terminalExisted === null ? null : Number(record.terminalExisted),
+        Number(record.completedPairStable),
+        record.bodyJson,
+      ) as Readonly<{ sequence: number }> | undefined;
+    if (inserted?.sequence !== record.sequence) throw new HandoffRoutingStoreUnreadableError();
+    return inserted.sequence;
+  }
+
+  recordBody(invocationId: string, recordKind: HandoffRoutingRecordKind): string | undefined {
+    const row = this.#database
+      .prepare('SELECT body_json FROM handoff_routing_records WHERE invocation_id = ? AND record_kind = ?')
+      .get(invocationId, recordKind) as Readonly<{ body_json: string }> | undefined;
+    return row?.body_json;
+  }
+
+  insertClosingReserve(invocationId: string, eventId: string, observedAt: string): void {
+    this.#database
+      .prepare(
+        `INSERT INTO handoff_routing_closing_reserve (invocation_id, event_id, observed_at, allocation)
+        VALUES (?, ?, ?, zeroblob(?))`,
+      )
+      .run(invocationId, eventId, observedAt, this.#schema.closingRecordBytes);
+  }
+
+  releaseClosingReserve(invocationId: string): boolean {
+    return (
+      this.#database.prepare('DELETE FROM handoff_routing_closing_reserve WHERE invocation_id = ?').run(invocationId)
+        .changes === 1
+    );
+  }
+
+  readRetirementHistory(): HandoffRoutingRetirementHistoryRow | undefined {
+    return readRetirementHistory(this.#database);
+  }
+
+  updateRetirementHistory(update: HandoffRoutingRetirementHistoryUpdate): void {
+    this.#database
+      .prepare(
+        `UPDATE handoff_routing_metadata SET
+          expired_identity_count = ?,
+          capacity_eviction_count = ?,
+          completed_pair_compaction_count = ?,
+          operator_resolved_count = ?,
+          min_selection_sequence = ?,
+          max_selection_sequence = ?,
+          earliest_selected_at = ?,
+          latest_selected_at = ?
+        WHERE singleton = 1`,
+      )
+      .run(
+        update.expiredIdentityCount,
+        update.capacityEvictionCount,
+        update.completedPairCompactionCount,
+        update.operatorResolvedCount,
+        update.minSelectionSequence,
+        update.maxSelectionSequence,
+        update.earliestSelectedAt,
+        update.latestSelectedAt,
+      );
+  }
+
+  deleteRecord(sequence: number): void {
+    this.#database.prepare('DELETE FROM handoff_routing_records WHERE sequence = ?').run(sequence);
+  }
+
+  deleteInvocationRecords(invocationId: string): void {
+    this.#database.prepare('DELETE FROM handoff_routing_records WHERE invocation_id = ?').run(invocationId);
+  }
+
+  tombstoneBounds(): Readonly<{ count: number; bytes: number }> {
+    return this.#database
+      .prepare(
+        `SELECT COUNT(*) AS count, COALESCE(SUM(encoded_bytes), 0) AS bytes
+        FROM handoff_routing_records WHERE record_kind = 'retirement'`,
+      )
+      .get() as Readonly<{ count: number; bytes: number }>;
+  }
+
+  oldestTombstoneBody(): string | undefined {
+    const row = this.#database
+      .prepare(
+        `SELECT body_json FROM handoff_routing_records
+        WHERE record_kind = 'retirement'
+        ORDER BY selection_sequence, invocation_id
+        LIMIT 1`,
+      )
+      .get() as Readonly<{ body_json: string }> | undefined;
+    return row?.body_json;
+  }
+
+  oldestCompletedSelectionBody(): string | undefined {
+    const row = this.#database
+      .prepare(
+        `WITH latest_stable_pair AS (
+          SELECT selection.sequence
+          FROM handoff_routing_records AS selection
+          JOIN handoff_routing_records AS terminal ON terminal.invocation_id = selection.invocation_id
+          WHERE selection.record_kind = 'selection'
+            AND terminal.record_kind = 'terminal'
+            AND (selection.completed_pair_stable OR terminal.completed_pair_stable)
+          ORDER BY selection.sequence DESC
+          LIMIT 1
+        )
+        SELECT selection.body_json
+        FROM handoff_routing_records AS selection
+        JOIN handoff_routing_records AS terminal ON terminal.invocation_id = selection.invocation_id
+        WHERE selection.record_kind = 'selection'
+          AND terminal.record_kind = 'terminal'
+          AND selection.sequence != COALESCE((SELECT sequence FROM latest_stable_pair), 0)
+        ORDER BY selection.sequence
+        LIMIT 1`,
+      )
+      .get() as Readonly<{ body_json: string }> | undefined;
+    return row?.body_json;
+  }
+
+  hasAdmissionCapacity(recordBytes: number): boolean {
+    const pageSize = this.#pragmaNumber('page_size');
+    const pageCount = this.#pragmaNumber('page_count');
+    const freeListCount = this.#database.prepare('PRAGMA freelist_count').get() as Readonly<{
+      freelist_count: number;
+    }>;
+    const maxPageCount = this.#pragmaNumber('max_page_count');
+    const availableBytes = (maxPageCount - pageCount + freeListCount.freelist_count) * pageSize;
+    const maximumIdentifierBytes = Buffer.byteLength('\u0800'.repeat(this.#schema.maximumIdentifierLength), 'utf8');
+    const indexedEnvelopeBytes = maximumIdentifierBytes * 4 + this.#schema.maximumObservedAtLength * 2;
+    const btreeAllocationMarginBytes = pageSize * 8;
+    return availableBytes >= recordBytes + indexedEnvelopeBytes + btreeAllocationMarginBytes;
+  }
+
+  deleteOldestBoundedTerminal(): boolean {
+    return (
+      this.#database
+        .prepare(
+          `DELETE FROM handoff_routing_records
+          WHERE sequence = (
+            SELECT terminal.sequence
+            FROM handoff_routing_records AS terminal
+            WHERE terminal.record_kind = 'terminal'
+              AND NOT EXISTS (
+                SELECT 1 FROM handoff_routing_records AS selection
+                WHERE selection.invocation_id = terminal.invocation_id AND selection.record_kind = 'selection'
+              )
+            ORDER BY terminal.sequence
+            LIMIT 1
+          )`,
+        )
+        .run().changes === 1
+    );
+  }
+
+  boundedTerminalCount(): number {
+    const row = this.#database
+      .prepare(
+        `SELECT COUNT(*) AS count
+        FROM handoff_routing_records AS terminal
+        WHERE terminal.record_kind = 'terminal'
+          AND NOT EXISTS (
+            SELECT 1 FROM handoff_routing_records AS selection
+            WHERE selection.invocation_id = terminal.invocation_id AND selection.record_kind = 'selection'
+          )`,
+      )
+      .get() as Readonly<{ count: number }>;
+    return row.count;
+  }
+
+  completedSelectionBodiesForCompaction(limit: number, cutoff: string): readonly string[] {
+    const rows = this.#database
+      .prepare(
+        `WITH completed_pairs AS MATERIALIZED (
+          SELECT
+            selection.sequence,
+            selection.observed_at,
+            selection.body_json,
+            selection.completed_pair_stable OR terminal.completed_pair_stable AS stable
+          FROM handoff_routing_records AS selection
+          JOIN handoff_routing_records AS terminal ON terminal.invocation_id = selection.invocation_id
+          WHERE selection.record_kind = 'selection' AND terminal.record_kind = 'terminal'
+        ),
+        newest_pairs AS (
+          SELECT sequence FROM completed_pairs
+          ORDER BY sequence DESC
+          LIMIT ?
+        ),
+        latest_stable_pair AS (
+          SELECT sequence FROM completed_pairs
+          WHERE stable
+          ORDER BY sequence DESC
+          LIMIT 1
+        )
+        SELECT body_json
+        FROM completed_pairs
+        WHERE sequence != COALESCE((SELECT sequence FROM latest_stable_pair), 0)
+          AND (
+            julianday(observed_at) < julianday(?) OR
+            sequence NOT IN (SELECT sequence FROM newest_pairs)
+          )
+        ORDER BY sequence`,
+      )
+      .all(limit, cutoff) as ReadonlyArray<Readonly<{ body_json: string }>>;
+    return rows.map((row) => row.body_json);
+  }
+
+  unresolvedCount(): number {
+    const row = this.#database
+      .prepare(
+        `SELECT COUNT(*) AS count
+        FROM handoff_routing_records AS selection
+        WHERE selection.record_kind = 'selection'
+          AND NOT EXISTS (
+            SELECT 1 FROM handoff_routing_records AS terminal
+            WHERE terminal.invocation_id = selection.invocation_id AND terminal.record_kind = 'terminal'
+          )`,
+      )
+      .get() as Readonly<{ count: number }>;
+    return row.count;
+  }
+
+  oldestOpeningBody(): string | undefined {
+    const row = this.#database
+      .prepare(
+        `SELECT selection.body_json
+        FROM handoff_routing_records AS selection
+        WHERE selection.record_kind = 'selection'
+          AND NOT EXISTS (
+            SELECT 1 FROM handoff_routing_records AS terminal
+            WHERE terminal.invocation_id = selection.invocation_id AND terminal.record_kind = 'terminal'
+          )
+        ORDER BY selection.sequence
+        LIMIT 1`,
+      )
+      .get() as Readonly<{ body_json: string }> | undefined;
+    return row?.body_json;
+  }
+
+  eventExists(eventId: string): boolean {
+    return (
+      this.#database.prepare('SELECT 1 FROM handoff_routing_records WHERE event_id = ?').get(eventId) !== undefined
+    );
+  }
+
+  #pragmaNumber(name: 'page_size' | 'page_count' | 'max_page_count'): number {
+    const row = this.#database.prepare(`PRAGMA ${name}`).get() as Record<string, number>;
+    const value = row[name];
+    if (!Number.isSafeInteger(value) || value <= 0) throw new HandoffRoutingStoreUnreadableError();
+    return value;
+  }
+}
+
+export type HandoffRoutingStorePublication<T> =
+  | Readonly<{ kind: 'committed'; value: T }>
+  | Readonly<{ kind: 'failed'; error: unknown; commitStarted: boolean }>;
+
+export function quarantineHandoffRoutingStoreArtifact(
+  storage: StoragePort,
+  path: string,
+  quarantineId: string,
+): string {
+  const sourceDirectory = dirname(path);
+  const quarantineRoot = join(sourceDirectory, HANDOFF_ROUTING_STATUS_QUARANTINE_DIRECTORY);
+  const quarantinePath = join(quarantineRoot, `${basename(path)}.${quarantineId}`);
+  storage.mkdirSync(quarantineRoot, { recursive: true, mode: 0o700 });
+  storage.renameSync(path, quarantinePath);
+  for (const suffix of ['-wal', '-shm'] as const) {
+    try {
+      storage.renameSync(`${path}${suffix}`, `${quarantinePath}${suffix}`);
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+  }
+  if (!storage.syncDirectoryDurableSync(sourceDirectory) || !storage.syncDirectoryDurableSync(quarantineRoot)) {
+    throw new Error('Routing-status quarantine directory sync failed.');
+  }
+  return quarantinePath;
+}
+
+export function publishHandoffRoutingStoreTransaction<T>(
+  storage: StoragePort,
+  path: string,
+  schema: HandoffRoutingStatusStoreSchema,
+  mutate: (transaction: HandoffRoutingStatusTransaction) => T,
+): HandoffRoutingStorePublication<T> {
+  let database: SqliteDatabasePort | undefined;
+  let transactionOpen = false;
+  let commitStarted = false;
+  try {
+    storage.mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    database = storage.openSqliteDatabaseSync(path);
+    storage.chmodSync(path, 0o600);
+    configureDatabase(database, schema);
+    database.exec('BEGIN IMMEDIATE');
+    transactionOpen = true;
+    initializeOrValidateDatabase(database, schema);
+    const value = mutate(new HandoffRoutingStatusTransaction(database, schema));
+    commitStarted = true;
+    database.exec('COMMIT');
+    transactionOpen = false;
+    return { kind: 'committed', value };
+  } catch (error) {
+    rollback(database, transactionOpen, commitStarted);
+    return { kind: 'failed', error, commitStarted };
+  } finally {
+    close(database);
+  }
+}
+
+export type HandoffRoutingStoreSnapshotRead =
+  | Readonly<{ kind: 'absent' }>
+  | Readonly<{ kind: 'unsupported-generation'; generation: number }>
+  | Readonly<{
+      kind: 'snapshot';
+      rows: readonly unknown[];
+      reserves: readonly unknown[];
+      retirement: HandoffRoutingRetirementHistoryRow | undefined;
+    }>
+  | Readonly<{ kind: 'failed'; error: unknown }>;
+
+export function readHandoffRoutingStoreSnapshot(
+  storage: StoragePort,
+  path: string,
+  generation: number,
+): HandoffRoutingStoreSnapshotRead {
+  try {
+    storage.assertReadableSync(path);
+  } catch (error) {
+    const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return { kind: 'absent' };
+    return { kind: 'failed', error };
+  }
+
+  let database: SqliteDatabasePort | undefined;
+  let transactionOpen = false;
+  try {
+    database = storage.openSqliteDatabaseSync(path, { readOnly: true });
+    database.exec('PRAGMA busy_timeout=0');
+    database.exec('BEGIN');
+    transactionOpen = true;
+    const storedGeneration = (database.prepare('PRAGMA user_version').get() as Readonly<{ user_version: number }>)
+      .user_version;
+    if (storedGeneration !== generation) {
+      database.exec('COMMIT');
+      transactionOpen = false;
+      return { kind: 'unsupported-generation', generation: storedGeneration };
+    }
+    const retirement = readRetirementHistory(database);
+    const rows = database
+      .prepare(
+        `SELECT
+          sequence,
+          generation,
+          event_id,
+          invocation_id,
+          observed_at,
+          record_kind,
+          event_kind,
+          selection_sequence,
+          retirement_cause,
+          terminal_existed,
+          body_json,
+          encoded_bytes
+        FROM handoff_routing_records ORDER BY sequence`,
+      )
+      .all();
+    const reserves = database
+      .prepare(
+        `SELECT
+          invocation_id,
+          event_id,
+          observed_at,
+          length(allocation) AS allocation_bytes
+        FROM handoff_routing_closing_reserve ORDER BY invocation_id`,
+      )
+      .all();
+    database.exec('COMMIT');
+    transactionOpen = false;
+    return { kind: 'snapshot', rows, reserves, retirement };
+  } catch (error) {
+    rollback(database, transactionOpen, false);
+    return { kind: 'failed', error };
+  } finally {
+    close(database);
+  }
+}
+
+function configureDatabase(database: SqliteDatabasePort, schema: HandoffRoutingStatusStoreSchema): void {
+  database.exec('PRAGMA busy_timeout=0');
+  database.exec('PRAGMA journal_mode=WAL');
+  database.exec('PRAGMA synchronous=FULL');
+  database.exec('PRAGMA foreign_keys=ON');
+  const pageSize = Number((database.prepare('PRAGMA page_size').get() as Readonly<{ page_size: number }>).page_size);
+  database.exec(`PRAGMA max_page_count=${Math.floor(schema.maximumBytes / pageSize)}`);
+}
+
+function readRetirementHistory(database: SqliteDatabasePort): HandoffRoutingRetirementHistoryRow | undefined {
+  return database
+    .prepare(
+      `SELECT
+        generation,
+        expired_identity_count,
+        capacity_eviction_count,
+        completed_pair_compaction_count,
+        operator_resolved_count,
+        min_selection_sequence,
+        max_selection_sequence,
+        earliest_selected_at,
+        latest_selected_at
+      FROM handoff_routing_metadata WHERE singleton = 1`,
+    )
+    .get() as HandoffRoutingRetirementHistoryRow | undefined;
+}
+
+function initializeOrValidateDatabase(database: SqliteDatabasePort, schema: HandoffRoutingStatusStoreSchema): void {
+  const generation = (database.prepare('PRAGMA user_version').get() as Readonly<{ user_version: number }>).user_version;
+  if (generation === 0) {
+    const existing = database
+      .prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'")
+      .get() as Readonly<{ count: number }>;
+    if (existing.count !== 0) throw new HandoffRoutingStoreUnsupportedGenerationError();
+    database.exec(schemaSql(schema));
+    database
+      .prepare(
+        `INSERT INTO handoff_routing_metadata (
+          singleton,
+          generation,
+          expired_identity_count,
+          capacity_eviction_count,
+          completed_pair_compaction_count,
+          operator_resolved_count
+        ) VALUES (1, ?, 0, 0, 0, 0)`,
+      )
+      .run(schema.generation);
+    database.exec(`PRAGMA user_version=${schema.generation}`);
+    return;
+  }
+  if (generation !== schema.generation) throw new HandoffRoutingStoreUnsupportedGenerationError();
+  try {
+    const metadata = database.prepare('SELECT generation FROM handoff_routing_metadata WHERE singleton = 1').get() as
+      | Readonly<{ generation: number }>
+      | undefined;
+    if (metadata?.generation !== schema.generation) throw new HandoffRoutingStoreUnreadableError();
+  } catch (error) {
+    if (error instanceof HandoffRoutingStoreUnreadableError) throw error;
+    throw new HandoffRoutingStoreUnreadableError(errorNumber(error, SQLITE_CORRUPT));
+  }
+}
+
+function schemaSql(schema: HandoffRoutingStatusStoreSchema): string {
+  return `
+    CREATE TABLE handoff_routing_metadata (
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+      generation INTEGER NOT NULL CHECK (generation = ${schema.generation}),
+      expired_identity_count INTEGER NOT NULL CHECK (expired_identity_count >= 0),
+      capacity_eviction_count INTEGER NOT NULL CHECK (capacity_eviction_count >= 0),
+      completed_pair_compaction_count INTEGER NOT NULL CHECK (completed_pair_compaction_count >= 0),
+      operator_resolved_count INTEGER NOT NULL CHECK (operator_resolved_count >= 0),
+      min_selection_sequence INTEGER CHECK (min_selection_sequence > 0),
+      max_selection_sequence INTEGER CHECK (max_selection_sequence > 0),
+      earliest_selected_at TEXT,
+      latest_selected_at TEXT,
+      CHECK (
+        capacity_eviction_count + completed_pair_compaction_count + operator_resolved_count =
+          expired_identity_count
+      ),
+      CHECK (
+        (expired_identity_count = 0 AND min_selection_sequence IS NULL AND max_selection_sequence IS NULL AND
+          earliest_selected_at IS NULL AND latest_selected_at IS NULL) OR
+        (expired_identity_count > 0 AND min_selection_sequence IS NOT NULL AND max_selection_sequence IS NOT NULL AND
+          earliest_selected_at IS NOT NULL AND latest_selected_at IS NOT NULL)
+      )
+    ) STRICT;
+
+    CREATE TABLE handoff_routing_records (
+      sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+      generation INTEGER NOT NULL CHECK (generation = ${schema.generation}),
+      event_id TEXT NOT NULL UNIQUE CHECK (length(event_id) BETWEEN 1 AND ${schema.maximumIdentifierLength}),
+      invocation_id TEXT NOT NULL CHECK (length(invocation_id) BETWEEN 1 AND ${schema.maximumIdentifierLength}),
+      observed_at TEXT NOT NULL CHECK (length(observed_at) BETWEEN 1 AND ${schema.maximumObservedAtLength}),
+      record_kind TEXT NOT NULL CHECK (record_kind IN ('selection', 'terminal', 'retirement')),
+      event_kind TEXT NOT NULL CHECK (
+        event_kind IN ('routing-selected', 'execution-failed', 'continuation-finalized', 'retirement-tombstone')
+      ),
+      selection_sequence INTEGER CHECK (selection_sequence > 0),
+      retirement_cause TEXT CHECK (
+        retirement_cause IN ('selection-evicted-at-capacity', 'completed-pair-compaction', 'operator-resolved')
+      ),
+      terminal_existed INTEGER CHECK (terminal_existed IN (0, 1)),
+      body_json TEXT NOT NULL CHECK (json_valid(body_json)),
+      encoded_bytes INTEGER GENERATED ALWAYS AS (length(CAST(body_json AS BLOB))) STORED,
+      completed_pair_stable INTEGER NOT NULL CHECK (completed_pair_stable IN (0, 1)),
+      CHECK (
+        (record_kind = 'selection' AND event_kind = 'routing-selected' AND selection_sequence IS NULL AND
+          retirement_cause IS NULL AND terminal_existed IS NULL) OR
+        (record_kind = 'terminal' AND event_kind IN ('execution-failed', 'continuation-finalized') AND
+          retirement_cause IS NULL AND terminal_existed IS NULL) OR
+        (record_kind = 'retirement' AND event_kind = 'retirement-tombstone' AND selection_sequence IS NOT NULL AND
+          retirement_cause IS NOT NULL AND terminal_existed IS NOT NULL)
+      ),
+      CHECK (json_extract(body_json, '$.generation') = generation),
+      CHECK (json_extract(body_json, '$.sequence') = sequence),
+      CHECK (json_extract(body_json, '$.eventId') = event_id),
+      CHECK (json_extract(body_json, '$.invocationId') = invocation_id),
+      CHECK (json_extract(body_json, '$.observedAt') = observed_at),
+      CHECK (json_extract(body_json, '$.eventKind') = event_kind),
+      CHECK (
+        (record_kind = 'selection' AND json_extract(body_json, '$.phase') = 'selection' AND
+          encoded_bytes <= ${schema.maximumRoutingSelectedBytes}) OR
+        (record_kind = 'terminal' AND json_extract(body_json, '$.phase') = 'terminal' AND
+          ((event_kind = 'execution-failed' AND encoded_bytes <= ${schema.maximumExecutionFailedBytes}) OR
+           (event_kind = 'continuation-finalized' AND
+            encoded_bytes <= ${schema.maximumContinuationFinalizedBytes}))) OR
+        (record_kind = 'retirement' AND json_extract(body_json, '$.phase') = 'retirement' AND
+          json_extract(body_json, '$.selectionSequence') = selection_sequence AND
+          json_extract(body_json, '$.retirementCause') = retirement_cause AND
+          json_extract(body_json, '$.terminalExisted') = terminal_existed AND
+          encoded_bytes <= ${schema.maximumRetirementTombstoneBytes})
+      )
+    ) STRICT;
+
+    CREATE TABLE handoff_routing_closing_reserve (
+      invocation_id TEXT PRIMARY KEY CHECK (length(invocation_id) BETWEEN 1 AND ${schema.maximumIdentifierLength}),
+      event_id TEXT NOT NULL UNIQUE CHECK (length(event_id) BETWEEN 1 AND ${schema.maximumIdentifierLength}),
+      observed_at TEXT NOT NULL CHECK (length(observed_at) BETWEEN 1 AND ${schema.maximumObservedAtLength}),
+      allocation BLOB NOT NULL CHECK (length(allocation) = ${schema.closingRecordBytes})
+    ) STRICT;
+
+    CREATE UNIQUE INDEX handoff_routing_selection_or_retirement_per_invocation
+      ON handoff_routing_records(invocation_id)
+      WHERE record_kind IN ('selection', 'retirement');
+
+    CREATE UNIQUE INDEX handoff_routing_terminal_or_retirement_per_invocation
+      ON handoff_routing_records(invocation_id)
+      WHERE record_kind IN ('terminal', 'retirement');
+
+    CREATE UNIQUE INDEX handoff_routing_selection_or_unretained_terminal_per_invocation
+      ON handoff_routing_records(invocation_id)
+      WHERE record_kind = 'selection' OR (
+        record_kind = 'terminal' AND (
+          json_extract(body_json, '$.selection.kind') = 'without-selection' OR
+          json_extract(body_json, '$.disposition.kind') IN (
+            'terminal-without-retained-selection',
+            'terminal-after-operator-resolution'
+          )
+        )
+      );
+  `;
+}
+
+function rollback(database: SqliteDatabasePort | undefined, transactionOpen: boolean, commitStarted: boolean): void {
+  if (database === undefined || !transactionOpen || commitStarted) return;
+  try {
+    database.exec('ROLLBACK');
+  } catch (rollbackError) {
+    void rollbackError;
+  }
+}
+
+function close(database: SqliteDatabasePort | undefined): void {
+  if (database === undefined) return;
+  try {
+    database.close();
+  } catch (closeError) {
+    void closeError;
+  }
+}
+
+function errorNumber(error: unknown, fallback: number): number {
+  if (typeof error !== 'object' || error === null) return fallback;
+  const candidate = 'errcode' in error ? error.errcode : 'errno' in error ? error.errno : fallback;
+  return typeof candidate === 'number' && Number.isInteger(candidate) ? candidate : fallback;
+}

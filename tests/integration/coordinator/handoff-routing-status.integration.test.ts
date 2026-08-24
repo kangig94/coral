@@ -1,5 +1,5 @@
 import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
@@ -17,11 +17,15 @@ import {
   MAX_LEGAL_ROUTING_SELECTED_TRANSITION,
   MAX_RETIREMENT_TOMBSTONES,
   MAX_UNRESOLVED_INVOCATIONS,
+  publishGenerationCoordinatedHandoffRoutingTransitions,
   publishHandoffRoutingTransitions,
+  readHandoffRoutingStatus,
   type HandoffRoutingTransition,
   type PublicationOutcome,
 } from '#src/coordinator/handoff-routing-status.js';
-import { createRealTimePort } from '#src/infra/time.js';
+import { discardHandoffRoutingStatus } from '#src/cli/routing-status-discard.js';
+import { createRealRuntime } from '#src/runtime/real.js';
+import { acquireGenerationMaintenanceLease } from '#src/store/generation-mutation-coordination.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
 const FORMER_DIRECTORY_LOCK_STALE_MS = 30_000;
@@ -30,7 +34,8 @@ const BENCHMARK_LIFECYCLES = 100;
 const CONCURRENT_WRITERS = 2;
 const BYTE_PRESSURE_COMPLETED_PAIRS = 204;
 const BYTE_PRESSURE_BATCHED_PAIRS = 180;
-const time = createRealTimePort();
+const runtime = createRealRuntime('prod');
+const time = runtime.time;
 const temporaryDirectories: string[] = [];
 const children = new Set<ChildProcessWithoutNullStreams>();
 let workerBundlePath: string;
@@ -146,7 +151,7 @@ function maximumResolution(identity: string, selectionSequence: number): Handoff
 }
 
 async function committed(path: string, transition: HandoffRoutingTransition): Promise<number> {
-  const outcome = await publishHandoffRoutingTransitions(time, path, [transition]);
+  const outcome = await publishHandoffRoutingTransitions(runtime, path, [transition]);
   expect(outcome.kind).toBe('committed');
   if (outcome.kind !== 'committed') throw new Error(`Expected commit, received ${outcome.kind}`);
   return outcome.sequence;
@@ -204,10 +209,12 @@ function databaseCapacity(path: string): Readonly<{ pageCount: number; freeListC
   }
 }
 
-function spawnWriter(mode: string, path: string, identity?: string): Writer {
-  const child = spawn(process.execPath, [workerBundlePath, mode, path, identity ?? 'worker'], {
-    stdio: ['pipe', 'pipe', 'pipe'],
-  });
+function spawnWriter(mode: string, path: string, identity?: string, baseDir?: string): Writer {
+  const child = spawn(
+    process.execPath,
+    [workerBundlePath, mode, path, identity ?? 'worker', ...(baseDir === undefined ? [] : [baseDir])],
+    { stdio: ['pipe', 'pipe', 'pipe'] },
+  );
   children.add(child);
   child.once('exit', () => children.delete(child));
   let stderr = '';
@@ -281,7 +288,7 @@ async function populateMaximumRetainedStore(path: string): Promise<void> {
   const openings = Array.from({ length: MAX_UNRESOLVED_INVOCATIONS + MAX_RETIREMENT_TOMBSTONES }, (_, index) =>
     maximumSelection(`retained-opening-${index}`),
   );
-  const outcome = await publishHandoffRoutingTransitions(time, path, openings);
+  const outcome = await publishHandoffRoutingTransitions(runtime, path, openings);
   expect(outcome.kind).toBe('committed');
 }
 
@@ -410,6 +417,63 @@ afterAll(() => {
 });
 
 describe('handoff routing status transaction durability', () => {
+  it('refuses publication while generation maintenance is held', async () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'coral-handoff-routing-maintenance-'));
+    temporaryDirectories.push(baseDir);
+    const isolatedRuntime = createRealRuntime('prod', { baseDir });
+    const path = join(isolatedRuntime.paths.coral.coordinator.runDir, 'handoff-routing.1.db');
+    const maintenance = await acquireGenerationMaintenanceLease(isolatedRuntime);
+    const writer = spawnWriter('coordinated-publication', path, 'after-maintenance', baseDir);
+    try {
+      expect(JSON.parse(await nextLine(writer))).toEqual({
+        kind: 'not-published',
+        cause: 'generation-maintenance',
+      });
+      expect(existsSync(path)).toBe(false);
+    } finally {
+      maintenance.release();
+    }
+
+    await expect(
+      publishGenerationCoordinatedHandoffRoutingTransitions(isolatedRuntime, path, [selection('after-maintenance', 1)]),
+    ).resolves.toMatchObject({ kind: 'committed' });
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'refuses a stale discard after another process quarantines and recreates the journal',
+    async () => {
+      const baseDir = mkdtempSync(join(tmpdir(), 'coral-handoff-routing-discard-race-'));
+      temporaryDirectories.push(baseDir);
+      const isolatedRuntime = createRealRuntime('prod', { baseDir });
+      const path = join(isolatedRuntime.paths.coral.coordinator.runDir, 'handoff-routing.1.db');
+      mkdirSync(isolatedRuntime.paths.coral.coordinator.runDir, { recursive: true });
+      writeFileSync(path, 'not a sqlite database', { mode: 0o600 });
+
+      const staleDiscard = spawnWriter('stale-discard', path, 'stale', baseDir);
+      expect(await nextLine(staleDiscard)).toBe('discardable-observed');
+
+      const discarded = await discardHandoffRoutingStatus(isolatedRuntime, path);
+      expect(discarded.kind).toBe('discarded');
+      if (discarded.kind !== 'discarded') throw new Error(`Expected discard, received ${discarded.kind}`);
+      expect(existsSync(discarded.quarantinePath)).toBe(true);
+      expect(existsSync(path)).toBe(false);
+
+      await expect(
+        publishGenerationCoordinatedHandoffRoutingTransitions(isolatedRuntime, path, [selection('recreated', 1)]),
+      ).resolves.toMatchObject({ kind: 'committed' });
+      resumeWriter(staleDiscard);
+
+      expect(JSON.parse(await nextLine(staleDiscard))).toMatchObject({
+        kind: 'refused',
+        status: { kind: 'current' },
+      });
+      expect(readHandoffRoutingStatus(isolatedRuntime, path)).toMatchObject({
+        kind: 'current',
+        statuses: [{ selection: { invocationId: 'invocation-recreated' } }],
+      });
+      expect(existsSync(discarded.quarantinePath)).toBe(true);
+    },
+  );
   it('reserves byte capacity for selection admission and retained-opening closure', async () => {
     const path = databasePath();
     const opening = maximumSelection('opening');
@@ -419,7 +483,7 @@ describe('handoff routing status transaction durability', () => {
       return [maximumSelection(identity), maximumTerminal(identity, selectionSequence)];
     }).flat();
     await committed(path, opening);
-    const fillOutcome = await publishHandoffRoutingTransitions(time, path, fill);
+    const fillOutcome = await publishHandoffRoutingTransitions(runtime, path, fill);
     expect(fillOutcome).toEqual({ kind: 'committed', sequence: expect.any(Number) });
     for (let index = BYTE_PRESSURE_BATCHED_PAIRS; index < BYTE_PRESSURE_COMPLETED_PAIRS; index += 1) {
       const identity = `pair-${index}`;
@@ -427,11 +491,11 @@ describe('handoff routing status transaction durability', () => {
       await committed(path, maximumTerminal(identity, selected));
     }
 
-    const admitted = await publishHandoffRoutingTransitions(time, path, [maximumSelection('admitted')]);
-    const closedOpening = await publishHandoffRoutingTransitions(time, path, [maximumTerminal('opening', 1)]);
+    const admitted = await publishHandoffRoutingTransitions(runtime, path, [maximumSelection('admitted')]);
+    const closedOpening = await publishHandoffRoutingTransitions(runtime, path, [maximumTerminal('opening', 1)]);
     const closedAdmission =
       admitted.kind === 'committed'
-        ? await publishHandoffRoutingTransitions(time, path, [maximumTerminal('admitted', admitted.sequence)])
+        ? await publishHandoffRoutingTransitions(runtime, path, [maximumTerminal('admitted', admitted.sequence)])
         : undefined;
 
     expect({ admitted, closedOpening, closedAdmission }).toEqual({
@@ -445,16 +509,16 @@ describe('handoff routing status transaction durability', () => {
     const path = databasePath();
     const opening = await committed(path, maximumSelection('gap-opening'));
     const gapHistory = Array.from({ length: 376 }, (_, index) => maximumGapTerminal(`only-${index}`));
-    await expect(publishHandoffRoutingTransitions(time, path, gapHistory)).resolves.toEqual({
+    await expect(publishHandoffRoutingTransitions(runtime, path, gapHistory)).resolves.toEqual({
       kind: 'committed',
       sequence: expect.any(Number),
     });
     expect(retainedRecordCounts(path).completedPairs).toBeLessThanOrEqual(MAX_COMPLETED_HANDOFF_ROUTING_PAIRS);
 
     await expect(
-      publishHandoffRoutingTransitions(time, path, [maximumTerminal('gap-opening', opening)]),
+      publishHandoffRoutingTransitions(runtime, path, [maximumTerminal('gap-opening', opening)]),
     ).resolves.toEqual({ kind: 'committed', sequence: expect.any(Number) });
-    await expect(publishHandoffRoutingTransitions(time, path, [maximumSelection('after-gaps')])).resolves.toEqual({
+    await expect(publishHandoffRoutingTransitions(runtime, path, [maximumSelection('after-gaps')])).resolves.toEqual({
       kind: 'committed',
       sequence: expect.any(Number),
     });
@@ -486,7 +550,7 @@ describe('handoff routing status transaction durability', () => {
     expect(storeSnapshot(path).invocations).toContain(maximumIdentifier('iresolved-under-pressure'));
 
     await expect(
-      publishHandoffRoutingTransitions(time, path, [maximumTerminal('resolved-under-pressure', selected)]),
+      publishHandoffRoutingTransitions(runtime, path, [maximumTerminal('resolved-under-pressure', selected)]),
     ).resolves.toEqual({ kind: 'committed', sequence: expect.any(Number) });
     expect(retainedRecordCounts(path).completedPairs).toBeLessThan(69);
   });
@@ -497,14 +561,14 @@ describe('handoff routing status transaction durability', () => {
       const identity = `tombstone-only-${index}`;
       return [maximumSelection(identity), maximumResolution(identity, index * 2 + 1)];
     }).flat();
-    await expect(publishHandoffRoutingTransitions(time, path, tombstoneHistory)).resolves.toEqual({
+    await expect(publishHandoffRoutingTransitions(runtime, path, tombstoneHistory)).resolves.toEqual({
       kind: 'committed',
       sequence: expect.any(Number),
     });
 
-    await expect(publishHandoffRoutingTransitions(time, path, [maximumSelection('after-tombstones')])).resolves.toEqual(
-      { kind: 'committed', sequence: expect.any(Number) },
-    );
+    await expect(
+      publishHandoffRoutingTransitions(runtime, path, [maximumSelection('after-tombstones')]),
+    ).resolves.toEqual({ kind: 'committed', sequence: expect.any(Number) });
     expect(retainedRecordCounts(path).tombstones).toBeLessThanOrEqual(MAX_RETIREMENT_TOMBSTONES);
   });
 
@@ -581,7 +645,7 @@ describe('handoff routing status transaction durability', () => {
     },
   );
 
-  it.skipIf(process.platform === 'win32')(
+  it.skipIf(process.platform === 'win32' || process.env.CORAL_TEST_CAPACITY !== '1')(
     'commits maximum-retained-store lifecycles and reports sequential and concurrent timings',
     async () => {
       const path = databasePath();

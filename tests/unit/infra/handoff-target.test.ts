@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
 import {
   createForeignTargetValidator,
+  inspectValidatedHandoffTarget,
   withValidatedHandoffTarget,
   type ValidatedHandoffTarget,
 } from '#src/infra/handoff-target.js';
@@ -55,6 +56,23 @@ describe('handoff-target', () => {
     expect(execution.bundleDir).toBe(bundleDir);
     expect(execution.manifest).toEqual(manifest);
     execution.assertExecutable();
+  });
+
+  it('should inspect a bounded target summary without consuming the execution authority', () => {
+    const result = createForeignTargetValidator()(createBundle(), manifest);
+    expect(result.kind).toBe('validated');
+    if (result.kind !== 'validated') return;
+
+    expect(inspectValidatedHandoffTarget(result.target)).toEqual({
+      build: {
+        version: manifest.version,
+        buildSetId: manifest.buildSetId,
+        bundleHash: manifest.bundleHash,
+        flavor: manifest.flavor,
+      },
+    });
+    expect(inspectValidatedHandoffTarget(result.target)).toEqual(inspectValidatedHandoffTarget(result.target));
+    expect(() => withValidatedHandoffTarget(result.target)).not.toThrow();
   });
 
   it.each([
@@ -165,11 +183,15 @@ describe('handoff-target', () => {
 
     const inherited = Object.create(result.target) as ValidatedHandoffTarget;
     const cloned = structuredClone(result.target);
+    expect(() => inspectValidatedHandoffTarget({} as ValidatedHandoffTarget)).toThrow('was not produced');
+    expect(() => inspectValidatedHandoffTarget(inherited)).toThrow('was not produced');
+    expect(() => inspectValidatedHandoffTarget(cloned)).toThrow('was not produced');
     expect(() => withValidatedHandoffTarget({} as ValidatedHandoffTarget)).toThrow('was not produced');
     expect(() => withValidatedHandoffTarget(inherited)).toThrow('was not produced');
     expect(() => withValidatedHandoffTarget(cloned)).toThrow('was not produced');
 
     withValidatedHandoffTarget(result.target);
+    expect(() => inspectValidatedHandoffTarget(result.target)).toThrow('was not produced');
     expect(() => withValidatedHandoffTarget(result.target)).toThrow('was not produced');
   });
 });

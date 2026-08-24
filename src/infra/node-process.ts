@@ -97,6 +97,20 @@ function readLinuxBootId(): string | null {
   }
 }
 
+export function parseLinuxProcessIncarnation(bootIdInput: string, stat: string): ProcessIncarnation | null {
+  const bootId = bootIdInput.trim();
+  if (bootId.length === 0) return null;
+  const closeParen = stat.lastIndexOf(')');
+  if (closeParen === -1) return null;
+  const fields = stat
+    .slice(closeParen + 2)
+    .trim()
+    .split(/\s+/);
+  const startTicks = fields[19];
+  if (startTicks === undefined || !/^\d+$/.test(startTicks)) return null;
+  return `linux:${bootId}:${startTicks}` as ProcessIncarnation;
+}
+
 function probeLinuxProcessIncarnation(pid: number): ProcessIncarnation | null {
   const bootId = readLinuxBootId();
   if (bootId === null) {
@@ -105,23 +119,7 @@ function probeLinuxProcessIncarnation(pid: number): ProcessIncarnation | null {
 
   try {
     const stat = readFileSync(`/proc/${pid}/stat`, 'utf-8');
-    // The comm field is parenthesised and may itself contain spaces and parentheses, so fields are counted
-    // from the last ')'. Field 22 (1-based) is starttime, the first field after that point being index 0.
-    const closeParen = stat.lastIndexOf(')');
-    if (closeParen === -1) {
-      return null;
-    }
-
-    const fields = stat
-      .slice(closeParen + 2)
-      .trim()
-      .split(/\s+/);
-    const startTicks = fields[19];
-    if (startTicks === undefined || !/^\d+$/.test(startTicks)) {
-      return null;
-    }
-
-    return `linux:${bootId}:${startTicks}` as ProcessIncarnation;
+    return parseLinuxProcessIncarnation(bootId, stat);
   } catch {
     return null;
   }

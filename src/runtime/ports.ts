@@ -1,7 +1,15 @@
 import type { ProcessIncarnation, ProcessLiveness } from '../infra/node-process.js';
 import type { BuildFlavor } from '../infra/build-flavor.js';
 import type { CoralPaths } from '../infra/path/index.js';
-import type { ChildProcessLike, EnvPort, ExecResult, StoragePort, TimePort } from '../infra/port-types.js';
+import type {
+  ChildProcessLike,
+  EnvPort,
+  ExecResult,
+  ProcessIdentityObservation,
+  StoragePort,
+  TimePort,
+} from '../infra/port-types.js';
+import type { RecordedProcessIdentity } from '../infra/process-containment.js';
 import type { DurableCliRuntimeRecord, DurableProcessExit } from './durable-runtime.js';
 
 export interface RuntimePaths {
@@ -90,6 +98,10 @@ export interface ProcessPort {
   kill(pid: number, signal: NodeJS.Signals | 0): boolean;
   observeLiveness(pid: number): ProcessLiveness;
   readProcessIncarnation(pid: number, platform: NodeJS.Platform): ProcessIncarnation | null;
+  observeProcessIdentities(
+    owners: readonly RecordedProcessIdentity[],
+    deadlineMs: number,
+  ): Promise<readonly ProcessIdentityObservation[]>;
   durable: DurableExecutionTransport;
 }
 

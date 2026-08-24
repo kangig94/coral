@@ -1,14 +1,32 @@
 import { InvalidArgumentError, type Command } from 'commander';
 
 import {
+  HandoffRunError,
+  handoffPublicationIncidentExitContribution,
   liveHandoffResultObligation,
+  projectHandoffRunResult,
   runHandoff,
-  type LiveHandoffContinuationResult,
+  type LiveHandoffResult,
+  type NonEmptyReadonlyArray,
 } from '../../coordinator/handoff-runner.js';
+import {
+  parseHandoffRoutingInvocationId,
+  type HandoffRepairOperation,
+} from '../../coordinator/handoff-repair-operation.js';
+import {
+  HANDOFF_ROUTING_STATUS_GENERATION,
+  handoffRoutingStatusExitContribution,
+  readHandoffRoutingStatusWithOwnerObservations,
+  resolveHandoffRoutingStatus,
+  type HandoffRoutingResolveRequest,
+  type HandoffRoutingResolveResult,
+  type HandoffRoutingStatusReadResult,
+} from '../../coordinator/handoff-routing-status.js';
 import { resolveBuildFlavor, type BuildFlavor } from '../../infra/build-flavor.js';
 import { readBuildFlavor } from '../../infra/bundle-manifest.js';
 import { assertNever } from '../../infra/error-format.js';
 import { BackendUnreachableError } from '../../infra/http-errors.js';
+import { handoffRoutingStatusPathForRunDir } from '../../infra/path/index.js';
 import { isSafeKbCommitId } from '../../kb/commit-quarantine.js';
 import { RecoveryQuarantineStore, type RecoveryQuarantineEntry } from '../../recovery/quarantine.js';
 import type { RecoveryQuarantineClearRequest, RecoveryQuarantineClearResult } from '../../recovery/source-registry.js';
@@ -47,9 +65,10 @@ import { decodeHostRef, encodeHostRef } from '../../providers/host-ref-codec.js'
 import { getPluginRoot } from '../dispatch.js';
 import { emitError } from '../emit.js';
 import { errorCodeToExit } from '../errors.js';
+import { renderHandoffNotice, renderHandoffPublicationIncidents } from '../handoff-notice.js';
 import {
   formatBackendStatus,
-  formatLiveHandoffResult,
+  formatHandoffRoutingResolveResult,
   formatRecoveryQuarantineClear,
   formatRecoveryQuarantineList,
   formatShutdown,
@@ -57,6 +76,7 @@ import {
   RECOVERY_REVISION_UNTIL_CLEARED,
 } from '../format/backend.js';
 import { formatStoreResetList, formatStoreResetReport } from '../format/store-reset.js';
+import { discardHandoffRoutingStatus, type HandoffRoutingStatusDiscardResult } from '../routing-status-discard.js';
 
 /**
  * What each `backend shutdown` refusal means to a script, as an exit code.
@@ -117,7 +137,55 @@ export const BACKEND_STATUS_EXIT_CODES: Readonly<Record<BackendStatusFull['statu
   unreachable: 75,
   no_record_socket_present: 75,
 };
-import { renderHandoffNotice } from '../handoff-notice.js';
+
+type HandoffRoutingResolveKindWithoutPublication = Exclude<HandoffRoutingResolveResult['kind'], 'not-published'>;
+type HandoffRoutingNotPublishedCause = Extract<
+  Extract<HandoffRoutingResolveResult, { kind: 'not-published' }>['outcome'],
+  { kind: 'not-published' }
+>['cause'];
+
+export const HANDOFF_ROUTING_RESOLVE_EXIT_CODES: Readonly<
+  Record<HandoffRoutingResolveKindWithoutPublication, 0 | 1 | 75>
+> = {
+  resolved: 0,
+  'already-terminal': 0,
+  stale: 1,
+  'live-owner': 1,
+  'unauthorized-unobservable': 75,
+  'status-unavailable': 75,
+};
+
+const HANDOFF_ROUTING_NOT_PUBLISHED_EXIT_CODES: Readonly<Record<HandoffRoutingNotPublishedCause, 70 | 75>> = {
+  contended: 75,
+  'generation-maintenance': 75,
+  'capacity-exhausted': 75,
+  'invalid-record': 70,
+  'rejected-transition': 75,
+  'coordination-unavailable': 75,
+};
+
+function handoffRoutingResolveExitCode(result: HandoffRoutingResolveResult): 0 | 1 | 70 | 75 {
+  if (result.kind !== 'not-published') return HANDOFF_ROUTING_RESOLVE_EXIT_CODES[result.kind];
+  return result.outcome.kind === 'undeterminable' ? 75 : HANDOFF_ROUTING_NOT_PUBLISHED_EXIT_CODES[result.outcome.cause];
+}
+
+type BackendStatusLocalExitContribution = 0 | 70 | 75;
+
+const BACKEND_STATUS_LOCAL_EXIT_PRECEDENCE: Readonly<Record<BackendStatusLocalExitContribution, number>> = {
+  0: 0,
+  75: 1,
+  70: 2,
+};
+
+function combineBackendStatusLocalExitContributions(
+  contributions: NonEmptyReadonlyArray<BackendStatusLocalExitContribution>,
+): BackendStatusLocalExitContribution {
+  return contributions.reduce((selected, candidate) =>
+    BACKEND_STATUS_LOCAL_EXIT_PRECEDENCE[candidate] > BACKEND_STATUS_LOCAL_EXIT_PRECEDENCE[selected]
+      ? candidate
+      : selected,
+  );
+}
 import { quarantineKbCommitLocal } from '../kb-commit-quarantine.js';
 import type { StoreResetTarget } from '../../store/operator-store-reset.js';
 import {
@@ -148,7 +216,13 @@ export interface KbCommitCommandOperations {
 export interface BackendStatusCommandOperations {
   inspectReadiness(): GenerationReadiness;
   getStatus(): Promise<BackendStatusFull>;
-  getLiveHandoffResult(): LiveHandoffContinuationResult | null;
+  getLiveHandoffResult(): LiveHandoffResult | null;
+  getRoutingStatus(): Promise<HandoffRoutingStatusReadResult>;
+}
+
+export interface HandoffRoutingStatusCommandOperations {
+  resolve(request: HandoffRoutingResolveRequest): Promise<HandoffRoutingResolveResult>;
+  discard(): HandoffRoutingStatusDiscardResult | Promise<HandoffRoutingStatusDiscardResult>;
 }
 
 export interface RecoveryQuarantineCommandOperations {
@@ -166,6 +240,7 @@ export type BackendCommandOperations = Readonly<{
   storeReset?: StoreResetCommandOperations;
   kbCommit?: KbCommitCommandOperations;
   backendStatus?: BackendStatusCommandOperations;
+  routingStatus?: HandoffRoutingStatusCommandOperations;
   recoveryQuarantine?: RecoveryQuarantineCommandOperations;
   providerHosts?: ProviderHostCommandOperations;
 }>;
@@ -173,12 +248,51 @@ export type BackendCommandOperations = Readonly<{
 export function createBackendStatusCommandOperations(
   getLiveHandoffResult: BackendStatusCommandOperations['getLiveHandoffResult'] = () => null,
 ): BackendStatusCommandOperations {
+  const runtime = createRealRuntime(resolveBuildFlavor(process.env));
+  const routingStatusPath = handoffRoutingStatusPathForRunDir(
+    runtime.paths.coral.coordinator.runDir,
+    HANDOFF_ROUTING_STATUS_GENERATION,
+  );
   return {
-    inspectReadiness: () =>
-      inspectGenerationReadiness(createRealRuntime(resolveBuildFlavor(process.env)), currentCoralStoreFormat()),
+    inspectReadiness: () => inspectGenerationReadiness(runtime, currentCoralStoreFormat()),
     getStatus: () => getBackendStatusFull(getPluginRoot()),
     getLiveHandoffResult,
+    getRoutingStatus: () => readHandoffRoutingStatusWithOwnerObservations(runtime, routingStatusPath),
   };
+}
+
+export function createHandoffRoutingStatusCommandOperations(): HandoffRoutingStatusCommandOperations {
+  const runtime = createRealRuntime(resolveBuildFlavor(process.env));
+  const path = handoffRoutingStatusPathForRunDir(
+    runtime.paths.coral.coordinator.runDir,
+    HANDOFF_ROUTING_STATUS_GENERATION,
+  );
+  return {
+    resolve: (request) => resolveHandoffRoutingStatus(runtime, path, request),
+    discard: () => discardHandoffRoutingStatus(runtime, path),
+  };
+}
+
+function formatRoutingStatusDiscardRefusal(
+  status: Extract<HandoffRoutingStatusDiscardResult, { kind: 'refused' }>,
+): string {
+  switch (status.status.kind) {
+    case 'absent':
+      return 'Refusing to discard routing status: no journal exists at this address.\nNext step: no action is needed.';
+    case 'current':
+      return 'Refusing to discard routing status: the journal is current.\nNext step: run coral-cli backend status and follow whatever successor it shows.';
+    case 'undeterminable':
+      return `Refusing to discard routing status: the journal read was undeterminable (${status.status.cause}, errcode ${status.status.errcode}).\nNext step: retry coral-cli backend status without discarding and repair the reported storage condition if it persists; an ambiguous read cannot authorize quarantine.`;
+    default:
+      return assertNever(status.status);
+  }
+}
+
+function commanderInvocationId(value: string, previous: string | undefined): string {
+  if (previous !== undefined) throw new InvalidArgumentError('Option --invocation may only be specified once.');
+  const invocationId = parseHandoffRoutingInvocationId(value);
+  if (invocationId === null) throw new InvalidArgumentError('Invocation must be a canonical lowercase UUID.');
+  return invocationId;
 }
 
 type RecoveryQuarantineReadRuntime = Pick<Runtime, 'flavor' | 'paths' | 'storage'>;
@@ -255,6 +369,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
       quarantine: quarantineKbCommitLocal,
     },
     backendStatus = createBackendStatusCommandOperations(),
+    routingStatus = createHandoffRoutingStatusCommandOperations(),
     recoveryQuarantine = createRecoveryQuarantineCommandOperations(),
     providerHosts = createProviderHostCommandOperations(),
   } = operations;
@@ -274,22 +389,76 @@ export function registerBackendCommands(program: Command, operations: BackendCom
         default:
           assertNever(readiness);
       }
-      const status = await backendStatus.getStatus();
+      const [status, routingStatusRead] = await Promise.all([
+        backendStatus.getStatus(),
+        backendStatus.getRoutingStatus(),
+      ]);
       const liveHandoffResult = backendStatus.getLiveHandoffResult();
       const liveHandoffObligation = liveHandoffResultObligation(liveHandoffResult);
-      process.stdout.write(formatBackendStatus(status) + '\n');
-      if (liveHandoffObligation.severity === 'warning') {
-        const liveHandoffLine = formatLiveHandoffResult(liveHandoffResult);
-        if (liveHandoffLine !== null) {
-          process.stdout.write(`${liveHandoffLine}\n`);
-        }
-      }
-      process.exitCode =
-        BACKEND_STATUS_EXIT_CODES[status.status] === 75 || liveHandoffObligation.exitContribution === 75 ? 75 : 0;
+      process.stdout.write(`${formatBackendStatus(status, routingStatusRead, liveHandoffResult)}\n`);
+      const localExitContributions: NonEmptyReadonlyArray<BackendStatusLocalExitContribution> = [
+        BACKEND_STATUS_EXIT_CODES[status.status],
+        liveHandoffObligation.exitContribution,
+        handoffRoutingStatusExitContribution(routingStatusRead),
+        ...(liveHandoffResult?.publicationIncidents.map(handoffPublicationIncidentExitContribution) ?? []),
+      ];
+      process.exitCode = combineBackendStatusLocalExitContributions(localExitContributions);
     } catch (error) {
       emitError(error);
     }
   });
+
+  const routingStatusCommand = backend.command('routing-status').description('Inspect and repair routing status');
+  const resolveRoutingStatusCommand = routingStatusCommand
+    .command('resolve')
+    .description('Resolve one retained routing invocation after its owner is no longer authoritative')
+    .requiredOption('--invocation <id>', 'Canonical invocation ID shown by backend status', commanderInvocationId)
+    .option(
+      '--force-unobservable',
+      'Default: false; requires external owner verification and cannot override deadline-expired',
+    );
+  let forceUnobservableSeen = false;
+  resolveRoutingStatusCommand.on('option:force-unobservable', () => {
+    if (forceUnobservableSeen) {
+      throw new InvalidArgumentError('Option --force-unobservable may only be specified once.');
+    }
+    forceUnobservableSeen = true;
+  });
+  resolveRoutingStatusCommand.action(async (options: { invocation: string; forceUnobservable?: boolean }) => {
+    try {
+      const request: HandoffRepairOperation = {
+        kind: 'routing-status-resolve',
+        invocationId: options.invocation,
+        forceUnobservable: options.forceUnobservable ?? false,
+      };
+      const result = await routingStatus.resolve(request);
+      const rendered = formatHandoffRoutingResolveResult(result);
+      const exitCode = handoffRoutingResolveExitCode(result);
+      (exitCode === 0 ? process.stdout : process.stderr).write(`${rendered}\n`);
+      process.exitCode = exitCode;
+    } catch (error: unknown) {
+      emitError(error);
+    }
+  });
+  routingStatusCommand
+    .command('discard')
+    .description(
+      'Quarantine derived routing history so the next publication can replace it; Journal and Corpus authority are unchanged',
+    )
+    .action(async () => {
+      try {
+        const result = await routingStatus.discard();
+        if (result.kind === 'refused') {
+          process.stderr.write(`${formatRoutingStatusDiscardRefusal(result)}\n`);
+          process.exitCode = 75;
+          return;
+        }
+        process.stdout.write(`Quarantined routing status from ${result.artifactPath} at ${result.quarantinePath}.\n`);
+        process.exitCode = 0;
+      } catch (error: unknown) {
+        emitError(error);
+      }
+    });
 
   const shutdownCommand = backend.command('shutdown');
   shutdownCommand.description('Gracefully shut down backend daemon').action(async () => {
@@ -427,10 +596,16 @@ export function registerBackendCommands(program: Command, operations: BackendCom
         if (result.kind === 'handoff') {
           // The selection decision precedes every destructive step. Replaying the original argv lets the
           // validated owner perform the requested reset without asking the operator to run another command.
-          const continuation = await runHandoff(
+          const handoffResult = await runHandoff(
             { kind: 'cli-invocation', argv: ['node', 'coral-cli', ...program.args] },
-            { pluginRoot: getPluginRoot(), activeSelectionTarget: result.target },
+            {
+              pluginRoot: getPluginRoot(),
+              activeSelectionTarget: result.target,
+              onSelectionPublicationIncident: (incident) => renderHandoffPublicationIncidents([incident]),
+            },
           );
+          const { continuation, publicationIncidents } = projectHandoffRunResult(handoffResult);
+          renderHandoffPublicationIncidents(publicationIncidents.filter((incident) => incident.phase === 'terminal'));
           if (continuation.kind === 'run-current') {
             process.stderr.write(
               'This Coral process could not finish draining stdout, so store-reset delegation was abandoned before any destructive step. Nothing was changed. Retry the command.\n',
@@ -464,6 +639,11 @@ export function registerBackendCommands(program: Command, operations: BackendCom
           `${action} store-reset incident '${result.incident.incidentId}' and initialized ${result.target} ${result.flavor} store at ${result.storeDbPath}.\n`,
         );
       } catch (error: unknown) {
+        if (error instanceof HandoffRunError) {
+          renderHandoffPublicationIncidents(error.incidents.filter((incident) => incident.phase === 'terminal'));
+          emitError(error.originalError);
+          return;
+        }
         emitError(error);
       }
     });

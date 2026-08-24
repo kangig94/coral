@@ -6,8 +6,20 @@ import {
   type BackendStatusCommandOperations,
   type StoreResetCommandOperations,
 } from '#src/cli/commands/backend.js';
-import { formatBackendStatus, formatHandoffContinuationReason } from '#src/cli/format/backend.js';
-import type { HandoffContinuationReason } from '#src/coordinator/handoff-runner.js';
+import {
+  formatBackendStatus,
+  formatHandoffContinuationReason,
+  formatHandoffRoutingStatus,
+} from '#src/cli/format/backend.js';
+import { formatHandoffPublicationIncident } from '#src/cli/handoff-notice.js';
+import type {
+  HandoffContinuationReason,
+  HandoffPublicationIncident,
+  LiveHandoffContinuationResult,
+  LiveHandoffResult,
+} from '#src/coordinator/handoff-runner.js';
+import type { HandoffRoutingStatusReadResult } from '#src/coordinator/handoff-routing-status.js';
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { createRecoveryComponent } from '#src/coordinator/runtime-components/recovery-component.js';
 import { createRuntimeComponentRegistry } from '#src/coordinator/runtime-components/registry.js';
 import { RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
@@ -19,6 +31,13 @@ import type { HealthSnapshot } from '#src/transport/server-ports.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 
 const TEST_TIME = { now: () => Date.parse('2026-08-03T00:00:00.000Z') };
+
+function liveHandoffResult(
+  continuation: LiveHandoffContinuationResult,
+  publicationIncidents: readonly HandoffPublicationIncident[] = [],
+): LiveHandoffResult {
+  return { continuation, publicationIncidents };
+}
 
 const storeReset: StoreResetCommandOperations = {
   list: () => ({ incidents: [] }),
@@ -52,6 +71,27 @@ afterEach(() => {
 });
 
 describe('backend status generation readiness', () => {
+  it.each([
+    [{ kind: 'unreadable', reason: 'invalid-json' } as const, 'Routing status is unreadable (invalid-json).'],
+    [
+      { kind: 'unsupported-generation', generation: 2 } as const,
+      'Routing status generation 2 is not supported by this build.',
+    ],
+  ])('names discard as the successor for a durable routing-status hold', (status, summary) => {
+    expect(formatHandoffRoutingStatus(status)).toBe(
+      `${summary}\nNext step: run coral-cli backend routing-status discard.`,
+    );
+  });
+
+  it('refuses discard after an undeterminable read and names a non-destructive successor', () => {
+    expect(formatHandoffRoutingStatus({ kind: 'undeterminable', cause: 'io-failed', errcode: 5 })).toBe(
+      [
+        'Routing status could not be read (io-failed, errcode 5).',
+        'Next step: retry coral-cli backend status without discarding. If this persists, repair the reported storage condition; discard is not permitted because this read did not establish that the journal is unreadable or unsupported.',
+      ].join('\n'),
+    );
+  });
+
   it('prints the ignored-legacy-generation notice directly in the CLI', async () => {
     const status: BackendStatusCommandOperations = {
       inspectReadiness: () => ({
@@ -62,6 +102,7 @@ describe('backend status generation readiness', () => {
       }),
       getStatus: async () => ({ status: 'not_running' }),
       getLiveHandoffResult: () => null,
+      getRoutingStatus: async () => ({ kind: 'absent' }),
     };
     const program = new Command();
     program.exitOverride();
@@ -83,6 +124,7 @@ describe('backend status generation readiness', () => {
         phase: 'startup_failed',
       }),
       getLiveHandoffResult: () => null,
+      getRoutingStatus: async () => ({ kind: 'absent' }),
     };
     const program = new Command();
     program.exitOverride();
@@ -107,28 +149,30 @@ describe('backend status live handoff disposition', () => {
     const status: BackendStatusCommandOperations = {
       inspectReadiness: () => ({ kind: 'no-legacy' }),
       getStatus: async () => ({ status: 'not_running' }),
-      getLiveHandoffResult: () => ({
-        kind: 'run-current',
-        reason: {
-          kind: 'routing',
-          basis: {
-            kind: 'invoking-build-not-older',
-            comparison: 'same-version',
-            invoking: {
-              version: '0.10.9',
-              buildSetId: '123e4567-e89b-42d3-a456-426614174000',
-              bundleHash: 'invoking-bundle',
-              flavor: 'prod',
-            },
-            incumbent: {
-              version: '0.10.9',
-              buildSetId: '223e4567-e89b-42d3-a456-426614174000',
-              bundleHash: 'incumbent-bundle',
-              flavor: 'prod',
+      getLiveHandoffResult: () =>
+        liveHandoffResult({
+          kind: 'run-current',
+          reason: {
+            kind: 'routing',
+            basis: {
+              kind: 'invoking-build-not-older',
+              comparison: 'same-version',
+              invoking: {
+                version: '0.10.9',
+                buildSetId: '123e4567-e89b-42d3-a456-426614174000',
+                bundleHash: 'invoking-bundle',
+                flavor: 'prod',
+              },
+              incumbent: {
+                version: '0.10.9',
+                buildSetId: '223e4567-e89b-42d3-a456-426614174000',
+                bundleHash: 'incumbent-bundle',
+                flavor: 'prod',
+              },
             },
           },
-        },
-      }),
+        }),
+      getRoutingStatus: async () => ({ kind: 'absent' }),
     };
     const program = new Command();
     program.exitOverride();
@@ -151,16 +195,18 @@ describe('backend status live handoff disposition', () => {
     const status: BackendStatusCommandOperations = {
       inspectReadiness: () => ({ kind: 'no-legacy' }),
       getStatus: async () => ({ status: 'not_running' }),
-      getLiveHandoffResult: () => ({
-        kind: 'run-current',
-        reason: {
-          kind: 'routing',
-          basis: {
-            kind: 'same-build-set',
-            buildSetId: '123e4567-e89b-42d3-a456-426614174000',
+      getLiveHandoffResult: () =>
+        liveHandoffResult({
+          kind: 'run-current',
+          reason: {
+            kind: 'routing',
+            basis: {
+              kind: 'same-build-set',
+              buildSetId: '123e4567-e89b-42d3-a456-426614174000',
+            },
           },
-        },
-      }),
+        }),
+      getRoutingStatus: async () => ({ kind: 'absent' }),
     };
     const program = new Command();
     program.exitOverride();
@@ -172,6 +218,347 @@ describe('backend status live handoff disposition', () => {
       'Backend not running. Any coral-cli mutating command (or a Claude Code session start) relaunches it.\n',
     );
     expect(process.exitCode).toBe(0);
+  });
+
+  it('renders the live-incumbent newer-build line exactly', async () => {
+    const status: BackendStatusCommandOperations = {
+      inspectReadiness: () => ({ kind: 'no-legacy' }),
+      getStatus: async () => ({ status: 'not_running' }),
+      getLiveHandoffResult: () =>
+        liveHandoffResult({
+          kind: 'run-current',
+          reason: {
+            kind: 'routing',
+            basis: {
+              kind: 'invoking-build-not-older',
+              comparison: 'newer-version',
+              invoking: {
+                version: '0.10.8',
+                buildSetId: '123e4567-e89b-42d3-a456-426614174000',
+                bundleHash: 'invoking-bundle',
+                flavor: 'prod',
+              },
+              incumbent: {
+                version: '0.10.6',
+                buildSetId: '223e4567-e89b-42d3-a456-426614174000',
+                bundleHash: 'incumbent-bundle',
+                flavor: 'prod',
+              },
+            },
+          },
+        }),
+      getRoutingStatus: async () => ({ kind: 'absent' }),
+    };
+    const program = new Command();
+    program.exitOverride();
+    registerBackendCommands(program, { storeReset, backendStatus: status });
+
+    await program.parseAsync(['node', 'coral-cli', 'backend', 'status']);
+
+    expect(stdout).toContain(
+      'Handoff: continuing current build — invoking build 0.10.8 is newer than incumbent 0.10.6.',
+    );
+  });
+});
+
+describe('backend status local exit combination', () => {
+  it('renders the invalid-record validation category on the publication-incident surface', () => {
+    expect(
+      formatHandoffPublicationIncident({
+        phase: 'selection',
+        kind: 'not-published',
+        cause: 'invalid-record',
+        validation: { kind: 'schema-violation' },
+      }),
+    ).toContain('invalid-record, schema-violation');
+  });
+
+  const cases = [
+    { daemonContribution: 0, liveContribution: 0, routingContribution: 0, publicationContribution: 0, expected: 0 },
+    { daemonContribution: 75, liveContribution: 0, routingContribution: 0, publicationContribution: 0, expected: 75 },
+    { daemonContribution: 0, liveContribution: 75, routingContribution: 0, publicationContribution: 0, expected: 75 },
+    { daemonContribution: 0, liveContribution: 0, routingContribution: 75, publicationContribution: 0, expected: 75 },
+    { daemonContribution: 0, liveContribution: 0, routingContribution: 0, publicationContribution: 75, expected: 75 },
+    { daemonContribution: 0, liveContribution: 0, routingContribution: 0, publicationContribution: 70, expected: 70 },
+    { daemonContribution: 75, liveContribution: 0, routingContribution: 0, publicationContribution: 70, expected: 70 },
+  ] as const;
+
+  it.each(cases)(
+    'combines daemon=$daemonContribution live=$liveContribution routing=$routingContribution publication=$publicationContribution as $expected',
+    async ({ daemonContribution, liveContribution, routingContribution, publicationContribution, expected }) => {
+      const continuation: LiveHandoffContinuationResult =
+        liveContribution === 75
+          ? { kind: 'run-current', reason: { kind: 'handoff-abandoned', reason: 'stdout-drain-incomplete' } }
+          : { kind: 'run-current', reason: { kind: 'routing', basis: { kind: 'incumbent-absent' } } };
+      const live =
+        liveContribution === 0 && publicationContribution === 0
+          ? null
+          : liveHandoffResult(
+              continuation,
+              publicationContribution === 70
+                ? [
+                    {
+                      phase: 'selection',
+                      kind: 'not-published',
+                      cause: 'invalid-record',
+                      validation: { kind: 'schema-violation' },
+                    },
+                  ]
+                : publicationContribution === 75
+                  ? [{ phase: 'selection', kind: 'not-published', cause: 'contended' }]
+                  : [],
+            );
+      const status: BackendStatusCommandOperations = {
+        inspectReadiness: () => ({ kind: 'no-legacy' }),
+        getStatus: async () =>
+          daemonContribution === 75
+            ? { status: 'undecodable_record', reason: 'corrupt-json', path: '/run/coordinator.json' }
+            : { status: 'not_running' },
+        getLiveHandoffResult: () => live,
+        getRoutingStatus: async () =>
+          routingContribution === 75 ? { kind: 'unreadable', reason: 'invalid-json' } : { kind: 'absent' },
+      };
+      const program = new Command();
+      program.exitOverride();
+      registerBackendCommands(program, { storeReset, backendStatus: status });
+
+      await program.parseAsync(['node', 'coral-cli', 'backend', 'status']);
+
+      expect(process.exitCode).toBe(expected);
+    },
+  );
+});
+
+describe('backend routing status', () => {
+  it('renders invocation dispositions and aggregate retirement history in journal order', () => {
+    const routingStatus = {
+      kind: 'current',
+      generation: 1,
+      statuses: [
+        {
+          kind: 'unresolved',
+          selection: {
+            generation: 1,
+            sequence: 1,
+            eventId: 'unresolved-event',
+            invocationId: 'unresolved-invocation',
+            observedAt: '2026-08-01T00:00:00.000Z',
+            eventKind: 'routing-selected',
+            phase: 'selection',
+            owner: { pid: 101, incarnation: testIncarnation(101) },
+            disposition: {
+              kind: 'continue-current',
+              basis: { kind: 'same-build-set', buildSetId: '123e4567-e89b-42d3-a456-426614174000' },
+            },
+          },
+          ownerLiveness: { kind: 'absent' },
+        },
+        {
+          kind: 'terminal',
+          selection: null,
+          terminal: {
+            generation: 1,
+            sequence: 2,
+            eventId: 'terminal-event',
+            invocationId: 'terminal-invocation',
+            observedAt: '2026-08-02T00:00:00.000Z',
+            eventKind: 'continuation-finalized',
+            phase: 'terminal',
+            selection: { kind: 'with-selection-sequence', selectionSequence: 1 },
+            disposition: { kind: 'delegated-exit', version: '0.10.9', exitCode: 7 },
+          },
+        },
+        {
+          kind: 'retired',
+          tombstone: {
+            generation: 1,
+            sequence: 3,
+            eventId: 'retired-event',
+            invocationId: 'retired-invocation',
+            observedAt: '2026-08-03T00:00:00.000Z',
+            eventKind: 'retirement-tombstone',
+            phase: 'retirement',
+            selectionSequence: 2,
+            selectedAt: '2026-08-01T00:00:00.000Z',
+            owner: { pid: 102, incarnation: testIncarnation(102) },
+            selectedDisposition: {
+              kind: 'continue-current',
+              basis: { kind: 'same-build-set', buildSetId: '223e4567-e89b-42d3-a456-426614174000' },
+            },
+            retirementCause: 'completed-pair-compaction',
+            terminalExisted: true,
+          },
+        },
+      ],
+      retirementHistoryTruncated: {
+        kind: 'retirement-history-truncated',
+        expiredIdentityCount: 2,
+        causes: {
+          'selection-evicted-at-capacity': 1,
+          'completed-pair-compaction': 1,
+          'operator-resolved': 0,
+        },
+        minSelectionSequence: 4,
+        maxSelectionSequence: 8,
+        earliestSelectedAt: '2026-07-01T00:00:00.000Z',
+        latestSelectedAt: '2026-07-03T00:00:00.000Z',
+      },
+    } satisfies HandoffRoutingStatusReadResult;
+
+    expect(formatHandoffRoutingStatus(routingStatus)?.split('\n')).toEqual([
+      'Routing invocation unresolved-invocation: unresolved; its recorded owner is absent.',
+      'Next step: run coral-cli backend routing-status resolve --invocation unresolved-invocation.',
+      'Routing invocation terminal-invocation: terminal; delegated to 0.10.9, which exited 7.',
+      'Routing invocation retired-invocation: retired (completed-pair-compaction).',
+      'Routing retirement history: 2 exact invocation identities expired (selection-evicted-at-capacity=1, completed-pair-compaction=1, operator-resolved=0); observed selection sequence range 4-8, selected 2026-07-01T00:00:00.000Z through 2026-07-03T00:00:00.000Z.',
+    ]);
+  });
+
+  it('renders an unresolved invocation ID and contributes exit 75 for an absent owner', async () => {
+    const invocationId = '123e4567-e89b-42d3-a456-426614174000';
+    const routingStatus: HandoffRoutingStatusReadResult = {
+      kind: 'current',
+      generation: 1,
+      statuses: [
+        {
+          kind: 'unresolved',
+          selection: {
+            generation: 1,
+            sequence: 1,
+            eventId: 'event-1',
+            invocationId,
+            observedAt: '2026-08-03T00:00:00.000Z',
+            eventKind: 'routing-selected',
+            phase: 'selection',
+            owner: { pid: 101, incarnation: testIncarnation(101) },
+            disposition: {
+              kind: 'continue-current',
+              basis: { kind: 'same-build-set', buildSetId: '123e4567-e89b-42d3-a456-426614174000' },
+            },
+          },
+          ownerLiveness: { kind: 'absent' },
+        },
+      ],
+      retirementHistoryTruncated: {
+        kind: 'retirement-history-truncated',
+        expiredIdentityCount: 0,
+        causes: {
+          'selection-evicted-at-capacity': 0,
+          'completed-pair-compaction': 0,
+          'operator-resolved': 0,
+        },
+        minSelectionSequence: null,
+        maxSelectionSequence: null,
+        earliestSelectedAt: null,
+        latestSelectedAt: null,
+      },
+    };
+    const status: BackendStatusCommandOperations = {
+      inspectReadiness: () => ({ kind: 'no-legacy' }),
+      getStatus: async () => ({ status: 'not_running' }),
+      getLiveHandoffResult: () => null,
+      getRoutingStatus: async () => routingStatus,
+    };
+    const program = new Command();
+    program.exitOverride();
+    registerBackendCommands(program, { storeReset, backendStatus: status });
+
+    await program.parseAsync(['node', 'coral-cli', 'backend', 'status']);
+
+    expect(stdout).toContain(`Routing invocation ${invocationId}: unresolved; its recorded owner is absent.`);
+    expect(stdout).toContain(`backend routing-status resolve --invocation ${invocationId}`);
+    expect(process.exitCode).toBe(75);
+  });
+
+  it('renders aggregate-only retirement history without keeping the expired capacity gate', async () => {
+    const status: BackendStatusCommandOperations = {
+      inspectReadiness: () => ({ kind: 'no-legacy' }),
+      getStatus: async () => ({ status: 'not_running' }),
+      getLiveHandoffResult: () => null,
+      getRoutingStatus: async () => ({
+        kind: 'current',
+        generation: 1,
+        statuses: [],
+        retirementHistoryTruncated: {
+          kind: 'retirement-history-truncated',
+          expiredIdentityCount: 3,
+          causes: {
+            'selection-evicted-at-capacity': 1,
+            'completed-pair-compaction': 2,
+            'operator-resolved': 0,
+          },
+          minSelectionSequence: 7,
+          maxSelectionSequence: 11,
+          earliestSelectedAt: '2026-08-01T00:00:00.000Z',
+          latestSelectedAt: '2026-08-03T00:00:00.000Z',
+        },
+      }),
+    };
+    const program = new Command();
+    program.exitOverride();
+    registerBackendCommands(program, { storeReset, backendStatus: status });
+
+    await program.parseAsync(['node', 'coral-cli', 'backend', 'status']);
+
+    expect(stdout).toContain('Routing retirement history: 3 exact invocation identities expired');
+    expect(stdout).toContain('selection-evicted-at-capacity=1');
+    expect(process.exitCode).toBe(0);
+  });
+
+  it('keeps the capacity gate while the exact retirement tombstone is retained', async () => {
+    const status: BackendStatusCommandOperations = {
+      inspectReadiness: () => ({ kind: 'no-legacy' }),
+      getStatus: async () => ({ status: 'not_running' }),
+      getLiveHandoffResult: () => null,
+      getRoutingStatus: async () => ({
+        kind: 'current',
+        generation: 1,
+        statuses: [
+          {
+            kind: 'retired',
+            tombstone: {
+              generation: 1,
+              sequence: 2,
+              eventId: 'retirement-event',
+              invocationId: 'routing-invocation',
+              observedAt: '2026-08-03T00:00:00.000Z',
+              eventKind: 'retirement-tombstone',
+              phase: 'retirement',
+              selectionSequence: 1,
+              selectedAt: '2026-08-02T00:00:00.000Z',
+              owner: { pid: 101, incarnation: testIncarnation(101) },
+              selectedDisposition: {
+                kind: 'continue-current',
+                basis: { kind: 'same-build-set', buildSetId: '123e4567-e89b-42d3-a456-426614174000' },
+              },
+              retirementCause: 'selection-evicted-at-capacity',
+              terminalExisted: false,
+            },
+          },
+        ],
+        retirementHistoryTruncated: {
+          kind: 'retirement-history-truncated',
+          expiredIdentityCount: 0,
+          causes: {
+            'selection-evicted-at-capacity': 0,
+            'completed-pair-compaction': 0,
+            'operator-resolved': 0,
+          },
+          minSelectionSequence: null,
+          maxSelectionSequence: null,
+          earliestSelectedAt: null,
+          latestSelectedAt: null,
+        },
+      }),
+    };
+    const program = new Command();
+    program.exitOverride();
+    registerBackendCommands(program, { storeReset, backendStatus: status });
+
+    await program.parseAsync(['node', 'coral-cli', 'backend', 'status']);
+
+    expect(stdout).toContain('Routing invocation routing-invocation: retired (selection-evicted-at-capacity).');
+    expect(process.exitCode).toBe(75);
   });
 });
 
@@ -352,7 +739,7 @@ describe('backend status recovery quarantine propagation', () => {
       const { namespace: _namespace, status: _status, ...health } = produced;
       const status = { status: 'ok', health: { ...health, status: 'ok' } } satisfies BackendStatusFull;
 
-      expect(formatBackendStatus(status)).toContain(
+      expect(formatBackendStatus(status, { kind: 'absent' }, null)).toContain(
         [
           '  recovery: degraded',
           '    reason: recovery-quarantine (1 unresolved row)',
@@ -397,7 +784,9 @@ describe('backend status recovery quarantine propagation', () => {
     const { namespace: _namespace, status: _status, ...health } = produced;
     const status = { status: 'ok', health: { ...health, status: 'ok' } } satisfies BackendStatusFull;
 
-    expect(formatBackendStatus(status)).toContain('  recovery: offline\n    reason: Status unavailable:');
+    expect(formatBackendStatus(status, { kind: 'absent' }, null)).toContain(
+      '  recovery: offline\n    reason: Status unavailable:',
+    );
   });
 });
 
@@ -495,6 +884,7 @@ describe('backend startup diagnostic classification', () => {
       inspectReadiness: () => ({ kind: 'no-legacy' }),
       getStatus: async () => classified,
       getLiveHandoffResult: () => null,
+      getRoutingStatus: async () => ({ kind: 'absent' }),
     };
     const program = new Command();
     program.exitOverride();

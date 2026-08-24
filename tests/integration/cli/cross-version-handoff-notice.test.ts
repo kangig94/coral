@@ -6,16 +6,20 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { renderHandoffNotice } from '#src/cli/handoff-notice.js';
 import { runHandoff, type HandoffOutcome } from '#src/coordinator/handoff-runner.js';
+import type * as HandoffRoutingStatusMod from '#src/coordinator/handoff-routing-status.js';
 import type * as BackendDiscoveryMod from '#src/infra/backend-discovery.js';
 import type * as BundleManifestMod from '#src/infra/bundle-manifest.js';
+import type * as RealRuntimeMod from '#src/runtime/real.js';
+import type { Runtime } from '#src/runtime/ports.js';
 
 type StrictBundleManifest = BundleManifestMod.StrictBundleManifest;
 
 const mockState = vi.hoisted(() => ({
   createIpcClient: vi.fn(),
-  createRealRuntime: vi.fn(),
+  createRealRuntime: vi.fn<typeof RealRuntimeMod.createRealRuntime>(),
   health: vi.fn(),
   probeCoordinator: vi.fn(),
+  publishHandoffRoutingTransitions: vi.fn(),
   readBuildFlavor: vi.fn(),
   resolveStrictBundleIdentity: vi.fn(),
 }));
@@ -38,6 +42,11 @@ vi.mock('#src/runtime/real.js', () => ({
   createRealRuntime: mockState.createRealRuntime,
 }));
 
+vi.mock('#src/coordinator/handoff-routing-status.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof HandoffRoutingStatusMod>();
+  return { ...actual, publishHandoffRoutingTransitions: mockState.publishHandoffRoutingTransitions };
+});
+
 vi.mock('#src/transport/ipc/client.js', () => ({
   createIpcClient: mockState.createIpcClient,
 }));
@@ -56,6 +65,8 @@ function createTarget(tracePath: string, exitCode: number): { bundleDir: string;
 
   const cliBundle = [
     "const { appendFileSync } = require('node:fs');",
+    "const telemetryKeys = Object.keys(process.env).filter((key) => key.startsWith('CORAL_INTERNAL_HANDOFF_TELEMETRY_'));",
+    `if (telemetryKeys.length > 0) appendFileSync(${JSON.stringify(tracePath)}, telemetryKeys.join(',') + '\\n');`,
     `appendFileSync(${JSON.stringify(tracePath)}, 'delegated operation finished\\n');`,
     `process.exit(${exitCode});`,
   ].join('\n');
@@ -76,6 +87,23 @@ function createTarget(tracePath: string, exitCode: number): { bundleDir: string;
   writeFileSync(join(bundleDir, 'coral-claude-appserver.cjs'), claudeAppserverBundle, 'utf8');
   writeFileSync(join(bundleDir, 'manifest.json'), JSON.stringify(manifest), 'utf8');
   return { bundleDir, manifest };
+}
+
+async function createHandoffRuntime(socketPath: string): Promise<Runtime> {
+  const { createRealRuntime } = await vi.importActual<typeof RealRuntimeMod>('#src/runtime/real.js');
+  const runtimeRoot = mkdtempSync(join(tmpdir(), 'coral-handoff-notice-runtime-'));
+  fixtureRoots.push(runtimeRoot);
+  const runtime = createRealRuntime('prod', { baseDir: runtimeRoot });
+  return {
+    ...runtime,
+    paths: {
+      ...runtime.paths,
+      coral: {
+        ...runtime.paths.coral,
+        coordinator: { ...runtime.paths.coral.coordinator, socketPath },
+      },
+    },
+  };
 }
 
 async function runDelegatedOperation(tracePath: string, exitCode: number): Promise<HandoffOutcome> {
@@ -113,27 +141,23 @@ async function runDelegatedOperation(tracePath: string, exitCode: number): Promi
       buildSetId: '123e4567-e89b-42d3-a456-426614174000',
     },
   });
-  mockState.createRealRuntime.mockReturnValue({
-    storage: {},
-    time: {
-      // The drain arms a real timer through the port, so the double must actually schedule.
-      setTimeout: (fn: () => void, ms: number) => setTimeout(fn, ms),
-      clearTimeout: (handle: { unref?(): void } | null) => {
-        clearTimeout(handle as unknown as NodeJS.Timeout);
-      },
-    },
-    env: { cwd: () => process.cwd(), fullSnapshot: () => ({}) },
-    paths: { coral: { coordinator: { socketPath } } },
-  });
+  mockState.createRealRuntime.mockReturnValue(await createHandoffRuntime(socketPath));
+  mockState.publishHandoffRoutingTransitions.mockResolvedValue({ kind: 'committed', sequence: 1 });
 
   const result = await runHandoff(
     { kind: 'cli-invocation', argv: ['node', 'coral-cli'] },
     { pluginRoot: '/plugin/root' },
   );
-  if (result.kind !== 'delegated') {
+  const continuation =
+    result.kind === 'recorded'
+      ? result.continuation
+      : result.kind === 'recording-not-applicable'
+        ? result.continuationWithoutRecording
+        : result.observedWork;
+  if (continuation.kind !== 'delegated') {
     throw new Error('Expected the operation to run in the newer build.');
   }
-  return result.outcome;
+  return continuation.outcome;
 }
 
 afterEach(() => {
@@ -141,6 +165,7 @@ afterEach(() => {
   mockState.createRealRuntime.mockReset();
   mockState.health.mockReset();
   mockState.probeCoordinator.mockReset();
+  mockState.publishHandoffRoutingTransitions.mockReset();
   mockState.readBuildFlavor.mockReset();
   mockState.resolveStrictBundleIdentity.mockReset();
   vi.restoreAllMocks();

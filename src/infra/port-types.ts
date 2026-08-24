@@ -1,4 +1,6 @@
 import { STANDING_PROBE_ERRNOS } from './process-constants.js';
+import type { ProcessIncarnation } from './node-process.js';
+import type { RecordedProcessIdentity } from './process-containment.js';
 
 // Canonical port-shape vocabulary. Domains and runtime alias these via
 // `runtime/ports.ts`; infra-tier helpers reach here directly because infra
@@ -18,6 +20,17 @@ export interface TimePort {
   clearInterval(handle: TimerHandle | null): void;
 }
 
+export type ProcessIdentityObservation = Readonly<{
+  owner: RecordedProcessIdentity;
+  evidence:
+    | Readonly<{ kind: 'incarnation'; incarnation: ProcessIncarnation }>
+    | Readonly<{ kind: 'pid-absent' }>
+    | Readonly<{
+        kind: 'unobservable';
+        cause: 'incarnation-unavailable' | 'probe-not-available' | 'probe-failed' | 'deadline-expired';
+      }>;
+}>;
+
 export interface DirentLike {
   name: string;
   isDirectory(): boolean;
@@ -25,6 +38,20 @@ export interface DirentLike {
 }
 
 export type StorageData = string | Uint8Array;
+
+export type SqliteValue = null | number | bigint | string | Uint8Array;
+
+export interface SqliteStatementPort {
+  all(...values: SqliteValue[]): unknown[];
+  get(...values: SqliteValue[]): unknown;
+  run(...values: SqliteValue[]): { readonly changes: number; readonly lastInsertRowid: number | bigint };
+}
+
+export interface SqliteDatabasePort {
+  exec(sql: string): void;
+  prepare(sql: string): SqliteStatementPort;
+  close(): void;
+}
 
 export type StorageBigIntStat = {
   readonly dev: bigint;
@@ -41,6 +68,7 @@ export type StorageBigIntStat = {
 export type StorageEntryKind = { isDirectory(): boolean; isFile(): boolean; isSymbolicLink(): boolean };
 
 export interface StoragePort {
+  assertReadableSync(path: string): void;
   readFile(path: string, encoding: 'utf-8'): Promise<string>;
   readFileSync(path: string, encoding: 'utf-8'): string;
   writeFileSync(
@@ -91,6 +119,7 @@ export interface StoragePort {
   ): boolean;
   syncDirectoryDurableSync(path: string): boolean;
   chmodSync(path: string, mode: number): void;
+  openSqliteDatabaseSync(path: string, options?: { readOnly?: boolean }): SqliteDatabasePort;
 }
 
 export interface EnvPort {

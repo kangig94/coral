@@ -1,8 +1,3 @@
-import { randomUUID } from 'node:crypto';
-import { accessSync, chmodSync, constants as fsConstants, mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
-
 import { z } from 'zod';
 
 import { strictBundleManifestSchema, type StrictBundleIdentityFailure } from '../infra/bundle-manifest.js';
@@ -10,8 +5,29 @@ import { assertNever } from '../infra/error-format.js';
 import type { InvalidTargetFailure } from '../infra/handoff-target.js';
 import { createMonotonicClock } from '../infra/monotonic-clock.js';
 import { processIncarnationSchema } from '../infra/node-process.js';
-import type { TimePort } from '../infra/port-types.js';
+import type { IdPort, Runtime } from '../runtime/ports.js';
 import type { RecordedProcessIdentity } from '../infra/process-containment.js';
+import {
+  HandoffRoutingStoreInvalidRecordError,
+  HandoffRoutingStoreUnreadableError,
+  HandoffRoutingStoreUnsupportedGenerationError as UnsupportedGenerationError,
+  publishHandoffRoutingStoreTransaction,
+  readHandoffRoutingStoreSnapshot,
+  SQLITE_BUSY,
+  SQLITE_CORRUPT,
+  SQLITE_ERROR,
+  SQLITE_FULL,
+  SQLITE_NOTADB,
+  type HandoffRoutingRecordInput,
+  type HandoffRoutingRecordValidationFailure,
+  type HandoffRoutingRecordValidationResult,
+  type HandoffRoutingStatusTransaction,
+  type HandoffRoutingStatusStoreSchema,
+} from '../store/handoff-routing-status-store.js';
+import {
+  tryAcquireGenerationWriterLease,
+  type GenerationWriterLease,
+} from '../store/generation-mutation-coordination.js';
 import {
   HANDOFF_ROUTING_BASIS_OBLIGATIONS,
   type BuildSummary,
@@ -19,11 +35,7 @@ import {
   type IncumbentIdentitySummary,
   type RoutingBasisObligation,
 } from './handoff-routing.js';
-import {
-  ABSENT_HANDOFF_RESULT_OBLIGATION,
-  HANDOFF_CONTINUATION_REASON_OBLIGATIONS,
-  type HandoffContinuationReason,
-} from './handoff-runner.js';
+import type { ABSENT_HANDOFF_RESULT_OBLIGATION, HANDOFF_CONTINUATION_REASON_OBLIGATIONS } from './handoff-runner.js';
 
 export const HANDOFF_ROUTING_STATUS_GENERATION = 1;
 export const MAX_HANDOFF_ROUTING_STATUS_BYTES = 1_048_576;
@@ -31,6 +43,7 @@ export const MAX_RETIREMENT_TOMBSTONES = 128;
 export const MAX_RETIREMENT_TOMBSTONE_BYTES = 262_144;
 export const MAX_ENCODED_RETIREMENT_TOMBSTONE_BYTES = 2_048;
 export const MAX_UNRESOLVED_INVOCATIONS = 64;
+export const MAX_HANDOFF_ROUTING_OWNER_SWEEP_MS = 500;
 export const MAX_COMPLETED_HANDOFF_ROUTING_PAIRS = 256;
 export const HANDOFF_ROUTING_COMPLETED_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 
@@ -179,6 +192,26 @@ export type ObligationPolicyProjection =
   | Readonly<{ kind: 'ephemeral'; policy: Extract<RoutingStatusPolicy, { durability: 'ephemeral' }> }>
   | Readonly<{ kind: 'persisted'; policy: Extract<RoutingStatusPolicy, { durability: 'lifecycle-journal' }> }>;
 
+type ObligationPolicyProjectionFor<Obligation extends RoutingBasisObligation> =
+  Obligation['requiredDurability'] extends 'ephemeral-allowed'
+    ? Readonly<{
+        kind: 'ephemeral';
+        policy: Readonly<{
+          durability: 'ephemeral';
+          severity: Obligation['severity'];
+          exitContribution: Obligation['exitContribution'];
+        }>;
+      }>
+    : Readonly<{
+        kind: 'persisted';
+        policy: Readonly<{
+          durability: 'lifecycle-journal';
+          retention: Obligation['requiredRetention'];
+          severity: Obligation['severity'];
+          exitContribution: Obligation['exitContribution'];
+        }>;
+      }>;
+
 export function projectRoutingObligationToPolicy(obligation: RoutingBasisObligation): ObligationPolicyProjection {
   if (obligation.requiredDurability === 'ephemeral-allowed') {
     return {
@@ -227,18 +260,34 @@ export const HANDOFF_ROUTING_BASIS_POLICIES: Readonly<
   'invalid-incumbent-target': requirePersistedProjection(HANDOFF_ROUTING_BASIS_OBLIGATIONS['invalid-incumbent-target']),
 });
 
-export const HANDOFF_CONTINUATION_REASON_POLICY_PROJECTIONS: Readonly<
-  Record<Exclude<HandoffContinuationReason['kind'], 'routing'>, ObligationPolicyProjection>
-> = Object.freeze({
-  'handoff-not-applicable': projectRoutingObligationToPolicy(
-    HANDOFF_CONTINUATION_REASON_OBLIGATIONS['handoff-not-applicable'],
-  ),
-  'handoff-abandoned': projectRoutingObligationToPolicy(HANDOFF_CONTINUATION_REASON_OBLIGATIONS['handoff-abandoned']),
+type HandoffContinuationReasonObligations = typeof HANDOFF_CONTINUATION_REASON_OBLIGATIONS;
+
+export const HANDOFF_CONTINUATION_REASON_POLICY_PROJECTIONS: Readonly<{
+  [Kind in keyof HandoffContinuationReasonObligations]: ObligationPolicyProjectionFor<
+    HandoffContinuationReasonObligations[Kind]
+  >;
+}> = Object.freeze({
+  'handoff-not-applicable': {
+    kind: 'ephemeral',
+    policy: { durability: 'ephemeral', severity: 'info', exitContribution: 0 },
+  },
+  'handoff-abandoned': {
+    kind: 'persisted',
+    policy: {
+      durability: 'lifecycle-journal',
+      retention: 'bounded-history',
+      severity: 'warning',
+      exitContribution: 75,
+    },
+  },
 });
 
-export const ABSENT_HANDOFF_RESULT_POLICY_PROJECTION = projectRoutingObligationToPolicy(
-  ABSENT_HANDOFF_RESULT_OBLIGATION,
-);
+export const ABSENT_HANDOFF_RESULT_POLICY_PROJECTION: ObligationPolicyProjectionFor<
+  typeof ABSENT_HANDOFF_RESULT_OBLIGATION
+> = Object.freeze({
+  kind: 'ephemeral',
+  policy: { durability: 'ephemeral', severity: 'info', exitContribution: 0 },
+} as const);
 
 const recordedProcessIdentitySchema: z.ZodType<RecordedProcessIdentity> = z
   .object({
@@ -464,6 +513,85 @@ export const retirementTombstoneSchema = eventEnvelopeSchema
 
 export type RetirementTombstone = z.infer<typeof retirementTombstoneSchema>;
 
+type StoredStatusRecord = RoutingSelectedEvent | HandoffRoutingTerminalEvent | RetirementTombstone;
+
+type HandoffRoutingRecordEnvelope = Readonly<{
+  generation: number;
+  sequence: number;
+  eventId: string;
+  invocationId: string;
+  observedAt: string;
+  recordKind: string;
+  eventKind: string;
+  selectionSequence: number | null;
+  retirementCause: string | null;
+  terminalExisted: boolean | number | null;
+}>;
+
+function decodeStatusRecordBody(record: HandoffRoutingRecordEnvelope, body: unknown): StoredStatusRecord | null {
+  const parsed =
+    record.recordKind === 'selection'
+      ? routingSelectedEventSchema.safeParse(body)
+      : record.recordKind === 'terminal'
+        ? terminalEventSchema.safeParse(body)
+        : record.recordKind === 'retirement'
+          ? retirementTombstoneSchema.safeParse(body)
+          : null;
+  if (parsed === null || !parsed.success) return null;
+
+  const decoded = parsed.data;
+  if (
+    record.sequence !== decoded.sequence ||
+    record.generation !== decoded.generation ||
+    record.eventId !== decoded.eventId ||
+    record.invocationId !== decoded.invocationId ||
+    record.observedAt !== decoded.observedAt ||
+    record.eventKind !== decoded.eventKind
+  ) {
+    return null;
+  }
+  if (decoded.phase === 'selection') {
+    return record.selectionSequence === null && record.retirementCause === null && record.terminalExisted === null
+      ? decoded
+      : null;
+  }
+  if (decoded.phase === 'terminal') {
+    const selectionSequence =
+      decoded.selection.kind === 'with-selection-sequence' ? decoded.selection.selectionSequence : null;
+    return record.selectionSequence === selectionSequence &&
+      record.retirementCause === null &&
+      record.terminalExisted === null
+      ? decoded
+      : null;
+  }
+  return record.selectionSequence === decoded.selectionSequence &&
+    record.retirementCause === decoded.retirementCause &&
+    record.terminalExisted !== null &&
+    Number(record.terminalExisted) === Number(decoded.terminalExisted)
+    ? decoded
+    : null;
+}
+
+export function validateStatusRecordBody(record: HandoffRoutingRecordInput): HandoffRoutingRecordValidationResult {
+  let body: unknown;
+  try {
+    body = JSON.parse(record.bodyJson);
+  } catch {
+    return { kind: 'malformed-json' };
+  }
+
+  const parsed =
+    record.recordKind === 'selection'
+      ? routingSelectedEventSchema.safeParse(body)
+      : record.recordKind === 'terminal'
+        ? terminalEventSchema.safeParse(body)
+        : retirementTombstoneSchema.safeParse(body);
+  if (!parsed.success) return { kind: 'schema-violation' };
+  return decodeStatusRecordBody(record, parsed.data) === null
+    ? { kind: 'envelope-body-disagreement' }
+    : { kind: 'valid' };
+}
+
 export const retirementHistoryTruncatedSchema = z
   .object({
     kind: z.literal('retirement-history-truncated'),
@@ -506,6 +634,35 @@ export type RetirementHistoryTruncated = z.infer<typeof retirementHistoryTruncat
 
 function encodedBytes(value: unknown): number {
   return Buffer.byteLength(JSON.stringify(value), 'utf8');
+}
+
+function completedPairIsStable(event: HandoffRoutingJournalEvent | RetirementTombstone): boolean {
+  switch (event.phase) {
+    case 'selection': {
+      const policy = persistedHandoffDispositionPolicy(event.disposition);
+      return policy.durability === 'lifecycle-journal' && policy.retention === 'until-superseded';
+    }
+    case 'terminal':
+      switch (event.disposition.kind) {
+        case 'delegated-success':
+          return true;
+        case 'continued-current':
+        case 'delegated-exit':
+        case 'delegated-signal':
+        case 'execution-failed':
+        case 'failed-without-selection':
+        case 'finalized-without-selection':
+        case 'terminal-without-retained-selection':
+        case 'terminal-after-operator-resolution':
+          return false;
+        default:
+          return assertNever(event.disposition);
+      }
+    case 'retirement':
+      return false;
+    default:
+      return assertNever(event);
+  }
 }
 
 const transitionEnvelopeSchema = z
@@ -560,7 +717,17 @@ export type PublicationOutcome =
   | Readonly<{ kind: 'committed'; sequence: number }>
   | Readonly<{
       kind: 'not-published';
-      cause: 'contended' | 'capacity-exhausted' | 'rejected-transition';
+      cause: 'invalid-record';
+      validation: HandoffRoutingRecordValidationFailure;
+    }>
+  | Readonly<{
+      kind: 'not-published';
+      cause:
+        | 'contended'
+        | 'generation-maintenance'
+        | 'capacity-exhausted'
+        | 'rejected-transition'
+        | 'coordination-unavailable';
     }>
   | Readonly<{
       kind: 'undeterminable';
@@ -568,209 +735,23 @@ export type PublicationOutcome =
       errcode: number;
     }>;
 
-type StatusRow = Readonly<{
-  body_json: string;
+type HandoffRoutingPublicationPorts = Readonly<{
+  time: Pick<Runtime['time'], 'monotonicNow' | 'sleep'>;
+  storage: Runtime['storage'];
+  ids: Pick<Runtime['ids'], 'uuid'>;
 }>;
 
-type TombstoneBoundsRow = Readonly<{
-  count: number;
-  bytes: number;
-}>;
-
-type GenerationRow = Readonly<{ user_version: number }>;
-
-const SQLITE_BUSY = 5;
-const SQLITE_CANTOPEN = 14;
-const SQLITE_FULL = 13;
-const SQLITE_NOTADB = 26;
-const SQLITE_CORRUPT = 11;
-const SQLITE_ERROR = 1;
 const PUBLICATION_CONTENTION_TIMEOUT_MS = 1_000;
 const PUBLICATION_RETRY_DELAY_MS = 10;
 
 class RejectedTransitionError extends Error {}
 
-class UnreadableStatusError extends Error {
-  readonly errcode: number;
-
-  constructor(errcode = SQLITE_CORRUPT) {
-    super();
-    this.errcode = errcode;
-  }
-}
-
-class UnsupportedGenerationError extends Error {}
-
 class CapacityExhaustedError extends Error {
   readonly errcode = SQLITE_FULL;
 }
 
-function schemaSql(): string {
-  return `
-    CREATE TABLE handoff_routing_metadata (
-      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-      generation INTEGER NOT NULL CHECK (generation = ${HANDOFF_ROUTING_STATUS_GENERATION}),
-      expired_identity_count INTEGER NOT NULL CHECK (expired_identity_count >= 0),
-      capacity_eviction_count INTEGER NOT NULL CHECK (capacity_eviction_count >= 0),
-      completed_pair_compaction_count INTEGER NOT NULL CHECK (completed_pair_compaction_count >= 0),
-      operator_resolved_count INTEGER NOT NULL CHECK (operator_resolved_count >= 0),
-      min_selection_sequence INTEGER CHECK (min_selection_sequence > 0),
-      max_selection_sequence INTEGER CHECK (max_selection_sequence > 0),
-      earliest_selected_at TEXT,
-      latest_selected_at TEXT,
-      CHECK (
-        capacity_eviction_count + completed_pair_compaction_count + operator_resolved_count =
-          expired_identity_count
-      ),
-      CHECK (
-        (expired_identity_count = 0 AND min_selection_sequence IS NULL AND max_selection_sequence IS NULL AND
-          earliest_selected_at IS NULL AND latest_selected_at IS NULL) OR
-        (expired_identity_count > 0 AND min_selection_sequence IS NOT NULL AND max_selection_sequence IS NOT NULL AND
-          earliest_selected_at IS NOT NULL AND latest_selected_at IS NOT NULL)
-      )
-    ) STRICT;
-
-    CREATE TABLE handoff_routing_records (
-      sequence INTEGER PRIMARY KEY AUTOINCREMENT,
-      generation INTEGER NOT NULL CHECK (generation = ${HANDOFF_ROUTING_STATUS_GENERATION}),
-      event_id TEXT NOT NULL UNIQUE CHECK (length(event_id) BETWEEN 1 AND ${MAX_IDENTIFIER_LENGTH}),
-      invocation_id TEXT NOT NULL CHECK (length(invocation_id) BETWEEN 1 AND ${MAX_IDENTIFIER_LENGTH}),
-      observed_at TEXT NOT NULL CHECK (length(observed_at) BETWEEN 1 AND ${MAX_OBSERVED_AT_LENGTH}),
-      record_kind TEXT NOT NULL CHECK (record_kind IN ('selection', 'terminal', 'retirement')),
-      event_kind TEXT NOT NULL CHECK (
-        event_kind IN ('routing-selected', 'execution-failed', 'continuation-finalized', 'retirement-tombstone')
-      ),
-      selection_sequence INTEGER CHECK (selection_sequence > 0),
-      retirement_cause TEXT CHECK (
-        retirement_cause IN ('selection-evicted-at-capacity', 'completed-pair-compaction', 'operator-resolved')
-      ),
-      terminal_existed INTEGER CHECK (terminal_existed IN (0, 1)),
-      body_json TEXT NOT NULL CHECK (json_valid(body_json)),
-      encoded_bytes INTEGER GENERATED ALWAYS AS (length(CAST(body_json AS BLOB))) STORED,
-      completed_pair_stable INTEGER GENERATED ALWAYS AS (
-        CASE
-          WHEN record_kind = 'terminal' AND json_extract(body_json, '$.disposition.kind') = 'delegated-success'
-            THEN 1
-          WHEN record_kind = 'selection' AND
-            json_extract(body_json, '$.disposition.kind') = 'continue-current' AND
-            json_extract(body_json, '$.disposition.basis.kind') IN ('same-build-set', 'incumbent-absent')
-            THEN 1
-          ELSE 0
-        END
-      ) STORED,
-      CHECK (
-        (record_kind = 'selection' AND event_kind = 'routing-selected' AND selection_sequence IS NULL AND
-          retirement_cause IS NULL AND terminal_existed IS NULL) OR
-        (record_kind = 'terminal' AND event_kind IN ('execution-failed', 'continuation-finalized') AND
-          retirement_cause IS NULL AND terminal_existed IS NULL) OR
-        (record_kind = 'retirement' AND event_kind = 'retirement-tombstone' AND selection_sequence IS NOT NULL AND
-          retirement_cause IS NOT NULL AND terminal_existed IS NOT NULL)
-      ),
-      CHECK (json_extract(body_json, '$.generation') = generation),
-      CHECK (json_extract(body_json, '$.sequence') = sequence),
-      CHECK (json_extract(body_json, '$.eventId') = event_id),
-      CHECK (json_extract(body_json, '$.invocationId') = invocation_id),
-      CHECK (json_extract(body_json, '$.observedAt') = observed_at),
-      CHECK (json_extract(body_json, '$.eventKind') = event_kind),
-      CHECK (
-        (record_kind = 'selection' AND json_extract(body_json, '$.phase') = 'selection' AND
-          encoded_bytes <= ${MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES['routing-selected']}) OR
-        (record_kind = 'terminal' AND json_extract(body_json, '$.phase') = 'terminal' AND
-          ((event_kind = 'execution-failed' AND
-            encoded_bytes <= ${MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES['execution-failed']}) OR
-           (event_kind = 'continuation-finalized' AND
-            encoded_bytes <= ${MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES['continuation-finalized']}))) OR
-        (record_kind = 'retirement' AND json_extract(body_json, '$.phase') = 'retirement' AND
-          json_extract(body_json, '$.selectionSequence') = selection_sequence AND
-          json_extract(body_json, '$.retirementCause') = retirement_cause AND
-          json_extract(body_json, '$.terminalExisted') = terminal_existed AND
-          encoded_bytes <= ${MAX_ENCODED_RETIREMENT_TOMBSTONE_BYTES})
-      )
-    ) STRICT;
-
-    CREATE TABLE handoff_routing_closing_reserve (
-      invocation_id TEXT PRIMARY KEY CHECK (length(invocation_id) BETWEEN 1 AND ${MAX_IDENTIFIER_LENGTH}),
-      event_id TEXT NOT NULL UNIQUE CHECK (length(event_id) BETWEEN 1 AND ${MAX_IDENTIFIER_LENGTH}),
-      observed_at TEXT NOT NULL CHECK (length(observed_at) BETWEEN 1 AND ${MAX_OBSERVED_AT_LENGTH}),
-      allocation BLOB NOT NULL CHECK (length(allocation) = ${MAX_LEGAL_CLOSING_RECORD_BYTES})
-    ) STRICT;
-
-    CREATE UNIQUE INDEX handoff_routing_selection_or_retirement_per_invocation
-      ON handoff_routing_records(invocation_id)
-      WHERE record_kind IN ('selection', 'retirement');
-
-    CREATE UNIQUE INDEX handoff_routing_terminal_or_retirement_per_invocation
-      ON handoff_routing_records(invocation_id)
-      WHERE record_kind IN ('terminal', 'retirement');
-
-    CREATE UNIQUE INDEX handoff_routing_selection_or_unretained_terminal_per_invocation
-      ON handoff_routing_records(invocation_id)
-      WHERE record_kind = 'selection' OR (
-        record_kind = 'terminal' AND (
-          json_extract(body_json, '$.selection.kind') = 'without-selection' OR
-          json_extract(body_json, '$.disposition.kind') IN (
-            'terminal-without-retained-selection',
-            'terminal-after-operator-resolution'
-          )
-        )
-      );
-  `;
-}
-
-function configureDatabase(db: DatabaseSync): void {
-  db.exec('PRAGMA busy_timeout=0');
-  db.exec('PRAGMA journal_mode=WAL');
-  db.exec('PRAGMA synchronous=FULL');
-  db.exec('PRAGMA foreign_keys=ON');
-  const pageSize = Number((db.prepare('PRAGMA page_size').get() as Readonly<{ page_size: number }>).page_size);
-  const maxPageCount = Math.floor(MAX_HANDOFF_ROUTING_STATUS_BYTES / pageSize);
-  db.exec(`PRAGMA max_page_count=${maxPageCount}`);
-}
-
-function initializeOrValidateDatabase(db: DatabaseSync): void {
-  const generation = db.prepare('PRAGMA user_version').get() as GenerationRow;
-  if (generation.user_version === 0) {
-    const existing = db
-      .prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'")
-      .get() as Readonly<{ count: number }>;
-    if (existing.count !== 0) throw new UnsupportedGenerationError();
-    db.exec(schemaSql());
-    db.prepare(
-      `INSERT INTO handoff_routing_metadata (
-        singleton,
-        generation,
-        expired_identity_count,
-        capacity_eviction_count,
-        completed_pair_compaction_count,
-        operator_resolved_count
-      ) VALUES (1, ?, 0, 0, 0, 0)`,
-    ).run(HANDOFF_ROUTING_STATUS_GENERATION);
-    db.exec(`PRAGMA user_version=${HANDOFF_ROUTING_STATUS_GENERATION}`);
-    return;
-  }
-  if (generation.user_version !== HANDOFF_ROUTING_STATUS_GENERATION) {
-    throw new UnsupportedGenerationError();
-  }
-  try {
-    const metadata = db.prepare('SELECT generation FROM handoff_routing_metadata WHERE singleton = 1').get() as
-      | Readonly<{ generation: number }>
-      | undefined;
-    if (metadata?.generation !== HANDOFF_ROUTING_STATUS_GENERATION) throw new UnreadableStatusError();
-  } catch (error) {
-    if (error instanceof UnreadableStatusError) throw error;
-    throw new UnreadableStatusError(errorNumber(error, SQLITE_CORRUPT));
-  }
-}
-
-function nextRecordSequence(db: DatabaseSync): number {
-  const row = db
-    .prepare("SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'handoff_routing_records'), 0) + 1 AS next")
-    .get() as Readonly<{ next: number }>;
-  return row.next;
-}
-
 function insertRecord(
-  db: DatabaseSync,
+  transaction: HandoffRoutingStatusTransaction,
   recordKind: 'selection' | 'terminal' | 'retirement',
   event: HandoffRoutingJournalEvent | RetirementTombstone,
 ): number {
@@ -780,69 +761,57 @@ function insertRecord(
     (event.phase === 'terminal' && event.selection.kind === 'with-selection-sequence'
       ? event.selection.selectionSequence
       : null);
-  const inserted = db
-    .prepare(
-      `INSERT INTO handoff_routing_records (
-        generation,
-        event_id,
-        invocation_id,
-        observed_at,
-        record_kind,
-        event_kind,
-        selection_sequence,
-        retirement_cause,
-        terminal_existed,
-        body_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING sequence`,
-    )
-    .get(
-      event.generation,
-      event.eventId,
-      event.invocationId,
-      event.observedAt,
-      recordKind,
-      event.eventKind,
-      selectionSequence,
-      retirement?.retirementCause ?? null,
-      retirement === null ? null : Number(retirement.terminalExisted),
-      JSON.stringify(event),
-    ) as Readonly<{ sequence: number }> | undefined;
-  if (inserted?.sequence !== event.sequence) throw new UnreadableStatusError();
-  return inserted.sequence;
+  return transaction.insertRecord({
+    generation: event.generation,
+    sequence: event.sequence,
+    eventId: event.eventId,
+    invocationId: event.invocationId,
+    observedAt: event.observedAt,
+    recordKind,
+    eventKind: event.eventKind,
+    selectionSequence,
+    retirementCause: retirement?.retirementCause ?? null,
+    terminalExisted: retirement?.terminalExisted ?? null,
+    completedPairStable: completedPairIsStable(event),
+    bodyJson: JSON.stringify(event),
+  });
 }
 
-function parseRow<T>(row: StatusRow | undefined, schema: z.ZodType<T>): T | undefined {
-  if (row === undefined) return undefined;
+function parseRecordBody<T>(bodyJson: string | undefined, schema: z.ZodType<T>): T | undefined {
+  if (bodyJson === undefined) return undefined;
   try {
-    return schema.parse(JSON.parse(row.body_json));
+    return schema.parse(JSON.parse(bodyJson));
   } catch {
-    throw new UnreadableStatusError();
+    throw new HandoffRoutingStoreUnreadableError();
   }
 }
 
-function selectionForInvocation(db: DatabaseSync, invocationId: string): RoutingSelectedEvent | undefined {
-  const row = db
-    .prepare("SELECT body_json FROM handoff_routing_records WHERE invocation_id = ? AND record_kind = 'selection'")
-    .get(invocationId) as StatusRow | undefined;
-  return parseRow(row, routingSelectedEventSchema);
+function selectionForInvocation(
+  transaction: HandoffRoutingStatusTransaction,
+  invocationId: string,
+): RoutingSelectedEvent | undefined {
+  return parseRecordBody(transaction.recordBody(invocationId, 'selection'), routingSelectedEventSchema);
 }
 
-function terminalForInvocation(db: DatabaseSync, invocationId: string): HandoffRoutingTerminalEvent | undefined {
-  const row = db
-    .prepare("SELECT body_json FROM handoff_routing_records WHERE invocation_id = ? AND record_kind = 'terminal'")
-    .get(invocationId) as StatusRow | undefined;
-  return parseRow(row, terminalEventSchema);
+function terminalForInvocation(
+  transaction: HandoffRoutingStatusTransaction,
+  invocationId: string,
+): HandoffRoutingTerminalEvent | undefined {
+  return parseRecordBody(transaction.recordBody(invocationId, 'terminal'), terminalEventSchema);
 }
 
-function tombstoneForInvocation(db: DatabaseSync, invocationId: string): RetirementTombstone | undefined {
-  const row = db
-    .prepare("SELECT body_json FROM handoff_routing_records WHERE invocation_id = ? AND record_kind = 'retirement'")
-    .get(invocationId) as StatusRow | undefined;
-  return parseRow(row, retirementTombstoneSchema);
+function tombstoneForInvocation(
+  transaction: HandoffRoutingStatusTransaction,
+  invocationId: string,
+): RetirementTombstone | undefined {
+  return parseRecordBody(transaction.recordBody(invocationId, 'retirement'), retirementTombstoneSchema);
 }
 
-function insertSelection(db: DatabaseSync, transition: z.infer<typeof routingSelectedTransitionSchema>): number {
-  const sequence = nextRecordSequence(db);
+function insertSelection(
+  transaction: HandoffRoutingStatusTransaction,
+  transition: z.infer<typeof routingSelectedTransitionSchema>,
+): number {
+  const sequence = transaction.nextRecordSequence();
   const event = routingSelectedEventSchema.parse({
     generation: HANDOFF_ROUTING_STATUS_GENERATION,
     sequence,
@@ -854,17 +823,13 @@ function insertSelection(db: DatabaseSync, transition: z.infer<typeof routingSel
     owner: transition.owner,
     disposition: transition.disposition,
   });
-  const inserted = insertRecord(db, 'selection', event);
-  db.prepare(
-    `INSERT INTO handoff_routing_closing_reserve (invocation_id, event_id, observed_at, allocation)
-    VALUES (?, ?, ?, zeroblob(?))`,
-  ).run(event.invocationId, event.eventId, event.observedAt, MAX_LEGAL_CLOSING_RECORD_BYTES);
+  const inserted = insertRecord(transaction, 'selection', event);
+  transaction.insertClosingReserve(event.invocationId, event.eventId, event.observedAt);
   return inserted;
 }
 
-function releaseClosingReserve(db: DatabaseSync, invocationId: string): void {
-  const released = db.prepare('DELETE FROM handoff_routing_closing_reserve WHERE invocation_id = ?').run(invocationId);
-  if (released.changes !== 1) throw new UnreadableStatusError();
+function releaseClosingReserve(transaction: HandoffRoutingStatusTransaction, invocationId: string): void {
+  if (!transaction.releaseClosingReserve(invocationId)) throw new HandoffRoutingStoreUnreadableError();
 }
 
 function terminalGapDisposition(
@@ -876,11 +841,11 @@ function terminalGapDisposition(
 }
 
 function insertTerminal(
-  db: DatabaseSync,
+  transaction: HandoffRoutingStatusTransaction,
   transition: z.infer<typeof terminalTransitionSchema>,
   disposition: StoredTerminalDisposition,
 ): number {
-  const sequence = nextRecordSequence(db);
+  const sequence = transaction.nextRecordSequence();
   const event = terminalEventSchema.parse({
     generation: HANDOFF_ROUTING_STATUS_GENERATION,
     sequence,
@@ -892,19 +857,20 @@ function insertTerminal(
     selection: transition.selection,
     disposition,
   });
-  return insertRecord(db, 'terminal', event);
+  return insertRecord(transaction, 'terminal', event);
 }
 
 function insertTombstone(
-  db: DatabaseSync,
+  transaction: HandoffRoutingStatusTransaction,
+  ids: Pick<IdPort, 'uuid'>,
   selection: RoutingSelectedEvent,
   retirementCause: RetirementTombstone['retirementCause'],
   terminalExisted: boolean,
   observedAt: string,
   resolutionReason?: RetirementTombstone['resolutionReason'],
-  eventId = `retirement-${randomUUID()}`,
+  eventId = `retirement-${ids.uuid()}`,
 ): number {
-  const sequence = nextRecordSequence(db);
+  const sequence = transaction.nextRecordSequence();
   const tombstone = retirementTombstoneSchema.parse({
     generation: HANDOFF_ROUTING_STATUS_GENERATION,
     sequence,
@@ -921,36 +887,12 @@ function insertTombstone(
     terminalExisted,
     ...(resolutionReason === undefined ? {} : { resolutionReason }),
   });
-  return insertRecord(db, 'retirement', tombstone);
+  return insertRecord(transaction, 'retirement', tombstone);
 }
 
-function readRetirementHistory(db: DatabaseSync): RetirementHistoryTruncated {
-  const row = db
-    .prepare(
-      `SELECT
-        expired_identity_count,
-        capacity_eviction_count,
-        completed_pair_compaction_count,
-        operator_resolved_count,
-        min_selection_sequence,
-        max_selection_sequence,
-        earliest_selected_at,
-        latest_selected_at
-      FROM handoff_routing_metadata WHERE singleton = 1`,
-    )
-    .get() as
-    | Readonly<{
-        expired_identity_count: number;
-        capacity_eviction_count: number;
-        completed_pair_compaction_count: number;
-        operator_resolved_count: number;
-        min_selection_sequence: number | null;
-        max_selection_sequence: number | null;
-        earliest_selected_at: string | null;
-        latest_selected_at: string | null;
-      }>
-    | undefined;
-  if (row === undefined) throw new UnreadableStatusError();
+function readRetirementHistory(transaction: HandoffRoutingStatusTransaction): RetirementHistoryTruncated {
+  const row = transaction.readRetirementHistory();
+  if (row === undefined) throw new HandoffRoutingStoreUnreadableError();
   return retirementHistoryTruncatedSchema.parse({
     kind: 'retirement-history-truncated',
     expiredIdentityCount: row.expired_identity_count,
@@ -966,8 +908,8 @@ function readRetirementHistory(db: DatabaseSync): RetirementHistoryTruncated {
   });
 }
 
-function rollUpTombstone(db: DatabaseSync, tombstone: RetirementTombstone): void {
-  const aggregate = readRetirementHistory(db);
+function rollUpTombstone(transaction: HandoffRoutingStatusTransaction, tombstone: RetirementTombstone): void {
+  const aggregate = readRetirementHistory(transaction);
   const next = retirementHistoryTruncatedSchema.parse({
     kind: 'retirement-history-truncated',
     expiredIdentityCount: aggregate.expiredIdentityCount + 1,
@@ -992,55 +934,32 @@ function rollUpTombstone(db: DatabaseSync, tombstone: RetirementTombstone): void
         ? tombstone.selectedAt
         : aggregate.latestSelectedAt,
   });
-  db.prepare(
-    `UPDATE handoff_routing_metadata SET
-      expired_identity_count = ?,
-      capacity_eviction_count = ?,
-      completed_pair_compaction_count = ?,
-      operator_resolved_count = ?,
-      min_selection_sequence = ?,
-      max_selection_sequence = ?,
-      earliest_selected_at = ?,
-      latest_selected_at = ?
-    WHERE singleton = 1`,
-  ).run(
-    next.expiredIdentityCount,
-    next.causes['selection-evicted-at-capacity'],
-    next.causes['completed-pair-compaction'],
-    next.causes['operator-resolved'],
-    next.minSelectionSequence,
-    next.maxSelectionSequence,
-    next.earliestSelectedAt,
-    next.latestSelectedAt,
-  );
-  db.prepare('DELETE FROM handoff_routing_records WHERE sequence = ?').run(tombstone.sequence);
+  transaction.updateRetirementHistory({
+    expiredIdentityCount: next.expiredIdentityCount,
+    capacityEvictionCount: next.causes['selection-evicted-at-capacity'],
+    completedPairCompactionCount: next.causes['completed-pair-compaction'],
+    operatorResolvedCount: next.causes['operator-resolved'],
+    minSelectionSequence: next.minSelectionSequence,
+    maxSelectionSequence: next.maxSelectionSequence,
+    earliestSelectedAt: next.earliestSelectedAt,
+    latestSelectedAt: next.latestSelectedAt,
+  });
+  transaction.deleteRecord(tombstone.sequence);
 }
 
-function enforceTombstoneBounds(db: DatabaseSync): void {
+function enforceTombstoneBounds(transaction: HandoffRoutingStatusTransaction): void {
   while (true) {
-    const bounds = db
-      .prepare(
-        `SELECT COUNT(*) AS count, COALESCE(SUM(encoded_bytes), 0) AS bytes
-        FROM handoff_routing_records WHERE record_kind = 'retirement'`,
-      )
-      .get() as TombstoneBoundsRow;
+    const bounds = transaction.tombstoneBounds();
     if (bounds.count <= MAX_RETIREMENT_TOMBSTONES && bounds.bytes <= MAX_RETIREMENT_TOMBSTONE_BYTES) return;
-    const oldest = db
-      .prepare(
-        `SELECT body_json FROM handoff_routing_records
-        WHERE record_kind = 'retirement'
-        ORDER BY selection_sequence, invocation_id
-        LIMIT 1`,
-      )
-      .get() as StatusRow | undefined;
-    const tombstone = parseRow(oldest, retirementTombstoneSchema);
-    if (tombstone === undefined) throw new UnreadableStatusError();
-    rollUpTombstone(db, tombstone);
+    const tombstone = parseRecordBody(transaction.oldestTombstoneBody(), retirementTombstoneSchema);
+    if (tombstone === undefined) throw new HandoffRoutingStoreUnreadableError();
+    rollUpTombstone(transaction, tombstone);
   }
 }
 
 function retireSelection(
-  db: DatabaseSync,
+  transaction: HandoffRoutingStatusTransaction,
+  ids: Pick<IdPort, 'uuid'>,
   selection: RoutingSelectedEvent,
   cause: RetirementTombstone['retirementCause'],
   observedAt: string,
@@ -1048,254 +967,160 @@ function retireSelection(
   resolutionReason?: RetirementTombstone['resolutionReason'],
   eventId?: string,
 ): number {
-  if (!terminalExisted) releaseClosingReserve(db, selection.invocationId);
-  db.prepare('DELETE FROM handoff_routing_records WHERE invocation_id = ?').run(selection.invocationId);
-  const sequence = insertTombstone(db, selection, cause, terminalExisted, observedAt, resolutionReason, eventId);
-  enforceTombstoneBounds(db);
+  if (!terminalExisted) releaseClosingReserve(transaction, selection.invocationId);
+  transaction.deleteInvocationRecords(selection.invocationId);
+  const sequence = insertTombstone(
+    transaction,
+    ids,
+    selection,
+    cause,
+    terminalExisted,
+    observedAt,
+    resolutionReason,
+    eventId,
+  );
+  enforceTombstoneBounds(transaction);
   return sequence;
 }
 
-function retireOldestCompletedPairForCapacity(db: DatabaseSync, observedAt: string): boolean {
-  const row = db
-    .prepare(
-      `WITH latest_stable_pair AS (
-        SELECT selection.sequence
-        FROM handoff_routing_records AS selection
-        JOIN handoff_routing_records AS terminal ON terminal.invocation_id = selection.invocation_id
-        WHERE selection.record_kind = 'selection'
-          AND terminal.record_kind = 'terminal'
-          AND (selection.completed_pair_stable OR terminal.completed_pair_stable)
-        ORDER BY selection.sequence DESC
-        LIMIT 1
-      )
-      SELECT selection.body_json
-      FROM handoff_routing_records AS selection
-      JOIN handoff_routing_records AS terminal ON terminal.invocation_id = selection.invocation_id
-      WHERE selection.record_kind = 'selection'
-        AND terminal.record_kind = 'terminal'
-        AND selection.sequence != COALESCE((SELECT sequence FROM latest_stable_pair), 0)
-      ORDER BY selection.sequence
-      LIMIT 1`,
-    )
-    .get() as StatusRow | undefined;
-  const selection = parseRow(row, routingSelectedEventSchema);
+function retireOldestCompletedPairForCapacity(
+  transaction: HandoffRoutingStatusTransaction,
+  ids: Pick<IdPort, 'uuid'>,
+  observedAt: string,
+): boolean {
+  const selection = parseRecordBody(transaction.oldestCompletedSelectionBody(), routingSelectedEventSchema);
   if (selection === undefined) return false;
-  retireSelection(db, selection, 'completed-pair-compaction', observedAt, true);
+  retireSelection(transaction, ids, selection, 'completed-pair-compaction', observedAt, true);
   return true;
 }
 
-function rollUpOldestTombstone(db: DatabaseSync): boolean {
-  const row = db
-    .prepare(
-      `SELECT body_json FROM handoff_routing_records
-      WHERE record_kind = 'retirement'
-      ORDER BY selection_sequence, invocation_id
-      LIMIT 1`,
-    )
-    .get() as StatusRow | undefined;
-  const tombstone = parseRow(row, retirementTombstoneSchema);
+function rollUpOldestTombstone(transaction: HandoffRoutingStatusTransaction): boolean {
+  const tombstone = parseRecordBody(transaction.oldestTombstoneBody(), retirementTombstoneSchema);
   if (tombstone === undefined) return false;
-  rollUpTombstone(db, tombstone);
+  rollUpTombstone(transaction, tombstone);
   return true;
 }
 
-function pragmaNumber(db: DatabaseSync, name: 'page_size' | 'page_count' | 'max_page_count'): number {
-  const row = db.prepare(`PRAGMA ${name}`).get() as Record<string, number>;
-  const value = row[name];
-  if (!Number.isSafeInteger(value) || value <= 0) throw new UnreadableStatusError();
-  return value;
+function reclaimBoundedHistoryForAdmission(
+  transaction: HandoffRoutingStatusTransaction,
+  ids: Pick<IdPort, 'uuid'>,
+  observedAt: string,
+): boolean {
+  if (transaction.deleteOldestBoundedTerminal()) return true;
+  if (retireOldestCompletedPairForCapacity(transaction, ids, observedAt)) return true;
+  return rollUpOldestTombstone(transaction);
 }
 
-function hasAdmissionCapacity(db: DatabaseSync, recordBytes: number): boolean {
-  const pageSize = pragmaNumber(db, 'page_size');
-  const pageCount = pragmaNumber(db, 'page_count');
-  const freeListCount = db.prepare('PRAGMA freelist_count').get() as Readonly<{ freelist_count: number }>;
-  const maxPageCount = pragmaNumber(db, 'max_page_count');
-  const availableBytes = (maxPageCount - pageCount + freeListCount.freelist_count) * pageSize;
-  const maximumIdentifierBytes = Buffer.byteLength('\u0800'.repeat(MAX_IDENTIFIER_LENGTH), 'utf8');
-  const indexedEnvelopeBytes = maximumIdentifierBytes * 4 + MAX_OBSERVED_AT_LENGTH * 2;
-  const btreeAllocationMarginBytes = pageSize * 8;
-  const requiredBytes = recordBytes + indexedEnvelopeBytes + btreeAllocationMarginBytes;
-  return availableBytes >= requiredBytes;
-}
-
-function deleteOldestBoundedTerminal(db: DatabaseSync): boolean {
-  const deleted = db
-    .prepare(
-      `DELETE FROM handoff_routing_records
-      WHERE sequence = (
-        SELECT terminal.sequence
-        FROM handoff_routing_records AS terminal
-        WHERE terminal.record_kind = 'terminal'
-          AND NOT EXISTS (
-            SELECT 1 FROM handoff_routing_records AS selection
-            WHERE selection.invocation_id = terminal.invocation_id AND selection.record_kind = 'selection'
-          )
-        ORDER BY terminal.sequence
-        LIMIT 1
-      )`,
-    )
-    .run();
-  return deleted.changes === 1;
-}
-
-function boundedTerminalCount(db: DatabaseSync): number {
-  const row = db
-    .prepare(
-      `SELECT COUNT(*) AS count
-      FROM handoff_routing_records AS terminal
-      WHERE terminal.record_kind = 'terminal'
-        AND NOT EXISTS (
-          SELECT 1 FROM handoff_routing_records AS selection
-          WHERE selection.invocation_id = terminal.invocation_id AND selection.record_kind = 'selection'
-        )`,
-    )
-    .get() as Readonly<{ count: number }>;
-  return row.count;
-}
-
-function reclaimBoundedHistoryForAdmission(db: DatabaseSync, observedAt: string): boolean {
-  if (deleteOldestBoundedTerminal(db)) return true;
-  if (retireOldestCompletedPairForCapacity(db, observedAt)) return true;
-  return rollUpOldestTombstone(db);
-}
-
-function makeClosingAdmissionRoom(db: DatabaseSync, observedAt: string, capacity: 'reserved' | 'unreserved'): void {
+function makeClosingAdmissionRoom(
+  transaction: HandoffRoutingStatusTransaction,
+  ids: Pick<IdPort, 'uuid'>,
+  observedAt: string,
+  capacity: 'reserved' | 'unreserved',
+): void {
   if (capacity === 'reserved') return;
-  while (boundedTerminalCount(db) >= MAX_BOUNDED_TERMINAL_HISTORY) deleteOldestBoundedTerminal(db);
-  while (!hasAdmissionCapacity(db, MAX_LEGAL_CLOSING_RECORD_BYTES)) {
-    if (reclaimBoundedHistoryForAdmission(db, observedAt)) continue;
+  while (transaction.boundedTerminalCount() >= MAX_BOUNDED_TERMINAL_HISTORY) {
+    transaction.deleteOldestBoundedTerminal();
+  }
+  while (!transaction.hasAdmissionCapacity(MAX_LEGAL_CLOSING_RECORD_BYTES)) {
+    if (reclaimBoundedHistoryForAdmission(transaction, ids, observedAt)) continue;
     throw new CapacityExhaustedError();
   }
 }
 
-function makeSelectionAdmissionRoom(db: DatabaseSync, observedAt: string): void {
-  while (unresolvedCount(db) >= MAX_UNRESOLVED_INVOCATIONS) evictOldestOpening(db, observedAt);
+function makeSelectionAdmissionRoom(
+  transaction: HandoffRoutingStatusTransaction,
+  ids: Pick<IdPort, 'uuid'>,
+  observedAt: string,
+): void {
+  while (transaction.unresolvedCount() >= MAX_UNRESOLVED_INVOCATIONS) {
+    evictOldestOpening(transaction, ids, observedAt);
+  }
   const selectionAndReserveBytes =
     MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES['routing-selected'] + MAX_LEGAL_CLOSING_RECORD_BYTES;
-  while (!hasAdmissionCapacity(db, selectionAndReserveBytes)) {
-    if (reclaimBoundedHistoryForAdmission(db, observedAt)) continue;
-    if (unresolvedCount(db) > 0) {
-      evictOldestOpening(db, observedAt);
+  while (!transaction.hasAdmissionCapacity(selectionAndReserveBytes)) {
+    if (reclaimBoundedHistoryForAdmission(transaction, ids, observedAt)) continue;
+    if (transaction.unresolvedCount() > 0) {
+      evictOldestOpening(transaction, ids, observedAt);
       continue;
     }
     throw new CapacityExhaustedError();
   }
 }
 
-function compactExpiredCompletedPairs(db: DatabaseSync, observedAt: string): void {
+function compactExpiredCompletedPairs(
+  transaction: HandoffRoutingStatusTransaction,
+  ids: Pick<IdPort, 'uuid'>,
+  observedAt: string,
+): void {
   const cutoff = new Date(Date.parse(observedAt) - HANDOFF_ROUTING_COMPLETED_RETENTION_MS).toISOString();
-  const selections = db
-    .prepare(
-      `WITH completed_pairs AS MATERIALIZED (
-        SELECT
-          selection.sequence,
-          selection.observed_at,
-          selection.body_json,
-          selection.completed_pair_stable OR terminal.completed_pair_stable AS stable
-        FROM handoff_routing_records AS selection
-        JOIN handoff_routing_records AS terminal ON terminal.invocation_id = selection.invocation_id
-        WHERE selection.record_kind = 'selection' AND terminal.record_kind = 'terminal'
-      ),
-      newest_pairs AS (
-        SELECT sequence FROM completed_pairs
-        ORDER BY sequence DESC
-        LIMIT ?
-      ),
-      latest_stable_pair AS (
-        SELECT sequence FROM completed_pairs
-        WHERE stable
-        ORDER BY sequence DESC
-        LIMIT 1
-      )
-      SELECT body_json
-      FROM completed_pairs
-      WHERE sequence != COALESCE((SELECT sequence FROM latest_stable_pair), 0)
-        AND (
-          julianday(observed_at) < julianday(?) OR
-          sequence NOT IN (SELECT sequence FROM newest_pairs)
-        )
-      ORDER BY sequence`,
-    )
-    .all(MAX_COMPLETED_HANDOFF_ROUTING_PAIRS, cutoff) as StatusRow[];
-  for (const row of selections) {
-    const selection = parseRow(row, routingSelectedEventSchema);
-    if (selection === undefined) throw new UnreadableStatusError();
-    retireSelection(db, selection, 'completed-pair-compaction', observedAt, true);
+  const selectionBodies = transaction.completedSelectionBodiesForCompaction(
+    MAX_COMPLETED_HANDOFF_ROUTING_PAIRS,
+    cutoff,
+  );
+  for (const body of selectionBodies) {
+    const selection = parseRecordBody(body, routingSelectedEventSchema);
+    if (selection === undefined) throw new HandoffRoutingStoreUnreadableError();
+    retireSelection(transaction, ids, selection, 'completed-pair-compaction', observedAt, true);
   }
 }
 
-function unresolvedCount(db: DatabaseSync): number {
-  const row = db
-    .prepare(
-      `SELECT COUNT(*) AS count
-      FROM handoff_routing_records AS selection
-      WHERE selection.record_kind = 'selection'
-        AND NOT EXISTS (
-          SELECT 1 FROM handoff_routing_records AS terminal
-          WHERE terminal.invocation_id = selection.invocation_id AND terminal.record_kind = 'terminal'
-        )`,
-    )
-    .get() as Readonly<{ count: number }>;
-  return row.count;
-}
-
-function evictOldestOpening(db: DatabaseSync, observedAt: string): void {
-  const row = db
-    .prepare(
-      `SELECT selection.body_json
-      FROM handoff_routing_records AS selection
-      WHERE selection.record_kind = 'selection'
-        AND NOT EXISTS (
-          SELECT 1 FROM handoff_routing_records AS terminal
-          WHERE terminal.invocation_id = selection.invocation_id AND terminal.record_kind = 'terminal'
-        )
-      ORDER BY selection.sequence
-      LIMIT 1`,
-    )
-    .get() as StatusRow | undefined;
-  const selection = parseRow(row, routingSelectedEventSchema);
+function evictOldestOpening(
+  transaction: HandoffRoutingStatusTransaction,
+  ids: Pick<IdPort, 'uuid'>,
+  observedAt: string,
+): void {
+  const selection = parseRecordBody(transaction.oldestOpeningBody(), routingSelectedEventSchema);
   if (selection === undefined) throw new RejectedTransitionError();
-  retireSelection(db, selection, 'selection-evicted-at-capacity', observedAt, false);
+  retireSelection(transaction, ids, selection, 'selection-evicted-at-capacity', observedAt, false);
 }
 
-function applySelection(db: DatabaseSync, transition: z.infer<typeof routingSelectedTransitionSchema>): number {
+function applySelection(
+  transaction: HandoffRoutingStatusTransaction,
+  ids: Pick<IdPort, 'uuid'>,
+  transition: z.infer<typeof routingSelectedTransitionSchema>,
+): number {
   if (
-    selectionForInvocation(db, transition.invocationId) !== undefined ||
-    terminalForInvocation(db, transition.invocationId) !== undefined ||
-    tombstoneForInvocation(db, transition.invocationId) !== undefined
+    selectionForInvocation(transaction, transition.invocationId) !== undefined ||
+    terminalForInvocation(transaction, transition.invocationId) !== undefined ||
+    tombstoneForInvocation(transaction, transition.invocationId) !== undefined
   ) {
     throw new RejectedTransitionError();
   }
-  makeSelectionAdmissionRoom(db, transition.observedAt);
-  return insertSelection(db, transition);
+  makeSelectionAdmissionRoom(transaction, ids, transition.observedAt);
+  return insertSelection(transaction, transition);
 }
 
-function applyTerminal(db: DatabaseSync, transition: z.infer<typeof terminalTransitionSchema>): number {
-  if (terminalForInvocation(db, transition.invocationId) !== undefined) throw new RejectedTransitionError();
+function applyTerminal(
+  transaction: HandoffRoutingStatusTransaction,
+  ids: Pick<IdPort, 'uuid'>,
+  transition: z.infer<typeof terminalTransitionSchema>,
+): number {
+  if (terminalForInvocation(transaction, transition.invocationId) !== undefined) {
+    throw new RejectedTransitionError();
+  }
   if (transition.selection.kind === 'without-selection') {
     if (
-      selectionForInvocation(db, transition.invocationId) !== undefined ||
-      tombstoneForInvocation(db, transition.invocationId) !== undefined
+      selectionForInvocation(transaction, transition.invocationId) !== undefined ||
+      tombstoneForInvocation(transaction, transition.invocationId) !== undefined
     ) {
       throw new RejectedTransitionError();
     }
-    makeClosingAdmissionRoom(db, transition.observedAt, 'unreserved');
-    return insertTerminal(db, transition, terminalGapDisposition(transition));
+    makeClosingAdmissionRoom(transaction, ids, transition.observedAt, 'unreserved');
+    return insertTerminal(transaction, transition, terminalGapDisposition(transition));
   }
 
-  const selection = selectionForInvocation(db, transition.invocationId);
+  const selection = selectionForInvocation(transaction, transition.invocationId);
   if (selection !== undefined) {
     if (selection.sequence !== transition.selection.selectionSequence) throw new RejectedTransitionError();
-    releaseClosingReserve(db, selection.invocationId);
-    makeClosingAdmissionRoom(db, transition.observedAt, 'reserved');
-    return insertTerminal(db, transition, transition.disposition);
+    releaseClosingReserve(transaction, selection.invocationId);
+    makeClosingAdmissionRoom(transaction, ids, transition.observedAt, 'reserved');
+    return insertTerminal(transaction, transition, transition.disposition);
   }
 
-  const tombstone = tombstoneForInvocation(db, transition.invocationId);
+  const tombstone = tombstoneForInvocation(transaction, transition.invocationId);
   if (tombstone === undefined || tombstone.selectionSequence !== transition.selection.selectionSequence) {
-    makeClosingAdmissionRoom(db, transition.observedAt, 'unreserved');
-    return insertTerminal(db, transition, {
+    makeClosingAdmissionRoom(transaction, ids, transition.observedAt, 'unreserved');
+    return insertTerminal(transaction, transition, {
       kind: 'terminal-without-retained-selection',
       knowledge: 'identity-expired-or-selection-unavailable',
       terminal: transition.disposition,
@@ -1304,11 +1129,11 @@ function applyTerminal(db: DatabaseSync, transition: z.infer<typeof terminalTran
   if (tombstone.retirementCause === 'completed-pair-compaction' || tombstone.terminalExisted) {
     throw new RejectedTransitionError();
   }
-  db.prepare('DELETE FROM handoff_routing_records WHERE sequence = ?').run(tombstone.sequence);
-  makeClosingAdmissionRoom(db, transition.observedAt, 'unreserved');
+  transaction.deleteRecord(tombstone.sequence);
+  makeClosingAdmissionRoom(transaction, ids, transition.observedAt, 'unreserved');
   if (tombstone.retirementCause === 'operator-resolved') {
-    if (tombstone.resolutionReason === undefined) throw new UnreadableStatusError();
-    return insertTerminal(db, transition, {
+    if (tombstone.resolutionReason === undefined) throw new HandoffRoutingStoreUnreadableError();
+    return insertTerminal(transaction, transition, {
       kind: 'terminal-after-operator-resolution',
       resolutionReason: tombstone.resolutionReason,
       retiredSelection: {
@@ -1322,27 +1147,32 @@ function applyTerminal(db: DatabaseSync, transition: z.infer<typeof terminalTran
   }
   const replacement = retirementTombstoneSchema.parse({
     ...tombstone,
-    sequence: nextRecordSequence(db),
+    sequence: transaction.nextRecordSequence(),
     eventId: transition.eventId,
     observedAt: transition.observedAt,
     terminalExisted: true,
   });
-  const sequence = insertRecord(db, 'retirement', replacement);
-  enforceTombstoneBounds(db);
+  const sequence = insertRecord(transaction, 'retirement', replacement);
+  enforceTombstoneBounds(transaction);
   return sequence;
 }
 
-function applyResolution(db: DatabaseSync, transition: z.infer<typeof operatorResolvedTransitionSchema>): number {
-  const selection = selectionForInvocation(db, transition.invocationId);
+function applyResolution(
+  transaction: HandoffRoutingStatusTransaction,
+  ids: Pick<IdPort, 'uuid'>,
+  transition: z.infer<typeof operatorResolvedTransitionSchema>,
+): number {
+  const selection = selectionForInvocation(transaction, transition.invocationId);
   if (selection === undefined || selection.sequence !== transition.selectionSequence) {
     throw new RejectedTransitionError();
   }
-  if (terminalForInvocation(db, transition.invocationId) !== undefined) throw new RejectedTransitionError();
-  releaseClosingReserve(db, selection.invocationId);
-  db.prepare('DELETE FROM handoff_routing_records WHERE invocation_id = ?').run(selection.invocationId);
-  makeClosingAdmissionRoom(db, transition.observedAt, 'reserved');
+  if (terminalForInvocation(transaction, transition.invocationId) !== undefined) throw new RejectedTransitionError();
+  releaseClosingReserve(transaction, selection.invocationId);
+  transaction.deleteInvocationRecords(selection.invocationId);
+  makeClosingAdmissionRoom(transaction, ids, transition.observedAt, 'reserved');
   const sequence = insertTombstone(
-    db,
+    transaction,
+    ids,
     selection,
     'operator-resolved',
     false,
@@ -1350,21 +1180,24 @@ function applyResolution(db: DatabaseSync, transition: z.infer<typeof operatorRe
     transition.reason,
     transition.eventId,
   );
-  enforceTombstoneBounds(db);
+  enforceTombstoneBounds(transaction);
   return sequence;
 }
 
-function applyTransition(db: DatabaseSync, transition: HandoffRoutingTransition): number {
-  const duplicate = db.prepare('SELECT 1 FROM handoff_routing_records WHERE event_id = ?').get(transition.eventId);
-  if (duplicate !== undefined) throw new RejectedTransitionError();
+function applyTransition(
+  transaction: HandoffRoutingStatusTransaction,
+  ids: Pick<IdPort, 'uuid'>,
+  transition: HandoffRoutingTransition,
+): number {
+  if (transaction.eventExists(transition.eventId)) throw new RejectedTransitionError();
   switch (transition.kind) {
     case 'routing-selected':
-      return applySelection(db, transition);
+      return applySelection(transaction, ids, transition);
     case 'execution-failed':
     case 'continuation-finalized':
-      return applyTerminal(db, transition);
+      return applyTerminal(transaction, ids, transition);
     case 'operator-resolved':
-      return applyResolution(db, transition);
+      return applyResolution(transaction, ids, transition);
     default:
       return assertNever(transition);
   }
@@ -1383,27 +1216,17 @@ function errorNumber(error: unknown, fallback: number): number {
   return typeof candidate === 'number' && Number.isInteger(candidate) ? candidate : fallback;
 }
 
-function rollbackUncommittedPublication(
-  db: DatabaseSync | undefined,
-  transactionOpen: boolean,
-  commitStarted: boolean,
-): void {
-  if (db === undefined || !transactionOpen || commitStarted) return;
-  try {
-    db.exec('ROLLBACK');
-  } catch (rollbackError) {
-    void rollbackError;
-  }
-}
-
 function classifyPublicationError(error: unknown, commitStarted: boolean): PublicationOutcome {
+  if (error instanceof HandoffRoutingStoreInvalidRecordError) {
+    return { kind: 'not-published', cause: 'invalid-record', validation: error.validation };
+  }
   if (error instanceof RejectedTransitionError) {
     return { kind: 'not-published', cause: 'rejected-transition' };
   }
   if (error instanceof UnsupportedGenerationError) {
     return { kind: 'undeterminable', cause: 'unsupported-generation', errcode: SQLITE_ERROR };
   }
-  if (error instanceof UnreadableStatusError) {
+  if (error instanceof HandoffRoutingStoreUnreadableError) {
     return { kind: 'undeterminable', cause: 'unreadable', errcode: error.errcode };
   }
   const errcode = errorNumber(error, SQLITE_ERROR);
@@ -1416,64 +1239,100 @@ function classifyPublicationError(error: unknown, commitStarted: boolean): Publi
   return { kind: 'undeterminable', cause: 'io-failed', errcode };
 }
 
-function publishOnce(path: string, transitions: readonly HandoffRoutingTransition[]): PublicationOutcome {
+function handoffRoutingStatusStoreSchema(): HandoffRoutingStatusStoreSchema {
+  return {
+    generation: HANDOFF_ROUTING_STATUS_GENERATION,
+    maximumBytes: MAX_HANDOFF_ROUTING_STATUS_BYTES,
+    maximumIdentifierLength: MAX_IDENTIFIER_LENGTH,
+    maximumObservedAtLength: MAX_OBSERVED_AT_LENGTH,
+    maximumRoutingSelectedBytes: MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES['routing-selected'],
+    maximumExecutionFailedBytes: MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES['execution-failed'],
+    maximumContinuationFinalizedBytes: MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES['continuation-finalized'],
+    maximumRetirementTombstoneBytes: MAX_ENCODED_RETIREMENT_TOMBSTONE_BYTES,
+    closingRecordBytes: MAX_LEGAL_CLOSING_RECORD_BYTES,
+    validateRecordBody: validateStatusRecordBody,
+  };
+}
+
+function publishOnce(
+  runtime: Pick<HandoffRoutingPublicationPorts, 'storage' | 'ids'>,
+  path: string,
+  transitions: readonly HandoffRoutingTransition[],
+): PublicationOutcome {
   const parsed = z.array(handoffRoutingTransitionSchema).min(1).safeParse(transitions);
   if (!parsed.success) return { kind: 'not-published', cause: 'rejected-transition' };
 
-  let db: DatabaseSync | undefined;
-  let transactionOpen = false;
-  let commitStarted = false;
-  try {
-    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-    db = new DatabaseSync(path);
-    chmodSync(path, 0o600);
-    configureDatabase(db);
-    db.exec('BEGIN IMMEDIATE');
-    transactionOpen = true;
-    initializeOrValidateDatabase(db);
-
-    const observedAt = transitionObservedAt(parsed.data);
-    compactExpiredCompletedPairs(db, observedAt);
-    let publishedSequence = 0;
-    for (const transition of parsed.data) publishedSequence = applyTransition(db, transition);
-    compactExpiredCompletedPairs(db, observedAt);
-    commitStarted = true;
-    db.exec('COMMIT');
-    transactionOpen = false;
-    return { kind: 'committed', sequence: publishedSequence };
-  } catch (error) {
-    rollbackUncommittedPublication(db, transactionOpen, commitStarted);
-    return classifyPublicationError(error, commitStarted);
-  } finally {
-    if (db !== undefined) {
-      try {
-        db.close();
-      } catch (closeError) {
-        void closeError;
+  const publication = publishHandoffRoutingStoreTransaction(
+    runtime.storage,
+    path,
+    handoffRoutingStatusStoreSchema(),
+    (transaction) => {
+      const observedAt = transitionObservedAt(parsed.data);
+      compactExpiredCompletedPairs(transaction, runtime.ids, observedAt);
+      let publishedSequence = 0;
+      for (const transition of parsed.data) {
+        publishedSequence = applyTransition(transaction, runtime.ids, transition);
       }
-    }
-  }
+      compactExpiredCompletedPairs(transaction, runtime.ids, observedAt);
+      return publishedSequence;
+    },
+  );
+  return publication.kind === 'committed'
+    ? { kind: 'committed', sequence: publication.value }
+    : classifyPublicationError(publication.error, publication.commitStarted);
 }
 
 export async function publishHandoffRoutingTransitions(
-  time: Pick<TimePort, 'monotonicNow' | 'sleep'>,
+  runtime: HandoffRoutingPublicationPorts,
   path: string,
   transitions: readonly HandoffRoutingTransition[],
   signal?: AbortSignal,
 ): Promise<PublicationOutcome> {
   const clock = createMonotonicClock(Symbol('handoff-routing-status-publication-contention'), {
-    readMilliseconds: time.monotonicNow,
+    readMilliseconds: () => runtime.time.monotonicNow(),
   });
   const deadline = clock.shiftMilliseconds(clock.now(), PUBLICATION_CONTENTION_TIMEOUT_MS);
   while (true) {
-    const outcome = publishOnce(path, transitions);
+    const outcome = publishOnce(runtime, path, transitions);
     if (outcome.kind !== 'not-published' || outcome.cause !== 'contended') return outcome;
     if (signal?.aborted === true || clock.compare(clock.now(), deadline) >= 0) return outcome;
     try {
-      await time.sleep(PUBLICATION_RETRY_DELAY_MS, signal === undefined ? undefined : { signal });
+      await runtime.time.sleep(PUBLICATION_RETRY_DELAY_MS, signal === undefined ? undefined : { signal });
     } catch {
       return outcome;
     }
+  }
+}
+
+export async function publishGenerationCoordinatedHandoffRoutingTransitions(
+  runtime: Runtime,
+  path: string,
+  transitions: readonly HandoffRoutingTransition[],
+  signal?: AbortSignal,
+): Promise<PublicationOutcome> {
+  let writer: GenerationWriterLease;
+  try {
+    const attempt = tryAcquireGenerationWriterLease(runtime, {
+      kind: 'routing-status',
+      name: 'handoff-routing-status',
+    });
+    if (attempt.kind === 'maintenance-active') {
+      return { kind: 'not-published', cause: 'generation-maintenance' };
+    }
+    if (attempt.kind === 'contended') return { kind: 'not-published', cause: 'contended' };
+    writer = attempt.lease;
+  } catch {
+    return { kind: 'not-published', cause: 'coordination-unavailable' };
+  }
+  try {
+    try {
+      writer.assertOwned();
+    } catch {
+      return { kind: 'not-published', cause: 'coordination-unavailable' };
+    }
+    return await publishHandoffRoutingTransitions(runtime, path, transitions, signal);
+  } finally {
+    writer.release();
   }
 }
 
@@ -1602,8 +1461,8 @@ export function persistedHandoffDispositionPolicy(disposition: PersistedHandoffD
       return {
         durability: 'lifecycle-journal',
         retention: 'bounded-history',
-        severity: 'warning',
-        exitContribution: disposition.causes['selection-evicted-at-capacity'] > 0 ? 75 : 0,
+        severity: 'info',
+        exitContribution: 0,
       };
     default:
       return assertNever(disposition);
@@ -1636,6 +1495,35 @@ export type HandoffRoutingStatusReadResult =
   | Readonly<{ kind: 'undeterminable'; cause: 'io-failed'; errcode: number }>;
 
 export type HandoffRoutingOwnerLivenessProbe = (owner: RecordedProcessIdentity) => OwnerLiveness;
+
+export type HandoffRoutingResolveRequest = Readonly<{
+  invocationId: string;
+  forceUnobservable: boolean;
+}>;
+
+export type HandoffRoutingResolveResult =
+  | Readonly<{
+      kind: 'resolved';
+      invocationId: string;
+      reason: 'owner-absent' | 'operator-abandoned-unobservable';
+      sequence: number;
+    }>
+  | Readonly<{ kind: 'stale'; invocationId: string }>
+  | Readonly<{ kind: 'already-terminal'; invocationId: string }>
+  | Readonly<{ kind: 'live-owner'; invocationId: string }>
+  | Readonly<{
+      kind: 'unauthorized-unobservable';
+      invocationId: string;
+      cause: Extract<OwnerLiveness, { kind: 'unobservable' }>['cause'];
+    }>
+  | Readonly<{
+      kind: 'status-unavailable';
+      status: Extract<
+        HandoffRoutingStatusReadResult,
+        { kind: 'unreadable' | 'unsupported-generation' | 'undeterminable' }
+      >;
+    }>
+  | Readonly<{ kind: 'not-published'; outcome: Exclude<PublicationOutcome, { kind: 'committed' }> }>;
 
 const statusReadRowSchema = z
   .object({
@@ -1690,6 +1578,7 @@ type StatusSnapshot = Readonly<{
 
 type StatusSnapshotReadResult =
   | StatusSnapshot
+  | Extract<HandoffRoutingStatusReadResult, { kind: 'absent' }>
   | Extract<HandoffRoutingStatusReadResult, { kind: 'unreadable' | 'unsupported-generation' | 'undeterminable' }>;
 
 type InvocationRecords = {
@@ -1697,8 +1586,6 @@ type InvocationRecords = {
   terminal?: HandoffRoutingTerminalEvent;
   tombstone?: RetirementTombstone;
 };
-
-type StoredStatusRecord = RoutingSelectedEvent | HandoffRoutingTerminalEvent | RetirementTombstone;
 
 type UnreadableStatus = Extract<HandoffRoutingStatusReadResult, { kind: 'unreadable' }>;
 
@@ -1757,45 +1644,22 @@ function decodeAndValidateStatusRow(rawRow: unknown): DecodedStatusRow {
     return { kind: 'unreadable', reason: 'invalid-json' };
   }
 
-  const parsed =
-    row.record_kind === 'selection'
-      ? routingSelectedEventSchema.safeParse(body)
-      : row.record_kind === 'terminal'
-        ? terminalEventSchema.safeParse(body)
-        : retirementTombstoneSchema.safeParse(body);
-  if (!parsed.success) return { kind: 'unreadable', reason: 'invalid-shape' };
-
-  const record = parsed.data;
-  if (
-    row.encoded_bytes !== bodyBytes ||
-    row.sequence !== record.sequence ||
-    row.generation !== record.generation ||
-    row.event_id !== record.eventId ||
-    row.invocation_id !== record.invocationId ||
-    row.observed_at !== record.observedAt ||
-    row.event_kind !== record.eventKind
-  ) {
-    return { kind: 'unreadable', reason: 'invalid-shape' };
-  }
-  if (record.phase === 'selection') {
-    if (row.selection_sequence !== null || row.retirement_cause !== null || row.terminal_existed !== null) {
-      return { kind: 'unreadable', reason: 'invalid-shape' };
-    }
-  } else if (record.phase === 'terminal') {
-    const selectionSequence =
-      record.selection.kind === 'with-selection-sequence' ? record.selection.selectionSequence : null;
-    if (
-      row.selection_sequence !== selectionSequence ||
-      row.retirement_cause !== null ||
-      row.terminal_existed !== null
-    ) {
-      return { kind: 'unreadable', reason: 'invalid-shape' };
-    }
-  } else if (
-    row.selection_sequence !== record.selectionSequence ||
-    row.retirement_cause !== record.retirementCause ||
-    row.terminal_existed !== Number(record.terminalExisted)
-  ) {
+  const record = decodeStatusRecordBody(
+    {
+      generation: row.generation,
+      sequence: row.sequence,
+      eventId: row.event_id,
+      invocationId: row.invocation_id,
+      observedAt: row.observed_at,
+      recordKind: row.record_kind,
+      eventKind: row.event_kind,
+      selectionSequence: row.selection_sequence,
+      retirementCause: row.retirement_cause,
+      terminalExisted: row.terminal_existed,
+    },
+    body,
+  );
+  if (row.encoded_bytes !== bodyBytes || record === null) {
     return { kind: 'unreadable', reason: 'invalid-shape' };
   }
 
@@ -1932,99 +1796,29 @@ function classifyStatusSnapshotError(error: unknown): StatusSnapshotReadResult {
   return { kind: 'undeterminable', cause: 'io-failed', errcode };
 }
 
-function readStatusSnapshot(path: string): StatusSnapshotReadResult {
-  let db: DatabaseSync | undefined;
-  let transactionOpen = false;
-  try {
-    db = new DatabaseSync(path, { readOnly: true });
-    db.exec('PRAGMA busy_timeout=0');
-    db.exec('BEGIN');
-    transactionOpen = true;
-    const generation = (db.prepare('PRAGMA user_version').get() as GenerationRow).user_version;
-    if (generation !== HANDOFF_ROUTING_STATUS_GENERATION) {
-      db.exec('COMMIT');
-      transactionOpen = false;
-      return { kind: 'unsupported-generation', generation };
-    }
-    const retirement = db
-      .prepare(
-        `SELECT
-          generation,
-          expired_identity_count,
-          capacity_eviction_count,
-          completed_pair_compaction_count,
-          operator_resolved_count,
-          min_selection_sequence,
-          max_selection_sequence,
-          earliest_selected_at,
-          latest_selected_at
-        FROM handoff_routing_metadata WHERE singleton = 1`,
-      )
-      .get() as RetirementHistoryRow | undefined;
-    const rows = db
-      .prepare(
-        `SELECT
-          sequence,
-          generation,
-          event_id,
-          invocation_id,
-          observed_at,
-          record_kind,
-          event_kind,
-          selection_sequence,
-          retirement_cause,
-          terminal_existed,
-          body_json,
-          encoded_bytes
-        FROM handoff_routing_records ORDER BY sequence`,
-      )
-      .all();
-    const reserves = db
-      .prepare(
-        `SELECT
-          invocation_id,
-          event_id,
-          observed_at,
-          length(allocation) AS allocation_bytes
-        FROM handoff_routing_closing_reserve ORDER BY invocation_id`,
-      )
-      .all();
-    db.exec('COMMIT');
-    transactionOpen = false;
-    return { kind: 'snapshot', rows, reserves, retirement };
-  } catch (error) {
-    if (transactionOpen && db !== undefined) {
-      try {
-        db.exec('ROLLBACK');
-      } catch (rollbackError) {
-        void rollbackError;
-      }
-    }
-    return classifyStatusSnapshotError(error);
-  } finally {
-    if (db !== undefined) {
-      try {
-        db.close();
-      } catch (closeError) {
-        void closeError;
-      }
-    }
+function readStatusSnapshot(storage: Runtime['storage'], path: string): StatusSnapshotReadResult {
+  const result = readHandoffRoutingStoreSnapshot(storage, path, HANDOFF_ROUTING_STATUS_GENERATION);
+  switch (result.kind) {
+    case 'absent':
+      return result;
+    case 'unsupported-generation':
+      return result;
+    case 'snapshot':
+      return result;
+    case 'failed':
+      return classifyStatusSnapshotError(result.error);
+    default:
+      return assertNever(result);
   }
 }
 
 export function readHandoffRoutingStatus(
+  runtime: Pick<Runtime, 'storage'>,
   path: string,
   probe?: HandoffRoutingOwnerLivenessProbe,
 ): HandoffRoutingStatusReadResult {
-  try {
-    accessSync(path, fsConstants.R_OK);
-  } catch (error) {
-    const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
-    if (code === 'ENOENT' || code === 'ENOTDIR') return { kind: 'absent' };
-    return { kind: 'undeterminable', cause: 'io-failed', errcode: errorNumber(error, SQLITE_CANTOPEN) };
-  }
-
-  const snapshot = readStatusSnapshot(path);
+  const snapshot = readStatusSnapshot(runtime.storage, path);
+  if (snapshot.kind === 'absent') return snapshot;
   if (snapshot.kind !== 'snapshot') return snapshot;
 
   const retirementHistory = retirementHistoryTruncatedSchema.safeParse({
@@ -2052,6 +1846,146 @@ export function readHandoffRoutingStatus(
     statuses: projection.statuses,
     retirementHistoryTruncated: retirementHistory.data,
   };
+}
+
+function observationProbe(
+  observations: Awaited<ReturnType<Runtime['process']['observeProcessIdentities']>>,
+): HandoffRoutingOwnerLivenessProbe {
+  return (owner) => {
+    const observation = observations.find(
+      (candidate) => candidate.owner.pid === owner.pid && candidate.owner.incarnation === owner.incarnation,
+    );
+    if (observation === undefined) return { kind: 'unobservable', cause: 'probe-failed' };
+    switch (observation.evidence.kind) {
+      case 'pid-absent':
+        return { kind: 'absent' };
+      case 'incarnation':
+        return observation.evidence.incarnation === owner.incarnation ? { kind: 'alive' } : { kind: 'absent' };
+      case 'unobservable':
+        return observation.evidence;
+      default:
+        return assertNever(observation.evidence);
+    }
+  };
+}
+
+export async function readHandoffRoutingStatusWithOwnerObservations(
+  runtime: Pick<Runtime, 'storage' | 'process'>,
+  path: string,
+): Promise<HandoffRoutingStatusReadResult> {
+  const initial = readHandoffRoutingStatus(runtime, path);
+  if (initial.kind !== 'current') return initial;
+  const owners = initial.statuses.flatMap((status) => (status.kind === 'unresolved' ? [status.selection.owner] : []));
+  if (owners.length === 0) return initial;
+  let observations: Awaited<ReturnType<Runtime['process']['observeProcessIdentities']>>;
+  try {
+    observations = await runtime.process.observeProcessIdentities(
+      owners.slice(0, MAX_UNRESOLVED_INVOCATIONS),
+      MAX_HANDOFF_ROUTING_OWNER_SWEEP_MS,
+    );
+  } catch {
+    observations = owners.map((owner) => ({
+      owner,
+      evidence: { kind: 'unobservable', cause: 'probe-failed' },
+    }));
+  }
+  return readHandoffRoutingStatus(runtime, path, observationProbe(observations));
+}
+
+function statusInvocationId(status: HandoffRoutingInvocationStatus): string {
+  switch (status.kind) {
+    case 'unresolved':
+      return status.selection.invocationId;
+    case 'terminal':
+      return status.terminal.invocationId;
+    case 'retired':
+      return status.tombstone.invocationId;
+    default:
+      return assertNever(status);
+  }
+}
+
+export async function resolveHandoffRoutingStatus(
+  runtime: Runtime,
+  path: string,
+  request: HandoffRoutingResolveRequest,
+  signal?: AbortSignal,
+): Promise<HandoffRoutingResolveResult> {
+  const statusRead = await readHandoffRoutingStatusWithOwnerObservations(runtime, path);
+  if (statusRead.kind !== 'current') {
+    return statusRead.kind === 'absent'
+      ? { kind: 'stale', invocationId: request.invocationId }
+      : { kind: 'status-unavailable', status: statusRead };
+  }
+
+  const status = statusRead.statuses.find((candidate) => statusInvocationId(candidate) === request.invocationId);
+  if (status === undefined) return { kind: 'stale', invocationId: request.invocationId };
+  if (status.kind === 'terminal') return { kind: 'already-terminal', invocationId: request.invocationId };
+  if (status.kind === 'retired') {
+    return status.tombstone.retirementCause === 'operator-resolved' || status.tombstone.terminalExisted
+      ? { kind: 'already-terminal', invocationId: request.invocationId }
+      : { kind: 'stale', invocationId: request.invocationId };
+  }
+
+  let reason: 'owner-absent' | 'operator-abandoned-unobservable';
+  switch (status.ownerLiveness.kind) {
+    case 'alive':
+      return { kind: 'live-owner', invocationId: request.invocationId };
+    case 'absent':
+      reason = 'owner-absent';
+      break;
+    case 'unobservable':
+      if (!request.forceUnobservable || status.ownerLiveness.cause === 'deadline-expired') {
+        return {
+          kind: 'unauthorized-unobservable',
+          invocationId: request.invocationId,
+          cause: status.ownerLiveness.cause,
+        };
+      }
+      reason = 'operator-abandoned-unobservable';
+      break;
+    default:
+      return assertNever(status.ownerLiveness);
+  }
+
+  const outcome = await publishGenerationCoordinatedHandoffRoutingTransitions(
+    runtime,
+    path,
+    [
+      {
+        kind: 'operator-resolved',
+        eventId: runtime.ids.uuid(),
+        invocationId: request.invocationId,
+        observedAt: new Date(runtime.time.now()).toISOString(),
+        selectionSequence: status.selection.sequence,
+        reason,
+      },
+    ],
+    signal,
+  );
+  return outcome.kind === 'committed'
+    ? { kind: 'resolved', invocationId: request.invocationId, reason, sequence: outcome.sequence }
+    : { kind: 'not-published', outcome };
+}
+
+export function handoffRoutingStatusExitContribution(result: HandoffRoutingStatusReadResult): 0 | 75 {
+  if (result.kind === 'absent') return 0;
+  if (result.kind !== 'current') return 75;
+  for (const status of result.statuses) {
+    if (status.kind === 'unresolved') {
+      if (status.ownerLiveness.kind === 'absent') return 75;
+      if (status.ownerLiveness.kind === 'unobservable' && status.ownerLiveness.cause !== 'probe-not-available') {
+        return 75;
+      }
+      continue;
+    }
+    if (status.kind === 'retired') {
+      if (status.tombstone.retirementCause !== 'completed-pair-compaction') return 75;
+      continue;
+    }
+    if (persistedHandoffDispositionPolicy(status.terminal.disposition).exitContribution === 75) return 75;
+  }
+  return 0;
 }
 
 const MAX_TEXT = '\u0800';

@@ -14,25 +14,37 @@ import {
 } from '../infra/bundle-manifest.js';
 import {
   createForeignTargetValidator,
+  inspectValidatedHandoffTarget,
   withValidatedHandoffTarget,
   type ForeignTargetValidator,
   type ForeignTargetValidationResult,
   type ValidatedHandoffTarget,
 } from '../infra/handoff-target.js';
+import { handoffRoutingStatusPathForRunDir } from '../infra/path/index.js';
 import { assertNever } from '../infra/error-format.js';
 import type { TimePort, TimerHandle } from '../infra/port-types.js';
+import type { RecordedProcessIdentity } from '../infra/process-containment.js';
 import type { Runtime } from '../runtime/ports.js';
 import { createRealRuntime } from '../runtime/real.js';
 import { createIpcClient } from '../transport/ipc/client.js';
 import {
   HANDOFF_ROUTING_BASIS_OBLIGATIONS,
   routeLiveIncumbent,
+  type BuildSummary,
   type HandoffRoutingBasis,
   type HandoffRoutingResult,
   type IncumbentIdentitySummary,
   type RoutingBasisObligation,
   type UnresolvedIncumbentCause,
 } from './handoff-routing.js';
+import { isHandoffRoutingStatusDiscardOperation, parseHandoffRepairOperation } from './handoff-repair-operation.js';
+import type {
+  DirectTerminalDisposition,
+  DurableHandoffRoutingBasis,
+  HandoffRoutingTransition,
+  PublicationOutcome,
+  SelectedHandoffDisposition,
+} from './handoff-routing-status.js';
 
 // The pre-flight's own probe budget. Not `HEALTH_TIMEOUT_MS` from `transport/http/sse.ts`: the coordinator
 // topology invariant forbids a coordinator module depending on the HTTP transport, and this bound answers a
@@ -128,9 +140,7 @@ export type HandoffContinuationReason =
   | Readonly<{ kind: 'handoff-abandoned'; reason: 'stdout-drain-incomplete' }>;
 
 // A routing continuation must resolve its obligation through its basis table.
-export const HANDOFF_CONTINUATION_REASON_OBLIGATIONS: Readonly<
-  Record<Exclude<HandoffContinuationReason['kind'], 'routing'>, RoutingBasisObligation>
-> = {
+export const HANDOFF_CONTINUATION_REASON_OBLIGATIONS = {
   'handoff-not-applicable': {
     requiredDurability: 'ephemeral-allowed',
     requiredRetention: 'until-superseded',
@@ -143,28 +153,141 @@ export const HANDOFF_CONTINUATION_REASON_OBLIGATIONS: Readonly<
     severity: 'warning',
     exitContribution: 75,
   },
-};
+} as const satisfies Readonly<Record<Exclude<HandoffContinuationReason['kind'], 'routing'>, RoutingBasisObligation>>;
 
-export const ABSENT_HANDOFF_RESULT_OBLIGATION: RoutingBasisObligation = {
+export const ABSENT_HANDOFF_RESULT_OBLIGATION = {
   requiredDurability: 'ephemeral-allowed',
   requiredRetention: 'until-superseded',
   severity: 'info',
   exitContribution: 0,
-};
+} as const satisfies RoutingBasisObligation;
 
 export type HandoffContinuationResult =
   | Readonly<{ kind: 'run-current'; reason: HandoffContinuationReason }>
   | Readonly<{ kind: 'delegated'; version: string; outcome: HandoffOutcome }>;
 
-export type LiveHandoffContinuationResult = Extract<HandoffContinuationResult, { kind: 'run-current' }>;
-export type DelegatedHandoffContinuationResult = Extract<HandoffContinuationResult, { kind: 'delegated' }>;
+export type HandoffRecordingPhase = 'selection' | 'terminal';
 
-export function liveHandoffResultObligation(result: LiveHandoffContinuationResult | null): RoutingBasisObligation {
-  if (result === null) return ABSENT_HANDOFF_RESULT_OBLIGATION;
-  if (result.reason.kind === 'routing') {
-    return HANDOFF_ROUTING_BASIS_OBLIGATIONS[result.reason.basis.kind];
+export type HandoffRecordingRefusal =
+  | Readonly<{
+      reason: 'owner-identity-unavailable';
+      remediation: 'retry-when-process-identity-is-readable';
+      attemptedPhase: 'selection';
+    }>
+  | Readonly<{
+      reason: 'invalid-target-authority';
+      remediation: 'retry-with-live-target-authority';
+      attemptedPhase: 'selection';
+    }>
+  | Readonly<{
+      reason: 'selection-publication-undeterminable';
+      remediation: 'inspect-routing-status-before-repair';
+      attemptedPhase: 'terminal';
+    }>;
+
+type PublicationFailure = Exclude<PublicationOutcome, { kind: 'committed' }>;
+
+type HandoffRefusalIncident =
+  | Readonly<{
+      phase: 'selection';
+      kind: 'refused';
+      refusal: Extract<HandoffRecordingRefusal, { attemptedPhase: 'selection' }>;
+    }>
+  | Readonly<{
+      phase: 'terminal';
+      kind: 'refused';
+      refusal: Extract<HandoffRecordingRefusal, { attemptedPhase: 'terminal' }>;
+    }>;
+
+export type HandoffPublicationIncident =
+  | (PublicationFailure & Readonly<{ phase: HandoffRecordingPhase }>)
+  | HandoffRefusalIncident;
+
+type HandoffNotPublishedCause = Extract<PublicationFailure, { kind: 'not-published' }>['cause'];
+
+export const HANDOFF_PUBLICATION_INCIDENT_EXIT_CONTRIBUTIONS: Readonly<Record<HandoffNotPublishedCause, 70 | 75>> =
+  Object.freeze({
+    contended: 75,
+    'generation-maintenance': 75,
+    'capacity-exhausted': 75,
+    'invalid-record': 70,
+    'rejected-transition': 75,
+    'coordination-unavailable': 75,
+  });
+
+export function handoffPublicationIncidentExitContribution(incident: HandoffPublicationIncident): 70 | 75 {
+  switch (incident.kind) {
+    case 'not-published':
+      return HANDOFF_PUBLICATION_INCIDENT_EXIT_CONTRIBUTIONS[incident.cause];
+    case 'undeterminable':
+    case 'refused':
+      return 75;
+    default:
+      return assertNever(incident);
   }
-  return HANDOFF_CONTINUATION_REASON_OBLIGATIONS[result.reason.kind];
+}
+
+export type NonEmptyReadonlyArray<T> = readonly [T, ...T[]];
+
+export type HandoffRunResult =
+  | Readonly<{
+      kind: 'recorded';
+      continuation: HandoffContinuationResult;
+      publicationIncidents: readonly [];
+    }>
+  | Readonly<{
+      kind: 'recording-not-applicable';
+      continuationWithoutRecording: HandoffContinuationResult;
+    }>
+  | Readonly<{
+      kind: 'recording-incidents';
+      observedWork: HandoffContinuationResult;
+      publicationIncidents: NonEmptyReadonlyArray<HandoffPublicationIncident>;
+    }>;
+
+export type HandoffRunProjection = Readonly<{
+  continuation: HandoffContinuationResult;
+  publicationIncidents: readonly HandoffPublicationIncident[];
+}>;
+
+export function projectHandoffRunResult(result: HandoffRunResult): HandoffRunProjection {
+  switch (result.kind) {
+    case 'recorded':
+      return { continuation: result.continuation, publicationIncidents: result.publicationIncidents };
+    case 'recording-not-applicable':
+      return { continuation: result.continuationWithoutRecording, publicationIncidents: [] };
+    case 'recording-incidents':
+      return { continuation: result.observedWork, publicationIncidents: result.publicationIncidents };
+    default:
+      return assertNever(result);
+  }
+}
+
+export class HandoffRunError extends Error {
+  readonly originalError: unknown;
+  readonly incidents: NonEmptyReadonlyArray<HandoffPublicationIncident>;
+
+  constructor(originalError: unknown, incidents: NonEmptyReadonlyArray<HandoffPublicationIncident>) {
+    super('Handoff execution failed while routing-status publication was incomplete.');
+    this.name = 'HandoffRunError';
+    this.originalError = originalError;
+    this.incidents = incidents;
+  }
+}
+
+export type LiveHandoffContinuationResult = Extract<HandoffContinuationResult, { kind: 'run-current' }>;
+
+export type LiveHandoffResult = Readonly<{
+  continuation: LiveHandoffContinuationResult;
+  publicationIncidents: readonly HandoffPublicationIncident[];
+}>;
+
+export function liveHandoffResultObligation(result: LiveHandoffResult | null): RoutingBasisObligation {
+  if (result === null) return ABSENT_HANDOFF_RESULT_OBLIGATION;
+  if (result.continuation.reason.kind === 'routing') {
+    return HANDOFF_ROUTING_BASIS_OBLIGATIONS[result.continuation.reason.basis.kind];
+  }
+  return HANDOFF_CONTINUATION_REASON_OBLIGATIONS[result.continuation.reason.kind];
 }
 
 export type RunHandoffOptions = Readonly<{
@@ -172,6 +295,7 @@ export type RunHandoffOptions = Readonly<{
   time?: TimePort;
   signal?: AbortSignal;
   activeSelectionTarget?: ValidatedHandoffTarget;
+  onSelectionPublicationIncident?: (incident: HandoffPublicationIncident) => void;
 }>;
 
 type ChildOutcome = Readonly<{
@@ -186,7 +310,7 @@ type ObservedChild = Readonly<{
 
 type RoutingResolution = Readonly<{
   routing: HandoffRoutingResult;
-  runtime: Pick<Runtime, 'env' | 'paths' | 'storage'>;
+  runtime: Runtime;
   time: TimePort;
 }>;
 
@@ -521,31 +645,246 @@ function drainStdoutBeforeHandoff(time: TimePort, signal?: AbortSignal): Promise
   });
 }
 
-// A startup handoff delegates or throws; `refuses to continue-current for a startup handoff whose stdout drain
-// would fail` enforces this contract.
-export function runHandoff(
-  operationInput: Readonly<{ kind: 'backend-startup' }>,
-  options: RunHandoffOptions & Readonly<{ activeSelectionTarget: ValidatedHandoffTarget }>,
-): Promise<DelegatedHandoffContinuationResult>;
-export function runHandoff(
-  operationInput: HandoffOperation,
-  options?: RunHandoffOptions,
-): Promise<HandoffContinuationResult>;
-export async function runHandoff(
-  operationInput: HandoffOperation,
-  options: RunHandoffOptions = {},
-): Promise<HandoffContinuationResult> {
-  const operation = handoffOperationSchema.parse(operationInput) as HandoffOperation;
-  const guard = operation.kind === 'backend-startup' ? undefined : readCliHandoffGuard();
-  if (isDisplayOnlyInvocation(operation)) {
-    return { kind: 'run-current', reason: { kind: 'handoff-not-applicable', reason: 'display-only' } };
+type ExecutionThrowPhase = Extract<DirectTerminalDisposition, { kind: 'execution-failed' }>['throwPhase'];
+
+type SelectionPublication = PublicationOutcome | Readonly<{ kind: 'refused'; refusal: HandoffRecordingRefusal }>;
+
+function summarizeBuild(manifest: StrictBundleManifest): BuildSummary {
+  return {
+    version: manifest.version,
+    buildSetId: manifest.buildSetId,
+    bundleHash: manifest.bundleHash,
+    flavor: manifest.flavor,
+  };
+}
+
+function durableRoutingBasis(basis: HandoffRoutingBasis): DurableHandoffRoutingBasis {
+  switch (basis.kind) {
+    case 'incumbent-absent':
+    case 'incumbent-unresolved':
+    case 'incumbent-unusable':
+    case 'invoking-identity-unavailable':
+    case 'incumbent-identity-unavailable':
+    case 'same-build-set':
+    case 'invoking-build-not-older':
+      return basis;
+    case 'invalid-incumbent-target':
+      return {
+        kind: basis.kind,
+        evidence: {
+          failure: basis.evidence.failure,
+          ...(basis.evidence.expectedManifest === null
+            ? {}
+            : { expectedBuild: summarizeBuild(basis.evidence.expectedManifest) }),
+        },
+      };
+    default:
+      return assertNever(basis);
+  }
+}
+
+function selectedDisposition(routing: HandoffRoutingResult): SelectedHandoffDisposition {
+  switch (routing.kind) {
+    case 'continue-current':
+      return { kind: 'continue-current', basis: durableRoutingBasis(routing.basis) };
+    case 'handoff':
+      return {
+        kind: 'handoff-selected',
+        source: routing.source,
+        target: inspectValidatedHandoffTarget(routing.target),
+      };
+    default:
+      return assertNever(routing);
+  }
+}
+
+function writerIdentity(runtime: Runtime): RecordedProcessIdentity | null {
+  try {
+    const pid = runtime.env.pid();
+    const incarnation = runtime.process.readProcessIncarnation(pid, runtime.env.platform() as NodeJS.Platform);
+    return incarnation === null ? null : { pid, incarnation };
+  } catch {
+    return null;
+  }
+}
+
+function observedAt(time: TimePort): string {
+  return new Date(time.now()).toISOString();
+}
+
+async function publishHandoffTransition(
+  runtime: Runtime,
+  time: TimePort,
+  transition: HandoffRoutingTransition,
+  signal?: AbortSignal,
+): Promise<PublicationOutcome> {
+  const status = await import('./handoff-routing-status.js');
+  return status.publishGenerationCoordinatedHandoffRoutingTransitions(
+    { ...runtime, time },
+    handoffRoutingStatusPathForRunDir(runtime.paths.coral.coordinator.runDir, status.HANDOFF_ROUTING_STATUS_GENERATION),
+    [transition],
+    signal,
+  );
+}
+
+function recordIncident(
+  incidents: HandoffPublicationIncident[],
+  phase: HandoffRecordingPhase,
+  publication: SelectionPublication,
+): HandoffPublicationIncident | null {
+  if (publication.kind === 'committed') return null;
+  let incident: HandoffPublicationIncident;
+  if (publication.kind === 'refused') {
+    if (publication.refusal.attemptedPhase === 'selection') {
+      incident = { phase: 'selection', kind: publication.kind, refusal: publication.refusal };
+    } else {
+      incident = { phase: 'terminal', kind: publication.kind, refusal: publication.refusal };
+    }
+  } else if (publication.kind === 'not-published') {
+    incident = { phase, ...publication };
+  } else {
+    incident = {
+      phase,
+      kind: publication.kind,
+      cause: publication.cause,
+      errcode: publication.errcode,
+    };
+  }
+  incidents.push(incident);
+  return incident;
+}
+
+async function recordSelection(
+  runtime: Runtime,
+  time: TimePort,
+  routing: HandoffRoutingResult,
+  invocationId: string,
+  signal?: AbortSignal,
+): Promise<SelectionPublication> {
+  let disposition: SelectedHandoffDisposition;
+  try {
+    disposition = selectedDisposition(routing);
+  } catch {
+    return {
+      kind: 'refused',
+      refusal: {
+        reason: 'invalid-target-authority',
+        remediation: 'retry-with-live-target-authority',
+        attemptedPhase: 'selection',
+      },
+    };
   }
 
-  const { routing, runtime, time } = await resolveHandoffRoutingForOperation(operation, options);
+  const owner = writerIdentity(runtime);
+  if (owner === null) {
+    return {
+      kind: 'refused',
+      refusal: {
+        reason: 'owner-identity-unavailable',
+        remediation: 'retry-when-process-identity-is-readable',
+        attemptedPhase: 'selection',
+      },
+    };
+  }
+
+  return publishHandoffTransition(
+    runtime,
+    time,
+    {
+      kind: 'routing-selected',
+      eventId: runtime.ids.uuid(),
+      invocationId,
+      observedAt: observedAt(time),
+      owner,
+      disposition,
+    },
+    signal,
+  );
+}
+
+function finalizedDisposition(continuation: HandoffContinuationResult): DirectTerminalDisposition {
+  switch (continuation.kind) {
+    case 'run-current':
+      switch (continuation.reason.kind) {
+        case 'routing':
+          return {
+            kind: 'continued-current',
+            reason: { kind: 'routing', basis: durableRoutingBasis(continuation.reason.basis) },
+          };
+        case 'handoff-abandoned':
+          return { kind: 'continued-current', reason: { kind: 'handoff-abandoned-stdout' } };
+        case 'handoff-not-applicable':
+          throw new Error('Display-only handoff continuations cannot enter routing-status recording.');
+        default:
+          return assertNever(continuation.reason);
+      }
+    case 'delegated':
+      switch (continuation.outcome.kind) {
+        case 'handoff-success':
+          return { kind: 'delegated-success', version: continuation.version };
+        case 'handoff-exit':
+          return { kind: 'delegated-exit', version: continuation.version, exitCode: continuation.outcome.exitCode };
+        case 'handoff-signal':
+          return { kind: 'delegated-signal', version: continuation.version, signal: continuation.outcome.signal };
+        default:
+          return assertNever(continuation.outcome);
+      }
+    default:
+      return assertNever(continuation);
+  }
+}
+
+async function recordTerminal(
+  runtime: Runtime,
+  time: TimePort,
+  invocationId: string,
+  selection: SelectionPublication,
+  disposition: DirectTerminalDisposition,
+  signal?: AbortSignal,
+): Promise<SelectionPublication> {
+  if (selection.kind === 'undeterminable') {
+    return {
+      kind: 'refused',
+      refusal: {
+        reason: 'selection-publication-undeterminable',
+        remediation: 'inspect-routing-status-before-repair',
+        attemptedPhase: 'terminal',
+      },
+    };
+  }
+
+  return publishHandoffTransition(
+    runtime,
+    time,
+    {
+      kind: disposition.kind === 'execution-failed' ? 'execution-failed' : 'continuation-finalized',
+      eventId: runtime.ids.uuid(),
+      invocationId,
+      observedAt: observedAt(time),
+      selection:
+        selection.kind === 'committed'
+          ? { kind: 'with-selection-sequence', selectionSequence: selection.sequence }
+          : { kind: 'without-selection' },
+      disposition,
+    },
+    signal,
+  );
+}
+
+async function executeResolvedHandoff(
+  operation: HandoffOperation,
+  routing: HandoffRoutingResult,
+  runtime: Runtime,
+  time: TimePort,
+  signal: AbortSignal | undefined,
+  executionPhase: { current: ExecutionThrowPhase },
+): Promise<HandoffContinuationResult> {
   switch (routing.kind) {
     case 'continue-current':
       return { kind: 'run-current', reason: { kind: 'routing', basis: routing.basis } };
     case 'handoff': {
+      executionPhase.current = 'double-delegation-guard';
+      const guard = operation.kind === 'backend-startup' ? undefined : readCliHandoffGuard();
       if (guard === '1') {
         throw new Error(
           'This Coral build already delegated once and refuses a second delegation, which means two builds ' +
@@ -554,13 +893,14 @@ export async function runHandoff(
         );
       }
 
-      if (operation.kind !== 'backend-startup' && !(await drainStdoutBeforeHandoff(time, options.signal))) {
+      if (operation.kind !== 'backend-startup' && !(await drainStdoutBeforeHandoff(time, signal))) {
         return {
           kind: 'run-current',
           reason: { kind: 'handoff-abandoned', reason: 'stdout-drain-incomplete' },
         };
       }
 
+      executionPhase.current = 'target-authority';
       const execution = withValidatedHandoffTarget(routing.target);
       const executable = operation.kind === 'backend-startup' ? 'coral-backend.cjs' : 'coral-cli.cjs';
       const childArguments = [join(execution.bundleDir, executable), ...delegatedArguments(operation)];
@@ -571,11 +911,14 @@ export async function runHandoff(
         ...(operation.kind === 'backend-startup' ? { detached: true } : {}),
       };
 
+      executionPhase.current = 'executable-check';
       execution.assertExecutable();
+      executionPhase.current = 'child-spawn';
       // Runtime ports do not expose the executable for the current Node process.
       const child = spawn(process.execPath, childArguments, spawnOptions);
       const childObservation = observeChild(child);
       await childObservation.spawned;
+      executionPhase.current = 'child-outcome-wait';
       if (operation.kind === 'backend-startup') {
         child.unref();
         // The selected backend starts immediately; this bounded window delays only the retiring delegator and
@@ -606,5 +949,95 @@ export async function runHandoff(
     }
     default:
       return assertNever(routing);
+  }
+}
+
+function collectedIncidents(
+  incidents: readonly HandoffPublicationIncident[],
+): NonEmptyReadonlyArray<HandoffPublicationIncident> | null {
+  return incidents.length === 0
+    ? null
+    : (Object.freeze([...incidents]) as NonEmptyReadonlyArray<HandoffPublicationIncident>);
+}
+
+export async function runHandoff(
+  operationInput: HandoffOperation,
+  options: RunHandoffOptions = {},
+): Promise<HandoffRunResult> {
+  const operation = handoffOperationSchema.parse(operationInput) as HandoffOperation;
+  if (isDisplayOnlyInvocation(operation)) {
+    return {
+      kind: 'recording-not-applicable',
+      continuationWithoutRecording: {
+        kind: 'run-current',
+        reason: { kind: 'handoff-not-applicable', reason: 'display-only' },
+      },
+    };
+  }
+
+  const { routing, runtime, time } = await resolveHandoffRoutingForOperation(operation, options);
+  const recordingApplicable =
+    operation.kind !== 'cli-invocation' ||
+    (parseHandoffRepairOperation(operation.argv) === null && !isHandoffRoutingStatusDiscardOperation(operation.argv));
+  const executionPhase: { current: ExecutionThrowPhase } = { current: 'double-delegation-guard' };
+  if (!recordingApplicable) {
+    return {
+      kind: 'recording-not-applicable',
+      continuationWithoutRecording: await executeResolvedHandoff(
+        operation,
+        routing,
+        runtime,
+        time,
+        options.signal,
+        executionPhase,
+      ),
+    };
+  }
+
+  const invocationId = runtime.ids.uuid();
+  const incidents: HandoffPublicationIncident[] = [];
+  const selection = await recordSelection(runtime, time, routing, invocationId, options.signal);
+  const selectionIncident = recordIncident(incidents, 'selection', selection);
+  if (selectionIncident?.phase === 'selection') {
+    options.onSelectionPublicationIncident?.(selectionIncident);
+  }
+
+  try {
+    const continuation = await executeResolvedHandoff(
+      operation,
+      routing,
+      runtime,
+      time,
+      options.signal,
+      executionPhase,
+    );
+    const terminal = await recordTerminal(
+      runtime,
+      time,
+      invocationId,
+      selection,
+      finalizedDisposition(continuation),
+      options.signal,
+    );
+    recordIncident(incidents, 'terminal', terminal);
+    const publicationIncidents = collectedIncidents(incidents);
+    return publicationIncidents === null
+      ? { kind: 'recorded', continuation, publicationIncidents: [] }
+      : { kind: 'recording-incidents', observedWork: continuation, publicationIncidents };
+  } catch (originalError: unknown) {
+    const terminal = await recordTerminal(
+      runtime,
+      time,
+      invocationId,
+      selection,
+      { kind: 'execution-failed', throwPhase: executionPhase.current },
+      options.signal,
+    );
+    recordIncident(incidents, 'terminal', terminal);
+    const publicationIncidents = collectedIncidents(incidents);
+    if (publicationIncidents !== null) {
+      throw new HandoffRunError(originalError, publicationIncidents);
+    }
+    throw originalError;
   }
 }

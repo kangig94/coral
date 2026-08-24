@@ -4,17 +4,20 @@ import { DatabaseSync } from 'node:sqlite';
 
 import {
   HANDOFF_ROUTING_STATUS_GENERATION,
+  publishGenerationCoordinatedHandoffRoutingTransitions,
   publishHandoffRoutingTransitions,
+  readHandoffRoutingStatus,
   type HandoffRoutingTransition,
   type PublicationOutcome,
 } from '#src/coordinator/handoff-routing-status.js';
-import { createRealTimePort } from '#src/infra/time.js';
+import { discardHandoffRoutingStatus } from '#src/cli/routing-status-discard.js';
+import { createRealRuntime } from '#src/runtime/real.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
-const [, , mode, path, identity = 'worker'] = process.argv;
+const [, , mode, path, identity = 'worker', baseDir] = process.argv;
 if (mode === undefined || path === undefined) throw new Error('Expected mode and database path');
 
-const time = createRealTimePort();
+const runtime = createRealRuntime('prod', baseDir === undefined ? undefined : { baseDir });
 const owner = { pid: process.pid, incarnation: testIncarnation(process.pid) } as const;
 const observedAt = (offset: number): string => new Date(Date.parse('2026-02-01T00:00:00.000Z') + offset).toISOString();
 
@@ -84,8 +87,9 @@ function insertGapRecord(db: DatabaseSync, sequence: number): void {
       selection_sequence,
       retirement_cause,
       terminal_existed,
+      completed_pair_stable,
       body_json
-    ) VALUES (?, ?, ?, ?, ?, 'terminal', 'execution-failed', NULL, NULL, NULL, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, 'terminal', 'execution-failed', NULL, NULL, NULL, 0, ?)`,
   ).run(sequence, HANDOFF_ROUTING_STATUS_GENERATION, eventId, invocationId, event.observedAt, JSON.stringify(event));
 }
 
@@ -121,7 +125,7 @@ function runBetweenStatements(): void {
 }
 
 async function runAfterCommit(): Promise<void> {
-  const outcome = await publishHandoffRoutingTransitions(time, path, [selection(identity, 1)]);
+  const outcome = await publishHandoffRoutingTransitions(runtime, path, [selection(identity, 1)]);
   if (outcome.kind !== 'committed') throw new Error(`Expected committed outcome, received ${outcome.kind}`);
   stopAt('after-commit');
 }
@@ -147,17 +151,19 @@ async function runContendedSelection(): Promise<void> {
   let reportedContention = false;
   try {
     const contentionTime = {
-      monotonicNow: time.monotonicNow,
+      monotonicNow: runtime.time.monotonicNow,
       sleep: async (ms: number, options?: { signal?: AbortSignal }): Promise<void> => {
         if (!reportedContention) {
           reportedContention = true;
           emit('contended');
         }
-        await time.sleep(ms, options);
+        await runtime.time.sleep(ms, options);
       },
     };
     const started = performance.now();
-    const outcome = await publishHandoffRoutingTransitions(contentionTime, path, [selection(identity, 1)]);
+    const outcome = await publishHandoffRoutingTransitions({ ...runtime, time: contentionTime }, path, [
+      selection(identity, 1),
+    ]);
     emit({ kind: 'contention-result', outcome, elapsedMs: performance.now() - started });
   } finally {
     clearInterval(keepAlive);
@@ -171,13 +177,15 @@ async function runLifecycle(): Promise<void> {
   try {
     const lifecycleStarted = performance.now();
     const selectionStarted = performance.now();
-    const selected = await publishHandoffRoutingTransitions(time, path, [selection(identity, 1)]);
+    const selected = await publishHandoffRoutingTransitions(runtime, path, [selection(identity, 1)]);
     const selectionMs = performance.now() - selectionStarted;
     let terminalOutcome: PublicationOutcome | undefined;
     let terminalMs: number | undefined;
     if (selected.kind === 'committed') {
       const terminalStarted = performance.now();
-      terminalOutcome = await publishHandoffRoutingTransitions(time, path, [terminal(identity, 2, selected.sequence)]);
+      terminalOutcome = await publishHandoffRoutingTransitions(runtime, path, [
+        terminal(identity, 2, selected.sequence),
+      ]);
       terminalMs = performance.now() - terminalStarted;
     }
     emit({
@@ -191,6 +199,19 @@ async function runLifecycle(): Promise<void> {
   } finally {
     clearInterval(keepAlive);
   }
+}
+
+async function runStaleDiscard(): Promise<void> {
+  const observed = readHandoffRoutingStatus(runtime, path);
+  if (observed.kind !== 'unreadable' && observed.kind !== 'unsupported-generation') {
+    throw new Error(`Expected a discardable observation, received ${observed.kind}`);
+  }
+  stopAt('discardable-observed');
+  emit(await discardHandoffRoutingStatus(runtime, path));
+}
+
+async function runCoordinatedPublication(): Promise<void> {
+  emit(await publishGenerationCoordinatedHandoffRoutingTransitions(runtime, path, [selection(identity, 1)]));
 }
 
 async function run(): Promise<void> {
@@ -212,6 +233,12 @@ async function run(): Promise<void> {
       return;
     case 'lifecycle':
       await runLifecycle();
+      return;
+    case 'stale-discard':
+      await runStaleDiscard();
+      return;
+    case 'coordinated-publication':
+      await runCoordinatedPublication();
       return;
     default:
       throw new Error(`Unknown mode: ${mode}`);

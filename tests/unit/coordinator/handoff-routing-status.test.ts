@@ -1,14 +1,15 @@
 import { DatabaseSync } from 'node:sqlite';
-import { chmodSync, existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   ABSENT_HANDOFF_RESULT_POLICY_PROJECTION,
   HANDOFF_CONTINUATION_REASON_POLICY_PROJECTIONS,
   HANDOFF_ROUTING_COMPLETED_RETENTION_MS,
+  MAX_HANDOFF_ROUTING_OWNER_SWEEP_MS,
   HANDOFF_ROUTING_STATUS_GENERATION,
   MAX_COMPLETED_HANDOFF_ROUTING_PAIRS,
   MAX_ENCODED_RETIREMENT_TOMBSTONE_BYTES,
@@ -21,8 +22,11 @@ import {
   MAX_UNRESOLVED_INVOCATIONS,
   invalidTargetSummarySchema,
   persistedHandoffDispositionPolicy,
+  publishGenerationCoordinatedHandoffRoutingTransitions,
   publishHandoffRoutingTransitions,
-  readHandoffRoutingStatus,
+  readHandoffRoutingStatus as readHandoffRoutingStatusWithRuntime,
+  readHandoffRoutingStatusWithOwnerObservations,
+  resolveHandoffRoutingStatus,
   retirementTombstoneSchema,
   terminalEventSchema,
   type DurableHandoffRoutingBasis,
@@ -30,14 +34,22 @@ import {
   type PublicationOutcome,
   type RetirementTombstone,
 } from '#src/coordinator/handoff-routing-status.js';
-import { createRealTimePort } from '#src/infra/time.js';
+import type { ProcessIdentityObservation } from '#src/infra/port-types.js';
+import { createRealRuntime } from '#src/runtime/real.js';
+import { discardHandoffRoutingStatus } from '#src/cli/routing-status-discard.js';
+import {
+  acquireGenerationMaintenanceLease,
+  resolveGenerationBoundaryPaths,
+} from '#src/store/generation-mutation-coordination.js';
+import { SimulationRuntime } from '../../../tools/simulation/runtime.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
 const BASE_TIME = Date.parse('2026-01-01T00:00:00.000Z');
 const BUILD_SET_ID = '123e4567-e89b-42d3-a456-426614174000';
 const OWNER = { pid: 101, incarnation: testIncarnation(101) } as const;
 const temporaryDirectories: string[] = [];
-const time = createRealTimePort();
+const runtimeBaseDir = mkdtempSync(join(tmpdir(), 'coral-handoff-routing-runtime-'));
+const runtime = createRealRuntime('prod', { baseDir: runtimeBaseDir });
 
 function at(offsetMs: number): string {
   return new Date(BASE_TIME + offsetMs).toISOString();
@@ -93,7 +105,14 @@ function publish(
   transitions: readonly HandoffRoutingTransition[],
   signal?: AbortSignal,
 ): Promise<PublicationOutcome> {
-  return publishHandoffRoutingTransitions(time, path, transitions, signal);
+  return publishHandoffRoutingTransitions(runtime, path, transitions, signal);
+}
+
+function readHandoffRoutingStatus(
+  path: string,
+  probe?: Parameters<typeof readHandoffRoutingStatusWithRuntime>[2],
+): ReturnType<typeof readHandoffRoutingStatusWithRuntime> {
+  return readHandoffRoutingStatusWithRuntime(runtime, path, probe);
 }
 
 function records(path: string): Array<Record<string, unknown>> {
@@ -134,8 +153,9 @@ function insertTombstoneFixture(db: DatabaseSync, tombstone: RetirementTombstone
       selection_sequence,
       retirement_cause,
       terminal_existed,
+      completed_pair_stable,
       body_json
-    ) VALUES (?, ?, ?, ?, ?, 'retirement', 'retirement-tombstone', ?, ?, ?, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, 'retirement', 'retirement-tombstone', ?, ?, ?, 0, ?)`,
   ).run(
     tombstone.sequence,
     tombstone.generation,
@@ -233,6 +253,10 @@ afterEach(() => {
   for (const directory of temporaryDirectories.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 
+afterAll(() => {
+  rmSync(runtimeBaseDir, { recursive: true, force: true });
+});
+
 describe('handoff routing status', () => {
   it('projects continuation and absent obligations without inventing persisted status for ephemeral bindings', () => {
     expect(HANDOFF_CONTINUATION_REASON_POLICY_PROJECTIONS).toEqual({
@@ -265,6 +289,108 @@ describe('handoff routing status', () => {
     expect(MAX_RETIREMENT_TOMBSTONES * MAX_LEGAL_RETIREMENT_TOMBSTONE_BYTES).toBeLessThanOrEqual(
       MAX_RETIREMENT_TOMBSTONE_BYTES,
     );
+  });
+
+  it('publishes through simulation storage without touching the host path', async () => {
+    const simulation = new SimulationRuntime();
+    const path = '/simulation-only/handoff-routing.1.db';
+
+    expect(existsSync(path)).toBe(false);
+    await expect(publishHandoffRoutingTransitions(simulation, path, [selection('simulated', 1)])).resolves.toEqual({
+      kind: 'committed',
+      sequence: 1,
+    });
+    expect(simulation.storage.existsSync(path)).toBe(true);
+    expect(existsSync(path)).toBe(false);
+    expect(readHandoffRoutingStatusWithRuntime(simulation, path)).toMatchObject({
+      kind: 'current',
+      statuses: [{ kind: 'unresolved', selection: { invocationId: 'simulated' } }],
+    });
+  });
+
+  it('restores, unlinks, and recreates the simulated SQLite artifact with the virtual filesystem', async () => {
+    const simulation = new SimulationRuntime();
+    const path = '/simulation-only/handoff-routing.1.db';
+    await expect(
+      publishHandoffRoutingTransitions(simulation, path, [selection('before-snapshot', 1)]),
+    ).resolves.toMatchObject({
+      kind: 'committed',
+    });
+    const snapshot = simulation.storage.snapshot();
+    await expect(
+      publishHandoffRoutingTransitions(simulation, path, [selection('after-snapshot', 2)]),
+    ).resolves.toMatchObject({
+      kind: 'committed',
+    });
+
+    simulation.storage.restore(snapshot);
+    expect(readHandoffRoutingStatusWithRuntime(simulation, path)).toMatchObject({
+      kind: 'current',
+      statuses: [{ selection: { invocationId: 'before-snapshot' } }],
+    });
+
+    const renamedPath = '/simulation-only/renamed-handoff-routing.1.db';
+    simulation.storage.renameSync(path, renamedPath);
+    expect(readHandoffRoutingStatusWithRuntime(simulation, path)).toEqual({ kind: 'absent' });
+    expect(readHandoffRoutingStatusWithRuntime(simulation, renamedPath)).toMatchObject({
+      kind: 'current',
+      statuses: [{ selection: { invocationId: 'before-snapshot' } }],
+    });
+    simulation.storage.renameSync(renamedPath, path);
+
+    simulation.storage.unlinkSync(path);
+    expect(readHandoffRoutingStatusWithRuntime(simulation, path)).toEqual({ kind: 'absent' });
+    await expect(
+      publishHandoffRoutingTransitions(simulation, path, [selection('after-unlink', 3)]),
+    ).resolves.toMatchObject({
+      kind: 'committed',
+    });
+    expect(readHandoffRoutingStatusWithRuntime(simulation, path)).toMatchObject({
+      kind: 'current',
+      statuses: [{ selection: { invocationId: 'after-unlink' } }],
+    });
+  });
+
+  it('quarantines an unreadable artifact, permits a clean publication, and refuses a current journal', async () => {
+    const path = databasePath();
+    const discardRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+    writeFileSync(path, 'not a sqlite database', { mode: 0o600 });
+    writeFileSync(`${path}-wal`, 'retained wal');
+    writeFileSync(`${path}-shm`, 'retained shm');
+
+    const discarded = await discardHandoffRoutingStatus(discardRuntime, path);
+    expect(discarded).toMatchObject({
+      kind: 'discarded',
+      artifactPath: path,
+      previousStatus: { kind: 'unreadable' },
+    });
+    if (discarded.kind !== 'discarded') throw new Error(`Expected discard, received ${discarded.kind}`);
+    expect(existsSync(path)).toBe(false);
+    expect(readFileSync(discarded.quarantinePath, 'utf-8')).toBe('not a sqlite database');
+    expect(readFileSync(`${discarded.quarantinePath}-wal`, 'utf-8')).toBe('retained wal');
+    expect(statSync(`${discarded.quarantinePath}-shm`).size).toBeGreaterThan(0);
+
+    await expect(publish(path, [selection('clean-generation', 1)])).resolves.toMatchObject({ kind: 'committed' });
+    chmodSync(path, 0o000);
+    try {
+      if (process.platform !== 'win32') {
+        await expect(discardHandoffRoutingStatus(discardRuntime, path)).resolves.toMatchObject({
+          kind: 'refused',
+          status: { kind: 'undeterminable', cause: 'io-failed' },
+        });
+        expect(existsSync(path)).toBe(true);
+      }
+    } finally {
+      chmodSync(path, 0o600);
+    }
+    await expect(discardHandoffRoutingStatus(discardRuntime, path)).resolves.toMatchObject({
+      kind: 'refused',
+      status: { kind: 'current' },
+    });
+    expect(readHandoffRoutingStatus(path)).toMatchObject({
+      kind: 'current',
+      statuses: [{ selection: { invocationId: 'clean-generation' } }],
+    });
   });
 
   it('creates the bounded schema with persistent settings and relational uniqueness', async () => {
@@ -342,8 +468,9 @@ describe('handoff routing status', () => {
               selection_sequence,
               retirement_cause,
               terminal_existed,
+              completed_pair_stable,
               body_json
-            ) VALUES (?, ?, ?, ?, ?, 'terminal', ?, ?, NULL, NULL, ?)`,
+            ) VALUES (?, ?, ?, ?, ?, 'terminal', ?, ?, NULL, NULL, 0, ?)`,
           )
           .run(
             contradictoryTerminal.sequence,
@@ -570,6 +697,30 @@ describe('handoff routing status', () => {
     expect(existsSync(directory)).toBe(false);
   });
 
+  it('returns a decisive invalid-record outcome when the production body validator rejects an append', async () => {
+    const path = databasePath();
+    await committed(path, [selection('valid-record', 1)]);
+    const before = records(path);
+    const stringifyJson = JSON.stringify;
+    const stringify = vi
+      .spyOn(JSON, 'stringify')
+      .mockImplementation((value) =>
+        typeof value === 'object' && value !== null && 'eventId' in value && value.eventId === 'event-2'
+          ? '{'
+          : stringifyJson(value),
+      );
+    const outcome = await publish(path, [selection('malformed-record', 2)]).finally(() => stringify.mockRestore());
+
+    expect(outcome).toEqual({
+      kind: 'not-published',
+      cause: 'invalid-record',
+      validation: { kind: 'malformed-json' },
+    });
+    expect(outcome.kind).not.toBe('undeterminable');
+    expect(outcome).not.toMatchObject({ cause: 'unreadable' });
+    expect(records(path)).toEqual(before);
+  });
+
   it('keeps the event loop responsive while a writer holds the database', async () => {
     const path = databasePath();
     await committed(path, [selection('holder-seed', 1)]);
@@ -612,7 +763,9 @@ describe('handoff routing status', () => {
     };
     try {
       await expect(
-        publishHandoffRoutingTransitions(jumpingWallClock, path, [selection('monotonic-contender', 2)]),
+        publishHandoffRoutingTransitions({ ...runtime, time: jumpingWallClock }, path, [
+          selection('monotonic-contender', 2),
+        ]),
       ).resolves.toEqual({ kind: 'not-published', cause: 'contended' });
     } finally {
       holder.exec('ROLLBACK');
@@ -1087,6 +1240,234 @@ describe('handoff routing status', () => {
         earliestSelectedAt: at(1),
         latestSelectedAt: at(1),
       }),
-    ).toMatchObject({ severity: 'warning', exitContribution: 0 });
+    ).toMatchObject({ severity: 'info', exitContribution: 0 });
+  });
+
+  it('resolves only absent owners and returns typed stale, terminal, and live refusals', async () => {
+    const absentId = '123e4567-e89b-42d3-a456-426614174001';
+    const liveId = '123e4567-e89b-42d3-a456-426614174002';
+    const terminalId = '123e4567-e89b-42d3-a456-426614174003';
+    const staleId = '123e4567-e89b-42d3-a456-426614174004';
+    const reusedId = '123e4567-e89b-42d3-a456-426614174007';
+    const path = databasePath();
+    const absentSelection = await committed(path, [selection(absentId, 1)]);
+    await committed(path, [selection(liveId, 2)]);
+    const terminalSelection = await committed(path, [selection(terminalId, 3)]);
+    await committed(path, [terminal(terminalId, 4, terminalSelection.sequence)]);
+    await committed(path, [selection(reusedId, 5)]);
+
+    const repairRuntime = (evidence: ProcessIdentityObservation['evidence']) => ({
+      ...runtime,
+      process: {
+        ...runtime.process,
+        readProcessIncarnation: () => {
+          throw new Error('repair must use the batch observer');
+        },
+        observeProcessIdentities: async (owners: readonly (typeof OWNER)[]) =>
+          owners.map((owner) => ({ owner, evidence })),
+      },
+    });
+
+    await expect(
+      resolveHandoffRoutingStatus(repairRuntime({ kind: 'pid-absent' }), path, {
+        invocationId: staleId,
+        forceUnobservable: false,
+      }),
+    ).resolves.toEqual({ kind: 'stale', invocationId: staleId });
+    await expect(
+      resolveHandoffRoutingStatus(repairRuntime({ kind: 'pid-absent' }), path, {
+        invocationId: terminalId,
+        forceUnobservable: false,
+      }),
+    ).resolves.toEqual({ kind: 'already-terminal', invocationId: terminalId });
+    await expect(
+      resolveHandoffRoutingStatus(repairRuntime({ kind: 'incarnation', incarnation: OWNER.incarnation }), path, {
+        invocationId: liveId,
+        forceUnobservable: false,
+      }),
+    ).resolves.toEqual({ kind: 'live-owner', invocationId: liveId });
+
+    const resolved = await resolveHandoffRoutingStatus(repairRuntime({ kind: 'pid-absent' }), path, {
+      invocationId: absentId,
+      forceUnobservable: false,
+    });
+    expect(resolved).toMatchObject({
+      kind: 'resolved',
+      invocationId: absentId,
+      reason: 'owner-absent',
+    });
+    expect(absentSelection.sequence).toBeGreaterThan(0);
+    await expect(
+      resolveHandoffRoutingStatus(repairRuntime({ kind: 'incarnation', incarnation: testIncarnation(999) }), path, {
+        invocationId: reusedId,
+        forceUnobservable: false,
+      }),
+    ).resolves.toMatchObject({ kind: 'resolved', invocationId: reusedId, reason: 'owner-absent' });
+    const status = readHandoffRoutingStatus(path);
+    expect(status.kind).toBe('current');
+    if (status.kind !== 'current') throw new Error(`Expected current status, received ${status.kind}`);
+    expect(
+      status.statuses.find(
+        (candidate) => candidate.kind === 'retired' && candidate.tombstone.invocationId === absentId,
+      ),
+    ).toMatchObject({
+      kind: 'retired',
+      tombstone: {
+        invocationId: absentId,
+        retirementCause: 'operator-resolved',
+        resolutionReason: 'owner-absent',
+      },
+    });
+  });
+
+  it('refuses operator resolution while generation maintenance is held', async () => {
+    const invocationId = '123e4567-e89b-42d3-a456-426614174008';
+    const path = databasePath();
+    await committed(path, [selection(invocationId, 1)]);
+    const repairRuntime = {
+      ...runtime,
+      process: {
+        ...runtime.process,
+        observeProcessIdentities: async (owners: readonly (typeof OWNER)[]) =>
+          owners.map((owner) => ({ owner, evidence: { kind: 'pid-absent' as const } })),
+      },
+    };
+    const maintenance = await acquireGenerationMaintenanceLease(repairRuntime);
+    try {
+      await expect(
+        resolveHandoffRoutingStatus(repairRuntime, path, {
+          invocationId,
+          forceUnobservable: false,
+        }),
+      ).resolves.toEqual({
+        kind: 'not-published',
+        outcome: { kind: 'not-published', cause: 'generation-maintenance' },
+      });
+      expect(readHandoffRoutingStatus(path)).toMatchObject({
+        kind: 'current',
+        statuses: [{ kind: 'unresolved', selection: { invocationId } }],
+      });
+    } finally {
+      maintenance.release();
+    }
+  });
+
+  it('reports a coordination-root I/O failure without calling it contention', async () => {
+    const path = databasePath();
+    const writersRoot = resolveGenerationBoundaryPaths(runtime).writersRoot;
+    const failedStorage = {
+      ...runtime.storage,
+      mkdirSync: (candidate: string, options?: { recursive?: boolean; mode?: number }) => {
+        if (candidate === writersRoot) {
+          throw Object.assign(new Error('coordination root is not writable'), { code: 'EACCES' });
+        }
+        runtime.storage.mkdirSync(candidate, options);
+      },
+    };
+
+    await expect(
+      publishGenerationCoordinatedHandoffRoutingTransitions({ ...runtime, storage: failedStorage }, path, [
+        selection('coordination-io-failure', 1),
+      ]),
+    ).resolves.toEqual({ kind: 'not-published', cause: 'coordination-unavailable' });
+  });
+
+  it('resolves a lost writer lease as coordination unavailable', async () => {
+    const path = databasePath();
+    const failedStorage = {
+      ...runtime.storage,
+      renameSync: (oldPath: string, newPath: string) => {
+        if (newPath.includes('claim-refresh-')) {
+          throw Object.assign(new Error('writer lease refresh failed'), { code: 'EIO' });
+        }
+        runtime.storage.renameSync(oldPath, newPath);
+      },
+    };
+
+    await expect(
+      publishGenerationCoordinatedHandoffRoutingTransitions({ ...runtime, storage: failedStorage }, path, [
+        selection('lost-writer-lease', 1),
+      ]),
+    ).resolves.toEqual({ kind: 'not-published', cause: 'coordination-unavailable' });
+  });
+
+  it('requires force for unobservable owners and never lets force override an expired deadline', async () => {
+    const forcedId = '123e4567-e89b-42d3-a456-426614174005';
+    const deadlineId = '123e4567-e89b-42d3-a456-426614174006';
+    const path = databasePath();
+    await committed(path, [selection(forcedId, 1), selection(deadlineId, 2)]);
+
+    const repairRuntime = (cause: 'probe-failed' | 'deadline-expired') => ({
+      ...runtime,
+      process: {
+        ...runtime.process,
+        observeProcessIdentities: async (owners: readonly (typeof OWNER)[]) =>
+          owners.map((owner) => ({ owner, evidence: { kind: 'unobservable' as const, cause } })),
+      },
+    });
+
+    await expect(
+      resolveHandoffRoutingStatus(repairRuntime('probe-failed'), path, {
+        invocationId: forcedId,
+        forceUnobservable: false,
+      }),
+    ).resolves.toEqual({
+      kind: 'unauthorized-unobservable',
+      invocationId: forcedId,
+      cause: 'probe-failed',
+    });
+    await expect(
+      resolveHandoffRoutingStatus(repairRuntime('deadline-expired'), path, {
+        invocationId: deadlineId,
+        forceUnobservable: true,
+      }),
+    ).resolves.toEqual({
+      kind: 'unauthorized-unobservable',
+      invocationId: deadlineId,
+      cause: 'deadline-expired',
+    });
+    await expect(
+      resolveHandoffRoutingStatus(repairRuntime('probe-failed'), path, {
+        invocationId: forcedId,
+        forceUnobservable: true,
+      }),
+    ).resolves.toMatchObject({
+      kind: 'resolved',
+      invocationId: forcedId,
+      reason: 'operator-abandoned-unobservable',
+    });
+  });
+
+  it('observes the retained owner window in one bounded batch without the synchronous incarnation probe', async () => {
+    const path = databasePath();
+    const transitions = Array.from({ length: MAX_UNRESOLVED_INVOCATIONS + 1 }, (_, index) =>
+      selection(`window-${index}`, index + 1),
+    );
+    await committed(path, transitions);
+    const calls: Array<{ owners: readonly (typeof OWNER)[]; deadlineMs: number }> = [];
+    const batchRuntime = {
+      ...runtime,
+      process: {
+        ...runtime.process,
+        readProcessIncarnation: () => {
+          throw new Error('status read must use the batch observer');
+        },
+        observeProcessIdentities: async (owners: readonly (typeof OWNER)[], deadlineMs: number) => {
+          calls.push({ owners, deadlineMs });
+          return owners.map((owner) => ({ owner, evidence: { kind: 'pid-absent' as const } }));
+        },
+      },
+    };
+
+    const result = await readHandoffRoutingStatusWithOwnerObservations(batchRuntime, path);
+
+    expect(result.kind).toBe('current');
+    if (result.kind !== 'current') throw new Error(`Expected current status, received ${result.kind}`);
+    expect(result.statuses.filter((status) => status.kind === 'unresolved')).toHaveLength(MAX_UNRESOLVED_INVOCATIONS);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      owners: { length: MAX_UNRESOLVED_INVOCATIONS },
+      deadlineMs: MAX_HANDOFF_ROUTING_OWNER_SWEEP_MS,
+    });
   });
 });

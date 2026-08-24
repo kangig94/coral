@@ -9,12 +9,14 @@ import type { AcceptedLaunchResponse } from '#src/jobs/launch.js';
 import type { WaitStreamEvent } from '#src/jobs/wait.js';
 import type * as BackendDiscoveryMod from '#src/infra/backend-discovery.js';
 import type * as BundleManifestMod from '#src/infra/bundle-manifest.js';
+import type * as RealRuntimeMod from '#src/runtime/real.js';
+import type { Runtime } from '#src/runtime/ports.js';
 
 type StrictBundleManifest = BundleManifestMod.StrictBundleManifest;
 
 const mockState = vi.hoisted(() => ({
   createIpcClient: vi.fn(),
-  createRealRuntime: vi.fn(),
+  createRealRuntime: vi.fn<typeof RealRuntimeMod.createRealRuntime>(),
   ensure: vi.fn(),
   health: vi.fn(),
   probeCoordinator: vi.fn(),
@@ -127,6 +129,23 @@ function makeSubscription(events: readonly WaitStreamEvent[]) {
   };
 }
 
+async function createHandoffRuntime(socketPath: string): Promise<Runtime> {
+  const { createRealRuntime } = await vi.importActual<typeof RealRuntimeMod>('#src/runtime/real.js');
+  const runtimeRoot = mkdtempSync(join(tmpdir(), 'coral-cross-version-follow-runtime-'));
+  fixtureRoots.push(runtimeRoot);
+  const runtime = createRealRuntime('prod', { baseDir: runtimeRoot });
+  return {
+    ...runtime,
+    paths: {
+      ...runtime.paths,
+      coral: {
+        ...runtime.paths.coral,
+        coordinator: { ...runtime.paths.coral.coordinator, socketPath },
+      },
+    },
+  };
+}
+
 afterEach(() => {
   process.exitCode = undefined;
   mockState.createIpcClient.mockReset();
@@ -211,17 +230,7 @@ describe('cross-version follow', () => {
         buildSetId: '123e4567-e89b-42d3-a456-426614174000',
       },
     });
-    mockState.createRealRuntime.mockReturnValue({
-      storage: {},
-      time: {
-        setTimeout: (fn: () => void, ms: number) => setTimeout(fn, ms),
-        clearTimeout: (handle: { unref?(): void } | null) => {
-          clearTimeout(handle as unknown as NodeJS.Timeout);
-        },
-      },
-      env: { cwd: () => process.cwd(), fullSnapshot: () => ({ ...process.env }) },
-      paths: { coral: { coordinator: { socketPath } } },
-    });
+    mockState.createRealRuntime.mockReturnValue(await createHandoffRuntime(socketPath));
 
     const result = await launchAndFollow({
       launchResult: {

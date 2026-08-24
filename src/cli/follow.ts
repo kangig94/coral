@@ -13,12 +13,17 @@ import { assertNever } from '../infra/error-format.js';
 import { isRecord } from '../infra/json.js';
 import { ensure } from '../transport/ipc/ensure.js';
 import { childPrincipalAuthFromEnv, childPrincipalAuthOptions } from '../transport/ipc/child-principal-auth.js';
-import { runHandoff, type HandoffOutcome } from '../coordinator/handoff-runner.js';
+import {
+  HandoffRunError,
+  projectHandoffRunResult,
+  runHandoff,
+  type HandoffOutcome,
+} from '../coordinator/handoff-runner.js';
 import { formatLaunch, formatWorkflowSlot } from './format/jobs.js';
 import { openCliCauseRefRenderer } from './cause-renderer.js';
 import { getSharedReadCoralStore } from './read-store.js';
 import { errorCodeToExit, WaitResumeError } from './errors.js';
-import { renderHandoffNotice } from './handoff-notice.js';
+import { renderHandoffNotice, renderHandoffPublicationIncidents } from './handoff-notice.js';
 import { mapWaitSubscriptionError } from './wait-stream-error.js';
 import {
   formatWaitProgress,
@@ -554,18 +559,28 @@ export async function launchAndFollow(options: FollowOptions): Promise<number> {
       let backend;
       try {
         backend = await ensure(options.pluginRoot);
-        const continuation = await runHandoff(
+        const result = await runHandoff(
           {
             kind: 'wait-jobs',
             jobId: options.launchResult.jobId,
             serializedCursor: serializeWaitCursor(cursor ?? { afterSeq: 0 }),
           },
-          { pluginRoot: options.pluginRoot, signal },
+          {
+            pluginRoot: options.pluginRoot,
+            signal,
+            onSelectionPublicationIncident: (incident) => renderHandoffPublicationIncidents([incident]),
+          },
         );
+        const { continuation, publicationIncidents } = projectHandoffRunResult(result);
+        renderHandoffPublicationIncidents(publicationIncidents.filter((incident) => incident.phase === 'terminal'));
         if (continuation.kind === 'delegated') {
           return continuation;
         }
       } catch (error) {
+        if (error instanceof HandoffRunError) {
+          renderHandoffPublicationIncidents(error.incidents.filter((incident) => incident.phase === 'terminal'));
+          return { kind: 'fatal-error', error: error.originalError };
+        }
         return { kind: 'fatal-error', error };
       }
 

@@ -453,6 +453,16 @@ function throwIfDirectoryLockAborted(deps: DirectoryLockDeps): void {
   deps.signal?.throwIfAborted();
 }
 
+export function tryAcquireDirectoryLock(lockDir: string, providedDeps?: DirectoryLockDeps): DirectoryLockLease | null {
+  const deps = resolveDirectoryLockDeps(providedDeps);
+  throwIfDirectoryLockAborted(deps);
+  const lease = tryCreateDirectoryLock(lockDir, deps);
+  if (lease !== null) return lease;
+  if (!tryQuarantineStaleLock(lockDir, deps)) return null;
+  throwIfDirectoryLockAborted(deps);
+  return tryCreateDirectoryLock(lockDir, deps);
+}
+
 async function waitForDirectoryLockRetry(deps: DirectoryLockDeps): Promise<void> {
   const signal = deps.signal;
   if (signal === undefined) {

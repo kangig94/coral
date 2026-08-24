@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { handoffStartupToSelectedBuild } from '#src/coordinator/bootstrap.js';
 import { StartupStoreHandoffError } from '#src/coordinator/lifecycle.js';
+import { HandoffRunError } from '#src/coordinator/handoff-runner.js';
+import { backendLog } from '#src/infra/backend-log.js';
 import type { ValidatedHandoffTarget } from '#src/infra/handoff-target.js';
 import type * as HandoffRunnerMod from '#src/coordinator/handoff-runner.js';
 
@@ -24,24 +26,45 @@ describe('backend bootstrap store handoff', () => {
   it('should map StartupStoreHandoffError through backend-startup handoff success', async () => {
     const error = new StartupStoreHandoffError(target);
     mockState.runHandoff.mockResolvedValue({
-      kind: 'delegated',
-      outcome: { kind: 'handoff-success', version: '2.0.0' },
+      kind: 'recorded',
+      continuation: {
+        kind: 'delegated',
+        version: '2.0.0',
+        outcome: { kind: 'handoff-success', version: '2.0.0' },
+      },
+      publicationIncidents: [],
     });
 
     await expect(handoffStartupToSelectedBuild('/plugin/root', error)).resolves.toEqual({ kind: 'started' });
     expect(mockState.runHandoff).toHaveBeenCalledWith(
       { kind: 'backend-startup' },
-      { pluginRoot: '/plugin/root', activeSelectionTarget: target },
+      {
+        pluginRoot: '/plugin/root',
+        activeSelectionTarget: target,
+        onSelectionPublicationIncident: expect.any(Function),
+      },
     );
   });
 
   it.each([
     {
-      continuation: { kind: 'delegated', outcome: { kind: 'handoff-exit', exitCode: 23 } },
+      continuation: {
+        kind: 'recorded',
+        continuation: { kind: 'delegated', version: '2.0.0', outcome: { kind: 'handoff-exit', exitCode: 23 } },
+        publicationIncidents: [],
+      },
       message: 'Selected backend exited during startup handoff with code 23.',
     },
     {
-      continuation: { kind: 'delegated', outcome: { kind: 'handoff-signal', signal: 'SIGTERM' } },
+      continuation: {
+        kind: 'recorded',
+        continuation: {
+          kind: 'delegated',
+          version: '2.0.0',
+          outcome: { kind: 'handoff-signal', signal: 'SIGTERM' },
+        },
+        publicationIncidents: [],
+      },
       message: 'Selected backend exited during startup handoff from signal SIGTERM.',
     },
   ])('should map a non-success continuation to bootstrap failure: $message', async ({ continuation, message }) => {
@@ -54,11 +77,50 @@ describe('backend bootstrap store handoff', () => {
 
   it('should preserve a handoff execution error for bootstrap diagnostics', async () => {
     const handoffError = new Error('spawn rejected');
-    mockState.runHandoff.mockRejectedValue(handoffError);
+    const warn = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
+    mockState.runHandoff.mockRejectedValue(
+      new HandoffRunError(handoffError, [{ phase: 'terminal', kind: 'not-published', cause: 'contended' }]),
+    );
 
     await expect(handoffStartupToSelectedBuild('/plugin/root', new StartupStoreHandoffError(target))).resolves.toEqual({
       kind: 'failed',
       error: handoffError,
     });
+    expect(warn).toHaveBeenCalledWith(
+      'Backend startup handoff routing-status publication incident: ' +
+        '{"phase":"terminal","kind":"not-published","cause":"contended"}',
+    );
+  });
+
+  it('should log selection telemetry before startup work and finalization telemetry after it', async () => {
+    const order: string[] = [];
+    vi.spyOn(backendLog, 'warn').mockImplementation((message) => {
+      order.push(message.includes('"phase":"selection"') ? 'selection' : 'terminal');
+    });
+    mockState.runHandoff.mockImplementation(async (_operation, options) => {
+      options.onSelectionPublicationIncident({
+        phase: 'selection',
+        kind: 'not-published',
+        cause: 'contended',
+      });
+      order.push('startup-work');
+      return {
+        kind: 'recording-incidents',
+        observedWork: {
+          kind: 'delegated',
+          version: '2.0.0',
+          outcome: { kind: 'handoff-success', version: '2.0.0' },
+        },
+        publicationIncidents: [
+          { phase: 'selection', kind: 'not-published', cause: 'contended' },
+          { phase: 'terminal', kind: 'undeterminable', cause: 'io-failed', errcode: 5 },
+        ],
+      };
+    });
+
+    await expect(handoffStartupToSelectedBuild('/plugin/root', new StartupStoreHandoffError(target))).resolves.toEqual({
+      kind: 'started',
+    });
+    expect(order).toEqual(['selection', 'startup-work', 'terminal']);
   });
 });

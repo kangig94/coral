@@ -13,7 +13,7 @@ import type { WaitStreamEvent } from '#src/jobs/wait.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { BackendUnreachableError, TransientHttpError } from '#src/infra/http-errors.js';
 import { buildErrorEnvelope, UsageError } from '#src/cli/errors.js';
-import { formatBackendStatus, formatShutdown } from '#src/cli/format/backend.js';
+import { formatBackendStatus as formatComposedBackendStatus, formatShutdown } from '#src/cli/format/backend.js';
 import {
   formatDiscussAbort,
   formatDiscussParticipate,
@@ -59,6 +59,10 @@ import {
   formatUsageSegment,
   totalUsageTokens,
 } from '#src/cli/format/usage.js';
+
+function formatBackendStatus(status: BackendStatusFull): string {
+  return formatComposedBackendStatus(status, { kind: 'absent' }, null);
+}
 
 const runningDecision = {
   kind: 'provider-session',

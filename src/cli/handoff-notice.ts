@@ -1,4 +1,5 @@
-import type { HandoffSuccess } from '../coordinator/handoff-runner.js';
+import type { HandoffPublicationIncident, HandoffSuccess } from '../coordinator/handoff-runner.js';
+import { assertNever } from '../infra/error-format.js';
 
 let noticeRendered = false;
 
@@ -21,4 +22,31 @@ export function renderHandoffNotice(success: HandoffSuccess): void {
     `handed off to ${success.version}; this repeats on every run until the installed plugin is upgraded to ` +
       `${success.version} or newer\n`,
   );
+}
+
+export function formatHandoffPublicationIncident(incident: HandoffPublicationIncident): string {
+  switch (incident.kind) {
+    case 'refused':
+      return (
+        `Handoff routing-status ${incident.phase} publication was refused (${incident.refusal.reason}). ` +
+        `Remediation: ${incident.refusal.remediation}.`
+      );
+    case 'not-published':
+      return incident.cause === 'invalid-record'
+        ? `Handoff routing-status ${incident.phase} publication was not published (${incident.cause}, ${incident.validation.kind}).`
+        : `Handoff routing-status ${incident.phase} publication was not published (${incident.cause}).`;
+    case 'undeterminable':
+      return (
+        `Handoff routing-status ${incident.phase} publication could not be determined ` +
+        `(${incident.cause}, errcode ${incident.errcode}).`
+      );
+    default:
+      return assertNever(incident);
+  }
+}
+
+export function renderHandoffPublicationIncidents(incidents: readonly HandoffPublicationIncident[]): void {
+  for (const incident of incidents) {
+    process.stderr.write(`${formatHandoffPublicationIncident(incident)}\n`);
+  }
 }
