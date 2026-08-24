@@ -373,7 +373,11 @@ function formatUnpublishedRoutingResolution(
         case 'capacity-exhausted':
           return 'Next step: repair the reported storage-capacity condition, rerun coral-cli backend status, then retry this resolve command if the invocation is still unresolved.';
         case 'invalid-record':
-          return 'Next step: report the invalid routing-status record as a Coral defect; the journal is unaffected, and no storage action or retry is appropriate.';
+          return (
+            `Next step: report the invalid routing-status record (${outcome.validation.kind}) as a Coral defect; ` +
+            `the journal is unaffected, and no storage action is appropriate. After installing corrected Coral ` +
+            'software, rerun coral-cli backend routing-status resolve --invocation <id>.'
+          );
         case 'rejected-transition':
           return 'Next step: rerun coral-cli backend status and follow the successor shown for the invocation; do not assume resolution occurred.';
         case 'coordination-unavailable':
@@ -417,7 +421,10 @@ export function formatHandoffRoutingResolveResult(result: HandoffRoutingResolveR
     case 'status-unavailable':
       return `Refusing to resolve routing status because the authoritative journal is ${result.status.kind}.\n${formatUnavailableRoutingResolution(result.status)}`;
     case 'not-published':
-      return `Routing resolution was not published (${result.outcome.kind}:${result.outcome.cause}).\n${formatUnpublishedRoutingResolution(result.outcome)}`;
+      return (
+        `Routing resolution was not published (${result.outcome.kind}:${result.outcome.cause}).\n` +
+        formatUnpublishedRoutingResolution(result.outcome)
+      );
     default:
       return assertNever(result);
   }

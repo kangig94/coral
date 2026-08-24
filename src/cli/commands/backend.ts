@@ -1,8 +1,8 @@
 import { InvalidArgumentError, type Command } from 'commander';
 
 import {
-  HANDOFF_PUBLICATION_INCIDENT_EXIT_CONTRIBUTIONS,
   HandoffRunError,
+  handoffPublicationIncidentExitContribution,
   liveHandoffResultObligation,
   projectHandoffRunResult,
   runHandoff,
@@ -137,15 +137,54 @@ export const BACKEND_STATUS_EXIT_CODES: Readonly<Record<BackendStatusFull['statu
   no_record_socket_present: 75,
 };
 
-export const HANDOFF_ROUTING_RESOLVE_EXIT_CODES: Readonly<Record<HandoffRoutingResolveResult['kind'], 0 | 1 | 75>> = {
+type HandoffRoutingResolveKindWithoutPublication = Exclude<HandoffRoutingResolveResult['kind'], 'not-published'>;
+type HandoffRoutingNotPublishedCause = Extract<
+  Extract<HandoffRoutingResolveResult, { kind: 'not-published' }>['outcome'],
+  { kind: 'not-published' }
+>['cause'];
+
+export const HANDOFF_ROUTING_RESOLVE_EXIT_CODES: Readonly<
+  Record<HandoffRoutingResolveKindWithoutPublication, 0 | 1 | 75>
+> = {
   resolved: 0,
   'already-terminal': 0,
   stale: 1,
   'live-owner': 1,
   'unauthorized-unobservable': 75,
   'status-unavailable': 75,
-  'not-published': 75,
 };
+
+const HANDOFF_ROUTING_NOT_PUBLISHED_EXIT_CODES: Readonly<Record<HandoffRoutingNotPublishedCause, 70 | 75>> = {
+  contended: 75,
+  'generation-maintenance': 75,
+  'capacity-exhausted': 75,
+  'invalid-record': 70,
+  'rejected-transition': 75,
+  'coordination-unavailable': 75,
+};
+
+function handoffRoutingResolveExitCode(result: HandoffRoutingResolveResult): 0 | 1 | 70 | 75 {
+  if (result.kind !== 'not-published') return HANDOFF_ROUTING_RESOLVE_EXIT_CODES[result.kind];
+  return result.outcome.kind === 'undeterminable' ? 75 : HANDOFF_ROUTING_NOT_PUBLISHED_EXIT_CODES[result.outcome.cause];
+}
+
+type BackendStatusLocalExitContribution = 0 | 70 | 75;
+
+const BACKEND_STATUS_LOCAL_EXIT_PRECEDENCE: Readonly<Record<BackendStatusLocalExitContribution, number>> = {
+  0: 0,
+  75: 1,
+  70: 2,
+};
+
+function combineBackendStatusLocalExitContributions(
+  contributions: readonly BackendStatusLocalExitContribution[],
+): BackendStatusLocalExitContribution {
+  return contributions.reduce((selected, candidate) =>
+    BACKEND_STATUS_LOCAL_EXIT_PRECEDENCE[candidate] > BACKEND_STATUS_LOCAL_EXIT_PRECEDENCE[selected]
+      ? candidate
+      : selected,
+  );
+}
 import { quarantineKbCommitLocal } from '../kb-commit-quarantine.js';
 import type { StoreResetTarget } from '../../store/operator-store-reset.js';
 import {
@@ -356,15 +395,13 @@ export function registerBackendCommands(program: Command, operations: BackendCom
       const liveHandoffResult = backendStatus.getLiveHandoffResult();
       const liveHandoffObligation = liveHandoffResultObligation(liveHandoffResult);
       process.stdout.write(`${formatBackendStatus(status, routingStatusRead, liveHandoffResult)}\n`);
-      const localExitContributions: readonly (0 | 75)[] = [
+      const localExitContributions: readonly BackendStatusLocalExitContribution[] = [
         BACKEND_STATUS_EXIT_CODES[status.status],
         liveHandoffObligation.exitContribution,
         handoffRoutingStatusExitContribution(routingStatusRead),
-        ...(liveHandoffResult?.publicationIncidents.map(
-          (incident) => HANDOFF_PUBLICATION_INCIDENT_EXIT_CONTRIBUTIONS[incident.kind],
-        ) ?? []),
+        ...(liveHandoffResult?.publicationIncidents.map(handoffPublicationIncidentExitContribution) ?? []),
       ];
-      process.exitCode = localExitContributions.includes(75) ? 75 : 0;
+      process.exitCode = combineBackendStatusLocalExitContributions(localExitContributions);
     } catch (error) {
       emitError(error);
     }
@@ -395,8 +432,9 @@ export function registerBackendCommands(program: Command, operations: BackendCom
       };
       const result = await routingStatus.resolve(request);
       const rendered = formatHandoffRoutingResolveResult(result);
-      (HANDOFF_ROUTING_RESOLVE_EXIT_CODES[result.kind] === 0 ? process.stdout : process.stderr).write(`${rendered}\n`);
-      process.exitCode = HANDOFF_ROUTING_RESOLVE_EXIT_CODES[result.kind];
+      const exitCode = handoffRoutingResolveExitCode(result);
+      (exitCode === 0 ? process.stdout : process.stderr).write(`${rendered}\n`);
+      process.exitCode = exitCode;
     } catch (error: unknown) {
       emitError(error);
     }

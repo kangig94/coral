@@ -156,7 +156,11 @@ function publishRecord(path: string, record: HandoffRoutingRecordInput) {
   );
 }
 
-function expectInvalidRecord(path: string, record: HandoffRoutingRecordInput): void {
+function expectInvalidRecord(
+  path: string,
+  record: HandoffRoutingRecordInput,
+  validationKind: 'malformed-json' | 'schema-violation' | 'envelope-body-disagreement',
+): void {
   initializeStore(path);
   const publication = publishRecord(path, record);
 
@@ -166,6 +170,7 @@ function expectInvalidRecord(path: string, record: HandoffRoutingRecordInput): v
     commitStarted: false,
   });
   if (publication.kind !== 'failed') throw new Error('Expected invalid record publication to fail');
+  expect(publication.error).toMatchObject({ validation: { kind: validationKind } });
   expect(publication.error).not.toBeInstanceOf(HandoffRoutingStoreUnreadableError);
   expect(publication.error).not.toHaveProperty('errcode');
 
@@ -179,17 +184,21 @@ function expectInvalidRecord(path: string, record: HandoffRoutingRecordInput): v
 
 describe('HandoffRoutingStatusTransaction', () => {
   it('rejects malformed JSON through the production validator before inserting a row', () => {
-    expectInvalidRecord(databasePath(), { ...legalRecords[1].record, bodyJson: '{' });
+    expectInvalidRecord(databasePath(), { ...legalRecords[1].record, bodyJson: '{' }, 'malformed-json');
   });
 
   it('rejects a schema-invalid record through the production validator before inserting a row', () => {
-    expectInvalidRecord(databasePath(), {
-      ...legalRecords[1].record,
-      bodyJson: JSON.stringify({
-        ...terminalBody,
-        disposition: { kind: 'delegated-exit', version: '0.10.9', exitCode: 999 },
-      }),
-    });
+    expectInvalidRecord(
+      databasePath(),
+      {
+        ...legalRecords[1].record,
+        bodyJson: JSON.stringify({
+          ...terminalBody,
+          disposition: { kind: 'delegated-exit', version: '0.10.9', exitCode: 999 },
+        }),
+      },
+      'schema-violation',
+    );
   });
 
   it.each([
@@ -197,7 +206,7 @@ describe('HandoffRoutingStatusTransaction', () => {
     ['terminal', { ...legalRecords[1].record, selectionSequence: 2 }],
     ['retirement', { ...legalRecords[2].record, terminalExisted: true }],
   ] as const)('rejects a %s envelope/body disagreement through the production validator', (_name, record) => {
-    expectInvalidRecord(databasePath(), record);
+    expectInvalidRecord(databasePath(), record, 'envelope-body-disagreement');
   });
 
   it.each(legalRecords)('accepts a legal $name record through the production validator', ({ record }) => {

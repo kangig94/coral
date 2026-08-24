@@ -118,7 +118,7 @@ describe('backend routing-status resolve grammar', () => {
     expect(help).toContain('cannot override deadline-expired');
   });
 
-  it.each<Readonly<{ result: HandoffRoutingResolveResult; exitCode: 0 | 1 | 75 }>>([
+  it.each<Readonly<{ result: HandoffRoutingResolveResult; exitCode: 0 | 1 | 70 | 75 }>>([
     {
       result: { kind: 'resolved', invocationId: INVOCATION_ID, reason: 'owner-absent', sequence: 1 },
       exitCode: 0,
@@ -139,8 +139,15 @@ describe('backend routing-status resolve grammar', () => {
       exitCode: 75,
     },
     {
-      result: { kind: 'not-published', outcome: { kind: 'not-published', cause: 'invalid-record' } },
-      exitCode: 75,
+      result: {
+        kind: 'not-published',
+        outcome: {
+          kind: 'not-published',
+          cause: 'invalid-record',
+          validation: { kind: 'malformed-json' },
+        },
+      },
+      exitCode: 70,
     },
     {
       result: { kind: 'not-published', outcome: { kind: 'not-published', cause: 'coordination-unavailable' } },
@@ -207,8 +214,15 @@ describe('backend routing-status resolve grammar', () => {
       'storage-capacity condition',
     ],
     [
-      { kind: 'not-published', outcome: { kind: 'not-published', cause: 'invalid-record' } },
-      'journal is unaffected, and no storage action or retry is appropriate',
+      {
+        kind: 'not-published',
+        outcome: {
+          kind: 'not-published',
+          cause: 'invalid-record',
+          validation: { kind: 'envelope-body-disagreement' },
+        },
+      },
+      'journal is unaffected, and no storage action is appropriate. After installing corrected Coral software, rerun coral-cli backend routing-status resolve --invocation <id>',
     ],
     [
       { kind: 'not-published', outcome: { kind: 'not-published', cause: 'rejected-transition' } },

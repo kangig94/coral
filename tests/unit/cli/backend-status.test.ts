@@ -11,6 +11,7 @@ import {
   formatHandoffContinuationReason,
   formatHandoffRoutingStatus,
 } from '#src/cli/format/backend.js';
+import { formatHandoffPublicationIncident } from '#src/cli/handoff-notice.js';
 import type {
   HandoffContinuationReason,
   HandoffPublicationIncident,
@@ -261,12 +262,25 @@ describe('backend status live handoff disposition', () => {
 });
 
 describe('backend status local exit combination', () => {
+  it('renders the invalid-record validation category on the publication-incident surface', () => {
+    expect(
+      formatHandoffPublicationIncident({
+        phase: 'selection',
+        kind: 'not-published',
+        cause: 'invalid-record',
+        validation: { kind: 'schema-violation' },
+      }),
+    ).toContain('invalid-record, schema-violation');
+  });
+
   const cases = [
     { daemonContribution: 0, liveContribution: 0, routingContribution: 0, publicationContribution: 0, expected: 0 },
     { daemonContribution: 75, liveContribution: 0, routingContribution: 0, publicationContribution: 0, expected: 75 },
     { daemonContribution: 0, liveContribution: 75, routingContribution: 0, publicationContribution: 0, expected: 75 },
     { daemonContribution: 0, liveContribution: 0, routingContribution: 75, publicationContribution: 0, expected: 75 },
     { daemonContribution: 0, liveContribution: 0, routingContribution: 0, publicationContribution: 75, expected: 75 },
+    { daemonContribution: 0, liveContribution: 0, routingContribution: 0, publicationContribution: 70, expected: 70 },
+    { daemonContribution: 75, liveContribution: 0, routingContribution: 0, publicationContribution: 70, expected: 70 },
   ] as const;
 
   it.each(cases)(
@@ -281,9 +295,18 @@ describe('backend status local exit combination', () => {
           ? null
           : liveHandoffResult(
               continuation,
-              publicationContribution === 75
-                ? [{ phase: 'selection', kind: 'not-published', cause: 'invalid-record' }]
-                : [],
+              publicationContribution === 70
+                ? [
+                    {
+                      phase: 'selection',
+                      kind: 'not-published',
+                      cause: 'invalid-record',
+                      validation: { kind: 'schema-violation' },
+                    },
+                  ]
+                : publicationContribution === 75
+                  ? [{ phase: 'selection', kind: 'not-published', cause: 'contended' }]
+                  : [],
             );
       const status: BackendStatusCommandOperations = {
         inspectReadiness: () => ({ kind: 'no-legacy' }),

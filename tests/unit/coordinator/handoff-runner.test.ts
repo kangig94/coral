@@ -433,6 +433,29 @@ describe('handoff-runner', () => {
     });
   });
 
+  it('should retain the invalid-record validation category on a publication incident', async () => {
+    mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
+    mockState.publishHandoffRoutingTransitions
+      .mockResolvedValueOnce({
+        kind: 'not-published',
+        cause: 'invalid-record',
+        validation: { kind: 'envelope-body-disagreement' },
+      })
+      .mockResolvedValueOnce({ kind: 'committed', sequence: 2 });
+
+    await expect(runHandoffResult(cliOperation('run'), { pluginRoot: '/plugin/root' })).resolves.toMatchObject({
+      kind: 'recording-incidents',
+      publicationIncidents: [
+        {
+          phase: 'selection',
+          kind: 'not-published',
+          cause: 'invalid-record',
+          validation: { kind: 'envelope-body-disagreement' },
+        },
+      ],
+    });
+  });
+
   it('should surface generation maintenance refusals for both lifecycle publications', async () => {
     mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
     mockState.publishHandoffRoutingTransitions.mockResolvedValue({

@@ -711,7 +711,11 @@ describe('handoff routing status', () => {
       );
     const outcome = await publish(path, [selection('malformed-record', 2)]).finally(() => stringify.mockRestore());
 
-    expect(outcome).toEqual({ kind: 'not-published', cause: 'invalid-record' });
+    expect(outcome).toEqual({
+      kind: 'not-published',
+      cause: 'invalid-record',
+      validation: { kind: 'malformed-json' },
+    });
     expect(outcome.kind).not.toBe('undeterminable');
     expect(outcome).not.toMatchObject({ cause: 'unreadable' });
     expect(records(path)).toEqual(before);

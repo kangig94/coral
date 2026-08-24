@@ -32,7 +32,9 @@ export function formatHandoffPublicationIncident(incident: HandoffPublicationInc
         `Remediation: ${incident.refusal.remediation}.`
       );
     case 'not-published':
-      return `Handoff routing-status ${incident.phase} publication was not published (${incident.cause}).`;
+      return incident.cause === 'invalid-record'
+        ? `Handoff routing-status ${incident.phase} publication was not published (${incident.cause}, ${incident.validation.kind}).`
+        : `Handoff routing-status ${incident.phase} publication was not published (${incident.cause}).`;
     case 'undeterminable':
       return (
         `Handoff routing-status ${incident.phase} publication could not be determined ` +

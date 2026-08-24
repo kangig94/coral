@@ -19,6 +19,8 @@ import {
   SQLITE_FULL,
   SQLITE_NOTADB,
   type HandoffRoutingRecordInput,
+  type HandoffRoutingRecordValidationFailure,
+  type HandoffRoutingRecordValidationResult,
   type HandoffRoutingStatusTransaction,
   type HandoffRoutingStatusStoreSchema,
 } from '../store/handoff-routing-status-store.js';
@@ -570,12 +572,24 @@ function decodeStatusRecordBody(record: HandoffRoutingRecordEnvelope, body: unkn
     : null;
 }
 
-export function validateStatusRecordBody(record: HandoffRoutingRecordInput): boolean {
+export function validateStatusRecordBody(record: HandoffRoutingRecordInput): HandoffRoutingRecordValidationResult {
+  let body: unknown;
   try {
-    return decodeStatusRecordBody(record, JSON.parse(record.bodyJson)) !== null;
+    body = JSON.parse(record.bodyJson);
   } catch {
-    return false;
+    return { kind: 'malformed-json' };
   }
+
+  const parsed =
+    record.recordKind === 'selection'
+      ? routingSelectedEventSchema.safeParse(body)
+      : record.recordKind === 'terminal'
+        ? terminalEventSchema.safeParse(body)
+        : retirementTombstoneSchema.safeParse(body);
+  if (!parsed.success) return { kind: 'schema-violation' };
+  return decodeStatusRecordBody(record, parsed.data) === null
+    ? { kind: 'envelope-body-disagreement' }
+    : { kind: 'valid' };
 }
 
 export const retirementHistoryTruncatedSchema = z
@@ -703,11 +717,15 @@ export type PublicationOutcome =
   | Readonly<{ kind: 'committed'; sequence: number }>
   | Readonly<{
       kind: 'not-published';
+      cause: 'invalid-record';
+      validation: HandoffRoutingRecordValidationFailure;
+    }>
+  | Readonly<{
+      kind: 'not-published';
       cause:
         | 'contended'
         | 'generation-maintenance'
         | 'capacity-exhausted'
-        | 'invalid-record'
         | 'rejected-transition'
         | 'coordination-unavailable';
     }>
@@ -1200,7 +1218,7 @@ function errorNumber(error: unknown, fallback: number): number {
 
 function classifyPublicationError(error: unknown, commitStarted: boolean): PublicationOutcome {
   if (error instanceof HandoffRoutingStoreInvalidRecordError) {
-    return { kind: 'not-published', cause: 'invalid-record' };
+    return { kind: 'not-published', cause: 'invalid-record', validation: error.validation };
   }
   if (error instanceof RejectedTransitionError) {
     return { kind: 'not-published', cause: 'rejected-transition' };

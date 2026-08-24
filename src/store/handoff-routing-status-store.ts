@@ -19,8 +19,19 @@ export type HandoffRoutingStatusStoreSchema = Readonly<{
   maximumContinuationFinalizedBytes: number;
   maximumRetirementTombstoneBytes: number;
   closingRecordBytes: number;
-  validateRecordBody: (record: HandoffRoutingRecordInput) => boolean;
+  validateRecordBody: (record: HandoffRoutingRecordInput) => HandoffRoutingRecordValidationResult;
 }>;
+
+export type HandoffRoutingRecordValidationResult =
+  | Readonly<{ kind: 'valid' }>
+  | Readonly<{ kind: 'malformed-json' }>
+  | Readonly<{ kind: 'schema-violation' }>
+  | Readonly<{ kind: 'envelope-body-disagreement' }>;
+
+export type HandoffRoutingRecordValidationFailure = Exclude<
+  HandoffRoutingRecordValidationResult,
+  Readonly<{ kind: 'valid' }>
+>;
 
 export type HandoffRoutingRecordKind = 'selection' | 'terminal' | 'retirement';
 
@@ -62,7 +73,14 @@ export type HandoffRoutingRetirementHistoryUpdate = Readonly<{
   latestSelectedAt: string | null;
 }>;
 
-export class HandoffRoutingStoreInvalidRecordError extends Error {}
+export class HandoffRoutingStoreInvalidRecordError extends Error {
+  readonly validation: HandoffRoutingRecordValidationFailure;
+
+  constructor(validation: HandoffRoutingRecordValidationFailure) {
+    super();
+    this.validation = validation;
+  }
+}
 
 export class HandoffRoutingStoreUnreadableError extends Error {
   readonly errcode: number;
@@ -94,7 +112,8 @@ export class HandoffRoutingStatusTransaction {
   }
 
   insertRecord(record: HandoffRoutingRecordInput): number {
-    if (!this.#schema.validateRecordBody(record)) throw new HandoffRoutingStoreInvalidRecordError();
+    const validation = this.#schema.validateRecordBody(record);
+    if (validation.kind !== 'valid') throw new HandoffRoutingStoreInvalidRecordError(validation);
     const inserted = this.#database
       .prepare(
         `INSERT INTO handoff_routing_records (
