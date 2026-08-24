@@ -7,6 +7,7 @@ import {
   projectHandoffRunResult,
   runHandoff,
   type LiveHandoffResult,
+  type NonEmptyReadonlyArray,
 } from '../../coordinator/handoff-runner.js';
 import {
   parseHandoffRoutingInvocationId,
@@ -177,7 +178,7 @@ const BACKEND_STATUS_LOCAL_EXIT_PRECEDENCE: Readonly<Record<BackendStatusLocalEx
 };
 
 function combineBackendStatusLocalExitContributions(
-  contributions: readonly BackendStatusLocalExitContribution[],
+  contributions: NonEmptyReadonlyArray<BackendStatusLocalExitContribution>,
 ): BackendStatusLocalExitContribution {
   return contributions.reduce((selected, candidate) =>
     BACKEND_STATUS_LOCAL_EXIT_PRECEDENCE[candidate] > BACKEND_STATUS_LOCAL_EXIT_PRECEDENCE[selected]
@@ -395,7 +396,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
       const liveHandoffResult = backendStatus.getLiveHandoffResult();
       const liveHandoffObligation = liveHandoffResultObligation(liveHandoffResult);
       process.stdout.write(`${formatBackendStatus(status, routingStatusRead, liveHandoffResult)}\n`);
-      const localExitContributions: readonly BackendStatusLocalExitContribution[] = [
+      const localExitContributions: NonEmptyReadonlyArray<BackendStatusLocalExitContribution> = [
         BACKEND_STATUS_EXIT_CODES[status.status],
         liveHandoffObligation.exitContribution,
         handoffRoutingStatusExitContribution(routingStatusRead),
