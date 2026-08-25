@@ -15,7 +15,7 @@ import { ensure } from '../transport/ipc/ensure.js';
 import { childPrincipalAuthFromEnv, childPrincipalAuthOptions } from '../transport/ipc/child-principal-auth.js';
 import {
   HandoffRunError,
-  projectHandoffRunResult,
+  consumeHandoffRunResult,
   runHandoff,
   type HandoffOutcome,
 } from '../coordinator/handoff-runner.js';
@@ -571,8 +571,9 @@ export async function launchAndFollow(options: FollowOptions): Promise<number> {
             onSelectionPublicationIncident: (incident) => renderHandoffPublicationIncidents([incident]),
           },
         );
-        const { continuation, publicationIncidents } = projectHandoffRunResult(result);
-        renderHandoffPublicationIncidents(publicationIncidents.filter((incident) => incident.phase === 'terminal'));
+        const continuation = consumeHandoffRunResult(result, (incidents) =>
+          renderHandoffPublicationIncidents(incidents.filter((incident) => incident.phase === 'terminal')),
+        );
         if (continuation.kind === 'delegated') {
           return continuation;
         }

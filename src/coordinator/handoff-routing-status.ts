@@ -2,15 +2,14 @@ import { z } from 'zod';
 
 import { strictBundleManifestSchema, type StrictBundleIdentityFailure } from '../infra/bundle-manifest.js';
 import { assertNever } from '../infra/error-format.js';
-import type { InvalidTargetFailure } from '../infra/handoff-target.js';
 import { createMonotonicClock } from '../infra/monotonic-clock.js';
-import { processIncarnationSchema } from '../infra/node-process.js';
 import type { IdPort, Runtime } from '../runtime/ports.js';
-import type { RecordedProcessIdentity } from '../infra/process-containment.js';
+import { recordedProcessIdentitySchema, type RecordedProcessIdentity } from '../infra/process-containment.js';
 import {
   HandoffRoutingStoreInvalidRecordError,
   HandoffRoutingStoreUnreadableError,
   HandoffRoutingStoreUnsupportedGenerationError as UnsupportedGenerationError,
+  handoffRoutingStatusGeneration,
   publishHandoffRoutingStoreTransaction,
   readHandoffRoutingStoreSnapshot,
   SQLITE_BUSY,
@@ -30,18 +29,19 @@ import {
 } from '../store/generation-mutation-coordination.js';
 import {
   HANDOFF_ROUTING_BASIS_OBLIGATIONS,
+  buildSummarySchema,
+  incumbentIdentitySummarySchema,
   type BuildSummary,
   type HandoffRoutingBasis,
-  type IncumbentIdentitySummary,
   type RoutingBasisObligation,
 } from './handoff-routing.js';
 import type { ABSENT_HANDOFF_RESULT_OBLIGATION, HANDOFF_CONTINUATION_REASON_OBLIGATIONS } from './handoff-runner.js';
 
-export const HANDOFF_ROUTING_STATUS_GENERATION = 1;
 export const MAX_HANDOFF_ROUTING_STATUS_BYTES = 1_048_576;
 export const MAX_RETIREMENT_TOMBSTONES = 128;
-export const MAX_RETIREMENT_TOMBSTONE_BYTES = 262_144;
-export const MAX_ENCODED_RETIREMENT_TOMBSTONE_BYTES = 2_048;
+// DDL bounds must never be derived from encoded fixtures; generation addressing and body capacity may not form a cycle.
+export const MAX_ENCODED_RETIREMENT_TOMBSTONE_BYTES = 2_170;
+export const MAX_RETIREMENT_TOMBSTONE_BYTES = MAX_RETIREMENT_TOMBSTONES * MAX_ENCODED_RETIREMENT_TOMBSTONE_BYTES;
 export const MAX_UNRESOLVED_INVOCATIONS = 64;
 export const MAX_HANDOFF_ROUTING_OWNER_SWEEP_MS = 500;
 export const MAX_COMPLETED_HANDOFF_ROUTING_PAIRS = 256;
@@ -50,48 +50,53 @@ export const HANDOFF_ROUTING_COMPLETED_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 const MAX_BOUNDED_TERMINAL_HISTORY = MAX_COMPLETED_HANDOFF_ROUTING_PAIRS;
 
 const MAX_IDENTIFIER_LENGTH = 58;
-const MAX_INSTANCE_ID_LENGTH = 64;
-const MAX_VERSION_LENGTH = 64;
 const MAX_OBSERVED_AT_LENGTH = 24;
 const MAX_SIGNAL_LENGTH = 16;
+export const MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES = Object.freeze({
+  'routing-selected': 1_965,
+  'execution-failed': 2_345,
+  'continuation-finalized': 2_923,
+});
+export const MAX_LEGAL_CLOSING_RECORD_BYTES = 2_923;
+
+/**
+ * A persisted disposition is a hold only when a Coral operation can change its record. Every other
+ * disposition is retained and rendered as history, and history never contributes a nonzero status exit.
+ */
+const PERSISTED_DISPOSITION_CLASSIFICATIONS = Object.freeze({
+  'incumbent-absent': 'hold',
+  'incumbent-unresolved': 'hold',
+  'incumbent-unusable': 'hold',
+  'invoking-identity-unavailable': 'hold',
+  'incumbent-identity-unavailable': 'hold',
+  'same-build-set': 'hold',
+  'invoking-build-not-older': 'hold',
+  'invalid-incumbent-target': 'hold',
+  'continue-current': 'hold',
+  'handoff-selected': 'hold',
+  'execution-failed': 'history',
+  'continued-current': 'history',
+  'delegated-success': 'history',
+  'delegated-exit': 'history',
+  'delegated-signal': 'history',
+  'failed-without-selection': 'history',
+  'finalized-without-selection': 'history',
+  'terminal-without-retained-selection': 'history',
+  'terminal-after-operator-resolution': 'history',
+  'selection-evicted-at-capacity': 'hold',
+  'completed-pair-compaction': 'history',
+  'operator-resolved': 'history',
+  'retirement-history-truncated': 'history',
+} as const satisfies PersistedDispositionClassifications);
+
+const HANDOFF_ROUTING_STATUS_GENERATION = handoffRoutingStatusGeneration(handoffRoutingStatusStoreSchema());
 
 const sequenceSchema = z.number().int().nonnegative().safe();
 const positiveSequenceSchema = z.number().int().positive().safe();
 const identifierSchema = z.string().min(1).max(MAX_IDENTIFIER_LENGTH);
 const observedAtSchema = z.string().datetime({ offset: false, precision: 3 }).length(MAX_OBSERVED_AT_LENGTH);
-const boundedVersionSchema = strictBundleManifestSchema.shape.version.max(MAX_VERSION_LENGTH);
 
-export const buildSummarySchema = z
-  .object({
-    version: boundedVersionSchema,
-    buildSetId: strictBundleManifestSchema.shape.buildSetId,
-    bundleHash: strictBundleManifestSchema.shape.bundleHash,
-    flavor: strictBundleManifestSchema.shape.flavor,
-  })
-  .strict()
-  .readonly();
-
-export const incumbentIdentitySummarySchema = z
-  .object({
-    version: boundedVersionSchema,
-    bundleHash: strictBundleManifestSchema.shape.bundleHash,
-    flavor: strictBundleManifestSchema.shape.flavor,
-    instanceId: z.string().min(1).max(MAX_INSTANCE_ID_LENGTH),
-  })
-  .strict()
-  .readonly();
-
-export type ValidatedTargetSummary = Readonly<{ build: BuildSummary }>;
-
-export const validatedTargetSummarySchema: z.ZodType<ValidatedTargetSummary> = z
-  .object({ build: buildSummarySchema })
-  .strict()
-  .readonly();
-
-export type InvalidTargetSummary = Readonly<{
-  failure: InvalidTargetFailure;
-  expectedBuild?: BuildSummary;
-}>;
+export const validatedTargetSummarySchema = z.object({ build: buildSummarySchema }).strict().readonly();
 
 const invalidTargetFailureSchema = z.enum([
   'bundle-dir-not-canonical',
@@ -103,7 +108,7 @@ const invalidTargetFailureSchema = z.enum([
   'adjacent-bundle-mismatch',
 ]);
 
-export const invalidTargetSummarySchema: z.ZodType<InvalidTargetSummary> = z
+export const invalidTargetSummarySchema = z
   .object({
     failure: invalidTargetFailureSchema,
     expectedBuild: buildSummarySchema.optional(),
@@ -118,25 +123,7 @@ const strictBundleIdentityFailureSchema: z.ZodType<StrictBundleIdentityFailure> 
   'adjacent_manifest_mismatch',
 ]);
 
-export type DurableHandoffRoutingBasis =
-  | Readonly<{ kind: 'incumbent-absent' }>
-  | Readonly<{
-      kind: 'incumbent-unresolved';
-      cause: 'unreadable-record' | 'health-request-failed' | 'health-shape-rejected';
-    }>
-  | Readonly<{ kind: 'incumbent-unusable'; cause: 'draining' | 'identity-mismatch' }>
-  | Readonly<{ kind: 'invoking-identity-unavailable'; failure: StrictBundleIdentityFailure }>
-  | Readonly<{ kind: 'incumbent-identity-unavailable'; incumbent: IncumbentIdentitySummary }>
-  | Readonly<{ kind: 'same-build-set'; buildSetId: string }>
-  | Readonly<{
-      kind: 'invoking-build-not-older';
-      comparison: 'same-version' | 'newer-version';
-      invoking: BuildSummary;
-      incumbent: BuildSummary;
-    }>
-  | Readonly<{ kind: 'invalid-incumbent-target'; evidence: InvalidTargetSummary }>;
-
-export const durableHandoffRoutingBasisSchema: z.ZodType<DurableHandoffRoutingBasis> = z.union([
+export const durableHandoffRoutingBasisSchema = z.union([
   z
     .object({ kind: z.literal('incumbent-absent') })
     .strict()
@@ -178,6 +165,8 @@ export const durableHandoffRoutingBasisSchema: z.ZodType<DurableHandoffRoutingBa
     .strict()
     .readonly(),
 ]);
+
+export type DurableHandoffRoutingBasis = z.infer<typeof durableHandoffRoutingBasisSchema>;
 
 export type RoutingStatusPolicy =
   | Readonly<{ durability: 'ephemeral'; severity: 'info' | 'warning'; exitContribution: 0 | 75 }>
@@ -289,14 +278,6 @@ export const ABSENT_HANDOFF_RESULT_POLICY_PROJECTION: ObligationPolicyProjection
   policy: { durability: 'ephemeral', severity: 'info', exitContribution: 0 },
 } as const);
 
-const recordedProcessIdentitySchema: z.ZodType<RecordedProcessIdentity> = z
-  .object({
-    pid: z.number().int().positive().safe(),
-    incarnation: processIncarnationSchema,
-  })
-  .strict()
-  .readonly();
-
 const selectedDispositionSchema = z.union([
   z
     .object({ kind: z.literal('continue-current'), basis: durableHandoffRoutingBasisSchema })
@@ -346,19 +327,23 @@ const finalizedDispositionSchema = z.union([
     .strict()
     .readonly(),
   z
-    .object({ kind: z.literal('delegated-success'), version: boundedVersionSchema })
+    .object({ kind: z.literal('delegated-success'), version: strictBundleManifestSchema.shape.version })
     .strict()
     .readonly(),
   z
     .object({
       kind: z.literal('delegated-exit'),
-      version: boundedVersionSchema,
+      version: strictBundleManifestSchema.shape.version,
       exitCode: z.number().int().min(0).max(255),
     })
     .strict()
     .readonly(),
   z
-    .object({ kind: z.literal('delegated-signal'), version: boundedVersionSchema, signal: signalSchema })
+    .object({
+      kind: z.literal('delegated-signal'),
+      version: strictBundleManifestSchema.shape.version,
+      signal: signalSchema,
+    })
     .strict()
     .readonly(),
 ]);
@@ -636,35 +621,6 @@ function encodedBytes(value: unknown): number {
   return Buffer.byteLength(JSON.stringify(value), 'utf8');
 }
 
-function completedPairIsStable(event: HandoffRoutingJournalEvent | RetirementTombstone): boolean {
-  switch (event.phase) {
-    case 'selection': {
-      const policy = persistedHandoffDispositionPolicy(event.disposition);
-      return policy.durability === 'lifecycle-journal' && policy.retention === 'until-superseded';
-    }
-    case 'terminal':
-      switch (event.disposition.kind) {
-        case 'delegated-success':
-          return true;
-        case 'continued-current':
-        case 'delegated-exit':
-        case 'delegated-signal':
-        case 'execution-failed':
-        case 'failed-without-selection':
-        case 'finalized-without-selection':
-        case 'terminal-without-retained-selection':
-        case 'terminal-after-operator-resolution':
-          return false;
-        default:
-          return assertNever(event.disposition);
-      }
-    case 'retirement':
-      return false;
-    default:
-      return assertNever(event);
-  }
-}
-
 const transitionEnvelopeSchema = z
   .object({
     eventId: identifierSchema,
@@ -705,6 +661,14 @@ const operatorResolvedTransitionSchema = transitionEnvelopeSchema
   .strict()
   .readonly();
 
+const capacityEvictionAcknowledgedTransitionSchema = transitionEnvelopeSchema
+  .extend({
+    kind: z.literal('capacity-eviction-acknowledged'),
+    selectionSequence: positiveSequenceSchema,
+  })
+  .strict()
+  .readonly();
+
 export const handoffRoutingTransitionSchema = z.union([
   routingSelectedTransitionSchema,
   terminalTransitionSchema,
@@ -712,6 +676,13 @@ export const handoffRoutingTransitionSchema = z.union([
 ]);
 
 export type HandoffRoutingTransition = z.infer<typeof handoffRoutingTransitionSchema>;
+
+const handoffRoutingMutationSchema = z.union([
+  handoffRoutingTransitionSchema,
+  capacityEvictionAcknowledgedTransitionSchema,
+]);
+
+type HandoffRoutingMutation = z.infer<typeof handoffRoutingMutationSchema>;
 
 export type PublicationOutcome =
   | Readonly<{ kind: 'committed'; sequence: number }>
@@ -726,12 +697,15 @@ export type PublicationOutcome =
         | 'contended'
         | 'generation-maintenance'
         | 'capacity-exhausted'
+        | 'io-failed'
+        | 'unreadable'
+        | 'unsupported-generation'
         | 'rejected-transition'
         | 'coordination-unavailable';
     }>
   | Readonly<{
       kind: 'undeterminable';
-      cause: 'io-failed' | 'unreadable' | 'unsupported-generation';
+      cause: 'contended' | 'capacity-exhausted' | 'io-failed' | 'unreadable';
       errcode: number;
     }>;
 
@@ -772,12 +746,14 @@ function insertRecord(
     selectionSequence,
     retirementCause: retirement?.retirementCause ?? null,
     terminalExisted: retirement?.terminalExisted ?? null,
-    completedPairStable: completedPairIsStable(event),
     bodyJson: JSON.stringify(event),
   });
 }
 
-function parseRecordBody<T>(bodyJson: string | undefined, schema: z.ZodType<T>): T | undefined {
+function parseRecordBody<Schema extends z.ZodTypeAny>(
+  bodyJson: string | undefined,
+  schema: Schema,
+): z.output<Schema> | undefined {
   if (bodyJson === undefined) return undefined;
   try {
     return schema.parse(JSON.parse(bodyJson));
@@ -1184,10 +1160,26 @@ function applyResolution(
   return sequence;
 }
 
-function applyTransition(
+function applyCapacityEvictionAcknowledgement(
+  transaction: HandoffRoutingStatusTransaction,
+  transition: z.infer<typeof capacityEvictionAcknowledgedTransitionSchema>,
+): number {
+  const tombstone = tombstoneForInvocation(transaction, transition.invocationId);
+  if (
+    tombstone === undefined ||
+    tombstone.retirementCause !== 'selection-evicted-at-capacity' ||
+    tombstone.selectionSequence !== transition.selectionSequence
+  ) {
+    throw new RejectedTransitionError();
+  }
+  rollUpTombstone(transaction, tombstone);
+  return tombstone.sequence;
+}
+
+function applyRoutingMutation(
   transaction: HandoffRoutingStatusTransaction,
   ids: Pick<IdPort, 'uuid'>,
-  transition: HandoffRoutingTransition,
+  transition: HandoffRoutingMutation,
 ): number {
   if (transaction.eventExists(transition.eventId)) throw new RejectedTransitionError();
   switch (transition.kind) {
@@ -1198,12 +1190,14 @@ function applyTransition(
       return applyTerminal(transaction, ids, transition);
     case 'operator-resolved':
       return applyResolution(transaction, ids, transition);
+    case 'capacity-eviction-acknowledged':
+      return applyCapacityEvictionAcknowledgement(transaction, transition);
     default:
       return assertNever(transition);
   }
 }
 
-function transitionObservedAt(transitions: readonly HandoffRoutingTransition[]): string {
+function mutationObservedAt(transitions: readonly HandoffRoutingMutation[]): string {
   return transitions.reduce(
     (latest, transition) => (Date.parse(transition.observedAt) > Date.parse(latest) ? transition.observedAt : latest),
     transitions[0].observedAt,
@@ -1224,32 +1218,45 @@ function classifyPublicationError(error: unknown, commitStarted: boolean): Publi
     return { kind: 'not-published', cause: 'rejected-transition' };
   }
   if (error instanceof UnsupportedGenerationError) {
-    return { kind: 'undeterminable', cause: 'unsupported-generation', errcode: SQLITE_ERROR };
+    return { kind: 'not-published', cause: 'unsupported-generation' };
   }
-  if (error instanceof HandoffRoutingStoreUnreadableError) {
-    return { kind: 'undeterminable', cause: 'unreadable', errcode: error.errcode };
-  }
-  const errcode = errorNumber(error, SQLITE_ERROR);
+  const errcode =
+    error instanceof HandoffRoutingStoreUnreadableError ? error.errcode : errorNumber(error, SQLITE_ERROR);
   const primaryErrcode = errcode & 0xff;
-  if (primaryErrcode === SQLITE_FULL) return { kind: 'not-published', cause: 'capacity-exhausted' };
-  if (primaryErrcode === SQLITE_BUSY && !commitStarted) return { kind: 'not-published', cause: 'contended' };
-  if (primaryErrcode === SQLITE_NOTADB || primaryErrcode === SQLITE_CORRUPT) {
-    return { kind: 'undeterminable', cause: 'unreadable', errcode };
-  }
-  return { kind: 'undeterminable', cause: 'io-failed', errcode };
+  const cause =
+    error instanceof HandoffRoutingStoreUnreadableError ||
+    primaryErrcode === SQLITE_NOTADB ||
+    primaryErrcode === SQLITE_CORRUPT
+      ? 'unreadable'
+      : primaryErrcode === SQLITE_FULL
+        ? 'capacity-exhausted'
+        : primaryErrcode === SQLITE_BUSY
+          ? 'contended'
+          : 'io-failed';
+  return commitStarted ? { kind: 'undeterminable', cause, errcode } : { kind: 'not-published', cause };
 }
 
-function handoffRoutingStatusStoreSchema(): HandoffRoutingStatusStoreSchema {
+export function handoffRoutingStatusStoreSchema(): HandoffRoutingStatusStoreSchema {
   return {
-    generation: HANDOFF_ROUTING_STATUS_GENERATION,
-    maximumBytes: MAX_HANDOFF_ROUTING_STATUS_BYTES,
-    maximumIdentifierLength: MAX_IDENTIFIER_LENGTH,
-    maximumObservedAtLength: MAX_OBSERVED_AT_LENGTH,
-    maximumRoutingSelectedBytes: MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES['routing-selected'],
-    maximumExecutionFailedBytes: MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES['execution-failed'],
-    maximumContinuationFinalizedBytes: MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES['continuation-finalized'],
-    maximumRetirementTombstoneBytes: MAX_ENCODED_RETIREMENT_TOMBSTONE_BYTES,
-    closingRecordBytes: MAX_LEGAL_CLOSING_RECORD_BYTES,
+    durableFormat: {
+      maximumIdentifierLength: MAX_IDENTIFIER_LENGTH,
+      maximumObservedAtLength: MAX_OBSERVED_AT_LENGTH,
+      maximumRoutingSelectedBytes: MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES['routing-selected'],
+      maximumExecutionFailedBytes: MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES['execution-failed'],
+      maximumContinuationFinalizedBytes: MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES['continuation-finalized'],
+      maximumRetirementTombstoneBytes: MAX_ENCODED_RETIREMENT_TOMBSTONE_BYTES,
+      closingRecordBytes: MAX_LEGAL_CLOSING_RECORD_BYTES,
+      bodyVocabulary: {
+        dispositionKinds: Object.keys(PERSISTED_DISPOSITION_CLASSIFICATIONS).sort(),
+        routingBasisKinds: Object.keys(HANDOFF_ROUTING_BASIS_OBLIGATIONS).sort(),
+        completedPairStability: {
+          selectionDispositionKind: 'continue-current',
+          selectionBasisKinds: ['incumbent-absent', 'same-build-set'],
+          terminalDispositionKind: 'delegated-success',
+        },
+      },
+    },
+    operational: { maximumBytes: MAX_HANDOFF_ROUTING_STATUS_BYTES },
     validateRecordBody: validateStatusRecordBody,
   };
 }
@@ -1257,9 +1264,9 @@ function handoffRoutingStatusStoreSchema(): HandoffRoutingStatusStoreSchema {
 function publishOnce(
   runtime: Pick<HandoffRoutingPublicationPorts, 'storage' | 'ids'>,
   path: string,
-  transitions: readonly HandoffRoutingTransition[],
+  transitions: readonly HandoffRoutingMutation[],
 ): PublicationOutcome {
-  const parsed = z.array(handoffRoutingTransitionSchema).min(1).safeParse(transitions);
+  const parsed = z.array(handoffRoutingMutationSchema).min(1).safeParse(transitions);
   if (!parsed.success) return { kind: 'not-published', cause: 'rejected-transition' };
 
   const publication = publishHandoffRoutingStoreTransaction(
@@ -1267,11 +1274,11 @@ function publishOnce(
     path,
     handoffRoutingStatusStoreSchema(),
     (transaction) => {
-      const observedAt = transitionObservedAt(parsed.data);
+      const observedAt = mutationObservedAt(parsed.data);
       compactExpiredCompletedPairs(transaction, runtime.ids, observedAt);
       let publishedSequence = 0;
       for (const transition of parsed.data) {
-        publishedSequence = applyTransition(transaction, runtime.ids, transition);
+        publishedSequence = applyRoutingMutation(transaction, runtime.ids, transition);
       }
       compactExpiredCompletedPairs(transaction, runtime.ids, observedAt);
       return publishedSequence;
@@ -1282,20 +1289,27 @@ function publishOnce(
     : classifyPublicationError(publication.error, publication.commitStarted);
 }
 
-export async function publishHandoffRoutingTransitions(
-  runtime: HandoffRoutingPublicationPorts,
-  path: string,
-  transitions: readonly HandoffRoutingTransition[],
-  signal?: AbortSignal,
-): Promise<PublicationOutcome> {
+function publicationContentionWindow(runtime: HandoffRoutingPublicationPorts) {
   const clock = createMonotonicClock(Symbol('handoff-routing-status-publication-contention'), {
     readMilliseconds: () => runtime.time.monotonicNow(),
   });
-  const deadline = clock.shiftMilliseconds(clock.now(), PUBLICATION_CONTENTION_TIMEOUT_MS);
+  return {
+    clock,
+    deadline: clock.shiftMilliseconds(clock.now(), PUBLICATION_CONTENTION_TIMEOUT_MS),
+  };
+}
+
+async function publishHandoffRoutingTransitionsWithinWindow(
+  runtime: HandoffRoutingPublicationPorts,
+  path: string,
+  transitions: readonly HandoffRoutingMutation[],
+  window: ReturnType<typeof publicationContentionWindow>,
+  signal?: AbortSignal,
+): Promise<PublicationOutcome> {
   while (true) {
     const outcome = publishOnce(runtime, path, transitions);
     if (outcome.kind !== 'not-published' || outcome.cause !== 'contended') return outcome;
-    if (signal?.aborted === true || clock.compare(clock.now(), deadline) >= 0) return outcome;
+    if (signal?.aborted === true || window.clock.compare(window.clock.now(), window.deadline) >= 0) return outcome;
     try {
       await runtime.time.sleep(PUBLICATION_RETRY_DELAY_MS, signal === undefined ? undefined : { signal });
     } catch {
@@ -1304,25 +1318,54 @@ export async function publishHandoffRoutingTransitions(
   }
 }
 
+export function publishHandoffRoutingTransitions(
+  runtime: HandoffRoutingPublicationPorts,
+  path: string,
+  transitions: readonly HandoffRoutingMutation[],
+  signal?: AbortSignal,
+): Promise<PublicationOutcome> {
+  return publishHandoffRoutingTransitionsWithinWindow(
+    runtime,
+    path,
+    transitions,
+    publicationContentionWindow(runtime),
+    signal,
+  );
+}
+
 export async function publishGenerationCoordinatedHandoffRoutingTransitions(
   runtime: Runtime,
   path: string,
-  transitions: readonly HandoffRoutingTransition[],
+  transitions: readonly HandoffRoutingMutation[],
   signal?: AbortSignal,
 ): Promise<PublicationOutcome> {
+  const window = publicationContentionWindow(runtime);
   let writer: GenerationWriterLease;
-  try {
-    const attempt = tryAcquireGenerationWriterLease(runtime, {
-      kind: 'routing-status',
-      name: 'handoff-routing-status',
-    });
-    if (attempt.kind === 'maintenance-active') {
-      return { kind: 'not-published', cause: 'generation-maintenance' };
+  while (true) {
+    try {
+      const attempt = tryAcquireGenerationWriterLease(runtime, {
+        kind: 'routing-status',
+        name: 'handoff-routing-status',
+      });
+      if (attempt.kind === 'maintenance-active') {
+        return { kind: 'not-published', cause: 'generation-maintenance' };
+      }
+      if (attempt.kind === 'acquired') {
+        writer = attempt.lease;
+        break;
+      }
+    } catch {
+      return { kind: 'not-published', cause: 'coordination-unavailable' };
     }
-    if (attempt.kind === 'contended') return { kind: 'not-published', cause: 'contended' };
-    writer = attempt.lease;
-  } catch {
-    return { kind: 'not-published', cause: 'coordination-unavailable' };
+    const contended = { kind: 'not-published', cause: 'contended' } as const;
+    if (signal?.aborted === true || window.clock.compare(window.clock.now(), window.deadline) >= 0) {
+      return contended;
+    }
+    try {
+      await runtime.time.sleep(PUBLICATION_RETRY_DELAY_MS, signal === undefined ? undefined : { signal });
+    } catch {
+      return contended;
+    }
   }
   try {
     try {
@@ -1330,7 +1373,7 @@ export async function publishGenerationCoordinatedHandoffRoutingTransitions(
     } catch {
       return { kind: 'not-published', cause: 'coordination-unavailable' };
     }
-    return await publishHandoffRoutingTransitions(runtime, path, transitions, signal);
+    return await publishHandoffRoutingTransitionsWithinWindow(runtime, path, transitions, window, signal);
   } finally {
     writer.release();
   }
@@ -1348,7 +1391,28 @@ export type PersistedHandoffDisposition =
   | Readonly<{ kind: RetirementTombstone['retirementCause']; terminalExisted: boolean }>
   | RetirementHistoryTruncated;
 
-const boundedWarningPolicy: Extract<RoutingStatusPolicy, { durability: 'lifecycle-journal' }> = Object.freeze({
+type PersistedDispositionClassification = 'hold' | 'history';
+type LifecycleRoutingStatusPolicy = Extract<RoutingStatusPolicy, { durability: 'lifecycle-journal' }>;
+type PersistedDispositionClassifications = Readonly<
+  Record<PersistedHandoffDisposition['kind'], PersistedDispositionClassification>
+> &
+  Readonly<Record<StoredTerminalDisposition['kind'], 'history'>>;
+
+export type PersistedHandoffDispositionPolicy =
+  | Readonly<
+      Omit<LifecycleRoutingStatusPolicy, 'exitContribution'> & {
+        classification: 'hold';
+        exitContribution: 0 | 75;
+      }
+    >
+  | Readonly<
+      Omit<LifecycleRoutingStatusPolicy, 'exitContribution'> & {
+        classification: 'history';
+        exitContribution: 0;
+      }
+    >;
+
+const boundedWarningPolicy: LifecycleRoutingStatusPolicy = Object.freeze({
   durability: 'lifecycle-journal',
   retention: 'bounded-history',
   severity: 'warning',
@@ -1406,7 +1470,7 @@ function isRetirementDisposition(disposition: PersistedHandoffDisposition): disp
   return 'terminalExisted' in disposition;
 }
 
-function selectedDispositionPolicy(disposition: SelectedHandoffDisposition): RoutingStatusPolicy {
+function selectedDispositionPolicy(disposition: SelectedHandoffDisposition): LifecycleRoutingStatusPolicy {
   switch (disposition.kind) {
     case 'continue-current':
       return HANDOFF_ROUTING_BASIS_POLICIES[disposition.basis.kind];
@@ -1422,11 +1486,11 @@ function selectedDispositionPolicy(disposition: SelectedHandoffDisposition): Rou
   }
 }
 
-function retirementDispositionPolicy(disposition: RetirementDisposition): RoutingStatusPolicy {
+function retirementDispositionPolicy(disposition: RetirementDisposition): LifecycleRoutingStatusPolicy {
   switch (disposition.kind) {
     case 'selection-evicted-at-capacity':
-    case 'operator-resolved':
       return boundedWarningPolicy;
+    case 'operator-resolved':
     case 'completed-pair-compaction':
       return {
         durability: 'lifecycle-journal',
@@ -1439,7 +1503,9 @@ function retirementDispositionPolicy(disposition: RetirementDisposition): Routin
   }
 }
 
-export function persistedHandoffDispositionPolicy(disposition: PersistedHandoffDisposition): RoutingStatusPolicy {
+function unclassifiedPersistedDispositionPolicy(
+  disposition: PersistedHandoffDisposition,
+): LifecycleRoutingStatusPolicy {
   if (isRoutingBasisDisposition(disposition)) return HANDOFF_ROUTING_BASIS_POLICIES[disposition.kind];
   if (isSelectedDisposition(disposition)) return selectedDispositionPolicy(disposition);
   if (isRetirementDisposition(disposition)) return retirementDispositionPolicy(disposition);
@@ -1447,9 +1513,11 @@ export function persistedHandoffDispositionPolicy(disposition: PersistedHandoffD
 
   switch (disposition.kind) {
     case 'continued-current':
-      return disposition.reason.kind === 'routing'
-        ? HANDOFF_ROUTING_BASIS_POLICIES[disposition.reason.basis.kind]
-        : boundedWarningPolicy;
+      if (disposition.reason.kind !== 'routing') return boundedWarningPolicy;
+      return {
+        ...HANDOFF_ROUTING_BASIS_POLICIES[disposition.reason.basis.kind],
+        exitContribution: 0,
+      };
     case 'delegated-success':
       return {
         durability: 'lifecycle-journal',
@@ -1467,6 +1535,16 @@ export function persistedHandoffDispositionPolicy(disposition: PersistedHandoffD
     default:
       return assertNever(disposition);
   }
+}
+
+export function persistedHandoffDispositionPolicy(
+  disposition: PersistedHandoffDisposition,
+): PersistedHandoffDispositionPolicy {
+  const policy = unclassifiedPersistedDispositionPolicy(disposition);
+  const classification = PERSISTED_DISPOSITION_CLASSIFICATIONS[disposition.kind];
+  return classification === 'history'
+    ? { ...policy, classification, exitContribution: 0 }
+    : { ...policy, classification };
 }
 
 export type OwnerLiveness =
@@ -1501,12 +1579,20 @@ export type HandoffRoutingResolveRequest = Readonly<{
   forceUnobservable: boolean;
 }>;
 
+type HandoffRoutingResolvePublicationFailure = Readonly<{ invocationId: string }> &
+  Exclude<PublicationOutcome, { kind: 'committed' }>;
+
 export type HandoffRoutingResolveResult =
   | Readonly<{
       kind: 'resolved';
       invocationId: string;
       reason: 'owner-absent' | 'operator-abandoned-unobservable';
       sequence: number;
+    }>
+  | Readonly<{
+      kind: 'acknowledged-capacity-eviction';
+      invocationId: string;
+      selectionSequence: number;
     }>
   | Readonly<{ kind: 'stale'; invocationId: string }>
   | Readonly<{ kind: 'already-terminal'; invocationId: string }>
@@ -1523,7 +1609,7 @@ export type HandoffRoutingResolveResult =
         { kind: 'unreadable' | 'unsupported-generation' | 'undeterminable' }
       >;
     }>
-  | Readonly<{ kind: 'not-published'; outcome: Exclude<PublicationOutcome, { kind: 'committed' }> }>;
+  | HandoffRoutingResolvePublicationFailure;
 
 const statusReadRowSchema = z
   .object({
@@ -1797,7 +1883,7 @@ function classifyStatusSnapshotError(error: unknown): StatusSnapshotReadResult {
 }
 
 function readStatusSnapshot(storage: Runtime['storage'], path: string): StatusSnapshotReadResult {
-  const result = readHandoffRoutingStoreSnapshot(storage, path, HANDOFF_ROUTING_STATUS_GENERATION);
+  const result = readHandoffRoutingStoreSnapshot(storage, path, handoffRoutingStatusStoreSchema());
   switch (result.kind) {
     case 'absent':
       return result;
@@ -1922,6 +2008,30 @@ export async function resolveHandoffRoutingStatus(
   if (status === undefined) return { kind: 'stale', invocationId: request.invocationId };
   if (status.kind === 'terminal') return { kind: 'already-terminal', invocationId: request.invocationId };
   if (status.kind === 'retired') {
+    if (status.tombstone.retirementCause === 'selection-evicted-at-capacity') {
+      const outcome = await publishGenerationCoordinatedHandoffRoutingTransitions(
+        runtime,
+        path,
+        [
+          {
+            kind: 'capacity-eviction-acknowledged',
+            eventId: runtime.ids.uuid(),
+            invocationId: request.invocationId,
+            observedAt: new Date(runtime.time.now()).toISOString(),
+            selectionSequence: status.tombstone.selectionSequence,
+          },
+        ],
+        signal,
+      );
+      if (outcome.kind === 'committed') {
+        return {
+          kind: 'acknowledged-capacity-eviction',
+          invocationId: request.invocationId,
+          selectionSequence: status.tombstone.selectionSequence,
+        };
+      }
+      return { invocationId: request.invocationId, ...outcome };
+    }
     return status.tombstone.retirementCause === 'operator-resolved' || status.tombstone.terminalExisted
       ? { kind: 'already-terminal', invocationId: request.invocationId }
       : { kind: 'stale', invocationId: request.invocationId };
@@ -1963,9 +2073,10 @@ export async function resolveHandoffRoutingStatus(
     ],
     signal,
   );
-  return outcome.kind === 'committed'
-    ? { kind: 'resolved', invocationId: request.invocationId, reason, sequence: outcome.sequence }
-    : { kind: 'not-published', outcome };
+  if (outcome.kind === 'committed') {
+    return { kind: 'resolved', invocationId: request.invocationId, reason, sequence: outcome.sequence };
+  }
+  return { invocationId: request.invocationId, ...outcome };
 }
 
 export function handoffRoutingStatusExitContribution(result: HandoffRoutingStatusReadResult): 0 | 75 {
@@ -1980,7 +2091,14 @@ export function handoffRoutingStatusExitContribution(result: HandoffRoutingStatu
       continue;
     }
     if (status.kind === 'retired') {
-      if (status.tombstone.retirementCause !== 'completed-pair-compaction') return 75;
+      if (
+        persistedHandoffDispositionPolicy({
+          kind: status.tombstone.retirementCause,
+          terminalExisted: status.tombstone.terminalExisted,
+        }).exitContribution === 75
+      ) {
+        return 75;
+      }
       continue;
     }
     if (persistedHandoffDispositionPolicy(status.terminal.disposition).exitContribution === 75) return 75;
@@ -1989,6 +2107,8 @@ export function handoffRoutingStatusExitContribution(result: HandoffRoutingStatu
 }
 
 const MAX_TEXT = '\u0800';
+const MAX_VERSION_LENGTH = strictBundleManifestSchema.shape.version.maxLength;
+if (MAX_VERSION_LENGTH === null) throw new Error('The bundle manifest version must remain bounded.');
 const MAX_VERSION = `1.0.0-${'x'.repeat(MAX_VERSION_LENGTH - 6)}`;
 const MAX_ID = MAX_TEXT.repeat(MAX_IDENTIFIER_LENGTH);
 const MAX_INCARNATION = MAX_TEXT.repeat(256);
@@ -2040,10 +2160,6 @@ const MAX_TOMBSTONE_FIXTURES = (
 );
 
 export const MAX_LEGAL_RETIREMENT_TOMBSTONE_BYTES = Math.max(...MAX_TOMBSTONE_FIXTURES.map(encodedBytes));
-
-if (MAX_LEGAL_RETIREMENT_TOMBSTONE_BYTES > MAX_ENCODED_RETIREMENT_TOMBSTONE_BYTES) {
-  throw new Error('The maximum legal retirement tombstone exceeds its encoded bound.');
-}
 
 const MAX_EXECUTION_TERMINAL = terminalEventSchema.parse({
   generation: HANDOFF_ROUTING_STATUS_GENERATION,
@@ -2110,12 +2226,14 @@ const MAX_RESOLVED_FINALIZED_TERMINAL = terminalEventSchema.parse({
   },
 });
 
-const MAX_LEGAL_TERMINAL_BYTES = Math.max(
-  encodedBytes(MAX_EXECUTION_TERMINAL),
-  encodedBytes(MAX_FINALIZED_TERMINAL),
-  encodedBytes(MAX_RESOLVED_EXECUTION_TERMINAL),
-  encodedBytes(MAX_RESOLVED_FINALIZED_TERMINAL),
-);
+export const MAX_LEGAL_HANDOFF_ROUTING_EVENT_BYTES = Object.freeze({
+  'routing-selected': encodedBytes(MAX_SELECTION),
+  'execution-failed': Math.max(encodedBytes(MAX_EXECUTION_TERMINAL), encodedBytes(MAX_RESOLVED_EXECUTION_TERMINAL)),
+  'continuation-finalized': Math.max(
+    encodedBytes(MAX_FINALIZED_TERMINAL),
+    encodedBytes(MAX_RESOLVED_FINALIZED_TERMINAL),
+  ),
+});
 
 export const MAX_LEGAL_ROUTING_SELECTED_TRANSITION = routingSelectedTransitionSchema.parse({
   kind: 'routing-selected',
@@ -2133,15 +2251,4 @@ export const MAX_LEGAL_CONTINUATION_FINALIZED_TRANSITION = terminalTransitionSch
   observedAt: MAX_FINALIZED_TERMINAL.observedAt,
   selection: MAX_FINALIZED_TERMINAL.selection,
   disposition: MAX_FINALIZED_TERMINAL.disposition,
-});
-
-export const MAX_LEGAL_CLOSING_RECORD_BYTES = Math.max(MAX_LEGAL_RETIREMENT_TOMBSTONE_BYTES, MAX_LEGAL_TERMINAL_BYTES);
-
-export const MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES = Object.freeze({
-  'routing-selected': encodedBytes(MAX_SELECTION),
-  'execution-failed': Math.max(encodedBytes(MAX_EXECUTION_TERMINAL), encodedBytes(MAX_RESOLVED_EXECUTION_TERMINAL)),
-  'continuation-finalized': Math.max(
-    encodedBytes(MAX_FINALIZED_TERMINAL),
-    encodedBytes(MAX_RESOLVED_FINALIZED_TERMINAL),
-  ),
 });

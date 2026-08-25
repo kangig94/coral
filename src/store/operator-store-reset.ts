@@ -150,6 +150,7 @@ async function discardGeneratedStore(
               code: 'legacy_source_not_quiescent',
               operation: 'store-reset',
               holder: error.context?.holder,
+              ...(error.context?.writerObservation === 'unknown' ? { writerObservation: 'unknown' } : {}),
               flavor: options.runtime.flavor,
               baseDir: paths.baseDir,
             });

@@ -4,9 +4,10 @@ import { Command } from 'commander';
 
 import {
   HandoffRunError,
-  projectHandoffRunResult,
+  consumeHandoffRunResult,
   runHandoff,
   type HandoffOutcome,
+  type HandoffPublicationIncident,
   type HandoffRunResult,
   type LiveHandoffResult,
 } from '../coordinator/handoff-runner.js';
@@ -17,6 +18,7 @@ import { assertCommandClassCoverage } from './classify.js';
 import {
   createBackendStatusCommandOperations,
   createRecoveryQuarantineCommandOperations,
+  handoffPublicationIncidentsExitContribution,
   registerBackendCommands,
 } from './commands/backend.js';
 import { createStoreResetCommandOperations } from './store-reset.js';
@@ -53,14 +55,13 @@ async function executeCliHandoffPreflight(argv: readonly string[]): Promise<Hand
     throw error.originalError;
   }
 
-  const { continuation, publicationIncidents } = projectHandoffRunResult(result);
-  if (publicationIncidents.length > 0) {
+  let publicationIncidents: readonly HandoffPublicationIncident[] = [];
+  const continuation = consumeHandoffRunResult(result, (incidents) => {
+    publicationIncidents = incidents;
     renderHandoffPublicationIncidents(
-      statusInvocation
-        ? publicationIncidents
-        : publicationIncidents.filter((incident) => incident.phase === 'terminal'),
+      statusInvocation ? incidents : incidents.filter((incident) => incident.phase === 'terminal'),
     );
-  }
+  });
 
   switch (continuation.kind) {
     case 'run-current':
@@ -71,7 +72,9 @@ async function executeCliHandoffPreflight(argv: readonly string[]): Promise<Hand
       switch (outcome.kind) {
         case 'handoff-success':
           renderHandoffNotice(outcome);
-          return statusInvocation && publicationIncidents.length > 0 ? { kind: 'handoff-exit', exitCode: 75 } : outcome;
+          return statusInvocation && publicationIncidents.length > 0
+            ? { kind: 'handoff-exit', exitCode: handoffPublicationIncidentsExitContribution(publicationIncidents) }
+            : outcome;
         case 'handoff-exit':
         case 'handoff-signal':
           return outcome;

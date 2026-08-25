@@ -162,9 +162,23 @@ describe('handoff publication error emission', () => {
       return true;
     }) as typeof process.stderr.write);
 
-    emitError(new HandoffRunError(error(), [{ phase: 'selection', kind: 'not-published', cause: 'contended' }]));
+    emitError(
+      new HandoffRunError(error(), [
+        {
+          phase: 'selection',
+          invocationId: '123e4567-e89b-42d3-a456-426614174000',
+          kind: 'not-published',
+          cause: 'contended',
+        },
+      ]),
+    );
 
-    expect(stderr).toContain('Handoff routing-status selection publication was not published (contended).\n');
+    expect(stderr).toContain(
+      'Handoff routing-status selection publication for invocation 123e4567-e89b-42d3-a456-426614174000 was not published (contended).\n',
+    );
+    expect(stderr).toContain(
+      'Next step: rerun coral-cli backend status, then retry the operation if routing invocation 123e4567-e89b-42d3-a456-426614174000 is still unresolved.\n',
+    );
     expect(stderr).toContain(`[${errorTag}]`);
     expect(process.exitCode).toBe(exitCode);
   });

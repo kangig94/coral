@@ -33,6 +33,7 @@ vi.mock('#src/coordinator/handoff-runner.js', async (importOriginal) => {
 });
 
 type FollowModule = typeof FollowMod;
+const PUBLICATION_INVOCATION_ID = '123e4567-e89b-42d3-a456-426614174000';
 
 function toText(chunk: string | Uint8Array): string {
   return typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8');
@@ -389,6 +390,7 @@ describe('cli follow', () => {
     mockState.runHandoff.mockImplementationOnce(async (_operation, options) => {
       options.onSelectionPublicationIncident({
         phase: 'selection',
+        invocationId: PUBLICATION_INVOCATION_ID,
         kind: 'not-published',
         cause: 'contended',
       });
@@ -396,8 +398,23 @@ describe('cli follow', () => {
         kind: 'recording-incidents',
         observedWork: { kind: 'run-current', reason: { kind: 'routing', basis: { kind: 'incumbent-absent' } } },
         publicationIncidents: [
-          { phase: 'selection', kind: 'not-published', cause: 'contended' },
-          { phase: 'terminal', kind: 'undeterminable', cause: 'io-failed', errcode: 5 },
+          {
+            phase: 'selection',
+            invocationId: PUBLICATION_INVOCATION_ID,
+            kind: 'not-published',
+            cause: 'contended',
+          },
+          {
+            phase: 'terminal',
+            invocationId: PUBLICATION_INVOCATION_ID,
+            terminalDisposition: {
+              kind: 'continued-current',
+              reason: { kind: 'routing', basis: { kind: 'incumbent-absent' } },
+            },
+            kind: 'undeterminable',
+            cause: 'io-failed',
+            errcode: 5,
+          },
         ],
       };
     });
@@ -410,8 +427,10 @@ describe('cli follow', () => {
     await expect(launchAndFollow(makeOptions())).resolves.toBe(0);
 
     expect(stderr).toBe(
-      'Handoff routing-status selection publication was not published (contended).\n' +
-        'Handoff routing-status terminal publication could not be determined (io-failed, errcode 5).\n',
+      `Handoff routing-status selection publication for invocation ${PUBLICATION_INVOCATION_ID} was not published (contended).\n` +
+        `Next step: rerun coral-cli backend status, then retry the operation if routing invocation ${PUBLICATION_INVOCATION_ID} is still unresolved.\n` +
+        `Handoff routing-status terminal publication for invocation ${PUBLICATION_INVOCATION_ID} could not be determined (io-failed, errcode 5).\n` +
+        `Next step: repair the reported storage condition if it persists, then rerun coral-cli backend status; if routing invocation ${PUBLICATION_INVOCATION_ID} is still unresolved, run coral-cli backend routing-status resolve --invocation ${PUBLICATION_INVOCATION_ID}. Routing finished; the local operation is continuing. This attempt could not determine whether it committed.\n`,
     );
     expect(mockState.subscribe).toHaveBeenCalledOnce();
   });

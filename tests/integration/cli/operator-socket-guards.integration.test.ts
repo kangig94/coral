@@ -5,6 +5,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { socketFallbackDir } from '#src/infra/path/unix-socket.js';
 import { acquireOperatorSocketGuard } from '#src/cli/operator-socket-guard.js';
+import { discardHandoffRoutingStatus } from '#src/cli/routing-status-discard.js';
+import { handoffRoutingStatusStoreSchema } from '#src/coordinator/handoff-routing-status.js';
+import { handoffRoutingStatusGeneration } from '#src/store/handoff-routing-status-store.js';
 import { quarantineKbCommit } from '#src/cli/kb-commit-quarantine.js';
 import { acquireStoreResetSocketGuard } from '#src/cli/store-reset-socket.js';
 import { serializeCoralSetupError } from '#src/runtime/errors.js';
@@ -12,6 +15,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import { resolveStoreResetTargetPaths } from '#src/store/operator-store-reset.js';
 
 const roots: string[] = [];
+const HANDOFF_ROUTING_STATUS_GENERATION = handoffRoutingStatusGeneration(handoffRoutingStatusStoreSchema());
 
 function root(): string {
   const value = mkdtempSync(join(tmpdir(), 'coral-operator-socket-bind-'));
@@ -76,6 +80,34 @@ describe('operator coordinator socket bind failures', () => {
         socketPath: runtime.paths.coral.coordinator.socketPath,
         cause: expect.stringMatching(/directory|EEXIST|ENOTDIR/u),
       },
+    });
+  });
+
+  it('returns an unobservable discard refusal for a coordinator socket bind failure', async () => {
+    const runtime = createRealRuntime('prod', { baseDir: root() });
+    const path = join(
+      runtime.paths.coral.coordinator.runDir,
+      `handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db`,
+    );
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, 'not a sqlite database', { mode: 0o600 });
+    const socketPath = join(root(), 'blocked-parent', 'coordinator.sock');
+    blockSocketParent(socketPath);
+    const guardedRuntime = {
+      ...runtime,
+      paths: {
+        ...runtime.paths,
+        coral: {
+          ...runtime.paths.coral,
+          coordinator: { ...runtime.paths.coral.coordinator, socketPath },
+        },
+      },
+    };
+
+    await expect(discardHandoffRoutingStatus(guardedRuntime, path)).resolves.toEqual({
+      kind: 'coordinator-socket-unobservable',
+      socketPath,
+      cause: 'bind-failed',
     });
   });
 });

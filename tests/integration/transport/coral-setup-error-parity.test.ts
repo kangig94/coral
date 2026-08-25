@@ -294,7 +294,6 @@ describe('coral setup error parity', () => {
       }),
     );
 
-    // Its own remediation says to retry, and 500 drives the CLI to the permanent internal exit instead.
     expect(response.statusCode).toBe(503);
   });
 

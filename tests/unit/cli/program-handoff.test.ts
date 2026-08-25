@@ -51,6 +51,7 @@ vi.mock('#src/cli/plugin-root.js', () => ({
 }));
 
 const GUARD_ENV = 'CORAL_CLI_HANDOFF_DELEGATED';
+const PUBLICATION_INVOCATION_ID = '123e4567-e89b-42d3-a456-426614174000';
 
 type HandoffOutcome = HandoffRunnerMod.HandoffOutcome;
 type HandoffContinuationResult = HandoffRunnerMod.HandoffContinuationResult;
@@ -58,6 +59,10 @@ type ProgramModule = typeof ProgramMod;
 
 function handoffSuccess(): HandoffOutcome {
   return { kind: 'handoff-success', version: '2.3.4' } as HandoffOutcome;
+}
+
+function terminalIncident(terminalDisposition: HandoffRoutingStatusMod.DirectTerminalDisposition) {
+  return { phase: 'terminal' as const, invocationId: PUBLICATION_INVOCATION_ID, terminalDisposition };
 }
 
 function recorded(continuation: HandoffContinuationResult): HandoffRunnerMod.HandoffRunResult {
@@ -152,7 +157,14 @@ describe('program', () => {
         kind: 'run-current',
         reason: { kind: 'routing', basis: { kind: 'incumbent-absent' } },
       },
-      publicationIncidents: [{ phase: 'selection', kind: 'not-published', cause: 'contended' }],
+      publicationIncidents: [
+        {
+          phase: 'selection',
+          invocationId: PUBLICATION_INVOCATION_ID,
+          kind: 'not-published',
+          cause: 'contended',
+        },
+      ],
     });
     const { buildProgram, parseProgramWithHandoff } = await loadProgramFresh();
 
@@ -219,35 +231,104 @@ describe('program', () => {
   });
 
   it.each([
-    { childOutcome: { kind: 'handoff-success' as const, version: '2.3.4' }, expectedExit: 75 },
-    { childOutcome: { kind: 'handoff-exit' as const, exitCode: 69 }, expectedExit: 69 },
-    { childOutcome: { kind: 'handoff-exit' as const, exitCode: 70 }, expectedExit: 70 },
-    { childOutcome: { kind: 'handoff-exit' as const, exitCode: 77 }, expectedExit: 77 },
-  ])('should preserve delegated status exit arbitration at $expectedExit', async ({ childOutcome, expectedExit }) => {
-    let stderr = '';
-    vi.spyOn(process.stderr, 'write').mockImplementation(((chunk: string | Uint8Array) => {
-      stderr += chunk.toString();
-      return true;
-    }) as typeof process.stderr.write);
-    mockState.runHandoff.mockResolvedValue({
-      kind: 'recording-incidents',
-      observedWork: { kind: 'delegated', version: '2.3.4', outcome: childOutcome },
-      publicationIncidents: [{ phase: 'terminal', kind: 'not-published', cause: 'contended' }],
-    });
-    const { parseProgramWithHandoff } = await loadProgramFresh();
+    {
+      childOutcome: { kind: 'handoff-success' as const, version: '2.3.4' },
+      publicationIncidents: [
+        {
+          ...terminalIncident({ kind: 'delegated-success', version: '2.3.4' }),
+          kind: 'not-published',
+          cause: 'contended',
+        },
+      ] as const,
+      expectedExit: 75,
+    },
+    {
+      childOutcome: { kind: 'handoff-success' as const, version: '2.3.4' },
+      publicationIncidents: [
+        {
+          ...terminalIncident({ kind: 'delegated-success', version: '2.3.4' }),
+          kind: 'not-published',
+          cause: 'contended',
+        },
+        {
+          ...terminalIncident({ kind: 'delegated-success', version: '2.3.4' }),
+          kind: 'not-published',
+          cause: 'invalid-record',
+          validation: { kind: 'schema-violation' },
+        },
+      ] as const,
+      expectedExit: 70,
+    },
+    {
+      childOutcome: { kind: 'handoff-exit' as const, exitCode: 69 },
+      publicationIncidents: [
+        {
+          ...terminalIncident({ kind: 'delegated-exit', version: '2.3.4', exitCode: 69 }),
+          kind: 'not-published',
+          cause: 'contended',
+        },
+      ] as const,
+      expectedExit: 69,
+    },
+    {
+      childOutcome: { kind: 'handoff-exit' as const, exitCode: 70 },
+      publicationIncidents: [
+        {
+          ...terminalIncident({ kind: 'delegated-exit', version: '2.3.4', exitCode: 70 }),
+          kind: 'not-published',
+          cause: 'contended',
+        },
+      ] as const,
+      expectedExit: 70,
+    },
+    {
+      childOutcome: { kind: 'handoff-exit' as const, exitCode: 77 },
+      publicationIncidents: [
+        {
+          ...terminalIncident({ kind: 'delegated-exit', version: '2.3.4', exitCode: 77 }),
+          kind: 'not-published',
+          cause: 'contended',
+        },
+      ] as const,
+      expectedExit: 77,
+    },
+  ])(
+    'should preserve delegated status exit arbitration at $expectedExit',
+    async ({ childOutcome, publicationIncidents, expectedExit }) => {
+      let stderr = '';
+      vi.spyOn(process.stderr, 'write').mockImplementation(((chunk: string | Uint8Array) => {
+        stderr += chunk.toString();
+        return true;
+      }) as typeof process.stderr.write);
+      mockState.runHandoff.mockResolvedValue({
+        kind: 'recording-incidents',
+        observedWork: { kind: 'delegated', version: '2.3.4', outcome: childOutcome },
+        publicationIncidents,
+      });
+      const { parseProgramWithHandoff } = await loadProgramFresh();
 
-    const outcome = await parseProgramWithHandoff(commandWithAction(vi.fn()), [
-      'node',
-      'coral-cli',
-      'backend',
-      'status',
-    ]);
+      const outcome = await parseProgramWithHandoff(commandWithAction(vi.fn()), [
+        'node',
+        'coral-cli',
+        'backend',
+        'status',
+      ]);
 
-    expect(outcome).toEqual(
-      expectedExit === 75 ? { kind: 'handoff-exit', exitCode: 75 } : { kind: 'handoff-exit', exitCode: expectedExit },
-    );
-    expect(stderr).toContain('Handoff routing-status terminal publication was not published (contended).');
-  });
+      expect(outcome).toEqual(
+        expectedExit === 75 ? { kind: 'handoff-exit', exitCode: 75 } : { kind: 'handoff-exit', exitCode: expectedExit },
+      );
+      expect(stderr).toContain(
+        `Handoff routing-status terminal publication for invocation ${PUBLICATION_INVOCATION_ID} was not published (contended).`,
+      );
+      expect(stderr).toContain(
+        `Next step: rerun coral-cli backend status; if routing invocation ${PUBLICATION_INVOCATION_ID} is still unresolved, run coral-cli backend routing-status resolve --invocation ${PUBLICATION_INVOCATION_ID}. ${
+          childOutcome.kind === 'handoff-success'
+            ? 'The delegated operation succeeded; do not rerun it'
+            : `The delegated child exited with code ${childOutcome.exitCode}; follow the child's own diagnosis`
+        }.`,
+      );
+    },
+  );
 
   it('should append delegated status publication notices after the child exits', async () => {
     const order: string[] = [];
@@ -264,7 +345,14 @@ describe('program', () => {
           version: '2.3.4',
           outcome: { kind: 'handoff-success', version: '2.3.4' },
         },
-        publicationIncidents: [{ phase: 'selection', kind: 'not-published', cause: 'contended' }],
+        publicationIncidents: [
+          {
+            phase: 'selection',
+            invocationId: PUBLICATION_INVOCATION_ID,
+            kind: 'not-published',
+            cause: 'contended',
+          },
+        ],
       };
     });
     const { parseProgramWithHandoff } = await loadProgramFresh();

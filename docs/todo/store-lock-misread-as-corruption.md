@@ -104,3 +104,60 @@ through `refuseSignal` when liveness is anything but observed, so an unobservabl
 
 After PR2 and PR3 of `backend-routing-disposition`. Nothing here blocks that work, and the store
 misclassification predates it.
+
+## Reproduced in the field, 2026-08-24
+
+Not a reconstruction this time, and the two halves of this entry were observed as one ordered sequence. An
+incumbent did not die — it became unkillable, which is the distinction the 2026-08-23 measurement above
+established and which the first draft of this section got wrong.
+
+`~/.coral/gen2/run/coordinator.log`, incumbent `pid=62492`:
+
+    13:32:12  control.heartbeat.v1 exceeded its 5000ms budget   (liveClaims=4)
+    13:32:50  Incumbent did not exit within 30000ms; sent SIGTERM to pid=62492
+    13:33:03  Incumbent did not exit after SIGTERM grace; sent SIGKILL to pid=62492
+    13:33:09  Incumbent socket remained bound after SIGKILL grace for pid=62492
+    13:34:07  Fatal startup error: The current-generation store is corrupt or unsupported
+    13:38:39  started, with no intervention
+
+The order is the evidence. The store error appears only *after* the kill fails, and outlives it by four
+minutes. The surviving lock is correlated with that failed kill, but the observation does not identify the
+lock holder. Attributing it to `pid=62492` would require a contemporaneous lock-owner pid plus an incarnation
+token matching the signalled process. Without that identity evidence, the incumbent remaining in `D` is
+consistent with the ordering, but so is a later startup contender acquiring the lock immediately after the
+incumbent exited. The correlation remains the sentence that joins this entry's two halves; it does not select
+between those holder histories.
+
+The load that produced it was self-inflicted and will recur the same way. Five startup attempts landed in four
+seconds — 13:34:31.663, 13:34:31.791, 13:34:32.254, 13:34:35.839, 13:34:35.973 — because mutating commands
+that reach ordinary daemon startup relaunch the backend, and a full gate run plus retried waits issues many.
+Offline operator commands such as `routing-status discard`, `store-reset discard`, and `kb-commit quarantine`
+run locally under socket guards and do not contribute startup attempts. Startup contenders can still pile onto
+a wedged incumbent and contend with each other, so retrying daemon-starting commands amplifies the window
+rather than shortening it. A fix that only corrects the classification leaves that amplification in place.
+
+The same startup wrote `startup-diagnostic.json` with:
+
+    "code": "store_corrupt_or_unsupported",
+    "userMessage": "The current-generation store is corrupt or uses an unsupported format.",
+    "remediation": "Run 'coral-cli backend store-reset discard --target gen2 --flavor prod' to quarantine it",
+    "context": { "cause": "database is locked" }
+
+`retryable` was recorded as `false`. Both claims were checked and both were wrong. `PRAGMA integrity_check`
+on that database answered `ok`, and its `store.db.format` sentinel was byte-identical to the fingerprint
+`--print-store-reset-build-identity` reports for the build that refused it. The store was neither corrupt nor
+of an unsupported format, and nothing was done to it: the backend started on its own a few minutes later.
+
+So the destructive remedy was offered, as the only named next step, for a database that was healthy and for a
+condition that cleared itself. An operator who followed the instruction would have quarantined a 329 MB store
+to fix a lock.
+
+The start condition below is now met — PR2 and PR3 have merged.
+
+## A second defect surfaced with it
+
+`tests/unit/hooks/hooks.test.ts` reads the host's live backend state. While the daemon was refusing to start,
+the session-start hook prepended this diagnostic to its output and two assertions that pin the output's first
+line failed; both passed again once the daemon recovered, with no code change. A unit test whose result depends
+on whether the developer's own daemon happens to be healthy cannot distinguish a regression from a busy
+machine. It belongs with the entries in `unit-suite-concurrency-and-real-time-tests.md`.

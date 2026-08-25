@@ -51,7 +51,7 @@ import type {
   RuntimeExecOptions,
   RuntimePaths,
 } from './ports.js';
-import { errorMessage } from '../infra/error-format.js';
+import { assertNever, errorMessage } from '../infra/error-format.js';
 import {
   DEFAULT_SYNC_EXEC_TIMEOUT_MS,
   EXEC_MAXBUFFER_CODE,
@@ -104,11 +104,18 @@ export async function observeProcessIdentitiesWithoutSubprocesses(
   try {
     const pendingOwners = owners.map((owner) => ({ owner, liveness: environment.observeLiveness(owner.pid) }));
     if (environment.platform !== 'linux') {
-      return pendingOwners.map(({ owner, liveness }) =>
-        liveness === 'absent'
-          ? { owner, evidence: { kind: 'pid-absent' } }
-          : unobservable(owner, 'probe-not-available'),
-      );
+      return pendingOwners.map(({ owner, liveness }) => {
+        switch (liveness) {
+          case 'absent':
+            return { owner, evidence: { kind: 'pid-absent' } };
+          case 'alive':
+            return unobservable(owner, 'probe-not-available');
+          case 'unknown':
+            return unobservable(owner, 'probe-failed');
+          default:
+            return assertNever(liveness);
+        }
+      });
     }
 
     let bootId: string;

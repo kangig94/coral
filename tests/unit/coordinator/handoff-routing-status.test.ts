@@ -1,7 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -10,7 +10,6 @@ import {
   HANDOFF_CONTINUATION_REASON_POLICY_PROJECTIONS,
   HANDOFF_ROUTING_COMPLETED_RETENTION_MS,
   MAX_HANDOFF_ROUTING_OWNER_SWEEP_MS,
-  HANDOFF_ROUTING_STATUS_GENERATION,
   MAX_COMPLETED_HANDOFF_ROUTING_PAIRS,
   MAX_ENCODED_RETIREMENT_TOMBSTONE_BYTES,
   MAX_HANDOFF_ROUTING_STATUS_BYTES,
@@ -20,6 +19,9 @@ import {
   MAX_RETIREMENT_TOMBSTONE_BYTES,
   MAX_RETIREMENT_TOMBSTONES,
   MAX_UNRESOLVED_INVOCATIONS,
+  handoffRoutingStatusExitContribution,
+  handoffRoutingStatusStoreSchema,
+  handoffRoutingTransitionSchema,
   invalidTargetSummarySchema,
   persistedHandoffDispositionPolicy,
   publishGenerationCoordinatedHandoffRoutingTransitions,
@@ -34,22 +36,43 @@ import {
   type PublicationOutcome,
   type RetirementTombstone,
 } from '#src/coordinator/handoff-routing-status.js';
+import {
+  clearHandoffRoutingStatusQuarantine,
+  discardHandoffRoutingStatus,
+  type HandoffRoutingStatusOperatorOptions,
+} from '#src/coordinator/handoff-routing-status-operator.js';
+import { formatHandoffRoutingStatus } from '#src/cli/format/backend.js';
 import type { ProcessIdentityObservation } from '#src/infra/port-types.js';
+import { tryAcquireDirectoryLock } from '#src/infra/fs-lock.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import { discardHandoffRoutingStatus } from '#src/cli/routing-status-discard.js';
+import type { Runtime } from '#src/runtime/ports.js';
+import { acquireOperatorSocketGuard } from '#src/cli/operator-socket-guard.js';
 import {
   acquireGenerationMaintenanceLease,
   resolveGenerationBoundaryPaths,
+  tryAcquireGenerationWriterLease,
 } from '#src/store/generation-mutation-coordination.js';
 import { SimulationRuntime } from '../../../tools/simulation/runtime.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
+import type { SqliteDatabasePort, StoragePort } from '#src/infra/port-types.js';
+import {
+  handoffRoutingStatusGeneration,
+  MAX_HANDOFF_ROUTING_STATUS_QUARANTINES,
+  SQLITE_FULL,
+  listHandoffRoutingStoreQuarantines,
+} from '#src/store/handoff-routing-status-store.js';
 
+const HANDOFF_ROUTING_STATUS_GENERATION = handoffRoutingStatusGeneration(handoffRoutingStatusStoreSchema());
 const BASE_TIME = Date.parse('2026-01-01T00:00:00.000Z');
 const BUILD_SET_ID = '123e4567-e89b-42d3-a456-426614174000';
 const OWNER = { pid: 101, incarnation: testIncarnation(101) } as const;
 const temporaryDirectories: string[] = [];
 const runtimeBaseDir = mkdtempSync(join(tmpdir(), 'coral-handoff-routing-runtime-'));
 const runtime = createRealRuntime('prod', { baseDir: runtimeBaseDir });
+
+function routingStatusOperatorOptions(runtime: Runtime, path: string): HandoffRoutingStatusOperatorOptions {
+  return { runtime, path, acquireSocketGuard: acquireOperatorSocketGuard };
+}
 
 function at(offsetMs: number): string {
   return new Date(BASE_TIME + offsetMs).toISOString();
@@ -58,7 +81,7 @@ function at(offsetMs: number): string {
 function databasePath(): string {
   const directory = mkdtempSync(join(tmpdir(), 'coral-handoff-routing-'));
   temporaryDirectories.push(directory);
-  return join(directory, 'handoff-routing.1.db');
+  return join(directory, `handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db`);
 }
 
 function selection(
@@ -108,6 +131,30 @@ function publish(
   return publishHandoffRoutingTransitions(runtime, path, transitions, signal);
 }
 
+function storageFailingOnSqliteStatement(storage: StoragePort, failingStatement: string): StoragePort {
+  return new Proxy(storage, {
+    get(target, property) {
+      if (property !== 'openSqliteDatabaseSync') return Reflect.get(target, property, target);
+      return (path: string, options?: { readOnly?: boolean }): SqliteDatabasePort => {
+        const database = target.openSqliteDatabaseSync(path, options);
+        // Publication opens read-write and reading opens read-only, so sparing read-only connections aims
+        // the injection at the publication even when a caller reads first.
+        if (options?.readOnly === true) return database;
+        return {
+          exec(sql) {
+            if (sql === failingStatement) {
+              throw Object.assign(new Error(`injected ${failingStatement} failure`), { errcode: SQLITE_FULL });
+            }
+            database.exec(sql);
+          },
+          prepare: database.prepare.bind(database),
+          close: database.close.bind(database),
+        };
+      };
+    },
+  });
+}
+
 function readHandoffRoutingStatus(
   path: string,
   probe?: Parameters<typeof readHandoffRoutingStatusWithRuntime>[2],
@@ -153,9 +200,8 @@ function insertTombstoneFixture(db: DatabaseSync, tombstone: RetirementTombstone
       selection_sequence,
       retirement_cause,
       terminal_existed,
-      completed_pair_stable,
       body_json
-    ) VALUES (?, ?, ?, ?, ?, 'retirement', 'retirement-tombstone', ?, ?, ?, 0, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, 'retirement', 'retirement-tombstone', ?, ?, ?, ?)`,
   ).run(
     tombstone.sequence,
     tombstone.generation,
@@ -169,47 +215,17 @@ function insertTombstoneFixture(db: DatabaseSync, tombstone: RetirementTombstone
   );
 }
 
-function createReadFixtureDatabase(
+async function createReadFixtureDatabase(
   path: string,
-  rows: readonly Readonly<{ recordKind: 'selection'; bodyJson: string | null }>[],
-): void {
+  rows: readonly Readonly<{ recordKind: 'selection'; bodyJson: string }>[],
+): Promise<void> {
+  await committed(path, [selection('read-fixture-seed', 0)]);
   const db = new DatabaseSync(path);
   try {
     db.exec(`
-      CREATE TABLE handoff_routing_metadata (
-        singleton INTEGER PRIMARY KEY,
-        generation INTEGER NOT NULL,
-        expired_identity_count INTEGER NOT NULL,
-        capacity_eviction_count INTEGER NOT NULL,
-        completed_pair_compaction_count INTEGER NOT NULL,
-        operator_resolved_count INTEGER NOT NULL,
-        min_selection_sequence INTEGER,
-        max_selection_sequence INTEGER,
-        earliest_selected_at TEXT,
-        latest_selected_at TEXT
-      );
-      CREATE TABLE handoff_routing_records (
-        sequence INTEGER PRIMARY KEY,
-        generation INTEGER NOT NULL,
-        event_id TEXT NOT NULL,
-        invocation_id TEXT NOT NULL,
-        observed_at TEXT NOT NULL,
-        record_kind TEXT NOT NULL,
-        event_kind TEXT NOT NULL,
-        selection_sequence INTEGER,
-        retirement_cause TEXT,
-        terminal_existed INTEGER,
-        body_json TEXT,
-        encoded_bytes INTEGER
-      );
-      CREATE TABLE handoff_routing_closing_reserve (
-        invocation_id TEXT PRIMARY KEY,
-        event_id TEXT NOT NULL,
-        observed_at TEXT NOT NULL,
-        allocation BLOB NOT NULL
-      );
-      INSERT INTO handoff_routing_metadata VALUES (${HANDOFF_ROUTING_STATUS_GENERATION}, ${HANDOFF_ROUTING_STATUS_GENERATION}, 0, 0, 0, 0, NULL, NULL, NULL, NULL);
-      PRAGMA user_version=${HANDOFF_ROUTING_STATUS_GENERATION};
+      PRAGMA ignore_check_constraints=ON;
+      DELETE FROM handoff_routing_records;
+      DELETE FROM handoff_routing_closing_reserve;
     `);
     const insert = db.prepare(
       `INSERT INTO handoff_routing_records (
@@ -223,9 +239,8 @@ function createReadFixtureDatabase(
         selection_sequence,
         retirement_cause,
         terminal_existed,
-        body_json,
-        encoded_bytes
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)`,
+        body_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?)`,
     );
     rows.forEach((row, index) => {
       insert.run(
@@ -237,7 +252,6 @@ function createReadFixtureDatabase(
         row.recordKind,
         'routing-selected',
         row.bodyJson,
-        typeof row.bodyJson === 'string' ? Buffer.byteLength(row.bodyJson, 'utf8') : null,
       );
       db.prepare(
         `INSERT INTO handoff_routing_closing_reserve (invocation_id, event_id, observed_at, allocation)
@@ -284,16 +298,14 @@ describe('handoff routing status', () => {
     expect(
       invalidTargetSummarySchema.safeParse({ failure: 'bundle-dir-unavailable', bundleDir: '/tmp/x' }).success,
     ).toBe(false);
-    expect(MAX_LEGAL_RETIREMENT_TOMBSTONE_BYTES).toBeLessThanOrEqual(MAX_ENCODED_RETIREMENT_TOMBSTONE_BYTES);
+    expect(MAX_LEGAL_RETIREMENT_TOMBSTONE_BYTES).toBe(MAX_ENCODED_RETIREMENT_TOMBSTONE_BYTES);
     expect(MAX_LEGAL_RETIREMENT_TOMBSTONE_BYTES).toBeLessThanOrEqual(MAX_LEGAL_CLOSING_RECORD_BYTES);
-    expect(MAX_RETIREMENT_TOMBSTONES * MAX_LEGAL_RETIREMENT_TOMBSTONE_BYTES).toBeLessThanOrEqual(
-      MAX_RETIREMENT_TOMBSTONE_BYTES,
-    );
+    expect(MAX_RETIREMENT_TOMBSTONES * MAX_LEGAL_RETIREMENT_TOMBSTONE_BYTES).toBe(MAX_RETIREMENT_TOMBSTONE_BYTES);
   });
 
   it('publishes through simulation storage without touching the host path', async () => {
     const simulation = new SimulationRuntime();
-    const path = '/simulation-only/handoff-routing.1.db';
+    const path = `/simulation-only/handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db`;
 
     expect(existsSync(path)).toBe(false);
     await expect(publishHandoffRoutingTransitions(simulation, path, [selection('simulated', 1)])).resolves.toEqual({
@@ -310,7 +322,7 @@ describe('handoff routing status', () => {
 
   it('restores, unlinks, and recreates the simulated SQLite artifact with the virtual filesystem', async () => {
     const simulation = new SimulationRuntime();
-    const path = '/simulation-only/handoff-routing.1.db';
+    const path = `/simulation-only/handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db`;
     await expect(
       publishHandoffRoutingTransitions(simulation, path, [selection('before-snapshot', 1)]),
     ).resolves.toMatchObject({
@@ -329,7 +341,7 @@ describe('handoff routing status', () => {
       statuses: [{ selection: { invocationId: 'before-snapshot' } }],
     });
 
-    const renamedPath = '/simulation-only/renamed-handoff-routing.1.db';
+    const renamedPath = `/simulation-only/renamed-handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db`;
     simulation.storage.renameSync(path, renamedPath);
     expect(readHandoffRoutingStatusWithRuntime(simulation, path)).toEqual({ kind: 'absent' });
     expect(readHandoffRoutingStatusWithRuntime(simulation, renamedPath)).toMatchObject({
@@ -358,7 +370,71 @@ describe('handoff routing status', () => {
     writeFileSync(`${path}-wal`, 'retained wal');
     writeFileSync(`${path}-shm`, 'retained shm');
 
-    const discarded = await discardHandoffRoutingStatus(discardRuntime, path);
+    const socket = await acquireOperatorSocketGuard({
+      socketPath: discardRuntime.paths.coral.coordinator.socketPath,
+      flavor: discardRuntime.flavor,
+      operation: 'routing-status discard test',
+      retryCommand: 'coral-cli backend routing-status discard',
+    });
+    try {
+      await expect(discardHandoffRoutingStatus(routingStatusOperatorOptions(discardRuntime, path))).resolves.toEqual({
+        kind: 'coordinator-running',
+        socketPath: discardRuntime.paths.coral.coordinator.socketPath,
+      });
+    } finally {
+      await socket.release();
+    }
+
+    const maintenance = await acquireGenerationMaintenanceLease(discardRuntime);
+    let fastNow = discardRuntime.time.now();
+    try {
+      await expect(
+        discardHandoffRoutingStatus(
+          routingStatusOperatorOptions(
+            {
+              ...discardRuntime,
+              time: {
+                ...discardRuntime.time,
+                now: () => fastNow,
+                sleep: async (ms: number) => {
+                  fastNow += ms;
+                },
+              },
+            },
+            path,
+          ),
+        ),
+      ).resolves.toEqual({ kind: 'generation-maintenance-unavailable', cause: 'contended' });
+    } finally {
+      maintenance.release();
+    }
+
+    const ownershipLostRuntime = {
+      ...discardRuntime,
+      storage: {
+        ...discardRuntime.storage,
+        renameSync: (oldPath: string, newPath: string) => {
+          if (newPath.includes('claim-refresh-')) throw new Error('injected maintenance lease loss');
+          discardRuntime.storage.renameSync(oldPath, newPath);
+        },
+      },
+      time: {
+        ...discardRuntime.time,
+        setInterval: (fn: () => void) => {
+          fn();
+          return {};
+        },
+        clearInterval: () => undefined,
+      },
+    };
+    await expect(
+      discardHandoffRoutingStatus(routingStatusOperatorOptions(ownershipLostRuntime, path)),
+    ).resolves.toEqual({
+      kind: 'generation-maintenance-unavailable',
+      cause: 'ownership-lost',
+    });
+
+    const discarded = await discardHandoffRoutingStatus(routingStatusOperatorOptions(discardRuntime, path));
     expect(discarded).toMatchObject({
       kind: 'discarded',
       artifactPath: path,
@@ -368,13 +444,15 @@ describe('handoff routing status', () => {
     expect(existsSync(path)).toBe(false);
     expect(readFileSync(discarded.quarantinePath, 'utf-8')).toBe('not a sqlite database');
     expect(readFileSync(`${discarded.quarantinePath}-wal`, 'utf-8')).toBe('retained wal');
-    expect(statSync(`${discarded.quarantinePath}-shm`).size).toBeGreaterThan(0);
+    expect(existsSync(`${discarded.quarantinePath}-shm`)).toBe(true);
 
     await expect(publish(path, [selection('clean-generation', 1)])).resolves.toMatchObject({ kind: 'committed' });
     chmodSync(path, 0o000);
     try {
       if (process.platform !== 'win32') {
-        await expect(discardHandoffRoutingStatus(discardRuntime, path)).resolves.toMatchObject({
+        await expect(
+          discardHandoffRoutingStatus(routingStatusOperatorOptions(discardRuntime, path)),
+        ).resolves.toMatchObject({
           kind: 'refused',
           status: { kind: 'undeterminable', cause: 'io-failed' },
         });
@@ -383,13 +461,248 @@ describe('handoff routing status', () => {
     } finally {
       chmodSync(path, 0o600);
     }
-    await expect(discardHandoffRoutingStatus(discardRuntime, path)).resolves.toMatchObject({
+    await expect(
+      discardHandoffRoutingStatus(routingStatusOperatorOptions(discardRuntime, path)),
+    ).resolves.toMatchObject({
       kind: 'refused',
       status: { kind: 'current' },
     });
     expect(readHandoffRoutingStatus(path)).toMatchObject({
       kind: 'current',
       statuses: [{ selection: { invocationId: 'clean-generation' } }],
+    });
+  });
+
+  it('surfaces an unobservable generation writer instead of collapsing it into maintenance contention', async () => {
+    const path = databasePath();
+    const baseRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+    const pid = baseRuntime.env.pid();
+    const incarnation = testIncarnation(pid);
+    let now = baseRuntime.time.now();
+    const writerRuntime: Runtime = {
+      ...baseRuntime,
+      env: {
+        ...baseRuntime.env,
+        platform: () => 'linux',
+      },
+      process: {
+        ...baseRuntime.process,
+        readProcessIncarnation: () => incarnation,
+        observeLiveness: () => 'unknown',
+      },
+      time: {
+        ...baseRuntime.time,
+        now: () => now,
+        sleep: async (milliseconds: number) => {
+          now += milliseconds;
+        },
+      },
+    };
+    writeFileSync(path, 'not a sqlite database', { mode: 0o600 });
+    const attempt = tryAcquireGenerationWriterLease(writerRuntime, {
+      kind: 'routing-status',
+      name: 'handoff-routing-status',
+    });
+    if (attempt.kind !== 'acquired') throw new Error(`Expected writer lease, received ${attempt.kind}`);
+    try {
+      await expect(discardHandoffRoutingStatus(routingStatusOperatorOptions(writerRuntime, path))).resolves.toEqual({
+        kind: 'generation-maintenance-unavailable',
+        cause: 'writer-observation-unknown',
+        holder: `routing-status:handoff-routing-status (pid ${pid}), process identity unobservable`,
+      });
+    } finally {
+      attempt.lease.release();
+    }
+  });
+
+  it('keeps an interrupted sidecar move discoverable and refuses to combine it with the current database', async () => {
+    const path = databasePath();
+    const discardRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+    writeFileSync(path, 'not a sqlite database', { mode: 0o600 });
+    writeFileSync(`${path}-wal`, 'retained wal');
+    writeFileSync(`${path}-shm`, 'retained shm');
+    const databaseBytes = readFileSync(path);
+    const interruptedRuntime: Runtime = {
+      ...discardRuntime,
+      storage: {
+        ...discardRuntime.storage,
+        renameSync: (oldPath, newPath) => {
+          if (oldPath === `${path}-shm`) throw new Error('injected sidecar move failure');
+          discardRuntime.storage.renameSync(oldPath, newPath);
+        },
+      },
+    };
+
+    const interruptedResult = await discardHandoffRoutingStatus(routingStatusOperatorOptions(interruptedRuntime, path));
+    expect(interruptedResult).toMatchObject({
+      kind: 'quarantine-storage-failed',
+      movedArtifacts: ['wal'],
+      cause: 'artifact-move-failed',
+    });
+    if (interruptedResult.kind !== 'quarantine-storage-failed') {
+      throw new Error(`Expected partial quarantine, received ${interruptedResult.kind}`);
+    }
+    expect(existsSync(path)).toBe(true);
+    const interrupted = listHandoffRoutingStoreQuarantines(discardRuntime.storage, path);
+    expect(interrupted).toMatchObject({
+      overflow: false,
+      entries: [{ id: interruptedResult.quarantineId, state: 'incomplete', artifacts: ['wal'] }],
+    });
+    const incomplete = interrupted.entries[0];
+    if (incomplete === undefined) throw new Error('Expected an incomplete quarantine.');
+
+    const refused = await discardHandoffRoutingStatus(routingStatusOperatorOptions(discardRuntime, path));
+    expect(refused).toEqual({ kind: 'incomplete-quarantine', quarantineId: incomplete.id });
+    expect(readFileSync(path)).toEqual(databaseBytes);
+    expect(readFileSync(`${incomplete.quarantinePath}-wal`, 'utf-8')).toBe('retained wal');
+    expect(existsSync(`${path}-shm`)).toBe(true);
+    expect(listHandoffRoutingStoreQuarantines(discardRuntime.storage, path)).toEqual(interrupted);
+
+    await expect(
+      clearHandoffRoutingStatusQuarantine(routingStatusOperatorOptions(discardRuntime, path), incomplete.id),
+    ).resolves.toMatchObject({
+      kind: 'cleared',
+      entry: { id: incomplete.id },
+    });
+    expect(listHandoffRoutingStoreQuarantines(discardRuntime.storage, path)).toEqual({
+      entries: [],
+      overflow: false,
+    });
+  });
+
+  it('returns the exact partial quarantine when directory sync fails after the first move', async () => {
+    const path = databasePath();
+    const quarantineId = '00000000-0000-4000-8000-000000000042';
+    const baseRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+    writeFileSync(path, 'not a sqlite database', { mode: 0o600 });
+    writeFileSync(`${path}-wal`, 'retained wal');
+    writeFileSync(`${path}-shm`, 'retained shm');
+    const sync = baseRuntime.storage.syncDirectoryDurableSync.bind(baseRuntime.storage);
+    let sourceSyncFailed = false;
+    const discardRuntime: Runtime = {
+      ...baseRuntime,
+      ids: { ...baseRuntime.ids, uuid: () => quarantineId },
+      storage: {
+        ...baseRuntime.storage,
+        syncDirectoryDurableSync: (directory) => {
+          if (!sourceSyncFailed && directory === dirname(path)) {
+            sourceSyncFailed = true;
+            return false;
+          }
+          return sync(directory);
+        },
+      },
+    };
+
+    await expect(discardHandoffRoutingStatus(routingStatusOperatorOptions(discardRuntime, path))).resolves.toEqual({
+      kind: 'quarantine-storage-failed',
+      quarantineId,
+      quarantinePath: join(dirname(path), 'handoff-routing-quarantine', `${basename(path)}.${quarantineId}`),
+      movedArtifacts: ['wal'],
+      cause: 'directory-sync-failed',
+    });
+    expect(existsSync(path)).toBe(true);
+    expect(existsSync(`${path}-shm`)).toBe(true);
+    expect(listHandoffRoutingStoreQuarantines(baseRuntime.storage, path)).toMatchObject({
+      entries: [{ id: quarantineId, state: 'incomplete', artifacts: ['wal'] }],
+    });
+  });
+
+  it('returns the exact partial clear when directory sync fails after the first removal', async () => {
+    const path = databasePath();
+    const baseRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+    writeFileSync(path, 'not a sqlite database', { mode: 0o600 });
+    writeFileSync(`${path}-wal`, 'retained wal');
+    writeFileSync(`${path}-shm`, 'retained shm');
+    const discarded = await discardHandoffRoutingStatus(routingStatusOperatorOptions(baseRuntime, path));
+    if (discarded.kind !== 'discarded') throw new Error(`Expected discard, received ${discarded.kind}`);
+    const retained = listHandoffRoutingStoreQuarantines(baseRuntime.storage, path).entries[0];
+    if (retained === undefined) throw new Error('Expected retained quarantine.');
+    const sync = baseRuntime.storage.syncDirectoryDurableSync.bind(baseRuntime.storage);
+    let quarantineSyncFailed = false;
+    const clearRuntime: Runtime = {
+      ...baseRuntime,
+      storage: {
+        ...baseRuntime.storage,
+        syncDirectoryDurableSync: (directory) => {
+          if (!quarantineSyncFailed && directory === dirname(retained.quarantinePath)) {
+            quarantineSyncFailed = true;
+            return false;
+          }
+          return sync(directory);
+        },
+      },
+    };
+
+    await expect(
+      clearHandoffRoutingStatusQuarantine(routingStatusOperatorOptions(clearRuntime, path), retained.id),
+    ).resolves.toEqual({
+      kind: 'quarantine-clear-storage-failed',
+      quarantineId: retained.id,
+      quarantinePath: retained.quarantinePath,
+      removedArtifacts: ['wal'],
+      cause: 'directory-sync-failed',
+    });
+    expect(listHandoffRoutingStoreQuarantines(baseRuntime.storage, path)).toMatchObject({
+      entries: [{ id: retained.id, state: 'complete', artifacts: ['database', 'shm'] }],
+    });
+
+    await expect(
+      clearHandoffRoutingStatusQuarantine(routingStatusOperatorOptions(baseRuntime, path), retained.id),
+    ).resolves.toMatchObject({ kind: 'cleared', entry: { id: retained.id } });
+  });
+
+  it('refuses another discard when retained quarantine reaches its explicit ceiling', async () => {
+    const path = databasePath();
+    const discardRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+    const quarantineRoot = join(dirname(path), 'handoff-routing-quarantine');
+    mkdirSync(quarantineRoot, { recursive: true, mode: 0o700 });
+    for (let index = 0; index < MAX_HANDOFF_ROUTING_STATUS_QUARANTINES; index += 1) {
+      const id = `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`;
+      writeFileSync(join(quarantineRoot, `${basename(path)}.${id}`), 'retained evidence');
+    }
+    writeFileSync(path, 'not a sqlite database', { mode: 0o600 });
+
+    await expect(discardHandoffRoutingStatus(routingStatusOperatorOptions(discardRuntime, path))).resolves.toEqual({
+      kind: 'quarantine-capacity-exhausted',
+      maximum: MAX_HANDOFF_ROUTING_STATUS_QUARANTINES,
+    });
+    expect(existsSync(path)).toBe(true);
+    const retained = listHandoffRoutingStoreQuarantines(discardRuntime.storage, path);
+    expect(retained.overflow).toBe(false);
+    expect(retained.entries).toHaveLength(MAX_HANDOFF_ROUTING_STATUS_QUARANTINES);
+  });
+
+  it('revalidates maintenance ownership after the guarded journal read', async () => {
+    const path = databasePath();
+    const discardRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+    const boundary = resolveGenerationBoundaryPaths(discardRuntime);
+    writeFileSync(path, 'not a sqlite database', { mode: 0o600 });
+    let journalOpens = 0;
+    const ownershipLostRuntime: Runtime = {
+      ...discardRuntime,
+      storage: {
+        ...discardRuntime.storage,
+        openSqliteDatabaseSync: (databasePath, options) => {
+          journalOpens += 1;
+          if (journalOpens === 2) {
+            discardRuntime.storage.rmSync(boundary.maintenanceLock, { recursive: true, force: true });
+          }
+          return discardRuntime.storage.openSqliteDatabaseSync(databasePath, options);
+        },
+      },
+    };
+
+    await expect(
+      discardHandoffRoutingStatus(routingStatusOperatorOptions(ownershipLostRuntime, path)),
+    ).resolves.toEqual({
+      kind: 'generation-maintenance-unavailable',
+      cause: 'ownership-lost',
+    });
+    expect(existsSync(path)).toBe(true);
+    expect(listHandoffRoutingStoreQuarantines(discardRuntime.storage, path)).toEqual({
+      entries: [],
+      overflow: false,
     });
   });
 
@@ -468,9 +781,8 @@ describe('handoff routing status', () => {
               selection_sequence,
               retirement_cause,
               terminal_existed,
-              completed_pair_stable,
               body_json
-            ) VALUES (?, ?, ?, ?, ?, 'terminal', ?, ?, NULL, NULL, 0, ?)`,
+            ) VALUES (?, ?, ?, ?, ?, 'terminal', ?, ?, NULL, NULL, ?)`,
           )
           .run(
             contradictoryTerminal.sequence,
@@ -596,6 +908,154 @@ describe('handoff routing status', () => {
     ).toMatchObject({ ownerLiveness: { kind: 'unobservable', cause: 'probe-not-available' } });
   });
 
+  it.each([
+    ['probe-not-available', 0],
+    ['probe-failed', 75],
+  ] as const)('maps unresolved owner cause %s to exit contribution %s', async (cause, exitContribution) => {
+    const path = databasePath();
+    await committed(path, [selection('owner-probe', 1)]);
+    const observationRuntime: Runtime = {
+      ...runtime,
+      process: {
+        ...runtime.process,
+        observeProcessIdentities: async (owners) =>
+          owners.map((owner) => ({ owner, evidence: { kind: 'unobservable' as const, cause } })),
+      },
+    };
+
+    const result = await readHandoffRoutingStatusWithOwnerObservations(observationRuntime, path);
+    expect(handoffRoutingStatusExitContribution(result)).toBe(exitContribution);
+  });
+
+  it.each([
+    {
+      name: 'handoff-abandoned-stdout',
+      retainSelection: true,
+      transitionDisposition: { kind: 'continued-current', reason: { kind: 'handoff-abandoned-stdout' } },
+      durableDisposition: { kind: 'continued-current', reason: { kind: 'handoff-abandoned-stdout' } },
+      rendered:
+        'Routing invocation handoff-abandoned-stdout: terminal; continued current after stdout drain prevented delegation.',
+      exitContribution: 0,
+    },
+    {
+      name: 'delegated-signal',
+      retainSelection: true,
+      transitionDisposition: { kind: 'delegated-signal', version: '0.10.9', signal: 'SIGTERM' },
+      durableDisposition: { kind: 'delegated-signal', version: '0.10.9', signal: 'SIGTERM' },
+      rendered: 'Routing invocation delegated-signal: terminal; delegated to 0.10.9, which exited on SIGTERM.',
+      exitContribution: 0,
+    },
+    {
+      name: 'finalized-without-selection',
+      retainSelection: false,
+      transitionDisposition: { kind: 'delegated-success', version: '0.10.9' },
+      durableDisposition: {
+        kind: 'finalized-without-selection',
+        terminal: { kind: 'delegated-success', version: '0.10.9' },
+      },
+      rendered:
+        'Routing invocation finalized-without-selection: terminal; delegated successfully to 0.10.9 without a retained selection.',
+      exitContribution: 0,
+    },
+  ] as const)(
+    'round-trips $name from the durable record through status rendering and exit policy',
+    async ({ name, retainSelection, transitionDisposition, durableDisposition, rendered, exitContribution }) => {
+      const path = databasePath();
+      const selected = retainSelection
+        ? await committed(path, [
+            handoffRoutingTransitionSchema.parse({
+              kind: 'routing-selected',
+              eventId: `${name}-selection`,
+              invocationId: name,
+              observedAt: at(1),
+              owner: OWNER,
+              disposition: {
+                kind: 'continue-current',
+                basis: { kind: 'same-build-set', buildSetId: BUILD_SET_ID },
+              },
+            }),
+          ])
+        : null;
+      await committed(path, [
+        handoffRoutingTransitionSchema.parse({
+          kind: 'continuation-finalized',
+          eventId: `${name}-terminal`,
+          invocationId: name,
+          observedAt: at(2),
+          selection:
+            selected === null
+              ? { kind: 'without-selection' }
+              : { kind: 'with-selection-sequence', selectionSequence: selected.sequence },
+          disposition: transitionDisposition,
+        }),
+      ]);
+
+      const durable = terminalEventSchema.parse(
+        records(path).find((record) => record.eventKind === 'continuation-finalized'),
+      );
+      expect(durable.disposition).toEqual(durableDisposition);
+
+      const result = readHandoffRoutingStatus(path);
+      expect(result).toMatchObject({
+        kind: 'current',
+        statuses: [
+          {
+            kind: 'terminal',
+            selection: retainSelection ? { invocationId: name } : null,
+            terminal: { invocationId: name, disposition: durableDisposition },
+          },
+        ],
+      });
+      expect(formatHandoffRoutingStatus(result)).toBe(rendered);
+      expect(handoffRoutingStatusExitContribution(result)).toBe(exitContribution);
+    },
+  );
+
+  it('renders a failed-without-selection terminal as history that resolve cannot change', async () => {
+    const path = databasePath();
+    const invocationId = '123e4567-e89b-42d3-a456-426614174009';
+    await committed(path, [
+      {
+        kind: 'execution-failed',
+        eventId: 'failed-without-selection-terminal',
+        invocationId,
+        observedAt: at(1),
+        selection: { kind: 'without-selection' },
+        disposition: { kind: 'execution-failed', throwPhase: 'child-spawn' },
+      },
+    ]);
+
+    const result = readHandoffRoutingStatus(path);
+    expect(formatHandoffRoutingStatus(result)).toBe(
+      `Routing invocation ${invocationId}: terminal; execution failed during child-spawn without a retained selection.`,
+    );
+    expect(handoffRoutingStatusExitContribution(result)).toBe(0);
+    await expect(
+      resolveHandoffRoutingStatus(runtime, path, { invocationId, forceUnobservable: false }),
+    ).resolves.toEqual({ kind: 'already-terminal', invocationId });
+  });
+
+  it('renders a completed warning routing basis without gating the current status exit', async () => {
+    const path = databasePath();
+    const invocationId = 'historical-health-shape-rejected';
+    const basis = { kind: 'incumbent-unresolved', cause: 'health-shape-rejected' } as const;
+    const selected = await committed(path, [selection(invocationId, 1, basis)]);
+    await committed(path, [
+      {
+        kind: 'continuation-finalized',
+        eventId: `${invocationId}-terminal`,
+        invocationId,
+        observedAt: at(2),
+        selection: { kind: 'with-selection-sequence', selectionSequence: selected.sequence },
+        disposition: { kind: 'continued-current', reason: { kind: 'routing', basis } },
+      },
+    ]);
+
+    const result = readHandoffRoutingStatus(path);
+    expect(formatHandoffRoutingStatus(result)).toContain('continued current (incumbent-unresolved)');
+    expect(handoffRoutingStatusExitContribution(result)).toBe(0);
+  });
+
   it('returns distinct absent, unsupported-generation, unreadable, and I/O-failure results', async () => {
     const absentPath = databasePath();
     expect(readHandoffRoutingStatus(absentPath)).toEqual({ kind: 'absent' });
@@ -609,20 +1069,32 @@ describe('handoff routing status', () => {
       generation: HANDOFF_ROUTING_STATUS_GENERATION + 1,
     });
 
+    const unsupportedShapePath = databasePath();
+    const unsupportedShape = new DatabaseSync(unsupportedShapePath);
+    unsupportedShape.exec(`
+      CREATE TABLE handoff_routing_records (sequence INTEGER PRIMARY KEY, body_json TEXT NOT NULL) STRICT;
+      PRAGMA user_version=${HANDOFF_ROUTING_STATUS_GENERATION};
+    `);
+    unsupportedShape.close();
+    expect(readHandoffRoutingStatus(unsupportedShapePath)).toEqual({
+      kind: 'unsupported-generation',
+      generation: HANDOFF_ROUTING_STATUS_GENERATION,
+    });
+    await expect(publish(unsupportedShapePath, [selection('unsupported-shape', 1)])).resolves.toEqual({
+      kind: 'not-published',
+      cause: 'unsupported-generation',
+    });
+
     const invalidJsonPath = databasePath();
-    createReadFixtureDatabase(invalidJsonPath, [{ recordKind: 'selection', bodyJson: '{' }]);
+    await createReadFixtureDatabase(invalidJsonPath, [{ recordKind: 'selection', bodyJson: '{' }]);
     expect(readHandoffRoutingStatus(invalidJsonPath)).toEqual({ kind: 'unreadable', reason: 'invalid-json' });
 
     const invalidShapePath = databasePath();
-    createReadFixtureDatabase(invalidShapePath, [{ recordKind: 'selection', bodyJson: '{}' }]);
+    await createReadFixtureDatabase(invalidShapePath, [{ recordKind: 'selection', bodyJson: '{}' }]);
     expect(readHandoffRoutingStatus(invalidShapePath)).toEqual({ kind: 'unreadable', reason: 'invalid-shape' });
 
-    const nullBodyPath = databasePath();
-    createReadFixtureDatabase(nullBodyPath, [{ recordKind: 'selection', bodyJson: null }]);
-    expect(readHandoffRoutingStatus(nullBodyPath)).toEqual({ kind: 'unreadable', reason: 'invalid-shape' });
-
     const tooLargePath = databasePath();
-    createReadFixtureDatabase(tooLargePath, [
+    await createReadFixtureDatabase(tooLargePath, [
       { recordKind: 'selection', bodyJson: JSON.stringify({ padding: 'x'.repeat(10_000) }) },
     ]);
     expect(readHandoffRoutingStatus(tooLargePath)).toEqual({ kind: 'unreadable', reason: 'too-large' });
@@ -655,9 +1127,8 @@ describe('handoff routing status', () => {
 
     expect(readHandoffRoutingStatus(path)).toEqual({ kind: 'unreadable', reason: 'invalid-shape' });
     await expect(publish(path, [terminal('missing-reserve', 2, selected.sequence)])).resolves.toEqual({
-      kind: 'undeterminable',
+      kind: 'not-published',
       cause: 'unreadable',
-      errcode: 11,
     });
   });
 
@@ -688,7 +1159,7 @@ describe('handoff routing status', () => {
     const root = mkdtempSync(join(tmpdir(), 'coral-handoff-routing-invalid-'));
     temporaryDirectories.push(root);
     const directory = join(root, 'absent', 'nested');
-    const path = join(directory, 'handoff-routing.1.db');
+    const path = join(directory, `handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db`);
 
     await expect(publish(path, [])).resolves.toEqual({
       kind: 'not-published',
@@ -896,7 +1367,7 @@ describe('handoff routing status', () => {
     ]);
   });
 
-  it('attributes domain conflicts before SQLite and does not call an unexpected constraint a rejected transition', async () => {
+  it('attributes domain conflicts before SQLite and rejects an unexpected trigger as another schema', async () => {
     const path = databasePath();
     await committed(path, [selection('seed', 1)]);
     await expect(publish(path, [{ ...selection('duplicate-event', 2), eventId: 'event-1' }])).resolves.toEqual({
@@ -918,13 +1389,28 @@ describe('handoff routing status', () => {
     }
 
     await expect(publish(path, [selection('valid-transition', 3)])).resolves.toEqual({
-      kind: 'undeterminable',
-      cause: 'io-failed',
-      errcode: 1_811,
+      kind: 'not-published',
+      cause: 'unsupported-generation',
     });
   });
 
-  it('preserves the SQLite code that makes a generation-matching artifact unreadable', async () => {
+  it('treats generation-matching content corruption as unreadable', async () => {
+    const path = databasePath();
+    await committed(path, [selection('seed', 1)]);
+    const db = new DatabaseSync(path);
+    try {
+      db.exec('DELETE FROM handoff_routing_metadata');
+    } finally {
+      db.close();
+    }
+
+    await expect(publish(path, [selection('next', 2)])).resolves.toEqual({
+      kind: 'not-published',
+      cause: 'unreadable',
+    });
+  });
+
+  it('treats a generation-matching artifact with a dropped table as unsupported-generation', async () => {
     const path = databasePath();
     await committed(path, [selection('seed', 1)]);
     const db = new DatabaseSync(path);
@@ -934,10 +1420,13 @@ describe('handoff routing status', () => {
       db.close();
     }
 
+    expect(readHandoffRoutingStatus(path)).toEqual({
+      kind: 'unsupported-generation',
+      generation: HANDOFF_ROUTING_STATUS_GENERATION,
+    });
     await expect(publish(path, [selection('next', 2)])).resolves.toEqual({
-      kind: 'undeterminable',
-      cause: 'unreadable',
-      errcode: 1,
+      kind: 'not-published',
+      cause: 'unsupported-generation',
     });
   });
 
@@ -1174,17 +1663,15 @@ describe('handoff routing status', () => {
     unsupported.exec(`PRAGMA user_version=${HANDOFF_ROUTING_STATUS_GENERATION + 1}`);
     unsupported.close();
     await expect(publish(unsupportedPath, [selection('next', 2)])).resolves.toEqual({
-      kind: 'undeterminable',
+      kind: 'not-published',
       cause: 'unsupported-generation',
-      errcode: 1,
     });
 
     const corruptPath = databasePath();
     writeFileSync(corruptPath, 'not a sqlite database');
     await expect(publish(corruptPath, [selection('corrupt', 3)])).resolves.toEqual({
-      kind: 'undeterminable',
+      kind: 'not-published',
       cause: 'unreadable',
-      errcode: 26,
     });
 
     const fullPath = databasePath();
@@ -1193,9 +1680,15 @@ describe('handoff routing status', () => {
     try {
       full.exec('PRAGMA synchronous=OFF');
       full.exec(`PRAGMA max_page_count=${MAX_HANDOFF_ROUTING_STATUS_BYTES / 4096}`);
-      full.exec('CREATE TABLE padding (value BLOB NOT NULL)');
-      const pad = full.prepare('INSERT INTO padding VALUES (?)');
-      while (true) pad.run(Buffer.alloc(512));
+      const pad = full.prepare(
+        `INSERT INTO handoff_routing_closing_reserve (invocation_id, event_id, observed_at, allocation)
+         VALUES (?, ?, ?, zeroblob(?))`,
+      );
+      let index = 0;
+      while (true) {
+        pad.run(`padding-${index}`, `padding-event-${index}`, at(index), MAX_LEGAL_CLOSING_RECORD_BYTES);
+        index += 1;
+      }
     } catch (error) {
       expect(error).toMatchObject({ errcode: 13 });
     } finally {
@@ -1217,6 +1710,18 @@ describe('handoff routing status', () => {
     expect(capacity).toEqual({ kind: 'not-published', cause: 'capacity-exhausted' });
   });
 
+  it.each([
+    ['BEGIN IMMEDIATE', { kind: 'not-published', cause: 'capacity-exhausted' }],
+    ['COMMIT', { kind: 'undeterminable', cause: 'capacity-exhausted', errcode: SQLITE_FULL }],
+  ] as const)('uses the COMMIT attempt boundary when SQLITE_FULL is raised by %s', async (statement, expected) => {
+    const path = databasePath();
+    const failingRuntime = { ...runtime, storage: storageFailingOnSqliteStatement(runtime.storage, statement) };
+
+    await expect(
+      publishHandoffRoutingTransitions(failingRuntime, path, [selection(`full-at-${statement}`, 1)]),
+    ).resolves.toEqual(expected);
+  });
+
   it('assigns total policy to repair, gap, rollup, and lifecycle dispositions', () => {
     expect(
       persistedHandoffDispositionPolicy({ kind: 'selection-evicted-at-capacity', terminalExisted: false }),
@@ -1224,8 +1729,25 @@ describe('handoff routing status', () => {
       durability: 'lifecycle-journal',
       retention: 'bounded-history',
       severity: 'warning',
+      classification: 'hold',
       exitContribution: 75,
     });
+    expect(persistedHandoffDispositionPolicy({ kind: 'operator-resolved', terminalExisted: false })).toEqual({
+      durability: 'lifecycle-journal',
+      retention: 'bounded-history',
+      severity: 'info',
+      classification: 'history',
+      exitContribution: 0,
+    });
+    expect(
+      persistedHandoffDispositionPolicy({ kind: 'failed-without-selection', throwPhase: 'child-spawn' }),
+    ).toMatchObject({ severity: 'warning', classification: 'history', exitContribution: 0 });
+    expect(
+      persistedHandoffDispositionPolicy({
+        kind: 'finalized-without-selection',
+        terminal: { kind: 'delegated-success', version: '0.10.9' },
+      }),
+    ).toMatchObject({ severity: 'warning', classification: 'history', exitContribution: 0 });
     expect(
       persistedHandoffDispositionPolicy({
         kind: 'retirement-history-truncated',
@@ -1240,7 +1762,23 @@ describe('handoff routing status', () => {
         earliestSelectedAt: at(1),
         latestSelectedAt: at(1),
       }),
-    ).toMatchObject({ severity: 'info', exitContribution: 0 });
+    ).toMatchObject({ severity: 'info', classification: 'history', exitContribution: 0 });
+  });
+
+  it('keeps a warning routing basis actionable while selected but historical after its terminal', () => {
+    const basis = { kind: 'incumbent-unresolved', cause: 'health-shape-rejected' } as const;
+
+    expect(persistedHandoffDispositionPolicy({ kind: 'continue-current', basis })).toMatchObject({
+      severity: 'warning',
+      classification: 'hold',
+      exitContribution: 75,
+    });
+    expect(
+      persistedHandoffDispositionPolicy({
+        kind: 'continued-current',
+        reason: { kind: 'routing', basis },
+      }),
+    ).toMatchObject({ severity: 'warning', classification: 'history', exitContribution: 0 });
   });
 
   it('resolves only absent owners and returns typed stale, terminal, and live refusals', async () => {
@@ -1260,8 +1798,9 @@ describe('handoff routing status', () => {
       ...runtime,
       process: {
         ...runtime.process,
-        readProcessIncarnation: () => {
-          throw new Error('repair must use the batch observer');
+        readProcessIncarnation: (pid: number, platform: NodeJS.Platform) => {
+          if (pid === runtime.env.pid()) return runtime.process.readProcessIncarnation(pid, platform);
+          throw new Error('repair must use the batch observer for record owners');
         },
         observeProcessIdentities: async (owners: readonly (typeof OWNER)[]) =>
           owners.map((owner) => ({ owner, evidence })),
@@ -1318,6 +1857,107 @@ describe('handoff routing status', () => {
         resolutionReason: 'owner-absent',
       },
     });
+    expect(handoffRoutingStatusExitContribution(status)).toBe(0);
+  });
+
+  it('acknowledges an exact capacity eviction through routing-status resolve', async () => {
+    const path = databasePath();
+    await committed(
+      path,
+      Array.from({ length: MAX_UNRESOLVED_INVOCATIONS + 1 }, (_, index) =>
+        selection(`capacity-opening-${index}`, index + 1),
+      ),
+    );
+    const repairRuntime = {
+      ...runtime,
+      process: {
+        ...runtime.process,
+        observeProcessIdentities: async (owners: readonly (typeof OWNER)[]) =>
+          owners.map((owner) => ({ owner, evidence: { kind: 'pid-absent' as const } })),
+      },
+    };
+
+    await expect(
+      resolveHandoffRoutingStatus(repairRuntime, path, {
+        invocationId: 'capacity-opening-0',
+        forceUnobservable: false,
+      }),
+    ).resolves.toEqual({
+      kind: 'acknowledged-capacity-eviction',
+      invocationId: 'capacity-opening-0',
+      selectionSequence: 1,
+    });
+
+    const status = readHandoffRoutingStatus(path);
+    expect(status).toMatchObject({
+      kind: 'current',
+      retirementHistoryTruncated: {
+        expiredIdentityCount: 1,
+        causes: { 'selection-evicted-at-capacity': 1 },
+      },
+    });
+    if (status.kind !== 'current') throw new Error(`Expected current status, received ${status.kind}`);
+    expect(status.statuses.some((candidate) => candidate.kind === 'retired')).toBe(false);
+    expect(handoffRoutingStatusExitContribution(status)).toBe(0);
+  });
+
+  it('preserves an undeterminable operator-resolution publication at the resolve boundary', async () => {
+    const invocationId = '123e4567-e89b-42d3-a456-426614174009';
+    const path = databasePath();
+    await committed(path, [selection(invocationId, 1)]);
+    const repairRuntime = {
+      ...runtime,
+      storage: storageFailingOnSqliteStatement(runtime.storage, 'COMMIT'),
+      process: {
+        ...runtime.process,
+        observeProcessIdentities: async (owners: readonly (typeof OWNER)[]) =>
+          owners.map((owner) => ({ owner, evidence: { kind: 'pid-absent' as const } })),
+      },
+    };
+
+    await expect(
+      resolveHandoffRoutingStatus(repairRuntime, path, {
+        invocationId,
+        forceUnobservable: false,
+      }),
+    ).resolves.toEqual({
+      kind: 'undeterminable',
+      invocationId,
+      cause: 'capacity-exhausted',
+      errcode: SQLITE_FULL,
+    });
+  });
+
+  it('preserves an undeterminable capacity-acknowledgement publication at the resolve boundary', async () => {
+    const invocationId = 'capacity-opening-0';
+    const path = databasePath();
+    await committed(
+      path,
+      Array.from({ length: MAX_UNRESOLVED_INVOCATIONS + 1 }, (_, index) =>
+        selection(`capacity-opening-${index}`, index + 1),
+      ),
+    );
+    const repairRuntime = {
+      ...runtime,
+      storage: storageFailingOnSqliteStatement(runtime.storage, 'COMMIT'),
+      process: {
+        ...runtime.process,
+        observeProcessIdentities: async (owners: readonly (typeof OWNER)[]) =>
+          owners.map((owner) => ({ owner, evidence: { kind: 'pid-absent' as const } })),
+      },
+    };
+
+    await expect(
+      resolveHandoffRoutingStatus(repairRuntime, path, {
+        invocationId,
+        forceUnobservable: false,
+      }),
+    ).resolves.toEqual({
+      kind: 'undeterminable',
+      invocationId,
+      cause: 'capacity-exhausted',
+      errcode: SQLITE_FULL,
+    });
   });
 
   it('refuses operator resolution while generation maintenance is held', async () => {
@@ -1341,7 +1981,8 @@ describe('handoff routing status', () => {
         }),
       ).resolves.toEqual({
         kind: 'not-published',
-        outcome: { kind: 'not-published', cause: 'generation-maintenance' },
+        invocationId,
+        cause: 'generation-maintenance',
       });
       expect(readHandoffRoutingStatus(path)).toMatchObject({
         kind: 'current',
@@ -1370,6 +2011,116 @@ describe('handoff routing status', () => {
         selection('coordination-io-failure', 1),
       ]),
     ).resolves.toEqual({ kind: 'not-published', cause: 'coordination-unavailable' });
+  });
+
+  it('retries generation admission contention within the publication deadline', async () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'coral-handoff-routing-admission-retry-'));
+    temporaryDirectories.push(baseDir);
+    const isolatedRuntime = createRealRuntime('prod', { baseDir });
+    const paths = resolveGenerationBoundaryPaths(isolatedRuntime);
+    mkdirSync(paths.coordinationRoot, { recursive: true });
+    const releaseAdmission = tryAcquireDirectoryLock(paths.admissionLock);
+    if (releaseAdmission === null) throw new Error('Expected admission lock');
+    let released = false;
+    const retryRuntime: Runtime = {
+      ...isolatedRuntime,
+      time: {
+        ...isolatedRuntime.time,
+        sleep: async () => {
+          if (released) return;
+          released = true;
+          releaseAdmission();
+        },
+      },
+    };
+    try {
+      await expect(
+        publishGenerationCoordinatedHandoffRoutingTransitions(
+          retryRuntime,
+          join(
+            isolatedRuntime.paths.coral.coordinator.runDir,
+            `handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db`,
+          ),
+          [selection('admission-retried', 1)],
+        ),
+      ).resolves.toMatchObject({ kind: 'committed' });
+    } finally {
+      if (!released) releaseAdmission();
+    }
+  });
+
+  it('returns generation maintenance when maintenance wins an admission retry', async () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'coral-handoff-routing-maintenance-retry-'));
+    temporaryDirectories.push(baseDir);
+    const isolatedRuntime = createRealRuntime('prod', { baseDir });
+    const paths = resolveGenerationBoundaryPaths(isolatedRuntime);
+    mkdirSync(paths.coordinationRoot, { recursive: true });
+    const releaseAdmission = tryAcquireDirectoryLock(paths.admissionLock);
+    if (releaseAdmission === null) throw new Error('Expected admission lock');
+    let maintenance: Awaited<ReturnType<typeof acquireGenerationMaintenanceLease>> | undefined;
+    let admissionReleased = false;
+    const retryRuntime: Runtime = {
+      ...isolatedRuntime,
+      time: {
+        ...isolatedRuntime.time,
+        sleep: async () => {
+          if (admissionReleased) return;
+          admissionReleased = true;
+          releaseAdmission();
+          maintenance = await acquireGenerationMaintenanceLease(isolatedRuntime);
+        },
+      },
+    };
+    try {
+      await expect(
+        publishGenerationCoordinatedHandoffRoutingTransitions(
+          retryRuntime,
+          join(
+            isolatedRuntime.paths.coral.coordinator.runDir,
+            `handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db`,
+          ),
+          [selection('maintenance-won-admission', 1)],
+        ),
+      ).resolves.toEqual({ kind: 'not-published', cause: 'generation-maintenance' });
+    } finally {
+      if (!admissionReleased) releaseAdmission();
+      maintenance?.release();
+    }
+  });
+
+  it('returns contention only after generation admission spends the publication budget', async () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'coral-handoff-routing-admission-timeout-'));
+    temporaryDirectories.push(baseDir);
+    const isolatedRuntime = createRealRuntime('prod', { baseDir });
+    const paths = resolveGenerationBoundaryPaths(isolatedRuntime);
+    mkdirSync(paths.coordinationRoot, { recursive: true });
+    const releaseAdmission = tryAcquireDirectoryLock(paths.admissionLock);
+    if (releaseAdmission === null) throw new Error('Expected admission lock');
+    let monotonicNow = 0n;
+    const retryRuntime: Runtime = {
+      ...isolatedRuntime,
+      time: {
+        ...isolatedRuntime.time,
+        monotonicNow: () => monotonicNow,
+        sleep: async (milliseconds: number) => {
+          monotonicNow += BigInt(milliseconds * 100);
+        },
+      },
+    };
+    try {
+      await expect(
+        publishGenerationCoordinatedHandoffRoutingTransitions(
+          retryRuntime,
+          join(
+            isolatedRuntime.paths.coral.coordinator.runDir,
+            `handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db`,
+          ),
+          [selection('admission-timeout', 1)],
+        ),
+      ).resolves.toEqual({ kind: 'not-published', cause: 'contended' });
+    } finally {
+      releaseAdmission();
+    }
   });
 
   it('resolves a lost writer lease as coordination unavailable', async () => {

@@ -1,4 +1,10 @@
-import type { StrictBundleIdentityFailure, StrictBundleManifest } from '../infra/bundle-manifest.js';
+import { z } from 'zod';
+
+import {
+  strictBundleManifestSchema,
+  type StrictBundleIdentityFailure,
+  type StrictBundleManifest,
+} from '../infra/bundle-manifest.js';
 import type {
   ForeignTargetValidator,
   InvalidTargetEvidence,
@@ -9,14 +15,24 @@ import { compareProductVersions } from '../infra/product-version.js';
 
 export type UnresolvedIncumbentCause = 'unreadable-record' | 'health-request-failed' | 'health-shape-rejected';
 
-export type BuildSummary = Readonly<Pick<StrictBundleManifest, 'version' | 'buildSetId' | 'bundleHash' | 'flavor'>>;
+export const buildSummarySchema = strictBundleManifestSchema
+  .pick({ version: true, buildSetId: true, bundleHash: true, flavor: true })
+  .readonly();
 
-export type IncumbentIdentitySummary = Readonly<{
-  version: string;
-  bundleHash: string;
-  flavor: StrictBundleManifest['flavor'];
-  instanceId: string;
-}>;
+export type BuildSummary = z.infer<typeof buildSummarySchema>;
+
+export const incumbentIdentitySummarySchema = z
+  .object({
+    version: strictBundleManifestSchema.shape.version,
+    bundleHash: strictBundleManifestSchema.shape.bundleHash,
+    flavor: strictBundleManifestSchema.shape.flavor,
+    instanceId: z.string().min(1).max(64),
+  })
+  .strict()
+  .readonly()
+  .brand<'IncumbentIdentitySummary'>();
+
+export type IncumbentIdentitySummary = z.infer<typeof incumbentIdentitySummarySchema>;
 
 export type HandoffRoutingBasis =
   | Readonly<{ kind: 'incumbent-absent' }>
@@ -40,8 +56,6 @@ export type RoutingBasisObligation = Readonly<{
   exitContribution: 0 | 75;
 }>;
 
-// Every routed invocation opens a lifecycle whatever it decided, so no basis may be `ephemeral-allowed`;
-// the field varies across continuation reasons, not across bases.
 export const HANDOFF_ROUTING_BASIS_OBLIGATIONS: Readonly<Record<HandoffRoutingBasis['kind'], RoutingBasisObligation>> =
   {
     'incumbent-absent': {
@@ -109,12 +123,12 @@ export type LiveIncumbentRoutingInput = Readonly<{
 }>;
 
 function summarizeBuild(manifest: StrictBundleManifest): BuildSummary {
-  return {
+  return buildSummarySchema.parse({
     version: manifest.version,
     buildSetId: manifest.buildSetId,
     bundleHash: manifest.bundleHash,
     flavor: manifest.flavor,
-  };
+  });
 }
 
 export function routeLiveIncumbent(input: LiveIncumbentRoutingInput): HandoffRoutingResult {

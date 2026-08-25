@@ -3,16 +3,18 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { validateStatusRecordBody } from '#src/coordinator/handoff-routing-status.js';
+import { handoffRoutingStatusStoreSchema } from '#src/coordinator/handoff-routing-status.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import {
+  handoffRoutingStatusGeneration,
   HandoffRoutingStoreInvalidRecordError,
   HandoffRoutingStoreUnreadableError,
+  HandoffRoutingStoreUnsupportedGenerationError,
   publishHandoffRoutingStoreTransaction,
+  readHandoffRoutingStoreSnapshot,
   type HandoffRoutingRecordInput,
-  type HandoffRoutingStatusStoreSchema,
 } from '#src/store/handoff-routing-status-store.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
@@ -20,21 +22,11 @@ const temporaryDirectories: string[] = [];
 const owner = { pid: 101, incarnation: testIncarnation(101) } as const;
 const selectedDisposition = { kind: 'continue-current', basis: { kind: 'incumbent-absent' } } as const;
 
-const schema: HandoffRoutingStatusStoreSchema = {
-  generation: 1,
-  maximumBytes: 1_048_576,
-  maximumIdentifierLength: 58,
-  maximumObservedAtLength: 24,
-  maximumRoutingSelectedBytes: 4_096,
-  maximumExecutionFailedBytes: 4_096,
-  maximumContinuationFinalizedBytes: 4_096,
-  maximumRetirementTombstoneBytes: 4_096,
-  closingRecordBytes: 4_096,
-  validateRecordBody: validateStatusRecordBody,
-};
+const schema = handoffRoutingStatusStoreSchema();
+const HANDOFF_ROUTING_STATUS_GENERATION = handoffRoutingStatusGeneration(schema);
 
 const selectionBody = {
-  generation: 1,
+  generation: HANDOFF_ROUTING_STATUS_GENERATION,
   sequence: 1,
   eventId: 'selection-event',
   invocationId: 'selection-invocation',
@@ -46,7 +38,7 @@ const selectionBody = {
 } as const;
 
 const terminalBody = {
-  generation: 1,
+  generation: HANDOFF_ROUTING_STATUS_GENERATION,
   sequence: 1,
   eventId: 'terminal-event',
   invocationId: 'terminal-invocation',
@@ -61,7 +53,7 @@ const terminalBody = {
 } as const;
 
 const retirementBody = {
-  generation: 1,
+  generation: HANDOFF_ROUTING_STATUS_GENERATION,
   sequence: 1,
   eventId: 'retirement-event',
   invocationId: 'retirement-invocation',
@@ -89,7 +81,6 @@ function recordInput(
     invocationId: body.invocationId,
     observedAt: body.observedAt,
     eventKind: body.eventKind,
-    completedPairStable: false,
     bodyJson: JSON.stringify(body),
     ...fields,
   };
@@ -132,7 +123,7 @@ afterEach(() => {
 function databasePath(): string {
   const directory = mkdtempSync(join(tmpdir(), 'coral-handoff-routing-store-'));
   temporaryDirectories.push(directory);
-  return join(directory, 'handoff-routing.1.db');
+  return join(directory, `handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db`);
 }
 
 function initializeStore(path: string): void {
@@ -183,6 +174,194 @@ function expectInvalidRecord(
 }
 
 describe('HandoffRoutingStatusTransaction', () => {
+  it('derives the generation from the rendered schema bounds', () => {
+    expect(
+      handoffRoutingStatusGeneration({
+        ...schema,
+        durableFormat: {
+          ...schema.durableFormat,
+          maximumRetirementTombstoneBytes: schema.durableFormat.maximumRetirementTombstoneBytes + 1,
+        },
+      }),
+    ).not.toBe(HANDOFF_ROUTING_STATUS_GENERATION);
+  });
+
+  it('derives the generation from the complete body vocabulary but not operational capacity', () => {
+    expect(
+      handoffRoutingStatusGeneration({
+        ...schema,
+        durableFormat: {
+          ...schema.durableFormat,
+          bodyVocabulary: {
+            ...schema.durableFormat.bodyVocabulary,
+            dispositionKinds: [...schema.durableFormat.bodyVocabulary.dispositionKinds, 'future-disposition'].sort(),
+          },
+        },
+      }),
+    ).not.toBe(HANDOFF_ROUTING_STATUS_GENERATION);
+    expect(
+      handoffRoutingStatusGeneration({
+        ...schema,
+        operational: { maximumBytes: schema.operational.maximumBytes + 1 },
+      }),
+    ).toBe(HANDOFF_ROUTING_STATUS_GENERATION);
+  });
+
+  it('derives the same generation from any durable-format object key order', () => {
+    const format = schema.durableFormat;
+    const stability = format.bodyVocabulary.completedPairStability;
+    const reorderedFormat = {
+      bodyVocabulary: {
+        completedPairStability: {
+          terminalDispositionKind: stability.terminalDispositionKind,
+          selectionBasisKinds: stability.selectionBasisKinds,
+          selectionDispositionKind: stability.selectionDispositionKind,
+        },
+        routingBasisKinds: format.bodyVocabulary.routingBasisKinds,
+        dispositionKinds: format.bodyVocabulary.dispositionKinds,
+      },
+      closingRecordBytes: format.closingRecordBytes,
+      maximumRetirementTombstoneBytes: format.maximumRetirementTombstoneBytes,
+      maximumContinuationFinalizedBytes: format.maximumContinuationFinalizedBytes,
+      maximumExecutionFailedBytes: format.maximumExecutionFailedBytes,
+      maximumRoutingSelectedBytes: format.maximumRoutingSelectedBytes,
+      maximumObservedAtLength: format.maximumObservedAtLength,
+      maximumIdentifierLength: format.maximumIdentifierLength,
+    };
+
+    expect(handoffRoutingStatusGeneration({ ...schema, durableFormat: reorderedFormat })).toBe(
+      HANDOFF_ROUTING_STATUS_GENERATION,
+    );
+  });
+
+  it('refuses noncanonical durable vocabulary before rendering retention SQL', () => {
+    expect(() =>
+      handoffRoutingStatusGeneration({
+        ...schema,
+        durableFormat: {
+          ...schema.durableFormat,
+          bodyVocabulary: {
+            ...schema.durableFormat.bodyVocabulary,
+            completedPairStability: {
+              ...schema.durableFormat.bodyVocabulary.completedPairStability,
+              terminalDispositionKind: 'Delegated success',
+            },
+          },
+        },
+      }),
+    ).toThrow('unsafe identifier');
+  });
+
+  it('derives main-file and checkpoint bounds from the same byte budget', () => {
+    const path = databasePath();
+    const probe = new DatabaseSync(path);
+    const pageSize = Number((probe.prepare('PRAGMA page_size').get() as { page_size: number }).page_size);
+    probe.close();
+
+    const runtime = createRealRuntime('prod', { baseDir: dirname(path) });
+    const executed: string[] = [];
+    const storage = {
+      ...runtime.storage,
+      openSqliteDatabaseSync: (...args: Parameters<typeof runtime.storage.openSqliteDatabaseSync>) => {
+        const database = runtime.storage.openSqliteDatabaseSync(...args);
+        return {
+          exec(sql: string): void {
+            executed.push(sql);
+            database.exec(sql);
+          },
+          prepare: (sql: string) => database.prepare(sql),
+          close: () => database.close(),
+        };
+      },
+    };
+
+    expect(publishHandoffRoutingStoreTransaction(storage, path, schema, () => undefined)).toEqual({
+      kind: 'committed',
+      value: undefined,
+    });
+    const maximumPages = Math.floor(schema.operational.maximumBytes / pageSize);
+    expect(executed).toContain(`PRAGMA max_page_count=${maximumPages}`);
+    expect(executed).toContain(`PRAGMA journal_size_limit=${schema.operational.maximumBytes}`);
+    expect(executed).toContain(`PRAGMA wal_autocheckpoint=${maximumPages}`);
+  });
+
+  it('refuses a same-generation database with a different schema before publication', () => {
+    const path = databasePath();
+    const database = new DatabaseSync(path);
+    try {
+      database.exec(`
+        CREATE TABLE handoff_routing_records (sequence INTEGER PRIMARY KEY, body_json TEXT NOT NULL) STRICT;
+        PRAGMA user_version=${HANDOFF_ROUTING_STATUS_GENERATION};
+      `);
+    } finally {
+      database.close();
+    }
+    const runtime = createRealRuntime('prod', { baseDir: dirname(path) });
+    const configured: string[] = [];
+    const chmodSync = vi.fn(runtime.storage.chmodSync);
+    const storage = {
+      ...runtime.storage,
+      chmodSync,
+      openSqliteDatabaseSync: (...args: Parameters<typeof runtime.storage.openSqliteDatabaseSync>) => {
+        const database = runtime.storage.openSqliteDatabaseSync(...args);
+        return {
+          exec(sql: string): void {
+            configured.push(sql);
+            database.exec(sql);
+          },
+          prepare: (sql: string) => database.prepare(sql),
+          close: () => database.close(),
+        };
+      },
+    };
+
+    expect(publishHandoffRoutingStoreTransaction(storage, path, schema, () => undefined)).toMatchObject({
+      kind: 'failed',
+      error: expect.any(HandoffRoutingStoreUnsupportedGenerationError),
+      commitStarted: false,
+    });
+    expect(chmodSync).not.toHaveBeenCalled();
+    expect(configured).toEqual([]);
+    expect(readHandoffRoutingStoreSnapshot(runtime.storage, path, schema)).toEqual({
+      kind: 'unsupported-generation',
+      generation: HANDOFF_ROUTING_STATUS_GENERATION,
+    });
+  });
+
+  it.each([
+    ['table', 'CREATE TABLE unexpected_table (value INTEGER) STRICT'],
+    ['index', 'CREATE INDEX unexpected_index ON handoff_routing_metadata(generation)'],
+    ['view', 'CREATE VIEW unexpected_view AS SELECT generation FROM handoff_routing_metadata'],
+    [
+      'trigger',
+      `CREATE TRIGGER unexpected_trigger
+       BEFORE INSERT ON handoff_routing_records
+       BEGIN
+         SELECT RAISE(ABORT, 'unexpected schema');
+       END`,
+    ],
+  ] as const)('refuses a same-generation database with an additional %s', (_type, sql) => {
+    const path = databasePath();
+    initializeStore(path);
+    const database = new DatabaseSync(path);
+    try {
+      database.exec(sql);
+    } finally {
+      database.close();
+    }
+    const runtime = createRealRuntime('prod', { baseDir: dirname(path) });
+
+    expect(publishHandoffRoutingStoreTransaction(runtime.storage, path, schema, () => undefined)).toMatchObject({
+      kind: 'failed',
+      error: expect.any(HandoffRoutingStoreUnsupportedGenerationError),
+      commitStarted: false,
+    });
+    expect(readHandoffRoutingStoreSnapshot(runtime.storage, path, schema)).toEqual({
+      kind: 'unsupported-generation',
+      generation: HANDOFF_ROUTING_STATUS_GENERATION,
+    });
+  });
+
   it('rejects malformed JSON through the production validator before inserting a row', () => {
     expectInvalidRecord(databasePath(), { ...legalRecords[1].record, bodyJson: '{' }, 'malformed-json');
   });

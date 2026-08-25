@@ -17,6 +17,7 @@ vi.mock('#src/coordinator/handoff-runner.js', async (importOriginal) => {
 });
 
 const target = Object.freeze({}) as ValidatedHandoffTarget;
+const PUBLICATION_INVOCATION_ID = '123e4567-e89b-42d3-a456-426614174000';
 
 beforeEach(() => {
   mockState.runHandoff.mockReset();
@@ -79,7 +80,15 @@ describe('backend bootstrap store handoff', () => {
     const handoffError = new Error('spawn rejected');
     const warn = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
     mockState.runHandoff.mockRejectedValue(
-      new HandoffRunError(handoffError, [{ phase: 'terminal', kind: 'not-published', cause: 'contended' }]),
+      new HandoffRunError(handoffError, [
+        {
+          phase: 'terminal',
+          invocationId: PUBLICATION_INVOCATION_ID,
+          terminalDisposition: { kind: 'execution-failed', throwPhase: 'child-spawn' },
+          kind: 'not-published',
+          cause: 'contended',
+        },
+      ]),
     );
 
     await expect(handoffStartupToSelectedBuild('/plugin/root', new StartupStoreHandoffError(target))).resolves.toEqual({
@@ -88,18 +97,20 @@ describe('backend bootstrap store handoff', () => {
     });
     expect(warn).toHaveBeenCalledWith(
       'Backend startup handoff routing-status publication incident: ' +
-        '{"phase":"terminal","kind":"not-published","cause":"contended"}',
+        `{"phase":"terminal","invocationId":"${PUBLICATION_INVOCATION_ID}","terminalDisposition":{"kind":"execution-failed","throwPhase":"child-spawn"},"kind":"not-published","cause":"contended"}`,
     );
   });
 
   it('should log selection telemetry before startup work and finalization telemetry after it', async () => {
     const order: string[] = [];
     vi.spyOn(backendLog, 'warn').mockImplementation((message) => {
-      order.push(message.includes('"phase":"selection"') ? 'selection' : 'terminal');
+      const incident = JSON.parse(message.slice(message.indexOf('{'))) as { phase: 'selection' | 'terminal' };
+      order.push(incident.phase);
     });
     mockState.runHandoff.mockImplementation(async (_operation, options) => {
       options.onSelectionPublicationIncident({
         phase: 'selection',
+        invocationId: PUBLICATION_INVOCATION_ID,
         kind: 'not-published',
         cause: 'contended',
       });
@@ -112,8 +123,20 @@ describe('backend bootstrap store handoff', () => {
           outcome: { kind: 'handoff-success', version: '2.0.0' },
         },
         publicationIncidents: [
-          { phase: 'selection', kind: 'not-published', cause: 'contended' },
-          { phase: 'terminal', kind: 'undeterminable', cause: 'io-failed', errcode: 5 },
+          {
+            phase: 'selection',
+            invocationId: PUBLICATION_INVOCATION_ID,
+            kind: 'not-published',
+            cause: 'contended',
+          },
+          {
+            phase: 'terminal',
+            invocationId: PUBLICATION_INVOCATION_ID,
+            terminalDisposition: { kind: 'delegated-success', version: '2.0.0' },
+            kind: 'undeterminable',
+            cause: 'io-failed',
+            errcode: 5,
+          },
         ],
       };
     });

@@ -26,9 +26,12 @@ import type { TimePort, TimerHandle } from '../infra/port-types.js';
 import type { RecordedProcessIdentity } from '../infra/process-containment.js';
 import type { Runtime } from '../runtime/ports.js';
 import { createRealRuntime } from '../runtime/real.js';
+import { handoffRoutingStatusGeneration } from '../store/handoff-routing-status-store.js';
 import { createIpcClient } from '../transport/ipc/client.js';
 import {
   HANDOFF_ROUTING_BASIS_OBLIGATIONS,
+  buildSummarySchema,
+  incumbentIdentitySummarySchema,
   routeLiveIncumbent,
   type BuildSummary,
   type HandoffRoutingBasis,
@@ -37,7 +40,7 @@ import {
   type RoutingBasisObligation,
   type UnresolvedIncumbentCause,
 } from './handoff-routing.js';
-import { isHandoffRoutingStatusDiscardOperation, parseHandoffRepairOperation } from './handoff-repair-operation.js';
+import { classifyHandoffRoutingStatusOperatorInvocation } from './handoff-repair-operation.js';
 import type {
   DirectTerminalDisposition,
   DurableHandoffRoutingBasis,
@@ -56,6 +59,7 @@ const CLI_HANDOFF_GUARD_ENV = 'CORAL_CLI_HANDOFF_DELEGATED';
 
 const handoffSuccessBrand: unique symbol = Symbol('HandoffSuccess');
 const cliHandoffGuardSchema = z.enum(['0', '1']).optional();
+const incumbentIdentityShape = incumbentIdentitySummarySchema.unwrap().unwrap().shape;
 
 const handoffOperationSchema = z.discriminatedUnion('kind', [
   z
@@ -76,14 +80,14 @@ const handoffOperationSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('backend-startup') }).strict(),
 ]);
 
-const liveIncumbentHealthSchema = z
+export const liveIncumbentHealthSchema = z
   .object({
     status: z.enum(['starting', 'ok', 'draining']),
-    version: z.string().min(1),
-    bundleHash: z.string().min(1),
-    flavor: z.enum(['prod', 'dev']),
+    version: incumbentIdentityShape.version,
+    bundleHash: incumbentIdentityShape.bundleHash,
+    flavor: incumbentIdentityShape.flavor,
     namespace: z.string().min(1),
-    instanceId: z.string().min(1),
+    instanceId: incumbentIdentityShape.instanceId,
     pid: z.number().int().positive(),
     incarnation: processIncarnationSchema.optional(),
     manifest: strictBundleManifestSchema.optional(),
@@ -166,8 +170,6 @@ export type HandoffContinuationResult =
   | Readonly<{ kind: 'run-current'; reason: HandoffContinuationReason }>
   | Readonly<{ kind: 'delegated'; version: string; outcome: HandoffOutcome }>;
 
-export type HandoffRecordingPhase = 'selection' | 'terminal';
-
 export type HandoffRecordingRefusal =
   | Readonly<{
       reason: 'owner-identity-unavailable';
@@ -187,45 +189,32 @@ export type HandoffRecordingRefusal =
 
 type PublicationFailure = Exclude<PublicationOutcome, { kind: 'committed' }>;
 
+type HandoffPublicationFailureIncident = PublicationFailure &
+  (
+    | Readonly<{ phase: 'selection'; invocationId: string }>
+    | Readonly<{
+        phase: 'terminal';
+        invocationId: string;
+        terminalDisposition: DirectTerminalDisposition;
+      }>
+  );
+
 type HandoffRefusalIncident =
   | Readonly<{
       phase: 'selection';
+      invocationId: string;
       kind: 'refused';
       refusal: Extract<HandoffRecordingRefusal, { attemptedPhase: 'selection' }>;
     }>
   | Readonly<{
       phase: 'terminal';
+      invocationId: string;
+      terminalDisposition: DirectTerminalDisposition;
       kind: 'refused';
       refusal: Extract<HandoffRecordingRefusal, { attemptedPhase: 'terminal' }>;
     }>;
 
-export type HandoffPublicationIncident =
-  | (PublicationFailure & Readonly<{ phase: HandoffRecordingPhase }>)
-  | HandoffRefusalIncident;
-
-type HandoffNotPublishedCause = Extract<PublicationFailure, { kind: 'not-published' }>['cause'];
-
-export const HANDOFF_PUBLICATION_INCIDENT_EXIT_CONTRIBUTIONS: Readonly<Record<HandoffNotPublishedCause, 70 | 75>> =
-  Object.freeze({
-    contended: 75,
-    'generation-maintenance': 75,
-    'capacity-exhausted': 75,
-    'invalid-record': 70,
-    'rejected-transition': 75,
-    'coordination-unavailable': 75,
-  });
-
-export function handoffPublicationIncidentExitContribution(incident: HandoffPublicationIncident): 70 | 75 {
-  switch (incident.kind) {
-    case 'not-published':
-      return HANDOFF_PUBLICATION_INCIDENT_EXIT_CONTRIBUTIONS[incident.cause];
-    case 'undeterminable':
-    case 'refused':
-      return 75;
-    default:
-      return assertNever(incident);
-  }
-}
+export type HandoffPublicationIncident = HandoffPublicationFailureIncident | HandoffRefusalIncident;
 
 export type NonEmptyReadonlyArray<T> = readonly [T, ...T[]];
 
@@ -245,19 +234,19 @@ export type HandoffRunResult =
       publicationIncidents: NonEmptyReadonlyArray<HandoffPublicationIncident>;
     }>;
 
-export type HandoffRunProjection = Readonly<{
-  continuation: HandoffContinuationResult;
-  publicationIncidents: readonly HandoffPublicationIncident[];
-}>;
-
-export function projectHandoffRunResult(result: HandoffRunResult): HandoffRunProjection {
+export function consumeHandoffRunResult(
+  result: HandoffRunResult,
+  handleRecordingIncidents: (incidents: NonEmptyReadonlyArray<HandoffPublicationIncident>) => void,
+): HandoffContinuationResult {
   switch (result.kind) {
     case 'recorded':
-      return { continuation: result.continuation, publicationIncidents: result.publicationIncidents };
+      return result.continuation;
     case 'recording-not-applicable':
-      return { continuation: result.continuationWithoutRecording, publicationIncidents: [] };
-    case 'recording-incidents':
-      return { continuation: result.observedWork, publicationIncidents: result.publicationIncidents };
+      return result.continuationWithoutRecording;
+    case 'recording-incidents': {
+      handleRecordingIncidents(result.publicationIncidents);
+      return result.observedWork;
+    }
     default:
       return assertNever(result);
   }
@@ -392,12 +381,12 @@ async function readAuthenticatedHealth(
 }
 
 function summarizeIncumbentIdentity(health: LiveIncumbentHealth): IncumbentIdentitySummary {
-  return {
+  return incumbentIdentitySummarySchema.parse({
     version: health.version,
     bundleHash: health.bundleHash,
     flavor: health.flavor,
     instanceId: health.instanceId,
-  };
+  });
 }
 
 export function routeAuthenticatedHealth(health: LiveIncumbentHealth): HandoffRoutingResult {
@@ -647,15 +636,27 @@ function drainStdoutBeforeHandoff(time: TimePort, signal?: AbortSignal): Promise
 
 type ExecutionThrowPhase = Extract<DirectTerminalDisposition, { kind: 'execution-failed' }>['throwPhase'];
 
-type SelectionPublication = PublicationOutcome | Readonly<{ kind: 'refused'; refusal: HandoffRecordingRefusal }>;
+type SelectionPublication =
+  | PublicationOutcome
+  | Readonly<{
+      kind: 'refused';
+      refusal: Extract<HandoffRecordingRefusal, { attemptedPhase: 'selection' }>;
+    }>;
+
+type TerminalPublication =
+  | PublicationOutcome
+  | Readonly<{
+      kind: 'refused';
+      refusal: Extract<HandoffRecordingRefusal, { attemptedPhase: 'terminal' }>;
+    }>;
 
 function summarizeBuild(manifest: StrictBundleManifest): BuildSummary {
-  return {
+  return buildSummarySchema.parse({
     version: manifest.version,
     buildSetId: manifest.buildSetId,
     bundleHash: manifest.bundleHash,
     flavor: manifest.flavor,
-  };
+  });
 }
 
 function durableRoutingBasis(basis: HandoffRoutingBasis): DurableHandoffRoutingBasis {
@@ -719,37 +720,38 @@ async function publishHandoffTransition(
   signal?: AbortSignal,
 ): Promise<PublicationOutcome> {
   const status = await import('./handoff-routing-status.js');
+  const generation = handoffRoutingStatusGeneration(status.handoffRoutingStatusStoreSchema());
   return status.publishGenerationCoordinatedHandoffRoutingTransitions(
     { ...runtime, time },
-    handoffRoutingStatusPathForRunDir(runtime.paths.coral.coordinator.runDir, status.HANDOFF_ROUTING_STATUS_GENERATION),
+    handoffRoutingStatusPathForRunDir(runtime.paths.coral.coordinator.runDir, generation),
     [transition],
     signal,
   );
 }
 
+type HandoffPublicationAttempt =
+  | Readonly<{ phase: 'selection'; publication: SelectionPublication }>
+  | Readonly<{
+      phase: 'terminal';
+      publication: TerminalPublication;
+      terminalDisposition: DirectTerminalDisposition;
+    }>;
+
 function recordIncident(
   incidents: HandoffPublicationIncident[],
-  phase: HandoffRecordingPhase,
-  publication: SelectionPublication,
+  invocationId: string,
+  attempt: HandoffPublicationAttempt,
 ): HandoffPublicationIncident | null {
-  if (publication.kind === 'committed') return null;
-  let incident: HandoffPublicationIncident;
-  if (publication.kind === 'refused') {
-    if (publication.refusal.attemptedPhase === 'selection') {
-      incident = { phase: 'selection', kind: publication.kind, refusal: publication.refusal };
-    } else {
-      incident = { phase: 'terminal', kind: publication.kind, refusal: publication.refusal };
-    }
-  } else if (publication.kind === 'not-published') {
-    incident = { phase, ...publication };
-  } else {
-    incident = {
-      phase,
-      kind: publication.kind,
-      cause: publication.cause,
-      errcode: publication.errcode,
-    };
-  }
+  if (attempt.publication.kind === 'committed') return null;
+  const incident: HandoffPublicationIncident =
+    attempt.phase === 'selection'
+      ? { phase: 'selection', invocationId, ...attempt.publication }
+      : {
+          phase: 'terminal',
+          invocationId,
+          terminalDisposition: attempt.terminalDisposition,
+          ...attempt.publication,
+        };
   incidents.push(incident);
   return incident;
 }
@@ -841,7 +843,7 @@ async function recordTerminal(
   selection: SelectionPublication,
   disposition: DirectTerminalDisposition,
   signal?: AbortSignal,
-): Promise<SelectionPublication> {
+): Promise<TerminalPublication> {
   if (selection.kind === 'undeterminable') {
     return {
       kind: 'refused',
@@ -978,7 +980,7 @@ export async function runHandoff(
   const { routing, runtime, time } = await resolveHandoffRoutingForOperation(operation, options);
   const recordingApplicable =
     operation.kind !== 'cli-invocation' ||
-    (parseHandoffRepairOperation(operation.argv) === null && !isHandoffRoutingStatusDiscardOperation(operation.argv));
+    classifyHandoffRoutingStatusOperatorInvocation(operation.argv).kind === 'not-routing-status';
   const executionPhase: { current: ExecutionThrowPhase } = { current: 'double-delegation-guard' };
   if (!recordingApplicable) {
     return {
@@ -997,7 +999,7 @@ export async function runHandoff(
   const invocationId = runtime.ids.uuid();
   const incidents: HandoffPublicationIncident[] = [];
   const selection = await recordSelection(runtime, time, routing, invocationId, options.signal);
-  const selectionIncident = recordIncident(incidents, 'selection', selection);
+  const selectionIncident = recordIncident(incidents, invocationId, { phase: 'selection', publication: selection });
   if (selectionIncident?.phase === 'selection') {
     options.onSelectionPublicationIncident?.(selectionIncident);
   }
@@ -1011,29 +1013,20 @@ export async function runHandoff(
       options.signal,
       executionPhase,
     );
-    const terminal = await recordTerminal(
-      runtime,
-      time,
-      invocationId,
-      selection,
-      finalizedDisposition(continuation),
-      options.signal,
-    );
-    recordIncident(incidents, 'terminal', terminal);
+    const terminalDisposition = finalizedDisposition(continuation);
+    const terminal = await recordTerminal(runtime, time, invocationId, selection, terminalDisposition, options.signal);
+    recordIncident(incidents, invocationId, { phase: 'terminal', terminalDisposition, publication: terminal });
     const publicationIncidents = collectedIncidents(incidents);
     return publicationIncidents === null
       ? { kind: 'recorded', continuation, publicationIncidents: [] }
       : { kind: 'recording-incidents', observedWork: continuation, publicationIncidents };
   } catch (originalError: unknown) {
-    const terminal = await recordTerminal(
-      runtime,
-      time,
-      invocationId,
-      selection,
-      { kind: 'execution-failed', throwPhase: executionPhase.current },
-      options.signal,
-    );
-    recordIncident(incidents, 'terminal', terminal);
+    const terminalDisposition: DirectTerminalDisposition = {
+      kind: 'execution-failed',
+      throwPhase: executionPhase.current,
+    };
+    const terminal = await recordTerminal(runtime, time, invocationId, selection, terminalDisposition, options.signal);
+    recordIncident(incidents, invocationId, { phase: 'terminal', terminalDisposition, publication: terminal });
     const publicationIncidents = collectedIncidents(incidents);
     if (publicationIncidents !== null) {
       throw new HandoffRunError(originalError, publicationIncidents);

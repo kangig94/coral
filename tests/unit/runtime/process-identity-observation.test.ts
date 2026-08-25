@@ -31,18 +31,20 @@ describe('process identity batch observation', () => {
   it('takes liveness without reading incarnation files on a subprocess-backed platform', async () => {
     const alive = { pid: 11, incarnation: testIncarnation(11) };
     const absent = { pid: 12, incarnation: testIncarnation(12) };
+    const unknown = { pid: 13, incarnation: testIncarnation(13) };
     const readFile = vi.fn<() => Promise<string>>();
 
     await expect(
-      observeProcessIdentitiesWithoutSubprocesses([alive, absent], 500, {
+      observeProcessIdentitiesWithoutSubprocesses([alive, absent, unknown], 500, {
         platform: 'darwin',
-        observeLiveness: (pid) => (pid === absent.pid ? 'absent' : 'alive'),
+        observeLiveness: (pid) => (pid === absent.pid ? 'absent' : pid === unknown.pid ? 'unknown' : 'alive'),
         readFile,
         time,
       }),
     ).resolves.toEqual([
       { owner: alive, evidence: { kind: 'unobservable', cause: 'probe-not-available' } },
       { owner: absent, evidence: { kind: 'pid-absent' } },
+      { owner: unknown, evidence: { kind: 'unobservable', cause: 'probe-failed' } },
     ]);
     expect(readFile).not.toHaveBeenCalled();
   });

@@ -1,17 +1,75 @@
+import { createHash } from 'node:crypto';
 import { basename, dirname, join } from 'node:path';
 
 import type { SqliteDatabasePort, StoragePort } from '../infra/port-types.js';
+import { canonicalContractJson } from '../infra/persisted-contract.js';
 
 export const SQLITE_BUSY = 5;
 export const SQLITE_FULL = 13;
 export const SQLITE_NOTADB = 26;
 export const SQLITE_CORRUPT = 11;
 export const SQLITE_ERROR = 1;
+const HANDOFF_ROUTING_STATUS_GENERATION_DECIMAL_WIDTH = 10;
+export const HANDOFF_ROUTING_STATUS_GENERATION_BAND = {
+  minimum: 10 ** (HANDOFF_ROUTING_STATUS_GENERATION_DECIMAL_WIDTH - 1),
+  // `PRAGMA user_version` cannot store a value above the signed 32-bit maximum.
+  maximum: Math.min(10 ** HANDOFF_ROUTING_STATUS_GENERATION_DECIMAL_WIDTH - 1, 2 ** 31 - 1),
+  decimalWidth: HANDOFF_ROUTING_STATUS_GENERATION_DECIMAL_WIDTH,
+} as const;
 const HANDOFF_ROUTING_STATUS_QUARANTINE_DIRECTORY = 'handoff-routing-quarantine';
+export const MAX_HANDOFF_ROUTING_STATUS_QUARANTINES = 16;
+const MAX_HANDOFF_ROUTING_STATUS_QUARANTINE_FILES = MAX_HANDOFF_ROUTING_STATUS_QUARANTINES * 3 + 1;
+const CANONICAL_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
-export type HandoffRoutingStatusStoreSchema = Readonly<{
-  generation: number;
-  maximumBytes: number;
+export type HandoffRoutingStatusQuarantineArtifact = 'database' | 'wal' | 'shm';
+
+export type HandoffRoutingStatusQuarantineEntry = Readonly<{
+  id: string;
+  quarantinePath: string;
+  state: 'complete' | 'incomplete';
+  artifacts: readonly HandoffRoutingStatusQuarantineArtifact[];
+}>;
+
+export type HandoffRoutingStatusQuarantineList = Readonly<{
+  entries: readonly HandoffRoutingStatusQuarantineEntry[];
+  overflow: boolean;
+}>;
+
+export type HandoffRoutingStatusQuarantineResult =
+  | Readonly<{ kind: 'quarantined'; quarantinePath: string }>
+  | Readonly<{ kind: 'incomplete-quarantine'; quarantineId: string }>
+  | Readonly<{
+      kind: 'quarantine-storage-failed';
+      quarantineId: string;
+      quarantinePath: string;
+      movedArtifacts: readonly HandoffRoutingStatusQuarantineArtifact[];
+      cause: 'artifact-move-failed' | 'directory-sync-failed';
+    }>;
+
+export type HandoffRoutingStatusQuarantineClearStoreResult =
+  | Readonly<{ kind: 'cleared'; entry: HandoffRoutingStatusQuarantineEntry }>
+  | Readonly<{ kind: 'quarantine-not-found'; quarantineId: string }>
+  | Readonly<{
+      kind: 'quarantine-clear-storage-failed';
+      quarantineId: string;
+      quarantinePath: string;
+      removedArtifacts: readonly HandoffRoutingStatusQuarantineArtifact[];
+      cause: 'artifact-remove-failed' | 'directory-sync-failed';
+    }>;
+
+export class HandoffRoutingStatusQuarantineCapacityError extends Error {}
+
+export type HandoffRoutingStatusBodyVocabulary = Readonly<{
+  dispositionKinds: readonly string[];
+  routingBasisKinds: readonly string[];
+  completedPairStability: Readonly<{
+    selectionDispositionKind: string;
+    selectionBasisKinds: readonly string[];
+    terminalDispositionKind: string;
+  }>;
+}>;
+
+export type HandoffRoutingStatusStoreDurableFormat = Readonly<{
   maximumIdentifierLength: number;
   maximumObservedAtLength: number;
   maximumRoutingSelectedBytes: number;
@@ -19,6 +77,17 @@ export type HandoffRoutingStatusStoreSchema = Readonly<{
   maximumContinuationFinalizedBytes: number;
   maximumRetirementTombstoneBytes: number;
   closingRecordBytes: number;
+  bodyVocabulary: HandoffRoutingStatusBodyVocabulary;
+}>;
+
+export type HandoffRoutingStatusStoreOperationalCapacity = Readonly<{
+  // Capacity tuning must not move the address of data that remains decodable.
+  maximumBytes: number;
+}>;
+
+export type HandoffRoutingStatusStoreSchema = Readonly<{
+  durableFormat: HandoffRoutingStatusStoreDurableFormat;
+  operational: HandoffRoutingStatusStoreOperationalCapacity;
   validateRecordBody: (record: HandoffRoutingRecordInput) => HandoffRoutingRecordValidationResult;
 }>;
 
@@ -46,9 +115,30 @@ export type HandoffRoutingRecordInput = Readonly<{
   selectionSequence: number | null;
   retirementCause: 'selection-evicted-at-capacity' | 'completed-pair-compaction' | 'operator-resolved' | null;
   terminalExisted: boolean | null;
-  completedPairStable: boolean;
   bodyJson: string;
 }>;
+
+const DURABLE_VOCABULARY_IDENTIFIER_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/u;
+
+function sqlVocabularyLiteral(value: string): string {
+  if (!DURABLE_VOCABULARY_IDENTIFIER_PATTERN.test(value)) {
+    throw new Error('Routing-status durable vocabulary contains an unsafe identifier.');
+  }
+  return `'${value}'`;
+}
+
+function completedPairStableSql(vocabulary: HandoffRoutingStatusBodyVocabulary): string {
+  const stability = vocabulary.completedPairStability;
+  const selectionDisposition = sqlVocabularyLiteral(stability.selectionDispositionKind);
+  const selectionBases = stability.selectionBasisKinds.map(sqlVocabularyLiteral).join(', ');
+  const terminalDisposition = sqlVocabularyLiteral(stability.terminalDispositionKind);
+  return `(
+    (
+      json_extract(selection.body_json, '$.disposition.kind') = ${selectionDisposition} AND
+      json_extract(selection.body_json, '$.disposition.basis.kind') IN (${selectionBases})
+    ) OR json_extract(terminal.body_json, '$.disposition.kind') = ${terminalDisposition}
+  )`;
+}
 
 export type HandoffRoutingRetirementHistoryRow = Readonly<{
   generation: number;
@@ -126,9 +216,8 @@ export class HandoffRoutingStatusTransaction {
           selection_sequence,
           retirement_cause,
           terminal_existed,
-          completed_pair_stable,
           body_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING sequence`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING sequence`,
       )
       .get(
         record.generation,
@@ -140,7 +229,6 @@ export class HandoffRoutingStatusTransaction {
         record.selectionSequence,
         record.retirementCause,
         record.terminalExisted === null ? null : Number(record.terminalExisted),
-        Number(record.completedPairStable),
         record.bodyJson,
       ) as Readonly<{ sequence: number }> | undefined;
     if (inserted?.sequence !== record.sequence) throw new HandoffRoutingStoreUnreadableError();
@@ -160,7 +248,7 @@ export class HandoffRoutingStatusTransaction {
         `INSERT INTO handoff_routing_closing_reserve (invocation_id, event_id, observed_at, allocation)
         VALUES (?, ?, ?, zeroblob(?))`,
       )
-      .run(invocationId, eventId, observedAt, this.#schema.closingRecordBytes);
+      .run(invocationId, eventId, observedAt, this.#schema.durableFormat.closingRecordBytes);
   }
 
   releaseClosingReserve(invocationId: string): boolean {
@@ -230,6 +318,7 @@ export class HandoffRoutingStatusTransaction {
   }
 
   oldestCompletedSelectionBody(): string | undefined {
+    const completedPairStable = completedPairStableSql(this.#schema.durableFormat.bodyVocabulary);
     const row = this.#database
       .prepare(
         `WITH latest_stable_pair AS (
@@ -238,7 +327,7 @@ export class HandoffRoutingStatusTransaction {
           JOIN handoff_routing_records AS terminal ON terminal.invocation_id = selection.invocation_id
           WHERE selection.record_kind = 'selection'
             AND terminal.record_kind = 'terminal'
-            AND (selection.completed_pair_stable OR terminal.completed_pair_stable)
+            AND ${completedPairStable}
           ORDER BY selection.sequence DESC
           LIMIT 1
         )
@@ -263,8 +352,11 @@ export class HandoffRoutingStatusTransaction {
     }>;
     const maxPageCount = this.#pragmaNumber('max_page_count');
     const availableBytes = (maxPageCount - pageCount + freeListCount.freelist_count) * pageSize;
-    const maximumIdentifierBytes = Buffer.byteLength('\u0800'.repeat(this.#schema.maximumIdentifierLength), 'utf8');
-    const indexedEnvelopeBytes = maximumIdentifierBytes * 4 + this.#schema.maximumObservedAtLength * 2;
+    const maximumIdentifierBytes = Buffer.byteLength(
+      '\u0800'.repeat(this.#schema.durableFormat.maximumIdentifierLength),
+      'utf8',
+    );
+    const indexedEnvelopeBytes = maximumIdentifierBytes * 4 + this.#schema.durableFormat.maximumObservedAtLength * 2;
     const btreeAllocationMarginBytes = pageSize * 8;
     return availableBytes >= recordBytes + indexedEnvelopeBytes + btreeAllocationMarginBytes;
   }
@@ -306,6 +398,7 @@ export class HandoffRoutingStatusTransaction {
   }
 
   completedSelectionBodiesForCompaction(limit: number, cutoff: string): readonly string[] {
+    const completedPairStable = completedPairStableSql(this.#schema.durableFormat.bodyVocabulary);
     const rows = this.#database
       .prepare(
         `WITH completed_pairs AS MATERIALIZED (
@@ -313,7 +406,7 @@ export class HandoffRoutingStatusTransaction {
             selection.sequence,
             selection.observed_at,
             selection.body_json,
-            selection.completed_pair_stable OR terminal.completed_pair_stable AS stable
+            ${completedPairStable} AS stable
           FROM handoff_routing_records AS selection
           JOIN handoff_routing_records AS terminal ON terminal.invocation_id = selection.invocation_id
           WHERE selection.record_kind = 'selection' AND terminal.record_kind = 'terminal'
@@ -392,27 +485,231 @@ export type HandoffRoutingStorePublication<T> =
   | Readonly<{ kind: 'committed'; value: T }>
   | Readonly<{ kind: 'failed'; error: unknown; commitStarted: boolean }>;
 
+function quarantineRoot(path: string): string {
+  return join(dirname(path), HANDOFF_ROUTING_STATUS_QUARANTINE_DIRECTORY);
+}
+
+function quarantineArtifact(
+  fileName: string,
+  databaseName: string,
+): Readonly<{ id: string; artifact: HandoffRoutingStatusQuarantineArtifact }> | null {
+  const prefix = `${databaseName}.`;
+  if (!fileName.startsWith(prefix)) return null;
+  const remainder = fileName.slice(prefix.length);
+  const suffix = remainder.endsWith('-wal') ? '-wal' : remainder.endsWith('-shm') ? '-shm' : '';
+  const id = suffix === '' ? remainder : remainder.slice(0, -suffix.length);
+  if (!CANONICAL_UUID_PATTERN.test(id)) return null;
+  return { id, artifact: suffix === '-wal' ? 'wal' : suffix === '-shm' ? 'shm' : 'database' };
+}
+
+export function listHandoffRoutingStoreQuarantines(
+  storage: StoragePort,
+  path: string,
+): HandoffRoutingStatusQuarantineList {
+  const root = quarantineRoot(path);
+  if (!storage.existsSync(root)) return { entries: [], overflow: false };
+  const bounded = storage.readDirectoryBoundedSync(root, MAX_HANDOFF_ROUTING_STATUS_QUARANTINE_FILES);
+  const artifactsById = new Map<string, Set<HandoffRoutingStatusQuarantineArtifact>>();
+  for (const fileName of bounded.entries) {
+    const parsed = quarantineArtifact(fileName, basename(path));
+    if (parsed === null) continue;
+    const artifacts = artifactsById.get(parsed.id) ?? new Set<HandoffRoutingStatusQuarantineArtifact>();
+    artifacts.add(parsed.artifact);
+    artifactsById.set(parsed.id, artifacts);
+  }
+  const artifactOrder: readonly HandoffRoutingStatusQuarantineArtifact[] = ['database', 'wal', 'shm'];
+  const entries = [...artifactsById.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(
+      ([id, artifacts]): HandoffRoutingStatusQuarantineEntry => ({
+        id,
+        quarantinePath: join(root, `${basename(path)}.${id}`),
+        state: artifacts.has('database') ? 'complete' : 'incomplete',
+        artifacts: artifactOrder.filter((artifact) => artifacts.has(artifact)),
+      }),
+    );
+  return { entries, overflow: bounded.overflow };
+}
+
+function moveQuarantineArtifact(storage: StoragePort, source: string, destination: string): boolean {
+  if (storage.existsSync(destination)) {
+    if (storage.existsSync(source)) throw new Error('Routing-status quarantine contains duplicate source evidence.');
+    return false;
+  }
+  try {
+    storage.renameSync(source, destination);
+    return true;
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    return false;
+  }
+}
+
+function syncQuarantineMove(storage: StoragePort, sourceDirectory: string, root: string): boolean {
+  const sourceSynced = storage.syncDirectoryDurableSync(sourceDirectory);
+  const quarantineSynced = storage.syncDirectoryDurableSync(root);
+  return sourceSynced && quarantineSynced;
+}
+
 export function quarantineHandoffRoutingStoreArtifact(
   storage: StoragePort,
   path: string,
   quarantineId: string,
-): string {
+  assertOwned: () => void,
+): HandoffRoutingStatusQuarantineResult {
   const sourceDirectory = dirname(path);
-  const quarantineRoot = join(sourceDirectory, HANDOFF_ROUTING_STATUS_QUARANTINE_DIRECTORY);
-  const quarantinePath = join(quarantineRoot, `${basename(path)}.${quarantineId}`);
-  storage.mkdirSync(quarantineRoot, { recursive: true, mode: 0o700 });
-  storage.renameSync(path, quarantinePath);
-  for (const suffix of ['-wal', '-shm'] as const) {
+  const root = quarantineRoot(path);
+  storage.mkdirSync(root, { recursive: true, mode: 0o700 });
+  const retained = listHandoffRoutingStoreQuarantines(storage, path);
+  const incomplete = retained.entries.filter((entry) => entry.state === 'incomplete');
+  if (incomplete.length > 1 || retained.overflow) throw new HandoffRoutingStatusQuarantineCapacityError();
+  const incompleteEntry = incomplete[0];
+  if (incompleteEntry !== undefined) {
+    assertOwned();
+    return { kind: 'incomplete-quarantine', quarantineId: incompleteEntry.id };
+  }
+  if (retained.entries.length >= MAX_HANDOFF_ROUTING_STATUS_QUARANTINES) {
+    throw new HandoffRoutingStatusQuarantineCapacityError();
+  }
+  if (!CANONICAL_UUID_PATTERN.test(quarantineId)) {
+    throw new Error('Routing-status quarantine ID must be a canonical lowercase UUID.');
+  }
+  const quarantinePath = join(root, `${basename(path)}.${quarantineId}`);
+  const movedArtifacts: HandoffRoutingStatusQuarantineArtifact[] = [];
+  const storageFailure = (
+    cause: Extract<HandoffRoutingStatusQuarantineResult, { kind: 'quarantine-storage-failed' }>['cause'],
+  ): HandoffRoutingStatusQuarantineResult => ({
+    kind: 'quarantine-storage-failed',
+    quarantineId,
+    quarantinePath,
+    movedArtifacts,
+    cause,
+  });
+  assertOwned();
+  for (const [suffix, artifact] of [
+    ['-wal', 'wal'],
+    ['-shm', 'shm'],
+  ] as const) {
+    let moved: boolean;
     try {
-      storage.renameSync(`${path}${suffix}`, `${quarantinePath}${suffix}`);
+      moved = moveQuarantineArtifact(storage, `${path}${suffix}`, `${quarantinePath}${suffix}`);
     } catch (error: unknown) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      if (movedArtifacts.length === 0) throw error;
+      return storageFailure('artifact-move-failed');
+    }
+    if (moved) {
+      movedArtifacts.push(artifact);
+      try {
+        if (!syncQuarantineMove(storage, sourceDirectory, root)) {
+          return storageFailure('directory-sync-failed');
+        }
+      } catch {
+        return storageFailure('directory-sync-failed');
+      }
+    }
+    assertOwned();
+  }
+  try {
+    storage.renameSync(path, quarantinePath);
+  } catch (error: unknown) {
+    if (movedArtifacts.length === 0) throw error;
+    return storageFailure('artifact-move-failed');
+  }
+  movedArtifacts.push('database');
+  try {
+    if (!syncQuarantineMove(storage, sourceDirectory, root)) {
+      return storageFailure('directory-sync-failed');
+    }
+  } catch {
+    return storageFailure('directory-sync-failed');
+  }
+  return { kind: 'quarantined', quarantinePath };
+}
+
+function unlinkIfPresent(storage: StoragePort, path: string): boolean {
+  try {
+    storage.unlinkSync(path);
+    return true;
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    return false;
+  }
+}
+
+function syncQuarantineClear(storage: StoragePort, path: string): boolean {
+  return storage.syncDirectoryDurableSync(quarantineRoot(path));
+}
+
+export function clearHandoffRoutingStoreQuarantine(
+  storage: StoragePort,
+  path: string,
+  quarantineId: string,
+  assertOwned: () => void,
+): HandoffRoutingStatusQuarantineClearStoreResult {
+  if (!CANONICAL_UUID_PATTERN.test(quarantineId)) return { kind: 'quarantine-not-found', quarantineId };
+  const quarantinePath = join(quarantineRoot(path), `${basename(path)}.${quarantineId}`);
+  const artifacts: HandoffRoutingStatusQuarantineArtifact[] = [];
+  if (storage.existsSync(quarantinePath)) artifacts.push('database');
+  if (storage.existsSync(`${quarantinePath}-wal`)) artifacts.push('wal');
+  if (storage.existsSync(`${quarantinePath}-shm`)) artifacts.push('shm');
+  if (artifacts.length === 0) return { kind: 'quarantine-not-found', quarantineId };
+  const entry: HandoffRoutingStatusQuarantineEntry = {
+    id: quarantineId,
+    quarantinePath,
+    state: artifacts.includes('database') ? 'complete' : 'incomplete',
+    artifacts,
+  };
+  const removedArtifacts: HandoffRoutingStatusQuarantineArtifact[] = [];
+  const storageFailure = (
+    cause: Extract<
+      HandoffRoutingStatusQuarantineClearStoreResult,
+      { kind: 'quarantine-clear-storage-failed' }
+    >['cause'],
+  ): HandoffRoutingStatusQuarantineClearStoreResult => ({
+    kind: 'quarantine-clear-storage-failed',
+    quarantineId,
+    quarantinePath,
+    removedArtifacts,
+    cause,
+  });
+  assertOwned();
+  for (const [suffix, artifact] of [
+    ['-wal', 'wal'],
+    ['-shm', 'shm'],
+  ] as const) {
+    let removed: boolean;
+    try {
+      removed = unlinkIfPresent(storage, `${entry.quarantinePath}${suffix}`);
+    } catch (error: unknown) {
+      if (removedArtifacts.length === 0) throw error;
+      return storageFailure('artifact-remove-failed');
+    }
+    if (removed) {
+      removedArtifacts.push(artifact);
+      try {
+        if (!syncQuarantineClear(storage, path)) return storageFailure('directory-sync-failed');
+      } catch {
+        return storageFailure('directory-sync-failed');
+      }
+    }
+    assertOwned();
+  }
+  let databaseRemoved: boolean;
+  try {
+    databaseRemoved = unlinkIfPresent(storage, entry.quarantinePath);
+  } catch (error: unknown) {
+    if (removedArtifacts.length === 0) throw error;
+    return storageFailure('artifact-remove-failed');
+  }
+  if (databaseRemoved) {
+    removedArtifacts.push('database');
+    try {
+      if (!syncQuarantineClear(storage, path)) return storageFailure('directory-sync-failed');
+    } catch {
+      return storageFailure('directory-sync-failed');
     }
   }
-  if (!storage.syncDirectoryDurableSync(sourceDirectory) || !storage.syncDirectoryDurableSync(quarantineRoot)) {
-    throw new Error('Routing-status quarantine directory sync failed.');
-  }
-  return quarantinePath;
+  return { kind: 'cleared', entry };
 }
 
 export function publishHandoffRoutingStoreTransaction<T>(
@@ -427,8 +724,9 @@ export function publishHandoffRoutingStoreTransaction<T>(
   try {
     storage.mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     database = storage.openSqliteDatabaseSync(path);
+    databaseOwnership(database, schema);
     storage.chmodSync(path, 0o600);
-    configureDatabase(database, schema);
+    configureDatabase(database, schema.operational);
     database.exec('BEGIN IMMEDIATE');
     transactionOpen = true;
     initializeOrValidateDatabase(database, schema);
@@ -459,7 +757,7 @@ export type HandoffRoutingStoreSnapshotRead =
 export function readHandoffRoutingStoreSnapshot(
   storage: StoragePort,
   path: string,
-  generation: number,
+  schema: HandoffRoutingStatusStoreSchema,
 ): HandoffRoutingStoreSnapshotRead {
   try {
     storage.assertReadableSync(path);
@@ -476,9 +774,16 @@ export function readHandoffRoutingStoreSnapshot(
     database.exec('PRAGMA busy_timeout=0');
     database.exec('BEGIN');
     transactionOpen = true;
+    const generation = handoffRoutingStatusGeneration(schema);
     const storedGeneration = (database.prepare('PRAGMA user_version').get() as Readonly<{ user_version: number }>)
       .user_version;
     if (storedGeneration !== generation) {
+      database.exec('COMMIT');
+      transactionOpen = false;
+      return { kind: 'unsupported-generation', generation: storedGeneration };
+    }
+    const schemaMatches = databaseSchemaMatches(database, schema);
+    if (!schemaMatches) {
       database.exec('COMMIT');
       transactionOpen = false;
       return { kind: 'unsupported-generation', generation: storedGeneration };
@@ -523,13 +828,20 @@ export function readHandoffRoutingStoreSnapshot(
   }
 }
 
-function configureDatabase(database: SqliteDatabasePort, schema: HandoffRoutingStatusStoreSchema): void {
+function configureDatabase(
+  database: SqliteDatabasePort,
+  operational: HandoffRoutingStatusStoreOperationalCapacity,
+): void {
   database.exec('PRAGMA busy_timeout=0');
   database.exec('PRAGMA journal_mode=WAL');
   database.exec('PRAGMA synchronous=FULL');
   database.exec('PRAGMA foreign_keys=ON');
   const pageSize = Number((database.prepare('PRAGMA page_size').get() as Readonly<{ page_size: number }>).page_size);
-  database.exec(`PRAGMA max_page_count=${Math.floor(schema.maximumBytes / pageSize)}`);
+  const maximumBytes = operational.maximumBytes;
+  const maximumPages = Math.max(1, Math.floor(maximumBytes / pageSize));
+  database.exec(`PRAGMA max_page_count=${maximumPages}`);
+  database.exec(`PRAGMA journal_size_limit=${maximumBytes}`);
+  database.exec(`PRAGMA wal_autocheckpoint=${maximumPages}`);
 }
 
 function readRetirementHistory(database: SqliteDatabasePort): HandoffRoutingRetirementHistoryRow | undefined {
@@ -551,45 +863,61 @@ function readRetirementHistory(database: SqliteDatabasePort): HandoffRoutingReti
 }
 
 function initializeOrValidateDatabase(database: SqliteDatabasePort, schema: HandoffRoutingStatusStoreSchema): void {
-  const generation = (database.prepare('PRAGMA user_version').get() as Readonly<{ user_version: number }>).user_version;
-  if (generation === 0) {
+  const expectedGeneration = handoffRoutingStatusGeneration(schema);
+  if (databaseOwnership(database, schema) === 'initialized') return;
+  database.exec(schemaSql(schema));
+  database
+    .prepare(
+      `INSERT INTO handoff_routing_metadata (
+        singleton,
+        generation,
+        expired_identity_count,
+        capacity_eviction_count,
+        completed_pair_compaction_count,
+        operator_resolved_count
+      ) VALUES (1, ?, 0, 0, 0, 0)`,
+    )
+    .run(expectedGeneration);
+  database.exec(`PRAGMA user_version=${expectedGeneration}`);
+}
+
+function databaseOwnership(
+  database: SqliteDatabasePort,
+  schema: HandoffRoutingStatusStoreSchema,
+): 'empty' | 'initialized' {
+  const expectedGeneration = handoffRoutingStatusGeneration(schema);
+  const storedGeneration = (database.prepare('PRAGMA user_version').get() as Readonly<{ user_version: number }>)
+    .user_version;
+  if (storedGeneration === 0) {
     const existing = database
       .prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'")
       .get() as Readonly<{ count: number }>;
     if (existing.count !== 0) throw new HandoffRoutingStoreUnsupportedGenerationError();
-    database.exec(schemaSql(schema));
-    database
-      .prepare(
-        `INSERT INTO handoff_routing_metadata (
-          singleton,
-          generation,
-          expired_identity_count,
-          capacity_eviction_count,
-          completed_pair_compaction_count,
-          operator_resolved_count
-        ) VALUES (1, ?, 0, 0, 0, 0)`,
-      )
-      .run(schema.generation);
-    database.exec(`PRAGMA user_version=${schema.generation}`);
-    return;
+    return 'empty';
   }
-  if (generation !== schema.generation) throw new HandoffRoutingStoreUnsupportedGenerationError();
+  if (storedGeneration !== expectedGeneration) {
+    throw new HandoffRoutingStoreUnsupportedGenerationError();
+  }
+  const schemaMatches = databaseSchemaMatches(database, schema);
+  if (!schemaMatches) {
+    throw new HandoffRoutingStoreUnsupportedGenerationError();
+  }
   try {
     const metadata = database.prepare('SELECT generation FROM handoff_routing_metadata WHERE singleton = 1').get() as
       | Readonly<{ generation: number }>
       | undefined;
-    if (metadata?.generation !== schema.generation) throw new HandoffRoutingStoreUnreadableError();
+    if (metadata?.generation !== expectedGeneration) throw new HandoffRoutingStoreUnreadableError();
   } catch (error) {
     if (error instanceof HandoffRoutingStoreUnreadableError) throw error;
     throw new HandoffRoutingStoreUnreadableError(errorNumber(error, SQLITE_CORRUPT));
   }
+  return 'initialized';
 }
 
-function schemaSql(schema: HandoffRoutingStatusStoreSchema): string {
-  return `
+const HANDOFF_ROUTING_STATUS_SCHEMA_SQL = `
     CREATE TABLE handoff_routing_metadata (
       singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-      generation INTEGER NOT NULL CHECK (generation = ${schema.generation}),
+      generation INTEGER NOT NULL CHECK (generation = __HANDOFF_ROUTING_STATUS_GENERATION__),
       expired_identity_count INTEGER NOT NULL CHECK (expired_identity_count >= 0),
       capacity_eviction_count INTEGER NOT NULL CHECK (capacity_eviction_count >= 0),
       completed_pair_compaction_count INTEGER NOT NULL CHECK (completed_pair_compaction_count >= 0),
@@ -612,10 +940,10 @@ function schemaSql(schema: HandoffRoutingStatusStoreSchema): string {
 
     CREATE TABLE handoff_routing_records (
       sequence INTEGER PRIMARY KEY AUTOINCREMENT,
-      generation INTEGER NOT NULL CHECK (generation = ${schema.generation}),
-      event_id TEXT NOT NULL UNIQUE CHECK (length(event_id) BETWEEN 1 AND ${schema.maximumIdentifierLength}),
-      invocation_id TEXT NOT NULL CHECK (length(invocation_id) BETWEEN 1 AND ${schema.maximumIdentifierLength}),
-      observed_at TEXT NOT NULL CHECK (length(observed_at) BETWEEN 1 AND ${schema.maximumObservedAtLength}),
+      generation INTEGER NOT NULL CHECK (generation = __HANDOFF_ROUTING_STATUS_GENERATION__),
+      event_id TEXT NOT NULL UNIQUE CHECK (length(event_id) BETWEEN 1 AND __MAXIMUM_IDENTIFIER_LENGTH__),
+      invocation_id TEXT NOT NULL CHECK (length(invocation_id) BETWEEN 1 AND __MAXIMUM_IDENTIFIER_LENGTH__),
+      observed_at TEXT NOT NULL CHECK (length(observed_at) BETWEEN 1 AND __MAXIMUM_OBSERVED_AT_LENGTH__),
       record_kind TEXT NOT NULL CHECK (record_kind IN ('selection', 'terminal', 'retirement')),
       event_kind TEXT NOT NULL CHECK (
         event_kind IN ('routing-selected', 'execution-failed', 'continuation-finalized', 'retirement-tombstone')
@@ -627,7 +955,6 @@ function schemaSql(schema: HandoffRoutingStatusStoreSchema): string {
       terminal_existed INTEGER CHECK (terminal_existed IN (0, 1)),
       body_json TEXT NOT NULL CHECK (json_valid(body_json)),
       encoded_bytes INTEGER GENERATED ALWAYS AS (length(CAST(body_json AS BLOB))) STORED,
-      completed_pair_stable INTEGER NOT NULL CHECK (completed_pair_stable IN (0, 1)),
       CHECK (
         (record_kind = 'selection' AND event_kind = 'routing-selected' AND selection_sequence IS NULL AND
           retirement_cause IS NULL AND terminal_existed IS NULL) OR
@@ -644,24 +971,24 @@ function schemaSql(schema: HandoffRoutingStatusStoreSchema): string {
       CHECK (json_extract(body_json, '$.eventKind') = event_kind),
       CHECK (
         (record_kind = 'selection' AND json_extract(body_json, '$.phase') = 'selection' AND
-          encoded_bytes <= ${schema.maximumRoutingSelectedBytes}) OR
+          encoded_bytes <= __MAXIMUM_ROUTING_SELECTED_BYTES__) OR
         (record_kind = 'terminal' AND json_extract(body_json, '$.phase') = 'terminal' AND
-          ((event_kind = 'execution-failed' AND encoded_bytes <= ${schema.maximumExecutionFailedBytes}) OR
+          ((event_kind = 'execution-failed' AND encoded_bytes <= __MAXIMUM_EXECUTION_FAILED_BYTES__) OR
            (event_kind = 'continuation-finalized' AND
-            encoded_bytes <= ${schema.maximumContinuationFinalizedBytes}))) OR
+            encoded_bytes <= __MAXIMUM_CONTINUATION_FINALIZED_BYTES__))) OR
         (record_kind = 'retirement' AND json_extract(body_json, '$.phase') = 'retirement' AND
           json_extract(body_json, '$.selectionSequence') = selection_sequence AND
           json_extract(body_json, '$.retirementCause') = retirement_cause AND
           json_extract(body_json, '$.terminalExisted') = terminal_existed AND
-          encoded_bytes <= ${schema.maximumRetirementTombstoneBytes})
+          encoded_bytes <= __MAXIMUM_RETIREMENT_TOMBSTONE_BYTES__)
       )
     ) STRICT;
 
     CREATE TABLE handoff_routing_closing_reserve (
-      invocation_id TEXT PRIMARY KEY CHECK (length(invocation_id) BETWEEN 1 AND ${schema.maximumIdentifierLength}),
-      event_id TEXT NOT NULL UNIQUE CHECK (length(event_id) BETWEEN 1 AND ${schema.maximumIdentifierLength}),
-      observed_at TEXT NOT NULL CHECK (length(observed_at) BETWEEN 1 AND ${schema.maximumObservedAtLength}),
-      allocation BLOB NOT NULL CHECK (length(allocation) = ${schema.closingRecordBytes})
+      invocation_id TEXT PRIMARY KEY CHECK (length(invocation_id) BETWEEN 1 AND __MAXIMUM_IDENTIFIER_LENGTH__),
+      event_id TEXT NOT NULL UNIQUE CHECK (length(event_id) BETWEEN 1 AND __MAXIMUM_IDENTIFIER_LENGTH__),
+      observed_at TEXT NOT NULL CHECK (length(observed_at) BETWEEN 1 AND __MAXIMUM_OBSERVED_AT_LENGTH__),
+      allocation BLOB NOT NULL CHECK (length(allocation) = __CLOSING_RECORD_BYTES__)
     ) STRICT;
 
     CREATE UNIQUE INDEX handoff_routing_selection_or_retirement_per_invocation
@@ -684,6 +1011,108 @@ function schemaSql(schema: HandoffRoutingStatusStoreSchema): string {
         )
       );
   `;
+
+function renderedSchemaSql(format: HandoffRoutingStatusStoreDurableFormat, generation: string): string {
+  return HANDOFF_ROUTING_STATUS_SCHEMA_SQL.replaceAll('__HANDOFF_ROUTING_STATUS_GENERATION__', generation)
+    .replaceAll('__MAXIMUM_IDENTIFIER_LENGTH__', String(format.maximumIdentifierLength))
+    .replaceAll('__MAXIMUM_OBSERVED_AT_LENGTH__', String(format.maximumObservedAtLength))
+    .replaceAll('__MAXIMUM_ROUTING_SELECTED_BYTES__', String(format.maximumRoutingSelectedBytes))
+    .replaceAll('__MAXIMUM_EXECUTION_FAILED_BYTES__', String(format.maximumExecutionFailedBytes))
+    .replaceAll('__MAXIMUM_CONTINUATION_FINALIZED_BYTES__', String(format.maximumContinuationFinalizedBytes))
+    .replaceAll('__MAXIMUM_RETIREMENT_TOMBSTONE_BYTES__', String(format.maximumRetirementTombstoneBytes))
+    .replaceAll('__CLOSING_RECORD_BYTES__', String(format.closingRecordBytes));
+}
+
+function assertCanonicalVocabulary(name: string, values: readonly string[]): void {
+  for (const value of values) sqlVocabularyLiteral(value);
+  const canonical = [...new Set(values)].sort();
+  if (canonical.length !== values.length || canonical.some((value, index) => value !== values[index])) {
+    throw new Error(`Routing-status ${name} vocabulary must be sorted and unique.`);
+  }
+}
+
+function assertDurableFormat(format: HandoffRoutingStatusStoreDurableFormat): void {
+  const vocabulary = format.bodyVocabulary;
+  assertCanonicalVocabulary('disposition', vocabulary.dispositionKinds);
+  assertCanonicalVocabulary('routing-basis', vocabulary.routingBasisKinds);
+  const stability = vocabulary.completedPairStability;
+  sqlVocabularyLiteral(stability.selectionDispositionKind);
+  sqlVocabularyLiteral(stability.terminalDispositionKind);
+  assertCanonicalVocabulary('completed-pair routing-basis', stability.selectionBasisKinds);
+  if (!vocabulary.dispositionKinds.includes(stability.selectionDispositionKind)) {
+    throw new Error('Routing-status completed-pair selection disposition is outside the durable vocabulary.');
+  }
+  if (!vocabulary.dispositionKinds.includes(stability.terminalDispositionKind)) {
+    throw new Error('Routing-status completed-pair terminal disposition is outside the durable vocabulary.');
+  }
+  if (stability.selectionBasisKinds.some((kind) => !vocabulary.routingBasisKinds.includes(kind))) {
+    throw new Error('Routing-status completed-pair basis is outside the durable vocabulary.');
+  }
+}
+
+export function handoffRoutingStatusGeneration(schema: HandoffRoutingStatusStoreSchema): number {
+  assertDurableFormat(schema.durableFormat);
+  const fingerprint = createHash('sha256')
+    .update(canonicalContractJson(schema.durableFormat), 'utf-8')
+    .update('\0', 'utf-8')
+    .update(renderedSchemaSql(schema.durableFormat, ''), 'utf-8')
+    .update('\0', 'utf-8')
+    .update(completedPairStableSql(schema.durableFormat.bodyVocabulary), 'utf-8')
+    .digest();
+  const { minimum, maximum } = HANDOFF_ROUTING_STATUS_GENERATION_BAND;
+  const generationCount = maximum - minimum + 1;
+  return (fingerprint.readUInt32BE(0) % generationCount) + minimum;
+}
+
+function schemaSql(schema: HandoffRoutingStatusStoreSchema): string {
+  return renderedSchemaSql(schema.durableFormat, String(handoffRoutingStatusGeneration(schema)));
+}
+
+type HandoffRoutingSchemaObject = Readonly<{
+  type: string;
+  name: string;
+  sql: string | null;
+}>;
+
+function canonicalSchemaSql(sql: string): string {
+  return sql.trim().replace(/;$/u, '').replace(/\s+/gu, ' ');
+}
+
+function expectedSchemaObjects(schema: HandoffRoutingStatusStoreSchema): readonly HandoffRoutingSchemaObject[] {
+  return schemaSql(schema)
+    .split(';')
+    .map((sql) => sql.trim())
+    .filter((sql) => sql.length > 0)
+    .map((sql) => {
+      const match = /^CREATE (?:UNIQUE )?(TABLE|INDEX) ([a-z0-9_]+)/iu.exec(sql);
+      const type = match?.[1]?.toLowerCase();
+      const name = match?.[2];
+      if ((type !== 'table' && type !== 'index') || name === undefined) {
+        throw new Error('Handoff routing schema contains an unaddressed object.');
+      }
+      return { type, name, sql };
+    });
+}
+
+function databaseSchemaMatches(database: SqliteDatabasePort, schema: HandoffRoutingStatusStoreSchema): boolean {
+  const observed = database
+    .prepare(
+      `SELECT type, name, sql
+       FROM sqlite_master
+       WHERE name NOT LIKE 'sqlite_%'`,
+    )
+    .all() as readonly HandoffRoutingSchemaObject[];
+  const expected = expectedSchemaObjects(schema);
+  if (observed.length !== expected.length) return false;
+  const observedByName = new Map(observed.map((object) => [object.name, object]));
+  return expected.every((object) => {
+    const candidate = observedByName.get(object.name);
+    return (
+      candidate?.type === object.type &&
+      candidate.sql !== null &&
+      canonicalSchemaSql(candidate.sql) === canonicalSchemaSql(object.sql ?? '')
+    );
+  });
 }
 
 function rollback(database: SqliteDatabasePort | undefined, transactionOpen: boolean, commitStarted: boolean): void {

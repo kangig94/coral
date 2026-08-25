@@ -68,3 +68,60 @@ is inessential means reading what the test is for.
 
 None — it can start now, and should not be folded into a feature branch. Removing a real sleep or swapping a
 fixture changes what a test proves, so each one wants its own reasoning and its own diff.
+
+## Measured 2026-08-25: the cost is fsync, and the lever is the journal mode
+
+The entry above blamed concurrency and recorded that a ramdisk changed nothing, concluding the run was
+CPU-bound. **That conclusion was wrong.** It was reached without measuring the device, and the device is the
+whole story. Everything below is one sitting on `KANG-HOME`, WSL2, with the repo, `~/.coral` and `/tmp` all on
+the same ext4 filesystem on `/dev/sdd` — which is why moving a fraction of the working set to tmpfs could not
+help.
+
+Sampling `/proc/meminfo` and `/proc/diskstats` every 500 ms across one `npm test`:
+
+    device busy >= 450ms of every 500ms   137 of 187 samples (73%)
+    peak requests in flight               368
+    peak processes in D state             10
+    peak Dirty                            81 MiB   (against a 256 MiB vm.dirty_bytes cap)
+
+Dirty never approached its cap, so writeback throttling is not the mechanism and
+`/etc/sysctl.d/99-coral-writeback.conf` — added during the earlier investigation — does not address this. The
+mechanism is request-queue saturation: the device is at 100% utilization with hundreds of queued requests, and
+anything else touching that filesystem waits behind them. CPU stays low precisely because everyone is blocked.
+
+Decomposing one durable database lifecycle:
+
+    fsync on an already-open file         4.651 ms
+    create+write+fsync+close+unlink       4.894 ms
+    create+write+close, no fsync          0.016 ms
+    mkdtemp + rm -r                       0.066 ms
+
+`4.651 ms` per fsync is the floor this host imposes: every fsync is a barrier through the WSL2 VHDX to the
+Windows host. No Linux-side setting moves it. Two device settings were factually wrong — the kernel had
+`/sys/block/sdd/queue/rotational=1` and `read_ahead_kb=8192` for what is an SSD — and correcting both to `0`
+and `128` changed the benchmark from 31.45/32.61/34.28 ms to 30.78/30.18/30.93 ms. That is noise. Fixing them
+was right; expecting it to help was not.
+
+What the pragmas actually cost, same 150 lifecycles in one process:
+
+    file + WAL + synchronous=FULL         33.11 ms each
+    file + WAL + synchronous=OFF          12.83 ms each
+    file + journal_mode=MEMORY + sync=OFF  0.07 ms each
+    :memory:                               0.03 ms each
+
+The dominant cost is **`journal_mode=WAL`, not `synchronous=FULL`**. Relaxing only the durability pragma buys
+2.6x; also leaving WAL buys 473x, because creating the WAL and checkpointing it on close fsync regardless of
+`synchronous`. Anyone who reaches for `synchronous=NORMAL` as the fix will get a fifth of the available win and
+conclude the theory was wrong.
+
+So the work this entry asks for is narrower than "audit the tests": production keeps WAL and `synchronous=FULL`,
+and a test that is not asserting durability physics must be able to open its database with an in-memory journal.
+That is a runtime/port-level choice, not a per-test pragma, or the next database opened through the real store
+path silently pays the 33 ms again.
+
+## The suite has no margin, which is a finding of its own
+
+Adding one `/proc` sampling loop at 2 Hz alongside `npm test` was enough to fail four unrelated tests —
+`drift-signal-disjoint`, `search-mode-branching`, `generation-readiness`, `handoff-routing-status-store` — all
+of which pass when run alone. A suite that cannot absorb a sampling loop cannot distinguish a regression from a
+busy machine, and every gate run on this host is therefore a coin toss on top of a real result.

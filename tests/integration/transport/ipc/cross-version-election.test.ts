@@ -1,18 +1,3 @@
-import { testIncarnation } from '#tests/helpers/process-incarnation.js';
-// Daemon-side bind-path election (BLOCKING 1 / BLOCKING 2 from the
-// cross-version-coordinator-continuity review): `bindWithHandoff`
-// (`src/coordinator/handoff.ts`) must apply the same product-version
-// precedence the CLI target-routing path already applies
-// (`src/coordinator/handoff-routing.ts`), so that:
-//   - two same-version builds with different bundle hashes never both
-//     conclude the other side should be evicted (the data-destroying loop);
-//   - an older build never evicts a healthy newer incumbent;
-//   - a newer build still takes over from a healthy older incumbent.
-//
-// Uses real sockets end to end: a scripted "incumbent" IPC server plus the
-// real `bindSocket`/`bindWithHandoff` implementation. No mocked
-// `requestIncumbentShutdown`.
-
 import { afterEach, describe, expect, it } from 'vitest';
 import { createServer, type Server as NetServer } from 'node:net';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
@@ -29,6 +14,7 @@ import {
   type JsonRpcResponseEnvelope,
 } from '#src/transport/ipc/json-rpc.js';
 import type { Runtime } from '#src/runtime/ports.js';
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
 const tempDirs: string[] = [];
 const servers: NetServer[] = [];

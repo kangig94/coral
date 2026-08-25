@@ -123,6 +123,7 @@ function boundQuarantineLeaseError(
       operation: 'kb-commit',
       flavor: runtime.flavor,
       holder: error.context?.holder,
+      ...(error.context?.writerObservation === 'unknown' ? { writerObservation: 'unknown' } : {}),
       retryCommand,
     });
   }
