@@ -39,7 +39,8 @@ import type { ABSENT_HANDOFF_RESULT_OBLIGATION, HANDOFF_CONTINUATION_REASON_OBLI
 
 export const MAX_HANDOFF_ROUTING_STATUS_BYTES = 1_048_576;
 export const MAX_RETIREMENT_TOMBSTONES = 128;
-export const MAX_ENCODED_RETIREMENT_TOMBSTONE_BYTES = 2_169;
+// DDL bounds must never be derived from encoded fixtures; generation addressing and body capacity may not form a cycle.
+export const MAX_ENCODED_RETIREMENT_TOMBSTONE_BYTES = 2_170;
 export const MAX_RETIREMENT_TOMBSTONE_BYTES = MAX_RETIREMENT_TOMBSTONES * MAX_ENCODED_RETIREMENT_TOMBSTONE_BYTES;
 export const MAX_UNRESOLVED_INVOCATIONS = 64;
 export const MAX_HANDOFF_ROUTING_OWNER_SWEEP_MS = 500;
@@ -52,11 +53,42 @@ const MAX_IDENTIFIER_LENGTH = 58;
 const MAX_OBSERVED_AT_LENGTH = 24;
 const MAX_SIGNAL_LENGTH = 16;
 export const MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES = Object.freeze({
-  'routing-selected': 1_964,
-  'execution-failed': 2_344,
-  'continuation-finalized': 2_922,
+  'routing-selected': 1_965,
+  'execution-failed': 2_345,
+  'continuation-finalized': 2_923,
 });
-export const MAX_LEGAL_CLOSING_RECORD_BYTES = 2_922;
+export const MAX_LEGAL_CLOSING_RECORD_BYTES = 2_923;
+
+/**
+ * A persisted disposition is a hold only when a Coral operation can change its record. Every other
+ * disposition is retained and rendered as history, and history never contributes a nonzero status exit.
+ */
+const PERSISTED_DISPOSITION_CLASSIFICATIONS = Object.freeze({
+  'incumbent-absent': 'hold',
+  'incumbent-unresolved': 'hold',
+  'incumbent-unusable': 'hold',
+  'invoking-identity-unavailable': 'hold',
+  'incumbent-identity-unavailable': 'hold',
+  'same-build-set': 'hold',
+  'invoking-build-not-older': 'hold',
+  'invalid-incumbent-target': 'hold',
+  'continue-current': 'hold',
+  'handoff-selected': 'hold',
+  'execution-failed': 'history',
+  'continued-current': 'history',
+  'delegated-success': 'history',
+  'delegated-exit': 'history',
+  'delegated-signal': 'history',
+  'failed-without-selection': 'history',
+  'finalized-without-selection': 'history',
+  'terminal-without-retained-selection': 'history',
+  'terminal-after-operator-resolution': 'history',
+  'selection-evicted-at-capacity': 'hold',
+  'completed-pair-compaction': 'history',
+  'operator-resolved': 'history',
+  'retirement-history-truncated': 'history',
+} as const satisfies PersistedDispositionClassifications);
+
 const HANDOFF_ROUTING_STATUS_GENERATION = handoffRoutingStatusGeneration(handoffRoutingStatusStoreSchema());
 
 const sequenceSchema = z.number().int().nonnegative().safe();
@@ -1206,14 +1238,25 @@ function classifyPublicationError(error: unknown, commitStarted: boolean): Publi
 
 export function handoffRoutingStatusStoreSchema(): HandoffRoutingStatusStoreSchema {
   return {
-    maximumBytes: MAX_HANDOFF_ROUTING_STATUS_BYTES,
-    maximumIdentifierLength: MAX_IDENTIFIER_LENGTH,
-    maximumObservedAtLength: MAX_OBSERVED_AT_LENGTH,
-    maximumRoutingSelectedBytes: MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES['routing-selected'],
-    maximumExecutionFailedBytes: MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES['execution-failed'],
-    maximumContinuationFinalizedBytes: MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES['continuation-finalized'],
-    maximumRetirementTombstoneBytes: MAX_ENCODED_RETIREMENT_TOMBSTONE_BYTES,
-    closingRecordBytes: MAX_LEGAL_CLOSING_RECORD_BYTES,
+    durableFormat: {
+      maximumIdentifierLength: MAX_IDENTIFIER_LENGTH,
+      maximumObservedAtLength: MAX_OBSERVED_AT_LENGTH,
+      maximumRoutingSelectedBytes: MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES['routing-selected'],
+      maximumExecutionFailedBytes: MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES['execution-failed'],
+      maximumContinuationFinalizedBytes: MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES['continuation-finalized'],
+      maximumRetirementTombstoneBytes: MAX_ENCODED_RETIREMENT_TOMBSTONE_BYTES,
+      closingRecordBytes: MAX_LEGAL_CLOSING_RECORD_BYTES,
+      bodyVocabulary: {
+        dispositionKinds: Object.keys(PERSISTED_DISPOSITION_CLASSIFICATIONS).sort(),
+        routingBasisKinds: Object.keys(HANDOFF_ROUTING_BASIS_OBLIGATIONS).sort(),
+        completedPairStability: {
+          selectionDispositionKind: 'continue-current',
+          selectionBasisKinds: ['incumbent-absent', 'same-build-set'],
+          terminalDispositionKind: 'delegated-success',
+        },
+      },
+    },
+    operational: { maximumBytes: MAX_HANDOFF_ROUTING_STATUS_BYTES },
     validateRecordBody: validateStatusRecordBody,
   };
 }
@@ -1368,36 +1411,6 @@ export type PersistedHandoffDispositionPolicy =
         exitContribution: 0;
       }
     >;
-
-/**
- * A persisted disposition is a hold only when a Coral operation can change its record. Every other
- * disposition is retained and rendered as history, and history never contributes a nonzero status exit.
- */
-const PERSISTED_DISPOSITION_CLASSIFICATIONS = Object.freeze({
-  'incumbent-absent': 'hold',
-  'incumbent-unresolved': 'hold',
-  'incumbent-unusable': 'hold',
-  'invoking-identity-unavailable': 'hold',
-  'incumbent-identity-unavailable': 'hold',
-  'same-build-set': 'hold',
-  'invoking-build-not-older': 'hold',
-  'invalid-incumbent-target': 'hold',
-  'continue-current': 'hold',
-  'handoff-selected': 'hold',
-  'execution-failed': 'history',
-  'continued-current': 'history',
-  'delegated-success': 'history',
-  'delegated-exit': 'history',
-  'delegated-signal': 'history',
-  'failed-without-selection': 'history',
-  'finalized-without-selection': 'history',
-  'terminal-without-retained-selection': 'history',
-  'terminal-after-operator-resolution': 'history',
-  'selection-evicted-at-capacity': 'hold',
-  'completed-pair-compaction': 'history',
-  'operator-resolved': 'history',
-  'retirement-history-truncated': 'history',
-} as const satisfies PersistedDispositionClassifications);
 
 const boundedWarningPolicy: LifecycleRoutingStatusPolicy = Object.freeze({
   durability: 'lifecycle-journal',
@@ -2148,10 +2161,6 @@ const MAX_TOMBSTONE_FIXTURES = (
 
 export const MAX_LEGAL_RETIREMENT_TOMBSTONE_BYTES = Math.max(...MAX_TOMBSTONE_FIXTURES.map(encodedBytes));
 
-if (MAX_LEGAL_RETIREMENT_TOMBSTONE_BYTES > MAX_ENCODED_RETIREMENT_TOMBSTONE_BYTES) {
-  throw new Error('The maximum legal retirement tombstone exceeds its encoded bound.');
-}
-
 const MAX_EXECUTION_TERMINAL = terminalEventSchema.parse({
   generation: HANDOFF_ROUTING_STATUS_GENERATION,
   sequence: Number.MAX_SAFE_INTEGER,
@@ -2217,12 +2226,14 @@ const MAX_RESOLVED_FINALIZED_TERMINAL = terminalEventSchema.parse({
   },
 });
 
-const MAX_LEGAL_TERMINAL_BYTES = Math.max(
-  encodedBytes(MAX_EXECUTION_TERMINAL),
-  encodedBytes(MAX_FINALIZED_TERMINAL),
-  encodedBytes(MAX_RESOLVED_EXECUTION_TERMINAL),
-  encodedBytes(MAX_RESOLVED_FINALIZED_TERMINAL),
-);
+export const MAX_LEGAL_HANDOFF_ROUTING_EVENT_BYTES = Object.freeze({
+  'routing-selected': encodedBytes(MAX_SELECTION),
+  'execution-failed': Math.max(encodedBytes(MAX_EXECUTION_TERMINAL), encodedBytes(MAX_RESOLVED_EXECUTION_TERMINAL)),
+  'continuation-finalized': Math.max(
+    encodedBytes(MAX_FINALIZED_TERMINAL),
+    encodedBytes(MAX_RESOLVED_FINALIZED_TERMINAL),
+  ),
+});
 
 export const MAX_LEGAL_ROUTING_SELECTED_TRANSITION = routingSelectedTransitionSchema.parse({
   kind: 'routing-selected',
@@ -2241,17 +2252,3 @@ export const MAX_LEGAL_CONTINUATION_FINALIZED_TRANSITION = terminalTransitionSch
   selection: MAX_FINALIZED_TERMINAL.selection,
   disposition: MAX_FINALIZED_TERMINAL.disposition,
 });
-
-if (Math.max(MAX_LEGAL_RETIREMENT_TOMBSTONE_BYTES, MAX_LEGAL_TERMINAL_BYTES) !== MAX_LEGAL_CLOSING_RECORD_BYTES) {
-  throw new Error('The maximum legal closing record no longer matches its encoded bound.');
-}
-
-if (
-  encodedBytes(MAX_SELECTION) !== MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES['routing-selected'] ||
-  Math.max(encodedBytes(MAX_EXECUTION_TERMINAL), encodedBytes(MAX_RESOLVED_EXECUTION_TERMINAL)) !==
-    MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES['execution-failed'] ||
-  Math.max(encodedBytes(MAX_FINALIZED_TERMINAL), encodedBytes(MAX_RESOLVED_FINALIZED_TERMINAL)) !==
-    MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES['continuation-finalized']
-) {
-  throw new Error('A maximum legal routing event no longer matches its encoded bound.');
-}

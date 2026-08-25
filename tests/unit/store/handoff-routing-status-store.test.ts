@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { handoffRoutingStatusStoreSchema } from '#src/coordinator/handoff-routing-status.js';
 import { createRealRuntime } from '#src/runtime/real.js';
@@ -178,9 +178,78 @@ describe('HandoffRoutingStatusTransaction', () => {
     expect(
       handoffRoutingStatusGeneration({
         ...schema,
-        maximumRetirementTombstoneBytes: schema.maximumRetirementTombstoneBytes + 1,
+        durableFormat: {
+          ...schema.durableFormat,
+          maximumRetirementTombstoneBytes: schema.durableFormat.maximumRetirementTombstoneBytes + 1,
+        },
       }),
     ).not.toBe(HANDOFF_ROUTING_STATUS_GENERATION);
+  });
+
+  it('derives the generation from the complete body vocabulary but not operational capacity', () => {
+    expect(
+      handoffRoutingStatusGeneration({
+        ...schema,
+        durableFormat: {
+          ...schema.durableFormat,
+          bodyVocabulary: {
+            ...schema.durableFormat.bodyVocabulary,
+            dispositionKinds: [...schema.durableFormat.bodyVocabulary.dispositionKinds, 'future-disposition'].sort(),
+          },
+        },
+      }),
+    ).not.toBe(HANDOFF_ROUTING_STATUS_GENERATION);
+    expect(
+      handoffRoutingStatusGeneration({
+        ...schema,
+        operational: { maximumBytes: schema.operational.maximumBytes + 1 },
+      }),
+    ).toBe(HANDOFF_ROUTING_STATUS_GENERATION);
+  });
+
+  it('derives the same generation from any durable-format object key order', () => {
+    const format = schema.durableFormat;
+    const stability = format.bodyVocabulary.completedPairStability;
+    const reorderedFormat = {
+      bodyVocabulary: {
+        completedPairStability: {
+          terminalDispositionKind: stability.terminalDispositionKind,
+          selectionBasisKinds: stability.selectionBasisKinds,
+          selectionDispositionKind: stability.selectionDispositionKind,
+        },
+        routingBasisKinds: format.bodyVocabulary.routingBasisKinds,
+        dispositionKinds: format.bodyVocabulary.dispositionKinds,
+      },
+      closingRecordBytes: format.closingRecordBytes,
+      maximumRetirementTombstoneBytes: format.maximumRetirementTombstoneBytes,
+      maximumContinuationFinalizedBytes: format.maximumContinuationFinalizedBytes,
+      maximumExecutionFailedBytes: format.maximumExecutionFailedBytes,
+      maximumRoutingSelectedBytes: format.maximumRoutingSelectedBytes,
+      maximumObservedAtLength: format.maximumObservedAtLength,
+      maximumIdentifierLength: format.maximumIdentifierLength,
+    };
+
+    expect(handoffRoutingStatusGeneration({ ...schema, durableFormat: reorderedFormat })).toBe(
+      HANDOFF_ROUTING_STATUS_GENERATION,
+    );
+  });
+
+  it('refuses unsafe durable vocabulary before interpolating retention SQL', () => {
+    expect(() =>
+      handoffRoutingStatusGeneration({
+        ...schema,
+        durableFormat: {
+          ...schema.durableFormat,
+          bodyVocabulary: {
+            ...schema.durableFormat.bodyVocabulary,
+            completedPairStability: {
+              ...schema.durableFormat.bodyVocabulary.completedPairStability,
+              terminalDispositionKind: "delegated-success' OR 1=1",
+            },
+          },
+        },
+      }),
+    ).toThrow('unsafe identifier');
   });
 
   it('derives main-file and checkpoint bounds from the same byte budget', () => {
@@ -210,9 +279,9 @@ describe('HandoffRoutingStatusTransaction', () => {
       kind: 'committed',
       value: undefined,
     });
-    const maximumPages = Math.floor(schema.maximumBytes / pageSize);
+    const maximumPages = Math.floor(schema.operational.maximumBytes / pageSize);
     expect(executed).toContain(`PRAGMA max_page_count=${maximumPages}`);
-    expect(executed).toContain(`PRAGMA journal_size_limit=${schema.maximumBytes}`);
+    expect(executed).toContain(`PRAGMA journal_size_limit=${schema.operational.maximumBytes}`);
     expect(executed).toContain(`PRAGMA wal_autocheckpoint=${maximumPages}`);
   });
 
@@ -228,12 +297,31 @@ describe('HandoffRoutingStatusTransaction', () => {
       database.close();
     }
     const runtime = createRealRuntime('prod', { baseDir: dirname(path) });
+    const configured: string[] = [];
+    const chmodSync = vi.fn(runtime.storage.chmodSync);
+    const storage = {
+      ...runtime.storage,
+      chmodSync,
+      openSqliteDatabaseSync: (...args: Parameters<typeof runtime.storage.openSqliteDatabaseSync>) => {
+        const database = runtime.storage.openSqliteDatabaseSync(...args);
+        return {
+          exec(sql: string): void {
+            configured.push(sql);
+            database.exec(sql);
+          },
+          prepare: (sql: string) => database.prepare(sql),
+          close: () => database.close(),
+        };
+      },
+    };
 
-    expect(publishHandoffRoutingStoreTransaction(runtime.storage, path, schema, () => undefined)).toMatchObject({
+    expect(publishHandoffRoutingStoreTransaction(storage, path, schema, () => undefined)).toMatchObject({
       kind: 'failed',
       error: expect.any(HandoffRoutingStoreUnsupportedGenerationError),
       commitStarted: false,
     });
+    expect(chmodSync).not.toHaveBeenCalled();
+    expect(configured).toEqual([]);
     expect(readHandoffRoutingStoreSnapshot(runtime.storage, path, schema)).toEqual({
       kind: 'unsupported-generation',
       generation: HANDOFF_ROUTING_STATUS_GENERATION,

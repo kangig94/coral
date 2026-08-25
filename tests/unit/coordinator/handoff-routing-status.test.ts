@@ -444,7 +444,7 @@ describe('handoff routing status', () => {
     expect(existsSync(path)).toBe(false);
     expect(readFileSync(discarded.quarantinePath, 'utf-8')).toBe('not a sqlite database');
     expect(readFileSync(`${discarded.quarantinePath}-wal`, 'utf-8')).toBe('retained wal');
-    expect(statSync(`${discarded.quarantinePath}-shm`).size).toBeGreaterThan(0);
+    expect(existsSync(`${discarded.quarantinePath}-shm`)).toBe(true);
 
     await expect(publish(path, [selection('clean-generation', 1)])).resolves.toMatchObject({ kind: 'committed' });
     chmodSync(path, 0o000);
@@ -515,12 +515,13 @@ describe('handoff routing status', () => {
     }
   });
 
-  it('keeps an interrupted sidecar move discoverable and resumes the same quarantine', async () => {
+  it('keeps an interrupted sidecar move discoverable and refuses to combine it with the current database', async () => {
     const path = databasePath();
     const discardRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
     writeFileSync(path, 'not a sqlite database', { mode: 0o600 });
     writeFileSync(`${path}-wal`, 'retained wal');
     writeFileSync(`${path}-shm`, 'retained shm');
+    const databaseBytes = readFileSync(path);
     const interruptedRuntime: Runtime = {
       ...discardRuntime,
       storage: {
@@ -544,11 +545,12 @@ describe('handoff routing status', () => {
     const incomplete = interrupted.entries[0];
     if (incomplete === undefined) throw new Error('Expected an incomplete quarantine.');
 
-    const resumed = await discardHandoffRoutingStatus(routingStatusOperatorOptions(discardRuntime, path));
-    expect(resumed).toMatchObject({ kind: 'discarded', quarantinePath: incomplete.quarantinePath });
-    expect(readFileSync(incomplete.quarantinePath, 'utf-8')).toBe('not a sqlite database');
+    const refused = await discardHandoffRoutingStatus(routingStatusOperatorOptions(discardRuntime, path));
+    expect(refused).toEqual({ kind: 'incomplete-quarantine', quarantineId: incomplete.id });
+    expect(readFileSync(path)).toEqual(databaseBytes);
     expect(readFileSync(`${incomplete.quarantinePath}-wal`, 'utf-8')).toBe('retained wal');
-    expect(statSync(`${incomplete.quarantinePath}-shm`).size).toBeGreaterThan(0);
+    expect(existsSync(`${path}-shm`)).toBe(true);
+    expect(listHandoffRoutingStoreQuarantines(discardRuntime.storage, path)).toEqual(interrupted);
 
     await expect(
       clearHandoffRoutingStatusQuarantine(routingStatusOperatorOptions(discardRuntime, path), incomplete.id),

@@ -444,6 +444,11 @@ describe('backend routing-status resolve grammar', () => {
       75,
     ],
     [
+      { kind: 'incomplete-quarantine', quarantineId: '00000000-0000-4000-8000-000000000042' } as const,
+      'routing-status quarantine clear --id 00000000-0000-4000-8000-000000000042',
+      75,
+    ],
+    [
       { kind: 'quarantine-capacity-exhausted', maximum: 16 } as const,
       'routing-status quarantine list, clear exact entries',
       75,

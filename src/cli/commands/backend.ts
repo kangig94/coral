@@ -363,6 +363,8 @@ function formatRoutingStatusDiscardRefusal(
     }
     case 'quarantine-capacity-exhausted':
       return `Refusing to discard routing status: ${result.maximum} quarantine entries are already retained or the quarantine could not be fully enumerated.\nNext step: run coral-cli backend routing-status quarantine list, clear exact entries that are no longer needed, then rerun coral-cli backend routing-status discard.`;
+    case 'incomplete-quarantine':
+      return `Refusing to discard routing status: quarantine ${result.quarantineId} is incomplete and cannot establish ownership of the current source database.\nNext step: run coral-cli backend routing-status quarantine clear --id ${result.quarantineId}, then rerun coral-cli backend routing-status discard.`;
     default:
       return assertNever(result);
   }
