@@ -23,7 +23,8 @@ import {
   type HandoffRoutingTransition,
   type PublicationOutcome,
 } from '#src/coordinator/handoff-routing-status.js';
-import { discardHandoffRoutingStatus } from '#src/cli/routing-status-discard.js';
+import { discardHandoffRoutingStatus } from '#src/coordinator/handoff-routing-status-operator.js';
+import { acquireOperatorSocketGuard } from '#src/cli/operator-socket-guard.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { acquireGenerationMaintenanceLease } from '#src/store/generation-mutation-coordination.js';
@@ -480,7 +481,11 @@ describe('handoff routing status transaction durability', () => {
       const staleDiscard = spawnWriter('stale-discard', path, 'stale', baseDir);
       expect(await nextLine(staleDiscard)).toBe('discardable-observed');
 
-      const discarded = await discardHandoffRoutingStatus(isolatedRuntime, path);
+      const discarded = await discardHandoffRoutingStatus({
+        runtime: isolatedRuntime,
+        path,
+        acquireSocketGuard: acquireOperatorSocketGuard,
+      });
       expect(discarded.kind).toBe('discarded');
       if (discarded.kind !== 'discarded') throw new Error(`Expected discard, received ${discarded.kind}`);
       expect(existsSync(discarded.quarantinePath)).toBe(true);

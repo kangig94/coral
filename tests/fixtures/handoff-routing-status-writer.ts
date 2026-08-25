@@ -8,7 +8,8 @@ import {
   type HandoffRoutingTransition,
   type PublicationOutcome,
 } from '#src/coordinator/handoff-routing-status.js';
-import { discardHandoffRoutingStatus } from '#src/cli/routing-status-discard.js';
+import { discardHandoffRoutingStatus } from '#src/coordinator/handoff-routing-status-operator.js';
+import { acquireOperatorSocketGuard } from '#src/cli/operator-socket-guard.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { HANDOFF_ROUTING_STATUS_GENERATION } from '#src/store/handoff-routing-status-store.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
@@ -209,7 +210,7 @@ async function runStaleDiscard(): Promise<void> {
     throw new Error(`Expected a discardable observation, received ${observed.kind}`);
   }
   stopAt('discardable-observed');
-  emit(await discardHandoffRoutingStatus(runtime, path));
+  emit(await discardHandoffRoutingStatus({ runtime, path, acquireSocketGuard: acquireOperatorSocketGuard }));
 }
 
 async function runCoordinatedPublication(): Promise<void> {

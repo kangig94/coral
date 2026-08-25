@@ -1341,7 +1341,58 @@ export type PersistedHandoffDisposition =
   | Readonly<{ kind: RetirementTombstone['retirementCause']; terminalExisted: boolean }>
   | RetirementHistoryTruncated;
 
-const boundedWarningPolicy: Extract<RoutingStatusPolicy, { durability: 'lifecycle-journal' }> = Object.freeze({
+type PersistedDispositionClassification = 'hold' | 'history';
+type LifecycleRoutingStatusPolicy = Extract<RoutingStatusPolicy, { durability: 'lifecycle-journal' }>;
+type PersistedDispositionClassifications = Readonly<
+  Record<PersistedHandoffDisposition['kind'], PersistedDispositionClassification>
+> &
+  Readonly<Record<StoredTerminalDisposition['kind'], 'history'>>;
+
+export type PersistedHandoffDispositionPolicy =
+  | Readonly<
+      Omit<LifecycleRoutingStatusPolicy, 'exitContribution'> & {
+        classification: 'hold';
+        exitContribution: 0 | 75;
+      }
+    >
+  | Readonly<
+      Omit<LifecycleRoutingStatusPolicy, 'exitContribution'> & {
+        classification: 'history';
+        exitContribution: 0;
+      }
+    >;
+
+/**
+ * A persisted disposition is a hold only when a Coral operation can change its record. Every other
+ * disposition is retained and rendered as history, and history never contributes a nonzero status exit.
+ */
+const PERSISTED_DISPOSITION_CLASSIFICATIONS = Object.freeze({
+  'incumbent-absent': 'hold',
+  'incumbent-unresolved': 'hold',
+  'incumbent-unusable': 'hold',
+  'invoking-identity-unavailable': 'hold',
+  'incumbent-identity-unavailable': 'hold',
+  'same-build-set': 'hold',
+  'invoking-build-not-older': 'hold',
+  'invalid-incumbent-target': 'hold',
+  'continue-current': 'hold',
+  'handoff-selected': 'hold',
+  'execution-failed': 'history',
+  'continued-current': 'history',
+  'delegated-success': 'history',
+  'delegated-exit': 'history',
+  'delegated-signal': 'history',
+  'failed-without-selection': 'history',
+  'finalized-without-selection': 'history',
+  'terminal-without-retained-selection': 'history',
+  'terminal-after-operator-resolution': 'history',
+  'selection-evicted-at-capacity': 'hold',
+  'completed-pair-compaction': 'history',
+  'operator-resolved': 'history',
+  'retirement-history-truncated': 'history',
+} as const satisfies PersistedDispositionClassifications);
+
+const boundedWarningPolicy: LifecycleRoutingStatusPolicy = Object.freeze({
   durability: 'lifecycle-journal',
   retention: 'bounded-history',
   severity: 'warning',
@@ -1399,7 +1450,7 @@ function isRetirementDisposition(disposition: PersistedHandoffDisposition): disp
   return 'terminalExisted' in disposition;
 }
 
-function selectedDispositionPolicy(disposition: SelectedHandoffDisposition): RoutingStatusPolicy {
+function selectedDispositionPolicy(disposition: SelectedHandoffDisposition): LifecycleRoutingStatusPolicy {
   switch (disposition.kind) {
     case 'continue-current':
       return HANDOFF_ROUTING_BASIS_POLICIES[disposition.basis.kind];
@@ -1415,7 +1466,7 @@ function selectedDispositionPolicy(disposition: SelectedHandoffDisposition): Rou
   }
 }
 
-function retirementDispositionPolicy(disposition: RetirementDisposition): RoutingStatusPolicy {
+function retirementDispositionPolicy(disposition: RetirementDisposition): LifecycleRoutingStatusPolicy {
   switch (disposition.kind) {
     case 'selection-evicted-at-capacity':
       return boundedWarningPolicy;
@@ -1432,7 +1483,9 @@ function retirementDispositionPolicy(disposition: RetirementDisposition): Routin
   }
 }
 
-export function persistedHandoffDispositionPolicy(disposition: PersistedHandoffDisposition): RoutingStatusPolicy {
+function unclassifiedPersistedDispositionPolicy(
+  disposition: PersistedHandoffDisposition,
+): LifecycleRoutingStatusPolicy {
   if (isRoutingBasisDisposition(disposition)) return HANDOFF_ROUTING_BASIS_POLICIES[disposition.kind];
   if (isSelectedDisposition(disposition)) return selectedDispositionPolicy(disposition);
   if (isRetirementDisposition(disposition)) return retirementDispositionPolicy(disposition);
@@ -1462,6 +1515,16 @@ export function persistedHandoffDispositionPolicy(disposition: PersistedHandoffD
     default:
       return assertNever(disposition);
   }
+}
+
+export function persistedHandoffDispositionPolicy(
+  disposition: PersistedHandoffDisposition,
+): PersistedHandoffDispositionPolicy {
+  const policy = unclassifiedPersistedDispositionPolicy(disposition);
+  const classification = PERSISTED_DISPOSITION_CLASSIFICATIONS[disposition.kind];
+  return classification === 'history'
+    ? { ...policy, classification, exitContribution: 0 }
+    : { ...policy, classification };
 }
 
 export type OwnerLiveness =

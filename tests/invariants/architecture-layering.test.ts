@@ -385,6 +385,19 @@ describe('architecture layering invariants', () => {
     expect(violations).toEqual([]);
   });
 
+  it('the routing-status CLI adapter owns no authorization or raw mutation imports', () => {
+    const forbiddenTargets = new Set([
+      'src/coordinator/handoff-routing-status.ts',
+      'src/store/generation-mutation-coordination.ts',
+      'src/store/handoff-routing-status-store.ts',
+    ]);
+    const violations = IMPORT_EDGES.filter(
+      ({ source, target }) => source === 'src/cli/routing-status-discard.ts' && forbiddenTargets.has(target),
+    ).map(({ source, target }) => `${source} -> ${target}`);
+
+    expect(violations).toEqual([]);
+  });
+
   it('the jobs domain does not reach into the provider proxy', () => {
     // Jobs must remain meaningful without a live proxy process; proxy correlation brands stop at the wire
     // boundary and durable saga identities are validated by the store instead.

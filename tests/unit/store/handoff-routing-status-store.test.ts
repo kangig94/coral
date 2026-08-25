@@ -173,6 +173,39 @@ function expectInvalidRecord(
 }
 
 describe('HandoffRoutingStatusTransaction', () => {
+  it('derives main-file and checkpoint bounds from the same byte budget', () => {
+    const path = databasePath();
+    const probe = new DatabaseSync(path);
+    const pageSize = Number((probe.prepare('PRAGMA page_size').get() as { page_size: number }).page_size);
+    probe.close();
+
+    const runtime = createRealRuntime('prod', { baseDir: dirname(path) });
+    const executed: string[] = [];
+    const storage = {
+      ...runtime.storage,
+      openSqliteDatabaseSync: (...args: Parameters<typeof runtime.storage.openSqliteDatabaseSync>) => {
+        const database = runtime.storage.openSqliteDatabaseSync(...args);
+        return {
+          exec(sql: string): void {
+            executed.push(sql);
+            database.exec(sql);
+          },
+          prepare: (sql: string) => database.prepare(sql),
+          close: () => database.close(),
+        };
+      },
+    };
+
+    expect(publishHandoffRoutingStoreTransaction(storage, path, schema, () => undefined)).toEqual({
+      kind: 'committed',
+      value: undefined,
+    });
+    const maximumPages = Math.floor(schema.maximumBytes / pageSize);
+    expect(executed).toContain(`PRAGMA max_page_count=${maximumPages}`);
+    expect(executed).toContain(`PRAGMA journal_size_limit=${schema.maximumBytes}`);
+    expect(executed).toContain(`PRAGMA wal_autocheckpoint=${maximumPages}`);
+  });
+
   it('refuses a same-generation database with a different schema before publication', () => {
     const path = databasePath();
     const database = new DatabaseSync(path);

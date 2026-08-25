@@ -21,6 +21,11 @@ import {
   type HandoffRoutingResolveResult,
   type HandoffRoutingStatusReadResult,
 } from '../../coordinator/handoff-routing-status.js';
+import type {
+  HandoffRoutingStatusDiscardResult,
+  HandoffRoutingStatusMaintenanceRefusal,
+  HandoffRoutingStatusQuarantineClearResult,
+} from '../../coordinator/handoff-routing-status-operator.js';
 import { resolveBuildFlavor, type BuildFlavor } from '../../infra/build-flavor.js';
 import { readBuildFlavor } from '../../infra/bundle-manifest.js';
 import { assertNever } from '../../infra/error-format.js';
@@ -81,13 +86,7 @@ import {
   RECOVERY_REVISION_UNTIL_CLEARED,
 } from '../format/backend.js';
 import { formatStoreResetList, formatStoreResetReport } from '../format/store-reset.js';
-import {
-  clearHandoffRoutingStatusQuarantine,
-  discardHandoffRoutingStatus,
-  type HandoffRoutingStatusDiscardResult,
-  type HandoffRoutingStatusMaintenanceRefusal,
-  type HandoffRoutingStatusQuarantineClearResult,
-} from '../routing-status-discard.js';
+import { clearHandoffRoutingStatusQuarantine, discardHandoffRoutingStatus } from '../routing-status-discard.js';
 
 /**
  * What each `backend shutdown` refusal means to a script, as an exit code.

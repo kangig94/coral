@@ -676,7 +676,10 @@ function configureDatabase(database: SqliteDatabasePort, schema: HandoffRoutingS
   database.exec('PRAGMA synchronous=FULL');
   database.exec('PRAGMA foreign_keys=ON');
   const pageSize = Number((database.prepare('PRAGMA page_size').get() as Readonly<{ page_size: number }>).page_size);
-  database.exec(`PRAGMA max_page_count=${Math.floor(schema.maximumBytes / pageSize)}`);
+  const maximumPages = Math.max(1, Math.floor(schema.maximumBytes / pageSize));
+  database.exec(`PRAGMA max_page_count=${maximumPages}`);
+  database.exec(`PRAGMA journal_size_limit=${schema.maximumBytes}`);
+  database.exec(`PRAGMA wal_autocheckpoint=${maximumPages}`);
 }
 
 function readRetirementHistory(database: SqliteDatabasePort): HandoffRoutingRetirementHistoryRow | undefined {

@@ -759,6 +759,81 @@ describe('backend routing status', () => {
     expect(process.exitCode).toBe(0);
   });
 
+  it('renders committed selection-gap terminals as history without keeping backend status at 75', async () => {
+    const failedInvocationId = '123e4567-e89b-42d3-a456-426614174010';
+    const finalizedInvocationId = '123e4567-e89b-42d3-a456-426614174011';
+    const status: BackendStatusCommandOperations = {
+      inspectReadiness: () => ({ kind: 'no-legacy' }),
+      getStatus: async () => ({ status: 'not_running' }),
+      getLiveHandoffResult: () => null,
+      getRoutingStatus: async () => ({
+        kind: 'current',
+        generation: HANDOFF_ROUTING_STATUS_GENERATION,
+        statuses: [
+          {
+            kind: 'terminal',
+            selection: null,
+            terminal: {
+              generation: HANDOFF_ROUTING_STATUS_GENERATION,
+              sequence: 1,
+              eventId: 'failed-gap-event',
+              invocationId: failedInvocationId,
+              observedAt: '2026-08-03T00:00:00.000Z',
+              eventKind: 'execution-failed',
+              phase: 'terminal',
+              selection: { kind: 'without-selection' },
+              disposition: { kind: 'failed-without-selection', throwPhase: 'child-spawn' },
+            },
+          },
+          {
+            kind: 'terminal',
+            selection: null,
+            terminal: {
+              generation: HANDOFF_ROUTING_STATUS_GENERATION,
+              sequence: 2,
+              eventId: 'finalized-gap-event',
+              invocationId: finalizedInvocationId,
+              observedAt: '2026-08-03T00:00:01.000Z',
+              eventKind: 'continuation-finalized',
+              phase: 'terminal',
+              selection: { kind: 'without-selection' },
+              disposition: {
+                kind: 'finalized-without-selection',
+                terminal: { kind: 'delegated-success', version: '0.10.9' },
+              },
+            },
+          },
+        ],
+        retirementHistoryTruncated: {
+          kind: 'retirement-history-truncated',
+          expiredIdentityCount: 0,
+          causes: {
+            'selection-evicted-at-capacity': 0,
+            'completed-pair-compaction': 0,
+            'operator-resolved': 0,
+          },
+          minSelectionSequence: null,
+          maxSelectionSequence: null,
+          earliestSelectedAt: null,
+          latestSelectedAt: null,
+        },
+      }),
+    };
+    const program = new Command();
+    program.exitOverride();
+    registerBackendCommands(program, { storeReset, backendStatus: status });
+
+    await program.parseAsync(['node', 'coral-cli', 'backend', 'status']);
+
+    expect(stdout).toContain(
+      `Routing invocation ${failedInvocationId}: terminal; execution failed during child-spawn without a retained selection.`,
+    );
+    expect(stdout).toContain(
+      `Routing invocation ${finalizedInvocationId}: terminal; delegated successfully to 0.10.9 without a retained selection.`,
+    );
+    expect(process.exitCode).toBe(0);
+  });
+
   it('keeps the capacity gate while the exact retirement tombstone is retained', async () => {
     const status: BackendStatusCommandOperations = {
       inspectReadiness: () => ({ kind: 'no-legacy' }),

@@ -35,12 +35,16 @@ import {
   type PublicationOutcome,
   type RetirementTombstone,
 } from '#src/coordinator/handoff-routing-status.js';
+import {
+  clearHandoffRoutingStatusQuarantine,
+  discardHandoffRoutingStatus,
+  type HandoffRoutingStatusOperatorOptions,
+} from '#src/coordinator/handoff-routing-status-operator.js';
 import { formatHandoffRoutingStatus } from '#src/cli/format/backend.js';
 import type { ProcessIdentityObservation } from '#src/infra/port-types.js';
 import { tryAcquireDirectoryLock } from '#src/infra/fs-lock.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
-import { clearHandoffRoutingStatusQuarantine, discardHandoffRoutingStatus } from '#src/cli/routing-status-discard.js';
 import { acquireOperatorSocketGuard } from '#src/cli/operator-socket-guard.js';
 import {
   acquireGenerationMaintenanceLease,
@@ -63,6 +67,10 @@ const OWNER = { pid: 101, incarnation: testIncarnation(101) } as const;
 const temporaryDirectories: string[] = [];
 const runtimeBaseDir = mkdtempSync(join(tmpdir(), 'coral-handoff-routing-runtime-'));
 const runtime = createRealRuntime('prod', { baseDir: runtimeBaseDir });
+
+function routingStatusOperatorOptions(runtime: Runtime, path: string): HandoffRoutingStatusOperatorOptions {
+  return { runtime, path, acquireSocketGuard: acquireOperatorSocketGuard };
+}
 
 function at(offsetMs: number): string {
   return new Date(BASE_TIME + offsetMs).toISOString();
@@ -367,7 +375,7 @@ describe('handoff routing status', () => {
       retryCommand: 'coral-cli backend routing-status discard',
     });
     try {
-      await expect(discardHandoffRoutingStatus(discardRuntime, path)).resolves.toEqual({
+      await expect(discardHandoffRoutingStatus(routingStatusOperatorOptions(discardRuntime, path))).resolves.toEqual({
         kind: 'coordinator-running',
         socketPath: discardRuntime.paths.coral.coordinator.socketPath,
       });
@@ -380,17 +388,19 @@ describe('handoff routing status', () => {
     try {
       await expect(
         discardHandoffRoutingStatus(
-          {
-            ...discardRuntime,
-            time: {
-              ...discardRuntime.time,
-              now: () => fastNow,
-              sleep: async (ms: number) => {
-                fastNow += ms;
+          routingStatusOperatorOptions(
+            {
+              ...discardRuntime,
+              time: {
+                ...discardRuntime.time,
+                now: () => fastNow,
+                sleep: async (ms: number) => {
+                  fastNow += ms;
+                },
               },
             },
-          },
-          path,
+            path,
+          ),
         ),
       ).resolves.toEqual({ kind: 'generation-maintenance-unavailable', cause: 'contended' });
     } finally {
@@ -415,12 +425,14 @@ describe('handoff routing status', () => {
         clearInterval: () => undefined,
       },
     };
-    await expect(discardHandoffRoutingStatus(ownershipLostRuntime, path)).resolves.toEqual({
+    await expect(
+      discardHandoffRoutingStatus(routingStatusOperatorOptions(ownershipLostRuntime, path)),
+    ).resolves.toEqual({
       kind: 'generation-maintenance-unavailable',
       cause: 'ownership-lost',
     });
 
-    const discarded = await discardHandoffRoutingStatus(discardRuntime, path);
+    const discarded = await discardHandoffRoutingStatus(routingStatusOperatorOptions(discardRuntime, path));
     expect(discarded).toMatchObject({
       kind: 'discarded',
       artifactPath: path,
@@ -436,7 +448,9 @@ describe('handoff routing status', () => {
     chmodSync(path, 0o000);
     try {
       if (process.platform !== 'win32') {
-        await expect(discardHandoffRoutingStatus(discardRuntime, path)).resolves.toMatchObject({
+        await expect(
+          discardHandoffRoutingStatus(routingStatusOperatorOptions(discardRuntime, path)),
+        ).resolves.toMatchObject({
           kind: 'refused',
           status: { kind: 'undeterminable', cause: 'io-failed' },
         });
@@ -445,7 +459,9 @@ describe('handoff routing status', () => {
     } finally {
       chmodSync(path, 0o600);
     }
-    await expect(discardHandoffRoutingStatus(discardRuntime, path)).resolves.toMatchObject({
+    await expect(
+      discardHandoffRoutingStatus(routingStatusOperatorOptions(discardRuntime, path)),
+    ).resolves.toMatchObject({
       kind: 'refused',
       status: { kind: 'current' },
     });
@@ -487,7 +503,7 @@ describe('handoff routing status', () => {
     });
     if (attempt.kind !== 'acquired') throw new Error(`Expected writer lease, received ${attempt.kind}`);
     try {
-      await expect(discardHandoffRoutingStatus(writerRuntime, path)).resolves.toEqual({
+      await expect(discardHandoffRoutingStatus(routingStatusOperatorOptions(writerRuntime, path))).resolves.toEqual({
         kind: 'generation-maintenance-unavailable',
         cause: 'writer-observation-unknown',
         holder: `routing-status:handoff-routing-status (pid ${pid}), process identity unobservable`,
@@ -514,7 +530,7 @@ describe('handoff routing status', () => {
       },
     };
 
-    await expect(discardHandoffRoutingStatus(interruptedRuntime, path)).rejects.toThrow(
+    await expect(discardHandoffRoutingStatus(routingStatusOperatorOptions(interruptedRuntime, path))).rejects.toThrow(
       'injected sidecar move failure',
     );
     expect(existsSync(path)).toBe(true);
@@ -526,13 +542,15 @@ describe('handoff routing status', () => {
     const incomplete = interrupted.entries[0];
     if (incomplete === undefined) throw new Error('Expected an incomplete quarantine.');
 
-    const resumed = await discardHandoffRoutingStatus(discardRuntime, path);
+    const resumed = await discardHandoffRoutingStatus(routingStatusOperatorOptions(discardRuntime, path));
     expect(resumed).toMatchObject({ kind: 'discarded', quarantinePath: incomplete.quarantinePath });
     expect(readFileSync(incomplete.quarantinePath, 'utf-8')).toBe('not a sqlite database');
     expect(readFileSync(`${incomplete.quarantinePath}-wal`, 'utf-8')).toBe('retained wal');
     expect(statSync(`${incomplete.quarantinePath}-shm`).size).toBeGreaterThan(0);
 
-    await expect(clearHandoffRoutingStatusQuarantine(discardRuntime, path, incomplete.id)).resolves.toMatchObject({
+    await expect(
+      clearHandoffRoutingStatusQuarantine(routingStatusOperatorOptions(discardRuntime, path), incomplete.id),
+    ).resolves.toMatchObject({
       kind: 'cleared',
       entry: { id: incomplete.id },
     });
@@ -553,7 +571,7 @@ describe('handoff routing status', () => {
     }
     writeFileSync(path, 'not a sqlite database', { mode: 0o600 });
 
-    await expect(discardHandoffRoutingStatus(discardRuntime, path)).resolves.toEqual({
+    await expect(discardHandoffRoutingStatus(routingStatusOperatorOptions(discardRuntime, path))).resolves.toEqual({
       kind: 'quarantine-capacity-exhausted',
       maximum: MAX_HANDOFF_ROUTING_STATUS_QUARANTINES,
     });
@@ -583,7 +601,9 @@ describe('handoff routing status', () => {
       },
     };
 
-    await expect(discardHandoffRoutingStatus(ownershipLostRuntime, path)).resolves.toEqual({
+    await expect(
+      discardHandoffRoutingStatus(routingStatusOperatorOptions(ownershipLostRuntime, path)),
+    ).resolves.toEqual({
       kind: 'generation-maintenance-unavailable',
       cause: 'ownership-lost',
     });
@@ -823,7 +843,7 @@ describe('handoff routing status', () => {
       durableDisposition: { kind: 'continued-current', reason: { kind: 'handoff-abandoned-stdout' } },
       rendered:
         'Routing invocation handoff-abandoned-stdout: terminal; continued current after stdout drain prevented delegation.',
-      exitContribution: 75,
+      exitContribution: 0,
     },
     {
       name: 'delegated-signal',
@@ -831,7 +851,7 @@ describe('handoff routing status', () => {
       transitionDisposition: { kind: 'delegated-signal', version: '0.10.9', signal: 'SIGTERM' },
       durableDisposition: { kind: 'delegated-signal', version: '0.10.9', signal: 'SIGTERM' },
       rendered: 'Routing invocation delegated-signal: terminal; delegated to 0.10.9, which exited on SIGTERM.',
-      exitContribution: 75,
+      exitContribution: 0,
     },
     {
       name: 'finalized-without-selection',
@@ -843,7 +863,7 @@ describe('handoff routing status', () => {
       },
       rendered:
         'Routing invocation finalized-without-selection: terminal; delegated successfully to 0.10.9 without a retained selection.',
-      exitContribution: 75,
+      exitContribution: 0,
     },
   ] as const)(
     'round-trips $name from the durable record through status rendering and exit policy',
@@ -898,6 +918,30 @@ describe('handoff routing status', () => {
       expect(handoffRoutingStatusExitContribution(result)).toBe(exitContribution);
     },
   );
+
+  it('renders a failed-without-selection terminal as history that resolve cannot change', async () => {
+    const path = databasePath();
+    const invocationId = '123e4567-e89b-42d3-a456-426614174009';
+    await committed(path, [
+      {
+        kind: 'execution-failed',
+        eventId: 'failed-without-selection-terminal',
+        invocationId,
+        observedAt: at(1),
+        selection: { kind: 'without-selection' },
+        disposition: { kind: 'execution-failed', throwPhase: 'child-spawn' },
+      },
+    ]);
+
+    const result = readHandoffRoutingStatus(path);
+    expect(formatHandoffRoutingStatus(result)).toBe(
+      `Routing invocation ${invocationId}: terminal; execution failed during child-spawn without a retained selection.`,
+    );
+    expect(handoffRoutingStatusExitContribution(result)).toBe(0);
+    await expect(
+      resolveHandoffRoutingStatus(runtime, path, { invocationId, forceUnobservable: false }),
+    ).resolves.toEqual({ kind: 'already-terminal', invocationId });
+  });
 
   it('renders a completed warning routing basis without gating the current status exit', async () => {
     const path = databasePath();
@@ -1587,14 +1631,25 @@ describe('handoff routing status', () => {
       durability: 'lifecycle-journal',
       retention: 'bounded-history',
       severity: 'warning',
+      classification: 'hold',
       exitContribution: 75,
     });
     expect(persistedHandoffDispositionPolicy({ kind: 'operator-resolved', terminalExisted: false })).toEqual({
       durability: 'lifecycle-journal',
       retention: 'bounded-history',
       severity: 'info',
+      classification: 'history',
       exitContribution: 0,
     });
+    expect(
+      persistedHandoffDispositionPolicy({ kind: 'failed-without-selection', throwPhase: 'child-spawn' }),
+    ).toMatchObject({ severity: 'warning', classification: 'history', exitContribution: 0 });
+    expect(
+      persistedHandoffDispositionPolicy({
+        kind: 'finalized-without-selection',
+        terminal: { kind: 'delegated-success', version: '0.10.9' },
+      }),
+    ).toMatchObject({ severity: 'warning', classification: 'history', exitContribution: 0 });
     expect(
       persistedHandoffDispositionPolicy({
         kind: 'retirement-history-truncated',
@@ -1609,7 +1664,7 @@ describe('handoff routing status', () => {
         earliestSelectedAt: at(1),
         latestSelectedAt: at(1),
       }),
-    ).toMatchObject({ severity: 'info', exitContribution: 0 });
+    ).toMatchObject({ severity: 'info', classification: 'history', exitContribution: 0 });
   });
 
   it('keeps a warning routing basis actionable while selected but historical after its terminal', () => {
@@ -1617,6 +1672,7 @@ describe('handoff routing status', () => {
 
     expect(persistedHandoffDispositionPolicy({ kind: 'continue-current', basis })).toMatchObject({
       severity: 'warning',
+      classification: 'hold',
       exitContribution: 75,
     });
     expect(
@@ -1624,7 +1680,7 @@ describe('handoff routing status', () => {
         kind: 'continued-current',
         reason: { kind: 'routing', basis },
       }),
-    ).toMatchObject({ severity: 'warning', exitContribution: 0 });
+    ).toMatchObject({ severity: 'warning', classification: 'history', exitContribution: 0 });
   });
 
   it('resolves only absent owners and returns typed stale, terminal, and live refusals', async () => {
