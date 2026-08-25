@@ -662,6 +662,9 @@ describe('handoff-runner', () => {
   it.each([
     ['resolve', ['resolve', '--invocation', '123e4567-e89b-42d3-a456-426614174000']],
     ['discard', ['discard']],
+    ['quarantine list', ['quarantine', 'list']],
+    ['quarantine clear', ['quarantine', 'clear', '--id', '123e4567-e89b-42d3-a456-426614174000']],
+    ['an unclassified routing-status subcommand', ['future-command']],
   ])('should route and execute routing-status %s without opening a lifecycle', async (_name, args) => {
     mockState.spawn.mockImplementationOnce(() => childThatExits(0, null));
     const result = await runHandoffResult(cliOperation('backend', 'routing-status', ...args), {
@@ -686,22 +689,16 @@ describe('handoff-runner', () => {
       'force override',
       ['--invocation', '123e4567-e89b-42d3-a456-426614174000', '--force-unobservable', '--force-unobservable'],
     ],
-  ])('should keep lifecycle recording enabled for duplicate %s options', async (_name, options) => {
+  ])('should exclude malformed routing-status resolve %s options from lifecycle recording', async (_name, options) => {
     mockState.spawn.mockImplementationOnce(() => childThatExits(0, null));
 
     await expect(
       runHandoffResult(cliOperation('backend', 'routing-status', 'resolve', ...options), {
         pluginRoot: '/plugin/root',
       }),
-    ).resolves.toMatchObject({ kind: 'recorded' });
+    ).resolves.toMatchObject({ kind: 'recording-not-applicable' });
 
-    expect(mockState.publishHandoffRoutingTransitions).toHaveBeenCalledTimes(2);
-    expect(mockState.publishHandoffRoutingTransitions.mock.calls[0]?.[2][0]).toMatchObject({
-      kind: 'routing-selected',
-    });
-    expect(mockState.publishHandoffRoutingTransitions.mock.calls[1]?.[2][0]).toMatchObject({
-      kind: 'continuation-finalized',
-    });
+    expect(mockState.publishHandoffRoutingTransitions).not.toHaveBeenCalled();
   });
 
   it.each(['forged', 'consumed'])('should persist no selection for a %s target', async (authority) => {

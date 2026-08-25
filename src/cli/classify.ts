@@ -1,5 +1,7 @@
 import type { Command } from 'commander';
 
+import { classifyHandoffRoutingStatusOperatorInvocation } from '../coordinator/handoff-repair-operation.js';
+
 export type CommandClass = 'directRead' | 'servedRead' | 'mutate' | 'subscribe';
 
 export type StaticCommandPath =
@@ -243,6 +245,17 @@ export function assertCommandClassCoverage(program: Command): void {
     }
 
     if (entry.isLeaf) {
+      if (entry.path.startsWith('backend routing-status ')) {
+        const routingStatusClassification = classifyHandoffRoutingStatusOperatorInvocation([
+          'node',
+          'coral-cli',
+          ...entry.path.split(' '),
+        ]);
+        if (routingStatusClassification.kind !== 'operator') {
+          problems.push(`Routing-status leaf command "${entry.path}" is missing an operator classification.`);
+        }
+      }
+
       if (entry.resolution.kind === 'container') {
         problems.push(`Leaf command "${entry.path}" is marked as a container path.`);
         continue;

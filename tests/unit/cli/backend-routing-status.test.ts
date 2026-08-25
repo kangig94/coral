@@ -453,6 +453,19 @@ describe('backend routing-status resolve grammar', () => {
       'routing-status quarantine list, clear exact entries',
       75,
     ],
+    [
+      {
+        kind: 'quarantine-storage-failed',
+        quarantineId: '00000000-0000-4000-8000-000000000042',
+        quarantinePath: '/state/run/handoff-routing-quarantine/handoff-routing.db.00000000-0000-4000-8000-000000000042',
+        movedArtifacts: ['wal'],
+        cause: 'directory-sync-failed',
+      } as const,
+      'routing-status quarantine list, repair the reported storage condition, run coral-cli backend ' +
+        'routing-status quarantine clear --id 00000000-0000-4000-8000-000000000042, then rerun ' +
+        'coral-cli backend routing-status discard',
+      75,
+    ],
   ])('renders the discard refusal successor for case #%# with exit $2', async (result, expected, exitCode) => {
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
@@ -534,5 +547,40 @@ describe('backend routing-status resolve grammar', () => {
     expect(clear).toHaveBeenCalledWith(INVOCATION_ID);
     expect(stdout).toHaveBeenCalledWith(expect.stringContaining(`Cleared routing-status quarantine ${INVOCATION_ID}`));
     expect(process.exitCode).toBe(0);
+  });
+
+  it('renders the exact list and retry successor after a partial quarantine clear', async () => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const routingStatusQuarantine: HandoffRoutingStatusQuarantineCommandOperations = {
+      list: () => ({ entries: [], overflow: false }),
+      clear: async (quarantineId) => ({
+        kind: 'quarantine-clear-storage-failed',
+        quarantineId,
+        quarantinePath: `/state/run/handoff-routing-quarantine/handoff-routing.db.${quarantineId}`,
+        removedArtifacts: ['wal'],
+        cause: 'directory-sync-failed',
+      }),
+    };
+    const program = new Command();
+    program.exitOverride();
+    registerBackendCommands(program, { routingStatusQuarantine });
+
+    await program.parseAsync([
+      'node',
+      'coral-cli',
+      'backend',
+      'routing-status',
+      'quarantine',
+      'clear',
+      '--id',
+      INVOCATION_ID,
+    ]);
+
+    expect(stderr).toHaveBeenCalledWith(expect.stringContaining('coral-cli backend routing-status quarantine list'));
+    expect(stderr).toHaveBeenCalledWith(
+      expect.stringContaining(`coral-cli backend routing-status quarantine clear --id ${INVOCATION_ID}`),
+    );
+    expect(process.exitCode).toBe(75);
   });
 });

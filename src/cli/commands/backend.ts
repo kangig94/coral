@@ -365,6 +365,8 @@ function formatRoutingStatusDiscardRefusal(
       return `Refusing to discard routing status: ${result.maximum} quarantine entries are already retained or the quarantine could not be fully enumerated.\nNext step: run coral-cli backend routing-status quarantine list, clear exact entries that are no longer needed, then rerun coral-cli backend routing-status discard.`;
     case 'incomplete-quarantine':
       return `Refusing to discard routing status: quarantine ${result.quarantineId} is incomplete and cannot establish ownership of the current source database.\nNext step: run coral-cli backend routing-status quarantine clear --id ${result.quarantineId}, then rerun coral-cli backend routing-status discard.`;
+    case 'quarantine-storage-failed':
+      return `Routing-status discard stopped after storage failed with evidence in quarantine ${result.quarantineId} (moved artifacts: ${result.movedArtifacts.join(', ')}; ${result.cause}).\nNext step: run coral-cli backend routing-status quarantine list, repair the reported storage condition, run coral-cli backend routing-status quarantine clear --id ${result.quarantineId}, then rerun coral-cli backend routing-status discard.`;
     default:
       return assertNever(result);
   }
@@ -441,6 +443,13 @@ function formatRoutingStatusQuarantineMaintenanceRefusal(
     default:
       return assertNever(kind);
   }
+}
+
+function formatRoutingStatusQuarantineClearStorageFailure(
+  result: Extract<HandoffRoutingStatusQuarantineClearResult, { kind: 'quarantine-clear-storage-failed' }>,
+): string {
+  const retry = `coral-cli backend routing-status quarantine clear --id ${result.quarantineId}`;
+  return `Routing-status quarantine clear stopped after storage failed for ${result.quarantineId} (removed artifacts: ${result.removedArtifacts.join(', ')}; ${result.cause}).\nNext step: run coral-cli backend routing-status quarantine list, repair the reported storage condition, then rerun ${retry}.`;
 }
 
 type RecoveryQuarantineReadRuntime = Pick<Runtime, 'flavor' | 'paths' | 'storage'>;
@@ -645,6 +654,11 @@ export function registerBackendCommands(program: Command, operations: BackendCom
         if (result.kind === 'quarantine-not-found') {
           process.stdout.write(`Routing-status quarantine ${result.quarantineId} is already absent.\n`);
           process.exitCode = 0;
+          return;
+        }
+        if (result.kind === 'quarantine-clear-storage-failed') {
+          process.stderr.write(`${formatRoutingStatusQuarantineClearStorageFailure(result)}\n`);
+          process.exitCode = 75;
           return;
         }
         process.stderr.write(`${formatRoutingStatusQuarantineMaintenanceRefusal(result, options.id)}\n`);

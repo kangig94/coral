@@ -6,7 +6,8 @@ import {
   HandoffRoutingStatusQuarantineCapacityError,
   MAX_HANDOFF_ROUTING_STATUS_QUARANTINES,
   quarantineHandoffRoutingStoreArtifact,
-  type HandoffRoutingStatusQuarantineEntry,
+  type HandoffRoutingStatusQuarantineClearStoreResult,
+  type HandoffRoutingStatusQuarantineResult,
 } from '../store/handoff-routing-status-store.js';
 import { acquireGenerationMaintenanceLease } from '../store/generation-mutation-coordination.js';
 import { readHandoffRoutingStatus, type HandoffRoutingStatusReadResult } from './handoff-routing-status.js';
@@ -44,13 +45,12 @@ export type HandoffRoutingStatusDiscardResult =
       previousStatus: DiscardableRoutingStatus;
     }>
   | Readonly<{ kind: 'refused'; status: RefusedRoutingStatus }>
-  | Readonly<{ kind: 'incomplete-quarantine'; quarantineId: string }>
+  | Extract<HandoffRoutingStatusQuarantineResult, { kind: 'incomplete-quarantine' | 'quarantine-storage-failed' }>
   | Readonly<{ kind: 'quarantine-capacity-exhausted'; maximum: number }>
   | HandoffRoutingStatusMaintenanceRefusal;
 
 export type HandoffRoutingStatusQuarantineClearResult =
-  | Readonly<{ kind: 'cleared'; entry: HandoffRoutingStatusQuarantineEntry }>
-  | Readonly<{ kind: 'quarantine-not-found'; quarantineId: string }>
+  | HandoffRoutingStatusQuarantineClearStoreResult
   | HandoffRoutingStatusMaintenanceRefusal;
 
 export interface HandoffRoutingStatusSocketGuard {
@@ -177,7 +177,7 @@ export async function discardHandoffRoutingStatus(
         if (refusal !== null) return refusal;
         throw error;
       }
-      if (quarantine.kind === 'incomplete-quarantine') return quarantine;
+      if (quarantine.kind !== 'quarantined') return quarantine;
       return {
         kind: 'discarded',
         artifactPath: path,
@@ -228,9 +228,9 @@ export async function clearHandoffRoutingStatusQuarantine(
         if (refusal !== null) return refusal;
         throw error;
       }
-      let entry: HandoffRoutingStatusQuarantineEntry | null;
+      let result: HandoffRoutingStatusQuarantineClearStoreResult;
       try {
-        entry = clearHandoffRoutingStoreQuarantine(runtime.storage, path, quarantineId, () =>
+        result = clearHandoffRoutingStoreQuarantine(runtime.storage, path, quarantineId, () =>
           maintenance.assertOwned(),
         );
       } catch (error: unknown) {
@@ -238,7 +238,7 @@ export async function clearHandoffRoutingStatusQuarantine(
         if (refusal !== null) return refusal;
         throw error;
       }
-      return entry === null ? { kind: 'quarantine-not-found', quarantineId } : { kind: 'cleared', entry };
+      return result;
     } finally {
       maintenance.release();
     }

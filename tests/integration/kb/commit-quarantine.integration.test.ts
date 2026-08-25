@@ -13,9 +13,11 @@ import type { Runtime } from '#src/runtime/ports.js';
 import {
   generationMutationCoordinationSeam,
   resolveGenerationBoundaryPaths,
+  tryAcquireGenerationWriterLease,
 } from '#src/store/generation-mutation-coordination.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { bindSocket } from '#src/transport/ipc/server.js';
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
 const roots: string[] = [];
 
@@ -105,6 +107,57 @@ describe('KB commit quarantine', () => {
       expect(readFileSync(join(commitDirectory, 'commit.json'), 'utf-8')).toBe('{malformed');
     } finally {
       writer.release();
+    }
+  });
+
+  it('preserves an unknown writer observation through the quarantine command error', async () => {
+    const { runtime, commitId } = createHarness();
+    const pid = runtime.env.pid();
+    const incarnation = testIncarnation(pid);
+    let now = runtime.time.now();
+    const writerRuntime: Runtime = {
+      ...runtime,
+      process: {
+        ...runtime.process,
+        readProcessIncarnation: () => incarnation,
+        observeLiveness: () => 'unknown',
+      },
+      time: {
+        ...runtime.time,
+        now: () => now,
+        sleep: async (milliseconds) => {
+          now += milliseconds;
+        },
+      },
+    };
+    const attempt = tryAcquireGenerationWriterLease(writerRuntime, {
+      kind: 'kb-child',
+      name: 'unobservable-kb-daemon',
+    });
+    if (attempt.kind !== 'acquired') throw new Error(`Expected writer lease, received ${attempt.kind}`);
+
+    try {
+      let refusal: unknown;
+      try {
+        await quarantineKbCommit({ runtime: writerRuntime, commitId, maintenanceTimeoutMs: 10 });
+      } catch (error: unknown) {
+        refusal = error;
+      }
+      const serialized = serializeCoralSetupError(refusal);
+      expect(serialized).toMatchObject({
+        code: 'legacy_source_not_quiescent',
+        context: {
+          operation: 'kb-commit',
+          writerObservation: 'unknown',
+          holder: expect.stringContaining('unobservable-kb-daemon'),
+          retryCommand: `coral-cli backend kb-commit quarantine --flavor prod --commit ${commitId}`,
+        },
+        remediation: expect.stringContaining('Restore process-identity and liveness observation'),
+      });
+      expect(serialized?.remediation).toContain('after ten minutes without a heartbeat');
+      expect(serialized?.remediation).not.toContain("Run this build's own 'coral-cli backend shutdown'");
+    } finally {
+      attempt.lease.release();
     }
   });
 

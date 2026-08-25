@@ -7,6 +7,7 @@ import {
   commandContainerPaths,
 } from '#src/cli/classify.js';
 import { buildProgram } from '#src/cli/program.js';
+import { classifyHandoffRoutingStatusOperatorInvocation } from '#src/coordinator/handoff-repair-operation.js';
 
 describe('command class coverage', () => {
   it('classifies every transport-routed leaf command directly or through provider-family resolution', () => {
@@ -48,6 +49,34 @@ describe('command class coverage', () => {
         kind: 'container',
       })),
     );
+  });
+
+  it('classifies every registered routing-status leaf for lifecycle exclusion', () => {
+    const classifications = collectCommandCoverage(buildProgram())
+      .filter((entry) => entry.isLeaf && entry.path.startsWith('backend routing-status '))
+      .map((entry) => ({
+        path: entry.path,
+        classification: classifyHandoffRoutingStatusOperatorInvocation(['node', 'coral-cli', ...entry.path.split(' ')]),
+      }));
+
+    expect(classifications).toEqual([
+      {
+        path: 'backend routing-status resolve',
+        classification: { kind: 'operator', command: 'resolve', repairOperation: null },
+      },
+      {
+        path: 'backend routing-status discard',
+        classification: { kind: 'operator', command: 'discard' },
+      },
+      {
+        path: 'backend routing-status quarantine list',
+        classification: { kind: 'operator', command: 'quarantine-list' },
+      },
+      {
+        path: 'backend routing-status quarantine clear',
+        classification: { kind: 'operator', command: 'quarantine-clear' },
+      },
+    ]);
   });
 
   it('allows executable parent commands to also expose subcommands', () => {

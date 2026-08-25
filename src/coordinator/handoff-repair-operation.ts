@@ -11,7 +11,7 @@ export function parseHandoffRoutingInvocationId(value: unknown): string | null {
   return parsed.success ? parsed.data : null;
 }
 
-export function parseHandoffRepairOperation(argv: readonly string[]): HandoffRepairOperation | null {
+function parseRoutingStatusResolveOperation(argv: readonly string[]): HandoffRepairOperation | null {
   const tokens = argv.slice(2);
   if (tokens[0] !== 'backend' || tokens[1] !== 'routing-status' || tokens[2] !== 'resolve') return null;
 
@@ -61,12 +61,44 @@ export function parseHandoffRepairOperation(argv: readonly string[]): HandoffRep
   };
 }
 
-export function isHandoffRoutingStatusDiscardOperation(argv: readonly string[]): boolean {
+export type HandoffRoutingStatusOperatorInvocation =
+  | Readonly<{
+      kind: 'operator';
+      command: 'resolve';
+      repairOperation: HandoffRepairOperation | null;
+    }>
+  | Readonly<{ kind: 'operator'; command: 'discard' | 'quarantine-list' | 'quarantine-clear' }>
+  | Readonly<{ kind: 'unclassified-routing-status' }>
+  | Readonly<{ kind: 'not-routing-status' }>;
+
+export function classifyHandoffRoutingStatusOperatorInvocation(
+  argv: readonly string[],
+): HandoffRoutingStatusOperatorInvocation {
   const tokens = argv.slice(2);
-  return (
-    tokens[0] === 'backend' &&
-    tokens[1] === 'routing-status' &&
-    tokens[2] === 'discard' &&
-    (tokens.length === 3 || (tokens.length === 4 && tokens[3] === '--'))
-  );
+  if (tokens[0] !== 'backend' || tokens[1] !== 'routing-status') return { kind: 'not-routing-status' };
+
+  switch (tokens[2]) {
+    case 'resolve':
+      return { kind: 'operator', command: 'resolve', repairOperation: parseRoutingStatusResolveOperation(argv) };
+    case 'discard':
+      return { kind: 'operator', command: 'discard' };
+    case 'quarantine':
+      switch (tokens[3]) {
+        case 'list':
+          return { kind: 'operator', command: 'quarantine-list' };
+        case 'clear':
+          return { kind: 'operator', command: 'quarantine-clear' };
+        default:
+          return { kind: 'unclassified-routing-status' };
+      }
+    default:
+      return { kind: 'unclassified-routing-status' };
+  }
+}
+
+export function parseHandoffRepairOperation(argv: readonly string[]): HandoffRepairOperation | null {
+  const classification = classifyHandoffRoutingStatusOperatorInvocation(argv);
+  return classification.kind === 'operator' && classification.command === 'resolve'
+    ? classification.repairOperation
+    : null;
 }

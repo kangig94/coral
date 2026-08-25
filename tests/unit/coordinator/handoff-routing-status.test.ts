@@ -533,14 +533,20 @@ describe('handoff routing status', () => {
       },
     };
 
-    await expect(discardHandoffRoutingStatus(routingStatusOperatorOptions(interruptedRuntime, path))).rejects.toThrow(
-      'injected sidecar move failure',
-    );
+    const interruptedResult = await discardHandoffRoutingStatus(routingStatusOperatorOptions(interruptedRuntime, path));
+    expect(interruptedResult).toMatchObject({
+      kind: 'quarantine-storage-failed',
+      movedArtifacts: ['wal'],
+      cause: 'artifact-move-failed',
+    });
+    if (interruptedResult.kind !== 'quarantine-storage-failed') {
+      throw new Error(`Expected partial quarantine, received ${interruptedResult.kind}`);
+    }
     expect(existsSync(path)).toBe(true);
     const interrupted = listHandoffRoutingStoreQuarantines(discardRuntime.storage, path);
     expect(interrupted).toMatchObject({
       overflow: false,
-      entries: [{ state: 'incomplete', artifacts: ['wal'] }],
+      entries: [{ id: interruptedResult.quarantineId, state: 'incomplete', artifacts: ['wal'] }],
     });
     const incomplete = interrupted.entries[0];
     if (incomplete === undefined) throw new Error('Expected an incomplete quarantine.');
@@ -562,6 +568,88 @@ describe('handoff routing status', () => {
       entries: [],
       overflow: false,
     });
+  });
+
+  it('returns the exact partial quarantine when directory sync fails after the first move', async () => {
+    const path = databasePath();
+    const quarantineId = '00000000-0000-4000-8000-000000000042';
+    const baseRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+    writeFileSync(path, 'not a sqlite database', { mode: 0o600 });
+    writeFileSync(`${path}-wal`, 'retained wal');
+    writeFileSync(`${path}-shm`, 'retained shm');
+    const sync = baseRuntime.storage.syncDirectoryDurableSync.bind(baseRuntime.storage);
+    let sourceSyncFailed = false;
+    const discardRuntime: Runtime = {
+      ...baseRuntime,
+      ids: { ...baseRuntime.ids, uuid: () => quarantineId },
+      storage: {
+        ...baseRuntime.storage,
+        syncDirectoryDurableSync: (directory) => {
+          if (!sourceSyncFailed && directory === dirname(path)) {
+            sourceSyncFailed = true;
+            return false;
+          }
+          return sync(directory);
+        },
+      },
+    };
+
+    await expect(discardHandoffRoutingStatus(routingStatusOperatorOptions(discardRuntime, path))).resolves.toEqual({
+      kind: 'quarantine-storage-failed',
+      quarantineId,
+      quarantinePath: join(dirname(path), 'handoff-routing-quarantine', `${basename(path)}.${quarantineId}`),
+      movedArtifacts: ['wal'],
+      cause: 'directory-sync-failed',
+    });
+    expect(existsSync(path)).toBe(true);
+    expect(existsSync(`${path}-shm`)).toBe(true);
+    expect(listHandoffRoutingStoreQuarantines(baseRuntime.storage, path)).toMatchObject({
+      entries: [{ id: quarantineId, state: 'incomplete', artifacts: ['wal'] }],
+    });
+  });
+
+  it('returns the exact partial clear when directory sync fails after the first removal', async () => {
+    const path = databasePath();
+    const baseRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+    writeFileSync(path, 'not a sqlite database', { mode: 0o600 });
+    writeFileSync(`${path}-wal`, 'retained wal');
+    writeFileSync(`${path}-shm`, 'retained shm');
+    const discarded = await discardHandoffRoutingStatus(routingStatusOperatorOptions(baseRuntime, path));
+    if (discarded.kind !== 'discarded') throw new Error(`Expected discard, received ${discarded.kind}`);
+    const retained = listHandoffRoutingStoreQuarantines(baseRuntime.storage, path).entries[0];
+    if (retained === undefined) throw new Error('Expected retained quarantine.');
+    const sync = baseRuntime.storage.syncDirectoryDurableSync.bind(baseRuntime.storage);
+    let quarantineSyncFailed = false;
+    const clearRuntime: Runtime = {
+      ...baseRuntime,
+      storage: {
+        ...baseRuntime.storage,
+        syncDirectoryDurableSync: (directory) => {
+          if (!quarantineSyncFailed && directory === dirname(retained.quarantinePath)) {
+            quarantineSyncFailed = true;
+            return false;
+          }
+          return sync(directory);
+        },
+      },
+    };
+
+    await expect(
+      clearHandoffRoutingStatusQuarantine(routingStatusOperatorOptions(clearRuntime, path), retained.id),
+    ).resolves.toEqual({
+      kind: 'quarantine-clear-storage-failed',
+      quarantineId: retained.id,
+      quarantinePath: retained.quarantinePath,
+      removedArtifacts: ['wal'],
+      cause: 'directory-sync-failed',
+    });
+    expect(listHandoffRoutingStoreQuarantines(baseRuntime.storage, path)).toMatchObject({
+      entries: [{ id: retained.id, state: 'complete', artifacts: ['database', 'shm'] }],
+    });
+
+    await expect(
+      clearHandoffRoutingStatusQuarantine(routingStatusOperatorOptions(baseRuntime, path), retained.id),
+    ).resolves.toMatchObject({ kind: 'cleared', entry: { id: retained.id } });
   });
 
   it('refuses another discard when retained quarantine reaches its explicit ceiling', async () => {

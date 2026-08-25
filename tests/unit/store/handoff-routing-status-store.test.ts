@@ -234,7 +234,7 @@ describe('HandoffRoutingStatusTransaction', () => {
     );
   });
 
-  it('refuses unsafe durable vocabulary before interpolating retention SQL', () => {
+  it('refuses noncanonical durable vocabulary before rendering retention SQL', () => {
     expect(() =>
       handoffRoutingStatusGeneration({
         ...schema,
@@ -244,7 +244,7 @@ describe('HandoffRoutingStatusTransaction', () => {
             ...schema.durableFormat.bodyVocabulary,
             completedPairStability: {
               ...schema.durableFormat.bodyVocabulary.completedPairStability,
-              terminalDispositionKind: "delegated-success' OR 1=1",
+              terminalDispositionKind: 'Delegated success',
             },
           },
         },

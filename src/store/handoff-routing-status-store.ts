@@ -37,7 +37,25 @@ export type HandoffRoutingStatusQuarantineList = Readonly<{
 
 export type HandoffRoutingStatusQuarantineResult =
   | Readonly<{ kind: 'quarantined'; quarantinePath: string }>
-  | Readonly<{ kind: 'incomplete-quarantine'; quarantineId: string }>;
+  | Readonly<{ kind: 'incomplete-quarantine'; quarantineId: string }>
+  | Readonly<{
+      kind: 'quarantine-storage-failed';
+      quarantineId: string;
+      quarantinePath: string;
+      movedArtifacts: readonly HandoffRoutingStatusQuarantineArtifact[];
+      cause: 'artifact-move-failed' | 'directory-sync-failed';
+    }>;
+
+export type HandoffRoutingStatusQuarantineClearStoreResult =
+  | Readonly<{ kind: 'cleared'; entry: HandoffRoutingStatusQuarantineEntry }>
+  | Readonly<{ kind: 'quarantine-not-found'; quarantineId: string }>
+  | Readonly<{
+      kind: 'quarantine-clear-storage-failed';
+      quarantineId: string;
+      quarantinePath: string;
+      removedArtifacts: readonly HandoffRoutingStatusQuarantineArtifact[];
+      cause: 'artifact-remove-failed' | 'directory-sync-failed';
+    }>;
 
 export class HandoffRoutingStatusQuarantineCapacityError extends Error {}
 
@@ -527,10 +545,10 @@ function moveQuarantineArtifact(storage: StoragePort, source: string, destinatio
   }
 }
 
-function syncQuarantineMove(storage: StoragePort, sourceDirectory: string, root: string): void {
+function syncQuarantineMove(storage: StoragePort, sourceDirectory: string, root: string): boolean {
   const sourceSynced = storage.syncDirectoryDurableSync(sourceDirectory);
   const quarantineSynced = storage.syncDirectoryDurableSync(root);
-  if (!sourceSynced || !quarantineSynced) throw new Error('Routing-status quarantine directory sync failed.');
+  return sourceSynced && quarantineSynced;
 }
 
 export function quarantineHandoffRoutingStoreArtifact(
@@ -557,15 +575,54 @@ export function quarantineHandoffRoutingStoreArtifact(
     throw new Error('Routing-status quarantine ID must be a canonical lowercase UUID.');
   }
   const quarantinePath = join(root, `${basename(path)}.${quarantineId}`);
+  const movedArtifacts: HandoffRoutingStatusQuarantineArtifact[] = [];
+  const storageFailure = (
+    cause: Extract<HandoffRoutingStatusQuarantineResult, { kind: 'quarantine-storage-failed' }>['cause'],
+  ): HandoffRoutingStatusQuarantineResult => ({
+    kind: 'quarantine-storage-failed',
+    quarantineId,
+    quarantinePath,
+    movedArtifacts,
+    cause,
+  });
   assertOwned();
-  for (const suffix of ['-wal', '-shm'] as const) {
-    if (moveQuarantineArtifact(storage, `${path}${suffix}`, `${quarantinePath}${suffix}`)) {
-      syncQuarantineMove(storage, sourceDirectory, root);
+  for (const [suffix, artifact] of [
+    ['-wal', 'wal'],
+    ['-shm', 'shm'],
+  ] as const) {
+    let moved: boolean;
+    try {
+      moved = moveQuarantineArtifact(storage, `${path}${suffix}`, `${quarantinePath}${suffix}`);
+    } catch (error: unknown) {
+      if (movedArtifacts.length === 0) throw error;
+      return storageFailure('artifact-move-failed');
+    }
+    if (moved) {
+      movedArtifacts.push(artifact);
+      try {
+        if (!syncQuarantineMove(storage, sourceDirectory, root)) {
+          return storageFailure('directory-sync-failed');
+        }
+      } catch {
+        return storageFailure('directory-sync-failed');
+      }
     }
     assertOwned();
   }
-  storage.renameSync(path, quarantinePath);
-  syncQuarantineMove(storage, sourceDirectory, root);
+  try {
+    storage.renameSync(path, quarantinePath);
+  } catch (error: unknown) {
+    if (movedArtifacts.length === 0) throw error;
+    return storageFailure('artifact-move-failed');
+  }
+  movedArtifacts.push('database');
+  try {
+    if (!syncQuarantineMove(storage, sourceDirectory, root)) {
+      return storageFailure('directory-sync-failed');
+    }
+  } catch {
+    return storageFailure('directory-sync-failed');
+  }
   return { kind: 'quarantined', quarantinePath };
 }
 
@@ -579,10 +636,8 @@ function unlinkIfPresent(storage: StoragePort, path: string): boolean {
   }
 }
 
-function syncQuarantineClear(storage: StoragePort, path: string): void {
-  if (!storage.syncDirectoryDurableSync(quarantineRoot(path))) {
-    throw new Error('Routing-status quarantine directory sync failed.');
-  }
+function syncQuarantineClear(storage: StoragePort, path: string): boolean {
+  return storage.syncDirectoryDurableSync(quarantineRoot(path));
 }
 
 export function clearHandoffRoutingStoreQuarantine(
@@ -590,27 +645,71 @@ export function clearHandoffRoutingStoreQuarantine(
   path: string,
   quarantineId: string,
   assertOwned: () => void,
-): HandoffRoutingStatusQuarantineEntry | null {
-  if (!CANONICAL_UUID_PATTERN.test(quarantineId)) return null;
+): HandoffRoutingStatusQuarantineClearStoreResult {
+  if (!CANONICAL_UUID_PATTERN.test(quarantineId)) return { kind: 'quarantine-not-found', quarantineId };
   const quarantinePath = join(quarantineRoot(path), `${basename(path)}.${quarantineId}`);
   const artifacts: HandoffRoutingStatusQuarantineArtifact[] = [];
   if (storage.existsSync(quarantinePath)) artifacts.push('database');
   if (storage.existsSync(`${quarantinePath}-wal`)) artifacts.push('wal');
   if (storage.existsSync(`${quarantinePath}-shm`)) artifacts.push('shm');
-  if (artifacts.length === 0) return null;
+  if (artifacts.length === 0) return { kind: 'quarantine-not-found', quarantineId };
   const entry: HandoffRoutingStatusQuarantineEntry = {
     id: quarantineId,
     quarantinePath,
     state: artifacts.includes('database') ? 'complete' : 'incomplete',
     artifacts,
   };
+  const removedArtifacts: HandoffRoutingStatusQuarantineArtifact[] = [];
+  const storageFailure = (
+    cause: Extract<
+      HandoffRoutingStatusQuarantineClearStoreResult,
+      { kind: 'quarantine-clear-storage-failed' }
+    >['cause'],
+  ): HandoffRoutingStatusQuarantineClearStoreResult => ({
+    kind: 'quarantine-clear-storage-failed',
+    quarantineId,
+    quarantinePath,
+    removedArtifacts,
+    cause,
+  });
   assertOwned();
-  for (const suffix of ['-wal', '-shm'] as const) {
-    if (unlinkIfPresent(storage, `${entry.quarantinePath}${suffix}`)) syncQuarantineClear(storage, path);
+  for (const [suffix, artifact] of [
+    ['-wal', 'wal'],
+    ['-shm', 'shm'],
+  ] as const) {
+    let removed: boolean;
+    try {
+      removed = unlinkIfPresent(storage, `${entry.quarantinePath}${suffix}`);
+    } catch (error: unknown) {
+      if (removedArtifacts.length === 0) throw error;
+      return storageFailure('artifact-remove-failed');
+    }
+    if (removed) {
+      removedArtifacts.push(artifact);
+      try {
+        if (!syncQuarantineClear(storage, path)) return storageFailure('directory-sync-failed');
+      } catch {
+        return storageFailure('directory-sync-failed');
+      }
+    }
     assertOwned();
   }
-  if (unlinkIfPresent(storage, entry.quarantinePath)) syncQuarantineClear(storage, path);
-  return entry;
+  let databaseRemoved: boolean;
+  try {
+    databaseRemoved = unlinkIfPresent(storage, entry.quarantinePath);
+  } catch (error: unknown) {
+    if (removedArtifacts.length === 0) throw error;
+    return storageFailure('artifact-remove-failed');
+  }
+  if (databaseRemoved) {
+    removedArtifacts.push('database');
+    try {
+      if (!syncQuarantineClear(storage, path)) return storageFailure('directory-sync-failed');
+    } catch {
+      return storageFailure('directory-sync-failed');
+    }
+  }
+  return { kind: 'cleared', entry };
 }
 
 export function publishHandoffRoutingStoreTransaction<T>(
