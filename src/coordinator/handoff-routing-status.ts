@@ -9,7 +9,7 @@ import {
   HandoffRoutingStoreInvalidRecordError,
   HandoffRoutingStoreUnreadableError,
   HandoffRoutingStoreUnsupportedGenerationError as UnsupportedGenerationError,
-  HANDOFF_ROUTING_STATUS_GENERATION,
+  handoffRoutingStatusGeneration,
   publishHandoffRoutingStoreTransaction,
   readHandoffRoutingStoreSnapshot,
   SQLITE_BUSY,
@@ -51,6 +51,13 @@ const MAX_BOUNDED_TERMINAL_HISTORY = MAX_COMPLETED_HANDOFF_ROUTING_PAIRS;
 const MAX_IDENTIFIER_LENGTH = 58;
 const MAX_OBSERVED_AT_LENGTH = 24;
 const MAX_SIGNAL_LENGTH = 16;
+export const MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES = Object.freeze({
+  'routing-selected': 1_964,
+  'execution-failed': 2_344,
+  'continuation-finalized': 2_922,
+});
+export const MAX_LEGAL_CLOSING_RECORD_BYTES = 2_922;
+const HANDOFF_ROUTING_STATUS_GENERATION = handoffRoutingStatusGeneration(handoffRoutingStatusStoreSchema());
 
 const sequenceSchema = z.number().int().nonnegative().safe();
 const positiveSequenceSchema = z.number().int().positive().safe();
@@ -2235,13 +2242,16 @@ export const MAX_LEGAL_CONTINUATION_FINALIZED_TRANSITION = terminalTransitionSch
   disposition: MAX_FINALIZED_TERMINAL.disposition,
 });
 
-export const MAX_LEGAL_CLOSING_RECORD_BYTES = Math.max(MAX_LEGAL_RETIREMENT_TOMBSTONE_BYTES, MAX_LEGAL_TERMINAL_BYTES);
+if (Math.max(MAX_LEGAL_RETIREMENT_TOMBSTONE_BYTES, MAX_LEGAL_TERMINAL_BYTES) !== MAX_LEGAL_CLOSING_RECORD_BYTES) {
+  throw new Error('The maximum legal closing record no longer matches its encoded bound.');
+}
 
-export const MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES = Object.freeze({
-  'routing-selected': encodedBytes(MAX_SELECTION),
-  'execution-failed': Math.max(encodedBytes(MAX_EXECUTION_TERMINAL), encodedBytes(MAX_RESOLVED_EXECUTION_TERMINAL)),
-  'continuation-finalized': Math.max(
-    encodedBytes(MAX_FINALIZED_TERMINAL),
-    encodedBytes(MAX_RESOLVED_FINALIZED_TERMINAL),
-  ),
-});
+if (
+  encodedBytes(MAX_SELECTION) !== MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES['routing-selected'] ||
+  Math.max(encodedBytes(MAX_EXECUTION_TERMINAL), encodedBytes(MAX_RESOLVED_EXECUTION_TERMINAL)) !==
+    MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES['execution-failed'] ||
+  Math.max(encodedBytes(MAX_FINALIZED_TERMINAL), encodedBytes(MAX_RESOLVED_FINALIZED_TERMINAL)) !==
+    MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES['continuation-finalized']
+) {
+  throw new Error('A maximum legal routing event no longer matches its encoded bound.');
+}

@@ -15,6 +15,7 @@ import {
 } from '../../coordinator/handoff-repair-operation.js';
 import {
   handoffRoutingStatusExitContribution,
+  handoffRoutingStatusStoreSchema,
   readHandoffRoutingStatusWithOwnerObservations,
   resolveHandoffRoutingStatus,
   type HandoffRoutingResolveRequest,
@@ -45,7 +46,7 @@ import { currentCoralStoreFormat } from '../../store-format.js';
 import { classifyStoreFile, type Database } from '../../store/db.js';
 import { openReadOnlyStoreDatabase } from '../../store/read-port.js';
 import {
-  HANDOFF_ROUTING_STATUS_GENERATION,
+  handoffRoutingStatusGeneration,
   listHandoffRoutingStoreQuarantines,
   MAX_HANDOFF_ROUTING_STATUS_QUARANTINES,
   type HandoffRoutingStatusQuarantineList,
@@ -288,28 +289,29 @@ export type BackendCommandOperations = Readonly<{
   providerHosts?: ProviderHostCommandOperations;
 }>;
 
+function routingStatusPath(runtime: Runtime): string {
+  return handoffRoutingStatusPathForRunDir(
+    runtime.paths.coral.coordinator.runDir,
+    handoffRoutingStatusGeneration(handoffRoutingStatusStoreSchema()),
+  );
+}
+
 export function createBackendStatusCommandOperations(
   getLiveHandoffResult: BackendStatusCommandOperations['getLiveHandoffResult'] = () => null,
 ): BackendStatusCommandOperations {
   const runtime = createRealRuntime(resolveBuildFlavor(process.env));
-  const routingStatusPath = handoffRoutingStatusPathForRunDir(
-    runtime.paths.coral.coordinator.runDir,
-    HANDOFF_ROUTING_STATUS_GENERATION,
-  );
+  const statusPath = routingStatusPath(runtime);
   return {
     inspectReadiness: () => inspectGenerationReadiness(runtime, currentCoralStoreFormat()),
     getStatus: () => getBackendStatusFull(getPluginRoot()),
     getLiveHandoffResult,
-    getRoutingStatus: () => readHandoffRoutingStatusWithOwnerObservations(runtime, routingStatusPath),
+    getRoutingStatus: () => readHandoffRoutingStatusWithOwnerObservations(runtime, statusPath),
   };
 }
 
 export function createHandoffRoutingStatusCommandOperations(): HandoffRoutingStatusCommandOperations {
   const runtime = createRealRuntime(resolveBuildFlavor(process.env));
-  const path = handoffRoutingStatusPathForRunDir(
-    runtime.paths.coral.coordinator.runDir,
-    HANDOFF_ROUTING_STATUS_GENERATION,
-  );
+  const path = routingStatusPath(runtime);
   return {
     resolve: (request) => resolveHandoffRoutingStatus(runtime, path, request),
     discard: () => discardHandoffRoutingStatus(runtime, path),
@@ -318,10 +320,7 @@ export function createHandoffRoutingStatusCommandOperations(): HandoffRoutingSta
 
 export function createRoutingStatusQuarantineCommandOperations(): HandoffRoutingStatusQuarantineCommandOperations {
   const runtime = createRealRuntime(resolveBuildFlavor(process.env));
-  const path = handoffRoutingStatusPathForRunDir(
-    runtime.paths.coral.coordinator.runDir,
-    HANDOFF_ROUTING_STATUS_GENERATION,
-  );
+  const path = routingStatusPath(runtime);
   return {
     list: () => listHandoffRoutingStoreQuarantines(runtime.storage, path),
     clear: (quarantineId) => clearHandoffRoutingStatusQuarantine(runtime, path, quarantineId),
@@ -353,7 +352,7 @@ function formatRoutingStatusDiscardRefusal(
       const cause = result.cause;
       switch (cause) {
         case 'contended':
-          return 'Refusing to discard routing status: generation maintenance is unavailable (contended).\nNext step: wait for generation maintenance to finish, then rerun coral-cli backend routing-status discard.';
+          return 'Refusing to discard routing status: generation maintenance is unavailable (contended).\nNext step: rerun coral-cli backend routing-status discard after active maintenance finishes. If its holder exited, retry after the maintenance lease has gone ten minutes without a heartbeat; do not delete the lease.';
         case 'writer-observation-unknown':
           return `Refusing to discard routing status: Coral could not determine whether ${result.holder} still owns its writer lease.\nNext step: restore process-identity and liveness observation, then rerun coral-cli backend routing-status discard. If the writer exited, retry after the lease has gone ten minutes without a heartbeat; do not delete the lease.`;
         case 'ownership-lost':
@@ -428,7 +427,7 @@ function formatRoutingStatusQuarantineMaintenanceRefusal(
       const cause = result.cause;
       switch (cause) {
         case 'contended':
-          return `Refusing to clear routing-status quarantine: generation maintenance is unavailable (contended).\nNext step: wait for generation maintenance to finish, then rerun ${retry}.`;
+          return `Refusing to clear routing-status quarantine: generation maintenance is unavailable (contended).\nNext step: rerun ${retry} after active maintenance finishes. If its holder exited, retry after the maintenance lease has gone ten minutes without a heartbeat; do not delete the lease.`;
         case 'writer-observation-unknown':
           return `Refusing to clear routing-status quarantine: Coral could not determine whether ${result.holder} still owns its writer lease.\nNext step: restore process-identity and liveness observation, then rerun ${retry}. If the writer exited, retry after the lease has gone ten minutes without a heartbeat; do not delete the lease.`;
         case 'ownership-lost':

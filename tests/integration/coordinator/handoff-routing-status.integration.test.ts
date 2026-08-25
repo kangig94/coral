@@ -13,10 +13,12 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import {
   MAX_COMPLETED_HANDOFF_ROUTING_PAIRS,
   MAX_HANDOFF_ROUTING_STATUS_BYTES,
+  MAX_LEGAL_CLOSING_RECORD_BYTES,
   MAX_LEGAL_CONTINUATION_FINALIZED_TRANSITION,
   MAX_LEGAL_ROUTING_SELECTED_TRANSITION,
   MAX_RETIREMENT_TOMBSTONES,
   MAX_UNRESOLVED_INVOCATIONS,
+  handoffRoutingStatusStoreSchema,
   publishGenerationCoordinatedHandoffRoutingTransitions,
   publishHandoffRoutingTransitions,
   readHandoffRoutingStatus,
@@ -28,7 +30,7 @@ import { acquireOperatorSocketGuard } from '#src/cli/operator-socket-guard.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { acquireGenerationMaintenanceLease } from '#src/store/generation-mutation-coordination.js';
-import { HANDOFF_ROUTING_STATUS_GENERATION } from '#src/store/handoff-routing-status-store.js';
+import { handoffRoutingStatusGeneration } from '#src/store/handoff-routing-status-store.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
 const FORMER_DIRECTORY_LOCK_STALE_MS = 30_000;
@@ -37,6 +39,7 @@ const BENCHMARK_LIFECYCLES = 100;
 const CONCURRENT_WRITERS = 2;
 const BYTE_PRESSURE_COMPLETED_PAIRS = 204;
 const BYTE_PRESSURE_BATCHED_PAIRS = 180;
+const HANDOFF_ROUTING_STATUS_GENERATION = handoffRoutingStatusGeneration(handoffRoutingStatusStoreSchema());
 const runtime = createRealRuntime('prod');
 const time = runtime.time;
 const temporaryDirectories: string[] = [];
@@ -570,9 +573,15 @@ describe('handoff routing status transaction durability', () => {
     try {
       db.exec('PRAGMA synchronous=OFF');
       db.exec(`PRAGMA max_page_count=${MAX_HANDOFF_ROUTING_STATUS_BYTES / 4096}`);
-      db.exec('CREATE TABLE pressure_padding (value BLOB NOT NULL)');
-      const insert = db.prepare('INSERT INTO pressure_padding VALUES (?)');
-      while (true) insert.run(Buffer.alloc(512));
+      const insert = db.prepare(
+        `INSERT INTO handoff_routing_closing_reserve (invocation_id, event_id, observed_at, allocation)
+         VALUES (?, ?, ?, zeroblob(?))`,
+      );
+      let index = 0;
+      while (true) {
+        insert.run(`padding-${index}`, `padding-event-${index}`, observedAt(index), MAX_LEGAL_CLOSING_RECORD_BYTES);
+        index += 1;
+      }
     } catch (error) {
       expect(error).toMatchObject({ errcode: 13 });
     } finally {

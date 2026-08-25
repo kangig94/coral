@@ -20,6 +20,7 @@ import {
   MAX_RETIREMENT_TOMBSTONES,
   MAX_UNRESOLVED_INVOCATIONS,
   handoffRoutingStatusExitContribution,
+  handoffRoutingStatusStoreSchema,
   handoffRoutingTransitionSchema,
   invalidTargetSummarySchema,
   persistedHandoffDispositionPolicy,
@@ -55,12 +56,13 @@ import { SimulationRuntime } from '../../../tools/simulation/runtime.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import type { SqliteDatabasePort, StoragePort } from '#src/infra/port-types.js';
 import {
-  HANDOFF_ROUTING_STATUS_GENERATION,
+  handoffRoutingStatusGeneration,
   MAX_HANDOFF_ROUTING_STATUS_QUARANTINES,
   SQLITE_FULL,
   listHandoffRoutingStoreQuarantines,
 } from '#src/store/handoff-routing-status-store.js';
 
+const HANDOFF_ROUTING_STATUS_GENERATION = handoffRoutingStatusGeneration(handoffRoutingStatusStoreSchema());
 const BASE_TIME = Date.parse('2026-01-01T00:00:00.000Z');
 const BUILD_SET_ID = '123e4567-e89b-42d3-a456-426614174000';
 const OWNER = { pid: 101, incarnation: testIncarnation(101) } as const;
@@ -1275,7 +1277,7 @@ describe('handoff routing status', () => {
     ]);
   });
 
-  it('attributes domain conflicts before SQLite and does not call an unexpected constraint a rejected transition', async () => {
+  it('attributes domain conflicts before SQLite and rejects an unexpected trigger as another schema', async () => {
     const path = databasePath();
     await committed(path, [selection('seed', 1)]);
     await expect(publish(path, [{ ...selection('duplicate-event', 2), eventId: 'event-1' }])).resolves.toEqual({
@@ -1298,7 +1300,7 @@ describe('handoff routing status', () => {
 
     await expect(publish(path, [selection('valid-transition', 3)])).resolves.toEqual({
       kind: 'not-published',
-      cause: 'io-failed',
+      cause: 'unsupported-generation',
     });
   });
 
@@ -1588,9 +1590,15 @@ describe('handoff routing status', () => {
     try {
       full.exec('PRAGMA synchronous=OFF');
       full.exec(`PRAGMA max_page_count=${MAX_HANDOFF_ROUTING_STATUS_BYTES / 4096}`);
-      full.exec('CREATE TABLE padding (value BLOB NOT NULL)');
-      const pad = full.prepare('INSERT INTO padding VALUES (?)');
-      while (true) pad.run(Buffer.alloc(512));
+      const pad = full.prepare(
+        `INSERT INTO handoff_routing_closing_reserve (invocation_id, event_id, observed_at, allocation)
+         VALUES (?, ?, ?, zeroblob(?))`,
+      );
+      let index = 0;
+      while (true) {
+        pad.run(`padding-${index}`, `padding-event-${index}`, at(index), MAX_LEGAL_CLOSING_RECORD_BYTES);
+        index += 1;
+      }
     } catch (error) {
       expect(error).toMatchObject({ errcode: 13 });
     } finally {

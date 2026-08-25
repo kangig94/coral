@@ -6,6 +6,7 @@ import type {
   HandoffRoutingStatusReadResult,
   OwnerLiveness,
   RetirementHistoryTruncated,
+  SelectedHandoffDisposition,
   StoredTerminalDisposition,
 } from '../../coordinator/handoff-routing-status.js';
 import {
@@ -224,23 +225,66 @@ function formatDaemonStatus(result: BackendStatusFull): string {
   }
 }
 
-function formatRoutingOwnerLiveness(invocationId: string, liveness: OwnerLiveness): string {
+function formatSelectedRoutingBasis(
+  basis: Extract<SelectedHandoffDisposition, { kind: 'continue-current' }>['basis'],
+): string {
+  switch (basis.kind) {
+    case 'incumbent-absent':
+      return basis.kind;
+    case 'incumbent-unresolved':
+    case 'incumbent-unusable':
+      return `${basis.kind}: ${basis.cause}`;
+    case 'invoking-identity-unavailable':
+      return `${basis.kind}: ${basis.failure}`;
+    case 'incumbent-identity-unavailable':
+      return `${basis.kind}: ${basis.incumbent.version}, instance ${basis.incumbent.instanceId}`;
+    case 'same-build-set':
+      return `${basis.kind}: ${basis.buildSetId}`;
+    case 'invoking-build-not-older':
+      return `${basis.kind}: ${basis.comparison}, invoking ${basis.invoking.version}, incumbent ${basis.incumbent.version}`;
+    case 'invalid-incumbent-target':
+      return `${basis.kind}: ${basis.evidence.failure}`;
+    default:
+      return assertNever(basis);
+  }
+}
+
+function formatSelectedRoutingDisposition(disposition: SelectedHandoffDisposition): string {
+  switch (disposition.kind) {
+    case 'continue-current':
+      return `continued current (${formatSelectedRoutingBasis(disposition.basis)})`;
+    case 'handoff-selected':
+      return `selected ${disposition.source} handoff to ${disposition.target.build.version} (${disposition.target.build.flavor}, build set ${disposition.target.build.buildSetId}, bundle ${disposition.target.build.bundleHash})`;
+    default:
+      return assertNever(disposition);
+  }
+}
+
+function formatRoutingOwnerLiveness(
+  invocationId: string,
+  disposition: SelectedHandoffDisposition,
+  liveness: OwnerLiveness,
+): string {
+  const selectionEvidence = `Selected routing: ${formatSelectedRoutingDisposition(disposition)}.`;
   switch (liveness.kind) {
     case 'alive':
       return `Routing invocation ${invocationId}: in flight; its recorded owner is alive.`;
     case 'absent':
       return [
         `Routing invocation ${invocationId}: unresolved; its recorded owner is absent.`,
+        selectionEvidence,
         `Next step: run coral-cli backend routing-status resolve --invocation ${invocationId}.`,
       ].join('\n');
     case 'unobservable':
       return liveness.cause === 'deadline-expired'
         ? [
             `Routing invocation ${invocationId}: unresolved; owner observation was unobservable (${liveness.cause}).`,
+            selectionEvidence,
             'Next step: rerun coral-cli backend status; an expired sweep cannot authorize resolution.',
           ].join('\n')
         : [
             `Routing invocation ${invocationId}: unresolved; owner observation was unobservable (${liveness.cause}).`,
+            selectionEvidence,
             `Next step: verify the owner externally, then run coral-cli backend routing-status resolve --invocation ${invocationId} --force-unobservable to abandon it.`,
           ].join('\n');
     default:
@@ -300,7 +344,11 @@ function formatStoredTerminalDisposition(disposition: StoredTerminalDisposition)
 function formatRoutingInvocationStatus(status: HandoffRoutingInvocationStatus): string {
   switch (status.kind) {
     case 'unresolved':
-      return formatRoutingOwnerLiveness(status.selection.invocationId, status.ownerLiveness);
+      return formatRoutingOwnerLiveness(
+        status.selection.invocationId,
+        status.selection.disposition,
+        status.ownerLiveness,
+      );
     case 'terminal':
       return `Routing invocation ${status.terminal.invocationId}: terminal; ${formatStoredTerminalDisposition(status.terminal.disposition)}.`;
     case 'retired':
@@ -309,7 +357,7 @@ function formatRoutingInvocationStatus(status: HandoffRoutingInvocationStatus): 
           const terminalEvidence = status.tombstone.terminalExisted
             ? 'terminal recorded: yes'
             : 'terminal recorded: no';
-          return `Routing invocation ${status.tombstone.invocationId}: retired (selection-evicted-at-capacity; ${terminalEvidence}).\nNext step: run coral-cli backend routing-status resolve --invocation ${status.tombstone.invocationId} to acknowledge the retained capacity eviction.`;
+          return `Routing invocation ${status.tombstone.invocationId}: retired (selection-evicted-at-capacity; ${terminalEvidence}).\nSelected routing: ${formatSelectedRoutingDisposition(status.tombstone.selectedDisposition)}.\nNext step: run coral-cli backend routing-status resolve --invocation ${status.tombstone.invocationId} to acknowledge the retained capacity eviction.`;
         }
         case 'completed-pair-compaction':
           return `Routing invocation ${status.tombstone.invocationId}: retired (completed-pair-compaction). No action is needed.`;

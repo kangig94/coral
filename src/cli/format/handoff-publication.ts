@@ -133,7 +133,7 @@ export function formatHandoffPublicationFailureSuccessor(input: HandoffPublicati
         case 'contended':
           return `Next step: ${nextAction}`;
         case 'generation-maintenance':
-          return `Next step: wait for generation maintenance to finish, then ${nextAction}`;
+          return `Next step: after generation maintenance finishes, ${nextAction} If its holder exited, retry after the maintenance lease has gone ten minutes without a heartbeat; do not delete the lease.`;
         case 'capacity-exhausted':
           return `Next step: repair the reported storage-capacity condition, then ${nextAction}`;
         case 'io-failed':

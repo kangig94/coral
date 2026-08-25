@@ -19,6 +19,7 @@ import type {
   LiveHandoffResult,
 } from '#src/coordinator/handoff-runner.js';
 import {
+  handoffRoutingStatusStoreSchema,
   retirementTombstoneSchema,
   type HandoffRoutingStatusReadResult,
 } from '#src/coordinator/handoff-routing-status.js';
@@ -29,13 +30,14 @@ import { createRuntimeComponentRegistry } from '#src/coordinator/runtime-compone
 import { RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
-import { HANDOFF_ROUTING_STATUS_GENERATION } from '#src/store/handoff-routing-status-store.js';
+import { handoffRoutingStatusGeneration } from '#src/store/handoff-routing-status-store.js';
 import { isBackendHealth } from '#src/transport/http/backend/health.js';
 import { statusFromStartupDiagnostic, type BackendStatusFull } from '#src/transport/http/backend/status.js';
 import type { HealthSnapshot } from '#src/transport/server-ports.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 
 const TEST_TIME = { now: () => Date.parse('2026-08-03T00:00:00.000Z') };
+const HANDOFF_ROUTING_STATUS_GENERATION = handoffRoutingStatusGeneration(handoffRoutingStatusStoreSchema());
 const PUBLICATION_INVOCATION_ID = '123e4567-e89b-42d3-a456-426614174000';
 
 function liveHandoffResult(
@@ -283,7 +285,7 @@ describe('backend status local exit combination', () => {
 
   it.each([
     ['contended', 'rerun coral-cli backend status'],
-    ['generation-maintenance', 'wait for generation maintenance to finish'],
+    ['generation-maintenance', 'maintenance lease has gone ten minutes without a heartbeat'],
     ['capacity-exhausted', 'repair the reported storage-capacity condition'],
     ['io-failed', 'repair the reported storage condition'],
     ['unreadable', 'routing-status discard successor'],
@@ -587,6 +589,7 @@ describe('backend routing status', () => {
 
     expect(formatHandoffRoutingStatus(routingStatus)?.split('\n')).toEqual([
       'Routing invocation unresolved-invocation: unresolved; its recorded owner is absent.',
+      'Selected routing: continued current (same-build-set: 123e4567-e89b-42d3-a456-426614174000).',
       'Next step: run coral-cli backend routing-status resolve --invocation unresolved-invocation.',
       'Routing invocation terminal-invocation: terminal; delegated to 0.10.9, which exited 7.',
       'Routing invocation retired-invocation: retired (completed-pair-compaction). No action is needed.',
@@ -595,20 +598,62 @@ describe('backend routing status', () => {
     ]);
   });
 
+  it('renders the retained routing cause on actionable unresolved entries', () => {
+    const result: HandoffRoutingStatusReadResult = {
+      kind: 'current',
+      generation: HANDOFF_ROUTING_STATUS_GENERATION,
+      statuses: (['unreadable-record', 'health-shape-rejected'] as const).map(
+        (cause, index) =>
+          ({
+            kind: 'unresolved',
+            selection: {
+              generation: HANDOFF_ROUTING_STATUS_GENERATION,
+              sequence: index + 1,
+              eventId: `event-${index}`,
+              invocationId: `invocation-${index}`,
+              observedAt: '2026-08-03T00:00:00.000Z',
+              eventKind: 'routing-selected',
+              phase: 'selection',
+              owner: { pid: 101 + index, incarnation: testIncarnation(101 + index) },
+              disposition: { kind: 'continue-current', basis: { kind: 'incumbent-unresolved', cause } },
+            },
+            ownerLiveness: { kind: 'absent' },
+          }) as const,
+      ),
+      retirementHistoryTruncated: {
+        kind: 'retirement-history-truncated',
+        expiredIdentityCount: 0,
+        causes: {
+          'selection-evicted-at-capacity': 0,
+          'completed-pair-compaction': 0,
+          'operator-resolved': 0,
+        },
+        minSelectionSequence: null,
+        maxSelectionSequence: null,
+        earliestSelectedAt: null,
+        latestSelectedAt: null,
+      },
+    };
+
+    const rendered = formatHandoffRoutingStatus(result);
+    expect(rendered).toContain('Selected routing: continued current (incumbent-unresolved: unreadable-record).');
+    expect(rendered).toContain('Selected routing: continued current (incumbent-unresolved: health-shape-rejected).');
+  });
+
   it.each([
     {
       name: 'capacity eviction before a terminal',
       retirementCause: 'selection-evicted-at-capacity',
       terminalExisted: false,
       expected:
-        'Routing invocation retired-invocation: retired (selection-evicted-at-capacity; terminal recorded: no).\nNext step: run coral-cli backend routing-status resolve --invocation retired-invocation to acknowledge the retained capacity eviction.',
+        'Routing invocation retired-invocation: retired (selection-evicted-at-capacity; terminal recorded: no).\nSelected routing: continued current (same-build-set: 123e4567-e89b-42d3-a456-426614174000).\nNext step: run coral-cli backend routing-status resolve --invocation retired-invocation to acknowledge the retained capacity eviction.',
     },
     {
       name: 'capacity eviction with a terminal',
       retirementCause: 'selection-evicted-at-capacity',
       terminalExisted: true,
       expected:
-        'Routing invocation retired-invocation: retired (selection-evicted-at-capacity; terminal recorded: yes).\nNext step: run coral-cli backend routing-status resolve --invocation retired-invocation to acknowledge the retained capacity eviction.',
+        'Routing invocation retired-invocation: retired (selection-evicted-at-capacity; terminal recorded: yes).\nSelected routing: continued current (same-build-set: 123e4567-e89b-42d3-a456-426614174000).\nNext step: run coral-cli backend routing-status resolve --invocation retired-invocation to acknowledge the retained capacity eviction.',
     },
     {
       name: 'absent-owner resolution',
@@ -888,6 +933,9 @@ describe('backend routing status', () => {
 
     expect(stdout).toContain(
       'Routing invocation routing-invocation: retired (selection-evicted-at-capacity; terminal recorded: no).',
+    );
+    expect(stdout).toContain(
+      'Selected routing: continued current (same-build-set: 123e4567-e89b-42d3-a456-426614174000).',
     );
     expect(stdout).toContain(
       'coral-cli backend routing-status resolve --invocation routing-invocation to acknowledge the retained capacity eviction',

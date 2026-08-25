@@ -51,6 +51,44 @@ afterEach(() => {
 });
 
 describe('generation mutation writer identity', () => {
+  it('reclaims an abandoned maintenance lease after its heartbeat goes stale', async () => {
+    const pid = 4241;
+    const incarnation = testIncarnation(pid);
+    const runtime = coordinationRuntime(pid, incarnation, 'alive');
+    let now = runtime.time.now();
+    const abandonedRuntime: Runtime = {
+      ...runtime,
+      time: {
+        ...runtime.time,
+        now: () => now,
+        setInterval: () => ({}),
+        clearInterval: () => undefined,
+      },
+    };
+    await acquireGenerationMaintenanceLease(abandonedRuntime);
+
+    const maintenanceLock = resolveGenerationBoundaryPaths(runtime).maintenanceLock;
+    const ownerMarker = runtime.storage
+      .readdirSync(maintenanceLock)
+      .find((entry) => entry.startsWith('owner-') && entry.endsWith('.lock'));
+    if (ownerMarker === undefined) throw new Error('Expected a maintenance owner marker');
+    now = runtime.storage.statSync(join(maintenanceLock, ownerMarker)).mtimeMs + 10 * 60 * 1_000 + 1;
+    const contenderRuntime: Runtime = {
+      ...runtime,
+      time: {
+        ...runtime.time,
+        now: () => now,
+      },
+    };
+    const attempt = tryAcquireGenerationWriterLease(contenderRuntime, {
+      kind: 'routing-status',
+      name: 'handoff-routing-status',
+    });
+
+    expect(attempt.kind).toBe('acquired');
+    if (attempt.kind === 'acquired') attempt.lease.release();
+  });
+
   it('records pid and incarnation in the writer lease contents', () => {
     const pid = 4242;
     const incarnation = testIncarnation(pid);

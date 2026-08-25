@@ -26,7 +26,7 @@ import type { TimePort, TimerHandle } from '../infra/port-types.js';
 import type { RecordedProcessIdentity } from '../infra/process-containment.js';
 import type { Runtime } from '../runtime/ports.js';
 import { createRealRuntime } from '../runtime/real.js';
-import { HANDOFF_ROUTING_STATUS_GENERATION } from '../store/handoff-routing-status-store.js';
+import { handoffRoutingStatusGeneration } from '../store/handoff-routing-status-store.js';
 import { createIpcClient } from '../transport/ipc/client.js';
 import {
   HANDOFF_ROUTING_BASIS_OBLIGATIONS,
@@ -720,9 +720,10 @@ async function publishHandoffTransition(
   signal?: AbortSignal,
 ): Promise<PublicationOutcome> {
   const status = await import('./handoff-routing-status.js');
+  const generation = handoffRoutingStatusGeneration(status.handoffRoutingStatusStoreSchema());
   return status.publishGenerationCoordinatedHandoffRoutingTransitions(
     { ...runtime, time },
-    handoffRoutingStatusPathForRunDir(runtime.paths.coral.coordinator.runDir, HANDOFF_ROUTING_STATUS_GENERATION),
+    handoffRoutingStatusPathForRunDir(runtime.paths.coral.coordinator.runDir, generation),
     [transition],
     signal,
   );

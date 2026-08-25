@@ -364,7 +364,9 @@ function acquireWriterLeaseUnderAdmission(
   paths: GenerationBoundaryPaths,
   mutation: { readonly kind: GenerationMutationKind; readonly name: string },
 ): GenerationWriterLeaseAttempt {
-  if (runtime.storage.existsSync(paths.maintenanceLock)) return { kind: 'maintenance-active' };
+  const maintenanceProbe = tryAcquireDirectoryLock(paths.maintenanceLock, directoryLockDeps(runtime));
+  if (maintenanceProbe === null) return { kind: 'maintenance-active' };
+  maintenanceProbe();
   const identity = writerIdentity(runtime);
   const leasePath = join(paths.writersRoot, writerLeaseName(runtime, mutation));
   const releaseWriter = tryAcquireDirectoryLock(leasePath, directoryLockDeps(runtime));

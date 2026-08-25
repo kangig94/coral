@@ -6,7 +6,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { socketFallbackDir } from '#src/infra/path/unix-socket.js';
 import { acquireOperatorSocketGuard } from '#src/cli/operator-socket-guard.js';
 import { discardHandoffRoutingStatus } from '#src/cli/routing-status-discard.js';
-import { HANDOFF_ROUTING_STATUS_GENERATION } from '#src/store/handoff-routing-status-store.js';
+import { handoffRoutingStatusStoreSchema } from '#src/coordinator/handoff-routing-status.js';
+import { handoffRoutingStatusGeneration } from '#src/store/handoff-routing-status-store.js';
 import { quarantineKbCommit } from '#src/cli/kb-commit-quarantine.js';
 import { acquireStoreResetSocketGuard } from '#src/cli/store-reset-socket.js';
 import { serializeCoralSetupError } from '#src/runtime/errors.js';
@@ -14,6 +15,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import { resolveStoreResetTargetPaths } from '#src/store/operator-store-reset.js';
 
 const roots: string[] = [];
+const HANDOFF_ROUTING_STATUS_GENERATION = handoffRoutingStatusGeneration(handoffRoutingStatusStoreSchema());
 
 function root(): string {
   const value = mkdtempSync(join(tmpdir(), 'coral-operator-socket-bind-'));

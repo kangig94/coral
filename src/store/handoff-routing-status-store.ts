@@ -617,9 +617,10 @@ export function readHandoffRoutingStoreSnapshot(
     database.exec('PRAGMA busy_timeout=0');
     database.exec('BEGIN');
     transactionOpen = true;
+    const generation = handoffRoutingStatusGeneration(schema);
     const storedGeneration = (database.prepare('PRAGMA user_version').get() as Readonly<{ user_version: number }>)
       .user_version;
-    if (storedGeneration !== HANDOFF_ROUTING_STATUS_GENERATION) {
+    if (storedGeneration !== generation) {
       database.exec('COMMIT');
       transactionOpen = false;
       return { kind: 'unsupported-generation', generation: storedGeneration };
@@ -701,8 +702,10 @@ function readRetirementHistory(database: SqliteDatabasePort): HandoffRoutingReti
 }
 
 function initializeOrValidateDatabase(database: SqliteDatabasePort, schema: HandoffRoutingStatusStoreSchema): void {
-  const generation = (database.prepare('PRAGMA user_version').get() as Readonly<{ user_version: number }>).user_version;
-  if (generation === 0) {
+  const expectedGeneration = handoffRoutingStatusGeneration(schema);
+  const storedGeneration = (database.prepare('PRAGMA user_version').get() as Readonly<{ user_version: number }>)
+    .user_version;
+  if (storedGeneration === 0) {
     const existing = database
       .prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'")
       .get() as Readonly<{ count: number }>;
@@ -719,11 +722,11 @@ function initializeOrValidateDatabase(database: SqliteDatabasePort, schema: Hand
           operator_resolved_count
         ) VALUES (1, ?, 0, 0, 0, 0)`,
       )
-      .run(HANDOFF_ROUTING_STATUS_GENERATION);
-    database.exec(`PRAGMA user_version=${HANDOFF_ROUTING_STATUS_GENERATION}`);
+      .run(expectedGeneration);
+    database.exec(`PRAGMA user_version=${expectedGeneration}`);
     return;
   }
-  if (generation !== HANDOFF_ROUTING_STATUS_GENERATION) {
+  if (storedGeneration !== expectedGeneration) {
     throw new HandoffRoutingStoreUnsupportedGenerationError();
   }
   const schemaMatches = databaseSchemaMatches(database, schema);
@@ -734,7 +737,7 @@ function initializeOrValidateDatabase(database: SqliteDatabasePort, schema: Hand
     const metadata = database.prepare('SELECT generation FROM handoff_routing_metadata WHERE singleton = 1').get() as
       | Readonly<{ generation: number }>
       | undefined;
-    if (metadata?.generation !== HANDOFF_ROUTING_STATUS_GENERATION) throw new HandoffRoutingStoreUnreadableError();
+    if (metadata?.generation !== expectedGeneration) throw new HandoffRoutingStoreUnreadableError();
   } catch (error) {
     if (error instanceof HandoffRoutingStoreUnreadableError) throw error;
     throw new HandoffRoutingStoreUnreadableError(errorNumber(error, SQLITE_CORRUPT));
@@ -839,14 +842,8 @@ const HANDOFF_ROUTING_STATUS_SCHEMA_SQL = `
       );
   `;
 
-const schemaFingerprint = createHash('sha256').update(HANDOFF_ROUTING_STATUS_SCHEMA_SQL, 'utf-8').digest();
-export const HANDOFF_ROUTING_STATUS_GENERATION = (schemaFingerprint.readUInt32BE(0) % 0x7fff_ffff) + 1;
-
-function schemaSql(schema: HandoffRoutingStatusStoreSchema): string {
-  return HANDOFF_ROUTING_STATUS_SCHEMA_SQL.replaceAll(
-    '__HANDOFF_ROUTING_STATUS_GENERATION__',
-    String(HANDOFF_ROUTING_STATUS_GENERATION),
-  )
+function renderedSchemaSql(schema: HandoffRoutingStatusStoreSchema, generation: string): string {
+  return HANDOFF_ROUTING_STATUS_SCHEMA_SQL.replaceAll('__HANDOFF_ROUTING_STATUS_GENERATION__', generation)
     .replaceAll('__MAXIMUM_IDENTIFIER_LENGTH__', String(schema.maximumIdentifierLength))
     .replaceAll('__MAXIMUM_OBSERVED_AT_LENGTH__', String(schema.maximumObservedAtLength))
     .replaceAll('__MAXIMUM_ROUTING_SELECTED_BYTES__', String(schema.maximumRoutingSelectedBytes))
@@ -856,8 +853,17 @@ function schemaSql(schema: HandoffRoutingStatusStoreSchema): string {
     .replaceAll('__CLOSING_RECORD_BYTES__', String(schema.closingRecordBytes));
 }
 
+export function handoffRoutingStatusGeneration(schema: HandoffRoutingStatusStoreSchema): number {
+  const fingerprint = createHash('sha256').update(renderedSchemaSql(schema, ''), 'utf-8').digest();
+  return (fingerprint.readUInt32BE(0) % 0x7fff_ffff) + 1;
+}
+
+function schemaSql(schema: HandoffRoutingStatusStoreSchema): string {
+  return renderedSchemaSql(schema, String(handoffRoutingStatusGeneration(schema)));
+}
+
 type HandoffRoutingSchemaObject = Readonly<{
-  type: 'table' | 'index';
+  type: string;
   name: string;
   sql: string | null;
 }>;
@@ -887,10 +893,11 @@ function databaseSchemaMatches(database: SqliteDatabasePort, schema: HandoffRout
     .prepare(
       `SELECT type, name, sql
        FROM sqlite_master
-       WHERE name NOT LIKE 'sqlite_%' AND type IN ('table', 'index')`,
+       WHERE name NOT LIKE 'sqlite_%'`,
     )
     .all() as readonly HandoffRoutingSchemaObject[];
   const expected = expectedSchemaObjects(schema);
+  if (observed.length !== expected.length) return false;
   const observedByName = new Map(observed.map((object) => [object.name, object]));
   return expected.every((object) => {
     const candidate = observedByName.get(object.name);

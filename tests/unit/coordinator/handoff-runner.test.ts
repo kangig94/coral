@@ -25,7 +25,8 @@ import { backendLog } from '#src/infra/backend-log.js';
 import type * as BackendDiscoveryMod from '#src/infra/backend-discovery.js';
 import type * as BundleManifestMod from '#src/infra/bundle-manifest.js';
 import type * as HandoffRoutingStatusMod from '#src/coordinator/handoff-routing-status.js';
-import { HANDOFF_ROUTING_STATUS_GENERATION } from '#src/store/handoff-routing-status-store.js';
+import { handoffRoutingStatusStoreSchema } from '#src/coordinator/handoff-routing-status.js';
+import { handoffRoutingStatusGeneration } from '#src/store/handoff-routing-status-store.js';
 import type { ProcessIncarnation } from '#src/infra/node-process.js';
 import type { TimePort } from '#src/infra/port-types.js';
 import { withValidatedHandoffTarget, type ValidatedHandoffTarget } from '#src/infra/handoff-target.js';
@@ -37,6 +38,7 @@ import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 type StrictBundleManifest = BundleManifestMod.StrictBundleManifest;
 type StrictBundleIdentityFailure = BundleManifestMod.StrictBundleIdentityFailure;
 type LiveIncumbentHealth = Parameters<typeof routeAuthenticatedHealth>[0];
+const HANDOFF_ROUTING_STATUS_GENERATION = handoffRoutingStatusGeneration(handoffRoutingStatusStoreSchema());
 
 const mockState = vi.hoisted(() => ({
   createIpcClient: vi.fn(),

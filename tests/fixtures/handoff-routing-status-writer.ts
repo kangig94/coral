@@ -5,19 +5,21 @@ import { DatabaseSync } from 'node:sqlite';
 import {
   publishGenerationCoordinatedHandoffRoutingTransitions,
   readHandoffRoutingStatus,
+  handoffRoutingStatusStoreSchema,
   type HandoffRoutingTransition,
   type PublicationOutcome,
 } from '#src/coordinator/handoff-routing-status.js';
 import { discardHandoffRoutingStatus } from '#src/coordinator/handoff-routing-status-operator.js';
 import { acquireOperatorSocketGuard } from '#src/cli/operator-socket-guard.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import { HANDOFF_ROUTING_STATUS_GENERATION } from '#src/store/handoff-routing-status-store.js';
+import { handoffRoutingStatusGeneration } from '#src/store/handoff-routing-status-store.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
 const [, , mode, path, identity = 'worker', baseDir] = process.argv;
 if (mode === undefined || path === undefined) throw new Error('Expected mode and database path');
 
 const runtime = createRealRuntime('prod', baseDir === undefined ? undefined : { baseDir });
+const HANDOFF_ROUTING_STATUS_GENERATION = handoffRoutingStatusGeneration(handoffRoutingStatusStoreSchema());
 const owner = { pid: process.pid, incarnation: testIncarnation(process.pid) } as const;
 const observedAt = (offset: number): string => new Date(Date.parse('2026-02-01T00:00:00.000Z') + offset).toISOString();
 

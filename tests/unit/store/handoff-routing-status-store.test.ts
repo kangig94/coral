@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { handoffRoutingStatusStoreSchema } from '#src/coordinator/handoff-routing-status.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import {
-  HANDOFF_ROUTING_STATUS_GENERATION,
+  handoffRoutingStatusGeneration,
   HandoffRoutingStoreInvalidRecordError,
   HandoffRoutingStoreUnreadableError,
   HandoffRoutingStoreUnsupportedGenerationError,
@@ -23,6 +23,7 @@ const owner = { pid: 101, incarnation: testIncarnation(101) } as const;
 const selectedDisposition = { kind: 'continue-current', basis: { kind: 'incumbent-absent' } } as const;
 
 const schema = handoffRoutingStatusStoreSchema();
+const HANDOFF_ROUTING_STATUS_GENERATION = handoffRoutingStatusGeneration(schema);
 
 const selectionBody = {
   generation: HANDOFF_ROUTING_STATUS_GENERATION,
@@ -173,6 +174,15 @@ function expectInvalidRecord(
 }
 
 describe('HandoffRoutingStatusTransaction', () => {
+  it('derives the generation from the rendered schema bounds', () => {
+    expect(
+      handoffRoutingStatusGeneration({
+        ...schema,
+        maximumRetirementTombstoneBytes: schema.maximumRetirementTombstoneBytes + 1,
+      }),
+    ).not.toBe(HANDOFF_ROUTING_STATUS_GENERATION);
+  });
+
   it('derives main-file and checkpoint bounds from the same byte budget', () => {
     const path = databasePath();
     const probe = new DatabaseSync(path);
@@ -214,6 +224,40 @@ describe('HandoffRoutingStatusTransaction', () => {
         CREATE TABLE handoff_routing_records (sequence INTEGER PRIMARY KEY, body_json TEXT NOT NULL) STRICT;
         PRAGMA user_version=${HANDOFF_ROUTING_STATUS_GENERATION};
       `);
+    } finally {
+      database.close();
+    }
+    const runtime = createRealRuntime('prod', { baseDir: dirname(path) });
+
+    expect(publishHandoffRoutingStoreTransaction(runtime.storage, path, schema, () => undefined)).toMatchObject({
+      kind: 'failed',
+      error: expect.any(HandoffRoutingStoreUnsupportedGenerationError),
+      commitStarted: false,
+    });
+    expect(readHandoffRoutingStoreSnapshot(runtime.storage, path, schema)).toEqual({
+      kind: 'unsupported-generation',
+      generation: HANDOFF_ROUTING_STATUS_GENERATION,
+    });
+  });
+
+  it.each([
+    ['table', 'CREATE TABLE unexpected_table (value INTEGER) STRICT'],
+    ['index', 'CREATE INDEX unexpected_index ON handoff_routing_metadata(generation)'],
+    ['view', 'CREATE VIEW unexpected_view AS SELECT generation FROM handoff_routing_metadata'],
+    [
+      'trigger',
+      `CREATE TRIGGER unexpected_trigger
+       BEFORE INSERT ON handoff_routing_records
+       BEGIN
+         SELECT RAISE(ABORT, 'unexpected schema');
+       END`,
+    ],
+  ] as const)('refuses a same-generation database with an additional %s', (_type, sql) => {
+    const path = databasePath();
+    initializeStore(path);
+    const database = new DatabaseSync(path);
+    try {
+      database.exec(sql);
     } finally {
       database.close();
     }

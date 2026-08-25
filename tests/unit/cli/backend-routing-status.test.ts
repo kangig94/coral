@@ -8,10 +8,14 @@ import {
 } from '#src/cli/commands/backend.js';
 import { formatHandoffRoutingResolveResult } from '#src/cli/format/backend.js';
 import { parseHandoffRepairOperation } from '#src/coordinator/handoff-repair-operation.js';
-import { HANDOFF_ROUTING_STATUS_GENERATION } from '#src/store/handoff-routing-status-store.js';
-import type { HandoffRoutingResolveResult } from '#src/coordinator/handoff-routing-status.js';
+import {
+  handoffRoutingStatusStoreSchema,
+  type HandoffRoutingResolveResult,
+} from '#src/coordinator/handoff-routing-status.js';
+import { handoffRoutingStatusGeneration } from '#src/store/handoff-routing-status-store.js';
 
 const INVOCATION_ID = '123e4567-e89b-42d3-a456-426614174000';
+const HANDOFF_ROUTING_STATUS_GENERATION = handoffRoutingStatusGeneration(handoffRoutingStatusStoreSchema());
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -242,7 +246,7 @@ describe('backend routing-status resolve grammar', () => {
         invocationId: INVOCATION_ID,
         cause: 'generation-maintenance',
       },
-      'wait for generation maintenance to finish',
+      'maintenance lease has gone ten minutes without a heartbeat',
     ],
     [
       {
@@ -422,7 +426,7 @@ describe('backend routing-status resolve grammar', () => {
     ],
     [
       { kind: 'generation-maintenance-unavailable', cause: 'contended' } as const,
-      'wait for generation maintenance to finish',
+      'maintenance lease has gone ten minutes without a heartbeat',
       75,
     ],
     [
