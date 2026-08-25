@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { basename, dirname, join } from 'node:path';
 
 import type { SqliteDatabasePort, StoragePort } from '../infra/port-types.js';
@@ -29,7 +30,6 @@ export type HandoffRoutingStatusQuarantineList = Readonly<{
 export class HandoffRoutingStatusQuarantineCapacityError extends Error {}
 
 export type HandoffRoutingStatusStoreSchema = Readonly<{
-  generation: number;
   maximumBytes: number;
   maximumIdentifierLength: number;
   maximumObservedAtLength: number;
@@ -65,9 +65,15 @@ export type HandoffRoutingRecordInput = Readonly<{
   selectionSequence: number | null;
   retirementCause: 'selection-evicted-at-capacity' | 'completed-pair-compaction' | 'operator-resolved' | null;
   terminalExisted: boolean | null;
-  completedPairStable: boolean;
   bodyJson: string;
 }>;
+
+const COMPLETED_PAIR_STABLE_SQL = `(
+  (
+    json_extract(selection.body_json, '$.disposition.kind') = 'continue-current' AND
+    json_extract(selection.body_json, '$.disposition.basis.kind') IN ('incumbent-absent', 'same-build-set')
+  ) OR json_extract(terminal.body_json, '$.disposition.kind') = 'delegated-success'
+)`;
 
 export type HandoffRoutingRetirementHistoryRow = Readonly<{
   generation: number;
@@ -145,9 +151,8 @@ export class HandoffRoutingStatusTransaction {
           selection_sequence,
           retirement_cause,
           terminal_existed,
-          completed_pair_stable,
           body_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING sequence`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING sequence`,
       )
       .get(
         record.generation,
@@ -159,7 +164,6 @@ export class HandoffRoutingStatusTransaction {
         record.selectionSequence,
         record.retirementCause,
         record.terminalExisted === null ? null : Number(record.terminalExisted),
-        Number(record.completedPairStable),
         record.bodyJson,
       ) as Readonly<{ sequence: number }> | undefined;
     if (inserted?.sequence !== record.sequence) throw new HandoffRoutingStoreUnreadableError();
@@ -257,7 +261,7 @@ export class HandoffRoutingStatusTransaction {
           JOIN handoff_routing_records AS terminal ON terminal.invocation_id = selection.invocation_id
           WHERE selection.record_kind = 'selection'
             AND terminal.record_kind = 'terminal'
-            AND (selection.completed_pair_stable OR terminal.completed_pair_stable)
+            AND ${COMPLETED_PAIR_STABLE_SQL}
           ORDER BY selection.sequence DESC
           LIMIT 1
         )
@@ -332,7 +336,7 @@ export class HandoffRoutingStatusTransaction {
             selection.sequence,
             selection.observed_at,
             selection.body_json,
-            selection.completed_pair_stable OR terminal.completed_pair_stable AS stable
+            ${COMPLETED_PAIR_STABLE_SQL} AS stable
           FROM handoff_routing_records AS selection
           JOIN handoff_routing_records AS terminal ON terminal.invocation_id = selection.invocation_id
           WHERE selection.record_kind = 'selection' AND terminal.record_kind = 'terminal'
@@ -596,7 +600,7 @@ export type HandoffRoutingStoreSnapshotRead =
 export function readHandoffRoutingStoreSnapshot(
   storage: StoragePort,
   path: string,
-  generation: number,
+  schema: HandoffRoutingStatusStoreSchema,
 ): HandoffRoutingStoreSnapshotRead {
   try {
     storage.assertReadableSync(path);
@@ -615,7 +619,13 @@ export function readHandoffRoutingStoreSnapshot(
     transactionOpen = true;
     const storedGeneration = (database.prepare('PRAGMA user_version').get() as Readonly<{ user_version: number }>)
       .user_version;
-    if (storedGeneration !== generation) {
+    if (storedGeneration !== HANDOFF_ROUTING_STATUS_GENERATION) {
+      database.exec('COMMIT');
+      transactionOpen = false;
+      return { kind: 'unsupported-generation', generation: storedGeneration };
+    }
+    const schemaMatches = databaseSchemaMatches(database, schema);
+    if (!schemaMatches) {
       database.exec('COMMIT');
       transactionOpen = false;
       return { kind: 'unsupported-generation', generation: storedGeneration };
@@ -706,27 +716,32 @@ function initializeOrValidateDatabase(database: SqliteDatabasePort, schema: Hand
           operator_resolved_count
         ) VALUES (1, ?, 0, 0, 0, 0)`,
       )
-      .run(schema.generation);
-    database.exec(`PRAGMA user_version=${schema.generation}`);
+      .run(HANDOFF_ROUTING_STATUS_GENERATION);
+    database.exec(`PRAGMA user_version=${HANDOFF_ROUTING_STATUS_GENERATION}`);
     return;
   }
-  if (generation !== schema.generation) throw new HandoffRoutingStoreUnsupportedGenerationError();
+  if (generation !== HANDOFF_ROUTING_STATUS_GENERATION) {
+    throw new HandoffRoutingStoreUnsupportedGenerationError();
+  }
+  const schemaMatches = databaseSchemaMatches(database, schema);
+  if (!schemaMatches) {
+    throw new HandoffRoutingStoreUnsupportedGenerationError();
+  }
   try {
     const metadata = database.prepare('SELECT generation FROM handoff_routing_metadata WHERE singleton = 1').get() as
       | Readonly<{ generation: number }>
       | undefined;
-    if (metadata?.generation !== schema.generation) throw new HandoffRoutingStoreUnreadableError();
+    if (metadata?.generation !== HANDOFF_ROUTING_STATUS_GENERATION) throw new HandoffRoutingStoreUnreadableError();
   } catch (error) {
     if (error instanceof HandoffRoutingStoreUnreadableError) throw error;
     throw new HandoffRoutingStoreUnreadableError(errorNumber(error, SQLITE_CORRUPT));
   }
 }
 
-function schemaSql(schema: HandoffRoutingStatusStoreSchema): string {
-  return `
+const HANDOFF_ROUTING_STATUS_SCHEMA_SQL = `
     CREATE TABLE handoff_routing_metadata (
       singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-      generation INTEGER NOT NULL CHECK (generation = ${schema.generation}),
+      generation INTEGER NOT NULL CHECK (generation = __HANDOFF_ROUTING_STATUS_GENERATION__),
       expired_identity_count INTEGER NOT NULL CHECK (expired_identity_count >= 0),
       capacity_eviction_count INTEGER NOT NULL CHECK (capacity_eviction_count >= 0),
       completed_pair_compaction_count INTEGER NOT NULL CHECK (completed_pair_compaction_count >= 0),
@@ -749,10 +764,10 @@ function schemaSql(schema: HandoffRoutingStatusStoreSchema): string {
 
     CREATE TABLE handoff_routing_records (
       sequence INTEGER PRIMARY KEY AUTOINCREMENT,
-      generation INTEGER NOT NULL CHECK (generation = ${schema.generation}),
-      event_id TEXT NOT NULL UNIQUE CHECK (length(event_id) BETWEEN 1 AND ${schema.maximumIdentifierLength}),
-      invocation_id TEXT NOT NULL CHECK (length(invocation_id) BETWEEN 1 AND ${schema.maximumIdentifierLength}),
-      observed_at TEXT NOT NULL CHECK (length(observed_at) BETWEEN 1 AND ${schema.maximumObservedAtLength}),
+      generation INTEGER NOT NULL CHECK (generation = __HANDOFF_ROUTING_STATUS_GENERATION__),
+      event_id TEXT NOT NULL UNIQUE CHECK (length(event_id) BETWEEN 1 AND __MAXIMUM_IDENTIFIER_LENGTH__),
+      invocation_id TEXT NOT NULL CHECK (length(invocation_id) BETWEEN 1 AND __MAXIMUM_IDENTIFIER_LENGTH__),
+      observed_at TEXT NOT NULL CHECK (length(observed_at) BETWEEN 1 AND __MAXIMUM_OBSERVED_AT_LENGTH__),
       record_kind TEXT NOT NULL CHECK (record_kind IN ('selection', 'terminal', 'retirement')),
       event_kind TEXT NOT NULL CHECK (
         event_kind IN ('routing-selected', 'execution-failed', 'continuation-finalized', 'retirement-tombstone')
@@ -764,7 +779,6 @@ function schemaSql(schema: HandoffRoutingStatusStoreSchema): string {
       terminal_existed INTEGER CHECK (terminal_existed IN (0, 1)),
       body_json TEXT NOT NULL CHECK (json_valid(body_json)),
       encoded_bytes INTEGER GENERATED ALWAYS AS (length(CAST(body_json AS BLOB))) STORED,
-      completed_pair_stable INTEGER NOT NULL CHECK (completed_pair_stable IN (0, 1)),
       CHECK (
         (record_kind = 'selection' AND event_kind = 'routing-selected' AND selection_sequence IS NULL AND
           retirement_cause IS NULL AND terminal_existed IS NULL) OR
@@ -781,24 +795,24 @@ function schemaSql(schema: HandoffRoutingStatusStoreSchema): string {
       CHECK (json_extract(body_json, '$.eventKind') = event_kind),
       CHECK (
         (record_kind = 'selection' AND json_extract(body_json, '$.phase') = 'selection' AND
-          encoded_bytes <= ${schema.maximumRoutingSelectedBytes}) OR
+          encoded_bytes <= __MAXIMUM_ROUTING_SELECTED_BYTES__) OR
         (record_kind = 'terminal' AND json_extract(body_json, '$.phase') = 'terminal' AND
-          ((event_kind = 'execution-failed' AND encoded_bytes <= ${schema.maximumExecutionFailedBytes}) OR
+          ((event_kind = 'execution-failed' AND encoded_bytes <= __MAXIMUM_EXECUTION_FAILED_BYTES__) OR
            (event_kind = 'continuation-finalized' AND
-            encoded_bytes <= ${schema.maximumContinuationFinalizedBytes}))) OR
+            encoded_bytes <= __MAXIMUM_CONTINUATION_FINALIZED_BYTES__))) OR
         (record_kind = 'retirement' AND json_extract(body_json, '$.phase') = 'retirement' AND
           json_extract(body_json, '$.selectionSequence') = selection_sequence AND
           json_extract(body_json, '$.retirementCause') = retirement_cause AND
           json_extract(body_json, '$.terminalExisted') = terminal_existed AND
-          encoded_bytes <= ${schema.maximumRetirementTombstoneBytes})
+          encoded_bytes <= __MAXIMUM_RETIREMENT_TOMBSTONE_BYTES__)
       )
     ) STRICT;
 
     CREATE TABLE handoff_routing_closing_reserve (
-      invocation_id TEXT PRIMARY KEY CHECK (length(invocation_id) BETWEEN 1 AND ${schema.maximumIdentifierLength}),
-      event_id TEXT NOT NULL UNIQUE CHECK (length(event_id) BETWEEN 1 AND ${schema.maximumIdentifierLength}),
-      observed_at TEXT NOT NULL CHECK (length(observed_at) BETWEEN 1 AND ${schema.maximumObservedAtLength}),
-      allocation BLOB NOT NULL CHECK (length(allocation) = ${schema.closingRecordBytes})
+      invocation_id TEXT PRIMARY KEY CHECK (length(invocation_id) BETWEEN 1 AND __MAXIMUM_IDENTIFIER_LENGTH__),
+      event_id TEXT NOT NULL UNIQUE CHECK (length(event_id) BETWEEN 1 AND __MAXIMUM_IDENTIFIER_LENGTH__),
+      observed_at TEXT NOT NULL CHECK (length(observed_at) BETWEEN 1 AND __MAXIMUM_OBSERVED_AT_LENGTH__),
+      allocation BLOB NOT NULL CHECK (length(allocation) = __CLOSING_RECORD_BYTES__)
     ) STRICT;
 
     CREATE UNIQUE INDEX handoff_routing_selection_or_retirement_per_invocation
@@ -821,6 +835,68 @@ function schemaSql(schema: HandoffRoutingStatusStoreSchema): string {
         )
       );
   `;
+
+const schemaFingerprint = createHash('sha256').update(HANDOFF_ROUTING_STATUS_SCHEMA_SQL, 'utf-8').digest();
+export const HANDOFF_ROUTING_STATUS_GENERATION = (schemaFingerprint.readUInt32BE(0) % 0x7fff_ffff) + 1;
+
+function schemaSql(schema: HandoffRoutingStatusStoreSchema): string {
+  return HANDOFF_ROUTING_STATUS_SCHEMA_SQL.replaceAll(
+    '__HANDOFF_ROUTING_STATUS_GENERATION__',
+    String(HANDOFF_ROUTING_STATUS_GENERATION),
+  )
+    .replaceAll('__MAXIMUM_IDENTIFIER_LENGTH__', String(schema.maximumIdentifierLength))
+    .replaceAll('__MAXIMUM_OBSERVED_AT_LENGTH__', String(schema.maximumObservedAtLength))
+    .replaceAll('__MAXIMUM_ROUTING_SELECTED_BYTES__', String(schema.maximumRoutingSelectedBytes))
+    .replaceAll('__MAXIMUM_EXECUTION_FAILED_BYTES__', String(schema.maximumExecutionFailedBytes))
+    .replaceAll('__MAXIMUM_CONTINUATION_FINALIZED_BYTES__', String(schema.maximumContinuationFinalizedBytes))
+    .replaceAll('__MAXIMUM_RETIREMENT_TOMBSTONE_BYTES__', String(schema.maximumRetirementTombstoneBytes))
+    .replaceAll('__CLOSING_RECORD_BYTES__', String(schema.closingRecordBytes));
+}
+
+type HandoffRoutingSchemaObject = Readonly<{
+  type: 'table' | 'index';
+  name: string;
+  sql: string | null;
+}>;
+
+function canonicalSchemaSql(sql: string): string {
+  return sql.trim().replace(/;$/u, '').replace(/\s+/gu, ' ');
+}
+
+function expectedSchemaObjects(schema: HandoffRoutingStatusStoreSchema): readonly HandoffRoutingSchemaObject[] {
+  return schemaSql(schema)
+    .split(';')
+    .map((sql) => sql.trim())
+    .filter((sql) => sql.length > 0)
+    .map((sql) => {
+      const match = /^CREATE (?:UNIQUE )?(TABLE|INDEX) ([a-z0-9_]+)/iu.exec(sql);
+      const type = match?.[1]?.toLowerCase();
+      const name = match?.[2];
+      if ((type !== 'table' && type !== 'index') || name === undefined) {
+        throw new Error('Handoff routing schema contains an unaddressed object.');
+      }
+      return { type, name, sql };
+    });
+}
+
+function databaseSchemaMatches(database: SqliteDatabasePort, schema: HandoffRoutingStatusStoreSchema): boolean {
+  const observed = database
+    .prepare(
+      `SELECT type, name, sql
+       FROM sqlite_master
+       WHERE name NOT LIKE 'sqlite_%' AND type IN ('table', 'index')`,
+    )
+    .all() as readonly HandoffRoutingSchemaObject[];
+  const expected = expectedSchemaObjects(schema);
+  const observedByName = new Map(observed.map((object) => [object.name, object]));
+  return expected.every((object) => {
+    const candidate = observedByName.get(object.name);
+    return (
+      candidate?.type === object.type &&
+      candidate.sql !== null &&
+      canonicalSchemaSql(candidate.sql) === canonicalSchemaSql(object.sql ?? '')
+    );
+  });
 }
 
 function rollback(database: SqliteDatabasePort | undefined, transactionOpen: boolean, commitStarted: boolean): void {

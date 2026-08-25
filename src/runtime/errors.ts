@@ -242,7 +242,9 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
   },
   legacy_source_not_quiescent: {
     userMessage: (context) =>
-      `The generation-boundary operation cannot proceed while ${stringContextValue(context, 'holder', '<writer-lease-holder>')} remains active.`,
+      context?.writerObservation === 'unknown'
+        ? `The generation-boundary operation cannot determine whether ${stringContextValue(context, 'holder', '<writer-lease-holder>')} is still active.`
+        : `The generation-boundary operation cannot proceed while ${stringContextValue(context, 'holder', '<writer-lease-holder>')} remains active.`,
     remediation: (context) => {
       const retry = stringContextValue(
         context,
@@ -251,6 +253,9 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
           ? `coral-cli backend store-reset discard --target gen2 --flavor ${stringContextValue(context, 'flavor', '<prod|dev>')}`
           : 'the operator command you ran',
       );
+      if (context?.writerObservation === 'unknown') {
+        return `Restore process-identity and liveness observation for '${stringContextValue(context, 'holder', '<writer-lease-holder>')}', then retry '${retry}'. If that writer has exited, its lease becomes reclaimable after ten minutes without a heartbeat; retry after that bound instead of deleting the lease.`;
+      }
       return `Run this build's own 'coral-cli backend shutdown'. Wait for '${stringContextValue(context, 'holder', '<writer-lease-holder>')}' to exit and release its lease or lock, then retry '${retry}'.`;
     },
   },

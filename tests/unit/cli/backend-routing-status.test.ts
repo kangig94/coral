@@ -8,6 +8,7 @@ import {
 } from '#src/cli/commands/backend.js';
 import { formatHandoffRoutingResolveResult } from '#src/cli/format/backend.js';
 import { parseHandoffRepairOperation } from '#src/coordinator/handoff-repair-operation.js';
+import { HANDOFF_ROUTING_STATUS_GENERATION } from '#src/store/handoff-routing-status-store.js';
 import type { HandoffRoutingResolveResult } from '#src/coordinator/handoff-routing-status.js';
 
 const INVOCATION_ID = '123e4567-e89b-42d3-a456-426614174000';
@@ -351,8 +352,8 @@ describe('backend routing-status resolve grammar', () => {
       },
       discard: () => ({
         kind: 'discarded',
-        artifactPath: '/state/run/handoff-routing.1.db',
-        quarantinePath: '/state/run/handoff-routing-quarantine/handoff-routing.1.db.event-id',
+        artifactPath: `/state/run/handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db`,
+        quarantinePath: `/state/run/handoff-routing-quarantine/handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db.event-id`,
         previousStatus: { kind: 'unreadable', reason: 'invalid-shape' },
       }),
     };
@@ -363,7 +364,7 @@ describe('backend routing-status resolve grammar', () => {
     await program.parseAsync(['node', 'coral-cli', 'backend', 'routing-status', 'discard']);
 
     expect(stdout).toHaveBeenCalledWith(
-      'Quarantined routing status from /state/run/handoff-routing.1.db at /state/run/handoff-routing-quarantine/handoff-routing.1.db.event-id.\n',
+      `Quarantined routing status from /state/run/handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db at /state/run/handoff-routing-quarantine/handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db.event-id.\n`,
     );
     expect(process.exitCode).toBe(0);
   });
@@ -375,7 +376,7 @@ describe('backend routing-status resolve grammar', () => {
         kind: 'refused',
         status: {
           kind: 'current',
-          generation: 1,
+          generation: HANDOFF_ROUTING_STATUS_GENERATION,
           statuses: [],
           retirementHistoryTruncated: {
             kind: 'retirement-history-truncated',
@@ -425,6 +426,15 @@ describe('backend routing-status resolve grammar', () => {
       75,
     ],
     [
+      {
+        kind: 'generation-maintenance-unavailable',
+        cause: 'writer-observation-unknown',
+        holder: 'routing-status:handoff-routing-status (pid 42)',
+      } as const,
+      'retry after the lease has gone ten minutes without a heartbeat; do not delete the lease',
+      75,
+    ],
+    [
       { kind: 'generation-maintenance-unavailable', cause: 'ownership-lost' } as const,
       'repair the generation coordination root, rerun coral-cli backend status, then retry',
       75,
@@ -460,7 +470,7 @@ describe('backend routing-status resolve grammar', () => {
         entries: [
           {
             id: INVOCATION_ID,
-            quarantinePath: `/state/run/handoff-routing-quarantine/handoff-routing.1.db.${INVOCATION_ID}`,
+            quarantinePath: `/state/run/handoff-routing-quarantine/handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db.${INVOCATION_ID}`,
             state: 'incomplete',
             artifacts: ['wal'],
           },
@@ -488,7 +498,7 @@ describe('backend routing-status resolve grammar', () => {
       kind: 'cleared' as const,
       entry: {
         id: quarantineId,
-        quarantinePath: `/state/run/handoff-routing-quarantine/handoff-routing.1.db.${quarantineId}`,
+        quarantinePath: `/state/run/handoff-routing-quarantine/handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db.${quarantineId}`,
         state: 'complete' as const,
         artifacts: ['database' as const],
       },

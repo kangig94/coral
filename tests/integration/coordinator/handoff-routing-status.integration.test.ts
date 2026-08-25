@@ -1,7 +1,7 @@
 import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { createInterface } from 'node:readline';
 import { DatabaseSync } from 'node:sqlite';
@@ -25,7 +25,9 @@ import {
 } from '#src/coordinator/handoff-routing-status.js';
 import { discardHandoffRoutingStatus } from '#src/cli/routing-status-discard.js';
 import { createRealRuntime } from '#src/runtime/real.js';
+import type { Runtime } from '#src/runtime/ports.js';
 import { acquireGenerationMaintenanceLease } from '#src/store/generation-mutation-coordination.js';
+import { HANDOFF_ROUTING_STATUS_GENERATION } from '#src/store/handoff-routing-status-store.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
 const FORMER_DIRECTORY_LOCK_STALE_MS = 30_000;
@@ -64,7 +66,7 @@ type ContentionResult = Readonly<{
 function databasePath(): string {
   const directory = mkdtempSync(join(tmpdir(), 'coral-handoff-routing-integration-'));
   temporaryDirectories.push(directory);
-  return join(directory, 'handoff-routing.1.db');
+  return join(directory, `handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db`);
 }
 
 function owner(pid = process.pid): Readonly<{ pid: number; incarnation: ReturnType<typeof testIncarnation> }> {
@@ -154,6 +156,17 @@ async function committed(path: string, transition: HandoffRoutingTransition): Pr
   const outcome = await publishHandoffRoutingTransitions(runtime, path, [transition]);
   expect(outcome.kind).toBe('committed');
   if (outcome.kind !== 'committed') throw new Error(`Expected commit, received ${outcome.kind}`);
+  return outcome.sequence;
+}
+
+async function generationCoordinatedCommitted(
+  coordinatedRuntime: Runtime,
+  path: string,
+  transition: HandoffRoutingTransition,
+): Promise<number> {
+  const outcome = await publishGenerationCoordinatedHandoffRoutingTransitions(coordinatedRuntime, path, [transition]);
+  expect(outcome.kind).toBe('committed');
+  if (outcome.kind !== 'committed') throw new Error(`Expected coordinated commit, received ${outcome.kind}`);
   return outcome.sequence;
 }
 
@@ -279,20 +292,21 @@ function percentile95(values: readonly number[]): number {
   return sorted[Math.ceil(sorted.length * 0.95) - 1];
 }
 
-async function populateMaximumRetainedStore(path: string): Promise<void> {
+async function populateMaximumRetainedStore(coordinatedRuntime: Runtime, path: string): Promise<void> {
   for (let index = 0; index < MAX_COMPLETED_HANDOFF_ROUTING_PAIRS; index += 1) {
     const identity = `retained-pair-${index}`;
-    const selected = await committed(path, maximumSelection(identity));
-    await committed(path, maximumTerminal(identity, selected));
+    const selected = await generationCoordinatedCommitted(coordinatedRuntime, path, maximumSelection(identity));
+    await generationCoordinatedCommitted(coordinatedRuntime, path, maximumTerminal(identity, selected));
   }
   const openings = Array.from({ length: MAX_UNRESOLVED_INVOCATIONS + MAX_RETIREMENT_TOMBSTONES }, (_, index) =>
     maximumSelection(`retained-opening-${index}`),
   );
-  const outcome = await publishHandoffRoutingTransitions(runtime, path, openings);
+  const outcome = await publishGenerationCoordinatedHandoffRoutingTransitions(coordinatedRuntime, path, openings);
   expect(outcome.kind).toBe('committed');
 }
 
 async function benchmarkSequential(
+  coordinatedRuntime: Runtime,
   path: string,
 ): Promise<Readonly<{ publicationP95Ms: number; lifecycleMaxMs: number }>> {
   const publications: number[] = [];
@@ -301,20 +315,24 @@ async function benchmarkSequential(
     const identity = `sequential-${index}`;
     const lifecycleStarted = performance.now();
     const selectionStarted = performance.now();
-    const selected = await committed(path, selection(identity, 2_000 + index * 2));
+    const selected = await generationCoordinatedCommitted(
+      coordinatedRuntime,
+      path,
+      selection(identity, 2_000 + index * 2),
+    );
     publications.push(performance.now() - selectionStarted);
     const terminalStarted = performance.now();
-    await committed(path, terminal(identity, 2_001 + index * 2, selected));
+    await generationCoordinatedCommitted(coordinatedRuntime, path, terminal(identity, 2_001 + index * 2, selected));
     publications.push(performance.now() - terminalStarted);
     lifecycles.push(performance.now() - lifecycleStarted);
   }
   return { publicationP95Ms: percentile95(publications), lifecycleMaxMs: Math.max(...lifecycles) };
 }
 
-async function benchmarkRetryContention(path: string): Promise<number> {
-  const retryHolder = spawnWriter('hold-transaction', path);
+async function benchmarkRetryContention(path: string, baseDir: string): Promise<number> {
+  const retryHolder = spawnWriter('hold-transaction', path, 'retry-holder', baseDir);
   expect(await nextLine(retryHolder)).toBe('holding-transaction');
-  const retryingWriter = spawnWriter('contended-selection', path, 'retrying-contender');
+  const retryingWriter = spawnWriter('contended-selection', path, 'retrying-contender', baseDir);
   expect(await nextLine(retryingWriter)).toBe('ready');
   resumeWriter(retryingWriter);
   expect(await nextLine(retryingWriter)).toBe('contended');
@@ -325,10 +343,10 @@ async function benchmarkRetryContention(path: string): Promise<number> {
   return retried.elapsedMs;
 }
 
-async function benchmarkRefusalContention(path: string): Promise<number> {
-  const refusalHolder = spawnWriter('hold-transaction', path);
+async function benchmarkRefusalContention(path: string, baseDir: string): Promise<number> {
+  const refusalHolder = spawnWriter('hold-transaction', path, 'refusal-holder', baseDir);
   expect(await nextLine(refusalHolder)).toBe('holding-transaction');
-  const refusingWriter = spawnWriter('contended-selection', path, 'refusing-contender');
+  const refusingWriter = spawnWriter('contended-selection', path, 'refusing-contender', baseDir);
   expect(await nextLine(refusingWriter)).toBe('ready');
   resumeWriter(refusingWriter);
   expect(await nextLine(refusingWriter)).toBe('contended');
@@ -341,11 +359,12 @@ async function benchmarkRefusalContention(path: string): Promise<number> {
 
 async function benchmarkConcurrentLifecycles(
   path: string,
+  baseDir: string,
 ): Promise<Readonly<{ publicationP95Ms: number; lifecycleP95Ms: number }>> {
   const results: BenchmarkResult[] = [];
   for (let batch = 0; batch < BENCHMARK_LIFECYCLES / CONCURRENT_WRITERS; batch += 1) {
     const writers = Array.from({ length: CONCURRENT_WRITERS }, (_, slot) =>
-      spawnWriter('lifecycle', path, `concurrent-${batch}-${slot}`),
+      spawnWriter('lifecycle', path, `concurrent-${batch}-${slot}`, baseDir),
     );
     await Promise.all(
       writers.map(async (writer) => {
@@ -380,7 +399,10 @@ async function benchmarkConcurrentLifecycles(
   };
 }
 
-async function benchmarkConcurrent(path: string): Promise<
+async function benchmarkConcurrent(
+  path: string,
+  baseDir: string,
+): Promise<
   Readonly<{
     publicationP95Ms: number;
     lifecycleP95Ms: number;
@@ -388,9 +410,9 @@ async function benchmarkConcurrent(path: string): Promise<
     refusalMs: number;
   }>
 > {
-  const retryCommitMs = await benchmarkRetryContention(path);
-  const refusalMs = await benchmarkRefusalContention(path);
-  const lifecycles = await benchmarkConcurrentLifecycles(path);
+  const retryCommitMs = await benchmarkRetryContention(path, baseDir);
+  const refusalMs = await benchmarkRefusalContention(path, baseDir);
+  const lifecycles = await benchmarkConcurrentLifecycles(path, baseDir);
   return { ...lifecycles, retryCommitMs, refusalMs };
 }
 
@@ -421,7 +443,10 @@ describe('handoff routing status transaction durability', () => {
     const baseDir = mkdtempSync(join(tmpdir(), 'coral-handoff-routing-maintenance-'));
     temporaryDirectories.push(baseDir);
     const isolatedRuntime = createRealRuntime('prod', { baseDir });
-    const path = join(isolatedRuntime.paths.coral.coordinator.runDir, 'handoff-routing.1.db');
+    const path = join(
+      isolatedRuntime.paths.coral.coordinator.runDir,
+      `handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db`,
+    );
     const maintenance = await acquireGenerationMaintenanceLease(isolatedRuntime);
     const writer = spawnWriter('coordinated-publication', path, 'after-maintenance', baseDir);
     try {
@@ -445,7 +470,10 @@ describe('handoff routing status transaction durability', () => {
       const baseDir = mkdtempSync(join(tmpdir(), 'coral-handoff-routing-discard-race-'));
       temporaryDirectories.push(baseDir);
       const isolatedRuntime = createRealRuntime('prod', { baseDir });
-      const path = join(isolatedRuntime.paths.coral.coordinator.runDir, 'handoff-routing.1.db');
+      const path = join(
+        isolatedRuntime.paths.coral.coordinator.runDir,
+        `handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db`,
+      );
       mkdirSync(isolatedRuntime.paths.coral.coordinator.runDir, { recursive: true });
       writeFileSync(path, 'not a sqlite database', { mode: 0o600 });
 
@@ -631,7 +659,7 @@ describe('handoff routing status transaction durability', () => {
     async () => {
       const path = databasePath();
       await committed(path, selection('previous', 0));
-      const writer = spawnWriter('after-commit', path, 'next');
+      const writer = spawnWriter('after-commit', path, 'next', dirname(path));
       expect(await nextLine(writer)).toBe('after-commit');
       const pid = writer.child.pid;
       if (pid === undefined) throw new Error('Writer has no pid');
@@ -649,14 +677,16 @@ describe('handoff routing status transaction durability', () => {
     'commits maximum-retained-store lifecycles and reports sequential and concurrent timings',
     async () => {
       const path = databasePath();
-      await populateMaximumRetainedStore(path);
+      const baseDir = dirname(path);
+      const coordinatedRuntime = createRealRuntime('prod', { baseDir });
+      await populateMaximumRetainedStore(coordinatedRuntime, path);
       const retained = retainedRecordCounts(path);
       expect(retained.unresolved).toBe(MAX_UNRESOLVED_INVOCATIONS);
       expect(retained.completedPairs).toBeLessThan(MAX_COMPLETED_HANDOFF_ROUTING_PAIRS);
       expect(retained.tombstones).toBeGreaterThan(0);
       expect(retained.tombstones).toBeLessThanOrEqual(MAX_RETIREMENT_TOMBSTONES);
-      const sequential = await benchmarkSequential(path);
-      const concurrent = await benchmarkConcurrent(path);
+      const sequential = await benchmarkSequential(coordinatedRuntime, path);
+      const concurrent = await benchmarkConcurrent(path, baseDir);
       const measurements = { platform: process.platform, sequential, concurrent };
       console.info(`HANDOFF_ROUTING_BENCHMARK ${JSON.stringify(measurements)}`);
     },

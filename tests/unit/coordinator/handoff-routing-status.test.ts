@@ -10,7 +10,6 @@ import {
   HANDOFF_CONTINUATION_REASON_POLICY_PROJECTIONS,
   HANDOFF_ROUTING_COMPLETED_RETENTION_MS,
   MAX_HANDOFF_ROUTING_OWNER_SWEEP_MS,
-  HANDOFF_ROUTING_STATUS_GENERATION,
   MAX_COMPLETED_HANDOFF_ROUTING_PAIRS,
   MAX_ENCODED_RETIREMENT_TOMBSTONE_BYTES,
   MAX_HANDOFF_ROUTING_STATUS_BYTES,
@@ -38,6 +37,7 @@ import {
 } from '#src/coordinator/handoff-routing-status.js';
 import { formatHandoffRoutingStatus } from '#src/cli/format/backend.js';
 import type { ProcessIdentityObservation } from '#src/infra/port-types.js';
+import { tryAcquireDirectoryLock } from '#src/infra/fs-lock.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { clearHandoffRoutingStatusQuarantine, discardHandoffRoutingStatus } from '#src/cli/routing-status-discard.js';
@@ -45,11 +45,13 @@ import { acquireOperatorSocketGuard } from '#src/cli/operator-socket-guard.js';
 import {
   acquireGenerationMaintenanceLease,
   resolveGenerationBoundaryPaths,
+  tryAcquireGenerationWriterLease,
 } from '#src/store/generation-mutation-coordination.js';
 import { SimulationRuntime } from '../../../tools/simulation/runtime.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import type { SqliteDatabasePort, StoragePort } from '#src/infra/port-types.js';
 import {
+  HANDOFF_ROUTING_STATUS_GENERATION,
   MAX_HANDOFF_ROUTING_STATUS_QUARANTINES,
   SQLITE_FULL,
   listHandoffRoutingStoreQuarantines,
@@ -69,7 +71,7 @@ function at(offsetMs: number): string {
 function databasePath(): string {
   const directory = mkdtempSync(join(tmpdir(), 'coral-handoff-routing-'));
   temporaryDirectories.push(directory);
-  return join(directory, 'handoff-routing.1.db');
+  return join(directory, `handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db`);
 }
 
 function selection(
@@ -188,9 +190,8 @@ function insertTombstoneFixture(db: DatabaseSync, tombstone: RetirementTombstone
       selection_sequence,
       retirement_cause,
       terminal_existed,
-      completed_pair_stable,
       body_json
-    ) VALUES (?, ?, ?, ?, ?, 'retirement', 'retirement-tombstone', ?, ?, ?, 0, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, 'retirement', 'retirement-tombstone', ?, ?, ?, ?)`,
   ).run(
     tombstone.sequence,
     tombstone.generation,
@@ -204,47 +205,17 @@ function insertTombstoneFixture(db: DatabaseSync, tombstone: RetirementTombstone
   );
 }
 
-function createReadFixtureDatabase(
+async function createReadFixtureDatabase(
   path: string,
-  rows: readonly Readonly<{ recordKind: 'selection'; bodyJson: string | null }>[],
-): void {
+  rows: readonly Readonly<{ recordKind: 'selection'; bodyJson: string }>[],
+): Promise<void> {
+  await committed(path, [selection('read-fixture-seed', 0)]);
   const db = new DatabaseSync(path);
   try {
     db.exec(`
-      CREATE TABLE handoff_routing_metadata (
-        singleton INTEGER PRIMARY KEY,
-        generation INTEGER NOT NULL,
-        expired_identity_count INTEGER NOT NULL,
-        capacity_eviction_count INTEGER NOT NULL,
-        completed_pair_compaction_count INTEGER NOT NULL,
-        operator_resolved_count INTEGER NOT NULL,
-        min_selection_sequence INTEGER,
-        max_selection_sequence INTEGER,
-        earliest_selected_at TEXT,
-        latest_selected_at TEXT
-      );
-      CREATE TABLE handoff_routing_records (
-        sequence INTEGER PRIMARY KEY,
-        generation INTEGER NOT NULL,
-        event_id TEXT NOT NULL,
-        invocation_id TEXT NOT NULL,
-        observed_at TEXT NOT NULL,
-        record_kind TEXT NOT NULL,
-        event_kind TEXT NOT NULL,
-        selection_sequence INTEGER,
-        retirement_cause TEXT,
-        terminal_existed INTEGER,
-        body_json TEXT,
-        encoded_bytes INTEGER
-      );
-      CREATE TABLE handoff_routing_closing_reserve (
-        invocation_id TEXT PRIMARY KEY,
-        event_id TEXT NOT NULL,
-        observed_at TEXT NOT NULL,
-        allocation BLOB NOT NULL
-      );
-      INSERT INTO handoff_routing_metadata VALUES (${HANDOFF_ROUTING_STATUS_GENERATION}, ${HANDOFF_ROUTING_STATUS_GENERATION}, 0, 0, 0, 0, NULL, NULL, NULL, NULL);
-      PRAGMA user_version=${HANDOFF_ROUTING_STATUS_GENERATION};
+      PRAGMA ignore_check_constraints=ON;
+      DELETE FROM handoff_routing_records;
+      DELETE FROM handoff_routing_closing_reserve;
     `);
     const insert = db.prepare(
       `INSERT INTO handoff_routing_records (
@@ -258,9 +229,8 @@ function createReadFixtureDatabase(
         selection_sequence,
         retirement_cause,
         terminal_existed,
-        body_json,
-        encoded_bytes
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)`,
+        body_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?)`,
     );
     rows.forEach((row, index) => {
       insert.run(
@@ -272,7 +242,6 @@ function createReadFixtureDatabase(
         row.recordKind,
         'routing-selected',
         row.bodyJson,
-        typeof row.bodyJson === 'string' ? Buffer.byteLength(row.bodyJson, 'utf8') : null,
       );
       db.prepare(
         `INSERT INTO handoff_routing_closing_reserve (invocation_id, event_id, observed_at, allocation)
@@ -326,7 +295,7 @@ describe('handoff routing status', () => {
 
   it('publishes through simulation storage without touching the host path', async () => {
     const simulation = new SimulationRuntime();
-    const path = '/simulation-only/handoff-routing.1.db';
+    const path = `/simulation-only/handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db`;
 
     expect(existsSync(path)).toBe(false);
     await expect(publishHandoffRoutingTransitions(simulation, path, [selection('simulated', 1)])).resolves.toEqual({
@@ -343,7 +312,7 @@ describe('handoff routing status', () => {
 
   it('restores, unlinks, and recreates the simulated SQLite artifact with the virtual filesystem', async () => {
     const simulation = new SimulationRuntime();
-    const path = '/simulation-only/handoff-routing.1.db';
+    const path = `/simulation-only/handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db`;
     await expect(
       publishHandoffRoutingTransitions(simulation, path, [selection('before-snapshot', 1)]),
     ).resolves.toMatchObject({
@@ -362,7 +331,7 @@ describe('handoff routing status', () => {
       statuses: [{ selection: { invocationId: 'before-snapshot' } }],
     });
 
-    const renamedPath = '/simulation-only/renamed-handoff-routing.1.db';
+    const renamedPath = `/simulation-only/renamed-handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db`;
     simulation.storage.renameSync(path, renamedPath);
     expect(readHandoffRoutingStatusWithRuntime(simulation, path)).toEqual({ kind: 'absent' });
     expect(readHandoffRoutingStatusWithRuntime(simulation, renamedPath)).toMatchObject({
@@ -484,6 +453,48 @@ describe('handoff routing status', () => {
       kind: 'current',
       statuses: [{ selection: { invocationId: 'clean-generation' } }],
     });
+  });
+
+  it('surfaces an unobservable generation writer instead of collapsing it into maintenance contention', async () => {
+    const path = databasePath();
+    const baseRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+    const pid = baseRuntime.env.pid();
+    const incarnation = testIncarnation(pid);
+    let now = baseRuntime.time.now();
+    const writerRuntime: Runtime = {
+      ...baseRuntime,
+      env: {
+        ...baseRuntime.env,
+        platform: () => 'linux',
+      },
+      process: {
+        ...baseRuntime.process,
+        readProcessIncarnation: () => incarnation,
+        observeLiveness: () => 'unknown',
+      },
+      time: {
+        ...baseRuntime.time,
+        now: () => now,
+        sleep: async (milliseconds: number) => {
+          now += milliseconds;
+        },
+      },
+    };
+    writeFileSync(path, 'not a sqlite database', { mode: 0o600 });
+    const attempt = tryAcquireGenerationWriterLease(writerRuntime, {
+      kind: 'routing-status',
+      name: 'handoff-routing-status',
+    });
+    if (attempt.kind !== 'acquired') throw new Error(`Expected writer lease, received ${attempt.kind}`);
+    try {
+      await expect(discardHandoffRoutingStatus(writerRuntime, path)).resolves.toEqual({
+        kind: 'generation-maintenance-unavailable',
+        cause: 'writer-observation-unknown',
+        holder: `routing-status:handoff-routing-status (pid ${pid}), process identity unobservable`,
+      });
+    } finally {
+      attempt.lease.release();
+    }
   });
 
   it('keeps an interrupted sidecar move discoverable and resumes the same quarantine', async () => {
@@ -658,9 +669,8 @@ describe('handoff routing status', () => {
               selection_sequence,
               retirement_cause,
               terminal_existed,
-              completed_pair_stable,
               body_json
-            ) VALUES (?, ?, ?, ?, ?, 'terminal', ?, ?, NULL, NULL, 0, ?)`,
+            ) VALUES (?, ?, ?, ?, ?, 'terminal', ?, ?, NULL, NULL, ?)`,
           )
           .run(
             contradictoryTerminal.sequence,
@@ -923,20 +933,32 @@ describe('handoff routing status', () => {
       generation: HANDOFF_ROUTING_STATUS_GENERATION + 1,
     });
 
+    const unsupportedShapePath = databasePath();
+    const unsupportedShape = new DatabaseSync(unsupportedShapePath);
+    unsupportedShape.exec(`
+      CREATE TABLE handoff_routing_records (sequence INTEGER PRIMARY KEY, body_json TEXT NOT NULL) STRICT;
+      PRAGMA user_version=${HANDOFF_ROUTING_STATUS_GENERATION};
+    `);
+    unsupportedShape.close();
+    expect(readHandoffRoutingStatus(unsupportedShapePath)).toEqual({
+      kind: 'unsupported-generation',
+      generation: HANDOFF_ROUTING_STATUS_GENERATION,
+    });
+    await expect(publish(unsupportedShapePath, [selection('unsupported-shape', 1)])).resolves.toEqual({
+      kind: 'not-published',
+      cause: 'unsupported-generation',
+    });
+
     const invalidJsonPath = databasePath();
-    createReadFixtureDatabase(invalidJsonPath, [{ recordKind: 'selection', bodyJson: '{' }]);
+    await createReadFixtureDatabase(invalidJsonPath, [{ recordKind: 'selection', bodyJson: '{' }]);
     expect(readHandoffRoutingStatus(invalidJsonPath)).toEqual({ kind: 'unreadable', reason: 'invalid-json' });
 
     const invalidShapePath = databasePath();
-    createReadFixtureDatabase(invalidShapePath, [{ recordKind: 'selection', bodyJson: '{}' }]);
+    await createReadFixtureDatabase(invalidShapePath, [{ recordKind: 'selection', bodyJson: '{}' }]);
     expect(readHandoffRoutingStatus(invalidShapePath)).toEqual({ kind: 'unreadable', reason: 'invalid-shape' });
 
-    const nullBodyPath = databasePath();
-    createReadFixtureDatabase(nullBodyPath, [{ recordKind: 'selection', bodyJson: null }]);
-    expect(readHandoffRoutingStatus(nullBodyPath)).toEqual({ kind: 'unreadable', reason: 'invalid-shape' });
-
     const tooLargePath = databasePath();
-    createReadFixtureDatabase(tooLargePath, [
+    await createReadFixtureDatabase(tooLargePath, [
       { recordKind: 'selection', bodyJson: JSON.stringify({ padding: 'x'.repeat(10_000) }) },
     ]);
     expect(readHandoffRoutingStatus(tooLargePath)).toEqual({ kind: 'unreadable', reason: 'too-large' });
@@ -1001,7 +1023,7 @@ describe('handoff routing status', () => {
     const root = mkdtempSync(join(tmpdir(), 'coral-handoff-routing-invalid-'));
     temporaryDirectories.push(root);
     const directory = join(root, 'absent', 'nested');
-    const path = join(directory, 'handoff-routing.1.db');
+    const path = join(directory, `handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db`);
 
     await expect(publish(path, [])).resolves.toEqual({
       kind: 'not-published',
@@ -1236,7 +1258,23 @@ describe('handoff routing status', () => {
     });
   });
 
-  it('preserves the SQLite code that makes a generation-matching artifact unreadable', async () => {
+  it('treats generation-matching content corruption as unreadable', async () => {
+    const path = databasePath();
+    await committed(path, [selection('seed', 1)]);
+    const db = new DatabaseSync(path);
+    try {
+      db.exec('DELETE FROM handoff_routing_metadata');
+    } finally {
+      db.close();
+    }
+
+    await expect(publish(path, [selection('next', 2)])).resolves.toEqual({
+      kind: 'not-published',
+      cause: 'unreadable',
+    });
+  });
+
+  it('treats a generation-matching artifact with a dropped table as unsupported-generation', async () => {
     const path = databasePath();
     await committed(path, [selection('seed', 1)]);
     const db = new DatabaseSync(path);
@@ -1246,9 +1284,13 @@ describe('handoff routing status', () => {
       db.close();
     }
 
+    expect(readHandoffRoutingStatus(path)).toEqual({
+      kind: 'unsupported-generation',
+      generation: HANDOFF_ROUTING_STATUS_GENERATION,
+    });
     await expect(publish(path, [selection('next', 2)])).resolves.toEqual({
       kind: 'not-published',
-      cause: 'unreadable',
+      cause: 'unsupported-generation',
     });
   });
 
@@ -1602,8 +1644,9 @@ describe('handoff routing status', () => {
       ...runtime,
       process: {
         ...runtime.process,
-        readProcessIncarnation: () => {
-          throw new Error('repair must use the batch observer');
+        readProcessIncarnation: (pid: number, platform: NodeJS.Platform) => {
+          if (pid === runtime.env.pid()) return runtime.process.readProcessIncarnation(pid, platform);
+          throw new Error('repair must use the batch observer for record owners');
         },
         observeProcessIdentities: async (owners: readonly (typeof OWNER)[]) =>
           owners.map((owner) => ({ owner, evidence })),
@@ -1814,6 +1857,116 @@ describe('handoff routing status', () => {
         selection('coordination-io-failure', 1),
       ]),
     ).resolves.toEqual({ kind: 'not-published', cause: 'coordination-unavailable' });
+  });
+
+  it('retries generation admission contention within the publication deadline', async () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'coral-handoff-routing-admission-retry-'));
+    temporaryDirectories.push(baseDir);
+    const isolatedRuntime = createRealRuntime('prod', { baseDir });
+    const paths = resolveGenerationBoundaryPaths(isolatedRuntime);
+    mkdirSync(paths.coordinationRoot, { recursive: true });
+    const releaseAdmission = tryAcquireDirectoryLock(paths.admissionLock);
+    if (releaseAdmission === null) throw new Error('Expected admission lock');
+    let released = false;
+    const retryRuntime: Runtime = {
+      ...isolatedRuntime,
+      time: {
+        ...isolatedRuntime.time,
+        sleep: async () => {
+          if (released) return;
+          released = true;
+          releaseAdmission();
+        },
+      },
+    };
+    try {
+      await expect(
+        publishGenerationCoordinatedHandoffRoutingTransitions(
+          retryRuntime,
+          join(
+            isolatedRuntime.paths.coral.coordinator.runDir,
+            `handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db`,
+          ),
+          [selection('admission-retried', 1)],
+        ),
+      ).resolves.toMatchObject({ kind: 'committed' });
+    } finally {
+      if (!released) releaseAdmission();
+    }
+  });
+
+  it('returns generation maintenance when maintenance wins an admission retry', async () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'coral-handoff-routing-maintenance-retry-'));
+    temporaryDirectories.push(baseDir);
+    const isolatedRuntime = createRealRuntime('prod', { baseDir });
+    const paths = resolveGenerationBoundaryPaths(isolatedRuntime);
+    mkdirSync(paths.coordinationRoot, { recursive: true });
+    const releaseAdmission = tryAcquireDirectoryLock(paths.admissionLock);
+    if (releaseAdmission === null) throw new Error('Expected admission lock');
+    let maintenance: Awaited<ReturnType<typeof acquireGenerationMaintenanceLease>> | undefined;
+    let admissionReleased = false;
+    const retryRuntime: Runtime = {
+      ...isolatedRuntime,
+      time: {
+        ...isolatedRuntime.time,
+        sleep: async () => {
+          if (admissionReleased) return;
+          admissionReleased = true;
+          releaseAdmission();
+          maintenance = await acquireGenerationMaintenanceLease(isolatedRuntime);
+        },
+      },
+    };
+    try {
+      await expect(
+        publishGenerationCoordinatedHandoffRoutingTransitions(
+          retryRuntime,
+          join(
+            isolatedRuntime.paths.coral.coordinator.runDir,
+            `handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db`,
+          ),
+          [selection('maintenance-won-admission', 1)],
+        ),
+      ).resolves.toEqual({ kind: 'not-published', cause: 'generation-maintenance' });
+    } finally {
+      if (!admissionReleased) releaseAdmission();
+      maintenance?.release();
+    }
+  });
+
+  it('returns contention only after generation admission spends the publication budget', async () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'coral-handoff-routing-admission-timeout-'));
+    temporaryDirectories.push(baseDir);
+    const isolatedRuntime = createRealRuntime('prod', { baseDir });
+    const paths = resolveGenerationBoundaryPaths(isolatedRuntime);
+    mkdirSync(paths.coordinationRoot, { recursive: true });
+    const releaseAdmission = tryAcquireDirectoryLock(paths.admissionLock);
+    if (releaseAdmission === null) throw new Error('Expected admission lock');
+    let monotonicNow = 0n;
+    const retryRuntime: Runtime = {
+      ...isolatedRuntime,
+      time: {
+        ...isolatedRuntime.time,
+        monotonicNow: () => monotonicNow,
+        sleep: async (milliseconds: number) => {
+          monotonicNow += BigInt(milliseconds * 100);
+        },
+      },
+    };
+    try {
+      await expect(
+        publishGenerationCoordinatedHandoffRoutingTransitions(
+          retryRuntime,
+          join(
+            isolatedRuntime.paths.coral.coordinator.runDir,
+            `handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db`,
+          ),
+          [selection('admission-timeout', 1)],
+        ),
+      ).resolves.toEqual({ kind: 'not-published', cause: 'contended' });
+    } finally {
+      releaseAdmission();
+    }
   });
 
   it('resolves a lost writer lease as coordination unavailable', async () => {

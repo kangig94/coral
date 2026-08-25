@@ -1,9 +1,9 @@
 import {
-  HANDOFF_ROUTING_STATUS_GENERATION,
   type HandoffRoutingInvocationStatus,
   type HandoffRoutingStatusReadResult,
   type RetirementHistoryTruncated,
 } from '../../src/coordinator/handoff-routing-status.js';
+import { HANDOFF_ROUTING_STATUS_GENERATION } from '../../src/store/handoff-routing-status-store.js';
 
 declare const statuses: readonly HandoffRoutingInvocationStatus[];
 declare const retirementHistoryTruncated: RetirementHistoryTruncated;

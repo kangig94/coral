@@ -25,6 +25,7 @@ import { backendLog } from '#src/infra/backend-log.js';
 import type * as BackendDiscoveryMod from '#src/infra/backend-discovery.js';
 import type * as BundleManifestMod from '#src/infra/bundle-manifest.js';
 import type * as HandoffRoutingStatusMod from '#src/coordinator/handoff-routing-status.js';
+import { HANDOFF_ROUTING_STATUS_GENERATION } from '#src/store/handoff-routing-status-store.js';
 import type { ProcessIncarnation } from '#src/infra/node-process.js';
 import type { TimePort } from '#src/infra/port-types.js';
 import { withValidatedHandoffTarget, type ValidatedHandoffTarget } from '#src/infra/handoff-target.js';
@@ -371,7 +372,9 @@ describe('handoff-runner', () => {
 
     const selection = mockState.publishHandoffRoutingTransitions.mock.calls[0]?.[2][0];
     const terminal = mockState.publishHandoffRoutingTransitions.mock.calls[1]?.[2][0];
-    expect(mockState.publishHandoffRoutingTransitions.mock.calls[0]?.[1]).toBe('/handoff/run/handoff-routing.1.db');
+    expect(mockState.publishHandoffRoutingTransitions.mock.calls[0]?.[1]).toBe(
+      `/handoff/run/handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db`,
+    );
     expect(selection).toMatchObject({
       kind: 'routing-selected',
       owner: { pid: 101, incarnation: testIncarnation('handoff-runner') },
@@ -465,7 +468,7 @@ describe('handoff-runner', () => {
 
     const path = join(
       isolatedRuntime.paths.coral.coordinator.runDir,
-      `handoff-routing.${status.HANDOFF_ROUTING_STATUS_GENERATION}.db`,
+      `handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db`,
     );
     expect(status.readHandoffRoutingStatus(isolatedRuntime, path)).toMatchObject({
       kind: 'current',

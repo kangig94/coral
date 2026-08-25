@@ -5,14 +5,16 @@ import { dirname, join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { validateStatusRecordBody } from '#src/coordinator/handoff-routing-status.js';
+import { handoffRoutingStatusStoreSchema } from '#src/coordinator/handoff-routing-status.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import {
+  HANDOFF_ROUTING_STATUS_GENERATION,
   HandoffRoutingStoreInvalidRecordError,
   HandoffRoutingStoreUnreadableError,
+  HandoffRoutingStoreUnsupportedGenerationError,
   publishHandoffRoutingStoreTransaction,
+  readHandoffRoutingStoreSnapshot,
   type HandoffRoutingRecordInput,
-  type HandoffRoutingStatusStoreSchema,
 } from '#src/store/handoff-routing-status-store.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
@@ -20,21 +22,10 @@ const temporaryDirectories: string[] = [];
 const owner = { pid: 101, incarnation: testIncarnation(101) } as const;
 const selectedDisposition = { kind: 'continue-current', basis: { kind: 'incumbent-absent' } } as const;
 
-const schema: HandoffRoutingStatusStoreSchema = {
-  generation: 1,
-  maximumBytes: 1_048_576,
-  maximumIdentifierLength: 58,
-  maximumObservedAtLength: 24,
-  maximumRoutingSelectedBytes: 4_096,
-  maximumExecutionFailedBytes: 4_096,
-  maximumContinuationFinalizedBytes: 4_096,
-  maximumRetirementTombstoneBytes: 4_096,
-  closingRecordBytes: 4_096,
-  validateRecordBody: validateStatusRecordBody,
-};
+const schema = handoffRoutingStatusStoreSchema();
 
 const selectionBody = {
-  generation: 1,
+  generation: HANDOFF_ROUTING_STATUS_GENERATION,
   sequence: 1,
   eventId: 'selection-event',
   invocationId: 'selection-invocation',
@@ -46,7 +37,7 @@ const selectionBody = {
 } as const;
 
 const terminalBody = {
-  generation: 1,
+  generation: HANDOFF_ROUTING_STATUS_GENERATION,
   sequence: 1,
   eventId: 'terminal-event',
   invocationId: 'terminal-invocation',
@@ -61,7 +52,7 @@ const terminalBody = {
 } as const;
 
 const retirementBody = {
-  generation: 1,
+  generation: HANDOFF_ROUTING_STATUS_GENERATION,
   sequence: 1,
   eventId: 'retirement-event',
   invocationId: 'retirement-invocation',
@@ -89,7 +80,6 @@ function recordInput(
     invocationId: body.invocationId,
     observedAt: body.observedAt,
     eventKind: body.eventKind,
-    completedPairStable: false,
     bodyJson: JSON.stringify(body),
     ...fields,
   };
@@ -132,7 +122,7 @@ afterEach(() => {
 function databasePath(): string {
   const directory = mkdtempSync(join(tmpdir(), 'coral-handoff-routing-store-'));
   temporaryDirectories.push(directory);
-  return join(directory, 'handoff-routing.1.db');
+  return join(directory, `handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db`);
 }
 
 function initializeStore(path: string): void {
@@ -183,6 +173,30 @@ function expectInvalidRecord(
 }
 
 describe('HandoffRoutingStatusTransaction', () => {
+  it('refuses a same-generation database with a different schema before publication', () => {
+    const path = databasePath();
+    const database = new DatabaseSync(path);
+    try {
+      database.exec(`
+        CREATE TABLE handoff_routing_records (sequence INTEGER PRIMARY KEY, body_json TEXT NOT NULL) STRICT;
+        PRAGMA user_version=${HANDOFF_ROUTING_STATUS_GENERATION};
+      `);
+    } finally {
+      database.close();
+    }
+    const runtime = createRealRuntime('prod', { baseDir: dirname(path) });
+
+    expect(publishHandoffRoutingStoreTransaction(runtime.storage, path, schema, () => undefined)).toMatchObject({
+      kind: 'failed',
+      error: expect.any(HandoffRoutingStoreUnsupportedGenerationError),
+      commitStarted: false,
+    });
+    expect(readHandoffRoutingStoreSnapshot(runtime.storage, path, schema)).toEqual({
+      kind: 'unsupported-generation',
+      generation: HANDOFF_ROUTING_STATUS_GENERATION,
+    });
+  });
+
   it('rejects malformed JSON through the production validator before inserting a row', () => {
     expectInvalidRecord(databasePath(), { ...legalRecords[1].record, bodyJson: '{' }, 'malformed-json');
   });

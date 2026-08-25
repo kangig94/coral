@@ -1,5 +1,8 @@
+import { z } from 'zod';
+
 import {
   isProcessIncarnation,
+  processIncarnationSchema,
   probeProcessIncarnation,
   type ProcessIncarnation,
   type ProcessLiveness,
@@ -22,6 +25,14 @@ export type RecordedProcessIdentity = Readonly<{
   pid: number;
   incarnation: ProcessIncarnation;
 }>;
+
+export const recordedProcessIdentitySchema: z.ZodType<RecordedProcessIdentity> = z
+  .object({
+    pid: z.number().int().positive().safe(),
+    incarnation: processIncarnationSchema,
+  })
+  .strict()
+  .readonly();
 
 /** A detached process leader and the process group it established. */
 export type RecordedContainmentIdentity = RecordedProcessIdentity &

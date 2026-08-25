@@ -3,13 +3,13 @@ import { z } from 'zod';
 import { strictBundleManifestSchema, type StrictBundleIdentityFailure } from '../infra/bundle-manifest.js';
 import { assertNever } from '../infra/error-format.js';
 import { createMonotonicClock } from '../infra/monotonic-clock.js';
-import { processIncarnationSchema } from '../infra/node-process.js';
 import type { IdPort, Runtime } from '../runtime/ports.js';
-import type { RecordedProcessIdentity } from '../infra/process-containment.js';
+import { recordedProcessIdentitySchema, type RecordedProcessIdentity } from '../infra/process-containment.js';
 import {
   HandoffRoutingStoreInvalidRecordError,
   HandoffRoutingStoreUnreadableError,
   HandoffRoutingStoreUnsupportedGenerationError as UnsupportedGenerationError,
+  HANDOFF_ROUTING_STATUS_GENERATION,
   publishHandoffRoutingStoreTransaction,
   readHandoffRoutingStoreSnapshot,
   SQLITE_BUSY,
@@ -37,10 +37,9 @@ import {
 } from './handoff-routing.js';
 import type { ABSENT_HANDOFF_RESULT_OBLIGATION, HANDOFF_CONTINUATION_REASON_OBLIGATIONS } from './handoff-runner.js';
 
-export const HANDOFF_ROUTING_STATUS_GENERATION = 1;
 export const MAX_HANDOFF_ROUTING_STATUS_BYTES = 1_048_576;
 export const MAX_RETIREMENT_TOMBSTONES = 128;
-export const MAX_ENCODED_RETIREMENT_TOMBSTONE_BYTES = 2_161;
+export const MAX_ENCODED_RETIREMENT_TOMBSTONE_BYTES = 2_169;
 export const MAX_RETIREMENT_TOMBSTONE_BYTES = MAX_RETIREMENT_TOMBSTONES * MAX_ENCODED_RETIREMENT_TOMBSTONE_BYTES;
 export const MAX_UNRESOLVED_INVOCATIONS = 64;
 export const MAX_HANDOFF_ROUTING_OWNER_SWEEP_MS = 500;
@@ -239,14 +238,6 @@ export const ABSENT_HANDOFF_RESULT_POLICY_PROJECTION: ObligationPolicyProjection
   kind: 'ephemeral',
   policy: { durability: 'ephemeral', severity: 'info', exitContribution: 0 },
 } as const);
-
-const recordedProcessIdentitySchema: z.ZodType<RecordedProcessIdentity> = z
-  .object({
-    pid: z.number().int().positive().safe(),
-    incarnation: processIncarnationSchema,
-  })
-  .strict()
-  .readonly();
 
 const selectedDispositionSchema = z.union([
   z
@@ -591,35 +582,6 @@ function encodedBytes(value: unknown): number {
   return Buffer.byteLength(JSON.stringify(value), 'utf8');
 }
 
-function completedPairIsStable(event: HandoffRoutingJournalEvent | RetirementTombstone): boolean {
-  switch (event.phase) {
-    case 'selection': {
-      const policy = persistedHandoffDispositionPolicy(event.disposition);
-      return policy.durability === 'lifecycle-journal' && policy.retention === 'until-superseded';
-    }
-    case 'terminal':
-      switch (event.disposition.kind) {
-        case 'delegated-success':
-          return true;
-        case 'continued-current':
-        case 'delegated-exit':
-        case 'delegated-signal':
-        case 'execution-failed':
-        case 'failed-without-selection':
-        case 'finalized-without-selection':
-        case 'terminal-without-retained-selection':
-        case 'terminal-after-operator-resolution':
-          return false;
-        default:
-          return assertNever(event.disposition);
-      }
-    case 'retirement':
-      return false;
-    default:
-      return assertNever(event);
-  }
-}
-
 const transitionEnvelopeSchema = z
   .object({
     eventId: identifierSchema,
@@ -745,7 +707,6 @@ function insertRecord(
     selectionSequence,
     retirementCause: retirement?.retirementCause ?? null,
     terminalExisted: retirement?.terminalExisted ?? null,
-    completedPairStable: completedPairIsStable(event),
     bodyJson: JSON.stringify(event),
   });
 }
@@ -1236,9 +1197,8 @@ function classifyPublicationError(error: unknown, commitStarted: boolean): Publi
   return commitStarted ? { kind: 'undeterminable', cause, errcode } : { kind: 'not-published', cause };
 }
 
-function handoffRoutingStatusStoreSchema(): HandoffRoutingStatusStoreSchema {
+export function handoffRoutingStatusStoreSchema(): HandoffRoutingStatusStoreSchema {
   return {
-    generation: HANDOFF_ROUTING_STATUS_GENERATION,
     maximumBytes: MAX_HANDOFF_ROUTING_STATUS_BYTES,
     maximumIdentifierLength: MAX_IDENTIFIER_LENGTH,
     maximumObservedAtLength: MAX_OBSERVED_AT_LENGTH,
@@ -1279,20 +1239,27 @@ function publishOnce(
     : classifyPublicationError(publication.error, publication.commitStarted);
 }
 
-export async function publishHandoffRoutingTransitions(
-  runtime: HandoffRoutingPublicationPorts,
-  path: string,
-  transitions: readonly HandoffRoutingMutation[],
-  signal?: AbortSignal,
-): Promise<PublicationOutcome> {
+function publicationContentionWindow(runtime: HandoffRoutingPublicationPorts) {
   const clock = createMonotonicClock(Symbol('handoff-routing-status-publication-contention'), {
     readMilliseconds: () => runtime.time.monotonicNow(),
   });
-  const deadline = clock.shiftMilliseconds(clock.now(), PUBLICATION_CONTENTION_TIMEOUT_MS);
+  return {
+    clock,
+    deadline: clock.shiftMilliseconds(clock.now(), PUBLICATION_CONTENTION_TIMEOUT_MS),
+  };
+}
+
+async function publishHandoffRoutingTransitionsWithinWindow(
+  runtime: HandoffRoutingPublicationPorts,
+  path: string,
+  transitions: readonly HandoffRoutingMutation[],
+  window: ReturnType<typeof publicationContentionWindow>,
+  signal?: AbortSignal,
+): Promise<PublicationOutcome> {
   while (true) {
     const outcome = publishOnce(runtime, path, transitions);
     if (outcome.kind !== 'not-published' || outcome.cause !== 'contended') return outcome;
-    if (signal?.aborted === true || clock.compare(clock.now(), deadline) >= 0) return outcome;
+    if (signal?.aborted === true || window.clock.compare(window.clock.now(), window.deadline) >= 0) return outcome;
     try {
       await runtime.time.sleep(PUBLICATION_RETRY_DELAY_MS, signal === undefined ? undefined : { signal });
     } catch {
@@ -1301,25 +1268,54 @@ export async function publishHandoffRoutingTransitions(
   }
 }
 
+export function publishHandoffRoutingTransitions(
+  runtime: HandoffRoutingPublicationPorts,
+  path: string,
+  transitions: readonly HandoffRoutingMutation[],
+  signal?: AbortSignal,
+): Promise<PublicationOutcome> {
+  return publishHandoffRoutingTransitionsWithinWindow(
+    runtime,
+    path,
+    transitions,
+    publicationContentionWindow(runtime),
+    signal,
+  );
+}
+
 export async function publishGenerationCoordinatedHandoffRoutingTransitions(
   runtime: Runtime,
   path: string,
   transitions: readonly HandoffRoutingMutation[],
   signal?: AbortSignal,
 ): Promise<PublicationOutcome> {
+  const window = publicationContentionWindow(runtime);
   let writer: GenerationWriterLease;
-  try {
-    const attempt = tryAcquireGenerationWriterLease(runtime, {
-      kind: 'routing-status',
-      name: 'handoff-routing-status',
-    });
-    if (attempt.kind === 'maintenance-active') {
-      return { kind: 'not-published', cause: 'generation-maintenance' };
+  while (true) {
+    try {
+      const attempt = tryAcquireGenerationWriterLease(runtime, {
+        kind: 'routing-status',
+        name: 'handoff-routing-status',
+      });
+      if (attempt.kind === 'maintenance-active') {
+        return { kind: 'not-published', cause: 'generation-maintenance' };
+      }
+      if (attempt.kind === 'acquired') {
+        writer = attempt.lease;
+        break;
+      }
+    } catch {
+      return { kind: 'not-published', cause: 'coordination-unavailable' };
     }
-    if (attempt.kind === 'contended') return { kind: 'not-published', cause: 'contended' };
-    writer = attempt.lease;
-  } catch {
-    return { kind: 'not-published', cause: 'coordination-unavailable' };
+    const contended = { kind: 'not-published', cause: 'contended' } as const;
+    if (signal?.aborted === true || window.clock.compare(window.clock.now(), window.deadline) >= 0) {
+      return contended;
+    }
+    try {
+      await runtime.time.sleep(PUBLICATION_RETRY_DELAY_MS, signal === undefined ? undefined : { signal });
+    } catch {
+      return contended;
+    }
   }
   try {
     try {
@@ -1327,7 +1323,7 @@ export async function publishGenerationCoordinatedHandoffRoutingTransitions(
     } catch {
       return { kind: 'not-published', cause: 'coordination-unavailable' };
     }
-    return await publishHandoffRoutingTransitions(runtime, path, transitions, signal);
+    return await publishHandoffRoutingTransitionsWithinWindow(runtime, path, transitions, window, signal);
   } finally {
     writer.release();
   }
@@ -1804,7 +1800,7 @@ function classifyStatusSnapshotError(error: unknown): StatusSnapshotReadResult {
 }
 
 function readStatusSnapshot(storage: Runtime['storage'], path: string): StatusSnapshotReadResult {
-  const result = readHandoffRoutingStoreSnapshot(storage, path, HANDOFF_ROUTING_STATUS_GENERATION);
+  const result = readHandoffRoutingStoreSnapshot(storage, path, handoffRoutingStatusStoreSchema());
   switch (result.kind) {
     case 'absent':
       return result;

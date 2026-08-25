@@ -29,6 +29,7 @@ import { createRuntimeComponentRegistry } from '#src/coordinator/runtime-compone
 import { RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
+import { HANDOFF_ROUTING_STATUS_GENERATION } from '#src/store/handoff-routing-status-store.js';
 import { isBackendHealth } from '#src/transport/http/backend/health.js';
 import { statusFromStartupDiagnostic, type BackendStatusFull } from '#src/transport/http/backend/status.js';
 import type { HealthSnapshot } from '#src/transport/server-ports.js';
@@ -490,12 +491,12 @@ describe('backend routing status', () => {
   it('renders invocation dispositions and aggregate retirement history in journal order', () => {
     const routingStatus = {
       kind: 'current',
-      generation: 1,
+      generation: HANDOFF_ROUTING_STATUS_GENERATION,
       statuses: [
         {
           kind: 'unresolved',
           selection: {
-            generation: 1,
+            generation: HANDOFF_ROUTING_STATUS_GENERATION,
             sequence: 1,
             eventId: 'unresolved-event',
             invocationId: 'unresolved-invocation',
@@ -514,7 +515,7 @@ describe('backend routing status', () => {
           kind: 'terminal',
           selection: null,
           terminal: {
-            generation: 1,
+            generation: HANDOFF_ROUTING_STATUS_GENERATION,
             sequence: 2,
             eventId: 'terminal-event',
             invocationId: 'terminal-invocation',
@@ -528,7 +529,7 @@ describe('backend routing status', () => {
         {
           kind: 'retired',
           tombstone: {
-            generation: 1,
+            generation: HANDOFF_ROUTING_STATUS_GENERATION,
             sequence: 3,
             eventId: 'retired-event',
             invocationId: 'retired-invocation',
@@ -549,7 +550,7 @@ describe('backend routing status', () => {
         {
           kind: 'retired',
           tombstone: {
-            generation: 1,
+            generation: HANDOFF_ROUTING_STATUS_GENERATION,
             sequence: 4,
             eventId: 'operator-resolved-event',
             invocationId: 'operator-resolved-invocation',
@@ -627,7 +628,7 @@ describe('backend routing status', () => {
     },
   ] as const)('renders retained evidence for $name', ({ retirementCause, terminalExisted, ...testCase }) => {
     const tombstone = retirementTombstoneSchema.parse({
-      generation: 1,
+      generation: HANDOFF_ROUTING_STATUS_GENERATION,
       sequence: 1,
       eventId: 'retirement-event',
       invocationId: 'retired-invocation',
@@ -647,7 +648,7 @@ describe('backend routing status', () => {
     });
     const result: HandoffRoutingStatusReadResult = {
       kind: 'current',
-      generation: 1,
+      generation: HANDOFF_ROUTING_STATUS_GENERATION,
       statuses: [{ kind: 'retired', tombstone }],
       retirementHistoryTruncated: {
         kind: 'retirement-history-truncated',
@@ -671,12 +672,12 @@ describe('backend routing status', () => {
     const invocationId = '123e4567-e89b-42d3-a456-426614174000';
     const routingStatus: HandoffRoutingStatusReadResult = {
       kind: 'current',
-      generation: 1,
+      generation: HANDOFF_ROUTING_STATUS_GENERATION,
       statuses: [
         {
           kind: 'unresolved',
           selection: {
-            generation: 1,
+            generation: HANDOFF_ROUTING_STATUS_GENERATION,
             sequence: 1,
             eventId: 'event-1',
             invocationId,
@@ -730,7 +731,7 @@ describe('backend routing status', () => {
       getLiveHandoffResult: () => null,
       getRoutingStatus: async () => ({
         kind: 'current',
-        generation: 1,
+        generation: HANDOFF_ROUTING_STATUS_GENERATION,
         statuses: [],
         retirementHistoryTruncated: {
           kind: 'retirement-history-truncated',
@@ -765,12 +766,12 @@ describe('backend routing status', () => {
       getLiveHandoffResult: () => null,
       getRoutingStatus: async () => ({
         kind: 'current',
-        generation: 1,
+        generation: HANDOFF_ROUTING_STATUS_GENERATION,
         statuses: [
           {
             kind: 'retired',
             tombstone: {
-              generation: 1,
+              generation: HANDOFF_ROUTING_STATUS_GENERATION,
               sequence: 2,
               eventId: 'retirement-event',
               invocationId: 'routing-invocation',

@@ -9,6 +9,7 @@ import {
   tryAcquireDirectoryLock,
   type DirectoryLockLease,
 } from '../infra/fs-lock.js';
+import { recordedProcessIdentitySchema, type RecordedProcessIdentity } from '../infra/process-containment.js';
 import { validateProductVersion } from '../infra/product-version.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
 import type { Runtime } from '../runtime/ports.js';
@@ -98,6 +99,7 @@ const GENERATION_COORDINATION_TIMEOUT_MS = 5_000;
 const GENERATION_COORDINATION_STALE_MS = 10 * 60 * 1_000;
 const GENERATION_COORDINATION_HEARTBEAT_MS = 10 * 1_000;
 const GENERATION_COORDINATION_RETRY_MS = 25;
+const WRITER_IDENTITY_FILE = 'identity.json';
 
 export function resolveGenerationBoundaryPaths(runtime: Pick<Runtime, 'paths'>): GenerationBoundaryPaths {
   const generation = runtime.paths.coral.generation;
@@ -178,11 +180,16 @@ function directoryLockDeps(runtime: Runtime) {
   };
 }
 
-export function generationNotQuiescentError(runtime: Pick<Runtime, 'flavor'>, holder: string): Error {
+export function generationNotQuiescentError(
+  runtime: Pick<Runtime, 'flavor'>,
+  holder: string,
+  writerObservation?: 'unknown',
+): Error {
   return documentedCoralSetupError({
     code: 'legacy_source_not_quiescent',
     flavor: runtime.flavor,
     holder,
+    ...(writerObservation === undefined ? {} : { writerObservation }),
   });
 }
 
@@ -240,7 +247,20 @@ function writerLeaseName(runtime: Runtime, mutation: { readonly kind: Generation
   return `${runtime.env.pid()}-${mutation.kind}-${encodeURIComponent(mutation.name)}.lease-${runtime.ids.uuid()}.lock`;
 }
 
-function writerHolder(entry: string): { readonly pid: number; readonly description: string } | null {
+function writerIdentity(runtime: Runtime): RecordedProcessIdentity {
+  const pid = runtime.env.pid();
+  const incarnation = runtime.process.readProcessIncarnation(pid, runtime.env.platform() as NodeJS.Platform);
+  if (incarnation === null) {
+    throw generationNotQuiescentError(runtime, `writer process identity for pid ${pid}`, 'unknown');
+  }
+  return { pid, incarnation };
+}
+
+function writerHolder(
+  runtime: Runtime,
+  paths: GenerationBoundaryPaths,
+  entry: string,
+): { readonly identity: RecordedProcessIdentity; readonly description: string } | null {
   const match = /^(\d+)-(install|update|uninstall|kb-child|routing-status)-(.+)\.lease-[^.]+\.lock$/u.exec(entry);
   if (match === null) return null;
   const pid = Number(match[1]);
@@ -251,7 +271,15 @@ function writerHolder(entry: string): { readonly pid: number; readonly descripti
   } catch {
     return null;
   }
-  return { pid, description: `${match[2]}:${name} (pid ${pid})` };
+  try {
+    const parsed = recordedProcessIdentitySchema.safeParse(
+      JSON.parse(runtime.storage.readFileSync(join(paths.writersRoot, entry, WRITER_IDENTITY_FILE), 'utf-8')),
+    );
+    if (!parsed.success || parsed.data.pid !== pid) return null;
+    return { identity: parsed.data, description: `${match[2]}:${name} (pid ${pid})` };
+  } catch {
+    return null;
+  }
 }
 
 function writerEntries(runtime: Runtime, paths: GenerationBoundaryPaths): string[] {
@@ -263,21 +291,72 @@ function writerEntries(runtime: Runtime, paths: GenerationBoundaryPaths): string
   }
 }
 
-function removeDeadWriterLeases(runtime: Runtime, paths: GenerationBoundaryPaths): string[] {
-  const live: string[] = [];
+type GenerationWriterBlocker = Readonly<{
+  description: string;
+  observation: 'alive' | 'unknown';
+}>;
+
+function removeWriterLease(runtime: Runtime, paths: GenerationBoundaryPaths, entry: string): void {
+  runtime.storage.rmSync(join(paths.writersRoot, entry), { recursive: true, force: true });
+}
+
+function reclaimStaleWriterLease(runtime: Runtime, paths: GenerationBoundaryPaths, entry: string): boolean {
+  const recovered = tryAcquireDirectoryLock(join(paths.writersRoot, entry), directoryLockDeps(runtime));
+  if (recovered === null) return false;
+  recovered();
+  return true;
+}
+
+function removeDeadWriterLeases(runtime: Runtime, paths: GenerationBoundaryPaths): GenerationWriterBlocker[] {
+  const blockers: GenerationWriterBlocker[] = [];
   for (const entry of writerEntries(runtime, paths)) {
-    const holder = writerHolder(entry);
+    const holder = writerHolder(runtime, paths, entry);
     if (holder === null) {
-      live.push(entry);
+      if (!reclaimStaleWriterLease(runtime, paths, entry)) {
+        blockers.push({ description: `${entry} (identity unreadable)`, observation: 'unknown' });
+      }
       continue;
     }
-    if (runtime.process.observeLiveness(holder.pid) !== 'absent') {
-      live.push(holder.description);
+
+    let incarnation: ReturnType<Runtime['process']['readProcessIncarnation']> = null;
+    let liveness: ReturnType<Runtime['process']['observeLiveness']>;
+    try {
+      incarnation = runtime.process.readProcessIncarnation(
+        holder.identity.pid,
+        runtime.env.platform() as NodeJS.Platform,
+      );
+      if (incarnation !== null && incarnation !== holder.identity.incarnation) {
+        removeWriterLease(runtime, paths, entry);
+        continue;
+      }
+      liveness = runtime.process.observeLiveness(holder.identity.pid);
+    } catch {
+      liveness = 'unknown';
+    }
+
+    switch (liveness) {
+      case 'absent':
+        removeWriterLease(runtime, paths, entry);
+        continue;
+      case 'alive':
+        if (incarnation === holder.identity.incarnation) {
+          blockers.push({ description: holder.description, observation: 'alive' });
+          continue;
+        }
+        break;
+      case 'unknown':
+        break;
+      default:
+        assertNever(liveness);
+    }
+
+    // A failed process observation cannot authorize deletion; only the independent heartbeat lease can age out.
+    if (reclaimStaleWriterLease(runtime, paths, entry)) {
       continue;
     }
-    runtime.storage.rmSync(join(paths.writersRoot, entry), { recursive: true, force: true });
+    blockers.push({ description: `${holder.description}, process identity unobservable`, observation: 'unknown' });
   }
-  return live;
+  return blockers;
 }
 
 function acquireWriterLeaseUnderAdmission(
@@ -286,19 +365,43 @@ function acquireWriterLeaseUnderAdmission(
   mutation: { readonly kind: GenerationMutationKind; readonly name: string },
 ): GenerationWriterLeaseAttempt {
   if (runtime.storage.existsSync(paths.maintenanceLock)) return { kind: 'maintenance-active' };
-  const releaseWriter = tryAcquireDirectoryLock(
-    join(paths.writersRoot, writerLeaseName(runtime, mutation)),
-    directoryLockDeps(runtime),
-  );
-  return releaseWriter === null
-    ? { kind: 'contended' }
-    : {
-        kind: 'acquired',
-        lease: {
-          assertOwned: releaseWriter.assertOwned,
-          release: releaseWriter,
-        },
-      };
+  const identity = writerIdentity(runtime);
+  const leasePath = join(paths.writersRoot, writerLeaseName(runtime, mutation));
+  const releaseWriter = tryAcquireDirectoryLock(leasePath, directoryLockDeps(runtime));
+  if (releaseWriter === null) return { kind: 'contended' };
+  const identityPath = join(leasePath, WRITER_IDENTITY_FILE);
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    try {
+      releaseWriter.assertOwned();
+      runtime.storage.unlinkSync(identityPath);
+    } catch {
+      // Ownership is the authority to remove identity.json; the path may belong to a successor after loss.
+    }
+    try {
+      releaseWriter();
+    } catch {
+      // Release is a total cleanup boundary; an underlying cleanup failure cannot escape.
+    }
+  };
+  try {
+    runtime.storage.writeFileSync(identityPath, JSON.stringify(identity), {
+      encoding: 'utf-8',
+      mode: 0o600,
+    });
+  } catch (error) {
+    release();
+    throw error;
+  }
+  return {
+    kind: 'acquired',
+    lease: {
+      assertOwned: releaseWriter.assertOwned,
+      release,
+    },
+  };
 }
 
 export function tryAcquireGenerationWriterLease(
@@ -361,10 +464,14 @@ export async function acquireGenerationMaintenanceLease(
   const deadline = runtime.time.now() + timeoutMs;
   try {
     while (true) {
-      const live = removeDeadWriterLeases(runtime, paths);
-      if (live.length === 0) break;
+      const blockers = removeDeadWriterLeases(runtime, paths);
+      if (blockers.length === 0) break;
       if (runtime.time.now() >= deadline) {
-        throw generationNotQuiescentError(runtime, live.join(', '));
+        throw generationNotQuiescentError(
+          runtime,
+          blockers.map((blocker) => blocker.description).join(', '),
+          blockers.some((blocker) => blocker.observation === 'unknown') ? 'unknown' : undefined,
+        );
       }
       await runtime.time.sleep(GENERATION_COORDINATION_RETRY_MS);
     }

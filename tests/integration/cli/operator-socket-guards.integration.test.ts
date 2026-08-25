@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { socketFallbackDir } from '#src/infra/path/unix-socket.js';
 import { acquireOperatorSocketGuard } from '#src/cli/operator-socket-guard.js';
 import { discardHandoffRoutingStatus } from '#src/cli/routing-status-discard.js';
+import { HANDOFF_ROUTING_STATUS_GENERATION } from '#src/store/handoff-routing-status-store.js';
 import { quarantineKbCommit } from '#src/cli/kb-commit-quarantine.js';
 import { acquireStoreResetSocketGuard } from '#src/cli/store-reset-socket.js';
 import { serializeCoralSetupError } from '#src/runtime/errors.js';
@@ -82,7 +83,10 @@ describe('operator coordinator socket bind failures', () => {
 
   it('returns an unobservable discard refusal for a coordinator socket bind failure', async () => {
     const runtime = createRealRuntime('prod', { baseDir: root() });
-    const path = join(runtime.paths.coral.coordinator.runDir, 'handoff-routing.1.db');
+    const path = join(
+      runtime.paths.coral.coordinator.runDir,
+      `handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db`,
+    );
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, 'not a sqlite database', { mode: 0o600 });
     const socketPath = join(root(), 'blocked-parent', 'coordinator.sock');

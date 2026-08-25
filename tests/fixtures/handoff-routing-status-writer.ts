@@ -3,15 +3,14 @@ import { performance } from 'node:perf_hooks';
 import { DatabaseSync } from 'node:sqlite';
 
 import {
-  HANDOFF_ROUTING_STATUS_GENERATION,
   publishGenerationCoordinatedHandoffRoutingTransitions,
-  publishHandoffRoutingTransitions,
   readHandoffRoutingStatus,
   type HandoffRoutingTransition,
   type PublicationOutcome,
 } from '#src/coordinator/handoff-routing-status.js';
 import { discardHandoffRoutingStatus } from '#src/cli/routing-status-discard.js';
 import { createRealRuntime } from '#src/runtime/real.js';
+import { HANDOFF_ROUTING_STATUS_GENERATION } from '#src/store/handoff-routing-status-store.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
 const [, , mode, path, identity = 'worker', baseDir] = process.argv;
@@ -87,9 +86,8 @@ function insertGapRecord(db: DatabaseSync, sequence: number): void {
       selection_sequence,
       retirement_cause,
       terminal_existed,
-      completed_pair_stable,
       body_json
-    ) VALUES (?, ?, ?, ?, ?, 'terminal', 'execution-failed', NULL, NULL, NULL, 0, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, 'terminal', 'execution-failed', NULL, NULL, NULL, ?)`,
   ).run(sequence, HANDOFF_ROUTING_STATUS_GENERATION, eventId, invocationId, event.observedAt, JSON.stringify(event));
 }
 
@@ -125,7 +123,7 @@ function runBetweenStatements(): void {
 }
 
 async function runAfterCommit(): Promise<void> {
-  const outcome = await publishHandoffRoutingTransitions(runtime, path, [selection(identity, 1)]);
+  const outcome = await publishGenerationCoordinatedHandoffRoutingTransitions(runtime, path, [selection(identity, 1)]);
   if (outcome.kind !== 'committed') throw new Error(`Expected committed outcome, received ${outcome.kind}`);
   stopAt('after-commit');
 }
@@ -151,7 +149,7 @@ async function runContendedSelection(): Promise<void> {
   let reportedContention = false;
   try {
     const contentionTime = {
-      monotonicNow: runtime.time.monotonicNow,
+      ...runtime.time,
       sleep: async (ms: number, options?: { signal?: AbortSignal }): Promise<void> => {
         if (!reportedContention) {
           reportedContention = true;
@@ -161,9 +159,11 @@ async function runContendedSelection(): Promise<void> {
       },
     };
     const started = performance.now();
-    const outcome = await publishHandoffRoutingTransitions({ ...runtime, time: contentionTime }, path, [
-      selection(identity, 1),
-    ]);
+    const outcome = await publishGenerationCoordinatedHandoffRoutingTransitions(
+      { ...runtime, time: contentionTime },
+      path,
+      [selection(identity, 1)],
+    );
     emit({ kind: 'contention-result', outcome, elapsedMs: performance.now() - started });
   } finally {
     clearInterval(keepAlive);
@@ -177,13 +177,15 @@ async function runLifecycle(): Promise<void> {
   try {
     const lifecycleStarted = performance.now();
     const selectionStarted = performance.now();
-    const selected = await publishHandoffRoutingTransitions(runtime, path, [selection(identity, 1)]);
+    const selected = await publishGenerationCoordinatedHandoffRoutingTransitions(runtime, path, [
+      selection(identity, 1),
+    ]);
     const selectionMs = performance.now() - selectionStarted;
     let terminalOutcome: PublicationOutcome | undefined;
     let terminalMs: number | undefined;
     if (selected.kind === 'committed') {
       const terminalStarted = performance.now();
-      terminalOutcome = await publishHandoffRoutingTransitions(runtime, path, [
+      terminalOutcome = await publishGenerationCoordinatedHandoffRoutingTransitions(runtime, path, [
         terminal(identity, 2, selected.sequence),
       ]);
       terminalMs = performance.now() - terminalStarted;

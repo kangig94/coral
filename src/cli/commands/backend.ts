@@ -14,7 +14,6 @@ import {
   type HandoffRepairOperation,
 } from '../../coordinator/handoff-repair-operation.js';
 import {
-  HANDOFF_ROUTING_STATUS_GENERATION,
   handoffRoutingStatusExitContribution,
   readHandoffRoutingStatusWithOwnerObservations,
   resolveHandoffRoutingStatus,
@@ -41,6 +40,7 @@ import { currentCoralStoreFormat } from '../../store-format.js';
 import { classifyStoreFile, type Database } from '../../store/db.js';
 import { openReadOnlyStoreDatabase } from '../../store/read-port.js';
 import {
+  HANDOFF_ROUTING_STATUS_GENERATION,
   listHandoffRoutingStoreQuarantines,
   MAX_HANDOFF_ROUTING_STATUS_QUARANTINES,
   type HandoffRoutingStatusQuarantineList,
@@ -355,6 +355,8 @@ function formatRoutingStatusDiscardRefusal(
       switch (cause) {
         case 'contended':
           return 'Refusing to discard routing status: generation maintenance is unavailable (contended).\nNext step: wait for generation maintenance to finish, then rerun coral-cli backend routing-status discard.';
+        case 'writer-observation-unknown':
+          return `Refusing to discard routing status: Coral could not determine whether ${result.holder} still owns its writer lease.\nNext step: restore process-identity and liveness observation, then rerun coral-cli backend routing-status discard. If the writer exited, retry after the lease has gone ten minutes without a heartbeat; do not delete the lease.`;
         case 'ownership-lost':
           return 'Refusing to discard routing status: generation maintenance ownership was lost.\nNext step: repair the generation coordination root, rerun coral-cli backend status, then retry coral-cli backend routing-status discard.';
         default:
@@ -415,19 +417,29 @@ function formatRoutingStatusQuarantineMaintenanceRefusal(
   quarantineId: string,
 ): string {
   const retry = `coral-cli backend routing-status quarantine clear --id ${quarantineId}`;
-  switch (result.kind) {
+  const kind = result.kind;
+  switch (kind) {
     case 'coordinator-running':
       return `Refusing to clear routing-status quarantine: the coordinator owns the live socket.\nNext step: run coral-cli backend shutdown, wait for the coordinator to exit, then rerun ${retry}.`;
     case 'coordinator-socket-unobservable':
       return `Routing-status quarantine clear could not determine whether the coordinator socket is available (${result.cause}).\nNext step: repair the coordinator socket path, then rerun ${retry}.`;
     case 'coordinator-socket-insecure':
       return `Refusing to clear routing-status quarantine: the coordinator socket directory is insecure.\nNext step: repair the reported ownership or permissions, then rerun ${retry}.`;
-    case 'generation-maintenance-unavailable':
-      return result.cause === 'contended'
-        ? `Refusing to clear routing-status quarantine: generation maintenance is unavailable (contended).\nNext step: wait for generation maintenance to finish, then rerun ${retry}.`
-        : `Refusing to clear routing-status quarantine: generation maintenance ownership was lost.\nNext step: repair the generation coordination root, then rerun ${retry}.`;
+    case 'generation-maintenance-unavailable': {
+      const cause = result.cause;
+      switch (cause) {
+        case 'contended':
+          return `Refusing to clear routing-status quarantine: generation maintenance is unavailable (contended).\nNext step: wait for generation maintenance to finish, then rerun ${retry}.`;
+        case 'writer-observation-unknown':
+          return `Refusing to clear routing-status quarantine: Coral could not determine whether ${result.holder} still owns its writer lease.\nNext step: restore process-identity and liveness observation, then rerun ${retry}. If the writer exited, retry after the lease has gone ten minutes without a heartbeat; do not delete the lease.`;
+        case 'ownership-lost':
+          return `Refusing to clear routing-status quarantine: generation maintenance ownership was lost.\nNext step: repair the generation coordination root, then rerun ${retry}.`;
+        default:
+          return assertNever(cause);
+      }
+    }
     default:
-      return assertNever(result);
+      return assertNever(kind);
   }
 }
 

@@ -33,6 +33,11 @@ export type HandoffRoutingStatusMaintenanceRefusal =
   | Readonly<{
       kind: 'generation-maintenance-unavailable';
       cause: 'contended' | 'ownership-lost';
+    }>
+  | Readonly<{
+      kind: 'generation-maintenance-unavailable';
+      cause: 'writer-observation-unknown';
+      holder: string;
     }>;
 
 export type HandoffRoutingStatusDiscardResult =
@@ -79,6 +84,13 @@ function generationMaintenanceRefusal(
     return { kind: 'generation-maintenance-unavailable', cause: 'contended' };
   }
   if (error instanceof CoralSetupError && error.code === 'legacy_source_not_quiescent') {
+    if (error.context?.writerObservation === 'unknown') {
+      return {
+        kind: 'generation-maintenance-unavailable',
+        cause: 'writer-observation-unknown',
+        holder: typeof error.context.holder === 'string' ? error.context.holder : '<writer-lease-holder>',
+      };
+    }
     return { kind: 'generation-maintenance-unavailable', cause: 'contended' };
   }
   if (error instanceof DirectoryLockOwnershipLostError) {
