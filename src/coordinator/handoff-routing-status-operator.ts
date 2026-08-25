@@ -113,6 +113,53 @@ function generationMaintenanceRefusal(
   return null;
 }
 
+type GenerationMaintenanceLease = Awaited<ReturnType<typeof acquireGenerationMaintenanceLease>>;
+
+/**
+ * A guard failure this module recognizes is returned as a refusal variant; anything else is thrown,
+ * because an unrecognized failure is not a decline and must not read as one. Acquiring the lease
+ * proves ownership only at that moment, so `run` must re-assert it around any step whose effect
+ * outlives the assertion. Maintenance refusals are matched by error shape, so `run` must not let
+ * another directory lock's timeout escape — it would be reported as maintenance contention.
+ */
+async function underOperatorGuards<T>(
+  options: HandoffRoutingStatusOperatorOptions,
+  invocation: Readonly<{ operation: string; retryCommand: string }>,
+  run: (maintenance: GenerationMaintenanceLease) => T | Promise<T>,
+): Promise<T | HandoffRoutingStatusMaintenanceRefusal> {
+  const { runtime } = options;
+  const socketPath = runtime.paths.coral.coordinator.socketPath;
+  let socket: HandoffRoutingStatusSocketGuard;
+  try {
+    socket = await options.acquireSocketGuard({ socketPath, flavor: runtime.flavor, ...invocation });
+  } catch (error: unknown) {
+    const refusal = operatorSocketRefusal(error, socketPath);
+    if (refusal !== null) return refusal;
+    throw error;
+  }
+  try {
+    let maintenance: GenerationMaintenanceLease;
+    try {
+      maintenance = await acquireGenerationMaintenanceLease(runtime);
+    } catch (error: unknown) {
+      const refusal = generationMaintenanceRefusal(error);
+      if (refusal !== null) return refusal;
+      throw error;
+    }
+    try {
+      return await run(maintenance);
+    } catch (error: unknown) {
+      const refusal = generationMaintenanceRefusal(error);
+      if (refusal !== null) return refusal;
+      throw error;
+    } finally {
+      maintenance.release();
+    }
+  } finally {
+    await socket.release();
+  }
+}
+
 export async function discardHandoffRoutingStatus(
   options: HandoffRoutingStatusOperatorOptions,
 ): Promise<HandoffRoutingStatusDiscardResult> {
@@ -122,49 +169,17 @@ export async function discardHandoffRoutingStatus(
     return { kind: 'refused', status: observedStatus };
   }
 
-  const socketPath = runtime.paths.coral.coordinator.socketPath;
-  let socket: HandoffRoutingStatusSocketGuard;
-  try {
-    socket = await options.acquireSocketGuard({
-      socketPath,
-      flavor: runtime.flavor,
-      operation: 'routing-status discard',
-      retryCommand: 'coral-cli backend routing-status discard',
-    });
-  } catch (error: unknown) {
-    const refusal = operatorSocketRefusal(error, socketPath);
-    if (refusal !== null) return refusal;
-    throw error;
-  }
-  try {
-    let maintenance: Awaited<ReturnType<typeof acquireGenerationMaintenanceLease>>;
-    try {
-      maintenance = await acquireGenerationMaintenanceLease(runtime);
-    } catch (error: unknown) {
-      const refusal = generationMaintenanceRefusal(error);
-      if (refusal !== null) return refusal;
-      throw error;
-    }
-    try {
-      try {
-        maintenance.assertOwned();
-      } catch (error: unknown) {
-        const refusal = generationMaintenanceRefusal(error);
-        if (refusal !== null) return refusal;
-        throw error;
-      }
+  return underOperatorGuards(
+    options,
+    { operation: 'routing-status discard', retryCommand: 'coral-cli backend routing-status discard' },
+    (maintenance): HandoffRoutingStatusDiscardResult => {
+      maintenance.assertOwned();
       const currentStatus = readHandoffRoutingStatus(runtime, path);
       if (currentStatus.kind !== 'unreadable' && currentStatus.kind !== 'unsupported-generation') {
         return { kind: 'refused', status: currentStatus };
       }
-      try {
-        maintenance.assertOwned();
-      } catch (error: unknown) {
-        const refusal = generationMaintenanceRefusal(error);
-        if (refusal !== null) return refusal;
-        throw error;
-      }
-      let quarantine: ReturnType<typeof quarantineHandoffRoutingStoreArtifact>;
+      maintenance.assertOwned();
+      let quarantine: HandoffRoutingStatusQuarantineResult;
       try {
         quarantine = quarantineHandoffRoutingStoreArtifact(runtime.storage, path, runtime.ids.uuid(), () =>
           maintenance.assertOwned(),
@@ -173,8 +188,6 @@ export async function discardHandoffRoutingStatus(
         if (error instanceof HandoffRoutingStatusQuarantineCapacityError) {
           return { kind: 'quarantine-capacity-exhausted', maximum: MAX_HANDOFF_ROUTING_STATUS_QUARANTINES };
         }
-        const refusal = generationMaintenanceRefusal(error);
-        if (refusal !== null) return refusal;
         throw error;
       }
       if (quarantine.kind !== 'quarantined') return quarantine;
@@ -184,12 +197,8 @@ export async function discardHandoffRoutingStatus(
         quarantinePath: quarantine.quarantinePath,
         previousStatus: currentStatus,
       };
-    } finally {
-      maintenance.release();
-    }
-  } finally {
-    await socket.release();
-  }
+    },
+  );
 }
 
 export async function clearHandoffRoutingStatusQuarantine(
@@ -197,52 +206,15 @@ export async function clearHandoffRoutingStatusQuarantine(
   quarantineId: string,
 ): Promise<HandoffRoutingStatusQuarantineClearResult> {
   const { runtime, path } = options;
-  const socketPath = runtime.paths.coral.coordinator.socketPath;
-  let socket: HandoffRoutingStatusSocketGuard;
-  try {
-    socket = await options.acquireSocketGuard({
-      socketPath,
-      flavor: runtime.flavor,
+  return underOperatorGuards(
+    options,
+    {
       operation: 'routing-status quarantine clear',
       retryCommand: `coral-cli backend routing-status quarantine clear --id ${quarantineId}`,
-    });
-  } catch (error: unknown) {
-    const refusal = operatorSocketRefusal(error, socketPath);
-    if (refusal !== null) return refusal;
-    throw error;
-  }
-  try {
-    let maintenance: Awaited<ReturnType<typeof acquireGenerationMaintenanceLease>>;
-    try {
-      maintenance = await acquireGenerationMaintenanceLease(runtime);
-    } catch (error: unknown) {
-      const refusal = generationMaintenanceRefusal(error);
-      if (refusal !== null) return refusal;
-      throw error;
-    }
-    try {
-      try {
-        maintenance.assertOwned();
-      } catch (error: unknown) {
-        const refusal = generationMaintenanceRefusal(error);
-        if (refusal !== null) return refusal;
-        throw error;
-      }
-      let result: HandoffRoutingStatusQuarantineClearStoreResult;
-      try {
-        result = clearHandoffRoutingStoreQuarantine(runtime.storage, path, quarantineId, () =>
-          maintenance.assertOwned(),
-        );
-      } catch (error: unknown) {
-        const refusal = generationMaintenanceRefusal(error);
-        if (refusal !== null) return refusal;
-        throw error;
-      }
-      return result;
-    } finally {
-      maintenance.release();
-    }
-  } finally {
-    await socket.release();
-  }
+    },
+    (maintenance): HandoffRoutingStatusQuarantineClearStoreResult => {
+      maintenance.assertOwned();
+      return clearHandoffRoutingStoreQuarantine(runtime.storage, path, quarantineId, () => maintenance.assertOwned());
+    },
+  );
 }
