@@ -301,7 +301,11 @@ SQL and omitting only the self-referential generation values. It maps the result
 generation band, whose width derives both endpoints and whose maximum is capped by the signed 32-bit
 `user_version` limit, then uses the generation for SQLite `user_version`, event envelopes, and the
 `handoff-routing.<generation>.db` address. Operational capacity is a separate schema part and does not move the
-address because it changes allocation limits rather than decodability.
+address because it changes allocation limits rather than decodability. Not everything that decides decodability
+is in the fingerprint either: the persisted body decoders hold enumerations no hashed input mentions, so a build
+that widens one shares the address with a build that cannot decode it, and the older reader answers `unreadable`
+instead of naming another generation — see
+[`terminal-body-grammar-outside-the-generation.md`](./todo/terminal-body-grammar-outside-the-generation.md).
 Callers derive the value before passing it to the path authority; the coordinator does not re-export it.
 Publication opens the database once and first compares an existing artifact's generation and complete non-internal
 `sqlite_master` set on that handle before changing its mode or configuring SQLite, then repeats the same validation
