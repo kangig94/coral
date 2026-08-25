@@ -303,7 +303,7 @@ describe('backend status local exit combination', () => {
 
     expect(rendered).toContain(prerequisite);
     expect(rendered).toContain(`coral-cli backend routing-status resolve --invocation ${PUBLICATION_INVOCATION_ID}`);
-    expect(rendered).toContain('The operation finished; do not rerun it');
+    expect(rendered).toContain('Routing finished; the local operation is continuing');
   });
 
   it.each([
@@ -325,7 +325,7 @@ describe('backend status local exit combination', () => {
     });
 
     expect(rendered).toContain(prerequisite);
-    expect(rendered).toContain('The operation finished; do not rerun it');
+    expect(rendered).toContain('Routing finished; the local operation is continuing');
   });
 
   it('reports a terminal invalid-record defect and distinguishes failed work from its failed record', () => {
@@ -344,6 +344,32 @@ describe('backend status local exit combination', () => {
     expect(rendered).not.toContain('<id>');
     expect(rendered).not.toContain('do not rerun it');
   });
+
+  it.each([
+    [{ kind: 'delegated-success', version: '2.3.4' } as const, 'The delegated operation succeeded; do not rerun it'],
+    [
+      { kind: 'delegated-exit', version: '2.3.4', exitCode: 23 } as const,
+      "The delegated child exited with code 23; follow the child's own diagnosis",
+    ],
+    [
+      { kind: 'delegated-signal', version: '2.3.4', signal: 'SIGTERM' } as const,
+      "The delegated child ended from signal SIGTERM; use the child's output to diagnose the operation",
+    ],
+  ])(
+    'describes the recorded delegated outcome without generalizing it as finished',
+    (terminalDisposition, expected) => {
+      const rendered = formatHandoffPublicationIncident({
+        phase: 'terminal',
+        invocationId: PUBLICATION_INVOCATION_ID,
+        terminalDisposition,
+        kind: 'not-published',
+        cause: 'contended',
+      });
+
+      expect(rendered).toContain(expected);
+      expect(rendered).not.toContain('The operation finished');
+    },
+  );
 
   it.each<readonly [Extract<HandoffPublicationIncident, { kind: 'refused' }>, string]>([
     [

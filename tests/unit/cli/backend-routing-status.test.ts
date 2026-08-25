@@ -1,7 +1,11 @@
 import { Command } from 'commander';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { registerBackendCommands, type HandoffRoutingStatusCommandOperations } from '#src/cli/commands/backend.js';
+import {
+  registerBackendCommands,
+  type HandoffRoutingStatusCommandOperations,
+  type HandoffRoutingStatusQuarantineCommandOperations,
+} from '#src/cli/commands/backend.js';
 import { formatHandoffRoutingResolveResult } from '#src/cli/format/backend.js';
 import { parseHandoffRepairOperation } from '#src/coordinator/handoff-repair-operation.js';
 import type { HandoffRoutingResolveResult } from '#src/coordinator/handoff-routing-status.js';
@@ -425,6 +429,11 @@ describe('backend routing-status resolve grammar', () => {
       'repair the generation coordination root, rerun coral-cli backend status, then retry',
       75,
     ],
+    [
+      { kind: 'quarantine-capacity-exhausted', maximum: 16 } as const,
+      'routing-status quarantine list, clear exact entries',
+      75,
+    ],
   ])('renders the discard refusal successor for case #%# with exit $2', async (result, expected, exitCode) => {
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
@@ -442,5 +451,69 @@ describe('backend routing-status resolve grammar', () => {
 
     expect(stderr).toHaveBeenCalledWith(expect.stringContaining(expected));
     expect(process.exitCode).toBe(exitCode);
+  });
+
+  it('lists complete and incomplete retained quarantines without hiding bounded overflow', async () => {
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const routingStatusQuarantine: HandoffRoutingStatusQuarantineCommandOperations = {
+      list: () => ({
+        entries: [
+          {
+            id: INVOCATION_ID,
+            quarantinePath: `/state/run/handoff-routing-quarantine/handoff-routing.1.db.${INVOCATION_ID}`,
+            state: 'incomplete',
+            artifacts: ['wal'],
+          },
+        ],
+        overflow: true,
+      }),
+      clear: async () => {
+        throw new Error('not used');
+      },
+    };
+    const program = new Command();
+    program.exitOverride();
+    registerBackendCommands(program, { routingStatusQuarantine });
+
+    await program.parseAsync(['node', 'coral-cli', 'backend', 'routing-status', 'quarantine', 'list']);
+
+    expect(stdout).toHaveBeenCalledWith(expect.stringContaining(`id=${INVOCATION_ID} state=incomplete artifacts=wal`));
+    expect(stdout).toHaveBeenCalledWith(expect.stringContaining('did not reach every retained file'));
+    expect(process.exitCode).toBe(75);
+  });
+
+  it('clears one exact retained quarantine by canonical ID', async () => {
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const clear = vi.fn(async (quarantineId: string) => ({
+      kind: 'cleared' as const,
+      entry: {
+        id: quarantineId,
+        quarantinePath: `/state/run/handoff-routing-quarantine/handoff-routing.1.db.${quarantineId}`,
+        state: 'complete' as const,
+        artifacts: ['database' as const],
+      },
+    }));
+    const routingStatusQuarantine: HandoffRoutingStatusQuarantineCommandOperations = {
+      list: () => ({ entries: [], overflow: false }),
+      clear,
+    };
+    const program = new Command();
+    program.exitOverride();
+    registerBackendCommands(program, { routingStatusQuarantine });
+
+    await program.parseAsync([
+      'node',
+      'coral-cli',
+      'backend',
+      'routing-status',
+      'quarantine',
+      'clear',
+      '--id',
+      INVOCATION_ID,
+    ]);
+
+    expect(clear).toHaveBeenCalledWith(INVOCATION_ID);
+    expect(stdout).toHaveBeenCalledWith(expect.stringContaining(`Cleared routing-status quarantine ${INVOCATION_ID}`));
+    expect(process.exitCode).toBe(0);
   });
 });

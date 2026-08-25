@@ -1,7 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -39,7 +39,8 @@ import {
 import { formatHandoffRoutingStatus } from '#src/cli/format/backend.js';
 import type { ProcessIdentityObservation } from '#src/infra/port-types.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import { discardHandoffRoutingStatus } from '#src/cli/routing-status-discard.js';
+import type { Runtime } from '#src/runtime/ports.js';
+import { clearHandoffRoutingStatusQuarantine, discardHandoffRoutingStatus } from '#src/cli/routing-status-discard.js';
 import { acquireOperatorSocketGuard } from '#src/cli/operator-socket-guard.js';
 import {
   acquireGenerationMaintenanceLease,
@@ -48,7 +49,11 @@ import {
 import { SimulationRuntime } from '../../../tools/simulation/runtime.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import type { SqliteDatabasePort, StoragePort } from '#src/infra/port-types.js';
-import { SQLITE_FULL } from '#src/store/handoff-routing-status-store.js';
+import {
+  MAX_HANDOFF_ROUTING_STATUS_QUARANTINES,
+  SQLITE_FULL,
+  listHandoffRoutingStoreQuarantines,
+} from '#src/store/handoff-routing-status-store.js';
 
 const BASE_TIME = Date.parse('2026-01-01T00:00:00.000Z');
 const BUILD_SET_ID = '123e4567-e89b-42d3-a456-426614174000';
@@ -314,11 +319,9 @@ describe('handoff routing status', () => {
     expect(
       invalidTargetSummarySchema.safeParse({ failure: 'bundle-dir-unavailable', bundleDir: '/tmp/x' }).success,
     ).toBe(false);
-    expect(MAX_LEGAL_RETIREMENT_TOMBSTONE_BYTES).toBeLessThanOrEqual(MAX_ENCODED_RETIREMENT_TOMBSTONE_BYTES);
+    expect(MAX_LEGAL_RETIREMENT_TOMBSTONE_BYTES).toBe(MAX_ENCODED_RETIREMENT_TOMBSTONE_BYTES);
     expect(MAX_LEGAL_RETIREMENT_TOMBSTONE_BYTES).toBeLessThanOrEqual(MAX_LEGAL_CLOSING_RECORD_BYTES);
-    expect(MAX_RETIREMENT_TOMBSTONES * MAX_LEGAL_RETIREMENT_TOMBSTONE_BYTES).toBeLessThanOrEqual(
-      MAX_RETIREMENT_TOMBSTONE_BYTES,
-    );
+    expect(MAX_RETIREMENT_TOMBSTONES * MAX_LEGAL_RETIREMENT_TOMBSTONE_BYTES).toBe(MAX_RETIREMENT_TOMBSTONE_BYTES);
   });
 
   it('publishes through simulation storage without touching the host path', async () => {
@@ -480,6 +483,103 @@ describe('handoff routing status', () => {
     expect(readHandoffRoutingStatus(path)).toMatchObject({
       kind: 'current',
       statuses: [{ selection: { invocationId: 'clean-generation' } }],
+    });
+  });
+
+  it('keeps an interrupted sidecar move discoverable and resumes the same quarantine', async () => {
+    const path = databasePath();
+    const discardRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+    writeFileSync(path, 'not a sqlite database', { mode: 0o600 });
+    writeFileSync(`${path}-wal`, 'retained wal');
+    writeFileSync(`${path}-shm`, 'retained shm');
+    const interruptedRuntime: Runtime = {
+      ...discardRuntime,
+      storage: {
+        ...discardRuntime.storage,
+        renameSync: (oldPath, newPath) => {
+          if (oldPath === `${path}-shm`) throw new Error('injected sidecar move failure');
+          discardRuntime.storage.renameSync(oldPath, newPath);
+        },
+      },
+    };
+
+    await expect(discardHandoffRoutingStatus(interruptedRuntime, path)).rejects.toThrow(
+      'injected sidecar move failure',
+    );
+    expect(existsSync(path)).toBe(true);
+    const interrupted = listHandoffRoutingStoreQuarantines(discardRuntime.storage, path);
+    expect(interrupted).toMatchObject({
+      overflow: false,
+      entries: [{ state: 'incomplete', artifacts: ['wal'] }],
+    });
+    const incomplete = interrupted.entries[0];
+    if (incomplete === undefined) throw new Error('Expected an incomplete quarantine.');
+
+    const resumed = await discardHandoffRoutingStatus(discardRuntime, path);
+    expect(resumed).toMatchObject({ kind: 'discarded', quarantinePath: incomplete.quarantinePath });
+    expect(readFileSync(incomplete.quarantinePath, 'utf-8')).toBe('not a sqlite database');
+    expect(readFileSync(`${incomplete.quarantinePath}-wal`, 'utf-8')).toBe('retained wal');
+    expect(statSync(`${incomplete.quarantinePath}-shm`).size).toBeGreaterThan(0);
+
+    await expect(clearHandoffRoutingStatusQuarantine(discardRuntime, path, incomplete.id)).resolves.toMatchObject({
+      kind: 'cleared',
+      entry: { id: incomplete.id },
+    });
+    expect(listHandoffRoutingStoreQuarantines(discardRuntime.storage, path)).toEqual({
+      entries: [],
+      overflow: false,
+    });
+  });
+
+  it('refuses another discard when retained quarantine reaches its explicit ceiling', async () => {
+    const path = databasePath();
+    const discardRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+    const quarantineRoot = join(dirname(path), 'handoff-routing-quarantine');
+    mkdirSync(quarantineRoot, { recursive: true, mode: 0o700 });
+    for (let index = 0; index < MAX_HANDOFF_ROUTING_STATUS_QUARANTINES; index += 1) {
+      const id = `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`;
+      writeFileSync(join(quarantineRoot, `${basename(path)}.${id}`), 'retained evidence');
+    }
+    writeFileSync(path, 'not a sqlite database', { mode: 0o600 });
+
+    await expect(discardHandoffRoutingStatus(discardRuntime, path)).resolves.toEqual({
+      kind: 'quarantine-capacity-exhausted',
+      maximum: MAX_HANDOFF_ROUTING_STATUS_QUARANTINES,
+    });
+    expect(existsSync(path)).toBe(true);
+    const retained = listHandoffRoutingStoreQuarantines(discardRuntime.storage, path);
+    expect(retained.overflow).toBe(false);
+    expect(retained.entries).toHaveLength(MAX_HANDOFF_ROUTING_STATUS_QUARANTINES);
+  });
+
+  it('revalidates maintenance ownership after the guarded journal read', async () => {
+    const path = databasePath();
+    const discardRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+    const boundary = resolveGenerationBoundaryPaths(discardRuntime);
+    writeFileSync(path, 'not a sqlite database', { mode: 0o600 });
+    let journalOpens = 0;
+    const ownershipLostRuntime: Runtime = {
+      ...discardRuntime,
+      storage: {
+        ...discardRuntime.storage,
+        openSqliteDatabaseSync: (databasePath, options) => {
+          journalOpens += 1;
+          if (journalOpens === 2) {
+            discardRuntime.storage.rmSync(boundary.maintenanceLock, { recursive: true, force: true });
+          }
+          return discardRuntime.storage.openSqliteDatabaseSync(databasePath, options);
+        },
+      },
+    };
+
+    await expect(discardHandoffRoutingStatus(ownershipLostRuntime, path)).resolves.toEqual({
+      kind: 'generation-maintenance-unavailable',
+      cause: 'ownership-lost',
+    });
+    expect(existsSync(path)).toBe(true);
+    expect(listHandoffRoutingStoreQuarantines(discardRuntime.storage, path)).toEqual({
+      entries: [],
+      overflow: false,
     });
   });
 
@@ -684,6 +784,25 @@ describe('handoff routing status', () => {
         (candidate) => candidate.kind === 'unresolved' && candidate.selection.invocationId === 'alive',
       ),
     ).toMatchObject({ ownerLiveness: { kind: 'unobservable', cause: 'probe-not-available' } });
+  });
+
+  it.each([
+    ['probe-not-available', 0],
+    ['probe-failed', 75],
+  ] as const)('maps unresolved owner cause %s to exit contribution %s', async (cause, exitContribution) => {
+    const path = databasePath();
+    await committed(path, [selection('owner-probe', 1)]);
+    const observationRuntime: Runtime = {
+      ...runtime,
+      process: {
+        ...runtime.process,
+        observeProcessIdentities: async (owners) =>
+          owners.map((owner) => ({ owner, evidence: { kind: 'unobservable' as const, cause } })),
+      },
+    };
+
+    const result = await readHandoffRoutingStatusWithOwnerObservations(observationRuntime, path);
+    expect(handoffRoutingStatusExitContribution(result)).toBe(exitContribution);
   });
 
   it.each([

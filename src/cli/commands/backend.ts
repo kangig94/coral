@@ -40,6 +40,11 @@ import {
 import { currentCoralStoreFormat } from '../../store-format.js';
 import { classifyStoreFile, type Database } from '../../store/db.js';
 import { openReadOnlyStoreDatabase } from '../../store/read-port.js';
+import {
+  listHandoffRoutingStoreQuarantines,
+  MAX_HANDOFF_ROUTING_STATUS_QUARANTINES,
+  type HandoffRoutingStatusQuarantineList,
+} from '../../store/handoff-routing-status-store.js';
 import { getBackendStatusFull, type BackendStatusFull } from '../../transport/http/backend/status.js';
 import { shutdownBackend, type ShutdownReason } from '../../transport/http/backend/shutdown.js';
 
@@ -76,7 +81,13 @@ import {
   RECOVERY_REVISION_UNTIL_CLEARED,
 } from '../format/backend.js';
 import { formatStoreResetList, formatStoreResetReport } from '../format/store-reset.js';
-import { discardHandoffRoutingStatus, type HandoffRoutingStatusDiscardResult } from '../routing-status-discard.js';
+import {
+  clearHandoffRoutingStatusQuarantine,
+  discardHandoffRoutingStatus,
+  type HandoffRoutingStatusDiscardResult,
+  type HandoffRoutingStatusMaintenanceRefusal,
+  type HandoffRoutingStatusQuarantineClearResult,
+} from '../routing-status-discard.js';
 
 /**
  * What each `backend shutdown` refusal means to a script, as an exit code.
@@ -252,6 +263,11 @@ export interface HandoffRoutingStatusCommandOperations {
   discard(): HandoffRoutingStatusDiscardResult | Promise<HandoffRoutingStatusDiscardResult>;
 }
 
+export interface HandoffRoutingStatusQuarantineCommandOperations {
+  list(): HandoffRoutingStatusQuarantineList;
+  clear(quarantineId: string): Promise<HandoffRoutingStatusQuarantineClearResult>;
+}
+
 export interface RecoveryQuarantineCommandOperations {
   list(): readonly RecoveryQuarantineEntry[];
   clear(request: RecoveryQuarantineClearRequest): Promise<RecoveryQuarantineClearResult>;
@@ -268,6 +284,7 @@ export type BackendCommandOperations = Readonly<{
   kbCommit?: KbCommitCommandOperations;
   backendStatus?: BackendStatusCommandOperations;
   routingStatus?: HandoffRoutingStatusCommandOperations;
+  routingStatusQuarantine?: HandoffRoutingStatusQuarantineCommandOperations;
   recoveryQuarantine?: RecoveryQuarantineCommandOperations;
   providerHosts?: ProviderHostCommandOperations;
 }>;
@@ -297,6 +314,18 @@ export function createHandoffRoutingStatusCommandOperations(): HandoffRoutingSta
   return {
     resolve: (request) => resolveHandoffRoutingStatus(runtime, path, request),
     discard: () => discardHandoffRoutingStatus(runtime, path),
+  };
+}
+
+export function createRoutingStatusQuarantineCommandOperations(): HandoffRoutingStatusQuarantineCommandOperations {
+  const runtime = createRealRuntime(resolveBuildFlavor(process.env));
+  const path = handoffRoutingStatusPathForRunDir(
+    runtime.paths.coral.coordinator.runDir,
+    HANDOFF_ROUTING_STATUS_GENERATION,
+  );
+  return {
+    list: () => listHandoffRoutingStoreQuarantines(runtime.storage, path),
+    clear: (quarantineId) => clearHandoffRoutingStatusQuarantine(runtime, path, quarantineId),
   };
 }
 
@@ -332,6 +361,8 @@ function formatRoutingStatusDiscardRefusal(
           return assertNever(cause);
       }
     }
+    case 'quarantine-capacity-exhausted':
+      return `Refusing to discard routing status: ${result.maximum} quarantine entries are already retained or the quarantine could not be fully enumerated.\nNext step: run coral-cli backend routing-status quarantine list, clear exact entries that are no longer needed, then rerun coral-cli backend routing-status discard.`;
     default:
       return assertNever(result);
   }
@@ -348,6 +379,56 @@ function commanderInvocationId(value: string, previous: string | undefined): str
   const invocationId = parseHandoffRoutingInvocationId(value);
   if (invocationId === null) throw new InvalidArgumentError('Invocation must be a canonical lowercase UUID.');
   return invocationId;
+}
+
+function commanderRoutingStatusQuarantineId(value: string, previous: string | undefined): string {
+  if (previous !== undefined) throw new InvalidArgumentError('Option --id may only be specified once.');
+  const quarantineId = parseHandoffRoutingInvocationId(value);
+  if (quarantineId === null) throw new InvalidArgumentError('Quarantine ID must be a canonical lowercase UUID.');
+  return quarantineId;
+}
+
+function formatRoutingStatusQuarantineList(result: HandoffRoutingStatusQuarantineList): string {
+  if (result.entries.length === 0 && !result.overflow) return 'Routing-status quarantine is empty.';
+  const lines = [`Routing-status quarantine (${result.entries.length} visible):`];
+  for (const entry of result.entries) {
+    lines.push(
+      `- id=${entry.id} state=${entry.state} artifacts=${entry.artifacts.join(',') || 'none'}`,
+      `  path=${entry.quarantinePath}`,
+    );
+  }
+  if (result.overflow) {
+    lines.push(
+      'The bounded listing did not reach every retained file. Clear visible entries that are no longer needed, then rerun this command.',
+    );
+  }
+  if (result.entries.length > MAX_HANDOFF_ROUTING_STATUS_QUARANTINES) {
+    lines.push(
+      `Retained quarantine exceeds its ${MAX_HANDOFF_ROUTING_STATUS_QUARANTINES}-entry ceiling. Clear exact entries until it is within bounds.`,
+    );
+  }
+  return lines.join('\n');
+}
+
+function formatRoutingStatusQuarantineMaintenanceRefusal(
+  result: HandoffRoutingStatusMaintenanceRefusal,
+  quarantineId: string,
+): string {
+  const retry = `coral-cli backend routing-status quarantine clear --id ${quarantineId}`;
+  switch (result.kind) {
+    case 'coordinator-running':
+      return `Refusing to clear routing-status quarantine: the coordinator owns the live socket.\nNext step: run coral-cli backend shutdown, wait for the coordinator to exit, then rerun ${retry}.`;
+    case 'coordinator-socket-unobservable':
+      return `Routing-status quarantine clear could not determine whether the coordinator socket is available (${result.cause}).\nNext step: repair the coordinator socket path, then rerun ${retry}.`;
+    case 'coordinator-socket-insecure':
+      return `Refusing to clear routing-status quarantine: the coordinator socket directory is insecure.\nNext step: repair the reported ownership or permissions, then rerun ${retry}.`;
+    case 'generation-maintenance-unavailable':
+      return result.cause === 'contended'
+        ? `Refusing to clear routing-status quarantine: generation maintenance is unavailable (contended).\nNext step: wait for generation maintenance to finish, then rerun ${retry}.`
+        : `Refusing to clear routing-status quarantine: generation maintenance ownership was lost.\nNext step: repair the generation coordination root, then rerun ${retry}.`;
+    default:
+      return assertNever(result);
+  }
 }
 
 type RecoveryQuarantineReadRuntime = Pick<Runtime, 'flavor' | 'paths' | 'storage'>;
@@ -425,6 +506,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
     },
     backendStatus = createBackendStatusCommandOperations(),
     routingStatus = createHandoffRoutingStatusCommandOperations(),
+    routingStatusQuarantine = createRoutingStatusQuarantineCommandOperations(),
     recoveryQuarantine = createRecoveryQuarantineCommandOperations(),
     providerHosts = createProviderHostCommandOperations(),
   } = operations;
@@ -511,6 +593,50 @@ export function registerBackendCommands(program: Command, operations: BackendCom
         }
         process.stdout.write(`Quarantined routing status from ${result.artifactPath} at ${result.quarantinePath}.\n`);
         process.exitCode = 0;
+      } catch (error: unknown) {
+        emitError(error);
+      }
+    });
+  const routingStatusQuarantineCommand = routingStatusCommand
+    .command('quarantine')
+    .description('Inspect and clear retained routing-status journal evidence');
+  routingStatusQuarantineCommand
+    .command('list')
+    .description('List retained complete and incomplete routing-status quarantines')
+    .action(() => {
+      try {
+        const result = routingStatusQuarantine.list();
+        process.stdout.write(`${formatRoutingStatusQuarantineList(result)}\n`);
+        process.exitCode = result.overflow || result.entries.length > MAX_HANDOFF_ROUTING_STATUS_QUARANTINES ? 75 : 0;
+      } catch (error: unknown) {
+        emitError(error);
+      }
+    });
+  routingStatusQuarantineCommand
+    .command('clear')
+    .description('Permanently remove one exact retained routing-status quarantine')
+    .requiredOption(
+      '--id <id>',
+      'Canonical quarantine ID shown by routing-status quarantine list',
+      commanderRoutingStatusQuarantineId,
+    )
+    .action(async (options: { id: string }) => {
+      try {
+        const result = await routingStatusQuarantine.clear(options.id);
+        if (result.kind === 'cleared') {
+          process.stdout.write(
+            `Cleared routing-status quarantine ${result.entry.id} at ${result.entry.quarantinePath}.\n`,
+          );
+          process.exitCode = 0;
+          return;
+        }
+        if (result.kind === 'quarantine-not-found') {
+          process.stdout.write(`Routing-status quarantine ${result.quarantineId} is already absent.\n`);
+          process.exitCode = 0;
+          return;
+        }
+        process.stderr.write(`${formatRoutingStatusQuarantineMaintenanceRefusal(result, options.id)}\n`);
+        process.exitCode = 75;
       } catch (error: unknown) {
         emitError(error);
       }

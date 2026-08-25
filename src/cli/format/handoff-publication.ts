@@ -96,9 +96,20 @@ function formatPublicationAfterStatus(input: HandoffPublicationActionContext): s
   const resolveOpening =
     `if routing invocation ${incident.invocationId} is still unresolved, run coral-cli backend routing-status ` +
     `resolve --invocation ${incident.invocationId}`;
-  return incident.terminalDisposition.kind === 'execution-failed'
-    ? `${resolveOpening}. The operation failed; follow the original error's remediation, then retry it`
-    : `${resolveOpening}. The operation finished; do not rerun it`;
+  switch (incident.terminalDisposition.kind) {
+    case 'execution-failed':
+      return `${resolveOpening}. The operation failed; follow the original error's remediation, then retry it`;
+    case 'continued-current':
+      return `${resolveOpening}. Routing finished; the local operation is continuing`;
+    case 'delegated-success':
+      return `${resolveOpening}. The delegated operation succeeded; do not rerun it`;
+    case 'delegated-exit':
+      return `${resolveOpening}. The delegated child exited with code ${incident.terminalDisposition.exitCode}; follow the child's own diagnosis`;
+    case 'delegated-signal':
+      return `${resolveOpening}. The delegated child ended from signal ${incident.terminalDisposition.signal}; use the child's output to diagnose the operation`;
+    default:
+      return assertNever(incident.terminalDisposition);
+  }
 }
 
 function formatPublicationNextAction(input: HandoffPublicationActionContext): string {

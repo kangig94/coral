@@ -321,7 +321,11 @@ describe('program', () => {
         `Handoff routing-status terminal publication for invocation ${PUBLICATION_INVOCATION_ID} was not published (contended).`,
       );
       expect(stderr).toContain(
-        `Next step: rerun coral-cli backend status; if routing invocation ${PUBLICATION_INVOCATION_ID} is still unresolved, run coral-cli backend routing-status resolve --invocation ${PUBLICATION_INVOCATION_ID}. The operation finished; do not rerun it.`,
+        `Next step: rerun coral-cli backend status; if routing invocation ${PUBLICATION_INVOCATION_ID} is still unresolved, run coral-cli backend routing-status resolve --invocation ${PUBLICATION_INVOCATION_ID}. ${
+          childOutcome.kind === 'handoff-success'
+            ? 'The delegated operation succeeded; do not rerun it'
+            : `The delegated child exited with code ${childOutcome.exitCode}; follow the child's own diagnosis`
+        }.`,
       );
     },
   );

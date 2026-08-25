@@ -197,6 +197,7 @@ These are the load-bearing boundaries that must not leak:
 - `AbortSignal` is the cancellation primitive throughout startup. Aborting the startup signal with no string reason preserves the `AbortError` discriminator; calling `abort('shutdown')` strips that discriminator and breaks downstream `name === 'AbortError'` checks. Enforced by the `abort-signal-threading` invariant.
 - Each domain owner module/contract set is the coordinator-facing surface for its domain; deleted `api.ts` barrels and compatibility shims are not recreated for convenience.
 - `store/` is the SQL/Journal substrate; `read-model/CoralStore` composes product reads over domain-owned query modules.
+- Routing-status quarantine is bounded store evidence: sidecars move before the main database, incomplete UUID-addressed sets resume on retry, and the seventeenth complete or incomplete set is refused until an operator lists and clears an exact ID.
 - Domain registries own event schemas, append validators, and reducers; `store/` only runs the composed validators transactionally.
 - Expansion lifecycle is KB-daemon-owned: transport reaches it through the parent `KbDaemonSupervisor.expansionRpc` proxy, and the KB daemon resolves active backends through `kbRuntime.<name>.read()` on each `RuntimeBinding<Backed<T>>` cell.
 - KB retrieval projections are rebuildable consumers of the Corpus authority; source import and explicit reindex readiness wait on `ConsumerDriver.waitFreshUntil('corpus', ...)`.

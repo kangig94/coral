@@ -430,7 +430,7 @@ describe('cli follow', () => {
       `Handoff routing-status selection publication for invocation ${PUBLICATION_INVOCATION_ID} was not published (contended).\n` +
         `Next step: rerun coral-cli backend status, then retry the operation if routing invocation ${PUBLICATION_INVOCATION_ID} is still unresolved.\n` +
         `Handoff routing-status terminal publication for invocation ${PUBLICATION_INVOCATION_ID} could not be determined (io-failed, errcode 5).\n` +
-        `Next step: repair the reported storage condition if it persists, then rerun coral-cli backend status; if routing invocation ${PUBLICATION_INVOCATION_ID} is still unresolved, run coral-cli backend routing-status resolve --invocation ${PUBLICATION_INVOCATION_ID}. The operation finished; do not rerun it. This attempt could not determine whether it committed.\n`,
+        `Next step: repair the reported storage condition if it persists, then rerun coral-cli backend status; if routing invocation ${PUBLICATION_INVOCATION_ID} is still unresolved, run coral-cli backend routing-status resolve --invocation ${PUBLICATION_INVOCATION_ID}. Routing finished; the local operation is continuing. This attempt could not determine whether it committed.\n`,
     );
     expect(mockState.subscribe).toHaveBeenCalledOnce();
   });
