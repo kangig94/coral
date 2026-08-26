@@ -1,5 +1,12 @@
 # A locked store is reported as a corrupt one, with a destructive remediation
 
+**Status, 2026-08-26.** The store-classification half is closed. Store-open failures now have explicit
+`corrupt-or-unsupported`, `unavailable`, and `unclassified` dispositions; busy/locked failures refuse with
+retry-later advice, and unclassified failures preserve the underlying cause without authorizing discard.
+The `SIGKILL`-without-observed-exit and cooldown-as-manual-repair defects below remain open and keep this entry
+in the pick-up order. The live-state unit-test defect remains tracked by
+`unit-suite-concurrency-and-real-time-tests.md`.
+
 **One-time field measurement, 2026-08-23, on host `KANG-HOME` and a working `gen2` store.** A coordinator
 startup failed with
 `store_corrupt_or_unsupported`, `retryable: false`, and this remediation:
@@ -12,29 +19,29 @@ on that exact file, run after the incident, returned `ok`. The diagnostic and po
 incident measurements; the original lock state cannot be re-run. The store was never corrupt. An operator who
 followed the remediation would have discarded a healthy store because SQLite was momentarily busy.
 
-## What produces it
+## What produced it
 
 `classifyStoreForProtocol` in `src/store/active-store-selection-coordination.ts` asks
-`corruptBackendStoreClassificationFromFailure` (`src/store/backend-store-reset.ts`) whether a thrown error
-is corruption. That function is written correctly and narrowly: it matches only `file is not a database`,
-`database disk image is malformed`, and `malformed database schema`, and returns `null` for anything else.
-`database is locked` is correctly **not** corruption, so it returns `null`.
+`classifyBackendStoreFailure` (`src/store/backend-store-reset.ts`) what a thrown error means. Before this
+half closed, that classifier answered only "corruption" or `null`, and it was written correctly and
+narrowly: it matched only `file is not a database`, `database disk image is malformed`, and `malformed
+database schema`. `database is locked` was correctly **not** corruption, so it returned `null`.
 
-The caller then reads that `null` as a reason to declare corruption anyway, through
-`documentedBackendStoreClassificationFailure`, which emits `store_corrupt_or_unsupported` for whatever
-error it is handed. The discriminator's "this is not corruption" and its "I could not classify this" are
-the same value, and the call site resolves both to the destructive one.
+The caller then read that `null` as a reason to declare corruption anyway, through
+`documentedBackendStoreClassificationFailure`, which emitted `store_corrupt_or_unsupported` for whatever
+error it was handed. The discriminator's "this is not corruption" and its "I could not classify this" were
+the same value, and the call site resolved both to the destructive one.
 
 This is principle 11 in `.claude/rules/design-philosophy.md`, in the form that principle names explicitly:
 `null` carrying two dispositions, and an unknown authorizing a finalization. Declaring corruption is a
 finalization — it is what justifies discarding the store.
 
-## Not yet established
+## Incident fact still not established
 
 - **Which call site fired.** `documentedBackendStoreClassificationFailure` has two callers,
   `classifyStoreForProtocol` and the open/reset path in `src/store/backend-store-reset.ts`. Both produce an
   identical payload (`code`, `path`, `flavor`, `cause`), so the recorded diagnostic cannot distinguish them.
-  Both need the fix; only one is proven to have run.
+  Both carried the defect and are now fixed; only one is proven to have run in the incident.
 
 **Established after the fact: the harm is confined to advice.** A one-time filesystem and SQL inspection on
 `KANG-HOME` found no reset: `store-reset-quarantine/` held nothing newer than 2026-08-14;
@@ -45,14 +52,15 @@ reconstructed once the live store and session history advance. Nothing in the cl
 store on its own — it only tells an operator to. That is the difference between a bad afternoon and lost data,
 and it is why the fix is urgent rather than an emergency.
 
-## The shape of the fix
+## Closed: store classification
 
-A third answer, in the return type. The classifier already distinguishes corruption from non-corruption;
-what it cannot say is "this error is about availability, not content". `database is locked` / `SQLITE_BUSY`
-is retryable and must reach an outcome that says so — `retryable: true`, and a remediation that names
-waiting or retrying rather than discarding. What must never happen is an unrecognized error resolving to
-the destructive branch by default: an error this build cannot classify is a refusal to start, not a verdict
-about the bytes on disk.
+`classifyBackendStoreFailure` now puts all three answers in its return type. Numeric `SQLITE_BUSY`,
+`SQLITE_LOCKED`, `SQLITE_CORRUPT`, and `SQLITE_NOTADB` codes decide first; the observed lock text and the three
+existing corruption signatures remain fallbacks for errors without a numeric SQLite code. Both callers must
+switch over `corrupt-or-unsupported`, `unavailable`, and `unclassified`. Availability maps to
+`store_open_contended` with exit `75`; an error this build cannot classify maps to
+`store_open_unclassified` with exit `70`. Neither non-corruption refusal names discard as its
+successor.
 
 ## Two more defects from the same incident
 

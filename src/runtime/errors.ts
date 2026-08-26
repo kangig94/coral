@@ -35,6 +35,8 @@ export type DocumentedCoralSetupErrorCode =
   | 'store_newer_incompatible'
   | 'store_older_incompatible'
   | 'store_corrupt_or_unsupported'
+  | 'store_open_contended'
+  | 'store_open_unclassified'
   | 'store_not_initialized'
   | 'kb_commit_corrupt_or_unsupported'
   | 'kb_commit_id_invalid'
@@ -280,6 +282,17 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
     userMessage: 'The current-generation store is corrupt or uses an unsupported format.',
     remediation: (context) =>
       `Run 'coral-cli backend store-reset discard --target gen2 --flavor ${stringContextValue(context, 'flavor', '<prod|dev>')}' to quarantine it before this build initializes an empty store.`,
+  },
+  store_open_contended: {
+    userMessage: 'The current-generation store could not be opened because it is in use.',
+    remediation: (context) =>
+      `Wait for the other Coral process or store-inspection tool using ${stringContextValue(context, 'path', '<store-path>')} to finish its transaction or exit and release the SQLite lock, then retry. If the refusal persists after every such process has released the store, it is no longer ordinary contention; verify which process still has the store open and verify filesystem health before diagnosing the store. This error does not authorize discarding it.`,
+  },
+  store_open_unclassified: {
+    userMessage: (context) =>
+      `Coral could not classify why the current-generation store could not be opened: ${stringContextValue(context, 'cause', '<unknown cause>')}`,
+    remediation: (context) =>
+      `Preserve the store at ${stringContextValue(context, 'path', '<store-path>')} and report this error with its cause. This refusal does not establish that the store is corrupt; do not discard it based on this error.`,
   },
   store_not_initialized: {
     userMessage: 'No Coral store exists yet for this installation.',

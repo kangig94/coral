@@ -148,6 +148,7 @@ export function errorCodeToExit(code: string, httpStatus?: number): number {
     code === 'kb_initializing' ||
     code === 'kb_offline' ||
     code === 'startup_not_ready' ||
+    code === 'store_open_contended' ||
     code === 'provider_host_inventory_unavailable' ||
     // "Could not observe", not "decided no" — see `NOT_OBSERVED_CORAL_SETUP_ERROR_CODES` for why this checks a
     // shared list instead of naming codes here; `code` is a bare `string`, not `DocumentedCoralSetupErrorCode`,
@@ -163,7 +164,7 @@ export function errorCodeToExit(code: string, httpStatus?: number): number {
   if (code === 'missing_capability' || code === 'child_credentials_incomplete') {
     return 77;
   }
-  if (code === 'internal' || code === 'internal_error' || httpStatus === 500) {
+  if (code === 'internal' || code === 'internal_error' || code === 'store_open_unclassified' || httpStatus === 500) {
     return 70;
   }
   return 1;

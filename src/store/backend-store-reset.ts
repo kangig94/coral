@@ -5,6 +5,7 @@ import { writeAuditEvent } from '../infra/audit-log.js';
 import { backendLog } from '../infra/backend-log.js';
 import type { StrictBundleManifest } from '../infra/bundle-manifest.js';
 import { assertNever } from '../infra/error-format.js';
+import { errorNumber } from '../infra/error-number.js';
 import { acquireDirectoryLockSync, isDirectoryLockTimeoutError } from '../infra/fs-lock.js';
 import type { StorageBigIntStat, StoragePort } from '../infra/port-types.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
@@ -48,6 +49,11 @@ const RETAINED_TRANSITION_DIRECTORY = 'retained-active-store-transitions';
 const TRANSITION_EVIDENCE_SUFFIX = `.active-store-transition.v${ACTIVE_STORE_TRANSITION_VERSION}.json`;
 const RETAINED_TRANSITION_STAGING_SUFFIX = '.tmp';
 export const STEADY_STATE_BUSY_TIMEOUT_MS = 5_000;
+
+const SQLITE_BUSY = 5;
+const SQLITE_LOCKED = 6;
+const SQLITE_CORRUPT = 11;
+const SQLITE_NOTADB = 26;
 
 const BACKEND_STORE_RESET_AUTHORITY_BRAND: unique symbol = Symbol('BackendStoreResetAuthority');
 const BACKEND_STORE_RESET_LOCK_BRAND: unique symbol = Symbol('BackendStoreResetLock');
@@ -1222,33 +1228,60 @@ export function refuseIncompatibleBackendStore(
   }
 }
 
-export function corruptBackendStoreClassificationFromFailure(
-  error: unknown,
+type BackendStoreFailureClassification =
+  | Readonly<{
+      kind: 'corrupt-or-unsupported';
+      classification: Extract<StoreFormatClassification, { readonly kind: 'corrupt-or-unsupported' }>;
+    }>
+  | Readonly<{ kind: 'unavailable'; cause: string }>
+  | Readonly<{ kind: 'unclassified'; cause: string }>;
+
+function corruptBackendStoreFailure(
   current: StoreFormatDescription,
-): Extract<StoreFormatClassification, { readonly kind: 'corrupt-or-unsupported' }> | null {
-  const message = error instanceof Error ? error.message : String(error);
-  if (!/file is not a database|database disk image is malformed|malformed database schema/iu.test(message)) {
-    return null;
-  }
+): Extract<BackendStoreFailureClassification, { readonly kind: 'corrupt-or-unsupported' }> {
   return {
     kind: 'corrupt-or-unsupported',
-    currentFingerprint: current.fingerprint,
-    currentProductVersion: current.productVersion,
-    storedFingerprint: null,
-    storedProductVersion: null,
+    classification: {
+      kind: 'corrupt-or-unsupported',
+      currentFingerprint: current.fingerprint,
+      currentProductVersion: current.productVersion,
+      storedFingerprint: null,
+      storedProductVersion: null,
+    },
   };
+}
+
+export function classifyBackendStoreFailure(
+  error: unknown,
+  current: StoreFormatDescription,
+): BackendStoreFailureClassification {
+  const cause = error instanceof Error ? error.message : String(error);
+  const primaryErrorNumber = errorNumber(error, 0) & 0xff;
+  if (primaryErrorNumber === SQLITE_BUSY || primaryErrorNumber === SQLITE_LOCKED) {
+    return { kind: 'unavailable', cause };
+  }
+  if (primaryErrorNumber === SQLITE_CORRUPT || primaryErrorNumber === SQLITE_NOTADB) {
+    return corruptBackendStoreFailure(current);
+  }
+  if (/database (?:table )?is locked/iu.test(cause)) {
+    return { kind: 'unavailable', cause };
+  }
+  if (/file is not a database|database disk image is malformed|malformed database schema/iu.test(cause)) {
+    return corruptBackendStoreFailure(current);
+  }
+  return { kind: 'unclassified', cause };
 }
 
 export function documentedBackendStoreClassificationFailure(
   runtime: Pick<Runtime, 'flavor'>,
   files: BackendStoreFileSet,
-  error: unknown,
+  failure: Extract<BackendStoreFailureClassification, { readonly kind: 'unavailable' | 'unclassified' }>,
 ): ReturnType<typeof documentedCoralSetupError> {
   return documentedCoralSetupError({
-    code: 'store_corrupt_or_unsupported',
+    code: failure.kind === 'unavailable' ? 'store_open_contended' : 'store_open_unclassified',
     path: files.dbFile,
     flavor: runtime.flavor,
-    cause: error instanceof Error ? error.message : String(error),
+    cause: failure.cause,
   });
 }
 
@@ -1288,11 +1321,17 @@ export function openOrResetBackendStoreDb(
     try {
       classification = classifyStoreFile(files.dbFile, runtime.storage, options.storeFormat);
     } catch (error: unknown) {
-      const corruptClassification = corruptBackendStoreClassificationFromFailure(error, options.storeFormat);
-      if (corruptClassification === null) {
-        throw documentedBackendStoreClassificationFailure(runtime, files, error);
+      const failure = classifyBackendStoreFailure(error, options.storeFormat);
+      switch (failure.kind) {
+        case 'corrupt-or-unsupported':
+          classification = failure.classification;
+          break;
+        case 'unavailable':
+        case 'unclassified':
+          throw documentedBackendStoreClassificationFailure(runtime, files, failure);
+        default:
+          return assertNever(failure);
       }
-      classification = corruptClassification;
     }
     if (classification.kind === 'older-incompatible' || classification.kind === 'corrupt-or-unsupported') {
       if (

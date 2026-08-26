@@ -48,6 +48,10 @@ function setupErrorStatusCode(code: string): number {
     case 'recovery_quarantine_continuation_pending':
     case 'recovery_quarantine_retry_in_progress':
       return 409;
+    case 'store_open_contended':
+      return 503;
+    case 'store_open_unclassified':
+      return 500;
     case 'kb_commit_id_invalid':
       return 400;
     case 'startup_not_ready':

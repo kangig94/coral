@@ -263,6 +263,42 @@ describe('cli errors', () => {
     });
 
     it.each([
+      ['store_open_contended', 503, 75, 'The current-generation store could not be opened because it is in use.'],
+      [
+        'store_open_unclassified',
+        500,
+        70,
+        'Coral could not classify why the current-generation store could not be opened: EACCES: permission denied',
+      ],
+    ] as const)(
+      'preserves the %s refusal and exit class through IPC and HTTP',
+      (code, statusCode, exitCode, message) => {
+        const context = { path: '/store/store.db', flavor: 'prod', cause: 'EACCES: permission denied' };
+        const setupError = documentedCoralSetupError(code, context);
+        const serialized = serializeCoralSetupError(setupError);
+        if (serialized === null) throw new Error(`Expected ${code} to serialize`);
+        const response = buildTransportErrorResponse(setupError);
+
+        expect(serialized.userMessage).toBe(message);
+        expect(serialized.remediation).not.toContain('store-reset discard');
+        expect(response.statusCode).toBe(statusCode);
+        expect(buildErrorEnvelope(setupError).exitCode).toBe(exitCode);
+        expect(
+          buildErrorEnvelope(
+            new IpcRpcError({
+              code: -32603,
+              message: serialized.userMessage,
+              data: serialized,
+            }),
+          ).exitCode,
+        ).toBe(exitCode);
+        expect(
+          buildErrorEnvelope(new BackendToolHttpError(response.message, response.statusCode, response.body)).exitCode,
+        ).toBe(exitCode);
+      },
+    );
+
+    it.each([
       ['kb_disabled', 'KB daemon supervisor is disabled: disabled (CORAL_KB_ENABLE=0)'],
       ['kb_initializing', 'Knowledge base is starting up — retry in ~5 seconds'],
       ['kb_offline', 'Knowledge base is offline'],
@@ -293,6 +329,7 @@ describe('cli errors', () => {
       ['kb_disabled', undefined, 75],
       ['kb_initializing', undefined, 75],
       ['kb_offline', undefined, 75],
+      ['store_open_contended', undefined, 75],
       ['provider_host_inventory_unavailable', undefined, 75],
       ['backend_error', 503, 75],
       ['backend_unreachable', undefined, 69],
@@ -300,6 +337,7 @@ describe('cli errors', () => {
       ['child_credentials_incomplete', undefined, 77],
       ['internal', undefined, 70],
       ['internal_error', undefined, 70],
+      ['store_open_unclassified', undefined, 70],
       ['backend_error', 500, 70],
       ['unauthorized', 401, 1],
       ['session_not_found', 404, 1],
