@@ -15,6 +15,7 @@ import {
   type JsonRpcRequestEnvelope,
   type JsonRpcResponseEnvelope,
 } from '#src/transport/ipc/json-rpc.js';
+import { probeProcessIncarnation } from '#src/infra/node-process.js';
 import { bindWithHandoff } from '#src/coordinator/handoff.js';
 import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 import type { Runtime } from '#src/runtime/ports.js';
@@ -112,6 +113,7 @@ describe('pre-PR running incumbent (R6)', () => {
       process: {
         kill: () => undefined,
         observeLiveness: () => 'alive' as const,
+        readProcessIncarnation: probeProcessIncarnation,
       } as unknown as Runtime['process'],
       env: { platform: () => 'linux' } as unknown as Runtime['env'],
     };
@@ -175,6 +177,7 @@ describe('pre-PR running incumbent (R6)', () => {
       process: {
         kill: () => undefined,
         observeLiveness: () => 'alive' as const,
+        readProcessIncarnation: probeProcessIncarnation,
       } as unknown as Runtime['process'],
       env: { platform: () => 'linux' } as unknown as Runtime['env'],
     };
@@ -234,6 +237,7 @@ describe('pre-PR running incumbent (R6)', () => {
       process: {
         kill: () => undefined,
         observeLiveness: () => 'alive' as const,
+        readProcessIncarnation: probeProcessIncarnation,
       } as unknown as Runtime['process'],
       env: { platform: () => 'linux' } as unknown as Runtime['env'],
     };

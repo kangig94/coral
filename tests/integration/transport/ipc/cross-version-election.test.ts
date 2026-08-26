@@ -3,6 +3,7 @@ import { createServer, type Server as NetServer } from 'node:net';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { probeProcessIncarnation } from '#src/infra/node-process.js';
 import { bindWithHandoff } from '#src/coordinator/handoff.js';
 import { bindSocket } from '#src/transport/ipc/server.js';
 import { IncumbentMatchesError, type IncumbentHealth } from '#src/transport/ipc/handoff.js';
@@ -61,6 +62,7 @@ function noSignalRuntime(): Pick<Runtime, 'time' | 'process' | 'env'> {
         throw new Error('signal escalation must not be reached in this scenario');
       },
       observeLiveness: () => 'alive' as const,
+      readProcessIncarnation: probeProcessIncarnation,
     } as unknown as Runtime['process'],
     env: { platform: () => 'linux' } as unknown as Runtime['env'],
   };

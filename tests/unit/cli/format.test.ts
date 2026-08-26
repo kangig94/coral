@@ -1065,14 +1065,26 @@ describe('cli format', () => {
         formatBackendStatus({
           status: 'recent_failure',
           phase: 'startup_failed',
+          retryable: false,
         }),
       ).toBe(
         [
           'Backend is not running after a recent coordinator failure.',
           'Phase: startup_failed',
+          'Retryable: no',
           'Next step: inspect the coordinator log, fix the reported cause, then retry a coral-cli mutating command to relaunch it.',
         ].join('\n'),
       );
+    });
+
+    it('formats a retryable recent coordinator failure', () => {
+      expect(
+        formatBackendStatus({
+          status: 'recent_failure',
+          phase: 'startup_failed',
+          retryable: true,
+        }),
+      ).toContain('Retryable: yes');
     });
 
     it('formats a documented startup failure with its authored cause and remediation', () => {
@@ -1080,6 +1092,7 @@ describe('cli format', () => {
         formatBackendStatus({
           status: 'recent_failure',
           phase: 'startup_failed',
+          retryable: false,
           setupError: {
             code: 'store_newer_incompatible',
             userMessage:
@@ -1092,6 +1105,7 @@ describe('cli format', () => {
         [
           'Backend is not running after a recent coordinator failure.',
           'Phase: startup_failed',
+          'Retryable: no',
           'Cause: The current-generation store was written by newer Coral 0.11.0 and is incompatible with this build. [code=store_newer_incompatible]',
           "Next step: Use Coral 0.11.0 to read this store, or run 'coral-cli backend store-reset discard --target gen2 --flavor prod'.",
         ].join('\n'),

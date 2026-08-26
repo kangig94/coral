@@ -32,7 +32,7 @@ import {
   type ActiveStoreTransition,
 } from '#src/store/active-store-selection.js';
 import { coordinateActiveStoreSelection } from '#src/store/active-store-selection-coordination.js';
-import { createBackendStoreResetAuthority } from '#src/store/backend-store-reset.js';
+import { classifyBackendStoreFailure, createBackendStoreResetAuthority } from '#src/store/backend-store-reset.js';
 import * as dbModule from '#src/store/db.js';
 import { openStoreDatabase } from '#src/store/db.js';
 import type { StoreFormatManifest } from '#src/store/format-fingerprint.js';
@@ -485,7 +485,7 @@ describe('active-store selection recovery', () => {
     expect(readActiveStoreTransition(runtime)).toEqual({ kind: 'absent' });
   });
 
-  it('should wrap an unreadable store classification in the documented protocol error', async () => {
+  it('should refuse an unclassified store-open failure without declaring corruption', async () => {
     const { runtime, currentSelection, authority } = harness();
     publish(runtime, 'selectionFile', encodeActiveStoreSelection(currentSelection));
     const failure = Object.assign(new Error('EACCES: permission denied while opening store.db'), { code: 'EACCES' });
@@ -505,7 +505,9 @@ describe('active-store selection recovery', () => {
         },
       }),
     ).rejects.toMatchObject({
-      code: 'store_corrupt_or_unsupported',
+      code: 'store_open_unclassified',
+      userMessage: 'Coral could not classify why the current-generation store could not be opened.',
+      remediation: expect.not.stringContaining('store-reset discard'),
       context: {
         path: runtime.paths.coral.store.dbFile,
         flavor: runtime.flavor,
@@ -513,6 +515,83 @@ describe('active-store selection recovery', () => {
       },
     });
   });
+
+  it.each([
+    Object.assign(new Error('database disk image is malformed'), { errcode: 5 }),
+    Object.assign(new Error('database table is locked'), { errno: 6 }),
+    new Error('database is locked'),
+  ])('should report a busy store as retryable contention without discard advice', async (failure) => {
+    const { runtime, currentSelection, authority } = harness();
+    publish(runtime, 'selectionFile', encodeActiveStoreSelection(currentSelection));
+    vi.spyOn(dbModule, 'classifyStoreFile').mockImplementation(() => {
+      throw failure;
+    });
+
+    await expect(
+      coordinateActiveStoreSelection(runtime, authority, {
+        storeFormat,
+        currentSelection,
+        dependencies: {
+          kind: 'operator',
+          validateSelectedTarget: () => {
+            throw new Error('validator should not run');
+          },
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: 'store_open_contended',
+      remediation: expect.not.stringContaining('store-reset discard'),
+      context: {
+        path: runtime.paths.coral.store.dbFile,
+        flavor: runtime.flavor,
+        cause: failure.message,
+      },
+    });
+  });
+
+  it.each([
+    Object.assign(new Error('unclassified SQLite failure'), { errcode: 11 }),
+    Object.assign(new Error('unclassified SQLite failure'), { errno: 26 }),
+    Object.assign(new Error('file is not a database'), { errcode: 999 }),
+    new Error('file is not a database'),
+    new Error('database disk image is malformed'),
+    new Error('malformed database schema'),
+  ])('should retain numeric and message corruption classifications', (failure) => {
+    expect(classifyBackendStoreFailure(failure, storeFormat)).toMatchObject({
+      kind: 'corrupt-or-unsupported',
+      classification: {
+        kind: 'corrupt-or-unsupported',
+        currentFingerprint: storeFormat.fingerprint,
+        currentProductVersion: storeFormat.productVersion,
+      },
+    });
+  });
+
+  // SQLite reports contention through extended codes whose primary code is in the low byte, so 261 and
+  // 517 are both SQLITE_BUSY and must classify as availability rather than reach the corruption branch.
+  it.each([
+    Object.assign(new Error('unrecognized contention'), { errcode: 5 }),
+    Object.assign(new Error('unrecognized contention'), { errno: 6 }),
+    Object.assign(new Error('unrecognized contention'), { errcode: 261 }),
+    Object.assign(new Error('unrecognized contention'), { errcode: 517 }),
+    new Error('database is locked'),
+    new Error('database table is locked'),
+  ])('should classify contention as availability, never as corruption', (failure) => {
+    expect(classifyBackendStoreFailure(failure, storeFormat)).toEqual({
+      kind: 'unavailable',
+      cause: failure.message,
+    });
+  });
+
+  it.each([new Error('disk I/O error'), Object.assign(new Error('disk I/O error'), { errcode: 10 }), new Error('')])(
+    'should refuse to guess at an unrecognized store-open failure',
+    (failure) => {
+      expect(classifyBackendStoreFailure(failure, storeFormat)).toEqual({
+        kind: 'unclassified',
+        cause: failure.message,
+      });
+    },
+  );
 
   it.each([
     ['absent', 'selection-absent'],

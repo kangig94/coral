@@ -1,6 +1,34 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { serializeBootstrapError } from '#src/coordinator/bootstrap-diagnostics.js';
+const storage = vi.hoisted(() => ({
+  mkdirSync: vi.fn(),
+  writeFileSync: vi.fn(),
+  renameSync: vi.fn(),
+}));
+
+vi.mock('#src/runtime/real.js', () => ({
+  createRealRuntime: () => ({
+    paths: {
+      coral: {
+        coordinator: {
+          startupDiagnosticFile: '/state/startup-diagnostic.json',
+          socketPath: '/state/coordinator.sock',
+        },
+      },
+    },
+    storage,
+  }),
+}));
+vi.mock('#src/infra/build-flavor.js', () => ({ resolveBuildFlavor: () => 'prod' }));
+vi.mock('#src/infra/bundle-manifest.js', () => ({ readBundleHash: () => 'bundle-hash' }));
+vi.mock('#src/infra/plugin-identity.js', () => ({ pluginRootNamespace: () => 'namespace' }));
+
+import { serializeBootstrapError, writeBootstrapDiagnostic } from '#src/coordinator/bootstrap-diagnostics.js';
+import { documentedCoralSetupError } from '#src/runtime/errors.js';
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
 
 describe('serializeBootstrapError', () => {
   it('preserves a nested Error cause chain', () => {
@@ -36,5 +64,17 @@ describe('serializeBootstrapError', () => {
     }
     expect(serialized).toMatchObject({ kind: 'error', message: 'cyclic failure' });
     expect(serialized).not.toHaveProperty('cause');
+  });
+});
+
+describe('writeBootstrapDiagnostic', () => {
+  it('derives retryability from the documented setup-error code', () => {
+    writeBootstrapDiagnostic('/plugin', 'startup_failed', documentedCoralSetupError('store_open_contended'), 75);
+    writeBootstrapDiagnostic('/plugin', 'startup_failed', documentedCoralSetupError('store_open_unclassified'), 70);
+
+    const retryable = JSON.parse(String(storage.writeFileSync.mock.calls[0]?.[1])) as Record<string, unknown>;
+    const nonRetryable = JSON.parse(String(storage.writeFileSync.mock.calls[1]?.[1])) as Record<string, unknown>;
+    expect(retryable.retryable).toBe(true);
+    expect(nonRetryable.retryable).toBe(false);
   });
 });

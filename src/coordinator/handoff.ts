@@ -9,12 +9,7 @@
 import { join } from 'node:path';
 
 import { writeAuditEvent } from '../infra/audit-log.js';
-import {
-  incarnationMayAuthorizeSignal,
-  isProcessIncarnation,
-  probeProcessIncarnation,
-  type ProcessIncarnation,
-} from '../infra/node-process.js';
+import { incarnationMayAuthorizeSignal, isProcessIncarnation, type ProcessIncarnation } from '../infra/node-process.js';
 import { backendLog } from '../infra/backend-log.js';
 import { SIGKILL_GRACE_MS, SIGTERM_GRACE_MS } from '../infra/process-constants.js';
 import type { Runtime } from '../runtime/ports.js';
@@ -42,8 +37,8 @@ export const HANDOFF_SIGNAL_POLICY_ENV = 'CORAL_HANDOFF_SIGNAL_POLICY';
  * errors (transient).
  */
 export class HandoffEscalationError extends Error {
-  constructor(message: string) {
-    super(message);
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
     this.name = 'HandoffEscalationError';
   }
 }
@@ -115,11 +110,133 @@ export interface HandoffOptions {
 }
 
 type HandoffSignal = 'SIGTERM' | 'SIGKILL';
-type HandoffSignalResult = 'sent' | 'send_failed';
-const HANDOFF_SIGNAL_RECORD_VERSION = 1 as const;
+type HandoffSignalResult = 'accepted' | 'rejected';
+
+type HandoffRefusalCause =
+  | 'fresh-discovery-unavailable'
+  | 'fresh-discovery-changed'
+  | 'signal-capability-unavailable'
+  | 'signal-cooldown-active'
+  | 'legacy-signal-attempt-indeterminate'
+  | 'shutdown-capability-rejected'
+  | 'shutdown-credential-unavailable'
+  | 'socket-holder-unverified'
+  | 'manual-policy'
+  | 'term-only-policy'
+  | 'process-identity-unavailable'
+  | 'process-liveness-unknown'
+  | 'platform-identity-insufficient'
+  | 'published-incarnation-missing'
+  | 'published-incarnation-mismatch'
+  | 'signal-anchor-missing'
+  | 'pid-recycled'
+  | 'signal-rejected-live'
+  | 'accepted-signal-target-alive-after-failure'
+  | 'accepted-signal-target-alive-after-bind';
+
+type SignalRefusalText = Readonly<{
+  description: string;
+  successor: string;
+}>;
+
+const HANDOFF_REFUSAL_REGISTRY = {
+  'fresh-discovery-unavailable': {
+    description: 'fresh coordinator discovery was unavailable',
+    successor: 'Retry when verified discovery is available',
+  },
+  'fresh-discovery-changed': {
+    description: 'fresh coordinator discovery changed',
+    successor: 'Retry handoff against the newly discovered incumbent',
+  },
+  'signal-capability-unavailable': {
+    description: 'verified coordinator discovery lacks required signal-capability fields',
+    successor:
+      'Repair or replace the coordinator discovery record, or stop the target through its host service, then retry handoff',
+  },
+  'signal-cooldown-active': {
+    description: 'the handoff signal cooldown has not elapsed',
+    successor: 'Wait for the cooldown to elapse, then retry handoff',
+  },
+  'legacy-signal-attempt-indeterminate': {
+    description: 'the legacy V1 handoff record proves only that a signal was attempted, not that it was accepted',
+    successor: 'Inspect the identified target and wait for the legacy attempt cooldown to elapse, then retry handoff',
+  },
+  'shutdown-capability-rejected': {
+    description: 'the incumbent rejected the shutdown capability',
+    successor:
+      'Stop the incumbent that owns the coordinator socket through the service or account that owns it, then retry handoff',
+  },
+  'shutdown-credential-unavailable': {
+    description: 'verified coordinator discovery had no boot credential for shutdown',
+    successor: 'Stop the identified incumbent through the service or account that owns it, then retry handoff',
+  },
+  'socket-holder-unverified': {
+    description: 'the socket remained bound but no verified holder pid was available',
+    successor: 'Inspect and recover the process or stale socket that holds the coordinator socket, then retry handoff',
+  },
+  'manual-policy': {
+    description: `${HANDOFF_SIGNAL_POLICY_ENV}=manual forbids automated handoff signals`,
+    successor: `Stop the target through the service or account that owns it, then retry handoff; or deliberately change ${HANDOFF_SIGNAL_POLICY_ENV} and retry`,
+  },
+  'term-only-policy': {
+    description: `${HANDOFF_SIGNAL_POLICY_ENV}=term-only forbids SIGKILL`,
+    successor: `Wait for the target's own shutdown to finish or stop it through the service or account that owns it, then retry handoff; or deliberately change ${HANDOFF_SIGNAL_POLICY_ENV} and retry`,
+  },
+  'process-identity-unavailable': {
+    description: 'the process incarnation was unavailable and pid absence was not established',
+    successor:
+      'Retry when a fresh process-identity observation for this pid succeeds; if it remains unavailable, inspect and stop the target through its host service before retrying handoff',
+  },
+  'process-liveness-unknown': {
+    description: 'the target identity matched but its current liveness could not be observed',
+    successor:
+      'Retry when a process-liveness observation for this pid succeeds; if it remains unavailable, inspect and stop the target through its host service before retrying handoff',
+  },
+  'platform-identity-insufficient': {
+    description: 'this platform cannot produce a process identity strong enough to authorize a signal',
+    successor: 'Stop the Coral backend through its service or socket, not by pid, then retry handoff',
+  },
+  'published-incarnation-missing': {
+    description: 'the incumbent published no incarnation, so this pid cannot be proven to be it',
+    successor: 'Stop the Coral backend through its service or socket, not by this pid, then retry handoff',
+  },
+  'published-incarnation-mismatch': {
+    description: 'this pid is not the process the incumbent published',
+    successor:
+      'Retry handoff against a freshly discovered incumbent; if the mismatch persists, stop the target through its host service before retrying handoff',
+  },
+  'signal-anchor-missing': {
+    description: 'no baseline was observed for this pid while it was authenticated',
+    successor:
+      'Retry handoff so a new attempt can establish an authenticated baseline; if it cannot, stop the target through its host service before retrying handoff',
+  },
+  'pid-recycled': {
+    description: 'the pid was recycled after this coordinator observed it',
+    successor:
+      'Retry handoff against the current incumbent; if ownership remains unclear, stop it through its host service before retrying handoff',
+  },
+  'signal-rejected-live': {
+    description:
+      'the process port rejected the signal request while the verified target remained alive; this process may lack permission or the target may be outside its signal reach',
+    successor: 'Stop the target through the service or account that owns it, then retry handoff',
+  },
+  'accepted-signal-target-alive-after-failure': {
+    description: 'the handoff exited before the accepted signal target was observed gone',
+    successor:
+      'Wait for the identified target to finish shutting down or stop it through the service or account that owns it, then retry startup',
+  },
+  'accepted-signal-target-alive-after-bind': {
+    description: 'the coordinator socket became bindable before the accepted signal target was observed gone',
+    successor:
+      'Wait for the identified target to finish shutting down or stop it through the service or account that owns it, then retry startup',
+  },
+} satisfies Record<HandoffRefusalCause, SignalRefusalText>;
+
+const HANDOFF_SIGNAL_RECORD_VERSION = 2 as const;
 
 export type HandoffSignalRecord = {
   version: typeof HANDOFF_SIGNAL_RECORD_VERSION;
+  accepted: true;
   socketPath: string;
   pid: number;
   incarnation?: ProcessIncarnation;
@@ -128,8 +245,14 @@ export type HandoffSignalRecord = {
   signaledAtMs: number;
 };
 
+export type LegacyHandoffSignalAttemptRecord = Omit<HandoffSignalRecord, 'accepted' | 'version'> & {
+  version: 1;
+};
+
+type HandoffSignalLedgerRecord = HandoffSignalRecord | LegacyHandoffSignalAttemptRecord;
+
 export interface HandoffSignalLedger {
-  read(): HandoffSignalRecord | null;
+  read(): HandoffSignalLedgerRecord | null;
   write(record: HandoffSignalRecord): void;
 }
 
@@ -144,7 +267,7 @@ export function createFileHandoffSignalLedger(options: {
     read: () => {
       try {
         const parsed = JSON.parse(options.storage.readFileSync(path, 'utf-8')) as unknown;
-        return isHandoffSignalRecord(parsed) ? parsed : null;
+        return decodeHandoffSignalLedgerRecord(parsed);
       } catch {
         return null;
       }
@@ -161,20 +284,27 @@ export function createFileHandoffSignalLedger(options: {
   };
 }
 
-function isHandoffSignalRecord(value: unknown): value is HandoffSignalRecord {
+function decodeHandoffSignalLedgerRecord(value: unknown): HandoffSignalLedgerRecord | null {
   if (value === null || typeof value !== 'object') {
-    return false;
+    return null;
   }
   const record = value as Record<string, unknown>;
-  return (
-    record.version === HANDOFF_SIGNAL_RECORD_VERSION &&
+  const commonShapeIsValid =
     typeof record.socketPath === 'string' &&
     Number.isInteger(record.pid) &&
     (record.incarnation === undefined || isProcessIncarnation(record.incarnation)) &&
     (record.instanceId === undefined || typeof record.instanceId === 'string') &&
     (record.signal === 'SIGTERM' || record.signal === 'SIGKILL') &&
-    Number.isFinite(record.signaledAtMs)
-  );
+    Number.isFinite(record.signaledAtMs);
+  if (!commonShapeIsValid) {
+    return null;
+  }
+  if (record.version === 1) {
+    return record as LegacyHandoffSignalAttemptRecord;
+  }
+  return record.version === HANDOFF_SIGNAL_RECORD_VERSION && record.accepted === true
+    ? (record as HandoffSignalRecord)
+    : null;
 }
 
 function sameIncumbent(left: IncumbentIdentity, right: IncumbentIdentity): boolean {
@@ -228,14 +358,10 @@ function refreshIncumbentForSignal(
 ): IncumbentIdentity {
   const fresh = readFreshDiscovery(opts, lastHealth);
   if (fresh === null) {
-    throw new HandoffEscalationError(
-      `Manual repair required: refusing to signal pid=${incumbent.pid} because fresh coordinator discovery was unavailable`,
-    );
+    return refuseHandoff(`Refusing to signal pid=${incumbent.pid}`, 'fresh-discovery-unavailable');
   }
   if (!sameIncumbent(incumbent, fresh)) {
-    throw new HandoffEscalationError(
-      `Manual repair required: refusing to signal pid=${incumbent.pid} because fresh coordinator discovery changed`,
-    );
+    return refuseHandoff(`Refusing to signal pid=${incumbent.pid}`, 'fresh-discovery-changed');
   }
   return fresh;
 }
@@ -259,12 +385,18 @@ function assertSignalCapability(incumbent: IncumbentIdentity): void {
   if (missing.length === 0) {
     return;
   }
-  throw new HandoffEscalationError(
-    `Manual repair required: refusing to signal pid=${incumbent.pid} because verified coordinator discovery lacked ${missing.join(', ')}`,
+  refuseHandoff(
+    `Refusing to signal pid=${incumbent.pid}`,
+    'signal-capability-unavailable',
+    `missing ${missing.join(', ')}`,
   );
 }
 
-function isSameSignalTarget(record: HandoffSignalRecord, socketPath: string, incumbent: IncumbentIdentity): boolean {
+function isSameSignalTarget(
+  record: HandoffSignalLedgerRecord,
+  socketPath: string,
+  incumbent: IncumbentIdentity,
+): boolean {
   return (
     record.socketPath === socketPath &&
     record.pid === incumbent.pid &&
@@ -289,20 +421,35 @@ function assertSignalCooldown(opts: HandoffOptions, incumbent: IncumbentIdentity
   if (ageMs >= cooldownMs) {
     return;
   }
-  throw new HandoffEscalationError(
-    `Manual repair required: refusing repeated handoff ${signal} for pid=${incumbent.pid}; last ${last.signal} was ${ageMs}ms ago`,
+  if (last.version === 1) {
+    refuseHandoff(
+      `Refusing ${signal} for pid=${incumbent.pid}`,
+      'legacy-signal-attempt-indeterminate',
+      `legacy ${last.signal} attempt was ${ageMs}ms ago; retry in ${cooldownMs - ageMs}ms`,
+    );
+  }
+  refuseHandoff(
+    `Refusing repeated ${signal} for pid=${incumbent.pid}`,
+    'signal-cooldown-active',
+    `last ${last.signal} was ${ageMs}ms ago; retry in ${cooldownMs - ageMs}ms`,
   );
 }
 
-function recordSignal(opts: HandoffOptions, incumbent: IncumbentIdentity, signal: HandoffSignal): void {
+function recordSignal(
+  opts: HandoffOptions,
+  incumbent: IncumbentIdentity,
+  signal: HandoffSignal,
+  acceptedAtMs: number,
+): void {
   opts.signalLedger?.write({
     version: HANDOFF_SIGNAL_RECORD_VERSION,
+    accepted: true,
     socketPath: opts.socketPath,
     pid: incumbent.pid,
     ...(incumbent.incarnation === undefined ? {} : { incarnation: incumbent.incarnation }),
     ...(incumbent.instanceId === undefined ? {} : { instanceId: incumbent.instanceId }),
     signal,
-    signaledAtMs: opts.runtime.time.now(),
+    signaledAtMs: acceptedAtMs,
   });
 }
 
@@ -338,10 +485,10 @@ function logHandoffSignalAudit(
       ...(incumbent.instanceId === undefined ? {} : { instanceId: incumbent.instanceId }),
     },
     ...(currentContenderPid === undefined ? {} : { contenderPid: currentContenderPid }),
-    signaledAtMs: opts.runtime.time.now(),
+    attemptedAtMs: opts.runtime.time.now(),
     ...(error === undefined ? {} : { error: signalErrorMessage(error) }),
   };
-  writeAuditEvent('handoff_signal', payload, signal === 'SIGKILL' || result === 'send_failed' ? 'error' : 'warn');
+  writeAuditEvent('handoff_signal', payload, signal === 'SIGKILL' || result === 'rejected' ? 'error' : 'warn');
 }
 
 function signalIncumbent(
@@ -349,12 +496,14 @@ function signalIncumbent(
   incumbent: IncumbentIdentity,
   signal: HandoffSignal,
 ): HandoffSignalResult {
-  let result: HandoffSignalResult = 'sent';
+  let result: HandoffSignalResult;
   let signalError: unknown;
   try {
-    opts.runtime.process.kill(incumbent.pid, signal);
+    // A successful kill(2) return proves only kernel acceptance; it cannot prove that the target dequeued
+    // the signal, ran a handler, or exited, including while the target is in uninterruptible sleep.
+    result = opts.runtime.process.kill(incumbent.pid, signal) ? 'accepted' : 'rejected';
   } catch (error: unknown) {
-    result = 'send_failed';
+    result = 'rejected';
     signalError = error;
   }
   logHandoffSignalAudit(opts, incumbent, signal, result, signalError);
@@ -389,23 +538,22 @@ async function sleepForHandoffPoll(opts: HandoffOptions, ms: number): Promise<vo
   opts.signal?.throwIfAborted();
 }
 
-type SignalVerificationResult = 'matched' | 'gone';
+type SignalVerificationResult = 'alive' | 'gone';
+
+type SignalTargetObservation =
+  | { kind: 'gone' }
+  | { kind: 'alive' }
+  | { kind: 'unverifiable'; cause: HandoffRefusalCause };
 
 /**
  * Confirms the pid about to be signalled is still the process this attempt observed, by comparing two
  * probes **this contender made itself**.
  *
- * The self-anchor exists because the old cross-process comparison was unsound: the derived value carried
- * a per-process clock term, so two processes never agreed. The token retired that term — a recorded
- * incarnation and a fresh probe of the same process now produce the same bytes.
- *
  * Two baselines, because they answer different questions and only one of them predates this contender.
  *
  * The **incumbent's published incarnation** says which process the record is about. Without it the only
  * baseline is this contender's own first observation — and a pid recycled *before* that observation
- * anchors an unrelated process, which then matches itself forever. A stale `coordinator.json` left by a
- * crashed daemon plus an ordinary pid wrap is all that takes, and the result is SIGKILL delivered to
- * something this coordinator has no relationship with.
+ * anchors an unrelated process, which then matches itself forever.
  *
  * The **self-anchor**, taken when the peer was authenticated, says the pid has not been recycled since.
  * The published incarnation cannot answer that, because it is equally old.
@@ -422,44 +570,284 @@ type SignalVerificationResult = 'matched' | 'gone';
 function verifySignalTarget(
   incumbent: IncumbentIdentity,
   anchoredIncarnation: ProcessIncarnation | null,
-  process: Pick<Runtime['process'], 'observeLiveness'>,
+  process: Pick<Runtime['process'], 'observeLiveness' | 'readProcessIncarnation'>,
   platform: NodeJS.Platform,
 ): SignalVerificationResult {
-  const liveIncarnation = probeProcessIncarnation(incumbent.pid, platform);
-  if (liveIncarnation === null) {
-    // Unreadable is not gone. Only a pid that no longer exists is gone.
-    return process.observeLiveness(incumbent.pid) !== 'absent'
-      ? refuseSignal(incumbent, 'process incarnation unavailable while pid is alive')
-      : 'gone';
-  }
-  // Checked after "gone", so a dead incumbent is still recognised as dead and escalation simply stops. What
-  // this refuses is the live case: a platform whose identity two processes can share cannot say which one
-  // this pid is, and signalling on it would be a coin toss with someone else's process.
-  if (!incarnationMayAuthorizeSignal(platform)) {
-    return refuseSignal(
-      incumbent,
-      'this platform cannot produce a process identity strong enough to signal on — stop the Coral backend by its service or socket',
-    );
-  }
-  if (incumbent.incarnation === undefined) {
-    return refuseSignal(
-      incumbent,
-      'the incumbent published no incarnation, so this pid cannot be proven to be it — stop the Coral backend by its service or socket, not by this pid',
-    );
-  }
-  if (incumbent.incarnation !== liveIncarnation) {
-    return refuseSignal(incumbent, 'this pid is not the process the incumbent published');
-  }
-  if (anchoredIncarnation === null) {
-    return refuseSignal(incumbent, 'no baseline was observed for this pid while it was authenticated');
-  }
-  return liveIncarnation === anchoredIncarnation
-    ? 'matched'
-    : refuseSignal(incumbent, 'pid was recycled after this coordinator observed it');
+  const observation = observeSignalTarget(incumbent, anchoredIncarnation, process, platform);
+  return observation.kind === 'unverifiable'
+    ? refuseHandoff(`Refusing to signal unverified incumbent pid=${incumbent.pid}`, observation.cause)
+    : observation.kind;
 }
 
-function refuseSignal(incumbent: IncumbentIdentity, reason: string): never {
-  throw new HandoffEscalationError(`Refusing to signal unverified incumbent pid=${incumbent.pid}: ${reason}`);
+function observeSignalTarget(
+  incumbent: IncumbentIdentity,
+  anchoredIncarnation: ProcessIncarnation | null,
+  process: Pick<Runtime['process'], 'observeLiveness' | 'readProcessIncarnation'>,
+  platform: NodeJS.Platform,
+): SignalTargetObservation {
+  const liveIncarnation = process.readProcessIncarnation(incumbent.pid, platform);
+  if (liveIncarnation === null) {
+    // Unreadable is not gone. Only a pid that no longer exists is gone.
+    return process.observeLiveness(incumbent.pid) === 'absent'
+      ? { kind: 'gone' }
+      : { kind: 'unverifiable', cause: 'process-identity-unavailable' };
+  }
+  // An identity that two processes can share cannot authorize a signal or decide which process survived it.
+  if (!incarnationMayAuthorizeSignal(platform)) {
+    return {
+      kind: 'unverifiable',
+      cause: 'platform-identity-insufficient',
+    };
+  }
+  if (incumbent.incarnation === undefined) {
+    return {
+      kind: 'unverifiable',
+      cause: 'published-incarnation-missing',
+    };
+  }
+  if (incumbent.incarnation !== liveIncarnation) {
+    return { kind: 'unverifiable', cause: 'published-incarnation-mismatch' };
+  }
+  if (anchoredIncarnation === null) {
+    return { kind: 'unverifiable', cause: 'signal-anchor-missing' };
+  }
+  if (liveIncarnation !== anchoredIncarnation) {
+    return { kind: 'unverifiable', cause: 'pid-recycled' };
+  }
+  switch (process.observeLiveness(incumbent.pid)) {
+    case 'absent':
+      return { kind: 'gone' };
+    case 'alive':
+      return { kind: 'alive' };
+    case 'unknown':
+      return { kind: 'unverifiable', cause: 'process-liveness-unknown' };
+  }
+}
+
+function settleSignalAttempt(
+  opts: HandoffOptions,
+  incumbent: IncumbentIdentity,
+  anchoredIncarnation: ProcessIncarnation | null,
+  signal: HandoffSignal,
+  result: HandoffSignalResult,
+  platform: NodeJS.Platform,
+): 'accepted' | 'target-gone' {
+  if (result === 'accepted') {
+    return 'accepted';
+  }
+  const observation = observeSignalTarget(incumbent, anchoredIncarnation, opts.runtime.process, platform);
+  if (observation.kind === 'gone') {
+    return 'target-gone';
+  }
+  if (observation.kind === 'alive') {
+    return refuseHandoff(
+      `Refusing handoff after ${signal} was rejected for incumbent pid=${incumbent.pid}`,
+      'signal-rejected-live',
+    );
+  }
+  return refuseHandoff(
+    `Refusing handoff after ${signal} was rejected for incumbent pid=${incumbent.pid} and its current target could not be verified`,
+    observation.cause,
+  );
+}
+
+function handoffRefusalMessage(prefix: string, cause: HandoffRefusalCause, detail?: string): string {
+  const refusal = HANDOFF_REFUSAL_REGISTRY[cause];
+  const description = detail === undefined ? refusal.description : `${refusal.description}: ${detail}`;
+  return `${prefix}: ${description}. ${refusal.successor}`;
+}
+
+function refuseHandoff(prefix: string, cause: HandoffRefusalCause, detail?: string): never {
+  throw new HandoffEscalationError(handoffRefusalMessage(prefix, cause, detail));
+}
+
+type PendingSignalSettlement = Readonly<{
+  signal: HandoffSignal;
+  acceptedAtMs: number;
+  target: IncumbentIdentity;
+  anchoredIncarnation: ProcessIncarnation | null;
+}>;
+
+type SigkillGraceTransitionOutcome =
+  | { kind: 'target-gone' }
+  | { kind: 'target-alive' }
+  | { kind: 'target-unverifiable'; cause: HandoffRefusalCause };
+
+function observePendingSignal(
+  pending: PendingSignalSettlement,
+  process: Pick<Runtime['process'], 'observeLiveness' | 'readProcessIncarnation'>,
+  platform: NodeJS.Platform,
+): SignalTargetObservation {
+  return observeSignalTarget(pending.target, pending.anchoredIncarnation, process, platform);
+}
+
+function refuseAfterPendingSignalFailure(
+  opts: HandoffOptions,
+  pending: PendingSignalSettlement,
+  platform: NodeJS.Platform,
+  error: unknown,
+): never {
+  const observation = observePendingSignal(pending, opts.runtime.process, platform);
+  if (observation.kind === 'gone') {
+    throw error;
+  }
+  const prefix =
+    observation.kind === 'alive'
+      ? `Handoff failed after the kernel accepted ${pending.signal} for incumbent pid=${pending.target.pid}, and the verified target remained alive`
+      : `Handoff failed after the kernel accepted ${pending.signal} for incumbent pid=${pending.target.pid}, but the target could not be verified`;
+  const cause = observation.kind === 'alive' ? 'accepted-signal-target-alive-after-failure' : observation.cause;
+  throw new HandoffEscalationError(handoffRefusalMessage(prefix, cause), { cause: error });
+}
+
+type SigtermGraceTransitionOutcome =
+  | { kind: 'target-gone'; stage: 'after-sigterm' | 'before-sigkill' | 'after-rejected-sigkill'; pid: number }
+  | { kind: 'target-unverifiable'; cause: HandoffRefusalCause; pid: number }
+  | { kind: 'sigkill-forbidden'; pid: number }
+  | { kind: 'sigkill-accepted'; pending: PendingSignalSettlement };
+
+function transitionAfterSigtermGrace(
+  opts: HandoffOptions,
+  pending: PendingSignalSettlement,
+  policy: HandoffSignalPolicy,
+  lastHealth: IncumbentHealth | null,
+  platform: NodeJS.Platform,
+): SigtermGraceTransitionOutcome {
+  const observation = observePendingSignal(pending, opts.runtime.process, platform);
+  if (observation.kind === 'unverifiable') {
+    return { kind: 'target-unverifiable', cause: observation.cause, pid: pending.target.pid };
+  }
+  if (observation.kind === 'gone') {
+    return { kind: 'target-gone', stage: 'after-sigterm', pid: pending.target.pid };
+  }
+  if (policy === 'term-only') {
+    return { kind: 'sigkill-forbidden', pid: pending.target.pid };
+  }
+
+  const incumbent = refreshIncumbentForSignal(opts, pending.target, lastHealth);
+  if (verifySignalTarget(incumbent, pending.anchoredIncarnation, opts.runtime.process, platform) === 'gone') {
+    return { kind: 'target-gone', stage: 'before-sigkill', pid: incumbent.pid };
+  }
+  assertSignalCapability(incumbent);
+  opts.signal?.throwIfAborted();
+  const result = signalIncumbent(opts, incumbent, 'SIGKILL');
+  if (
+    settleSignalAttempt(opts, incumbent, pending.anchoredIncarnation, 'SIGKILL', result, platform) === 'target-gone'
+  ) {
+    return { kind: 'target-gone', stage: 'after-rejected-sigkill', pid: incumbent.pid };
+  }
+  const acceptedAtMs = opts.runtime.time.now();
+  recordSignal(opts, incumbent, 'SIGKILL', acceptedAtMs);
+  return {
+    kind: 'sigkill-accepted',
+    pending: {
+      signal: 'SIGKILL',
+      acceptedAtMs,
+      target: incumbent,
+      anchoredIncarnation: pending.anchoredIncarnation,
+    },
+  };
+}
+
+function transitionAfterSigkillGrace(
+  opts: HandoffOptions,
+  pending: PendingSignalSettlement,
+  platform: NodeJS.Platform,
+): SigkillGraceTransitionOutcome {
+  const observation = observePendingSignal(pending, opts.runtime.process, platform);
+  switch (observation.kind) {
+    case 'gone':
+      return { kind: 'target-gone' };
+    case 'alive':
+      return { kind: 'target-alive' };
+    case 'unverifiable':
+      return { kind: 'target-unverifiable', cause: observation.cause };
+  }
+}
+
+type ExpiredPendingSignalTransitionOutcome =
+  | { kind: 'target-gone'; message: string }
+  | { kind: 'sigkill-accepted'; pending: PendingSignalSettlement };
+
+function settleBoundSocketAgainstPendingSignal(
+  opts: HandoffOptions,
+  pending: PendingSignalSettlement,
+  platform: NodeJS.Platform,
+): void {
+  const observation = observePendingSignal(pending, opts.runtime.process, platform);
+  if (observation.kind === 'unverifiable') {
+    refuseHandoff(
+      `The socket bound after the kernel accepted ${pending.signal} for incumbent pid=${pending.target.pid}, but the target could not be verified`,
+      observation.cause,
+    );
+  }
+  if (observation.kind === 'alive') {
+    refuseHandoff(
+      `The socket bound after the kernel accepted ${pending.signal} for incumbent pid=${pending.target.pid}`,
+      'accepted-signal-target-alive-after-bind',
+    );
+  }
+}
+
+function advanceExpiredPendingSignal(
+  opts: HandoffOptions,
+  pending: PendingSignalSettlement,
+  policy: HandoffSignalPolicy,
+  lastHealth: IncumbentHealth | null,
+  platform: NodeJS.Platform,
+): ExpiredPendingSignalTransitionOutcome {
+  if (pending.signal === 'SIGKILL') {
+    const disposition = transitionAfterSigkillGrace(opts, pending, platform);
+    if (disposition.kind === 'target-unverifiable') {
+      refuseHandoff(
+        `Kernel accepted SIGKILL for incumbent pid=${pending.target.pid} and its grace elapsed, but the current target could not be verified`,
+        disposition.cause,
+      );
+    }
+    if (disposition.kind === 'target-gone') {
+      throw new HandoffEscalationError(
+        `Kernel accepted SIGKILL for incumbent pid=${pending.target.pid}, its grace elapsed, and the target is gone, but its socket remained bound. Retry the original coral-cli mutating command; its bind path clears a stale socket before relaunching`,
+      );
+    }
+    throw new HandoffEscalationError(
+      `Kernel accepted SIGKILL for incumbent pid=${pending.target.pid}, its grace elapsed, and the verified target remained alive; under heavy fsync load it may be blocked in uninterruptible I/O, so wait for that I/O to complete and the process to exit before retrying`,
+    );
+  }
+
+  const transition = transitionAfterSigtermGrace(opts, pending, policy, lastHealth, platform);
+  if (transition.kind === 'target-unverifiable') {
+    refuseHandoff(
+      `Kernel accepted SIGTERM for incumbent pid=${transition.pid} and its grace elapsed, but the current target could not be verified`,
+      transition.cause,
+    );
+  }
+  if (transition.kind === 'sigkill-forbidden') {
+    refuseHandoff(`Refusing SIGKILL for incumbent pid=${transition.pid} after SIGTERM grace`, 'term-only-policy');
+  }
+  if (transition.kind === 'sigkill-accepted') {
+    return transition;
+  }
+  const message =
+    transition.stage === 'after-sigterm'
+      ? `Kernel accepted SIGTERM for incumbent pid=${transition.pid}, its grace elapsed, and the target is gone; retrying bind`
+      : transition.stage === 'before-sigkill'
+        ? `Incumbent pid=${transition.pid} exited before SIGKILL; retrying bind`
+        : `Incumbent pid=${transition.pid} was gone after rejected SIGKILL; retrying bind`;
+  return { kind: 'target-gone', message };
+}
+
+function createBoundCoordinator(sawIncumbent: boolean, opts: HandoffOptions): BoundCoordinator {
+  const state: BoundCoordinatorState = { runCoordinatorStartupRecovery: null };
+  const bound: BoundCoordinator = Object.freeze({
+    acquiredViaHandoff: sawIncumbent,
+    runStartupRecovery: (inputs) => {
+      if (state.runCoordinatorStartupRecovery === null) {
+        throw new Error('Bound coordinator startup recovery is not registered');
+      }
+      return opts.runStartupRecovery(inputs, state.runCoordinatorStartupRecovery);
+    },
+  });
+  boundCoordinatorStates.set(bound, state);
+  return bound;
 }
 
 /**
@@ -473,8 +861,7 @@ export async function bindWithHandoff(opts: HandoffOptions): Promise<BoundCoordi
   let sawIncumbent = false;
   let incumbent: IncumbentIdentity | null = null;
   let lastHealth: IncumbentHealth | null = null;
-  let sigtermAt: number | null = null;
-  let sigkillAt: number | null = null;
+  let pendingSignal: PendingSignalSettlement | null = null;
   /** This contender's own first observation of the incumbent's pid — see `verifySignalTarget`. */
   let signalAnchor: { pid: number; incarnation: ProcessIncarnation } | null = null;
 
@@ -486,7 +873,7 @@ export async function bindWithHandoff(opts: HandoffOptions): Promise<BoundCoordi
     if (signalAnchor?.pid === pid) {
       return;
     }
-    const observed = probeProcessIncarnation(pid, platform);
+    const observed = opts.runtime.process.readProcessIncarnation(pid, platform);
     signalAnchor = observed === null ? null : { pid, incarnation: observed };
   };
 
@@ -501,8 +888,7 @@ export async function bindWithHandoff(opts: HandoffOptions): Promise<BoundCoordi
    *  describe a dead process. */
   const abandonIncumbent = (): void => {
     incumbent = null;
-    sigtermAt = null;
-    sigkillAt = null;
+    pendingSignal = null;
     signalAnchor = null;
   };
 
@@ -512,22 +898,57 @@ export async function bindWithHandoff(opts: HandoffOptions): Promise<BoundCoordi
   };
 
   while (true) {
+    if (pendingSignal !== null) {
+      let activePendingSignal: PendingSignalSettlement = pendingSignal;
+      let targetGoneMessage: string | null = null;
+      try {
+        await sleepForHandoffPoll(opts, SOCKET_BIND_POLL_MS);
+        const pendingBindResult = await opts.bindAttempt();
+        if (pendingBindResult.kind === 'bound') {
+          settleBoundSocketAgainstPendingSignal(opts, activePendingSignal, platform);
+          return createBoundCoordinator(sawIncumbent, opts);
+        }
+        opts.signal?.throwIfAborted();
+        const graceMs = activePendingSignal.signal === 'SIGTERM' ? SIGTERM_GRACE_MS : SIGKILL_GRACE_MS;
+        if (opts.runtime.time.now() - activePendingSignal.acceptedAtMs < graceMs) {
+          continue;
+        }
+        const transition = advanceExpiredPendingSignal(opts, activePendingSignal, signalPolicy, lastHealth, platform);
+        if (transition.kind === 'target-gone') {
+          targetGoneMessage = transition.message;
+        } else {
+          activePendingSignal = transition.pending;
+          pendingSignal = activePendingSignal;
+          backendLog.error(
+            `Incumbent remained alive after the kernel accepted SIGTERM and its grace elapsed; kernel accepted SIGKILL for pid=${activePendingSignal.target.pid}`,
+          );
+        }
+      } catch (error: unknown) {
+        const abortSignal = opts.signal;
+        if (abortSignal?.aborted === true && error === abortSignal.reason) {
+          const observation = observePendingSignal(activePendingSignal, opts.runtime.process, platform);
+          backendLog.warn(
+            `Startup aborted after the kernel accepted ${activePendingSignal.signal} for incumbent pid=${activePendingSignal.target.pid}; observed target status=${observation.kind}`,
+          );
+          throw error;
+        }
+        if (error instanceof HandoffEscalationError) {
+          throw error;
+        }
+        refuseAfterPendingSignalFailure(opts, activePendingSignal, platform, error);
+      }
+      if (targetGoneMessage !== null) {
+        backendLog.info(targetGoneMessage);
+        abandonIncumbent();
+        await sleepForHandoffPoll(opts, SOCKET_BIND_POLL_MS);
+      }
+      continue;
+    }
+
     opts.signal?.throwIfAborted();
     const result = await opts.bindAttempt();
-    opts.signal?.throwIfAborted();
     if (result.kind === 'bound') {
-      const state: BoundCoordinatorState = { runCoordinatorStartupRecovery: null };
-      const bound: BoundCoordinator = Object.freeze({
-        acquiredViaHandoff: sawIncumbent,
-        runStartupRecovery: (inputs) => {
-          if (state.runCoordinatorStartupRecovery === null) {
-            throw new Error('Bound coordinator startup recovery is not registered');
-          }
-          return opts.runStartupRecovery(inputs, state.runCoordinatorStartupRecovery);
-        },
-      });
-      boundCoordinatorStates.set(bound, state);
-      return bound;
+      return createBoundCoordinator(sawIncumbent, opts);
     }
 
     sawIncumbent = true;
@@ -569,14 +990,13 @@ export async function bindWithHandoff(opts: HandoffOptions): Promise<BoundCoordi
       }
       incumbent = discoveryMerge.incumbent;
       if (shutdownResult.shutdownUnauthorized) {
-        throw new HandoffEscalationError(
-          `Manual shutdown required: incumbent pid=${incumbent?.pid ?? 'unknown'} rejected shutdown capability`,
+        refuseHandoff(
+          `Refusing handoff for incumbent pid=${incumbent?.pid ?? 'unknown'}`,
+          'shutdown-capability-rejected',
         );
       }
       if (!shutdownResult.shutdownAttempted && incumbent !== null && incumbent.bootToken === undefined) {
-        throw new HandoffEscalationError(
-          `Manual shutdown required: refusing handoff for pid=${incumbent.pid} because verified shutdown capability was unavailable`,
-        );
+        refuseHandoff(`Refusing handoff for incumbent pid=${incumbent.pid}`, 'shutdown-credential-unavailable');
       }
     }
     const pollingMerge = mergeVerifiedDiscovery(incumbent, readFreshDiscovery(opts, lastHealth));
@@ -594,61 +1014,42 @@ export async function bindWithHandoff(opts: HandoffOptions): Promise<BoundCoordi
     if (remaining <= 0) {
       opts.signal?.throwIfAborted();
       if (incumbent === null) {
-        throw new HandoffEscalationError('Incumbent socket remained bound, but no verified pid was available');
+        refuseHandoff(`Refusing handoff for socket ${opts.socketPath}`, 'socket-holder-unverified');
       }
-      if (sigtermAt === null) {
-        incumbent = refreshIncumbentForSignal(opts, incumbent, lastHealth);
-        if (signalPolicy === 'manual') {
-          throw new HandoffEscalationError(
-            `Manual repair required: refusing handoff signal for pid=${incumbent.pid} because ${HANDOFF_SIGNAL_POLICY_ENV}=manual`,
-          );
-        }
-        if (verifySignalTarget(incumbent, signalAnchorFor(incumbent.pid), opts.runtime.process, platform) === 'gone') {
-          backendLog.info(`Incumbent pid=${incumbent.pid} exited before SIGTERM; retrying bind`);
-          abandonIncumbent();
-          await sleepForHandoffPoll(opts, SOCKET_BIND_POLL_MS);
-          continue;
-        }
-        assertSignalCapability(incumbent);
-        assertSignalCooldown(opts, incumbent, 'SIGTERM');
-        opts.signal?.throwIfAborted();
-        const sigtermResult = signalIncumbent(opts, incumbent, 'SIGTERM');
-        recordSignal(opts, incumbent, 'SIGTERM');
-        sigtermAt = opts.runtime.time.now();
-        backendLog.warn(
-          `Incumbent did not exit within ${opts.totalBudgetMs}ms; ${
-            sigtermResult === 'sent' ? 'sent' : 'attempted'
-          } SIGTERM to pid=${incumbent.pid}`,
-        );
-      } else if (sigkillAt === null && opts.runtime.time.now() - sigtermAt >= SIGTERM_GRACE_MS) {
-        if (signalPolicy === 'term-only') {
-          throw new HandoffEscalationError(
-            `Manual repair required: incumbent pid=${incumbent.pid} remained bound after SIGTERM and ${HANDOFF_SIGNAL_POLICY_ENV}=term-only forbids SIGKILL`,
-          );
-        }
-        incumbent = refreshIncumbentForSignal(opts, incumbent, lastHealth);
-        if (verifySignalTarget(incumbent, signalAnchorFor(incumbent.pid), opts.runtime.process, platform) === 'gone') {
-          backendLog.info(`Incumbent pid=${incumbent.pid} exited before SIGKILL; retrying bind`);
-          abandonIncumbent();
-          await sleepForHandoffPoll(opts, SOCKET_BIND_POLL_MS);
-          continue;
-        }
-        assertSignalCapability(incumbent);
-        opts.signal?.throwIfAborted();
-        const sigkillResult = signalIncumbent(opts, incumbent, 'SIGKILL');
-        recordSignal(opts, incumbent, 'SIGKILL');
-        sigkillAt = opts.runtime.time.now();
-        backendLog.error(
-          `Incumbent did not exit after SIGTERM grace; ${
-            sigkillResult === 'sent' ? 'sent' : 'attempted'
-          } SIGKILL to pid=${incumbent.pid}`,
-        );
-      } else if (sigkillAt !== null && opts.runtime.time.now() - sigkillAt >= SIGKILL_GRACE_MS) {
-        throw new HandoffEscalationError(
-          `Incumbent socket remained bound after SIGKILL grace for pid=${incumbent.pid}`,
-        );
+      incumbent = refreshIncumbentForSignal(opts, incumbent, lastHealth);
+      if (signalPolicy === 'manual') {
+        refuseHandoff(`Refusing handoff signal for pid=${incumbent.pid}`, 'manual-policy');
       }
-      await sleepForHandoffPoll(opts, SOCKET_BIND_POLL_MS);
+      const anchoredIncarnation = signalAnchorFor(incumbent.pid);
+      if (verifySignalTarget(incumbent, anchoredIncarnation, opts.runtime.process, platform) === 'gone') {
+        backendLog.info(`Incumbent pid=${incumbent.pid} exited before SIGTERM; retrying bind`);
+        abandonIncumbent();
+        await sleepForHandoffPoll(opts, SOCKET_BIND_POLL_MS);
+        continue;
+      }
+      assertSignalCapability(incumbent);
+      assertSignalCooldown(opts, incumbent, 'SIGTERM');
+      opts.signal?.throwIfAborted();
+      const sigtermResult = signalIncumbent(opts, incumbent, 'SIGTERM');
+      if (
+        settleSignalAttempt(opts, incumbent, anchoredIncarnation, 'SIGTERM', sigtermResult, platform) === 'target-gone'
+      ) {
+        backendLog.info(`Incumbent pid=${incumbent.pid} was gone after rejected SIGTERM; retrying bind`);
+        abandonIncumbent();
+        await sleepForHandoffPoll(opts, SOCKET_BIND_POLL_MS);
+        continue;
+      }
+      const acceptedAtMs = opts.runtime.time.now();
+      recordSignal(opts, incumbent, 'SIGTERM', acceptedAtMs);
+      pendingSignal = {
+        signal: 'SIGTERM',
+        acceptedAtMs,
+        target: incumbent,
+        anchoredIncarnation,
+      };
+      backendLog.warn(
+        `Incumbent did not exit within ${opts.totalBudgetMs}ms; kernel accepted SIGTERM for pid=${incumbent.pid}`,
+      );
       continue;
     }
 

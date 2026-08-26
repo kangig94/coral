@@ -6,7 +6,7 @@ import { BackendUnreachableError, TransientHttpError } from '../infra/http-error
 import { isRecord } from '../infra/json.js';
 import { DiscussWatchReadError } from '../discuss/watch.js';
 import { HandoffGuardError } from '../coordinator/handoff-runner.js';
-import { NOT_OBSERVED_CORAL_SETUP_ERROR_CODES, serializeCoralSetupError } from '../runtime/errors.js';
+import { documentedCoralSetupErrorExitCode, serializeCoralSetupError } from '../runtime/errors.js';
 import { ChildPrincipalBindingError } from '../transport/ipc/child-principal-auth.js';
 import { IpcRpcError } from '../transport/ipc/client.js';
 
@@ -141,18 +141,18 @@ export function errorCodeToExit(code: string, httpStatus?: number): number {
   if (code === 'invalid_usage') {
     return 2;
   }
+  const documentedExitCode = documentedCoralSetupErrorExitCode(code);
+  if (documentedExitCode === 1 && httpStatus === 503) {
+    return 75;
+  }
+  if (documentedExitCode !== undefined) {
+    return documentedExitCode;
+  }
   if (
     code === 'transient' ||
     code === 'backend_shutting_down' ||
     code === 'kb_disabled' ||
-    code === 'kb_initializing' ||
-    code === 'kb_offline' ||
-    code === 'startup_not_ready' ||
     code === 'provider_host_inventory_unavailable' ||
-    // "Could not observe", not "decided no" — see `NOT_OBSERVED_CORAL_SETUP_ERROR_CODES` for why this checks a
-    // shared list instead of naming codes here; `code` is a bare `string`, not `DocumentedCoralSetupErrorCode`,
-    // because it also carries raw wire codes from `IpcRpcError`/`BackendToolHttpError` bodies.
-    NOT_OBSERVED_CORAL_SETUP_ERROR_CODES.has(code) ||
     httpStatus === 503
   ) {
     return 75;

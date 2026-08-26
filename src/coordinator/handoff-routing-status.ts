@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import { strictBundleManifestSchema, type StrictBundleIdentityFailure } from '../infra/bundle-manifest.js';
 import { assertNever } from '../infra/error-format.js';
+import { errorNumber } from '../infra/error-number.js';
 import { createMonotonicClock } from '../infra/monotonic-clock.js';
 import type { IdPort, Runtime } from '../runtime/ports.js';
 import { recordedProcessIdentitySchema, type RecordedProcessIdentity } from '../infra/process-containment.js';
@@ -1202,12 +1203,6 @@ function mutationObservedAt(transitions: readonly HandoffRoutingMutation[]): str
     (latest, transition) => (Date.parse(transition.observedAt) > Date.parse(latest) ? transition.observedAt : latest),
     transitions[0].observedAt,
   );
-}
-
-function errorNumber(error: unknown, fallback: number): number {
-  if (typeof error !== 'object' || error === null) return fallback;
-  const candidate = 'errcode' in error ? error.errcode : 'errno' in error ? error.errno : fallback;
-  return typeof candidate === 'number' && Number.isInteger(candidate) ? candidate : fallback;
 }
 
 function classifyPublicationError(error: unknown, commitStarted: boolean): PublicationOutcome {

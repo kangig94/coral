@@ -38,6 +38,7 @@ import {
   retainTransitionFileInStoreResetQuarantine,
   type BackendStoreResetAuthority,
 } from '#src/store/backend-store-reset.js';
+import * as dbModule from '#src/store/db.js';
 import { classifyStoreFile, openStoreDatabase, openWritableStoreDbNoReset } from '#src/store/db.js';
 import type { GenerationAdoptionLockLease } from '#src/store/generation-mutation-coordination.js';
 
@@ -518,6 +519,37 @@ describe('openOrResetBackendStoreDb', () => {
     expect(serializeCoralSetupError(error)).toMatchObject({ context: { version: '99.0.0' } });
     expect(readFileSync(dbPath)).toEqual(before);
     expect(existsSync(join(dirname(dbPath), 'store-reset-quarantine'))).toBe(false);
+  });
+
+  it.each([
+    [new Error('database is locked'), 'store_open_contended'],
+    [
+      Object.assign(new Error("EACCES: permission denied, open '/private/customer/store.db'"), { code: 'EACCES' }),
+      'store_open_unclassified',
+    ],
+  ] as const)('preserves the direct opener store and quarantine on %s', (failure, code) => {
+    const runtime = createRuntime();
+    const root = makeTempRoot(`coral-store-${code}-`);
+    const dbPath = join(root, 'store.db');
+    const storePaths = [dbPath, `${dbPath}-wal`, `${dbPath}-shm`, `${dbPath}.format`];
+    const quarantinePath = join(root, 'store-reset-quarantine');
+    for (const [index, path] of storePaths.entries()) {
+      writeFileSync(path, `unchanged-${index}`, 'utf-8');
+    }
+    const before = storePaths.map((path) => readFileSync(path));
+    vi.spyOn(dbModule, 'classifyStoreFile').mockImplementation(() => {
+      throw failure;
+    });
+
+    const error = captureError(() => openReset(runtime, dbPath));
+
+    expectSetupCode(error, code);
+    expect(serializeCoralSetupError(error)).toMatchObject({ context: { path: dbPath, cause: failure.message } });
+    for (const [index, path] of storePaths.entries()) {
+      expect(readFileSync(path)).toEqual(before[index]);
+    }
+    expect(existsSync(quarantinePath)).toBe(false);
+    expect(existsSync(join(root, 'store.db.reset.lock'))).toBe(false);
   });
 
   it('keeps crash-safe quarantine available to the explicit operator boundary', () => {

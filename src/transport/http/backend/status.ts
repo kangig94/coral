@@ -96,7 +96,12 @@ export type BackendStatusFull =
    * Neither a boot in progress nor a stale leftover socket may fold into `not_running`.
    */
   | { status: 'no_record_socket_present'; socketPath: string }
-  | { status: 'recent_failure'; phase: PublicDiagnosticPhase; setupError?: PublicSetupErrorSummary };
+  | {
+      status: 'recent_failure';
+      phase: PublicDiagnosticPhase;
+      retryable: boolean;
+      setupError?: PublicSetupErrorSummary;
+    };
 
 type RecentFailureStatus = Extract<BackendStatusFull, { status: 'recent_failure' }>;
 
@@ -114,7 +119,7 @@ export function statusFromStartupDiagnostic(
     !isRecord(value) ||
     value.schemaVersion !== 1 ||
     value.state !== 'stopped_with_diagnostic' ||
-    value.retryable !== false ||
+    typeof value.retryable !== 'boolean' ||
     !isPublicDiagnosticPhase(value.phase) ||
     typeof value.recordedAt !== 'string' ||
     !isRecord(value.error)
@@ -146,6 +151,7 @@ export function statusFromStartupDiagnostic(
   return {
     status: 'recent_failure',
     phase: value.phase,
+    retryable: value.retryable,
     ...(setupError === null ? {} : { setupError }),
   };
 }

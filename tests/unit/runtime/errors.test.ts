@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { CoralSetupError, documentedCoralSetupError, type DocumentedCoralSetupErrorCode } from '#src/runtime/errors.js';
+import {
+  CoralSetupError,
+  documentedCoralSetupError,
+  documentedCoralSetupErrorExitCode,
+  isRetryableCoralSetupError,
+  type DocumentedCoralSetupErrorCode,
+} from '#src/runtime/errors.js';
 
 function documentedCoralSetupErrorSpec(code: DocumentedCoralSetupErrorCode): Readonly<{
   userMessage: string;
@@ -13,6 +19,30 @@ function documentedCoralSetupErrorSpec(code: DocumentedCoralSetupErrorCode): Rea
 }
 
 describe('CoralSetupError', () => {
+  it('owns documented exit and retryability policy in the setup-error registry', () => {
+    const contended = documentedCoralSetupError('store_open_contended');
+
+    expect(documentedCoralSetupErrorExitCode(contended.code)).toBe(75);
+    expect(isRetryableCoralSetupError(contended)).toBe(true);
+    expect(documentedCoralSetupErrorExitCode('store_open_unclassified')).toBe(70);
+    expect(documentedCoralSetupErrorExitCode('kb_unavailable')).toBe(1);
+    expect(isRetryableCoralSetupError(documentedCoralSetupError('store_open_unclassified'))).toBe(false);
+    expect(documentedCoralSetupErrorExitCode('not_a_documented_code')).toBeUndefined();
+    expect(isRetryableCoralSetupError(new Error('database is locked'))).toBe(false);
+  });
+
+  it('keeps an unclassified store cause in diagnostic context, not public text', () => {
+    const error = documentedCoralSetupError('store_open_unclassified', {
+      path: '/private/customer/store.db',
+      cause: "EACCES: permission denied, open '/private/customer/store.db'",
+    });
+
+    expect(error.userMessage).toBe('Coral could not classify why the current-generation store could not be opened.');
+    expect(error.userMessage).not.toContain('/private/customer');
+    expect(error.remediation).toContain('error.context.cause');
+    expect(error.context?.cause).toBe("EACCES: permission denied, open '/private/customer/store.db'");
+  });
+
   it('should construct with all fields', () => {
     const err = new CoralSetupError({
       code: 'E_TEST',

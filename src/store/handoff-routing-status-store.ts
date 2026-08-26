@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { basename, dirname, join } from 'node:path';
 
+import { errorNumber } from '../infra/error-number.js';
 import type { SqliteDatabasePort, StoragePort } from '../infra/port-types.js';
 import { canonicalContractJson } from '../infra/persisted-contract.js';
 
@@ -1131,10 +1132,4 @@ function close(database: SqliteDatabasePort | undefined): void {
   } catch (closeError) {
     void closeError;
   }
-}
-
-function errorNumber(error: unknown, fallback: number): number {
-  if (typeof error !== 'object' || error === null) return fallback;
-  const candidate = 'errcode' in error ? error.errcode : 'errno' in error ? error.errno : fallback;
-  return typeof candidate === 'number' && Number.isInteger(candidate) ? candidate : fallback;
 }

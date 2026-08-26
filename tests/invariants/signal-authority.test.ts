@@ -31,7 +31,11 @@ import { join, relative } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import ts from 'typescript';
 
+import { bindWithHandoff, HandoffEscalationError, type HandoffOptions } from '../../src/coordinator/handoff.js';
+import type { Runtime } from '../../src/runtime/ports.js';
+import type { IncumbentIdentity } from '../../src/transport/ipc/handoff.js';
 import { codeTextOnly } from '../helpers/ts-code-text.js';
+import { testIncarnation } from '../helpers/process-incarnation.js';
 
 const REPO_ROOT = join(__dirname, '..', '..');
 const SRC_ROOT = 'src';
@@ -207,4 +211,77 @@ describe('a signal aimed at a pid establishes that the pid is still its recorded
       expect(constantArguments, `${canonical} must ask about the platform it is running on`).toEqual([]);
     }
   });
+
+  it.each([
+    ['SIGTERM', 'gone'],
+    ['SIGTERM', 'alive'],
+    ['SIGTERM', 'unverifiable'],
+    ['SIGKILL', 'gone'],
+    ['SIGKILL', 'alive'],
+    ['SIGKILL', 'unverifiable'],
+  ] as const)(
+    'does not complete a bind after accepted %s until its target is gone (%s)',
+    async (signal, targetStatus) => {
+      const incumbent: IncumbentIdentity = {
+        pid: 91_001,
+        incarnation: testIncarnation(91_001_000),
+        source: 'discovery',
+        instanceId: 'signal-settlement-invariant',
+        token: 'token',
+        bootToken: 'boot-token',
+        shutdownToken: 'shutdown-token',
+      };
+      const acceptedSignals: NodeJS.Signals[] = [];
+      let now = 0;
+      let socketBound = false;
+      const runtime: Pick<Runtime, 'time' | 'process' | 'env'> = {
+        time: {
+          now: () => now,
+          sleep: async (ms) => {
+            now += ms;
+          },
+        } as Runtime['time'],
+        process: {
+          kill: (_pid: number, acceptedSignal: NodeJS.Signals | 0) => {
+            if (acceptedSignal !== 0) acceptedSignals.push(acceptedSignal);
+            return true;
+          },
+          readProcessIncarnation: () =>
+            socketBound && targetStatus === 'gone' ? null : (incumbent.incarnation ?? null),
+          observeLiveness: () => {
+            if (!socketBound) return 'alive';
+            if (targetStatus === 'gone') return 'absent';
+            return targetStatus === 'alive' ? 'alive' : 'unknown';
+          },
+        } as unknown as Runtime['process'],
+        env: { platform: () => 'linux' } as unknown as Runtime['env'],
+      };
+      const options: HandoffOptions = {
+        socketPath: '/tmp/coral-signal-settlement-invariant.sock',
+        desired: { version: 'invariant', bundleHash: 'invariant', flavor: 'prod', namespace: 'invariant' },
+        bindAttempt: async () => {
+          if (acceptedSignals.includes(signal)) {
+            socketBound = true;
+            return { kind: 'bound' };
+          }
+          return { kind: 'incumbent', reason: 'signal-settlement-invariant' };
+        },
+        runStartupRecovery: async () => [],
+        runtime,
+        readVerifiedIncumbentFromDiscovery: () => incumbent,
+        totalBudgetMs: 0,
+      };
+
+      const outcome = await bindWithHandoff(options).catch((error: unknown) => error);
+
+      expect(acceptedSignals).toContain(signal);
+      if (targetStatus === 'gone') {
+        expect(outcome).toMatchObject({ acquiredViaHandoff: true });
+      } else {
+        expect(outcome).toBeInstanceOf(HandoffEscalationError);
+        expect(String((outcome as Error).message)).toContain(signal);
+        expect(String((outcome as Error).message)).toContain(`pid=${incumbent.pid}`);
+      }
+    },
+  );
 });

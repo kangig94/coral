@@ -28,7 +28,7 @@ import {
 import {
   acquireBackendStoreResetLock,
   assertBackendStoreResetAuthority,
-  corruptBackendStoreClassificationFromFailure,
+  classifyBackendStoreFailure,
   documentedBackendStoreClassificationFailure,
   publishClassifiedBackendStoreResetIncident,
   refuseIncompatibleBackendStore,
@@ -125,9 +125,16 @@ function classifyStoreForProtocol(
   try {
     return classifyStoreFile(files.dbFile, runtime.storage, options.storeFormat);
   } catch (error: unknown) {
-    const corruptClassification = corruptBackendStoreClassificationFromFailure(error, options.storeFormat);
-    if (corruptClassification === null) throw documentedBackendStoreClassificationFailure(runtime, files, error);
-    return corruptClassification;
+    const failure = classifyBackendStoreFailure(error, options.storeFormat);
+    switch (failure.kind) {
+      case 'corrupt-or-unsupported':
+        return failure.classification;
+      case 'unavailable':
+      case 'unclassified':
+        throw documentedBackendStoreClassificationFailure(runtime, files, failure);
+      default:
+        return assertNever(failure);
+    }
   }
 }
 
