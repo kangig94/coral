@@ -50,17 +50,14 @@ out of scope — adjacent, not joint. And `darwin-signal-authority` states it do
 `kb-daemon-independent-containment` or `wedged-coordinator-self-drain`: it is about the authority to
 signal a correctly identified target, they are about there being no party left to signal at all.
 
-**The closed incident entry and the first open entry share the same measured load.**
-`store-lock-misread-as-corruption` is closed: store-open classification, signal delivery, and final handoff
-dispositions now say only what their evidence establishes. Its field measurements still explain why
-`unit-suite-concurrency-and-real-time-tests` is first: a suite run saturates the one filesystem that the repo,
-`~/.coral` and `/tmp` all share, leaving the coordinator blocked mid-fsync. Closing the incident's messaging
-defects did not remove the load or make a gate result trustworthy while that load can starve the live
-coordinator.
+**Why the suite load is first.** A suite run saturates the one filesystem that the repo, `~/.coral` and
+`/tmp` all share, and a coordinator blocked mid-fsync holds the store lock and misses its heartbeat. The
+messaging defects that misread those symptoms are fixed; the load that produces them is not, and no gate
+result is trustworthy while it can starve the live coordinator.
 
 | Order | Entry                                                       | Why here                                                                                                                                                  |
 | ----- | ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1     | [`unit-suite-concurrency-and-real-time-tests`](./unit-suite-concurrency-and-real-time-tests.md) | Measured 2026-08-25: this manufactured the load recorded by the now-closed `store-lock-misread-as-corruption` incident. One `npm test` holds the device at 100% utilization for 73% of the run with 368 requests queued, so a coordinator sharing that filesystem loses its heartbeat and can block mid-fsync while holding the store lock. The incident's classifications now tell the truth, but the load still makes every gate result uncertain — adding one 2 Hz sampling loop failed four unrelated tests that pass alone. The lever is `journal_mode=WAL`, not `synchronous=FULL`: dropping the WAL is 473x where relaxing durability alone is 2.6x. |
+| 1     | [`unit-suite-concurrency-and-real-time-tests`](./unit-suite-concurrency-and-real-time-tests.md) | Measured 2026-08-25: this manufactures the load behind the field incidents that misread its symptoms. One `npm test` holds the device at 100% utilization for 73% of the run with 368 requests queued, so a coordinator sharing that filesystem loses its heartbeat and can block mid-fsync while holding the store lock. The incident's classifications now tell the truth, but the load still makes every gate result uncertain — adding one 2 Hz sampling loop failed four unrelated tests that pass alone. The lever is `journal_mode=WAL`, not `synchronous=FULL`: dropping the WAL is 473x where relaxing durability alone is 2.6x. |
 | 2     | [`session-start-context-truncated`](./session-start-context-truncated.md) | Measured on one configuration: the SessionStart packet was persisted at 11,320 bytes against a threshold that shows the first 2 KB, so the session read the general advice and lost the operative rules. Its static fragments alone sum to 9,740 bytes before any runtime content. Option 1 is a reordering inside one file. Everything else in this directory assumes an agent that read them. |
 | 3     | the compatibility policy, then `build-identity-and-upgrade` | Unblocks three others. The routing-reason step is closed; this entry still carries the record direction behind the compatibility policy and the independent output direction. |
 | 4     | `darwin-signal-authority` + `durable-cli-signal-authority`  | Needs a synchronous exit state on `ChildProcessLike`, which touches every fake in the suite. Do it when nothing else is in flight.                        |
@@ -269,7 +266,6 @@ they share a failure mode — the fix landed, the thing that would have caught i
 |                                                        |                                                                                                                 |
 | ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
 | [`store-format-routing.md`](./store-format-routing.md) | **Dormant.** Its one live defect was extracted to its own entry and has since been fixed. Read it as a design record. |
-| [`store-lock-misread-as-corruption.md`](./store-lock-misread-as-corruption.md)                           | **Closed incident record.** Busy/locked, corrupt/unsupported, and unclassified store-open failures have separate outcomes; the post-`SIGKILL` branch now distinguishes observed-gone, observed-alive, and unverified targets; and signal cooldown diagnostics name the remaining wait. It remains beside [`handoff-escalation-never-reaches-the-operator.md`](./handoff-escalation-never-reaches-the-operator.md) because that different entry is about delivery: these corrected messages still reach the coordinator log, while its question is whether they reach the terminal. |
 
 ---
 
