@@ -13,6 +13,7 @@ import {
   type JsonRpcRequestEnvelope,
   type JsonRpcResponseEnvelope,
 } from '#src/transport/ipc/json-rpc.js';
+import { probeProcessIncarnation } from '#src/infra/node-process.js';
 import { bindWithHandoff } from '#src/coordinator/handoff.js';
 import { backendLog } from '#src/infra/backend-log.js';
 import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
@@ -112,6 +113,7 @@ describe('handoff integration (AC2 + AC3 happy path)', () => {
         process: {
           kill: () => undefined,
           observeLiveness: () => 'alive' as const,
+          readProcessIncarnation: probeProcessIncarnation,
         } as unknown as Runtime['process'],
         env: { platform: () => 'linux' } as unknown as Runtime['env'],
       };

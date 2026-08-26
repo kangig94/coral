@@ -185,6 +185,8 @@ describe('expansionExitCode', () => {
     ['missing_capability', 77],
     ['child_credentials_incomplete', 77],
     ['unknown_expansion', 1],
+    ['store_open_contended', 75],
+    ['store_open_unclassified', 70],
     ['unmapped_code', 1],
   ] as const)('maps error code %s to exit %i', (code, exitCode) => {
     expect(expansionExitCode({ status: 'error', code, userMessage: 'unused', remediation: 'unused' })).toBe(exitCode);

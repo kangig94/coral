@@ -51,8 +51,8 @@ out of scope — adjacent, not joint. And `darwin-signal-authority` states it do
 signal a correctly identified target, they are about there being no party left to signal at all.
 
 **The closed incident entry and the first open entry share the same measured load.**
-`store-lock-misread-as-corruption` is closed: store-open classification and both handoff dispositions now say
-only what their evidence establishes. Its field measurements still explain why
+`store-lock-misread-as-corruption` is closed: store-open classification, signal delivery, and final handoff
+dispositions now say only what their evidence establishes. Its field measurements still explain why
 `unit-suite-concurrency-and-real-time-tests` is first: a suite run saturates the one filesystem that the repo,
 `~/.coral` and `/tmp` all share, leaving the coordinator blocked mid-fsync. Closing the incident's messaging
 defects did not remove the load or make a gate result trustworthy while that load can starve the live
@@ -156,6 +156,7 @@ landing does not unblock it — that was the record direction.
 | [`coordinator-process-disposition.md`](./coordinator-process-disposition.md)     | **A quarantine that releases the job's only owner is not better than terminalizing it** — which is why the repairable-binding quarantine was reverted rather than kept. Recovery commits its disposition before process-local cleanup, and that cleanup drops the `RecoveryRegistry` entry unconditionally, so a quarantined job with a live carrier has no owner and `jobs abort` cannot reach it. Custody must transfer by verified receipt before ownership is released, and process absence must become a completion obligation ahead of terminal and claim-release facts.                                                                                                                                        |
 | [`wedged-coordinator-self-drain.md`](./wedged-coordinator-self-drain.md)         | Every self-termination path Coral has is scheduled by the process it is meant to end. The 6h idle drain is tidiness for a healthy daemon, not a liveness backstop — reading it as one is what produced this entry.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | [`containment-observation-deadline.md`](./containment-observation-deadline.md)   | **Not the authority to signal — the cost of deciding whether to.** Every deadline that bounds teardown measures around `process.kill`; the observation that feeds it runs outside all of them. `waitForAbsence` completes a full sweep before checking its clock, `observeRecordedSet` probes every root rather than stopping at the first, and a synchronous probe blocks the event loop so no abort can interrupt it. Arithmetic, not a reproduction: its entry price is a measured case.                                                                                                                                                                                                                           |
+| [`handoff-wall-clock-graces.md`](./handoff-wall-clock-graces.md)                 | **The handoff deadline and both signal graces measure elapsed time with `Date.now()`.** A backward adjustment stalls escalation; a forward one observes a post-grace outcome before the grace elapsed. All eleven `runtime.time.now()` sites in `src/coordinator/handoff.ts` predate the signal-delivery repair and must move to one monotonic clock as a separately reviewable change.                                                                                                                                                                                                                                                                |
 | [`project-source-undecidable.md`](./project-source-undecidable.md)               | **Lifetime-durable half closed 2026-08-18; a per-interval identity flip remains.** `resolveProjectSource` returns one `string` for "no git remote" and "the probe could not be run", and `projectData` derives a KB memo directory from it — so a call made while a mount is stalled files a memo where later reads do not look. Only an answered probe is cached now; an unanswered one is held with an expiry, so a recovered system self-heals — and one root can therefore resolve two different ways inside one process, which `discuss/shell/recovery.ts` persists as `sourceId` and then rejects the row over. Closing it means a disposition in a port return type every consumer assumes always has a value. |
 
 These four are one concept — something must end a process that will not end itself, and it must be sure of
@@ -175,6 +176,11 @@ authority. It overlaps `darwin-signal-authority` on one function and nowhere els
 a macOS incarnation may authorize a signal, this one counts the subprocesses spent deriving it, and closing
 either leaves the other untouched. It cannot ship with them either: its own required shape is an asynchronous
 observation port, which the signal-authority entries do not need and would have to absorb.
+
+`handoff-wall-clock-graces` is another timing defect in the same process-lifetime section, but not another
+observation-cost defect. Its probes already return; the deadline and graces can still move underneath them
+because they use wall time. It starts only after the delivery-evidence change is independently reviewable,
+then migrates all eleven clock reads together.
 
 **Do not merge this with shutdown quiescence**, however alike the one-sentence summaries read. One is a
 process-lifetime guarantee whose whole premise is that the closer may already be dead; the other

@@ -130,6 +130,7 @@ describe('backend status generation readiness', () => {
       getStatus: async () => ({
         status: 'recent_failure',
         phase: 'startup_failed',
+        retryable: false,
       }),
       getLiveHandoffResult: () => null,
       getRoutingStatus: async () => ({ kind: 'absent' }),
@@ -145,6 +146,7 @@ describe('backend status generation readiness', () => {
       [
         'Backend is not running after a recent coordinator failure.',
         'Phase: startup_failed',
+        'Retryable: no',
         'Next step: inspect the coordinator log, fix the reported cause, then retry a coral-cli mutating command to relaunch it.',
         '',
       ].join('\n'),
@@ -1221,6 +1223,39 @@ describe('backend startup diagnostic classification', () => {
     ).toEqual({
       status: 'recent_failure',
       phase: 'startup_failed',
+      retryable: false,
+    });
+  });
+
+  it('accepts and carries a retryable startup diagnostic', () => {
+    expect(
+      statusFromStartupDiagnostic(
+        {
+          schemaVersion: 1,
+          phase: 'startup_failed',
+          state: 'stopped_with_diagnostic',
+          retryable: true,
+          pid: 4242,
+          recordedAt: '2026-08-02T11:59:30.000Z',
+          exitCode: 75,
+          error: {
+            kind: 'coral_setup_error',
+            code: 'store_open_contended',
+            userMessage: 'The current-generation store could not be opened because it is in use.',
+            remediation: 'Wait for the other store user to release the SQLite lock, then retry.',
+          },
+        },
+        now,
+      ),
+    ).toEqual({
+      status: 'recent_failure',
+      phase: 'startup_failed',
+      retryable: true,
+      setupError: {
+        code: 'store_open_contended',
+        userMessage: 'The current-generation store could not be opened because it is in use.',
+        remediation: 'Wait for the other store user to release the SQLite lock, then retry.',
+      },
     });
   });
 
@@ -1252,6 +1287,7 @@ describe('backend startup diagnostic classification', () => {
     ).toEqual({
       status: 'recent_failure',
       phase: 'startup_failed',
+      retryable: false,
       setupError: {
         code: 'store_newer_incompatible',
         userMessage:

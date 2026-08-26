@@ -91,12 +91,11 @@ A process in uninterruptible sleep does not receive `SIGKILL`; the kernel queues
 `D`. In that live capture, `kill(2)` returned success, the pending-signal mask remained set, and repeated
 `ss -xlp`/`/proc/<pid>` observations showed the process holding its socket for minutes while blocked on an
 fsync. That transient process state is gone and cannot be re-run. The message is therefore *literally
-accurate* and the conclusion drawn from it is not: what was observed is "the target did not die within the
-grace", and what cannot be concluded is that anything is wrong with the socket. The honest disposition is the
-third answer — the target could not be observed to have died, because right now it cannot be killed — which is
-the same disposition
-`.claude/rules/validation.md` already requires on the way in ("only `alive` may authorize SIGKILL"), missing
-on the way out.
+accurate* and the conclusion drawn from it is not: what was observed is "the target remained alive after a
+delivered signal and its grace", and what cannot be concluded is that anything is wrong with the socket. That
+is a positive live-process observation, not the "could not establish" answer reserved for a failed identity
+observation. The wait-for-I/O disposition is correct only when signal delivery succeeded and the same target
+was then observed alive.
 
 This also explains the sibling failure without a second cause: an incumbent stuck in an ext4 journal commit
 is a machine under heavy fsync load, which is when a concurrent opener meets `database is locked`.
@@ -109,15 +108,17 @@ incident that is exactly what happened: the retained `KANG-HOME` startup diagnos
 at 06:44:11, the successful startup at 06:45:04, and counted three intervening manual-repair messages. This is
 a one-time incident measurement, not a repeatable timing fixture; it shows the system healing on a timer.
 
-The escalation path itself is sound and should not be changed on this evidence: `verifySignalTarget` throws
-through `refuseSignal` when liveness is anything but observed, so an unobservable pid is never escalated to.
-The closing change preserves that policy and applies the same verification after the `SIGKILL` grace: only an
-observed-gone target produces the socket-anomaly message; observed-alive names heavy-fsync uninterruptible I/O
-and waiting for it to complete; refused verification says this run could not establish whether the target
-exited. The verification refusal also no longer calls a pid alive when the liveness probe answered `unknown`.
-Cooldown diagnostics now report the remaining milliseconds. Fresh discovery that is unavailable or changed
-names retry rather than manual repair; configured signal policy and discovery records lacking the authority
-fields needed to signal retain their manual-repair disposition.
+The closing change preserves `verifySignalTarget`'s fail-closed policy and also consumes the signal port's
+delivery result. A failed send is re-observed immediately: an absent target returns to binding, while a live
+target reports that the signal did not reach it and names permission or process reach, and an unverified target
+names the fresh identity observation that would settle it. No failed send enters the signal ledger or starts a
+grace, so it cannot cooldown-fence a later contender on a phantom signal. After a delivered `SIGKILL` and its
+grace, observed-alive names heavy-fsync uninterruptible I/O and waiting for it to complete; observed-gone names
+retrying the mutating command whose binder clears a stale socket; refused verification names the same fresh
+identity observation and the host-service inspection if it remains unavailable. Cooldown diagnostics report
+the remaining milliseconds. Fresh discovery that is unavailable or changed names retry rather than manual
+repair; configured signal policy and discovery records lacking the authority fields needed to signal retain
+their manual-repair disposition.
 
 ## Start condition
 
@@ -171,7 +172,7 @@ So the destructive remedy was offered, as the only named next step, for a databa
 condition that cleared itself. An operator who followed the instruction would have quarantined a 329 MB store
 to fix a lock.
 
-The start condition below is now met — PR2 and PR3 have merged.
+The start condition above is now met — PR2 and PR3 have merged.
 
 ## A second defect surfaced with it
 

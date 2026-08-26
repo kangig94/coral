@@ -27,7 +27,7 @@ import { requestIncumbentShutdown } from '#src/transport/ipc/handoff.js';
 import { probeProcessIncarnation } from '#src/infra/node-process.js';
 
 const mockedShutdown = requestIncumbentShutdown as ReturnType<typeof vi.fn>;
-const mockedProbe = probeProcessIncarnation as ReturnType<typeof vi.fn>;
+const mockedProbe = vi.mocked(probeProcessIncarnation);
 
 const flush = async (rounds = 16): Promise<void> => {
   for (let i = 0; i < rounds; i += 1) await Promise.resolve();
@@ -64,6 +64,7 @@ function buildEscalationHarness(opts: {
         return true;
       },
       observeLiveness,
+      readProcessIncarnation: (pid: number, platform: NodeJS.Platform) => mockedProbe(pid, platform),
     } as unknown as Runtime['process'],
     env: { platform: () => 'linux' } as unknown as Runtime['env'],
   };
@@ -114,7 +115,9 @@ describe('handoff escalation (AC7)', () => {
     const incumbentExitsAt = totalBudgetMs + SIGTERM_GRACE_MS + 2_000;
     const harness = buildEscalationHarness({ incumbentExitsAt, totalBudgetMs, identity });
     mockedShutdown.mockResolvedValue({ health: null, verifiedIdentity: identity });
-    mockedProbe.mockImplementation(() => (harness.elapsedMs() < incumbentExitsAt ? identity.incarnation : null));
+    mockedProbe.mockImplementation(() =>
+      harness.elapsedMs() < incumbentExitsAt ? (identity.incarnation ?? null) : null,
+    );
 
     const promise = bindWithHandoff(harness.options);
     for (let i = 0; i < 100; i += 1) {
@@ -174,7 +177,7 @@ describe('handoff escalation (AC7)', () => {
       identity,
     });
     mockedShutdown.mockResolvedValue({ health: null, verifiedIdentity: identity });
-    mockedProbe.mockImplementation(() => (harness.elapsedMs() < 600 ? identity.incarnation : null));
+    mockedProbe.mockImplementation(() => (harness.elapsedMs() < 600 ? (identity.incarnation ?? null) : null));
 
     const promise = bindWithHandoff(harness.options);
     for (let i = 0; i < 30; i += 1) {
@@ -211,7 +214,7 @@ describe('handoff escalation (AC7)', () => {
       identity,
     });
     mockedShutdown.mockResolvedValue({ health: null, verifiedIdentity: identity });
-    mockedProbe.mockReturnValue(identity.incarnation);
+    mockedProbe.mockReturnValue(identity.incarnation ?? null);
 
     let runStartupRecoveryCalled = false;
     const promise = bindWithHandoff(harness.options).then(() => {

@@ -537,7 +537,11 @@ function formatNoRecordSocketPresentStatus(
 }
 
 function formatRecentFailureStatus(result: Extract<BackendStatusFull, { status: 'recent_failure' }>): string {
-  const lines = ['Backend is not running after a recent coordinator failure.', `Phase: ${result.phase}`];
+  const lines = [
+    'Backend is not running after a recent coordinator failure.',
+    `Phase: ${result.phase}`,
+    `Retryable: ${result.retryable ? 'yes' : 'no'}`,
+  ];
   if (result.setupError === undefined) {
     // Undocumented failures have no authored remediation, and their raw message can carry provider payloads or
     // credentials, so the log stays the only place it is rendered.

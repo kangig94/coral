@@ -7,7 +7,7 @@ import { readBundleHash } from '../infra/bundle-manifest.js';
 import { errorMessage } from '../infra/error-format.js';
 import { pluginRootNamespace } from '../infra/plugin-identity.js';
 import { createRealRuntime } from '../runtime/real.js';
-import { serializeCoralSetupError } from '../runtime/errors.js';
+import { isRetryableCoralSetupError, serializeCoralSetupError } from '../runtime/errors.js';
 
 export type BootstrapDiagnosticPhase = 'startup_failed' | 'fatal_shutdown_error' | 'bootstrap_unhandled_rejection';
 
@@ -29,8 +29,7 @@ export function serializeBootstrapError(error: unknown, causeDepth = 0): Record<
       name: error.name,
       message: error.message,
       ...(error.stack === undefined ? {} : { stack: error.stack }),
-      // A wrapper that carries the real reason in `cause` is useless without it: the
-      // operator sees a fatal, non-retryable failure and no way to learn why.
+      // Nested causes must remain inspectable in the structured diagnostic; they never enter default public text.
       ...(error.cause === undefined || error.cause === null || causeDepth >= MAX_BOOTSTRAP_ERROR_CAUSE_DEPTH
         ? {}
         : { cause: serializeBootstrapError(error.cause, causeDepth + 1) }),
@@ -56,7 +55,7 @@ export function writeBootstrapDiagnostic(
       schemaVersion: 1,
       phase,
       state: 'stopped_with_diagnostic',
-      retryable: false,
+      retryable: isRetryableCoralSetupError(error),
       pid: process.pid,
       recordedAt: new Date().toISOString(),
       attemptId: process.env.CORAL_STARTUP_ATTEMPT_ID,

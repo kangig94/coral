@@ -107,6 +107,9 @@ export type DocumentedCoralSetupErrorCode =
 type DocumentedCoralSetupErrorSpec = {
   readonly userMessage: string | ((context?: CoralSetupErrorContext) => string);
   readonly remediation: string | ((context?: CoralSetupErrorContext) => string);
+  readonly exitCode?: number;
+  readonly retryable?: true;
+  readonly observation?: 'not_observed';
 };
 
 function stringContextValue(context: CoralSetupErrorContext | undefined, key: string, fallback: string): string {
@@ -168,6 +171,7 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
   startup_not_ready: {
     userMessage: 'Coral backend is still starting.',
     remediation: 'The Coral backend is still starting; retry shortly.',
+    exitCode: 75,
   },
   startup_bundle_unresolvable: {
     userMessage: "Coral cannot resolve this installation's running backend bundle directory.",
@@ -221,6 +225,8 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
       }
       return 'Resolve the filesystem error reported in the observation above, then start Coral again. Coral will not bind its singleton socket in a directory it could not observe.';
     },
+    exitCode: 75,
+    observation: 'not_observed',
   },
   store_schema_outdated: {
     userMessage: 'Coral backend store format does not match this installation.',
@@ -287,12 +293,14 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
     userMessage: 'The current-generation store could not be opened because it is in use.',
     remediation: (context) =>
       `Wait for the other Coral process or store-inspection tool using ${stringContextValue(context, 'path', '<store-path>')} to finish its transaction or exit and release the SQLite lock, then retry. If the refusal persists after every such process has released the store, it is no longer ordinary contention; verify which process still has the store open and verify filesystem health before diagnosing the store. This error does not authorize discarding it.`,
+    exitCode: 75,
+    retryable: true,
   },
   store_open_unclassified: {
-    userMessage: (context) =>
-      `Coral could not classify why the current-generation store could not be opened: ${stringContextValue(context, 'cause', '<unknown cause>')}`,
+    userMessage: 'Coral could not classify why the current-generation store could not be opened.',
     remediation: (context) =>
-      `Preserve the store at ${stringContextValue(context, 'path', '<store-path>')} and report this error with its cause. This refusal does not establish that the store is corrupt; do not discard it based on this error.`,
+      `Inspect error.context.cause in startup-diagnostic.json or the structured error payload, preserve the store at ${stringContextValue(context, 'path', '<store-path>')}, and report the code with that diagnostic cause. This refusal does not establish that the store is corrupt; do not discard it based on this error.`,
+    exitCode: 70,
   },
   store_not_initialized: {
     userMessage: 'No Coral store exists yet for this installation.',
@@ -436,6 +444,8 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
       `Coral cannot report ${stringContextValue(context, 'subject', 'expansion status')}: the coordinator discovery record at ${stringContextValue(context, 'path', '<record-path>')} could not be read (${stringContextValue(context, 'detail', 'unknown')}). This does not mean no coordinator is running.`,
     remediation: (context) =>
       `Fix the permissions on ${stringContextValue(context, 'path', '<record-path>')}, or delete it if its content is corrupt — a running coordinator never rewrites it, and a fresh one recreates it safely. Then run any coral-cli mutating command (or start a Claude Code session) to relaunch. Retrying this exact command re-reads the same file and will not resolve on its own.`,
+    exitCode: 75,
+    observation: 'not_observed',
   },
   /**
    * Reached only once a record decoded — a coordinator claimed this socket at some point, and wrote that
@@ -451,6 +461,8 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
       `Coral cannot report ${stringContextValue(context, 'subject', 'expansion status')}: the coordinator recorded itself at ${stringContextValue(context, 'path', '<record-path>')} but did not answer (${stringContextValue(context, 'detail', 'unknown')}).`,
     remediation: (context) =>
       `Retry shortly in case the coordinator is only busy. If it persists, run 'ps -p ${stringContextValue(context, 'pid', '<pid>')}' or check your process manager to see whether that process is actually Coral's coordinator; if it is not, or you cannot tell, delete ${stringContextValue(context, 'path', '<record-path>')} yourself and run any coral-cli mutating command (or start a Claude Code session) to relaunch.`,
+    exitCode: 75,
+    observation: 'not_observed',
   },
   unknown_expansion: {
     userMessage: (context) =>
@@ -591,16 +603,19 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
       const binding = stringContextValue(context, 'binding', '<binding>');
       return `No engine is currently bound to '${binding}'. Equip the bundled or installed engine that fills it, then retry.`;
     },
+    exitCode: 75,
   },
   // Transport-level distinction; CLI does not auto-retry on `_initializing`
   // and relies on the remediation hint instead.
   kb_initializing: {
     userMessage: 'Knowledge base is starting up — retry in ~5 seconds',
     remediation: 'Wait briefly, then retry the request',
+    exitCode: 75,
   },
   kb_offline: {
     userMessage: 'Knowledge base is offline',
     remediation: 'Restart the daemon: coral-cli backend shutdown',
+    exitCode: 75,
   },
   binding_occupied: {
     userMessage: (context) =>
@@ -698,12 +713,31 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
   },
 } satisfies Record<DocumentedCoralSetupErrorCode, DocumentedCoralSetupErrorSpec>;
 
+function documentedCoralSetupErrorSpec(code: string): DocumentedCoralSetupErrorSpec | undefined {
+  if (!Object.hasOwn(DOCUMENTED_CORAL_SETUP_ERRORS, code)) {
+    return undefined;
+  }
+  return DOCUMENTED_CORAL_SETUP_ERRORS[code as DocumentedCoralSetupErrorCode];
+}
+
 /** Exit 75 must not be read as a settled negative verdict or as a promise that retrying will resolve it. */
-export const NOT_OBSERVED_CORAL_SETUP_ERROR_CODES: ReadonlySet<string> = new Set<DocumentedCoralSetupErrorCode>([
-  'coordinator_unreachable',
-  'coordinator_record_unreadable',
-  'coordinator_socket_dir_unverified',
-]);
+export const NOT_OBSERVED_CORAL_SETUP_ERROR_CODES: ReadonlySet<string> = new Set<DocumentedCoralSetupErrorCode>(
+  (Object.keys(DOCUMENTED_CORAL_SETUP_ERRORS) as DocumentedCoralSetupErrorCode[]).filter(
+    (code) => documentedCoralSetupErrorSpec(code)?.observation === 'not_observed',
+  ),
+);
+
+/** A documented code's exit must come from its registry entry, including the default exit 1. */
+export function documentedCoralSetupErrorExitCode(code: string): number | undefined {
+  const spec = documentedCoralSetupErrorSpec(code);
+  return spec === undefined ? undefined : (spec.exitCode ?? 1);
+}
+
+/** Undocumented failures must remain non-retryable because no authored policy can justify retry. */
+export function isRetryableCoralSetupError(error: unknown): boolean {
+  const setupError = serializeCoralSetupError(error);
+  return setupError !== null && documentedCoralSetupErrorSpec(setupError.code)?.retryable === true;
+}
 
 function renderDocumentedSpec(
   value: string | ((context?: CoralSetupErrorContext) => string),

@@ -506,7 +506,7 @@ describe('active-store selection recovery', () => {
       }),
     ).rejects.toMatchObject({
       code: 'store_open_unclassified',
-      userMessage: `Coral could not classify why the current-generation store could not be opened: ${failure.message}`,
+      userMessage: 'Coral could not classify why the current-generation store could not be opened.',
       remediation: expect.not.stringContaining('store-reset discard'),
       context: {
         path: runtime.paths.coral.store.dbFile,

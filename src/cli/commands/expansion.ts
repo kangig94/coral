@@ -2,7 +2,7 @@ import { type Command, CommanderError } from 'commander';
 import { z } from 'zod';
 
 import { expansionArgsSchema, encodeInstallError, type ExpansionArgs } from '../expansion/contract.js';
-import { NOT_OBSERVED_CORAL_SETUP_ERROR_CODES } from '../../runtime/errors.js';
+import { errorCodeToExit } from '../errors.js';
 import {
   installErrorSchema,
   installResultSchema,
@@ -38,18 +38,7 @@ export function expansionExitCode(result: InstallResult | InstallError): number 
   if (result.status !== 'error') {
     return 0;
   }
-
-  if (result.code === 'invalid_usage') {
-    return 2;
-  }
-  if (result.code === 'missing_capability' || result.code === 'child_credentials_incomplete') {
-    return 77;
-  }
-  // "Could not observe", not "decided no" — see `NOT_OBSERVED_CORAL_SETUP_ERROR_CODES` in `runtime/errors.ts`.
-  if (NOT_OBSERVED_CORAL_SETUP_ERROR_CODES.has(result.code)) {
-    return 75;
-  }
-  return 1;
+  return errorCodeToExit(result.code);
 }
 
 function writeJsonLineAndExit(line: string, exitCode: number): void {

@@ -268,7 +268,7 @@ describe('cli errors', () => {
         'store_open_unclassified',
         500,
         70,
-        'Coral could not classify why the current-generation store could not be opened: EACCES: permission denied',
+        'Coral could not classify why the current-generation store could not be opened.',
       ],
     ] as const)(
       'preserves the %s refusal and exit class through IPC and HTTP',
@@ -280,6 +280,8 @@ describe('cli errors', () => {
         const response = buildTransportErrorResponse(setupError);
 
         expect(serialized.userMessage).toBe(message);
+        expect(serialized.userMessage).not.toContain('EACCES');
+        expect(serialized.context).toEqual(context);
         expect(serialized.remediation).not.toContain('store-reset discard');
         expect(response.statusCode).toBe(statusCode);
         expect(buildErrorEnvelope(setupError).exitCode).toBe(exitCode);
@@ -329,6 +331,7 @@ describe('cli errors', () => {
       ['kb_disabled', undefined, 75],
       ['kb_initializing', undefined, 75],
       ['kb_offline', undefined, 75],
+      ['kb_unavailable', undefined, 75],
       ['store_open_contended', undefined, 75],
       ['provider_host_inventory_unavailable', undefined, 75],
       ['backend_error', 503, 75],
