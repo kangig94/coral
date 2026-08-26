@@ -22,6 +22,8 @@ import {
   type StoreResetIncidentManifestV2,
 } from '#src/store/reset-incident.js';
 import { e2eBundleDir } from '#tests/support/e2e-bundle-dir.js';
+import { createTemporaryHomeOwner, type TemporaryHome } from '#tests/support/temporary-home-lifecycle.js';
+import { waitForCondition } from '#tests/support/wait-for-condition.js';
 
 const BUNDLE_DIR = e2eBundleDir();
 const CLI_BUNDLE = join(BUNDLE_DIR, 'coral-cli.cjs');
@@ -30,6 +32,8 @@ const CLAUDE_APPSERVER_BUNDLE = join(BUNDLE_DIR, 'coral-claude-appserver.cjs');
 const MANIFEST_PATH = join(BUNDLE_DIR, 'manifest.json');
 const INCIDENT_ID = '223e4567-e89b-42d3-a456-426614174000';
 const roots: string[] = [];
+const syntheticDiscoveryFiles: string[] = [];
+const temporaryHomes = createTemporaryHomeOwner();
 
 type BuildManifest = {
   readonly version: string;
@@ -45,6 +49,10 @@ function root(prefix: string): string {
   const value = mkdtempSync(join(tmpdir(), prefix));
   roots.push(value);
   return value;
+}
+
+function temporaryHome(prefix: string): TemporaryHome {
+  return temporaryHomes.create(prefix, readBuildManifest().flavor);
 }
 
 function readBuildManifest(): BuildManifest {
@@ -132,14 +140,14 @@ function writeIncident(options: {
 }
 
 function runCli(
-  home: string,
+  home: TemporaryHome,
   args: readonly string[],
   cliBundle = CLI_BUNDLE,
   options: { readonly autostart?: boolean; readonly timeoutMs?: number } = {},
 ): { readonly stdout: string; readonly stderr: string; readonly status: number } {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
-    HOME: home,
+    ...temporaryHomes.environment(home),
     TMPDIR: join(home, 'tmp'),
   };
   delete env.CORAL_CHILD;
@@ -164,16 +172,11 @@ function runCli(
   };
 }
 
-async function waitFor(check: () => boolean, timeoutMs = 10_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (check()) return;
-    await new Promise((resolve) => setTimeout(resolve, 50));
+afterEach(async () => {
+  for (const path of syntheticDiscoveryFiles.splice(0)) {
+    rmSync(path, { force: true });
   }
-  throw new Error(`Timed out after ${timeoutMs}ms.`);
-}
-
-afterEach(() => {
+  await temporaryHomes.cleanup();
   for (const value of roots.splice(0)) {
     rmSync(value, { recursive: true, force: true });
   }
@@ -181,12 +184,14 @@ afterEach(() => {
 
 describe('bundled store-reset CLI', () => {
   it.each(['stopped', 'unhealthy-discovery'])('lists and reports locally with daemon state %s', (daemonState) => {
-    const home = root('coral-store-reset-e2e-home-');
+    const home = temporaryHome('coral-store-reset-e2e-home-');
     mkdirSync(join(home, 'tmp'));
     if (daemonState !== 'stopped') {
       const stateDir = join(home, '.coral', 'runtime');
       mkdirSync(stateDir, { recursive: true });
-      writeFileSync(join(stateDir, 'coordinator.json'), daemonState);
+      const discoveryFile = join(stateDir, 'coordinator.json');
+      writeFileSync(discoveryFile, daemonState);
+      syntheticDiscoveryFiles.push(discoveryFile);
     }
     const fixture = writeIncident({ home });
 
@@ -216,10 +221,10 @@ describe('bundled store-reset CLI', () => {
   });
 
   it('automatically resets an unsupported store and retains its incident without operator action', async () => {
-    const home = root('coral-store-reset-e2e-running-');
+    const build = readBuildManifest();
+    const home = temporaryHomes.create('coral-store-reset-e2e-running-', build.flavor);
     const temp = join(home, 'tmp');
     mkdirSync(temp);
-    const build = readBuildManifest();
     const storePath = activeStorePath(home, build);
     mkdirSync(dirname(storePath), { recursive: true });
     const old = new DatabaseSync(storePath);
@@ -239,66 +244,59 @@ describe('bundled store-reset CLI', () => {
         db.close();
       }
     };
-    try {
-      const automatic = runCli(home, ['abort', '--all'], CLI_BUNDLE, {
-        autostart: true,
-        timeoutMs: 30_000,
-      });
-      expect(automatic.status, automatic.stderr).toBe(0);
-      expect(`${automatic.stdout}${automatic.stderr}`).not.toContain('store-reset discard');
-      expect(hasPreResetTable()).toBe(false);
+    const automatic = runCli(home, ['abort', '--all'], CLI_BUNDLE, {
+      autostart: true,
+      timeoutMs: 30_000,
+    });
+    expect(automatic.status, automatic.stderr).toBe(0);
+    expect(`${automatic.stdout}${automatic.stderr}`).not.toContain('store-reset discard');
+    expect(hasPreResetTable()).toBe(false);
 
-      const list = runCli(home, ['backend', 'store-reset', 'list', '--target', 'gen2']);
-      expect(list.status, list.stderr).toBe(0);
-      const incidentIds = list.stdout.match(/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}/g) ?? [];
-      expect(incidentIds).toHaveLength(1);
-      const incidentId = incidentIds[0] ?? 'missing';
+    const list = runCli(home, ['backend', 'store-reset', 'list', '--target', 'gen2']);
+    expect(list.status, list.stderr).toBe(0);
+    const incidentIds = list.stdout.match(/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}/g) ?? [];
+    expect(incidentIds).toHaveLength(1);
+    const incidentId = incidentIds[0] ?? 'missing';
 
-      const report = runCli(home, ['backend', 'store-reset', 'report', incidentId, '--target', 'gen2']);
-      expect(report.status, report.stderr).toBe(0);
-      expect(report.stdout).toContain('# Coral store-reset incident report\n');
-      expect(report.stdout).toContain(`- Incident ID: \`${incidentId}\``);
+    const report = runCli(home, ['backend', 'store-reset', 'report', incidentId, '--target', 'gen2']);
+    expect(report.status, report.stderr).toBe(0);
+    expect(report.stdout).toContain('# Coral store-reset incident report\n');
+    expect(report.stdout).toContain(`- Incident ID: \`${incidentId}\``);
 
-      const incidentPath = join(quarantineRoot(home, build), incidentId);
-      const manifest = parseStoreResetIncidentManifest(readFileSync(join(incidentPath, 'reset-manifest.json')));
-      expect(manifest.schemaVersion).toBe(3);
-      if (manifest.schemaVersion !== 3) throw new Error('Automatic reset must publish a V3 incident.');
-      expect(manifest.resetPolicyCause).toBe('corrupt-or-unsupported');
-      const evidence = manifest.files.find((file) => file.name === 'store.db');
-      expect(evidence).toBeDefined();
-      expect(sha256(readFileSync(join(incidentPath, 'store.db')))).toBe(evidence?.sha256);
+    const incidentPath = join(quarantineRoot(home, build), incidentId);
+    const manifest = parseStoreResetIncidentManifest(readFileSync(join(incidentPath, 'reset-manifest.json')));
+    expect(manifest.schemaVersion).toBe(3);
+    if (manifest.schemaVersion !== 3) throw new Error('Automatic reset must publish a V3 incident.');
+    expect(manifest.resetPolicyCause).toBe('corrupt-or-unsupported');
+    const evidence = manifest.files.find((file) => file.name === 'store.db');
+    expect(evidence).toBeDefined();
+    expect(sha256(readFileSync(join(incidentPath, 'store.db')))).toBe(evidence?.sha256);
 
-      const publicOutput = `${automatic.stdout}${automatic.stderr}${list.stdout}${list.stderr}${report.stdout}${report.stderr}`;
-      expect(publicOutput).not.toContain('PRIVATE_DB_SENTINEL');
-      expect(publicOutput).not.toContain('PRIVATE_NAMESPACE_SENTINEL');
-      expect(publicOutput).not.toContain(home);
+    const publicOutput = `${automatic.stdout}${automatic.stderr}${list.stdout}${list.stderr}${report.stdout}${report.stderr}`;
+    expect(publicOutput).not.toContain('PRIVATE_DB_SENTINEL');
+    expect(publicOutput).not.toContain('PRIVATE_NAMESPACE_SENTINEL');
+    expect(publicOutput).not.toContain(home);
 
-      const shutdown = runCli(home, ['backend', 'shutdown']);
-      expect(shutdown.status, shutdown.stderr).toBe(0);
-      await waitFor(() => !existsSync(discovery));
+    const shutdown = runCli(home, ['backend', 'shutdown']);
+    expect(shutdown.status, shutdown.stderr).toBe(0);
+    await waitForCondition(() => !existsSync(discovery));
 
-      const unsupported = new DatabaseSync(storePath);
-      unsupported.exec(`
-        UPDATE meta SET value = 'sha256:${'0'.repeat(64)}' WHERE key = 'store_format_fingerprint';
-        CREATE TABLE private_pre_reset(value TEXT);
-        INSERT INTO private_pre_reset VALUES ('PRIVATE_DB_SENTINEL');
-      `);
-      unsupported.close();
+    const unsupported = new DatabaseSync(storePath);
+    unsupported.exec(`
+      UPDATE meta SET value = 'sha256:${'0'.repeat(64)}' WHERE key = 'store_format_fingerprint';
+      CREATE TABLE private_pre_reset(value TEXT);
+      INSERT INTO private_pre_reset VALUES ('PRIVATE_DB_SENTINEL');
+    `);
+    unsupported.close();
 
-      const discard = runCli(home, ['backend', 'store-reset', 'discard', '--target', 'gen2', '--flavor', build.flavor]);
-      expect(discard.status, discard.stderr).toBe(0);
-      expect(discard.stdout).toContain('Quarantined store-reset incident');
-      expect(hasPreResetTable()).toBe(false);
-    } finally {
-      if (existsSync(discovery)) {
-        runCli(home, ['backend', 'shutdown']);
-        await waitFor(() => !existsSync(discovery));
-      }
-    }
+    const discard = runCli(home, ['backend', 'store-reset', 'discard', '--target', 'gen2', '--flavor', build.flavor]);
+    expect(discard.status, discard.stderr).toBe(0);
+    expect(discard.stdout).toContain('Quarantined store-reset incident');
+    expect(hasPreResetTable()).toBe(false);
   });
 
   it('uses fixed envelopes for invalid IDs, malformed incidents, and wrong-build incidents', () => {
-    const home = root('coral-store-reset-e2e-errors-');
+    const home = temporaryHome('coral-store-reset-e2e-errors-');
     mkdirSync(join(home, 'tmp'));
     const invalid = runCli(home, [
       'backend',
@@ -348,7 +346,7 @@ describe('bundled store-reset CLI', () => {
   });
 
   it('does not treat the hidden identity probe as an ordinary command argument', () => {
-    const home = root('coral-store-reset-e2e-probe-argument-');
+    const home = temporaryHome('coral-store-reset-e2e-probe-argument-');
     const result = runCli(home, [
       'backend',
       'store-reset',
@@ -368,7 +366,7 @@ describe('bundled store-reset CLI', () => {
   });
 
   it('reports corrupt SQLite through fixed diagnostic states without exposing child or database content', () => {
-    const home = root('coral-store-reset-e2e-corrupt-');
+    const home = temporaryHome('coral-store-reset-e2e-corrupt-');
     mkdirSync(join(home, 'tmp'));
     const fixture = writeIncident({ home, corruptDb: true });
     const report = runCli(home, ['backend', 'store-reset', 'report', INCIDENT_ID, '--target', 'gen2']);
@@ -381,7 +379,7 @@ describe('bundled store-reset CLI', () => {
   });
 
   it('fails closed when the executing CLI is paired with a stale adjacent manifest', () => {
-    const home = root('coral-store-reset-e2e-mixed-home-');
+    const home = temporaryHome('coral-store-reset-e2e-mixed-home-');
     const mixedBundle = root('coral-store-reset-e2e-mixed-bundle-');
     mkdirSync(join(home, 'tmp'));
     copyFileSync(CLI_BUNDLE, join(mixedBundle, 'coral-cli.cjs'));

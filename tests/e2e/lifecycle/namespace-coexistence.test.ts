@@ -11,7 +11,6 @@ import { coordinatorPaths } from '#src/infra/path/coordinator.js';
 import { readBuildFlavor } from '#src/infra/bundle-manifest.js';
 import { jobsDir } from '#src/jobs/paths.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
-import { observeProcessLiveness } from '#src/infra/node-process.js';
 import type { JobStatus } from '#src/jobs/records.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { openStoreDatabase } from '#src/store/db.js';
@@ -22,6 +21,8 @@ import { jobsRegistry } from '#src/jobs/events.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { ensure } from '#src/transport/ipc/ensure.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { createTemporaryHomeOwner, type TemporaryHome } from '#tests/support/temporary-home-lifecycle.js';
+import { waitForCondition } from '#tests/support/wait-for-condition.js';
 
 const sourceBuildDir = join(process.cwd(), 'clients', 'build');
 const sourceBackendBundle = join(sourceBuildDir, 'coral-backend.cjs');
@@ -34,13 +35,11 @@ const sourceManifest = JSON.parse(readFileSync(sourceManifestPath, 'utf-8')) as 
 };
 
 const tempRoots: string[] = [];
-const startedCoordinators: Array<{ pluginRoot: string; home: string }> = [];
 const createdJobIds: string[] = [];
+const temporaryHomes = createTemporaryHomeOwner();
 
 afterEach(async () => {
-  for (const coordinator of startedCoordinators.splice(0).reverse()) {
-    await stopBackend(coordinator.pluginRoot, coordinator.home);
-  }
+  await temporaryHomes.cleanup();
 
   for (const jobId of createdJobIds.splice(0)) {
     rmSync(join(jobsDir(createRealRuntime('prod').env), jobId), { recursive: true, force: true });
@@ -50,19 +49,6 @@ afterEach(async () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
-
-function wait(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function waitForCondition(check: () => boolean, timeoutMs = 10_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (check()) return;
-    await wait(50);
-  }
-  throw new Error('Timed out waiting for condition');
-}
 
 function createPluginFixture(): {
   root: string;
@@ -107,9 +93,8 @@ function createPluginFixture(): {
   return { root, bundleHash: sourceManifest.bundleHash, flavor: sourceManifest.flavor };
 }
 
-function createCoordinatorHome(sharedStoreDir: string): string {
-  const home = mkdtempSync(join(tmpdir(), 'coral-namespace-home-'));
-  tempRoots.push(home);
+function createCoordinatorHome(sharedStoreDir: string): TemporaryHome {
+  const home = temporaryHomes.create('coral-namespace-home-', sourceManifest.flavor);
   const store = storePaths(sourceManifest.flavor, { baseDir: join(home, '.coral') });
   mkdirSync(dirname(store.dbDir), { recursive: true });
   symlinkSync(sharedStoreDir, store.dbDir, 'dir');
@@ -193,17 +178,12 @@ function seedCompletedJobs(
   }
 }
 
-function backendDiscoveryRuntime(pluginRoot: string, home: string) {
-  const runtime = createRealRuntime(readBuildFlavor(pluginRoot), { baseDir: join(home, '.coral') });
-  return { storage: runtime.storage, env: runtime.env, paths: runtime.paths };
-}
-
-async function requireBackendInfo(pluginRoot: string, home: string): Promise<BackendInfo> {
-  const discoveryRuntime = backendDiscoveryRuntime(pluginRoot, home);
+async function requireBackendInfo(home: TemporaryHome): Promise<BackendInfo> {
+  const discoveryRuntime = temporaryHomes.discoveryRuntime(home);
   await waitForCondition(() => readBackendInfo(discoveryRuntime) !== null);
   const info = readBackendInfo(discoveryRuntime);
   if (!info) {
-    throw new Error(`Expected backend info for ${pluginRoot}`);
+    throw new Error(`Expected backend info for ${home}`);
   }
   return info;
 }
@@ -215,21 +195,14 @@ const childIdentityEnvKeys = [
   'CORAL_SESSION_ID',
 ] as const;
 
-async function withTopLevelHome<T>(home: string, action: () => Promise<T>): Promise<T> {
-  const previousHome = process.env.HOME;
+async function withTopLevelHome<T>(home: TemporaryHome, action: () => Promise<T>): Promise<T> {
   const previousChildIdentity = childIdentityEnvKeys.map((key) => [key, process.env[key]] as const);
-  process.env.HOME = home;
   for (const key of childIdentityEnvKeys) {
     delete process.env[key];
   }
   try {
-    return await action();
+    return await temporaryHomes.withHome(home, action);
   } finally {
-    if (previousHome === undefined) {
-      delete process.env.HOME;
-    } else {
-      process.env.HOME = previousHome;
-    }
     for (const [key, value] of previousChildIdentity) {
       if (value === undefined) {
         delete process.env[key];
@@ -240,7 +213,7 @@ async function withTopLevelHome<T>(home: string, action: () => Promise<T>): Prom
   }
 }
 
-async function ensureFixtureBackend(pluginRoot: string, home: string): Promise<void> {
+async function ensureFixtureBackend(pluginRoot: string, home: TemporaryHome): Promise<void> {
   await withTopLevelHome(home, async () => {
     try {
       await ensure(pluginRoot);
@@ -262,35 +235,6 @@ async function fetchJson<T>(info: BackendInfo, path: string, expectedStatus = 20
   });
   expect(response.status).toBe(expectedStatus);
   return (await response.json()) as T;
-}
-
-async function stopBackend(pluginRoot: string, home: string): Promise<void> {
-  const info = readBackendInfo(backendDiscoveryRuntime(pluginRoot, home));
-  if (!info || observeProcessLiveness(info.pid) === 'absent') {
-    return;
-  }
-
-  try {
-    process.kill(info.pid, 'SIGTERM');
-  } catch (error: unknown) {
-    if ((error as NodeJS.ErrnoException).code !== 'ESRCH') {
-      throw error;
-    }
-    return;
-  }
-
-  try {
-    await waitForCondition(() => observeProcessLiveness(info.pid) === 'absent', 10_000);
-  } catch {
-    try {
-      process.kill(info.pid, 'SIGKILL');
-    } catch (error: unknown) {
-      if ((error as NodeJS.ErrnoException).code !== 'ESRCH') {
-        throw error;
-      }
-    }
-    await waitForCondition(() => observeProcessLiveness(info.pid) === 'absent', 2_000).catch(() => {});
-  }
 }
 
 describe('namespace coexistence integration', () => {
@@ -315,15 +259,11 @@ describe('namespace coexistence integration', () => {
       { jobId: secondJobId, namespace: secondNamespace, projectRoot },
     ]);
 
-    startedCoordinators.push(
-      { pluginRoot: firstFixture.root, home: firstHome },
-      { pluginRoot: secondFixture.root, home: secondHome },
-    );
     await ensureFixtureBackend(firstFixture.root, firstHome);
     await ensureFixtureBackend(secondFixture.root, secondHome);
 
-    const firstInfo = await requireBackendInfo(firstFixture.root, firstHome);
-    const secondInfo = await requireBackendInfo(secondFixture.root, secondHome);
+    const firstInfo = await requireBackendInfo(firstHome);
+    const secondInfo = await requireBackendInfo(secondHome);
 
     expect(firstInfo.flavor).toBe(sourceManifest.flavor);
     expect(secondInfo.flavor).toBe(sourceManifest.flavor);

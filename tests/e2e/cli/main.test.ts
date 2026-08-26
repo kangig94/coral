@@ -1,11 +1,17 @@
 import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
-import { mkdtempSync, rmSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { e2eBundleDir } from '#tests/support/e2e-bundle-dir.js';
 
-const CLI_BUNDLE = join(e2eBundleDir(), 'coral-cli.cjs');
+import type { BuildFlavor } from '#src/infra/build-flavor.js';
+import { e2eBundleDir } from '#tests/support/e2e-bundle-dir.js';
+import { createTemporaryHomeOwner, type TemporaryHome } from '#tests/support/temporary-home-lifecycle.js';
+
+const BUNDLE_DIR = e2eBundleDir();
+const CLI_BUNDLE = join(BUNDLE_DIR, 'coral-cli.cjs');
+const BUILD_FLAVOR = (JSON.parse(readFileSync(join(BUNDLE_DIR, 'manifest.json'), 'utf-8')) as { flavor: BuildFlavor })
+  .flavor;
+const temporaryHomes = createTemporaryHomeOwner();
 
 function runCli(
   args: string[],
@@ -164,19 +170,17 @@ describe('cli main — workflow flag surface', () => {
 });
 
 describe('cli main — discuss stdin input redesign', () => {
-  let tmpDir: string;
+  let tmpDir: TemporaryHome;
 
   beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'coral-cli-test-'));
+    tmpDir = temporaryHomes.create('coral-cli-test-', BUILD_FLAVOR);
   });
 
-  afterEach(() => {
-    rmSync(tmpDir, { recursive: true, force: true });
-  });
+  afterEach(() => temporaryHomes.cleanup());
 
   it('accepts discuss seed payload from --input-json stdin', () => {
     const { stderr } = runCli(['discuss', 'seed', '--input-json', '-'], {
-      env: { HOME: tmpDir },
+      env: temporaryHomes.environment(tmpDir),
       input: JSON.stringify({
         controversy_axes: [{ axis: 'risk', positions: ['low', 'high'] }],
         n: 2,
@@ -215,7 +219,7 @@ describe('cli main — discuss stdin input redesign', () => {
 
   it('accepts discuss participate payload from --input-json stdin', () => {
     const { stderr } = runCli(['discuss', 'participate', '--input-json', '-'], {
-      env: { HOME: tmpDir },
+      env: temporaryHomes.environment(tmpDir),
       input: JSON.stringify({
         session: 'session-1',
         agent_name: 'alice',
@@ -230,19 +234,17 @@ describe('cli main — discuss stdin input redesign', () => {
 });
 
 describe('cli main — backend status without daemon', () => {
-  let tmpDir: string;
+  let tmpDir: TemporaryHome;
 
   beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'coral-cli-test-'));
+    tmpDir = temporaryHomes.create('coral-cli-test-', BUILD_FLAVOR);
   });
 
-  afterEach(() => {
-    rmSync(tmpDir, { recursive: true, force: true });
-  });
+  afterEach(() => temporaryHomes.cleanup());
 
   it('prints the daemon status before the informational routing status and exits zero', () => {
     const { stdout, status } = runCli(['backend', 'status'], {
-      env: { HOME: tmpDir },
+      env: temporaryHomes.environment(tmpDir),
     });
 
     expect(status).toBe(0);
@@ -256,19 +258,17 @@ describe('cli main — backend status without daemon', () => {
 });
 
 describe('cli main — backend shutdown routing', () => {
-  let tmpDir: string;
+  let tmpDir: TemporaryHome;
 
   beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'coral-cli-test-'));
+    tmpDir = temporaryHomes.create('coral-cli-test-', BUILD_FLAVOR);
   });
 
-  afterEach(() => {
-    rmSync(tmpDir, { recursive: true, force: true });
-  });
+  afterEach(() => temporaryHomes.cleanup());
 
   it('keeps failure output on stderr in text mode', () => {
     const { stdout, stderr, status } = runCli(['backend', 'shutdown'], {
-      env: { HOME: tmpDir },
+      env: temporaryHomes.environment(tmpDir),
     });
 
     expect(status).toBe(75);

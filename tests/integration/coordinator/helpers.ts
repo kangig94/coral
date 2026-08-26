@@ -18,6 +18,7 @@ import { isNoEntryError } from '#src/infra/fs-errors.js';
 import type { CoordinatorDiscoveryRecord } from '#src/infra/backend-discovery.js';
 import { coordinatorPaths } from '#src/infra/path/coordinator.js';
 import { storePaths } from '#src/infra/path/store.js';
+import { waitForCondition } from '#tests/support/wait-for-condition.js';
 
 const sourceBackendBundle = join(process.cwd(), 'clients', 'build', 'coral-backend.cjs');
 const sourceCliBundle = join(process.cwd(), 'clients', 'build', 'coral-cli.cjs');
@@ -134,18 +135,6 @@ export function readDiscoveryRecordForHome(home: string, flavor: BuildFlavor): C
     }
     throw error;
   }
-}
-
-export async function waitForCondition(check: () => boolean, timeoutMs = 10_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (check()) {
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-
-  throw new Error(`Timed out waiting for condition after ${timeoutMs}ms`);
 }
 
 export async function waitForDiscoveryRecord(
