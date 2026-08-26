@@ -12,7 +12,6 @@ import { writeAuditEvent } from '../infra/audit-log.js';
 import { incarnationMayAuthorizeSignal, isProcessIncarnation, type ProcessIncarnation } from '../infra/node-process.js';
 import { backendLog } from '../infra/backend-log.js';
 import { SIGKILL_GRACE_MS, SIGTERM_GRACE_MS } from '../infra/process-constants.js';
-import { documentedCoralSetupError } from '../runtime/errors.js';
 import type { Runtime } from '../runtime/ports.js';
 import type { StoragePort } from '../infra/port-types.js';
 import type { RunStartupRecoveryFn, RunStartupRecoveryOrchestratorFn } from './lifecycle.js';
@@ -704,47 +703,8 @@ function refuseAfterPendingSignalFailure(
   throw new HandoffEscalationError(handoffRefusalMessage(prefix, cause), { cause: error });
 }
 
-function abortAfterPendingSignalObservation(
-  opts: HandoffOptions,
-  pending: PendingSignalSettlement,
-  platform: NodeJS.Platform,
-  signal: AbortSignal,
-): never {
-  const observation = observePendingSignal(pending, opts.runtime.process, platform);
-  if (observation.kind === 'gone') {
-    throw signal.reason;
-  }
-
-  const refusal =
-    HANDOFF_REFUSAL_REGISTRY[
-      observation.kind === 'alive' ? 'accepted-signal-target-alive-after-failure' : observation.cause
-    ];
-  const targetStatus = observation.kind === 'alive' ? 'remained alive' : 'could not be verified as gone';
-  const error = documentedCoralSetupError(
-    'handoff_pending_signal_aborted',
-    {
-      acceptedSignal: pending.signal,
-      targetPid: String(pending.target.pid),
-      targetStatus: observation.kind,
-      targetDescription: targetStatus,
-      ...(observation.kind === 'unverifiable' ? { observationCause: observation.cause } : {}),
-    },
-    { remediation: refusal.successor },
-  );
-  Object.defineProperty(error, 'cause', { value: signal.reason, configurable: true });
-  throw error;
-}
-
-async function sleepForPendingSignalPoll(
-  opts: HandoffOptions,
-  pending: PendingSignalSettlement,
-  platform: NodeJS.Platform,
-): Promise<void> {
-  try {
-    await opts.runtime.time.sleep(SOCKET_BIND_POLL_MS);
-  } catch (error: unknown) {
-    refuseAfterPendingSignalFailure(opts, pending, platform, error);
-  }
+async function sleepForPendingSignalPoll(opts: HandoffOptions): Promise<void> {
+  await opts.runtime.time.sleep(SOCKET_BIND_POLL_MS);
 }
 
 type SigtermGraceTransitionOutcome =
@@ -776,9 +736,7 @@ function transitionAfterSigtermGrace(
     return { kind: 'target-gone', stage: 'before-sigkill', pid: incumbent.pid };
   }
   assertSignalCapability(incumbent);
-  if (opts.signal?.aborted === true) {
-    abortAfterPendingSignalObservation(opts, pending, platform, opts.signal);
-  }
+  opts.signal?.throwIfAborted();
   const result = signalIncumbent(opts, incumbent, 'SIGKILL');
   if (
     settleSignalAttempt(opts, incumbent, pending.anchoredIncarnation, 'SIGKILL', result, platform) === 'target-gone'
@@ -948,47 +906,55 @@ export async function bindWithHandoff(opts: HandoffOptions): Promise<BoundCoordi
   };
 
   while (true) {
-    if (pendingSignal === null) {
-      opts.signal?.throwIfAborted();
-    }
-    let result: HandoffBindResult;
-    try {
-      result = await opts.bindAttempt();
-    } catch (error: unknown) {
-      if (pendingSignal !== null) {
-        refuseAfterPendingSignalFailure(opts, pendingSignal, platform, error);
-      }
-      throw error;
-    }
     if (pendingSignal !== null) {
-      if (result.kind === 'bound') {
-        settleBoundSocketAgainstPendingSignal(opts, pendingSignal, platform);
-        return createBoundCoordinator(sawIncumbent, opts);
+      let activePendingSignal: PendingSignalSettlement = pendingSignal;
+      let targetGoneMessage: string | null = null;
+      try {
+        await sleepForPendingSignalPoll(opts);
+        const pendingBindResult = await opts.bindAttempt();
+        if (pendingBindResult.kind === 'bound') {
+          settleBoundSocketAgainstPendingSignal(opts, activePendingSignal, platform);
+          return createBoundCoordinator(sawIncumbent, opts);
+        }
+        opts.signal?.throwIfAborted();
+        const graceMs = activePendingSignal.signal === 'SIGTERM' ? SIGTERM_GRACE_MS : SIGKILL_GRACE_MS;
+        if (opts.runtime.time.now() - activePendingSignal.acceptedAtMs < graceMs) {
+          continue;
+        }
+        const transition = advanceExpiredPendingSignal(opts, activePendingSignal, signalPolicy, lastHealth, platform);
+        if (transition.kind === 'target-gone') {
+          targetGoneMessage = transition.message;
+        } else {
+          activePendingSignal = transition.pending;
+          pendingSignal = activePendingSignal;
+          backendLog.error(
+            `Incumbent remained alive after the kernel accepted SIGTERM and its grace elapsed; kernel accepted SIGKILL for pid=${activePendingSignal.target.pid}`,
+          );
+        }
+      } catch (error: unknown) {
+        const abortSignal = opts.signal;
+        if (abortSignal?.aborted === true && error === abortSignal.reason) {
+          const observation = observePendingSignal(activePendingSignal, opts.runtime.process, platform);
+          backendLog.warn(
+            `Startup aborted after the kernel accepted ${activePendingSignal.signal} for incumbent pid=${activePendingSignal.target.pid}; observed target status=${observation.kind}`,
+          );
+          throw error;
+        }
+        if (error instanceof HandoffEscalationError) {
+          throw error;
+        }
+        refuseAfterPendingSignalFailure(opts, activePendingSignal, platform, error);
       }
-      if (opts.signal?.aborted === true) {
-        abortAfterPendingSignalObservation(opts, pendingSignal, platform, opts.signal);
-      }
-      const graceMs = pendingSignal.signal === 'SIGTERM' ? SIGTERM_GRACE_MS : SIGKILL_GRACE_MS;
-      if (opts.runtime.time.now() - pendingSignal.acceptedAtMs < graceMs) {
-        await sleepForPendingSignalPoll(opts, pendingSignal, platform);
-        continue;
-      }
-      const transition = advanceExpiredPendingSignal(opts, pendingSignal, signalPolicy, lastHealth, platform);
-      if (transition.kind === 'target-gone') {
-        backendLog.info(transition.message);
+      if (targetGoneMessage !== null) {
+        backendLog.info(targetGoneMessage);
         abandonIncumbent();
         await sleepForHandoffPoll(opts, SOCKET_BIND_POLL_MS);
-        continue;
       }
-      pendingSignal = transition.pending;
-      backendLog.error(
-        `Incumbent remained alive after the kernel accepted SIGTERM and its grace elapsed; kernel accepted SIGKILL for pid=${pendingSignal.target.pid}`,
-      );
-      await sleepForPendingSignalPoll(opts, pendingSignal, platform);
       continue;
     }
 
     opts.signal?.throwIfAborted();
+    const result = await opts.bindAttempt();
     if (result.kind === 'bound') {
       return createBoundCoordinator(sawIncumbent, opts);
     }
@@ -1092,7 +1058,6 @@ export async function bindWithHandoff(opts: HandoffOptions): Promise<BoundCoordi
       backendLog.warn(
         `Incumbent did not exit within ${opts.totalBudgetMs}ms; kernel accepted SIGTERM for pid=${incumbent.pid}`,
       );
-      await sleepForPendingSignalPoll(opts, pendingSignal, platform);
       continue;
     }
 

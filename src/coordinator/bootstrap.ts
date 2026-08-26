@@ -15,7 +15,6 @@ import { runKbDaemonMain } from '../kb-daemon/daemon-main.js';
 import { backendLog } from '../infra/backend-log.js';
 import { shedInheritedClaudeCodeEnv } from '../infra/env-sanitize.js';
 import { errorMessage } from '../infra/error-format.js';
-import { CoralSetupError } from '../runtime/errors.js';
 import { createRealRuntime } from '../runtime/real.js';
 import { resolveBuildFlavor } from '../infra/build-flavor.js';
 import { resolveStrictBundleIdentity } from '../infra/bundle-manifest.js';
@@ -220,21 +219,6 @@ export async function main(): Promise<number> {
   } catch (error: unknown) {
     if (error instanceof BackendAlreadyRunningError) {
       backendLog.info(error.message);
-      return 0;
-    }
-    // A cancelled startup keeps its exit code; what it may not do is drop the obligation silently, so the
-    // outstanding settlement is recorded before the cancellation is honoured.
-    if (error instanceof CoralSetupError && error.code === 'handoff_pending_signal_aborted') {
-      backendLog.warn(`${error.userMessage} ${error.remediation}`);
-      const diagnosticFile = writeBootstrapDiagnostic(__PLUGIN_ROOT__, 'startup_failed', error, 0);
-      auditBootstrapFailure(
-        'bootstrap_startup_aborted_pending_signal',
-        __PLUGIN_ROOT__,
-        'startup_failed',
-        error,
-        0,
-        diagnosticFile,
-      );
       return 0;
     }
     if ((error as { name?: string } | null)?.name === 'AbortError') {

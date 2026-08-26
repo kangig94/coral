@@ -282,6 +282,8 @@ describe('cli errors', () => {
         expect(serialized.userMessage).toBe(message);
         expect(serialized.userMessage).not.toContain('EACCES');
         expect(serialized.context).toEqual(context);
+        expect(serialized.remediation).toContain(context.path);
+        expect(serialized.remediation).not.toContain(context.cause);
         expect(serialized.remediation).not.toContain('store-reset discard');
         expect(response.statusCode).toBe(statusCode);
         expect(buildErrorEnvelope(setupError).exitCode).toBe(exitCode);

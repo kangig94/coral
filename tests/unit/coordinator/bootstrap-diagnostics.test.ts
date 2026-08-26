@@ -77,28 +77,4 @@ describe('writeBootstrapDiagnostic', () => {
     expect(retryable.retryable).toBe(true);
     expect(nonRetryable.retryable).toBe(false);
   });
-
-  it('records a clean-exit pending-signal abort as a retryable startup outcome', () => {
-    const error = documentedCoralSetupError('handoff_pending_signal_aborted', {
-      acceptedSignal: 'SIGKILL',
-      targetPid: '4242',
-      targetDescription: 'could not be verified as gone',
-    });
-
-    writeBootstrapDiagnostic('/plugin', 'startup_failed', error, 0);
-
-    const diagnostic = JSON.parse(String(storage.writeFileSync.mock.calls[0]?.[1])) as Record<string, unknown>;
-    expect(diagnostic).toMatchObject({
-      phase: 'startup_failed',
-      state: 'stopped_with_diagnostic',
-      retryable: true,
-      exitCode: 0,
-      error: {
-        kind: 'coral_setup_error',
-        code: 'handoff_pending_signal_aborted',
-        userMessage: expect.stringContaining('SIGKILL for incumbent pid=4242'),
-        remediation: expect.stringContaining('retry startup'),
-      },
-    });
-  });
 });

@@ -212,9 +212,6 @@ describe('a signal aimed at a pid establishes that the pid is still its recorded
     }
   });
 
-  // This matrix reaches the real bind boundary after kernel acceptance. It does not cover rejected signal
-  // requests, a grace expiring while the socket stays bound, exceptional exits, or the distinct identity and
-  // platform reasons that can make an observation unverifiable; those remain behaviour tests in handoff.test.ts.
   it.each([
     ['SIGTERM', 'gone'],
     ['SIGTERM', 'alive'],

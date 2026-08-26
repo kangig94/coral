@@ -24,7 +24,6 @@ export type DocumentedCoralSetupErrorCode =
   | 'expansion_install_artifact_failed'
   | 'startup_not_ready'
   | 'startup_bundle_unresolvable'
-  | 'handoff_pending_signal_aborted'
   | 'coordinator_socket_in_use'
   | 'coordinator_socket_bind_failed'
   | 'coordinator_socket_dir_insecure'
@@ -178,13 +177,6 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
     userMessage: "Coral cannot resolve this installation's running backend bundle directory.",
     remediation: (context) =>
       `Reinstall or update the Coral plugin at ${stringContextValue(context, 'pluginRoot', '<plugin-root>')} so its bridge bundle and manifest are present, then start Coral again.`,
-  },
-  handoff_pending_signal_aborted: {
-    userMessage: (context) =>
-      `Startup was aborted after the kernel accepted ${stringContextValue(context, 'acceptedSignal', '<signal>')} for incumbent pid=${stringContextValue(context, 'targetPid', '<pid>')}; the target ${stringContextValue(context, 'targetDescription', 'was not verified as gone')}, so its pending settlement remains open.`,
-    remediation:
-      'Wait until the identified target is confirmed gone, or stop it through the service or account that owns it, then retry startup.',
-    retryable: true,
   },
   coordinator_socket_in_use: {
     userMessage: (context) =>

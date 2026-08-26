@@ -3,10 +3,11 @@
 **Status, 2026-08-26. Closed.** Store-open failures now have explicit `corrupt-or-unsupported`, `unavailable`,
 and `unclassified` dispositions; busy/locked failures refuse with retry-later advice, and unclassified
 failures preserve the underlying cause without authorizing discard. The handoff now settles every accepted
-signal against its anchored target on bound, failure, and abort exits, and distinguishes gone, alive, and
-unverified outcomes for both `SIGTERM` and `SIGKILL`. A failure with an outstanding settlement retains its
-proximate error as the refusal cause; an operator abort retains exit 0 but publishes the accepted signal,
-target status, and successor through the startup diagnostic and audit surfaces. Signal cooldown refusals name
+signal against its anchored target on bound and unchosen failure exits, and distinguishes gone, alive, and
+unverified outcomes for both `SIGTERM` and `SIGKILL`. A failure anywhere inside pending-signal handling,
+including post-grace discovery, retains its proximate error as the refusal cause unless absence discharges the
+settlement. An operator abort logs the accepted signal, target pid, and observed status, then propagates
+unchanged; the accepted signal was already durable in the ledger. Signal cooldown refusals name
 the remaining wait instead of manual repair, and the two transient discovery refusals name retry as their
 exit. No defect remains open in this entry. It is retained as the incident record and the source of the field
 measurements; the live-state unit-test defect remains tracked by
@@ -122,11 +123,13 @@ identity observation that would settle it. No rejected request enters the signal
 it cannot cooldown-fence a later contender on a phantom signal. A V2 ledger record carries `accepted: true`;
 a V1 record is treated as an indeterminate legacy attempt and receives its own wait-and-inspect successor.
 Each accepted signal remains a pending settlement: a successful bind observes the anchored target before it
-can complete, a bind or poll error observes it before choosing between the original error and a caused
-refusal, and an abort observes it before choosing between the original abort and a durable clean-exit startup
-status. The bind-settlement invariant drives the real handoff boundary across both signal kinds and all three
-target outcomes rather than testing helper mappings. Grace expiry separately observes that target before
-policy or revalidation for another signal. After the kernel accepted
+can complete, and one settlement-aware boundary re-observes it before an unchosen bind, poll, grace-transition,
+or post-grace discovery error can escape. Absence preserves the original error; alive and unverifiable outcomes
+become a caused refusal. An abort logs the accepted signal, target pid, and observed status before propagating
+unchanged, because this contender returns no coordinator and claims nothing about the incumbent. The
+bind-settlement invariant drives the real handoff boundary across both signal kinds and all three target
+outcomes rather than testing helper mappings. Grace expiry observes that target before policy or revalidation
+for another signal. After the kernel accepted
 `SIGKILL` and its grace elapsed, observed-alive names heavy-fsync uninterruptible I/O and waiting for it to
 complete; observed-gone names retrying the mutating command whose binder clears a stale socket; refused
 verification names the same fresh identity observation and the host-service inspection if it remains

@@ -117,6 +117,15 @@ const flush = async (rounds = 16): Promise<void> => {
   for (let i = 0; i < rounds; i += 1) await Promise.resolve();
 };
 
+const pendingSignalFailureCases = [
+  ['SIGTERM', 'gone'],
+  ['SIGTERM', 'alive'],
+  ['SIGTERM', 'unverifiable'],
+  ['SIGKILL', 'gone'],
+  ['SIGKILL', 'alive'],
+  ['SIGKILL', 'unverifiable'],
+] as const;
+
 function shutdownResult(overrides: {
   health?: IncumbentHealth | null;
   verifiedIdentity?: IncumbentIdentity | null;
@@ -687,29 +696,29 @@ describe('bindWithHandoff', () => {
     );
   });
 
-  it.each(['alive', 'gone', 'unverifiable'] as const)(
-    'observes an accepted signal before a bind error exits when the target is %s',
-    async (targetStatus) => {
+  it.each(pendingSignalFailureCases)(
+    'observes an accepted %s before a bind error exits when the target is %s',
+    async (acceptedSignal, targetStatus) => {
       const proximateError = new Error('bind probe failed');
       const verifiedIdentity: IncumbentIdentity = {
         pid: 7787,
         incarnation: testIncarnation(557_000),
         source: 'health',
       };
-      let sigtermAccepted = false;
+      const acceptedSignals: NodeJS.Signals[] = [];
       const { options, time, killCalls } = buildHarness({
         bindAttempt: async () => {
-          if (sigtermAccepted) throw proximateError;
+          if (acceptedSignals.includes(acceptedSignal)) throw proximateError;
           return { kind: 'incumbent', reason: 'live-listener' };
         },
         totalBudgetMs: 500,
         observeLiveness: () => {
-          if (!sigtermAccepted) return 'alive';
+          if (!acceptedSignals.includes(acceptedSignal)) return 'alive';
           if (targetStatus === 'gone') return 'absent';
           return targetStatus === 'alive' ? 'alive' : 'unknown';
         },
         killReturns: (signal) => {
-          sigtermAccepted = signal === 'SIGTERM';
+          if (signal !== 0) acceptedSignals.push(signal);
           return true;
         },
         readDiscovery: () => ({
@@ -723,165 +732,214 @@ describe('bindWithHandoff', () => {
       });
       mockedShutdown.mockResolvedValue(shutdownResult({ health: null, verifiedIdentity }));
       mockedProbe.mockImplementation(() =>
-        sigtermAccepted && targetStatus === 'gone' ? null : (verifiedIdentity.incarnation ?? null),
+        acceptedSignals.includes(acceptedSignal) && targetStatus === 'gone'
+          ? null
+          : (verifiedIdentity.incarnation ?? null),
       );
 
       const promise = bindWithHandoff(options).catch((error: unknown) => error);
-      for (let i = 0; i < 30; i += 1) {
+      for (let i = 0; i < (SIGTERM_GRACE_MS + 5_000) / 200; i += 1) {
         await flush();
         time.tick(200);
       }
       const outcome = await promise;
 
-      expect(killCalls).toEqual([{ pid: 7787, signal: 'SIGTERM' }]);
+      expect(killCalls).toEqual(
+        acceptedSignal === 'SIGTERM'
+          ? [{ pid: 7787, signal: 'SIGTERM' }]
+          : [
+              { pid: 7787, signal: 'SIGTERM' },
+              { pid: 7787, signal: 'SIGKILL' },
+            ],
+      );
       if (targetStatus === 'gone') {
         expect(outcome).toBe(proximateError);
       } else {
         expect(outcome).toBeInstanceOf(HandoffEscalationError);
         expect((outcome as Error).cause).toBe(proximateError);
-        expect(String((outcome as Error).message)).toContain('kernel accepted SIGTERM for incumbent pid=7787');
+        expect(String((outcome as Error).message)).toContain(
+          `kernel accepted ${acceptedSignal} for incumbent pid=7787`,
+        );
       }
     },
   );
 
-  it('retains a pending-poll failure as the cause when the accepted signal target remains alive', async () => {
-    const proximateError = new Error('pending poll failed');
-    const verifiedIdentity: IncumbentIdentity = {
-      pid: 7786,
-      incarnation: testIncarnation(558_000),
-      source: 'health',
-    };
-    const { options, time, killCalls } = buildHarness({
-      bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
-      totalBudgetMs: 500,
-      readDiscovery: () => ({
-        ...verifiedIdentity,
-        source: 'discovery',
-        instanceId: 'poll-error-incumbent',
-        token: 'token',
-        bootToken: 'boot-token',
-        shutdownToken: 'shutdown-token',
-      }),
-    });
-    const sleep = time.sleep.bind(time);
-    vi.spyOn(time, 'sleep').mockImplementation(async (ms, sleepOptions) => {
-      if (killCalls.some((call) => call.signal === 'SIGTERM')) throw proximateError;
-      await sleep(ms, sleepOptions);
-    });
-    mockedShutdown.mockResolvedValue(shutdownResult({ health: null, verifiedIdentity }));
-    mockedProbe.mockReturnValue(verifiedIdentity.incarnation ?? null);
-
-    const promise = bindWithHandoff(options).catch((error: unknown) => error);
-    for (let i = 0; i < 30 && !killCalls.some((call) => call.signal === 'SIGTERM'); i += 1) {
-      await flush();
-      time.tick(200);
-    }
-    const outcome = await promise;
-
-    expect(outcome).toBeInstanceOf(HandoffEscalationError);
-    expect((outcome as Error).cause).toBe(proximateError);
-    expect(String((outcome as Error).message)).toContain('kernel accepted SIGTERM for incumbent pid=7786');
-  });
-
-  it.each(['alive', 'unverifiable'] as const)(
-    'startup abort records the accepted signal and successor when its target is %s',
-    async (targetStatus) => {
-      const controller = new AbortController();
+  it.each(pendingSignalFailureCases)(
+    'observes an accepted %s before a pending-poll failure exits when the target is %s',
+    async (acceptedSignal, targetStatus) => {
+      const proximateError = new Error('pending poll failed');
       const verifiedIdentity: IncumbentIdentity = {
-        pid: 7788,
-        incarnation: testIncarnation(556_000),
+        pid: 7786,
+        incarnation: testIncarnation(558_000),
         source: 'health',
       };
+      const acceptedSignals: NodeJS.Signals[] = [];
       const { options, time, killCalls } = buildHarness({
         bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
         totalBudgetMs: 500,
-        signal: controller.signal,
-        observeLiveness: () => (controller.signal.aborted && targetStatus === 'unverifiable' ? 'unknown' : 'alive'),
+        observeLiveness: () => {
+          if (!acceptedSignals.includes(acceptedSignal)) return 'alive';
+          if (targetStatus === 'gone') return 'absent';
+          return targetStatus === 'alive' ? 'alive' : 'unknown';
+        },
+        killReturns: (signal) => {
+          if (signal !== 0) acceptedSignals.push(signal);
+          return true;
+        },
         readDiscovery: () => ({
           ...verifiedIdentity,
           source: 'discovery',
-          instanceId: 'abort-incumbent',
-          token: 'token-abort',
-          bootToken: 'boot-token-abort',
-          shutdownToken: 'shutdown-token-abort',
+          instanceId: 'poll-error-incumbent',
+          token: 'token',
+          bootToken: 'boot-token',
+          shutdownToken: 'shutdown-token',
         }),
       });
+      const sleep = time.sleep.bind(time);
+      vi.spyOn(time, 'sleep').mockImplementation(async (ms, sleepOptions) => {
+        if (acceptedSignals.includes(acceptedSignal)) throw proximateError;
+        await sleep(ms, sleepOptions);
+      });
       mockedShutdown.mockResolvedValue(shutdownResult({ health: null, verifiedIdentity }));
-      mockedProbe.mockReturnValue(verifiedIdentity.incarnation ?? null);
-
-      let outcome: Error | undefined;
-      void bindWithHandoff(options).catch((e: Error) => {
-        outcome = e;
-      });
-      for (let i = 0; i < 30 && !killCalls.some((c) => c.signal === 'SIGTERM'); i += 1) {
-        await flush();
-        time.tick(200);
-      }
-      await flush();
-      expect(killCalls.filter((c) => c.signal === 'SIGTERM')).toHaveLength(1);
-
-      const callsAtAbort = killCalls.length;
-      controller.abort();
-      for (let i = 0; i < 80 && outcome === undefined; i += 1) {
-        await flush();
-        time.tick(200);
-      }
-
-      expect(outcome).toMatchObject({
-        code: 'handoff_pending_signal_aborted',
-        context: {
-          acceptedSignal: 'SIGTERM',
-          targetPid: '7788',
-          targetStatus,
-        },
-      });
-      expect(outcome?.message).toContain(
-        targetStatus === 'alive' ? 'the target remained alive' : 'the target could not be verified as gone',
+      mockedProbe.mockImplementation(() =>
+        acceptedSignals.includes(acceptedSignal) && targetStatus === 'gone'
+          ? null
+          : (verifiedIdentity.incarnation ?? null),
       );
-      expect((outcome as Error & { remediation?: string }).remediation).toContain('retry');
-      expect(killCalls).toHaveLength(callsAtAbort);
-      expect(killCalls.some((c) => c.signal === 'SIGKILL')).toBe(false);
+
+      const promise = bindWithHandoff(options).catch((error: unknown) => error);
+      for (let i = 0; i < (SIGTERM_GRACE_MS + 5_000) / 200; i += 1) {
+        await flush();
+        time.tick(200);
+      }
+      const outcome = await promise;
+
+      expect(killCalls).toEqual(
+        acceptedSignal === 'SIGTERM'
+          ? [{ pid: 7786, signal: 'SIGTERM' }]
+          : [
+              { pid: 7786, signal: 'SIGTERM' },
+              { pid: 7786, signal: 'SIGKILL' },
+            ],
+      );
+      if (targetStatus === 'gone') {
+        expect(outcome).toBe(proximateError);
+      } else {
+        expect(outcome).toBeInstanceOf(HandoffEscalationError);
+        expect((outcome as Error).cause).toBe(proximateError);
+        expect(String((outcome as Error).message)).toContain(
+          `kernel accepted ${acceptedSignal} for incumbent pid=7786`,
+        );
+      }
     },
   );
 
-  it('propagates the original abort unchanged when the accepted signal target is gone', async () => {
+  it.each(['gone', 'alive', 'unverifiable'] as const)(
+    'settles an accepted signal when post-grace discovery fails and the target is %s',
+    async (targetStatus) => {
+      const discoveryError = Object.assign(new Error('coordinator discovery unreadable'), { code: 'EACCES' });
+      const verifiedIdentity: IncumbentIdentity = {
+        pid: 7784,
+        incarnation: testIncarnation(560_000),
+        source: 'health',
+      };
+      let sigtermAccepted = false;
+      let discoveryFailed = false;
+      const { options, time, killCalls } = buildHarness({
+        bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
+        totalBudgetMs: 500,
+        observeLiveness: () => {
+          if (!discoveryFailed) return 'alive';
+          if (targetStatus === 'gone') return 'absent';
+          return targetStatus === 'alive' ? 'alive' : 'unknown';
+        },
+        killReturns: (signal) => {
+          sigtermAccepted = signal === 'SIGTERM';
+          return true;
+        },
+        readDiscovery: () => {
+          if (sigtermAccepted) {
+            discoveryFailed = true;
+            throw discoveryError;
+          }
+          return {
+            ...verifiedIdentity,
+            source: 'discovery',
+            instanceId: 'post-grace-discovery-error-incumbent',
+            token: 'token',
+            bootToken: 'boot-token',
+            shutdownToken: 'shutdown-token',
+          };
+        },
+      });
+      mockedShutdown.mockResolvedValue(shutdownResult({ health: null, verifiedIdentity }));
+      mockedProbe.mockImplementation(() =>
+        discoveryFailed && targetStatus === 'gone' ? null : (verifiedIdentity.incarnation ?? null),
+      );
+
+      const promise = bindWithHandoff(options).catch((error: unknown) => error);
+      for (let i = 0; i < (SIGTERM_GRACE_MS + 5_000) / 200; i += 1) {
+        await flush();
+        time.tick(200);
+      }
+      const outcome = await promise;
+
+      expect(killCalls).toEqual([{ pid: 7784, signal: 'SIGTERM' }]);
+      if (targetStatus === 'gone') {
+        expect(outcome).toBe(discoveryError);
+      } else {
+        expect(outcome).toBeInstanceOf(HandoffEscalationError);
+        expect((outcome as Error).cause).toBe(discoveryError);
+        expect(String((outcome as Error).message)).toContain('kernel accepted SIGTERM for incumbent pid=7784');
+      }
+    },
+  );
+
+  it('logs the accepted signal settlement and propagates a startup abort unchanged', async () => {
     const controller = new AbortController();
     const abortReason = new DOMException('operator stopped startup', 'AbortError');
     const verifiedIdentity: IncumbentIdentity = {
-      pid: 7785,
-      incarnation: testIncarnation(559_000),
+      pid: 7788,
+      incarnation: testIncarnation(556_000),
       source: 'health',
     };
     const { options, time, killCalls } = buildHarness({
       bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
       totalBudgetMs: 500,
       signal: controller.signal,
-      observeLiveness: () => (controller.signal.aborted ? 'absent' : 'alive'),
       readDiscovery: () => ({
         ...verifiedIdentity,
         source: 'discovery',
-        instanceId: 'abort-gone-incumbent',
-        token: 'token-abort-gone',
-        bootToken: 'boot-token-abort-gone',
-        shutdownToken: 'shutdown-token-abort-gone',
+        instanceId: 'abort-incumbent',
+        token: 'token-abort',
+        bootToken: 'boot-token-abort',
+        shutdownToken: 'shutdown-token-abort',
       }),
     });
     mockedShutdown.mockResolvedValue(shutdownResult({ health: null, verifiedIdentity }));
-    mockedProbe.mockImplementation(() => (controller.signal.aborted ? null : (verifiedIdentity.incarnation ?? null)));
+    mockedProbe.mockReturnValue(verifiedIdentity.incarnation ?? null);
+    const warnSpy = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
 
-    const promise = bindWithHandoff(options).catch((error: unknown) => error);
-    for (let i = 0; i < 30 && !killCalls.some((call) => call.signal === 'SIGTERM'); i += 1) {
-      await flush();
-      time.tick(200);
-    }
-    controller.abort(abortReason);
-    for (let i = 0; i < 10; i += 1) {
-      await flush();
-      time.tick(200);
-    }
+    try {
+      const promise = bindWithHandoff(options).catch((error: unknown) => error);
+      for (let i = 0; i < 30 && !killCalls.some((call) => call.signal === 'SIGTERM'); i += 1) {
+        await flush();
+        time.tick(200);
+      }
+      controller.abort(abortReason);
+      for (let i = 0; i < 10; i += 1) {
+        await flush();
+        time.tick(200);
+      }
 
-    await expect(promise).resolves.toBe(abortReason);
-    expect(killCalls).toEqual([{ pid: 7785, signal: 'SIGTERM' }]);
+      await expect(promise).resolves.toBe(abortReason);
+      expect(killCalls).toEqual([{ pid: 7788, signal: 'SIGTERM' }]);
+      expect(warnSpy).toHaveBeenCalledWith(
+        'Startup aborted after the kernel accepted SIGTERM for incumbent pid=7788; observed target status=alive',
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it('benign discovery identity change before signaling resets and retries the new incumbent', async () => {
