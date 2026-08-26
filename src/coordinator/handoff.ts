@@ -549,10 +549,6 @@ type SignalTargetObservation =
  * Confirms the pid about to be signalled is still the process this attempt observed, by comparing two
  * probes **this contender made itself**.
  *
- * The self-anchor exists because the old cross-process comparison was unsound: the derived value carried
- * a per-process clock term, so two processes never agreed. The token retired that term — a recorded
- * incarnation and a fresh probe of the same process now produce the same bytes.
- *
  * Two baselines, because they answer different questions and only one of them predates this contender.
  *
  * The **incumbent's published incarnation** says which process the record is about. Without it the only
@@ -701,10 +697,6 @@ function refuseAfterPendingSignalFailure(
       : `Handoff failed after the kernel accepted ${pending.signal} for incumbent pid=${pending.target.pid}, but the target could not be verified`;
   const cause = observation.kind === 'alive' ? 'accepted-signal-target-alive-after-failure' : observation.cause;
   throw new HandoffEscalationError(handoffRefusalMessage(prefix, cause), { cause: error });
-}
-
-async function sleepForPendingSignalPoll(opts: HandoffOptions): Promise<void> {
-  await opts.runtime.time.sleep(SOCKET_BIND_POLL_MS);
 }
 
 type SigtermGraceTransitionOutcome =
@@ -910,7 +902,7 @@ export async function bindWithHandoff(opts: HandoffOptions): Promise<BoundCoordi
       let activePendingSignal: PendingSignalSettlement = pendingSignal;
       let targetGoneMessage: string | null = null;
       try {
-        await sleepForPendingSignalPoll(opts);
+        await sleepForHandoffPoll(opts, SOCKET_BIND_POLL_MS);
         const pendingBindResult = await opts.bindAttempt();
         if (pendingBindResult.kind === 'bound') {
           settleBoundSocketAgainstPendingSignal(opts, activePendingSignal, platform);

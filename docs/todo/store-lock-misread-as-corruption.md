@@ -7,7 +7,7 @@ signal against its anchored target on bound and unchosen failure exits, and dist
 unverified outcomes for both `SIGTERM` and `SIGKILL`. A failure anywhere inside pending-signal handling,
 including post-grace discovery, retains its proximate error as the refusal cause unless absence discharges the
 settlement. An operator abort logs the accepted signal, target pid, and observed status, then propagates
-unchanged; the accepted signal was already durable in the ledger. Signal cooldown refusals name
+unchanged, because the path claims nothing and the next startup re-derives the target's state; the ledger write attempted at acceptance is best-effort and only supplies a cooldown when it succeeds. Signal cooldown refusals name
 the remaining wait instead of manual repair, and the two transient discovery refusals name retry as their
 exit. No defect remains open in this entry. It is retained as the incident record and the source of the field
 measurements; the live-state unit-test defect remains tracked by

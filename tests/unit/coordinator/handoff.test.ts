@@ -615,8 +615,6 @@ describe('bindWithHandoff', () => {
     };
     const signalLedger: HandoffSignalLedger = { read: () => null, write: vi.fn() };
     const { options, time, killCalls } = buildHarness({
-      // The incumbent must still hold the socket when the budget expires, or the loop binds before it
-      // ever reaches the signal this case is about.
       bindSequence: [
         ...Array.from({ length: 8 }, () => ({ kind: 'incumbent', reason: 'live-listener' }) as const),
         { kind: 'bound' },
