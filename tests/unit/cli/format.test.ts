@@ -1077,6 +1077,16 @@ describe('cli format', () => {
       );
     });
 
+    it('formats a retryable recent coordinator failure', () => {
+      expect(
+        formatBackendStatus({
+          status: 'recent_failure',
+          phase: 'startup_failed',
+          retryable: true,
+        }),
+      ).toContain('Retryable: yes');
+    });
+
     it('formats a documented startup failure with its authored cause and remediation', () => {
       expect(
         formatBackendStatus({

@@ -88,14 +88,15 @@ wchan:   jbd2_log_wait_commit ← blocked in the ext4 journal commit
 ```
 
 A process in uninterruptible sleep does not receive `SIGKILL`; the kernel queues it until the process leaves
-`D`. In that live capture, `kill(2)` returned success, the pending-signal mask remained set, and repeated
+`D`. In that live capture, `kill(2)` returned success — establishing that the kernel accepted the request —
+the pending-signal mask remained set, and repeated
 `ss -xlp`/`/proc/<pid>` observations showed the process holding its socket for minutes while blocked on an
-fsync. That transient process state is gone and cannot be re-run. The message is therefore *literally
-accurate* and the conclusion drawn from it is not: what was observed is "the target remained alive after a
-delivered signal and its grace", and what cannot be concluded is that anything is wrong with the socket. That
-is a positive live-process observation, not the "could not establish" answer reserved for a failed identity
-observation. The wait-for-I/O disposition is correct only when signal delivery succeeded and the same target
-was then observed alive.
+fsync. That transient process state is gone and cannot be re-run. What was observed is "the kernel accepted
+the signal request, the grace elapsed, and the verified target remained alive"; neither the syscall return nor
+the later target observation establishes that the target dequeued the signal. What cannot be concluded is that
+anything is wrong with the socket. The verified target's continued life is a positive process observation,
+not the "could not establish" answer reserved for a failed identity observation. The wait-for-I/O disposition
+is correct when acceptance was observed and the same target was then observed alive after the grace.
 
 This also explains the sibling failure without a second cause: an incumbent stuck in an ext4 journal commit
 is a machine under heavy fsync load, which is when a concurrent opener meets `database is locked`.
@@ -108,17 +109,19 @@ incident that is exactly what happened: the retained `KANG-HOME` startup diagnos
 at 06:44:11, the successful startup at 06:45:04, and counted three intervening manual-repair messages. This is
 a one-time incident measurement, not a repeatable timing fixture; it shows the system healing on a timer.
 
-The closing change preserves `verifySignalTarget`'s fail-closed policy and also consumes the signal port's
-delivery result. A failed send is re-observed immediately: an absent target returns to binding, while a live
-target reports that the signal did not reach it and names permission or process reach, and an unverified target
-names the fresh identity observation that would settle it. No failed send enters the signal ledger or starts a
-grace, so it cannot cooldown-fence a later contender on a phantom signal. After a delivered `SIGKILL` and its
-grace, observed-alive names heavy-fsync uninterruptible I/O and waiting for it to complete; observed-gone names
-retrying the mutating command whose binder clears a stale socket; refused verification names the same fresh
-identity observation and the host-service inspection if it remains unavailable. Cooldown diagnostics report
-the remaining milliseconds. Fresh discovery that is unavailable or changed names retry rather than manual
-repair; configured signal policy and discovery records lacking the authority fields needed to signal retain
-their manual-repair disposition.
+The closing change preserves `verifySignalTarget`'s fail-closed policy and consumes the signal port's
+acceptance result without treating it as delivery evidence. A rejected signal request is re-observed
+immediately: an absent target returns to binding, while a live target names permission or process reach and the
+owning service or account that can stop it, and an unverified target refuses immediately and names the fresh
+identity observation that would settle it. No rejected request enters the signal ledger or starts a grace, so
+it cannot cooldown-fence a later contender on a phantom signal. When each accepted signal's grace expires, the
+anchored target is observed before policy or revalidation for another signal. After the kernel accepted
+`SIGKILL` and its grace elapsed, observed-alive names heavy-fsync uninterruptible I/O and waiting for it to
+complete; observed-gone names retrying the mutating command whose binder clears a stale socket; refused
+verification names the same fresh identity observation and the host-service inspection if it remains
+unavailable. Cooldown diagnostics report the remaining milliseconds. Fresh discovery that is unavailable or
+changed names retry; configured signal policy and discovery records lacking the authority fields needed to
+signal name either the owning service/account action or the policy/discovery change that permits a retry.
 
 ## Start condition
 
@@ -140,13 +143,16 @@ established and which the first draft of this section got wrong.
     13:34:07  Fatal startup error: The current-generation store is corrupt or unsupported
     13:38:39  started, with no intervention
 
-The order is the evidence. The store error appears only *after* the kill fails, and outlives it by four
-minutes. The surviving lock is correlated with that failed kill, but the observation does not identify the
-lock holder. Attributing it to `pid=62492` would require a contemporaneous lock-owner pid plus an incarnation
-token matching the signalled process. Without that identity evidence, the incumbent remaining in `D` is
-consistent with the ordering, but so is a later startup contender acquiring the lock immediately after the
-incumbent exited. The correlation remains the sentence that joins this entry's two halves; it does not select
-between those holder histories.
+The two historical `sent` lines used the old overclaiming vocabulary. Each records only that `kill(2)` returned
+without error, meaning the kernel accepted the signal request.
+
+The order is the evidence. The store error appears only *after* the kernel accepted the `SIGKILL` request and
+its grace elapsed, and outlives that point by four minutes. The surviving lock is correlated with the verified
+target remaining alive after that grace, but the observation does not identify the lock holder. Attributing it
+to `pid=62492` would require a contemporaneous lock-owner pid plus an incarnation token matching the signalled
+process. Without that identity evidence, the incumbent remaining in `D` is consistent with the ordering, but
+so is a later startup contender acquiring the lock immediately after the incumbent exited. The correlation
+remains the sentence that joins this entry's two halves; it does not select between those holder histories.
 
 The load that produced it was self-inflicted and will recur the same way. Five startup attempts landed in four
 seconds — 13:34:31.663, 13:34:31.791, 13:34:32.254, 13:34:35.839, 13:34:35.973 — because mutating commands
