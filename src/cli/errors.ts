@@ -142,6 +142,9 @@ export function errorCodeToExit(code: string, httpStatus?: number): number {
     return 2;
   }
   const documentedExitCode = documentedCoralSetupErrorExitCode(code);
+  if (documentedExitCode === 1 && httpStatus === 503) {
+    return 75;
+  }
   if (documentedExitCode !== undefined) {
     return documentedExitCode;
   }

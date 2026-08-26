@@ -603,7 +603,6 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
       const binding = stringContextValue(context, 'binding', '<binding>');
       return `No engine is currently bound to '${binding}'. Equip the bundled or installed engine that fills it, then retry.`;
     },
-    exitCode: 75,
   },
   // Transport-level distinction; CLI does not auto-retry on `_initializing`
   // and relies on the remediation hint instead.

@@ -31,6 +31,14 @@ import { join, relative } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import ts from 'typescript';
 
+import {
+  SIGNAL_SETTLEMENT_OUTCOME_KINDS,
+  classifySignalLiveness,
+  decideBindCompletion,
+  decideSignalAttempt,
+  type HandoffBindResult,
+} from '../../src/coordinator/handoff.js';
+import type { ProcessLiveness } from '../../src/infra/node-process.js';
 import { codeTextOnly } from '../helpers/ts-code-text.js';
 
 const REPO_ROOT = join(__dirname, '..', '..');
@@ -205,6 +213,52 @@ describe('a signal aimed at a pid establishes that the pid is still its recorded
       visit(parsed);
 
       expect(constantArguments, `${canonical} must ask about the platform it is running on`).toEqual([]);
+    }
+  });
+
+  it('reports each liveness verdict as exactly the observation it took', () => {
+    const expected = {
+      absent: { kind: 'gone' },
+      alive: { kind: 'alive' },
+      unknown: { kind: 'unverifiable', cause: 'process-liveness-unknown' },
+    } as const satisfies Record<ProcessLiveness, ReturnType<typeof classifySignalLiveness>>;
+
+    for (const [liveness, outcome] of Object.entries(expected) as Array<
+      [ProcessLiveness, ReturnType<typeof classifySignalLiveness>]
+    >) {
+      expect(classifySignalLiveness(liveness)).toEqual(outcome);
+    }
+    expect([...new Set(Object.values(expected).map((outcome) => outcome.kind))].sort()).toEqual(
+      [...SIGNAL_SETTLEMENT_OUTCOME_KINDS].sort(),
+    );
+  });
+
+  it('turns every accepted request into a pending settlement and blocks bind completion on it', () => {
+    type SignalResult = Parameters<typeof decideSignalAttempt>[0];
+    const signalDispositions = {
+      accepted: 'pending-settlement',
+      rejected: 'settle-rejection',
+    } as const satisfies Record<SignalResult, ReturnType<typeof decideSignalAttempt>>;
+    for (const [result, disposition] of Object.entries(signalDispositions) as Array<
+      [SignalResult, ReturnType<typeof decideSignalAttempt>]
+    >) {
+      expect(decideSignalAttempt(result)).toBe(disposition);
+    }
+
+    const bindDispositions = {
+      bound: { clear: 'complete', pending: 'settle-pending' },
+      incumbent: { clear: 'continue', pending: 'continue' },
+    } as const satisfies Record<
+      HandoffBindResult['kind'],
+      Record<'clear' | 'pending', ReturnType<typeof decideBindCompletion>>
+    >;
+    for (const [kind, dispositions] of Object.entries(bindDispositions) as Array<
+      [HandoffBindResult['kind'], (typeof bindDispositions)[HandoffBindResult['kind']]]
+    >) {
+      const result: HandoffBindResult =
+        kind === 'bound' ? { kind: 'bound' } : { kind: 'incumbent', reason: 'invariant' };
+      expect(decideBindCompletion(result, false)).toBe(dispositions.clear);
+      expect(decideBindCompletion(result, true)).toBe(dispositions.pending);
     }
   });
 });

@@ -2,8 +2,9 @@
 
 **Status, 2026-08-26. Closed.** Store-open failures now have explicit `corrupt-or-unsupported`, `unavailable`,
 and `unclassified` dispositions; busy/locked failures refuse with retry-later advice, and unclassified
-failures preserve the underlying cause without authorizing discard. The handoff now re-observes the target
-after the `SIGKILL` grace and distinguishes gone, alive, and unverified outcomes. Signal cooldown refusals name
+failures preserve the underlying cause without authorizing discard. The handoff now settles every accepted
+signal against its anchored target before a successful bind can complete, and distinguishes gone, alive, and
+unverified outcomes. Signal cooldown refusals name
 the remaining wait instead of manual repair, and the two transient discovery refusals name retry as their
 exit. No defect remains open in this entry. It is retained as the incident record and the source of the field
 measurements; the live-state unit-test defect remains tracked by
@@ -98,8 +99,10 @@ anything is wrong with the socket. The verified target's continued life is a pos
 not the "could not establish" answer reserved for a failed identity observation. The wait-for-I/O disposition
 is correct when acceptance was observed and the same target was then observed alive after the grace.
 
-This also explains the sibling failure without a second cause: an incumbent stuck in an ext4 journal commit
-is a machine under heavy fsync load, which is when a concurrent opener meets `database is locked`.
+The two observations are correlated with the same heavy-fsync interval, but they do not identify one cause.
+The captured incumbent was stuck in an ext4 journal commit, and a concurrent opener reported `database is
+locked`; without a contemporaneous lock-owner pid and matching incarnation, either that incumbent or a later
+contender remains compatible with the record.
 
 **A cooldown was announced as manual repair.** Before closure, `assertSignalCooldown` in
 `src/coordinator/handoff.ts` refused a repeated handoff signal within `DEFAULT_SIGNAL_COOLDOWN_MS` and phrased
@@ -114,8 +117,10 @@ acceptance result without treating it as delivery evidence. A rejected signal re
 immediately: an absent target returns to binding, while a live target names permission or process reach and the
 owning service or account that can stop it, and an unverified target refuses immediately and names the fresh
 identity observation that would settle it. No rejected request enters the signal ledger or starts a grace, so
-it cannot cooldown-fence a later contender on a phantom signal. When each accepted signal's grace expires, the
-anchored target is observed before policy or revalidation for another signal. After the kernel accepted
+it cannot cooldown-fence a later contender on a phantom signal. A V2 ledger record carries `accepted: true`;
+a V1 record is treated as an indeterminate legacy attempt and receives its own wait-and-inspect successor.
+Each accepted signal remains a pending settlement: a successful bind observes the anchored target before it
+can complete, and grace expiry observes that target before policy or revalidation for another signal. After the kernel accepted
 `SIGKILL` and its grace elapsed, observed-alive names heavy-fsync uninterruptible I/O and waiting for it to
 complete; observed-gone names retrying the mutating command whose binder clears a stale socket; refused
 verification names the same fresh identity observation and the host-service inspection if it remains

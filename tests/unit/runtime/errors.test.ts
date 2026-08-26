@@ -25,6 +25,7 @@ describe('CoralSetupError', () => {
     expect(documentedCoralSetupErrorExitCode(contended.code)).toBe(75);
     expect(isRetryableCoralSetupError(contended)).toBe(true);
     expect(documentedCoralSetupErrorExitCode('store_open_unclassified')).toBe(70);
+    expect(documentedCoralSetupErrorExitCode('kb_unavailable')).toBe(1);
     expect(isRetryableCoralSetupError(documentedCoralSetupError('store_open_unclassified'))).toBe(false);
     expect(documentedCoralSetupErrorExitCode('not_a_documented_code')).toBeUndefined();
     expect(isRetryableCoralSetupError(new Error('database is locked'))).toBe(false);
