@@ -11,13 +11,16 @@ import {
   ControlClientError,
   type ControlClient,
   type ControlClientErrorCode,
+  type ControlClientErrorOrigin,
   type ControlClientRemoteFailure,
   type ProviderEventHandler,
 } from '../../../provider-proxy/control-client.js';
-import type { ProviderProxyHeartbeatIncidentReason } from '../../services/provider-proxy-authority-fault.js';
+import type {
+  ProviderProxyHeartbeatIncidentReason,
+  ProviderProxyHeartbeatMethod,
+  ProviderProxyRole,
+} from '../../services/provider-proxy-authority-fault.js';
 import { heartbeatFailureDisposition, heartbeatOnce } from './heartbeat.js';
-
-export type ProviderProxyRole = 'proxy' | 'guardian' | 'reaper';
 
 export type ProviderProxyRoleOpenMethod =
   | 'control.open.v1'
@@ -32,14 +35,12 @@ export type ProviderProxyRecoveryOpenMethod = Extract<
   'guardian.handoff-redeem.v1' | 'reaper.handoff-rotate.v1' | 'handoff.redeem.v1'
 >;
 
-export type ProviderProxyHeartbeatMethod = 'control.heartbeat.v1' | 'guardian.heartbeat.v1' | 'reaper.heartbeat.v1';
-
 export type ProviderProxyRoleControlAvailabilityIncident =
   | Readonly<{
       kind: 'role-control-unavailable';
       role: ProviderProxyRole;
-      stage: 'connect' | 'open';
-      method: ProviderProxyRoleOpenMethod | null;
+      stage: 'connect' | 'open' | 'heartbeat';
+      method: ProviderProxyRoleOpenMethod | ProviderProxyHeartbeatMethod | null;
       origin: 'timeout' | 'write' | 'closed';
       controlCode: ControlClientErrorCode;
     }>
@@ -55,6 +56,12 @@ export type ProviderProxyRoleControlAvailabilityIncident =
       role: ProviderProxyRole;
       method: ProviderProxyHeartbeatMethod;
       incidentReason: ProviderProxyHeartbeatIncidentReason;
+      /** The same distinction `role-control-unavailable` carries: `heartbeatFailureDisposition` folds
+       *  `timeout`/`write`/`closed` into one `unanswered` reason and every `remote-response` refusal it does
+       *  not recognize into `unclassified`, so without this field a dead socket and a slow one render the
+       *  identical durable retry reason. */
+      origin: ControlClientErrorOrigin;
+      controlCode: ControlClientErrorCode;
     }>;
 
 export class ProviderProxyRoleControlUnavailableError extends Error {
@@ -122,14 +129,16 @@ const RECOVERY_OPEN_METHODS = new Set<string>([
   'handoff.redeem.v1',
 ]);
 
-function isRecoveryOpenMethod(method: ProviderProxyRoleOpenMethod): method is ProviderProxyRecoveryOpenMethod {
+function isRecoveryOpenMethod(
+  method: ProviderProxyRoleOpenMethod | ProviderProxyHeartbeatMethod,
+): method is ProviderProxyRecoveryOpenMethod {
   return RECOVERY_OPEN_METHODS.has(method);
 }
 
 function classifyRoleControlFailure(
   role: ProviderProxyRole,
-  stage: 'connect' | 'open',
-  method: ProviderProxyRoleOpenMethod | null,
+  stage: 'connect' | 'open' | 'heartbeat',
+  method: ProviderProxyRoleOpenMethod | ProviderProxyHeartbeatMethod | null,
   error: unknown,
 ): never {
   if (!(error instanceof ControlClientError)) throw error;
@@ -183,16 +192,23 @@ async function establishHeartbeat(
       return await heartbeatOnce(client, method, controlEpoch, challenge);
     } catch (error: unknown) {
       const disposition = heartbeatFailureDisposition(error, challenge);
+      if (disposition.kind === 'local-failure') {
+        // Not a disposition about the peer, and guaranteed to recur identically on retry — restore the
+        // definitive handling this call site had before it grew a heartbeat-specific classification.
+        throw disposition.error;
+      }
       if (disposition.kind === 'terminal') {
-        if (!(error instanceof ControlClientError)) {
-          throw new Error('provider_proxy_heartbeat_terminal_error_mismatch', { cause: error });
-        }
-        throw new ProviderProxyRoleControlRemoteError(role, 'heartbeat', method, error);
+        throw new ProviderProxyRoleControlRemoteError(role, 'heartbeat', method, disposition.error);
       }
       if (disposition.incidentReason === 'challenge-resynchronized' && !resynchronized) {
         challenge = disposition.challenge;
         resynchronized = true;
         continue;
+      }
+      // `heartbeatFailureDisposition` returns `'retry'`/`'terminal'` only for a `ControlClientError` — anything
+      // else is `'local-failure'`, already returned above — so `error` is one here whenever this line runs.
+      if (!(error instanceof ControlClientError)) {
+        throw new Error('provider_proxy_heartbeat_indeterminate_error_mismatch', { cause: error });
       }
       throw new ProviderProxyRoleControlUnavailableError(
         {
@@ -200,11 +216,52 @@ async function establishHeartbeat(
           role,
           method,
           incidentReason: disposition.incidentReason,
+          origin: error.origin,
+          controlCode: error.code,
         },
         { cause: error },
       );
     }
   }
+}
+
+/**
+ * Races the opening heartbeat against this client's own channel-fault signal, so a channel that dies mid
+ * establishment is reported as decisive rather than as the generic indeterminate disposition a single RPC
+ * rejection carries on its own.
+ *
+ * `client.faulted` already resolves the instant `control-client.ts` latches a permanent fault — an invalid
+ * frame or an ordinary close — and it does so strictly before the same event rejects whatever call was
+ * pending, since `faultInvalidFrame`/the socket's `'close'` handler both call `latchFault` before `failAll`.
+ * Once a set exists, that identical fact reaches `control-channel-fault` (a claim-bearing stop-and-reap)
+ * through `observeControlClient`; nothing subscribes that early during establishment, so establishment would
+ * otherwise see only `heartbeatFailureDisposition`'s per-call verdict — `retry`, since a lone rejection cannot
+ * tell a dead channel from a live one that merely answered oddly once. Racing against `client.faulted` closes
+ * that gap without changing what a single rejection means, so it does not disturb the disposition
+ * `establishHeartbeat` already gives an ordinary indeterminate refusal.
+ *
+ * `client.faulted` only ever resolves with `'remote-response'` (invalid-frame) or `'closed'` origin — never
+ * `'timeout'`/`'write'`, which are per-call rejection origins, not channel-fault origins. Both route through
+ * `classifyRoleControlFailure`, the one classifier `connect`/`open` failures already use: `'remote-response'`
+ * becomes the same typed remote error `teardown-latched` uses, and `'closed'` becomes a retryable
+ * `role-control-unavailable` at the `'heartbeat'` stage — carrying that origin rather than escaping raw.
+ */
+async function establishHeartbeatOrChannelFault(
+  role: ProviderProxyRole,
+  client: ControlClient,
+  method: ProviderProxyHeartbeatMethod,
+  controlEpoch: number,
+  firstChallenge: string,
+): Promise<{ nextHeartbeatChallenge: string }> {
+  const channelFaulted = client.faulted.then((fault): never =>
+    classifyRoleControlFailure(role, 'heartbeat', method, fault),
+  );
+  // A losing race leaves `channelFaulted` pending until the channel eventually faults for some ordinary later
+  // reason (or never); either way nothing will ever await it again, so it needs its own handler to avoid
+  // reporting as an unhandled rejection. `Promise.race` below still observes this same promise's rejection
+  // independently, so this does not change which side can win.
+  channelFaulted.catch(() => undefined);
+  return Promise.race([establishHeartbeat(role, client, method, controlEpoch, firstChallenge), channelFaulted]);
 }
 
 /** Compares only the fields this acquisition can independently verify — everything it minted, plus (for the
@@ -312,7 +369,7 @@ export async function establishRoleControl<
   }
   const result = plan.openResultSchema.parse(raw);
   assertIdentityFieldsAgree(plan.role, plan.expectedIdentity, plan.identity(result));
-  const beat = await establishHeartbeat(
+  const beat = await establishHeartbeatOrChannelFault(
     plan.role,
     client,
     plan.heartbeatMethod,

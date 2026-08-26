@@ -32,7 +32,9 @@ export type ControlCallPolicy =
 export type ProviderProxyRole = 'proxy' | 'guardian' | 'reaper';
 
 export type ProviderProxyHeartbeatMethod = 'control.heartbeat.v1' | 'guardian.heartbeat.v1' | 'reaper.heartbeat.v1';
-export type ProviderProxyHeartbeatTerminalReason = 'teardown-latched';
+/** `teardown-latched` is the endpoint's own decisive refusal. `local-failure` is this process's own — it
+ *  could not construct or decode a heartbeat call at all, so nothing about the peer was ever in question. */
+export type ProviderProxyHeartbeatTerminalReason = 'teardown-latched' | 'local-failure';
 export type ProviderProxyHeartbeatIncidentReason = 'unanswered' | 'challenge-resynchronized' | 'unclassified';
 
 export type ProviderProxyAuthorityFault =

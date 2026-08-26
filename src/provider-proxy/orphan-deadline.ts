@@ -55,8 +55,21 @@ export type ProviderProxyDeadlineTiming = Readonly<{
   orphanTimeoutMs: number;
 }>;
 
+/**
+ * How long a role's own enforcer tolerates silence before its adoption deadline can fire, derived from the
+ * same two configuration fields `adoptionDeadline()` (below) itself subtracts. Exported so a consumer that
+ * needs to agree with this tolerance — the coordinator's own bounded heartbeat-hold escalation
+ * (`ProviderProxySetLifecycleDeps.heartbeatHoldBoundMs`) — derives it from this one formula instead of
+ * restating it as an independently chosen number.
+ */
+export function providerProxyAdoptionWindowMs(
+  configuration: Pick<ProviderProxyDeadlineTiming, 'orphanTimeoutMs' | 'teardownReserveMs'>,
+): number {
+  return configuration.orphanTimeoutMs - configuration.teardownReserveMs;
+}
+
 export function providerProxyDeadlineTimingIsValid(timing: ProviderProxyDeadlineTiming): boolean {
-  const adoptionWindowMs = timing.orphanTimeoutMs - timing.teardownReserveMs;
+  const adoptionWindowMs = providerProxyAdoptionWindowMs(timing);
   const successorTailMs = Math.max(
     2 * timing.rpcTimeoutMs,
     timing.redemptionDispatchMs + timing.rpcTimeoutMs + timing.startupAttachReserveMs,

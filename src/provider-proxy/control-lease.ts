@@ -91,7 +91,7 @@ export class ControlLeaseEvidence<Scope extends symbol> {
   }
 
   echoChallenge(now: MonotonicInstant<Scope>, challenge: string, nextChallenge: string): ControlLeaseEchoResult {
-    if (this.#pendingChallenge === null || this.#pendingChallenge !== challenge) {
+    if (this.#pendingChallenge !== challenge) {
       this.#installChallenge(nextChallenge);
       return { accepted: false, reason: 'challenge-mismatch', nextChallenge };
     }

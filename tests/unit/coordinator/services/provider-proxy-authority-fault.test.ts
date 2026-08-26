@@ -54,6 +54,37 @@ describe('provider proxy authority fault latch', () => {
     ]);
   });
 
+  it('replays only the latest of two pending incidents for the same role and method', () => {
+    const latch = createProviderProxyAuthorityFaultLatch();
+    latch.reportIncident({
+      kind: 'heartbeat-indeterminate',
+      role: 'proxy',
+      method: 'control.heartbeat.v1',
+      incidentReason: 'unanswered',
+      error: 'timed out',
+    });
+    latch.reportIncident({
+      kind: 'heartbeat-indeterminate',
+      role: 'proxy',
+      method: 'control.heartbeat.v1',
+      incidentReason: 'unclassified',
+      error: 'answer could not be decoded',
+    });
+
+    const observed: unknown[] = [];
+    latch.onIncident((observation) => observed.push(observation));
+
+    expect(observed).toEqual([
+      {
+        kind: 'heartbeat-indeterminate',
+        role: 'proxy',
+        method: 'control.heartbeat.v1',
+        incidentReason: 'unclassified',
+        error: 'answer could not be decoded',
+      },
+    ]);
+  });
+
   it.each(['proxy', 'guardian', 'reaper'] as const)('latches a %s channel fault with its exact role', (role) => {
     const sources = {
       proxy: faultSource(),

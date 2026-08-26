@@ -161,6 +161,19 @@ timing constants are a solved inequality system
 above the floor set by `2 × PROXY_CONTROL_RPC_TIMEOUT_MS + PROXY_CONTROL_HEARTBEAT_MS`, so moving it alone breaks
 `leaseMs + successorTail < adoptionWindow`.
 
+**Corrected 2026-08-27:** the previous correction's "remaining destructive boundary" claim does not hold for
+the proxy's own `control.heartbeat.v1` at all. `buildDeadlines` (`src/provider-proxy/role-main.ts`) is
+constructed only inside `startProviderGuardianRole`/`startProviderReaperRole`, never `startProviderProxyRole`,
+so no enforcer exists to answer `teardown-latched` for that hold. Where an enforcer does exist (the guardian's
+and reaper's own heartbeat methods), its `adoptionDeadline()` is anchored on that role's own round-trip
+evidence — the coordinator's heartbeat *to the guardian*, not the coordinator's separate heartbeat *to the
+proxy* — so a coordinator starved specifically toward the proxy, while the guardian and reaper keep answering
+normally, never reaches that deadline either. The actual boundary for this scenario is now the coordinator's
+own bounded escalation (`heartbeatHoldBoundMs`, `#escalateHeartbeatHold` in `provider-proxy-set/index.ts`),
+derived from the identical `providerProxyAdoptionWindowMs` formula so it does not drift from the enforcer's own
+tolerance, and reported as `reason=heartbeat_hold_exhausted` with what it observed rather than a claim that
+silence proved the peer dead.
+
 ## Start condition
 
 **Met.** The observation above is the reachable cause this asked for. What remains before building anything is

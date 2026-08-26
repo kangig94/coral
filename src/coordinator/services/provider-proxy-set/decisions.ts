@@ -85,6 +85,27 @@ export type ProviderProxySetHeartbeatFaultStopDecision = Readonly<{
   setIdentity: ProviderProxySetIdentity;
 }>;
 
+/**
+ * The coordinator's own bounded exit from a heartbeat hold, distinct from `heartbeat-failed`: nothing the
+ * endpoint said authorized this — the coordinator observed indeterminate heartbeat incidents continuously for
+ * `elapsedMs` with no accepted echo in between and is invoking containment itself, so the decision names what
+ * it observed rather than a verdict about the peer.
+ */
+export type ProviderProxySetHeartbeatHoldExhaustedStopDecision = Readonly<{
+  action: 'stop-and-reap';
+  reason: 'heartbeat_hold_exhausted';
+  fault: 'heartbeat-hold-exhausted';
+  role: ProviderProxyRole;
+  method: ProviderProxyHeartbeatMethod;
+  lastIncidentReason: ProviderProxyHeartbeatIncidentReason;
+  attempts: number;
+  elapsedMs: number;
+  policy?: never;
+  error: string;
+  liveClaims: number;
+  setIdentity: ProviderProxySetIdentity;
+}>;
+
 export type ProviderProxySetDrainDecision = FaultlessDecisionFields &
   Readonly<{
     action: 'drain';
@@ -106,7 +127,8 @@ export type ProviderProxySetRetirementStopDecision = FaultlessDecisionFields &
 export type ProviderProxySetAuthorityStopDecision =
   | ProviderProxySetOperationFaultStopDecision
   | ProviderProxySetControlChannelFaultStopDecision
-  | ProviderProxySetHeartbeatFaultStopDecision;
+  | ProviderProxySetHeartbeatFaultStopDecision
+  | ProviderProxySetHeartbeatHoldExhaustedStopDecision;
 
 export type ProviderProxySetContainmentDecision =
   | ProviderProxySetAuthorityStopDecision
@@ -128,7 +150,8 @@ export function renderProviderProxySetDecision(
   decision: ProviderProxySetDecision,
   summary?: string,
 ): ProviderProxySetDecisionLog {
-  const severity: ProviderProxySetLogSeverity = decision.reason === 'provider_authority_lost' ? 'warn' : 'info';
+  const severity: ProviderProxySetLogSeverity =
+    decision.reason === 'provider_authority_lost' || decision.reason === 'heartbeat_hold_exhausted' ? 'warn' : 'info';
   let fault: string;
   let subject: string;
   let error: string;
@@ -148,6 +171,11 @@ export function renderProviderProxySetDecision(
       subject = decision.fault === 'operation-control-failed' ? decision.policy.method : decision.role;
       error = decision.error;
       break;
+    case 'heartbeat_hold_exhausted':
+      fault = decision.fault;
+      subject = decision.role;
+      error = decision.error;
+      break;
     case 'graceful_idle':
     case 'excess_capacity':
     case 'unclaimed_discovery':
@@ -158,6 +186,6 @@ export function renderProviderProxySetDecision(
   }
   return {
     severity,
-    message: `Provider proxy set action=${decision.action} reason=${decision.reason} fault=${fault} subject=${subject} liveClaims=${decision.liveClaims} set=${providerProxySetReference(decision.setIdentity)} error=${error}${decision.fault === 'heartbeat-failed' ? ` terminalReason=${decision.terminalReason}` : ''}${decision.fault === 'heartbeat-indeterminate' ? ` incidentReason=${decision.incidentReason}` : ''}${summary === undefined ? '' : ` ${summary}`}`,
+    message: `Provider proxy set action=${decision.action} reason=${decision.reason} fault=${fault} subject=${subject} liveClaims=${decision.liveClaims} set=${providerProxySetReference(decision.setIdentity)} error=${error}${decision.fault === 'heartbeat-failed' ? ` terminalReason=${decision.terminalReason}` : ''}${decision.fault === 'heartbeat-indeterminate' ? ` incidentReason=${decision.incidentReason}` : ''}${decision.fault === 'heartbeat-hold-exhausted' ? ` attempts=${decision.attempts} elapsedMs=${decision.elapsedMs} lastIncidentReason=${decision.lastIncidentReason}` : ''}${summary === undefined ? '' : ` ${summary}`}`,
   };
 }

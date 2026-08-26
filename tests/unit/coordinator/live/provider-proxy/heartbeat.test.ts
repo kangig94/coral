@@ -395,6 +395,43 @@ describe('provider proxy authority heartbeats', () => {
     stopAll(heartbeats);
   });
 
+  it('latches a non-ControlClientError as a local-failure terminal, not an indeterminate hold', async () => {
+    const time = new VirtualTime();
+    // Not a `ControlClientError` at all — the raw `ProxyControlProtocolError`/`ZodError` shape this process's
+    // own encode/decode path can raise, reaching the loop unwrapped.
+    const localBug = new Error('cannot encode heartbeat');
+    const proxy = scriptedClient([localBug]);
+    const guardian = scriptedClient(['guardian-challenge-1']);
+    const reaper = scriptedClient(['reaper-challenge-1']);
+    const faults = recordingFaultLatch();
+    const heartbeats = startAll(
+      sessions({ proxy: proxy.client, guardian: guardian.client, reaper: reaper.client }),
+      runtimeWithTime(time),
+      faults.latch,
+    );
+
+    time.tick(PROXY_CONTROL_HEARTBEAT_MS);
+    await flushMicrotasks();
+
+    expect(faults.faults).toEqual([
+      {
+        kind: 'heartbeat-failed',
+        role: 'proxy',
+        method: 'control.heartbeat.v1',
+        terminalReason: 'local-failure',
+        error: localBug,
+      },
+    ]);
+    // Not a disposition about the peer: it must never reach the non-consuming incident channel either.
+    expect(faults.incidents).toEqual([]);
+
+    // The loop stopped rather than retrying a call that is guaranteed to fail identically again.
+    time.tick(PROXY_CONTROL_HEARTBEAT_MS * 3);
+    await flushMicrotasks();
+    expect(proxy.calls).toHaveLength(1);
+    stopAll(heartbeats);
+  });
+
   it('stop() clears the interval on the runtime, not just its own internal flag', async () => {
     const time = new VirtualTime();
     // A spy on `clearInterval` itself, not just an absence of later calls: the loop's own `stopped` flag

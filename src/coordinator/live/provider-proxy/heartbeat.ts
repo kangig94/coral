@@ -68,24 +68,30 @@ export type HeartbeatFailureDisposition =
       challenge: string;
       incidentReason: ProviderProxyHeartbeatIncidentReason;
     }>
-  | Readonly<{ kind: 'terminal'; terminalReason: ProviderProxyHeartbeatTerminalReason }>;
+  | Readonly<{ kind: 'terminal'; terminalReason: ProviderProxyHeartbeatTerminalReason; error: ControlClientError }>
+  /** Not a disposition about the peer: this process could not construct or decode the call at all (a raw
+   *  `ProxyControlProtocolError` from `control-client.ts`'s own write path, or a schema failure this build's
+   *  own code raised before or after talking to the wire). Retrying reproduces the identical failure, so a
+   *  caller must treat this as decisive rather than folding it into a hold. */
+  | Readonly<{ kind: 'local-failure'; error: unknown }>;
 
 export function heartbeatFailureDisposition(error: unknown, challenge: string): HeartbeatFailureDisposition {
-  if (error instanceof ControlClientError) {
-    const refusal = error.remoteFailure?.kind === 'json-rpc-error' ? error.remoteFailure.heartbeatRefusal : null;
-    if (refusal?.reason === 'challenge-mismatch') {
-      return {
-        kind: 'retry',
-        challenge: refusal.nextHeartbeatChallenge,
-        incidentReason: 'challenge-resynchronized',
-      };
-    }
-    if (refusal?.reason === 'teardown-latched') {
-      return { kind: 'terminal', terminalReason: 'teardown-latched' };
-    }
-    if (error.origin !== 'remote-response') {
-      return { kind: 'retry', challenge, incidentReason: 'unanswered' };
-    }
+  if (!(error instanceof ControlClientError)) {
+    return { kind: 'local-failure', error };
+  }
+  const refusal = error.remoteFailure?.kind === 'json-rpc-error' ? error.remoteFailure.heartbeatRefusal : null;
+  if (refusal?.reason === 'challenge-mismatch') {
+    return {
+      kind: 'retry',
+      challenge: refusal.nextHeartbeatChallenge,
+      incidentReason: 'challenge-resynchronized',
+    };
+  }
+  if (refusal?.reason === 'teardown-latched') {
+    return { kind: 'terminal', terminalReason: 'teardown-latched', error };
+  }
+  if (error.origin !== 'remote-response') {
+    return { kind: 'retry', challenge, incidentReason: 'unanswered' };
   }
   return { kind: 'retry', challenge, incidentReason: 'unclassified' };
 }
@@ -122,7 +128,9 @@ function startHeartbeatLoop(
         }
         state = { kind: 'stopped' };
         runtime.time.clearInterval(handle);
-        onTerminal(error, disposition.terminalReason);
+        // `local-failure` is not a peer disposition, but this loop still has only one way to stop and report a
+        // decisive end — the same terminal path `teardown-latched` uses, distinguished by its own reason.
+        onTerminal(disposition.error, disposition.kind === 'terminal' ? disposition.terminalReason : 'local-failure');
       },
     );
   };
@@ -161,9 +169,9 @@ export function createProviderProxyAuthorityHeartbeatAssembly(
         () => faults.reportIncident({ kind: 'heartbeat-accepted', role, method }),
         (error, terminalReason) => {
           faults.latch({ kind: 'heartbeat-failed', role, method, terminalReason, error });
-          backendLog.warn(
-            `provider-proxy ${role} heartbeat echo was refused for ${session.instanceId}: ${errorMessage(error)}`,
-          );
+          const observed =
+            terminalReason === 'teardown-latched' ? 'heartbeat echo was refused' : 'heartbeat call failed locally';
+          backendLog.warn(`provider-proxy ${role} ${observed} for ${session.instanceId}: ${errorMessage(error)}`);
         },
       ),
     );

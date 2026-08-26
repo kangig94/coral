@@ -1,6 +1,7 @@
 import type {
   ContainmentRequiredControlCallPolicy,
   ControlCallPolicy,
+  ProviderProxyAuthorityFault,
   ProviderProxyAuthorityFaultLatch,
   ProviderProxyAuthorityIncident,
   RetrySafeControlCallPolicy,
@@ -152,6 +153,35 @@ declare const unqualifiedHeartbeatReap: Readonly<{
 const invalidHeartbeatReap: ProviderProxySetDecision = unqualifiedHeartbeatReap;
 void invalidHeartbeatReap;
 
+declare const unqualifiedHeartbeatHoldReap: Readonly<{
+  action: 'stop-and-reap';
+  reason: 'heartbeat_hold_exhausted';
+  fault: 'heartbeat-hold-exhausted';
+  role: 'guardian';
+  method: 'guardian.heartbeat.v1';
+  error: string;
+  liveClaims: number;
+  setIdentity: ProviderProxySetIdentity;
+}>;
+
+// @ts-expect-error the coordinator's own bounded escalation must name what it observed: attempts, elapsed span, and the last incident reason — not a bare "exhausted".
+const invalidHeartbeatHoldReap: ProviderProxySetDecision = unqualifiedHeartbeatHoldReap;
+void invalidHeartbeatHoldReap;
+
+const validHeartbeatHoldReap: ProviderProxySetDecision = {
+  action: 'stop-and-reap',
+  reason: 'heartbeat_hold_exhausted',
+  fault: 'heartbeat-hold-exhausted',
+  role: 'guardian',
+  method: 'guardian.heartbeat.v1',
+  lastIncidentReason: 'unclassified',
+  attempts: 3,
+  elapsedMs: 23_000,
+  error: 'answer could not be decoded',
+  liveClaims: 1,
+  setIdentity,
+};
+
 const validRetirementDecision: ProviderProxySetDecision = {
   action: 'stop-and-reap',
   reason: 'graceful_idle',
@@ -170,4 +200,20 @@ const validHeartbeatIncident: ProviderProxyAuthorityIncident = {
   incidentReason: 'unanswered',
   error: 'retry later',
 };
-void [validRetirementDecision, validIncident, validHeartbeatIncident, containmentPolicy];
+// A local failure (this process could not construct or decode the call at all) is a second decisive
+// terminal reason alongside `teardown-latched` — not a disposition about the peer, but still terminal.
+const validLocalFailureHeartbeatFault: ProviderProxyAuthorityFault = {
+  kind: 'heartbeat-failed',
+  role: 'guardian',
+  method: 'guardian.heartbeat.v1',
+  terminalReason: 'local-failure',
+  error: 'cannot encode heartbeat',
+};
+void [
+  validRetirementDecision,
+  validIncident,
+  validHeartbeatIncident,
+  containmentPolicy,
+  validLocalFailureHeartbeatFault,
+  validHeartbeatHoldReap,
+];

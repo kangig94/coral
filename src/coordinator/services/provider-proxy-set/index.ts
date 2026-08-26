@@ -60,6 +60,24 @@ type PreserveReportState = {
   recoveryTimer: TimerHandle | null;
 };
 
+/**
+ * The hold a role's heartbeat channel is under: continuous indeterminate incidents since the last accepted
+ * echo, spanning every error identity that run took. Kept separately from `PreserveReportState` because the
+ * hold is a property of the role's heartbeat, not of any one error shape — `preserveReports` keys by
+ * `[subject, errorIdentity]` so it can coalesce a repeating message, but a wedged proxy that alternates
+ * between two failure shapes (a timeout, then an undecodable response) would keep each shape's own report
+ * arriving too rarely to ever individually reach `heartbeatHoldBoundMs`. Keyed by `[role, method]`, the same
+ * pair `#recordHeartbeatAccepted` already clears by, so what starts a hold and what ends one agree on what the
+ * hold is.
+ */
+type HeartbeatHoldState = {
+  /** Set once when the first indeterminate incident in a run arrives, and never touched again until an
+   *  accepted echo or this coordinator's own escalation ends the run. */
+  firstObservedAtMs: number;
+  /** Every heartbeat-indeterminate incident folded into this hold, across every error identity it took. */
+  attempts: number;
+};
+
 type EstablishedSlot = {
   kind: 'available' | 'draining' | 'containing' | 'containment-wait';
   key: ProviderProxySetKey;
@@ -74,6 +92,7 @@ type EstablishedSlot = {
   retryTimer: TimerHandle | null;
   retirementDecision: ProviderProxySetDrainDecision | null;
   preserveReports: Map<string, PreserveReportState>;
+  heartbeatHolds: Map<string, HeartbeatHoldState>;
 };
 
 type ProviderProxySetSlot =
@@ -258,6 +277,13 @@ export type ProviderProxySetLifecycleDeps = Readonly<{
   controlEstablished(authority: DurableProviderProxyOperationAuthority): void;
   time: Pick<TimePort, 'now' | 'setTimeout' | 'clearTimeout'>;
   recoveryDispatcher: ProviderProxyRecoveryDispatcher;
+  /**
+   * How long a `heartbeat-indeterminate` hold may run, continuously and without an accepted echo, before this
+   * coordinator escalates into containment on its own. Derived from `providerProxyAdoptionWindowMs` at
+   * composition so this bound and the enforcer's own adoption window agree on how long silence is tolerated,
+   * rather than being an independently chosen number a future change could drift out of step with it.
+   */
+  heartbeatHoldBoundMs: number;
   onProgressPremiseViolation?: (violation: ProviderProxySetLifecycleProgressViolation) => void;
   reportLifecycle(severity: ProviderProxySetLogSeverity, message: string): void;
   onError?: (message: string) => void;
@@ -1066,6 +1092,7 @@ export class ProviderProxySetLifecycle {
       retryTimer: null,
       retirementDecision: null,
       preserveReports: new Map(),
+      heartbeatHolds: new Map(),
     };
     this.#slots.set(key, slot);
     authority.onFault((fault) => this.#faultAuthority(identity, fault));
@@ -1165,6 +1192,9 @@ export class ProviderProxySetLifecycle {
     errorIdentity: string,
   ): void {
     const now = this.#deps.time.now();
+    if (decision.fault === 'heartbeat-indeterminate' && this.#advanceHeartbeatHold(slot, decision, now)) {
+      return;
+    }
     const subject = decision.fault === 'operation-control-failed' ? decision.policy.method : decision.method;
     const key = JSON.stringify([subject, errorIdentity]);
     const report = slot.preserveReports.get(key);
@@ -1178,7 +1208,7 @@ export class ProviderProxySetLifecycle {
       };
       slot.preserveReports.set(key, newReport);
       this.#reportDecision(decision);
-      if (decision.fault === 'operation-control-failed') this.#schedulePreserveRecovery(slot, key, newReport);
+      this.#schedulePreserveRecovery(slot, key, newReport);
       return;
     }
     report.decision = decision;
@@ -1186,13 +1216,70 @@ export class ProviderProxySetLifecycle {
     slot.preserveReports.set(key, report);
     if (now - report.lastReportedAtMs < PRESERVE_REPORT_INTERVAL_MS) {
       report.suppressed += 1;
-      if (decision.fault === 'operation-control-failed') this.#schedulePreserveRecovery(slot, key, report);
+      this.#schedulePreserveRecovery(slot, key, report);
       return;
     }
     this.#reportDecision(decision, `summary=periodic suppressed=${report.suppressed}`);
     report.lastReportedAtMs = now;
     report.suppressed = 0;
-    if (decision.fault === 'operation-control-failed') this.#schedulePreserveRecovery(slot, key, report);
+    this.#schedulePreserveRecovery(slot, key, report);
+  }
+
+  /**
+   * Advances `decision.role`/`decision.method`'s heartbeat hold by this one incident and reports whether that
+   * push escalated it. A hold is created on its first incident (never escalating there — there is no span yet
+   * to measure) and every later incident for the same role/method extends the same hold regardless of its own
+   * error identity, which is the whole fix: the per-error-identity `preserveReports` key must not gate whether
+   * a hold's clock advances, or a wedged proxy that alternates failure shapes never trips the bound on either
+   * shape alone.
+   */
+  #advanceHeartbeatHold(
+    slot: EstablishedSlot,
+    decision: Extract<ProviderProxySetPreserveDecision, { fault: 'heartbeat-indeterminate' }>,
+    now: number,
+  ): boolean {
+    const key = JSON.stringify([decision.role, decision.method]);
+    const hold = slot.heartbeatHolds.get(key);
+    if (hold === undefined) {
+      slot.heartbeatHolds.set(key, { firstObservedAtMs: now, attempts: 1 });
+      return false;
+    }
+    // Counted before the bound check below, so `attempts` on an escalating decision includes the incident
+    // that triggered it rather than undercounting by one.
+    hold.attempts += 1;
+    if (now - hold.firstObservedAtMs < this.#deps.heartbeatHoldBoundMs) return false;
+    this.#escalateHeartbeatHold(slot, decision, hold, now);
+    return true;
+  }
+
+  /**
+   * The coordinator's own bounded exit from a heartbeat hold that an accepted echo never closed: `hold` has
+   * carried indeterminate incidents for `decision.role`/`decision.method` continuously since
+   * `hold.firstObservedAtMs` — across every error identity that run took — and that span has now reached
+   * `heartbeatHoldBoundMs`. This starts a containment attempt — dual evidence, `stop-and-reap` plus
+   * `containment-proof` — not a verdict that the peer is gone; containment never settles on silence alone. The
+   * decision names what was observed (attempts, elapsed span, last incident reason) rather than a bare
+   * "exhausted".
+   */
+  #escalateHeartbeatHold(
+    slot: EstablishedSlot,
+    decision: Extract<ProviderProxySetPreserveDecision, { fault: 'heartbeat-indeterminate' }>,
+    hold: HeartbeatHoldState,
+    now: number,
+  ): void {
+    this.#beginFaultContainment(slot, {
+      action: 'stop-and-reap',
+      reason: 'heartbeat_hold_exhausted',
+      fault: 'heartbeat-hold-exhausted',
+      role: decision.role,
+      method: decision.method,
+      lastIncidentReason: decision.incidentReason,
+      attempts: hold.attempts,
+      elapsedMs: now - hold.firstObservedAtMs,
+      error: decision.error,
+      liveClaims: this.#deps.claims.claimsFor(slot.identity).length,
+      setIdentity: slot.identity,
+    });
   }
 
   #recordHeartbeatAccepted(
@@ -1200,6 +1287,7 @@ export class ProviderProxySetLifecycle {
     role: ProviderProxyHeartbeatAccepted['role'],
     method: ProviderProxyHeartbeatAccepted['method'],
   ): void {
+    slot.heartbeatHolds.delete(JSON.stringify([role, method]));
     for (const [key, report] of slot.preserveReports) {
       if (
         report.decision.fault !== 'heartbeat-indeterminate' ||
@@ -1213,17 +1301,41 @@ export class ProviderProxySetLifecycle {
     }
   }
 
+  /**
+   * Evicts the oldest `operation-control-failed` report first: that kind alone gets a recovery timer from
+   * `#schedulePreserveRecovery` and so self-clears, while a `heartbeat-indeterminate` report has none and
+   * waits for an accepted echo (or this coordinator's own hold escalation, tracked separately in
+   * `heartbeatHolds`) to close it — losing one to eviction would leave `#recordHeartbeatAccepted` nothing to
+   * close and no periodic log until a fresh incident starts a new report. Falls back to the actual oldest
+   * entry only when every held report is itself a heartbeat hold, since some entry must still be evicted to
+   * honor the bound.
+   */
   #makeRoomForPreserveReport(slot: EstablishedSlot): void {
     if (slot.preserveReports.size < MAX_PRESERVE_REPORTS_PER_SET) return;
-    const oldest = slot.preserveReports.entries().next().value;
-    if (oldest === undefined) return;
-    const [key, report] = oldest;
+    let victim: readonly [string, PreserveReportState] | undefined;
+    for (const entry of slot.preserveReports) {
+      if (entry[1].decision.fault === 'operation-control-failed') {
+        victim = entry;
+        break;
+      }
+      victim ??= entry;
+    }
+    if (victim === undefined) return;
+    const [key, report] = victim;
     if (report.recoveryTimer !== null) this.#deps.time.clearTimeout(report.recoveryTimer);
     slot.preserveReports.delete(key);
     this.#reportDecision(report.decision, `summary=evicted suppressed=${report.suppressed}`);
   }
 
+  /**
+   * The single owner of "no timer may clear a heartbeat hold": only an accepted echo
+   * (`#recordHeartbeatAccepted`) or this coordinator's own bounded escalation (`#escalateHeartbeatHold`) may
+   * end one, never a recovery timer assuming silence means the trouble passed. Refusing here rather than at
+   * each call site means a future call site cannot silently reintroduce timer-based recovery for a heartbeat
+   * report by omitting a condition.
+   */
   #schedulePreserveRecovery(slot: EstablishedSlot, key: string, report: PreserveReportState): void {
+    if (report.decision.fault !== 'operation-control-failed') return;
     if (report.recoveryTimer !== null) this.#deps.time.clearTimeout(report.recoveryTimer);
     report.recoveryTimer = this.#deps.time.setTimeout(() => {
       report.recoveryTimer = null;

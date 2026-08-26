@@ -235,7 +235,14 @@ export function providerProxySetAvailabilityReason(incident: ProviderProxySetAva
     case 'role-control-busy':
       return [incident.kind, incident.role, incident.method, incident.protocolCode, incident.admissionReason].join(':');
     case 'role-heartbeat-indeterminate':
-      return [incident.kind, incident.role, incident.method, incident.incidentReason].join(':');
+      return [
+        incident.kind,
+        incident.role,
+        incident.method,
+        incident.incidentReason,
+        incident.origin,
+        incident.controlCode,
+      ].join(':');
     case 'recovery-deadline':
       return `${incident.kind}:${incident.timeoutMs}`;
   }

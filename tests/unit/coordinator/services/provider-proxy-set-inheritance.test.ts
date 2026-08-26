@@ -1052,6 +1052,60 @@ describe('attemptProviderProxySetInheritance', () => {
     expect(calls.some((c) => c.method === 'reaper.handoff-rotate.v1')).toBe(false);
     expect(calls.some((c) => c.method === 'handoff.redeem.v1')).toBe(false);
   });
+
+  // The reaper's control client already carries a stored fault before its role establishment even begins —
+  // `guardian.handoff-redeem.v1`/`reaper.handoff-rotate.v1` still answer normally, so nothing about the
+  // redemption's own request/response traffic reveals the channel is dead. `establishRoleControl` observes it
+  // by racing its own opening heartbeat against `client.faulted`, and the stored fault always wins that race
+  // (it is already settled; the heartbeat still has to round-trip). What this protects: that observation must
+  // land as a classified, retryable availability fact — never a raw throw, and never a completed redemption
+  // that goes on to publish an authority for a set whose reaper is already known dead.
+  it('classifies a reaper fault observed during establishment and never publishes an authority for it', async () => {
+    const loc = locator();
+    mockedReadCapsule.mockReturnValueOnce(capsuleFor(loc));
+    const calls: { method: string; params: unknown }[] = [];
+    const responses = redemptionResponses(loc, matchingOperationSets([]));
+    const guardianClient = fakeClient(responses, calls);
+    const reaper = faultableClient(responses, calls);
+    mockedConnect.mockImplementation(async (socketPath: string) => {
+      if (socketPath === loc.locator.guardian.controlEndpoint) return guardianClient;
+      if (socketPath === loc.locator.reaper.controlEndpoint) {
+        reaper.fault(new ControlClientError('control_client_closed', 'The reaper control channel closed.', 'closed'));
+        await reaper.client.faulted;
+        return reaper.client;
+      }
+      throw new Error(`unexpected connection to ${socketPath}`);
+    });
+    const registerInheritedSet = vi.fn();
+
+    const outcome = await attemptProviderProxySetInheritance(
+      loc,
+      unusedDb,
+      {
+        runtime,
+        coordinatorIdentity: COORDINATOR_IDENTITY,
+        operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
+        registerInheritedSet,
+      },
+      neverAborts,
+    );
+
+    expect(outcome).toEqual({
+      kind: 'temporarily-unavailable',
+      incident: {
+        kind: 'role-control-unavailable',
+        role: 'reaper',
+        stage: 'heartbeat',
+        method: 'reaper.heartbeat.v1',
+        origin: 'closed',
+        controlCode: 'control_client_closed',
+      },
+    });
+    expect(
+      registerInheritedSet,
+      'a stored fault must be observed before any authority is published',
+    ).not.toHaveBeenCalled();
+  });
 });
 
 describe('createProviderProxySetInheritance', () => {
@@ -1435,6 +1489,7 @@ describe('createProviderProxySetInheritance', () => {
     claims.initialize([providerOperationRecord('executing', { operation: loc.operation, locator: loc.locator })]);
     const lifecycle = new ProviderProxySetLifecycle({
       buildSetId: FIXTURE_BUILD_SET_ID,
+      heartbeatHoldBoundMs: Number.MAX_SAFE_INTEGER,
       claims,
       controlEstablished: notifyProviderProxyControlEstablished,
       time: runtime.time,
@@ -1501,6 +1556,7 @@ describe('createProviderProxySetInheritance', () => {
     const established = vi.fn();
     const lifecycle = new ProviderProxySetLifecycle({
       buildSetId: FIXTURE_BUILD_SET_ID,
+      heartbeatHoldBoundMs: Number.MAX_SAFE_INTEGER,
       claims,
       controlEstablished: established,
       time,
@@ -1538,76 +1594,6 @@ describe('createProviderProxySetInheritance', () => {
     }).toEqual({ acceptedRecurringEchoes: true, controlIsLive: true, announcements: 1 });
   });
 
-  it('observes a stored reaper fault inline before an inherited authority can be published', async () => {
-    const loc = locator();
-    mockedReadCapsule.mockReturnValueOnce(capsuleFor(loc));
-    const calls: { method: string; params: unknown }[] = [];
-    const responses = redemptionResponses(loc, matchingOperationSets([]), {
-      'guardian.stop-and-reap.v1': { disappearanceReceipt: 'guardian-absent' },
-      'reaper.stop-and-reap.v1': { disappearanceReceipt: 'reaper-absent' },
-    });
-    const guardian = faultableClient(responses, calls);
-    const reaper = faultableClient(responses, calls);
-    const proxy = faultableClient(responses, calls);
-    mockedConnect.mockImplementation(async (socketPath: string) => {
-      if (socketPath === loc.locator.guardian.controlEndpoint) return guardian.client;
-      if (socketPath === loc.locator.reaper.controlEndpoint) {
-        reaper.fault(new ControlClientError('control_client_closed', 'The reaper control channel closed.', 'closed'));
-        await reaper.client.faulted;
-        return reaper.client;
-      }
-      if (socketPath === loc.locator.proxy.controlEndpoint) return proxy.client;
-      throw new Error(`unexpected connection to ${socketPath}`);
-    });
-    const claims = new ProviderProxySetClaimMirror();
-    claims.initialize([]);
-    const established = vi.fn();
-    const lifecycle = new ProviderProxySetLifecycle({
-      buildSetId: FIXTURE_BUILD_SET_ID,
-      claims,
-      controlEstablished: established,
-      time: {
-        now: () => 0,
-        setTimeout: () => ({ unref: () => undefined }),
-        clearTimeout: () => undefined,
-      },
-      recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
-        'containment-proof': async () => null,
-        'disappearance-consumer': async ({ notice }) => ({
-          kind: 'accepted',
-          acceptance: { kind: 'accepted', operation: notice.operation, disposition: 'record-absent' },
-        }),
-      }),
-      reportLifecycle: () => undefined,
-    });
-    lifecycle.initializeClaimSlots();
-    lifecycle.completeStartupDiscovery();
-    let authorityInsideRegistration: ProviderProxyOperationAuthority | null | undefined;
-
-    const inheritance = createProviderProxySetInheritance({
-      runtime,
-      identity,
-      operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
-      registerInheritedSet: (set) => {
-        if (!isProviderProxyOperationAuthority(set)) throw new Error('expected durable authority');
-        lifecycle.registerInheritedSet(set);
-        authorityInsideRegistration = lifecycle.authorityFor(set.setIdentity);
-      },
-    });
-    const outcome = await inheritance.inheritProviderProxySet(loc, unusedDb, neverAborts);
-
-    expect(outcome.kind).toBe('inherited');
-    expect({
-      authorityAcceptedDuringRegistration: authorityInsideRegistration !== null,
-      announcements: established.mock.calls.length,
-    }).toEqual({ authorityAcceptedDuringRegistration: false, announcements: 0 });
-    if (outcome.kind === 'inherited') {
-      expect(lifecycle.authorityFor(outcome.set.setIdentity)).toBeNull();
-      outcome.set.stopHeartbeats();
-      await outcome.set.initiateControlClose();
-    }
-  });
-
   it('removes inherited authority when the guardian heartbeat genuinely rejects', async () => {
     const loc = locator();
     mockedReadCapsule.mockReturnValueOnce(capsuleFor(loc));
@@ -1642,6 +1628,7 @@ describe('createProviderProxySetInheritance', () => {
     claims.initialize([]);
     const lifecycle = new ProviderProxySetLifecycle({
       buildSetId: FIXTURE_BUILD_SET_ID,
+      heartbeatHoldBoundMs: Number.MAX_SAFE_INTEGER,
       claims,
       controlEstablished: () => undefined,
       time,

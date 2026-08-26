@@ -53,6 +53,8 @@ import type { ProviderOperationTerminalDirective } from '#src/store/provider-ope
 
 /** The build this fixture lifecycle belongs to — the same one `providerOperationRecord` stamps on its identities, so a discovered capsule is inheritable rather than foreign. */
 const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
+/** Mirrors the unexported `PRESERVE_REPORT_INTERVAL_MS` in `provider-proxy-set/index.ts`. */
+const PRESERVE_REPORT_INTERVAL_MS = 60_000;
 
 const noContainmentProof = async (): Promise<null> => null;
 /** Nothing observed is never absence, so every discovered capsule is retained and no retirement begins. */
@@ -106,9 +108,10 @@ function terminalAuthorityFault(): ProviderProxyAuthorityFault {
 
 type ProviderProxySetLifecycleFixtureDeps = Omit<
   ProviderProxySetLifecycleDeps,
-  'recoveryDispatcher' | 'reportLifecycle' | 'buildSetId'
+  'recoveryDispatcher' | 'reportLifecycle' | 'buildSetId' | 'heartbeatHoldBoundMs'
 > &
   Readonly<{
+    heartbeatHoldBoundMs?: number;
     recoveryDispatcher?: ProviderProxyRecoveryDispatcher;
     reportLifecycle?: ProviderProxySetLifecycleDeps['reportLifecycle'];
     disappearanceConsumer: ProviderContainmentDisappearanceConsumer;
@@ -153,6 +156,9 @@ function lifecycleFor(deps: ProviderProxySetLifecycleFixtureDeps): ProviderProxy
   } = deps;
   return new ProviderProxySetLifecycle({
     buildSetId: FIXTURE_BUILD_SET_ID,
+    // Large enough that no existing test's clock advance can cross it by accident — a test that means to
+    // exercise the heartbeat-hold escalation overrides this explicitly with a small, controlled value.
+    heartbeatHoldBoundMs: Number.MAX_SAFE_INTEGER,
     ...lifecycleDeps,
     recoveryDispatcher: suppliedDispatcher ?? recoveryDispatcher,
     reportLifecycle: lifecycleDeps.reportLifecycle ?? (() => undefined),
@@ -596,6 +602,331 @@ describe('ProviderProxySetLifecycle', () => {
 
     expect(reportLifecycle).toHaveBeenCalledExactlyOnceWith('info', expect.stringContaining('subject=guardian'));
     expect(reportLifecycle).toHaveBeenCalledWith('info', expect.stringContaining('summary=recovered suppressed=0'));
+  });
+
+  it('reports summary=periodic for a heartbeat hold past the suppression window, the same as for operation-control', () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const clock = new ManualClock();
+    const reportLifecycle = vi.fn();
+    const faults = createProviderProxyAuthorityFaultLatch();
+    const authority = fakeAuthority({ record, faults });
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+      reportLifecycle,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.registerInheritedSet(authority);
+
+    faults.reportIncident({
+      kind: 'heartbeat-indeterminate',
+      role: 'guardian',
+      method: 'guardian.heartbeat.v1',
+      incidentReason: 'unanswered',
+      error: 'heartbeat timed out',
+    });
+    reportLifecycle.mockClear();
+
+    clock.elapse(PRESERVE_REPORT_INTERVAL_MS);
+    faults.reportIncident({
+      kind: 'heartbeat-indeterminate',
+      role: 'guardian',
+      method: 'guardian.heartbeat.v1',
+      incidentReason: 'unanswered',
+      error: 'heartbeat timed out',
+    });
+
+    // `main` said "suppressed repeats while the preservation condition remains active" — true of either
+    // preserve kind. `summary=periodic` must not be narrowed to operation-control alone.
+    expect(reportLifecycle).toHaveBeenCalledExactlyOnceWith(
+      'info',
+      expect.stringContaining('summary=periodic suppressed=0'),
+    );
+  });
+
+  it('never schedules a recovery timer for a heartbeat hold, even across repeated incidents past the suppression window', () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const clock = new ManualClock();
+    const reportLifecycle = vi.fn();
+    const faults = createProviderProxyAuthorityFaultLatch();
+    const authority = fakeAuthority({ record, faults });
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+      reportLifecycle,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.registerInheritedSet(authority);
+
+    // First incident: the `report === undefined` branch.
+    faults.reportIncident({
+      kind: 'heartbeat-indeterminate',
+      role: 'guardian',
+      method: 'guardian.heartbeat.v1',
+      incidentReason: 'unanswered',
+      error: 'heartbeat timed out',
+    });
+    // Second incident inside the suppression window: the "suppressed" existing-report branch.
+    clock.elapse(1_000);
+    faults.reportIncident({
+      kind: 'heartbeat-indeterminate',
+      role: 'guardian',
+      method: 'guardian.heartbeat.v1',
+      incidentReason: 'unanswered',
+      error: 'heartbeat timed out',
+    });
+    // Third incident past the suppression window: the "periodic" existing-report branch.
+    clock.elapse(PRESERVE_REPORT_INTERVAL_MS);
+    faults.reportIncident({
+      kind: 'heartbeat-indeterminate',
+      role: 'guardian',
+      method: 'guardian.heartbeat.v1',
+      incidentReason: 'unanswered',
+      error: 'heartbeat timed out',
+    });
+    reportLifecycle.mockClear();
+
+    // No accepted echo ever arrives. If any of the three branches above scheduled a recovery timer for this
+    // heartbeat-indeterminate report, this would silently close the hold and log `summary=recovered`.
+    clock.elapse(10 * PRESERVE_REPORT_INTERVAL_MS);
+    clock.runDue();
+
+    expect(reportLifecycle).not.toHaveBeenCalled();
+  });
+
+  it('escalates a heartbeat hold into containment once it runs longer than heartbeatHoldBoundMs, citing what it observed', () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const clock = new ManualClock();
+    const reportLifecycle = vi.fn();
+    const faults = createProviderProxyAuthorityFaultLatch();
+    const stopAndReap = vi.fn(async () => ({ unconfirmed: 'unused' }) as const);
+    const authority = fakeAuthority({ record, faults, stopAndReap });
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+      reportLifecycle,
+      heartbeatHoldBoundMs: 5_000,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.registerInheritedSet(authority);
+
+    faults.reportIncident({
+      kind: 'heartbeat-indeterminate',
+      role: 'guardian',
+      method: 'guardian.heartbeat.v1',
+      incidentReason: 'unanswered',
+      error: 'heartbeat timed out',
+    });
+    reportLifecycle.mockClear();
+
+    clock.elapse(5_000);
+    faults.reportIncident({
+      kind: 'heartbeat-indeterminate',
+      role: 'guardian',
+      method: 'guardian.heartbeat.v1',
+      incidentReason: 'unclassified',
+      error: 'answer could not be decoded',
+    });
+
+    expect(reportLifecycle).toHaveBeenCalledExactlyOnceWith(
+      'warn',
+      `Provider proxy set action=stop-and-reap reason=heartbeat_hold_exhausted fault=heartbeat-hold-exhausted subject=guardian liveClaims=1 set=${setReference(authority.setIdentity)} error=answer could not be decoded attempts=2 elapsedMs=5000 lastIncidentReason=unclassified`,
+    );
+    expect(stopAndReap).toHaveBeenCalledOnce();
+  });
+
+  it('escalates a heartbeat hold that never repeats the same error identity twice', () => {
+    // The defect this guards against: keying the hold by `[subject, errorIdentity]` (as `preserveReports`
+    // does for its own, unrelated log-coalescing purpose) gives each error shape its own `firstObservedAtMs`.
+    // Every incident below carries an error identity `preserveErrorIdentity` has never seen before on this
+    // role/method, so the buggy per-identity keying would find `report === undefined` every single time and
+    // could never satisfy its own `report !== undefined` escalation guard — it would hold this role's
+    // heartbeat open forever no matter how long the run continues. The fix measures the run itself.
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const clock = new ManualClock();
+    const reportLifecycle = vi.fn();
+    const faults = createProviderProxyAuthorityFaultLatch();
+    const stopAndReap = vi.fn(async () => ({ unconfirmed: 'unused' }) as const);
+    const authority = fakeAuthority({ record, faults, stopAndReap });
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+      reportLifecycle,
+      heartbeatHoldBoundMs: 5_000,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.registerInheritedSet(authority);
+
+    // Three pairwise-distinct error identities — `preserveErrorIdentity` disagrees on `code`/`origin` between
+    // all three, and on `remoteFailure` between the third and the other two.
+    const timeout = new ControlClientError('control_call_failed', 'heartbeat timed out', 'timeout');
+    const closed = new ControlClientError('control_client_closed', 'the control channel closed', 'closed');
+    const undecodable = new ControlClientError(
+      'control_call_failed',
+      'answer could not be decoded',
+      'remote-response',
+      {
+        kind: 'json-rpc-error',
+        jsonRpcCode: -32_603,
+        protocolCode: null,
+        admissionReason: null,
+        heartbeatRefusal: null,
+      },
+    );
+
+    faults.reportIncident({
+      kind: 'heartbeat-indeterminate',
+      role: 'guardian',
+      method: 'guardian.heartbeat.v1',
+      incidentReason: 'unanswered',
+      error: timeout,
+    });
+    clock.elapse(2_500);
+    faults.reportIncident({
+      kind: 'heartbeat-indeterminate',
+      role: 'guardian',
+      method: 'guardian.heartbeat.v1',
+      incidentReason: 'unclassified',
+      error: undecodable,
+    });
+    reportLifecycle.mockClear();
+
+    clock.elapse(2_500);
+    faults.reportIncident({
+      kind: 'heartbeat-indeterminate',
+      role: 'guardian',
+      method: 'guardian.heartbeat.v1',
+      incidentReason: 'unanswered',
+      error: closed,
+    });
+
+    expect(reportLifecycle).toHaveBeenCalledExactlyOnceWith(
+      'warn',
+      `Provider proxy set action=stop-and-reap reason=heartbeat_hold_exhausted fault=heartbeat-hold-exhausted subject=guardian liveClaims=1 set=${setReference(authority.setIdentity)} error=the control channel closed attempts=3 elapsedMs=5000 lastIncidentReason=unanswered`,
+    );
+    expect(stopAndReap).toHaveBeenCalledOnce();
+  });
+
+  it('does not escalate a heartbeat hold that has not yet run for heartbeatHoldBoundMs', () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const clock = new ManualClock();
+    const reportLifecycle = vi.fn();
+    const faults = createProviderProxyAuthorityFaultLatch();
+    const stopAndReap = vi.fn(async () => ({ unconfirmed: 'unused' }) as const);
+    const authority = fakeAuthority({ record, faults, stopAndReap });
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+      reportLifecycle,
+      heartbeatHoldBoundMs: 5_000,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.registerInheritedSet(authority);
+
+    faults.reportIncident({
+      kind: 'heartbeat-indeterminate',
+      role: 'guardian',
+      method: 'guardian.heartbeat.v1',
+      incidentReason: 'unanswered',
+      error: 'heartbeat timed out',
+    });
+    clock.elapse(4_999);
+    faults.reportIncident({
+      kind: 'heartbeat-indeterminate',
+      role: 'guardian',
+      method: 'guardian.heartbeat.v1',
+      incidentReason: 'unanswered',
+      error: 'heartbeat timed out',
+    });
+
+    expect(stopAndReap).not.toHaveBeenCalled();
+    expect(reportLifecycle.mock.calls.some(([, message]) => message.includes('stop-and-reap'))).toBe(false);
+  });
+
+  it('prefers evicting an operation-control report over a live heartbeat hold', () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const reportLifecycle = vi.fn();
+    const faults = createProviderProxyAuthorityFaultLatch();
+    const authority = fakeAuthority({ record, faults });
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: new ManualClock(),
+      proveContainmentAbsent: noContainmentProof,
+      reportLifecycle,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.registerInheritedSet(authority);
+
+    // The oldest report of all, inserted first: a live heartbeat hold that must survive eviction pressure.
+    faults.reportIncident({
+      kind: 'heartbeat-indeterminate',
+      role: 'guardian',
+      method: 'guardian.heartbeat.v1',
+      incidentReason: 'unanswered',
+      error: 'heartbeat timed out',
+    });
+
+    // 32 distinct operation-control-failed keys fill the set to capacity (1 heartbeat + 31 operation-control),
+    // and the 32nd forces an eviction.
+    for (let code = 0; code < 32; code += 1) {
+      faults.reportIncident({
+        kind: 'operation-control-failed',
+        policy: operationPolicy,
+        error: new ControlClientError('control_call_failed', `remote failure ${code}`, 'remote-response', {
+          kind: 'json-rpc-error',
+          jsonRpcCode: code,
+          protocolCode: null,
+          admissionReason: null,
+          heartbeatRefusal: null,
+        }),
+      });
+    }
+
+    const evicted = reportLifecycle.mock.calls.filter(([, message]) => message.includes('summary=evicted'));
+    expect(evicted).toEqual([['info', expect.stringContaining('error=remote failure 0 summary=evicted suppressed=0')]]);
+
+    // The heartbeat hold's own record survived eviction: an accepted echo still finds it and closes it.
+    reportLifecycle.mockClear();
+    faults.reportIncident({ kind: 'heartbeat-accepted', role: 'guardian', method: 'guardian.heartbeat.v1' });
+    expect(reportLifecycle).toHaveBeenCalledExactlyOnceWith(
+      'info',
+      expect.stringContaining('summary=recovered suppressed=0'),
+    );
   });
 
   it('keys preserve reports by set and method and flushes a suppressed count before authority loss', () => {

@@ -23,6 +23,7 @@ import {
   PROXY_STARTUP_ATTACH_RESERVE_MS,
   PROXY_SUCCESSOR_TAIL_MS,
   PROXY_TEARDOWN_RESERVE_MS,
+  providerProxyAdoptionWindowMs,
   providerProxyDeadlineTimingIsValid,
   providerProxyDeadlineConfigurationSchema,
   resolveProviderProxyDeadlineConfiguration,
@@ -190,6 +191,19 @@ describe('provider proxy orphan deadline configuration', () => {
     expect(3 * PROXY_CONTROL_ESTABLISH_READY_MS).toBeLessThan(acquisitionDeadlineMs);
     expect(acquisitionDeadlineMs).toBeLessThan(3 * processBootstrapMs);
     expect(adoptionWindowMs).toBeLessThan(acquisitionDeadlineMs);
+  });
+
+  it('exposes the adoption window as the single formula both an enforcer and the coordinator escalation share', () => {
+    expect(
+      providerProxyAdoptionWindowMs({
+        orphanTimeoutMs: DEFAULT_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS,
+        teardownReserveMs: PROXY_TEARDOWN_RESERVE_MS,
+      }),
+    ).toBe(23_000);
+    expect(providerProxyAdoptionWindowMs(configuration())).toBe(23_000);
+    expect(providerProxyAdoptionWindowMs(configuration(String(MIN_EFFECTIVE_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS)))).toBe(
+      22_001,
+    );
   });
 
   it('rejects an unvalidated configuration object at the state-machine boundary', () => {
