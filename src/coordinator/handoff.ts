@@ -9,14 +9,10 @@
 import { join } from 'node:path';
 
 import { writeAuditEvent } from '../infra/audit-log.js';
-import {
-  incarnationMayAuthorizeSignal,
-  isProcessIncarnation,
-  type ProcessIncarnation,
-  type ProcessLiveness,
-} from '../infra/node-process.js';
+import { incarnationMayAuthorizeSignal, isProcessIncarnation, type ProcessIncarnation } from '../infra/node-process.js';
 import { backendLog } from '../infra/backend-log.js';
 import { SIGKILL_GRACE_MS, SIGTERM_GRACE_MS } from '../infra/process-constants.js';
+import { documentedCoralSetupError } from '../runtime/errors.js';
 import type { Runtime } from '../runtime/ports.js';
 import type { StoragePort } from '../infra/port-types.js';
 import type { RunStartupRecoveryFn, RunStartupRecoveryOrchestratorFn } from './lifecycle.js';
@@ -42,8 +38,8 @@ export const HANDOFF_SIGNAL_POLICY_ENV = 'CORAL_HANDOFF_SIGNAL_POLICY';
  * errors (transient).
  */
 export class HandoffEscalationError extends Error {
-  constructor(message: string) {
-    super(message);
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
     this.name = 'HandoffEscalationError';
   }
 }
@@ -136,6 +132,7 @@ type HandoffRefusalCause =
   | 'signal-anchor-missing'
   | 'pid-recycled'
   | 'signal-rejected-live'
+  | 'accepted-signal-target-alive-after-failure'
   | 'accepted-signal-target-alive-after-bind';
 
 type SignalRefusalText = Readonly<{
@@ -223,6 +220,11 @@ const HANDOFF_REFUSAL_REGISTRY = {
     description:
       'the process port rejected the signal request while the verified target remained alive; this process may lack permission or the target may be outside its signal reach',
     successor: 'Stop the target through the service or account that owns it, then retry handoff',
+  },
+  'accepted-signal-target-alive-after-failure': {
+    description: 'the handoff exited before the accepted signal target was observed gone',
+    successor:
+      'Wait for the identified target to finish shutting down or stop it through the service or account that owns it, then retry startup',
   },
   'accepted-signal-target-alive-after-bind': {
     description: 'the coordinator socket became bindable before the accepted signal target was observed gone',
@@ -539,41 +541,10 @@ async function sleepForHandoffPoll(opts: HandoffOptions, ms: number): Promise<vo
 
 type SignalVerificationResult = 'alive' | 'gone';
 
-export const SIGNAL_SETTLEMENT_OUTCOME_KINDS = ['gone', 'alive', 'unverifiable'] as const;
-
 type SignalTargetObservation =
   | { kind: 'gone' }
   | { kind: 'alive' }
   | { kind: 'unverifiable'; cause: HandoffRefusalCause };
-
-type SignalAttemptDisposition = 'pending-settlement' | 'settle-rejection';
-
-export function decideSignalAttempt(result: HandoffSignalResult): SignalAttemptDisposition {
-  return result === 'accepted' ? 'pending-settlement' : 'settle-rejection';
-}
-
-type BindCompletionDisposition = 'complete' | 'continue' | 'settle-pending';
-
-export function decideBindCompletion(
-  result: HandoffBindResult,
-  hasPendingSignalSettlement: boolean,
-): BindCompletionDisposition {
-  if (result.kind !== 'bound') {
-    return 'continue';
-  }
-  return hasPendingSignalSettlement ? 'settle-pending' : 'complete';
-}
-
-export function classifySignalLiveness(liveness: ProcessLiveness): SignalTargetObservation {
-  switch (liveness) {
-    case 'absent':
-      return { kind: 'gone' };
-    case 'alive':
-      return { kind: 'alive' };
-    case 'unknown':
-      return { kind: 'unverifiable', cause: 'process-liveness-unknown' };
-  }
-}
 
 /**
  * Confirms the pid about to be signalled is still the process this attempt observed, by comparing two
@@ -648,7 +619,14 @@ function observeSignalTarget(
   if (liveIncarnation !== anchoredIncarnation) {
     return { kind: 'unverifiable', cause: 'pid-recycled' };
   }
-  return classifySignalLiveness(process.observeLiveness(incumbent.pid));
+  switch (process.observeLiveness(incumbent.pid)) {
+    case 'absent':
+      return { kind: 'gone' };
+    case 'alive':
+      return { kind: 'alive' };
+    case 'unknown':
+      return { kind: 'unverifiable', cause: 'process-liveness-unknown' };
+  }
 }
 
 function settleSignalAttempt(
@@ -659,7 +637,7 @@ function settleSignalAttempt(
   result: HandoffSignalResult,
   platform: NodeJS.Platform,
 ): 'accepted' | 'target-gone' {
-  if (decideSignalAttempt(result) === 'pending-settlement') {
+  if (result === 'accepted') {
     return 'accepted';
   }
   const observation = observeSignalTarget(incumbent, anchoredIncarnation, opts.runtime.process, platform);
@@ -678,10 +656,14 @@ function settleSignalAttempt(
   );
 }
 
-function refuseHandoff(prefix: string, cause: HandoffRefusalCause, detail?: string): never {
+function handoffRefusalMessage(prefix: string, cause: HandoffRefusalCause, detail?: string): string {
   const refusal = HANDOFF_REFUSAL_REGISTRY[cause];
   const description = detail === undefined ? refusal.description : `${refusal.description}: ${detail}`;
-  throw new HandoffEscalationError(`${prefix}: ${description}. ${refusal.successor}`);
+  return `${prefix}: ${description}. ${refusal.successor}`;
+}
+
+function refuseHandoff(prefix: string, cause: HandoffRefusalCause, detail?: string): never {
+  throw new HandoffEscalationError(handoffRefusalMessage(prefix, cause, detail));
 }
 
 type PendingSignalSettlement = Readonly<{
@@ -704,19 +686,52 @@ function observePendingSignal(
   return observeSignalTarget(pending.target, pending.anchoredIncarnation, process, platform);
 }
 
-function throwAfterPendingSignalSettlement(
+function refuseAfterPendingSignalFailure(
   opts: HandoffOptions,
   pending: PendingSignalSettlement,
   platform: NodeJS.Platform,
   error: unknown,
 ): never {
   const observation = observePendingSignal(pending, opts.runtime.process, platform);
-  if (observation.kind === 'unverifiable') {
-    refuseHandoff(
-      `Handoff failed after the kernel accepted ${pending.signal} for incumbent pid=${pending.target.pid}, but the target could not be verified`,
-      observation.cause,
-    );
+  if (observation.kind === 'gone') {
+    throw error;
   }
+  const prefix =
+    observation.kind === 'alive'
+      ? `Handoff failed after the kernel accepted ${pending.signal} for incumbent pid=${pending.target.pid}, and the verified target remained alive`
+      : `Handoff failed after the kernel accepted ${pending.signal} for incumbent pid=${pending.target.pid}, but the target could not be verified`;
+  const cause = observation.kind === 'alive' ? 'accepted-signal-target-alive-after-failure' : observation.cause;
+  throw new HandoffEscalationError(handoffRefusalMessage(prefix, cause), { cause: error });
+}
+
+function abortAfterPendingSignalObservation(
+  opts: HandoffOptions,
+  pending: PendingSignalSettlement,
+  platform: NodeJS.Platform,
+  signal: AbortSignal,
+): never {
+  const observation = observePendingSignal(pending, opts.runtime.process, platform);
+  if (observation.kind === 'gone') {
+    throw signal.reason;
+  }
+
+  const refusal =
+    HANDOFF_REFUSAL_REGISTRY[
+      observation.kind === 'alive' ? 'accepted-signal-target-alive-after-failure' : observation.cause
+    ];
+  const targetStatus = observation.kind === 'alive' ? 'remained alive' : 'could not be verified as gone';
+  const error = documentedCoralSetupError(
+    'handoff_pending_signal_aborted',
+    {
+      acceptedSignal: pending.signal,
+      targetPid: String(pending.target.pid),
+      targetStatus: observation.kind,
+      targetDescription: targetStatus,
+      ...(observation.kind === 'unverifiable' ? { observationCause: observation.cause } : {}),
+    },
+    { remediation: refusal.successor },
+  );
+  Object.defineProperty(error, 'cause', { value: signal.reason, configurable: true });
   throw error;
 }
 
@@ -728,7 +743,7 @@ async function sleepForPendingSignalPoll(
   try {
     await opts.runtime.time.sleep(SOCKET_BIND_POLL_MS);
   } catch (error: unknown) {
-    throwAfterPendingSignalSettlement(opts, pending, platform, error);
+    refuseAfterPendingSignalFailure(opts, pending, platform, error);
   }
 }
 
@@ -761,7 +776,9 @@ function transitionAfterSigtermGrace(
     return { kind: 'target-gone', stage: 'before-sigkill', pid: incumbent.pid };
   }
   assertSignalCapability(incumbent);
-  opts.signal?.throwIfAborted();
+  if (opts.signal?.aborted === true) {
+    abortAfterPendingSignalObservation(opts, pending, platform, opts.signal);
+  }
   const result = signalIncumbent(opts, incumbent, 'SIGKILL');
   if (
     settleSignalAttempt(opts, incumbent, pending.anchoredIncarnation, 'SIGKILL', result, platform) === 'target-gone'
@@ -797,50 +814,37 @@ function transitionAfterSigkillGrace(
   }
 }
 
-type PendingSignalTransitionOutcome =
-  | { kind: 'bound-complete' }
-  | { kind: 'wait' }
+type ExpiredPendingSignalTransitionOutcome =
   | { kind: 'target-gone'; message: string }
   | { kind: 'sigkill-accepted'; pending: PendingSignalSettlement };
 
-function transitionPendingSignalSettlement(
+function settleBoundSocketAgainstPendingSignal(
   opts: HandoffOptions,
   pending: PendingSignalSettlement,
-  bindDisposition: BindCompletionDisposition,
+  platform: NodeJS.Platform,
+): void {
+  const observation = observePendingSignal(pending, opts.runtime.process, platform);
+  if (observation.kind === 'unverifiable') {
+    refuseHandoff(
+      `The socket bound after the kernel accepted ${pending.signal} for incumbent pid=${pending.target.pid}, but the target could not be verified`,
+      observation.cause,
+    );
+  }
+  if (observation.kind === 'alive') {
+    refuseHandoff(
+      `The socket bound after the kernel accepted ${pending.signal} for incumbent pid=${pending.target.pid}`,
+      'accepted-signal-target-alive-after-bind',
+    );
+  }
+}
+
+function advanceExpiredPendingSignal(
+  opts: HandoffOptions,
+  pending: PendingSignalSettlement,
   policy: HandoffSignalPolicy,
   lastHealth: IncumbentHealth | null,
   platform: NodeJS.Platform,
-): PendingSignalTransitionOutcome {
-  if (bindDisposition === 'settle-pending') {
-    const observation = observePendingSignal(pending, opts.runtime.process, platform);
-    if (observation.kind === 'unverifiable') {
-      refuseHandoff(
-        `The socket bound after the kernel accepted ${pending.signal} for incumbent pid=${pending.target.pid}, but the target could not be verified`,
-        observation.cause,
-      );
-    }
-    if (observation.kind === 'alive') {
-      refuseHandoff(
-        `The socket bound after the kernel accepted ${pending.signal} for incumbent pid=${pending.target.pid}`,
-        'accepted-signal-target-alive-after-bind',
-      );
-    }
-    return { kind: 'bound-complete' };
-  }
-  if (opts.signal?.aborted === true) {
-    const observation = observePendingSignal(pending, opts.runtime.process, platform);
-    if (observation.kind === 'unverifiable') {
-      refuseHandoff(
-        `Startup was aborted after the kernel accepted ${pending.signal} for incumbent pid=${pending.target.pid}, but the target could not be verified`,
-        observation.cause,
-      );
-    }
-    opts.signal.throwIfAborted();
-  }
-  const graceMs = pending.signal === 'SIGTERM' ? SIGTERM_GRACE_MS : SIGKILL_GRACE_MS;
-  if (opts.runtime.time.now() - pending.acceptedAtMs < graceMs) {
-    return { kind: 'wait' };
-  }
+): ExpiredPendingSignalTransitionOutcome {
   if (pending.signal === 'SIGKILL') {
     const disposition = transitionAfterSigkillGrace(opts, pending, platform);
     if (disposition.kind === 'target-unverifiable') {
@@ -952,31 +956,28 @@ export async function bindWithHandoff(opts: HandoffOptions): Promise<BoundCoordi
       result = await opts.bindAttempt();
     } catch (error: unknown) {
       if (pendingSignal !== null) {
-        throwAfterPendingSignalSettlement(opts, pendingSignal, platform, error);
+        refuseAfterPendingSignalFailure(opts, pendingSignal, platform, error);
       }
       throw error;
     }
-    const bindDisposition = decideBindCompletion(result, pendingSignal !== null);
     if (pendingSignal !== null) {
-      const transition = transitionPendingSignalSettlement(
-        opts,
-        pendingSignal,
-        bindDisposition,
-        signalPolicy,
-        lastHealth,
-        platform,
-      );
-      if (transition.kind === 'bound-complete') {
+      if (result.kind === 'bound') {
+        settleBoundSocketAgainstPendingSignal(opts, pendingSignal, platform);
         return createBoundCoordinator(sawIncumbent, opts);
       }
+      if (opts.signal?.aborted === true) {
+        abortAfterPendingSignalObservation(opts, pendingSignal, platform, opts.signal);
+      }
+      const graceMs = pendingSignal.signal === 'SIGTERM' ? SIGTERM_GRACE_MS : SIGKILL_GRACE_MS;
+      if (opts.runtime.time.now() - pendingSignal.acceptedAtMs < graceMs) {
+        await sleepForPendingSignalPoll(opts, pendingSignal, platform);
+        continue;
+      }
+      const transition = advanceExpiredPendingSignal(opts, pendingSignal, signalPolicy, lastHealth, platform);
       if (transition.kind === 'target-gone') {
         backendLog.info(transition.message);
         abandonIncumbent();
         await sleepForHandoffPoll(opts, SOCKET_BIND_POLL_MS);
-        continue;
-      }
-      if (transition.kind === 'wait') {
-        await sleepForPendingSignalPoll(opts, pendingSignal, platform);
         continue;
       }
       pendingSignal = transition.pending;
@@ -988,7 +989,7 @@ export async function bindWithHandoff(opts: HandoffOptions): Promise<BoundCoordi
     }
 
     opts.signal?.throwIfAborted();
-    if (bindDisposition === 'complete') {
+    if (result.kind === 'bound') {
       return createBoundCoordinator(sawIncumbent, opts);
     }
 

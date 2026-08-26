@@ -31,15 +31,11 @@ import { join, relative } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import ts from 'typescript';
 
-import {
-  SIGNAL_SETTLEMENT_OUTCOME_KINDS,
-  classifySignalLiveness,
-  decideBindCompletion,
-  decideSignalAttempt,
-  type HandoffBindResult,
-} from '../../src/coordinator/handoff.js';
-import type { ProcessLiveness } from '../../src/infra/node-process.js';
+import { bindWithHandoff, HandoffEscalationError, type HandoffOptions } from '../../src/coordinator/handoff.js';
+import type { Runtime } from '../../src/runtime/ports.js';
+import type { IncumbentIdentity } from '../../src/transport/ipc/handoff.js';
 import { codeTextOnly } from '../helpers/ts-code-text.js';
+import { testIncarnation } from '../helpers/process-incarnation.js';
 
 const REPO_ROOT = join(__dirname, '..', '..');
 const SRC_ROOT = 'src';
@@ -216,49 +212,79 @@ describe('a signal aimed at a pid establishes that the pid is still its recorded
     }
   });
 
-  it('reports each liveness verdict as exactly the observation it took', () => {
-    const expected = {
-      absent: { kind: 'gone' },
-      alive: { kind: 'alive' },
-      unknown: { kind: 'unverifiable', cause: 'process-liveness-unknown' },
-    } as const satisfies Record<ProcessLiveness, ReturnType<typeof classifySignalLiveness>>;
+  // This matrix reaches the real bind boundary after kernel acceptance. It does not cover rejected signal
+  // requests, a grace expiring while the socket stays bound, exceptional exits, or the distinct identity and
+  // platform reasons that can make an observation unverifiable; those remain behaviour tests in handoff.test.ts.
+  it.each([
+    ['SIGTERM', 'gone'],
+    ['SIGTERM', 'alive'],
+    ['SIGTERM', 'unverifiable'],
+    ['SIGKILL', 'gone'],
+    ['SIGKILL', 'alive'],
+    ['SIGKILL', 'unverifiable'],
+  ] as const)(
+    'does not complete a bind after accepted %s until its target is gone (%s)',
+    async (signal, targetStatus) => {
+      const incumbent: IncumbentIdentity = {
+        pid: 91_001,
+        incarnation: testIncarnation(91_001_000),
+        source: 'discovery',
+        instanceId: 'signal-settlement-invariant',
+        token: 'token',
+        bootToken: 'boot-token',
+        shutdownToken: 'shutdown-token',
+      };
+      const acceptedSignals: NodeJS.Signals[] = [];
+      let now = 0;
+      let socketBound = false;
+      const runtime: Pick<Runtime, 'time' | 'process' | 'env'> = {
+        time: {
+          now: () => now,
+          sleep: async (ms) => {
+            now += ms;
+          },
+        } as Runtime['time'],
+        process: {
+          kill: (_pid: number, acceptedSignal: NodeJS.Signals | 0) => {
+            if (acceptedSignal !== 0) acceptedSignals.push(acceptedSignal);
+            return true;
+          },
+          readProcessIncarnation: () =>
+            socketBound && targetStatus === 'gone' ? null : (incumbent.incarnation ?? null),
+          observeLiveness: () => {
+            if (!socketBound) return 'alive';
+            if (targetStatus === 'gone') return 'absent';
+            return targetStatus === 'alive' ? 'alive' : 'unknown';
+          },
+        } as unknown as Runtime['process'],
+        env: { platform: () => 'linux' } as unknown as Runtime['env'],
+      };
+      const options: HandoffOptions = {
+        socketPath: '/tmp/coral-signal-settlement-invariant.sock',
+        desired: { version: 'invariant', bundleHash: 'invariant', flavor: 'prod', namespace: 'invariant' },
+        bindAttempt: async () => {
+          if (acceptedSignals.includes(signal)) {
+            socketBound = true;
+            return { kind: 'bound' };
+          }
+          return { kind: 'incumbent', reason: 'signal-settlement-invariant' };
+        },
+        runStartupRecovery: async () => [],
+        runtime,
+        readVerifiedIncumbentFromDiscovery: () => incumbent,
+        totalBudgetMs: 0,
+      };
 
-    for (const [liveness, outcome] of Object.entries(expected) as Array<
-      [ProcessLiveness, ReturnType<typeof classifySignalLiveness>]
-    >) {
-      expect(classifySignalLiveness(liveness)).toEqual(outcome);
-    }
-    expect([...new Set(Object.values(expected).map((outcome) => outcome.kind))].sort()).toEqual(
-      [...SIGNAL_SETTLEMENT_OUTCOME_KINDS].sort(),
-    );
-  });
+      const outcome = await bindWithHandoff(options).catch((error: unknown) => error);
 
-  it('turns every accepted request into a pending settlement and blocks bind completion on it', () => {
-    type SignalResult = Parameters<typeof decideSignalAttempt>[0];
-    const signalDispositions = {
-      accepted: 'pending-settlement',
-      rejected: 'settle-rejection',
-    } as const satisfies Record<SignalResult, ReturnType<typeof decideSignalAttempt>>;
-    for (const [result, disposition] of Object.entries(signalDispositions) as Array<
-      [SignalResult, ReturnType<typeof decideSignalAttempt>]
-    >) {
-      expect(decideSignalAttempt(result)).toBe(disposition);
-    }
-
-    const bindDispositions = {
-      bound: { clear: 'complete', pending: 'settle-pending' },
-      incumbent: { clear: 'continue', pending: 'continue' },
-    } as const satisfies Record<
-      HandoffBindResult['kind'],
-      Record<'clear' | 'pending', ReturnType<typeof decideBindCompletion>>
-    >;
-    for (const [kind, dispositions] of Object.entries(bindDispositions) as Array<
-      [HandoffBindResult['kind'], (typeof bindDispositions)[HandoffBindResult['kind']]]
-    >) {
-      const result: HandoffBindResult =
-        kind === 'bound' ? { kind: 'bound' } : { kind: 'incumbent', reason: 'invariant' };
-      expect(decideBindCompletion(result, false)).toBe(dispositions.clear);
-      expect(decideBindCompletion(result, true)).toBe(dispositions.pending);
-    }
-  });
+      expect(acceptedSignals).toContain(signal);
+      if (targetStatus === 'gone') {
+        expect(outcome).toMatchObject({ acquiredViaHandoff: true });
+      } else {
+        expect(outcome).toBeInstanceOf(HandoffEscalationError);
+        expect(String((outcome as Error).message)).toContain(signal);
+        expect(String((outcome as Error).message)).toContain(`pid=${incumbent.pid}`);
+      }
+    },
+  );
 });

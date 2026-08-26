@@ -1,14 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { handoffStartupToSelectedBuild } from '#src/coordinator/bootstrap.js';
+import { handoffStartupToSelectedBuild, main } from '#src/coordinator/bootstrap.js';
 import { StartupStoreHandoffError } from '#src/coordinator/lifecycle.js';
 import { HandoffRunError } from '#src/coordinator/handoff-runner.js';
 import { backendLog } from '#src/infra/backend-log.js';
 import type { ValidatedHandoffTarget } from '#src/infra/handoff-target.js';
 import type * as HandoffRunnerMod from '#src/coordinator/handoff-runner.js';
+import { documentedCoralSetupError } from '#src/runtime/errors.js';
 
 const mockState = vi.hoisted(() => ({
   runHandoff: vi.fn(),
+  coordinatorStart: vi.fn(),
+  writeBootstrapDiagnostic: vi.fn(),
+  auditBootstrapFailure: vi.fn(),
 }));
 
 vi.mock('#src/coordinator/handoff-runner.js', async (importOriginal) => {
@@ -16,11 +20,57 @@ vi.mock('#src/coordinator/handoff-runner.js', async (importOriginal) => {
   return { ...actual, runHandoff: mockState.runHandoff };
 });
 
+vi.mock('#src/coordinator/index.js', () => ({
+  createCoordinatorServer: () => ({
+    start: mockState.coordinatorStart,
+    shutdown: vi.fn(async () => undefined),
+  }),
+}));
+
+vi.mock('#src/coordinator/bootstrap-diagnostics.js', () => ({
+  writeBootstrapDiagnostic: mockState.writeBootstrapDiagnostic,
+  writeStartupErrorSentinel: vi.fn(),
+  auditBootstrapFailure: mockState.auditBootstrapFailure,
+}));
+
 const target = Object.freeze({}) as ValidatedHandoffTarget;
 const PUBLICATION_INVOCATION_ID = '123e4567-e89b-42d3-a456-426614174000';
 
 beforeEach(() => {
   mockState.runHandoff.mockReset();
+  mockState.coordinatorStart.mockReset();
+  mockState.writeBootstrapDiagnostic.mockReset();
+  mockState.auditBootstrapFailure.mockReset();
+});
+
+describe('backend bootstrap abort outcome', () => {
+  it('writes the pending-signal startup status before preserving abort exit 0', async () => {
+    const error = documentedCoralSetupError('handoff_pending_signal_aborted', {
+      acceptedSignal: 'SIGTERM',
+      targetPid: 7788,
+      targetDescription: 'remained alive',
+    });
+    error.name = 'AbortError';
+    mockState.coordinatorStart.mockRejectedValue(error);
+    mockState.writeBootstrapDiagnostic.mockReturnValue('/state/startup-diagnostic.json');
+    const processOn = vi.spyOn(process, 'on').mockImplementation(() => process);
+
+    try {
+      await expect(main()).resolves.toBe(0);
+
+      expect(mockState.writeBootstrapDiagnostic).toHaveBeenCalledWith(expect.any(String), 'startup_failed', error, 0);
+      expect(mockState.auditBootstrapFailure).toHaveBeenCalledWith(
+        'bootstrap_startup_aborted_pending_signal',
+        expect.any(String),
+        'startup_failed',
+        error,
+        0,
+        '/state/startup-diagnostic.json',
+      );
+    } finally {
+      processOn.mockRestore();
+    }
+  });
 });
 
 describe('backend bootstrap store handoff', () => {
