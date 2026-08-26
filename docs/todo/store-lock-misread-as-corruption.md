@@ -1,10 +1,12 @@
 # A locked store is reported as a corrupt one, with a destructive remediation
 
-**Status, 2026-08-26.** The store-classification half is closed. Store-open failures now have explicit
-`corrupt-or-unsupported`, `unavailable`, and `unclassified` dispositions; busy/locked failures refuse with
-retry-later advice, and unclassified failures preserve the underlying cause without authorizing discard.
-The `SIGKILL`-without-observed-exit and cooldown-as-manual-repair defects below remain open and keep this entry
-in the pick-up order. The live-state unit-test defect remains tracked by
+**Status, 2026-08-26. Closed.** Store-open failures now have explicit `corrupt-or-unsupported`, `unavailable`,
+and `unclassified` dispositions; busy/locked failures refuse with retry-later advice, and unclassified
+failures preserve the underlying cause without authorizing discard. The handoff now re-observes the target
+after the `SIGKILL` grace and distinguishes gone, alive, and unverified outcomes. Signal cooldown refusals name
+the remaining wait instead of manual repair, and the two transient discovery refusals name retry as their
+exit. No defect remains open in this entry. It is retained as the incident record and the source of the field
+measurements; the live-state unit-test defect remains tracked by
 `unit-suite-concurrency-and-real-time-tests.md`.
 
 **One-time field measurement, 2026-08-23, on host `KANG-HOME` and a working `gen2` store.** A coordinator
@@ -62,13 +64,14 @@ switch over `corrupt-or-unsupported`, `unavailable`, and `unclassified`. Availab
 `store_open_unclassified` with exit `70`. Neither non-corruption refusal names discard as its
 successor.
 
-## Two more defects from the same incident
+## Closed: two more defects from the same incident
 
 Recorded here because they came from one startup sequence and share its evidence, not because they share a
-cause with the above. Each stands alone.
+cause with the above. Each stood alone and closed on 2026-08-26.
 
-**`SIGKILL` is treated as decisive, and it is not.** `bindWithHandoff` in `src/coordinator/handoff.ts`
-signals the incumbent, waits out `SIGKILL_GRACE_MS`, finds the socket still bound, and throws
+**`SIGKILL` was treated as decisive, and it is not.** Before closure, `bindWithHandoff` in
+`src/coordinator/handoff.ts` signalled the incumbent, waited out `SIGKILL_GRACE_MS`, found the socket still
+bound, and threw
 `Incumbent socket remained bound after SIGKILL grace for pid=<pid>`, which reads as an anomaly about the
 socket.
 
@@ -98,8 +101,9 @@ on the way out.
 This also explains the sibling failure without a second cause: an incumbent stuck in an ext4 journal commit
 is a machine under heavy fsync load, which is when a concurrent opener meets `database is locked`.
 
-**A cooldown is announced as manual repair.** `assertSignalCooldown` in `src/coordinator/handoff.ts` refuses
-a repeated handoff signal within `DEFAULT_SIGNAL_COOLDOWN_MS` and phrases the refusal as
+**A cooldown was announced as manual repair.** Before closure, `assertSignalCooldown` in
+`src/coordinator/handoff.ts` refused a repeated handoff signal within `DEFAULT_SIGNAL_COOLDOWN_MS` and phrased
+the refusal as
 `Manual repair required: refusing repeated handoff …`. The exit is waiting for the cooldown, and in this
 incident that is exactly what happened: the retained `KANG-HOME` startup diagnostics timestamped the SIGKILL
 at 06:44:11, the successful startup at 06:45:04, and counted three intervening manual-repair messages. This is
@@ -107,6 +111,13 @@ a one-time incident measurement, not a repeatable timing fixture; it shows the s
 
 The escalation path itself is sound and should not be changed on this evidence: `verifySignalTarget` throws
 through `refuseSignal` when liveness is anything but observed, so an unobservable pid is never escalated to.
+The closing change preserves that policy and applies the same verification after the `SIGKILL` grace: only an
+observed-gone target produces the socket-anomaly message; observed-alive names heavy-fsync uninterruptible I/O
+and waiting for it to complete; refused verification says this run could not establish whether the target
+exited. The verification refusal also no longer calls a pid alive when the liveness probe answered `unknown`.
+Cooldown diagnostics now report the remaining milliseconds. Fresh discovery that is unavailable or changed
+names retry rather than manual repair; configured signal policy and discovery records lacking the authority
+fields needed to signal retain their manual-repair disposition.
 
 ## Start condition
 

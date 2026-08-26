@@ -229,12 +229,12 @@ function refreshIncumbentForSignal(
   const fresh = readFreshDiscovery(opts, lastHealth);
   if (fresh === null) {
     throw new HandoffEscalationError(
-      `Manual repair required: refusing to signal pid=${incumbent.pid} because fresh coordinator discovery was unavailable`,
+      `Refusing to signal pid=${incumbent.pid} because fresh coordinator discovery was unavailable; retry when verified discovery is available`,
     );
   }
   if (!sameIncumbent(incumbent, fresh)) {
     throw new HandoffEscalationError(
-      `Manual repair required: refusing to signal pid=${incumbent.pid} because fresh coordinator discovery changed`,
+      `Refusing to signal pid=${incumbent.pid} because fresh coordinator discovery changed; retry handoff against the newly discovered incumbent`,
     );
   }
   return fresh;
@@ -290,7 +290,7 @@ function assertSignalCooldown(opts: HandoffOptions, incumbent: IncumbentIdentity
     return;
   }
   throw new HandoffEscalationError(
-    `Manual repair required: refusing repeated handoff ${signal} for pid=${incumbent.pid}; last ${last.signal} was ${ageMs}ms ago`,
+    `Handoff signal cooldown has not elapsed for pid=${incumbent.pid}; refusing repeated ${signal}; last ${last.signal} was ${ageMs}ms ago; retry in ${cooldownMs - ageMs}ms`,
   );
 }
 
@@ -391,6 +391,8 @@ async function sleepForHandoffPoll(opts: HandoffOptions, ms: number): Promise<vo
 
 type SignalVerificationResult = 'matched' | 'gone';
 
+type SignalTargetObservation = { kind: 'matched' } | { kind: 'gone' } | { kind: 'refused'; reason: string };
+
 /**
  * Confirms the pid about to be signalled is still the process this attempt observed, by comparing two
  * probes **this contender made itself**.
@@ -425,37 +427,47 @@ function verifySignalTarget(
   process: Pick<Runtime['process'], 'observeLiveness'>,
   platform: NodeJS.Platform,
 ): SignalVerificationResult {
+  const observation = observeSignalTarget(incumbent, anchoredIncarnation, process, platform);
+  return observation.kind === 'refused' ? refuseSignal(incumbent, observation.reason) : observation.kind;
+}
+
+function observeSignalTarget(
+  incumbent: IncumbentIdentity,
+  anchoredIncarnation: ProcessIncarnation | null,
+  process: Pick<Runtime['process'], 'observeLiveness'>,
+  platform: NodeJS.Platform,
+): SignalTargetObservation {
   const liveIncarnation = probeProcessIncarnation(incumbent.pid, platform);
   if (liveIncarnation === null) {
     // Unreadable is not gone. Only a pid that no longer exists is gone.
     return process.observeLiveness(incumbent.pid) !== 'absent'
-      ? refuseSignal(incumbent, 'process incarnation unavailable while pid is alive')
-      : 'gone';
+      ? { kind: 'refused', reason: 'process incarnation unavailable and pid absence was not established' }
+      : { kind: 'gone' };
   }
-  // Checked after "gone", so a dead incumbent is still recognised as dead and escalation simply stops. What
-  // this refuses is the live case: a platform whose identity two processes can share cannot say which one
-  // this pid is, and signalling on it would be a coin toss with someone else's process.
+  // An identity that two processes can share cannot authorize a signal or decide which process survived it.
   if (!incarnationMayAuthorizeSignal(platform)) {
-    return refuseSignal(
-      incumbent,
-      'this platform cannot produce a process identity strong enough to signal on — stop the Coral backend by its service or socket',
-    );
+    return {
+      kind: 'refused',
+      reason:
+        'this platform cannot produce a process identity strong enough to signal on — stop the Coral backend by its service or socket',
+    };
   }
   if (incumbent.incarnation === undefined) {
-    return refuseSignal(
-      incumbent,
-      'the incumbent published no incarnation, so this pid cannot be proven to be it — stop the Coral backend by its service or socket, not by this pid',
-    );
+    return {
+      kind: 'refused',
+      reason:
+        'the incumbent published no incarnation, so this pid cannot be proven to be it — stop the Coral backend by its service or socket, not by this pid',
+    };
   }
   if (incumbent.incarnation !== liveIncarnation) {
-    return refuseSignal(incumbent, 'this pid is not the process the incumbent published');
+    return { kind: 'refused', reason: 'this pid is not the process the incumbent published' };
   }
   if (anchoredIncarnation === null) {
-    return refuseSignal(incumbent, 'no baseline was observed for this pid while it was authenticated');
+    return { kind: 'refused', reason: 'no baseline was observed for this pid while it was authenticated' };
   }
   return liveIncarnation === anchoredIncarnation
-    ? 'matched'
-    : refuseSignal(incumbent, 'pid was recycled after this coordinator observed it');
+    ? { kind: 'matched' }
+    : { kind: 'refused', reason: 'pid was recycled after this coordinator observed it' };
 }
 
 function refuseSignal(incumbent: IncumbentIdentity, reason: string): never {
@@ -644,8 +656,24 @@ export async function bindWithHandoff(opts: HandoffOptions): Promise<BoundCoordi
           } SIGKILL to pid=${incumbent.pid}`,
         );
       } else if (sigkillAt !== null && opts.runtime.time.now() - sigkillAt >= SIGKILL_GRACE_MS) {
+        const finalObservation = observeSignalTarget(
+          incumbent,
+          signalAnchorFor(incumbent.pid),
+          opts.runtime.process,
+          platform,
+        );
+        if (finalObservation.kind === 'refused') {
+          throw new HandoffEscalationError(
+            `Could not establish whether incumbent pid=${incumbent.pid} exited after SIGKILL grace: ${finalObservation.reason}`,
+          );
+        }
+        if (finalObservation.kind === 'gone') {
+          throw new HandoffEscalationError(
+            `Incumbent socket remained bound after SIGKILL grace for pid=${incumbent.pid}`,
+          );
+        }
         throw new HandoffEscalationError(
-          `Incumbent socket remained bound after SIGKILL grace for pid=${incumbent.pid}`,
+          `Incumbent pid=${incumbent.pid} remained alive after the SIGKILL attempt and grace; under heavy fsync load it may be blocked in uninterruptible I/O, so wait for that I/O to complete and the process to exit before retrying`,
         );
       }
       await sleepForHandoffPoll(opts, SOCKET_BIND_POLL_MS);

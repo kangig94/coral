@@ -332,7 +332,7 @@ describe('bindWithHandoff', () => {
     await expect(promise).rejects.toBeInstanceOf(HandoffEscalationError);
   });
 
-  it('SIGTERM/SIGKILL escalation: matched pid, then kill', async () => {
+  it('reports an observed-live incumbent after SIGKILL grace', async () => {
     const verifiedIdentity: IncumbentIdentity = {
       pid: 7777,
       incarnation: testIncarnation(555_000),
@@ -364,11 +364,102 @@ describe('bindWithHandoff', () => {
     }
     const outcome = await promise;
     expect(outcome).toBeInstanceOf(HandoffEscalationError);
+    expect(String((outcome as Error).message)).toBe(
+      'Incumbent pid=7777 remained alive after the SIGKILL attempt and grace; under heavy fsync load it may be blocked in uninterruptible I/O, so wait for that I/O to complete and the process to exit before retrying',
+    );
     const sigterms = killCalls.filter((c) => c.signal === 'SIGTERM');
     const sigkills = killCalls.filter((c) => c.signal === 'SIGKILL');
     expect(sigterms.length).toBeGreaterThanOrEqual(1);
     expect(sigkills.length).toBeGreaterThanOrEqual(1);
     expect(sigterms[0].pid).toBe(7777);
+  });
+
+  it('reports a socket anomaly only when the incumbent is observed gone after SIGKILL grace', async () => {
+    const verifiedIdentity: IncumbentIdentity = {
+      pid: 7778,
+      incarnation: testIncarnation(556_000),
+      source: 'health',
+    };
+    const { options, time, killCalls } = buildHarness({
+      bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
+      totalBudgetMs: 1_000,
+      observeLiveness: () => 'absent',
+      readDiscovery: () => ({
+        ...verifiedIdentity,
+        source: 'discovery',
+        instanceId: 'incumbent-gone',
+        token: 'token-gone',
+        bootToken: 'boot-token-gone',
+        shutdownToken: 'shutdown-token-gone',
+      }),
+    });
+    mockedShutdown.mockResolvedValue(shutdownResult({ health: null, verifiedIdentity }));
+    mockedProbe
+      .mockReturnValueOnce(verifiedIdentity.incarnation)
+      .mockReturnValueOnce(verifiedIdentity.incarnation)
+      .mockReturnValueOnce(verifiedIdentity.incarnation)
+      .mockReturnValue(null);
+
+    const promise = bindWithHandoff(options).catch((e: Error) => e);
+    for (let i = 0; i < 30; i += 1) {
+      await flush();
+      time.tick(200);
+    }
+    for (let i = 0; i < (SIGTERM_GRACE_MS + SIGKILL_GRACE_MS) / 200 + 5; i += 1) {
+      await flush();
+      time.tick(200);
+    }
+    const outcome = await promise;
+
+    expect(outcome).toBeInstanceOf(HandoffEscalationError);
+    expect(String((outcome as Error).message)).toBe('Incumbent socket remained bound after SIGKILL grace for pid=7778');
+    expect(killCalls.filter((call) => call.signal === 'SIGKILL')).toHaveLength(1);
+  });
+
+  it('reports an indeterminate outcome when the final target identity cannot be verified', async () => {
+    const verifiedIdentity: IncumbentIdentity = {
+      pid: 7779,
+      incarnation: testIncarnation(557_000),
+      source: 'health',
+    };
+    const { options, time, killCalls } = buildHarness({
+      bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
+      totalBudgetMs: 1_000,
+      observeLiveness: () => 'unknown',
+      readDiscovery: () => ({
+        ...verifiedIdentity,
+        source: 'discovery',
+        instanceId: 'incumbent-unknown',
+        token: 'token-unknown',
+        bootToken: 'boot-token-unknown',
+        shutdownToken: 'shutdown-token-unknown',
+      }),
+    });
+    mockedShutdown.mockResolvedValue(shutdownResult({ health: null, verifiedIdentity }));
+    mockedProbe
+      .mockReturnValueOnce(verifiedIdentity.incarnation)
+      .mockReturnValueOnce(verifiedIdentity.incarnation)
+      .mockReturnValueOnce(verifiedIdentity.incarnation)
+      .mockReturnValue(null);
+
+    const promise = bindWithHandoff(options).catch((e: Error) => e);
+    for (let i = 0; i < 30; i += 1) {
+      await flush();
+      time.tick(200);
+    }
+    for (let i = 0; i < (SIGTERM_GRACE_MS + SIGKILL_GRACE_MS) / 200 + 5; i += 1) {
+      await flush();
+      time.tick(200);
+    }
+    const outcome = await promise;
+    const message = String((outcome as Error).message);
+
+    expect(outcome).toBeInstanceOf(HandoffEscalationError);
+    expect(message).toContain('Could not establish whether incumbent pid=7779 exited after SIGKILL grace');
+    expect(message).toContain('process incarnation unavailable and pid absence was not established');
+    expect(message).not.toContain('remained alive after');
+    expect(message).not.toContain('socket remained bound');
+    expect(killCalls.filter((call) => call.signal === 'SIGKILL')).toHaveLength(1);
   });
 
   it('startup abort during handoff interrupts before the next escalation', async () => {
@@ -782,7 +873,10 @@ describe('bindWithHandoff', () => {
     const outcome = await bindWithHandoff(options).catch((e: Error) => e);
 
     expect(outcome).toBeInstanceOf(HandoffEscalationError);
-    expect(String((outcome as Error).message)).toContain('fresh coordinator discovery changed');
+    expect(String((outcome as Error).message)).toContain(
+      'fresh coordinator discovery changed; retry handoff against the newly discovered incumbent',
+    );
+    expect(String((outcome as Error).message)).not.toContain('Manual repair required');
     expect(mockedShutdown).not.toHaveBeenCalled();
     expect(killCalls).toEqual([]);
   });
@@ -808,7 +902,10 @@ describe('bindWithHandoff', () => {
     }
     const outcome = await promise;
     expect(outcome).toBeInstanceOf(HandoffEscalationError);
-    expect(String((outcome as Error).message)).toContain('fresh coordinator discovery was unavailable');
+    expect(String((outcome as Error).message)).toContain(
+      'fresh coordinator discovery was unavailable; retry when verified discovery is available',
+    );
+    expect(String((outcome as Error).message)).not.toContain('Manual repair required');
     expect(killCalls).toEqual([]);
   });
 
@@ -855,8 +952,13 @@ describe('bindWithHandoff', () => {
       time.tick(200);
     }
     const outcome = await promise;
+    const message = String((outcome as Error).message);
+    const timing = /last SIGTERM was (\d+)ms ago; retry in (\d+)ms/.exec(message);
     expect(outcome).toBeInstanceOf(HandoffEscalationError);
-    expect(String((outcome as Error).message)).toContain('Manual repair required');
+    expect(message).toContain('Handoff signal cooldown has not elapsed');
+    expect(message).not.toContain('Manual repair required');
+    expect(timing).not.toBeNull();
+    expect(Number(timing?.[1]) + Number(timing?.[2])).toBe(10_000);
     expect(killCalls).toEqual([]);
   });
 
