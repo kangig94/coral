@@ -278,17 +278,6 @@ describe('provider proxy enforcer deadline evidence', () => {
     expect(guardian.issueFirstChallenge()).toEqual({ accepted: false, reason: 'invalid-state' });
   });
 
-  it('caps the first challenge at the adoption deadline', () => {
-    const fake = createFakeClock(guardianClockScope, 0);
-    const guardian = createEnforcerDeadlineStateMachine(fake.clock, configuration(), policy('c'));
-    const adoptionDeadline = guardian.bounds().adoptionDeadline;
-    fake.set(12_000);
-    guardian.issueFirstChallenge();
-
-    // The enforcer's challenge may not outlive the containment-recovery window it protects.
-    expectSameInstant(fake.clock, guardian.bounds().firstChallengeExpiresAt!, adoptionDeadline);
-  });
-
   it('lets the enforcer bootstrap echo win after ordinary loss but never at adoption equality', () => {
     const acceptedFake = createFakeClock(guardianClockScope, 0);
     const accepted = createEnforcerDeadlineStateMachine(acceptedFake.clock, configuration(), policy('accepted'));
@@ -321,31 +310,18 @@ describe('provider proxy enforcer deadline evidence', () => {
     expectSameInstant(equalityFake.clock, afterEquality.controlLossAt, beforeEquality.controlLossAt);
     expectSameInstant(equalityFake.clock, afterEquality.exitDeadline, beforeEquality.exitDeadline);
     expectSameInstant(equalityFake.clock, afterEquality.adoptionDeadline, beforeEquality.adoptionDeadline);
-    expectSameInstant(
-      equalityFake.clock,
-      afterEquality.firstChallengeExpiresAt!,
-      beforeEquality.firstChallengeExpiresAt!,
-    );
   });
 
-  it('leaves every bound unchanged when a bootstrap echo reaches its challenge-expiry equality', () => {
+  it('accepts matching first and recurring echoes after the control lease while adoption remains open', () => {
     const fake = createFakeClock(guardianClockScope, 0);
-    const guardian = createEnforcerDeadlineStateMachine(fake.clock, configuration(), policy('expired'));
+    const guardian = createEnforcerDeadlineStateMachine(fake.clock, configuration(), policy('late'));
     const first = mustAccept(guardian.issueFirstChallenge());
-    const before = guardian.bounds();
     fake.set(PROXY_CONTROL_LEASE_MS);
 
-    expect(guardian.echoChallenge(first.challenge)).toEqual({
-      accepted: false,
-      reason: 'challenge-expired',
-    });
-    const after = guardian.bounds();
-    expectSameInstant(fake.clock, after.lastRoundTripEvidenceAt, before.lastRoundTripEvidenceAt);
-    expect(after.eofAt).toBe(before.eofAt);
-    expectSameInstant(fake.clock, after.controlLossAt, before.controlLossAt);
-    expectSameInstant(fake.clock, after.exitDeadline, before.exitDeadline);
-    expectSameInstant(fake.clock, after.adoptionDeadline, before.adoptionDeadline);
-    expectSameInstant(fake.clock, after.firstChallengeExpiresAt!, before.firstChallengeExpiresAt!);
+    expect(guardian.echoChallenge(first.challenge)).toEqual({ accepted: true, nextChallenge: 'late-2' });
+
+    fake.set(PROXY_CONTROL_LEASE_MS * 2 + 1);
+    expect(guardian.echoChallenge('late-2')).toEqual({ accepted: true, nextChallenge: 'late-3' });
   });
 
   it('rejects a successor challenge at the earlier adoption cutoff', () => {
@@ -376,6 +352,7 @@ describe('provider proxy enforcer deadline evidence', () => {
     expect(guardian.echoChallenge(first.challenge)).toEqual({
       accepted: false,
       reason: 'challenge-mismatch',
+      nextChallenge: 'c-3',
     });
     const after = guardian.bounds();
     expectSameInstant(fake.clock, after.lastRoundTripEvidenceAt, before.lastRoundTripEvidenceAt);
@@ -383,7 +360,7 @@ describe('provider proxy enforcer deadline evidence', () => {
     expectSameInstant(fake.clock, after.controlLossAt, before.controlLossAt);
     expectSameInstant(fake.clock, after.exitDeadline, before.exitDeadline);
     expectSameInstant(fake.clock, after.adoptionDeadline, before.adoptionDeadline);
-    expectSameInstant(fake.clock, after.firstChallengeExpiresAt!, before.firstChallengeExpiresAt!);
+    expect(guardian.echoChallenge('c-3')).toEqual({ accepted: true, nextChallenge: 'c-4' });
   });
 
   it('ignores positive and negative wall-clock jumps', () => {

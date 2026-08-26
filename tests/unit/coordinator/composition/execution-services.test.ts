@@ -530,6 +530,7 @@ describe('execution services provider-proxy proof composition', () => {
                 kind: control,
                 role: 'proxy',
                 method: 'control.heartbeat.v1',
+                terminalReason: 'teardown-latched',
                 error: new Error('heartbeat failed'),
               };
 

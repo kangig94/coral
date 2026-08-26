@@ -276,7 +276,6 @@ async function startGuardianAndReaper() {
       controlLossAt: now,
       adoptionDeadline: clock.shiftMilliseconds(now, 60_000),
       exitDeadline: clock.shiftMilliseconds(now, 74_000),
-      firstChallengeExpiresAt: null,
     };
   };
   let challengeCount = 0;

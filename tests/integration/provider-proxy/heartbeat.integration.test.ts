@@ -102,13 +102,13 @@ async function openLeaseEndpoint(
   const clock = createMonotonicClock(clockScope, {
     readMilliseconds: () => (options.time === undefined ? elapsed : BigInt(options.time.now())),
   });
-  const lease = new ControlLeaseEvidence(clock, PROXY_CONTROL_LEASE_MS, clock.now(), () => null);
+  const lease = new ControlLeaseEvidence(clock, PROXY_CONTROL_LEASE_MS, clock.now());
   let challengeNumber = 0;
   const mintChallenge = (): string => `challenge-${challengeNumber++}`;
   const challenges: ControlChallengeAuthority = {
     issueFirstChallenge: () => {
       const challenge = mintChallenge();
-      return lease.issueFirstChallenge(challenge, clock.now(), 'recurring')
+      return lease.issueFirstChallenge(challenge)
         ? { accepted: true, challenge }
         : { accepted: false, reason: 'already-issued' };
     },
@@ -289,11 +289,12 @@ describe('provider proxy heartbeat against the real endpoint', () => {
     heartbeats.reaper.stop();
   });
 
-  it('stops and reports one genuine endpoint challenge rejection', async () => {
+  it('resynchronizes after a real endpoint challenge mismatch without latching authority loss', async () => {
     const time = new VirtualTime();
     let heartbeatRpcCalls = 0;
     let endpointRejections = 0;
     const failures: ProviderProxyAuthorityFault[] = [];
+    const incidents: string[] = [];
     const endpoint = await openLeaseEndpoint(undefined, () => {
       endpointRejections += 1;
     });
@@ -307,6 +308,7 @@ describe('provider proxy heartbeat against the real endpoint', () => {
     const clients = { proxy: client, guardian: passiveClient('guardian'), reaper: passiveClient('reaper') };
     const faultLatch = createProviderProxyAuthorityFaultLatch();
     faultLatch.onFault((fault) => failures.push(fault));
+    faultLatch.onIncident((incident) => incidents.push(incident.kind));
     const heartbeatSessions = sessions(clients, endpoint.opened);
     const heartbeats = startAll(
       {
@@ -319,19 +321,14 @@ describe('provider proxy heartbeat against the real endpoint', () => {
 
     time.tick(PROXY_CONTROL_HEARTBEAT_MS);
     await vi.waitFor(() => expect(endpointRejections).toBe(1));
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    time.tick(PROXY_CONTROL_HEARTBEAT_MS * 3);
+    time.tick(PROXY_CONTROL_HEARTBEAT_MS);
+    await vi.waitFor(() => expect(heartbeatRpcCalls).toBe(2));
 
-    expect({ endpointRejections, heartbeatRpcCalls, failures: failures.length }).toEqual({
+    expect({ endpointRejections, heartbeatRpcCalls, failures: failures.length, incidents }).toEqual({
       endpointRejections: 1,
-      heartbeatRpcCalls: 1,
-      failures: 1,
-    });
-    expect(failures[0]).toMatchObject({
-      kind: 'heartbeat-failed',
-      role: 'proxy',
-      method: 'control.heartbeat.v1',
-      error: { code: 'control_call_failed', protocolCode: 'invalid_request' },
+      heartbeatRpcCalls: 2,
+      failures: 0,
+      incidents: ['heartbeat-indeterminate'],
     });
     heartbeats.proxy.stop();
     heartbeats.guardian.stop();

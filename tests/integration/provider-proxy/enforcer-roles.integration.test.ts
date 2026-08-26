@@ -153,7 +153,6 @@ async function startSet(options: { recordContainment?: boolean } = {}) {
       controlLossAt: start,
       adoptionDeadline: clock.shiftMilliseconds(start, 60_000),
       exitDeadline: clock.shiftMilliseconds(start, 74_000),
-      firstChallengeExpiresAt: null,
     };
   };
   let controlLive = true;
@@ -493,7 +492,6 @@ function bareDeadlines<Scope extends symbol>(clock: MonotonicClock<Scope>): Enfo
       controlLossAt: clock.now(),
       adoptionDeadline: clock.shiftMilliseconds(clock.now(), 60_000),
       exitDeadline: clock.shiftMilliseconds(clock.now(), 74_000),
-      firstChallengeExpiresAt: null,
     }),
     state: () => 'accepting-control' as const,
   };
@@ -1840,7 +1838,6 @@ describe('provider-proxy guardian and reaper', () => {
           controlLossAt: clock.now(),
           adoptionDeadline: clock.shiftMilliseconds(clock.now(), 60_000),
           exitDeadline: clock.shiftMilliseconds(clock.now(), 74_000),
-          firstChallengeExpiresAt: null,
         }),
         state: () => 'accepting-control' as const,
       },

@@ -31,7 +31,7 @@ import type { OperationStopControl } from './operation-registry.js';
 import type {
   ControlCallPolicy,
   ProviderProxyAuthorityFault,
-  ProviderProxyOperationIncident,
+  ProviderProxyAuthorityIncident,
   ProviderProxyRole,
 } from './provider-proxy-authority-fault.js';
 import type { ProviderProxySetIdentity } from './provider-proxy-set/identity.js';
@@ -46,7 +46,7 @@ export interface ProviderProxyOperationActivationDeps {
   readonly setIdentity: ProviderProxySetIdentity;
   readonly mutationRpcTimeoutMs: number;
   readonly faultAuthority: (fault: ProviderProxyAuthorityFault) => void;
-  readonly reportIncident: (incident: ProviderProxyOperationIncident) => void;
+  readonly reportIncident: (incident: ProviderProxyAuthorityIncident) => void;
 }
 
 export type PrepareProviderOperationResult = z.output<typeof proxyOperationPrepareResultSchema>;
@@ -65,7 +65,7 @@ async function callStrict<TResult>(
   timeoutMs: number,
   resultSchema: z.ZodType<TResult, z.ZodTypeDef, unknown>,
   faultAuthority: (fault: ProviderProxyAuthorityFault) => void,
-  reportIncident: (incident: ProviderProxyOperationIncident) => void,
+  reportIncident: (incident: ProviderProxyAuthorityIncident) => void,
 ): Promise<TResult> {
   let raw: unknown;
   try {
@@ -87,7 +87,7 @@ function routeControlCallFailure(
   policy: ControlCallPolicy,
   error: unknown,
   faultAuthority: (fault: ProviderProxyAuthorityFault) => void,
-  reportIncident: (incident: ProviderProxyOperationIncident) => void,
+  reportIncident: (incident: ProviderProxyAuthorityIncident) => void,
 ): void {
   if (controlClientErrorCode(error) === 'control_client_closed') {
     faultAuthority({ kind: 'control-channel-fault', role, error: error as ControlClientError });

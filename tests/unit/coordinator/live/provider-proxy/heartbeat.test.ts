@@ -9,9 +9,10 @@ import {
 import type {
   ProviderProxyAuthorityFault,
   ProviderProxyAuthorityFaultLatch,
+  ProviderProxyAuthorityIncident,
   ProviderProxyRole,
 } from '#src/coordinator/services/provider-proxy-authority-fault.js';
-import type { ControlClient } from '#src/provider-proxy/control-client.js';
+import { ControlClientError, type ControlClient } from '#src/provider-proxy/control-client.js';
 import { PROXY_CONTROL_HEARTBEAT_MS } from '#src/provider-proxy/orphan-deadline.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { flushMicrotasks, VirtualTime } from '#tools/simulation/core/virtual-time.js';
@@ -79,18 +80,24 @@ function startAll(
   return assembly.complete();
 }
 
-function recordingFaultLatch(): { latch: ProviderProxyAuthorityFaultLatch; faults: ProviderProxyAuthorityFault[] } {
+function recordingFaultLatch(): {
+  latch: ProviderProxyAuthorityFaultLatch;
+  faults: ProviderProxyAuthorityFault[];
+  incidents: ProviderProxyAuthorityIncident[];
+} {
   const faults: ProviderProxyAuthorityFault[] = [];
+  const incidents: ProviderProxyAuthorityIncident[] = [];
   return {
     latch: {
       faulted: new Promise<never>(() => undefined),
       observeControlClient: () => undefined,
       latch: (fault) => faults.push(fault),
       onFault: () => () => undefined,
-      reportIncident: () => undefined,
+      reportIncident: (incident) => incidents.push(incident),
       onIncident: () => () => undefined,
     },
     faults,
+    incidents,
   };
 }
 
@@ -210,24 +217,153 @@ describe('provider proxy authority heartbeats', () => {
   });
 
   it.each([
-    ['proxy', 'control.heartbeat.v1'],
-    ['guardian', 'guardian.heartbeat.v1'],
-    ['reaper', 'reaper.heartbeat.v1'],
-  ] as const)('tags and latches a %s heartbeat failure once', async (role, method) => {
+    ['proxy', 'control.heartbeat.v1', 7],
+    ['guardian', 'guardian.heartbeat.v1', 8],
+    ['reaper', 'reaper.heartbeat.v1', 9],
+  ] as const)(
+    'reports an unclassified %s heartbeat refusal and retries the same challenge',
+    async (role, method, controlEpoch) => {
+      const time = new VirtualTime();
+      const error = new ControlClientError('control_call_failed', `${role} heartbeat refused`, 'remote-response', {
+        kind: 'json-rpc-error',
+        jsonRpcCode: -32_600,
+        protocolCode: 'invalid_request',
+        admissionReason: null,
+        heartbeatRefusal: null,
+      });
+      const sources: Record<ProviderProxyRole, ReturnType<typeof scriptedClient>> = {
+        proxy: scriptedClient(role === 'proxy' ? [error] : ['proxy-challenge-1']),
+        guardian: scriptedClient(role === 'guardian' ? [error] : ['guardian-challenge-1']),
+        reaper: scriptedClient(role === 'reaper' ? [error] : ['reaper-challenge-1']),
+      };
+      const faults = recordingFaultLatch();
+      const heartbeats = startAll(
+        sessions({
+          proxy: sources.proxy.client,
+          guardian: sources.guardian.client,
+          reaper: sources.reaper.client,
+        }),
+        runtimeWithTime(time),
+        faults.latch,
+      );
+
+      time.tick(PROXY_CONTROL_HEARTBEAT_MS);
+      await flushMicrotasks();
+
+      time.tick(PROXY_CONTROL_HEARTBEAT_MS);
+      await flushMicrotasks();
+
+      expect(sources[role].calls).toEqual([
+        { controlEpoch, heartbeatChallenge: `${role}-challenge-0` },
+        { controlEpoch, heartbeatChallenge: `${role}-challenge-0` },
+      ]);
+      expect(faults.incidents).toEqual([
+        { kind: 'heartbeat-indeterminate', role, method, incidentReason: 'unclassified', error },
+        { kind: 'heartbeat-indeterminate', role, method, incidentReason: 'unclassified', error },
+      ]);
+      expect(faults.faults).toEqual([]);
+      stopAll(heartbeats);
+    },
+  );
+
+  it('reports an unanswered echo as an incident and retries the same challenge on the next tick', async () => {
     const time = new VirtualTime();
-    const error = new Error(`${role} endpoint unreachable`);
-    const sources: Record<ProviderProxyRole, ReturnType<typeof scriptedClient>> = {
-      proxy: scriptedClient(role === 'proxy' ? [error] : ['proxy-challenge-1']),
-      guardian: scriptedClient(role === 'guardian' ? [error] : ['guardian-challenge-1']),
-      reaper: scriptedClient(role === 'reaper' ? [error] : ['reaper-challenge-1']),
-    };
+    const timeout = new ControlClientError('control_call_failed', 'heartbeat timed out', 'timeout');
+    const proxy = scriptedClient([timeout, 'proxy-challenge-1']);
+    const guardian = scriptedClient(['guardian-challenge-1']);
+    const reaper = scriptedClient(['reaper-challenge-1']);
     const faults = recordingFaultLatch();
     const heartbeats = startAll(
-      sessions({
-        proxy: sources.proxy.client,
-        guardian: sources.guardian.client,
-        reaper: sources.reaper.client,
+      sessions({ proxy: proxy.client, guardian: guardian.client, reaper: reaper.client }),
+      runtimeWithTime(time),
+      faults.latch,
+    );
+
+    time.tick(PROXY_CONTROL_HEARTBEAT_MS);
+    await flushMicrotasks();
+    time.tick(PROXY_CONTROL_HEARTBEAT_MS);
+    await flushMicrotasks();
+
+    expect(proxy.calls).toEqual([
+      { controlEpoch: 7, heartbeatChallenge: 'proxy-challenge-0' },
+      { controlEpoch: 7, heartbeatChallenge: 'proxy-challenge-0' },
+    ]);
+    expect(faults.incidents).toEqual([
+      {
+        kind: 'heartbeat-indeterminate',
+        role: 'proxy',
+        method: 'control.heartbeat.v1',
+        incidentReason: 'unanswered',
+        error: timeout,
+      },
+    ]);
+    expect(faults.faults).toEqual([]);
+    stopAll(heartbeats);
+  });
+
+  it('resynchronizes after a lost acknowledgement makes the retained challenge mismatch', async () => {
+    const time = new VirtualTime();
+    const timeout = new ControlClientError('control_call_failed', 'heartbeat timed out', 'timeout');
+    const mismatch = new ControlClientError('control_call_failed', 'challenge mismatch', 'remote-response', {
+      kind: 'json-rpc-error',
+      jsonRpcCode: -32_600,
+      protocolCode: 'invalid_request',
+      admissionReason: null,
+      heartbeatRefusal: { reason: 'challenge-mismatch', nextHeartbeatChallenge: 'proxy-challenge-fresh' },
+    });
+    const proxy = scriptedClient([timeout, mismatch, 'proxy-challenge-2']);
+    const guardian = scriptedClient(['guardian-challenge-1']);
+    const reaper = scriptedClient(['reaper-challenge-1']);
+    const faults = recordingFaultLatch();
+    const heartbeats = startAll(
+      sessions({ proxy: proxy.client, guardian: guardian.client, reaper: reaper.client }),
+      runtimeWithTime(time),
+      faults.latch,
+    );
+
+    time.tick(PROXY_CONTROL_HEARTBEAT_MS);
+    await flushMicrotasks();
+    time.tick(PROXY_CONTROL_HEARTBEAT_MS);
+    await flushMicrotasks();
+    time.tick(PROXY_CONTROL_HEARTBEAT_MS);
+    await flushMicrotasks();
+
+    expect(proxy.calls).toEqual([
+      { controlEpoch: 7, heartbeatChallenge: 'proxy-challenge-0' },
+      { controlEpoch: 7, heartbeatChallenge: 'proxy-challenge-0' },
+      { controlEpoch: 7, heartbeatChallenge: 'proxy-challenge-fresh' },
+    ]);
+    expect(faults.incidents).toEqual([
+      expect.objectContaining({
+        kind: 'heartbeat-indeterminate',
+        incidentReason: 'unanswered',
+        error: timeout,
       }),
+      expect.objectContaining({
+        kind: 'heartbeat-indeterminate',
+        incidentReason: 'challenge-resynchronized',
+        error: mismatch,
+      }),
+    ]);
+    expect(faults.faults).toEqual([]);
+    stopAll(heartbeats);
+  });
+
+  it('latches teardown-latched as a terminal heartbeat fault', async () => {
+    const time = new VirtualTime();
+    const refusal = new ControlClientError('control_call_failed', 'teardown latched', 'remote-response', {
+      kind: 'json-rpc-error',
+      jsonRpcCode: -32_600,
+      protocolCode: 'invalid_request',
+      admissionReason: null,
+      heartbeatRefusal: { reason: 'teardown-latched', nextHeartbeatChallenge: null },
+    });
+    const proxy = scriptedClient([refusal]);
+    const guardian = scriptedClient(['guardian-challenge-1']);
+    const reaper = scriptedClient(['reaper-challenge-1']);
+    const faults = recordingFaultLatch();
+    const heartbeats = startAll(
+      sessions({ proxy: proxy.client, guardian: guardian.client, reaper: reaper.client }),
       runtimeWithTime(time),
       faults.latch,
     );
@@ -235,12 +371,15 @@ describe('provider proxy authority heartbeats', () => {
     time.tick(PROXY_CONTROL_HEARTBEAT_MS);
     await flushMicrotasks();
 
-    expect(faults.faults).toEqual([{ kind: 'heartbeat-failed', role, method, error }]);
-
-    time.tick(PROXY_CONTROL_HEARTBEAT_MS);
-    await flushMicrotasks();
-
-    expect(sources[role].calls).toHaveLength(1);
+    expect(faults.faults).toEqual([
+      {
+        kind: 'heartbeat-failed',
+        role: 'proxy',
+        method: 'control.heartbeat.v1',
+        terminalReason: 'teardown-latched',
+        error: refusal,
+      },
+    ]);
     stopAll(heartbeats);
   });
 

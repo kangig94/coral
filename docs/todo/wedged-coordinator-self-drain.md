@@ -125,6 +125,13 @@ sets it, not the reverse.
 
 One reaped set carried `liveClaims=7` — seven jobs ended together because one heartbeat missed its budget.
 
+**Corrected 2026-08-26:** an unanswered heartbeat no longer consumes the terminal fault latch. It is a
+visible, retrying incident, and a matching one-use echo remains admissible after the 12-second lease. The
+remaining destructive boundary is the enforcer's adoption deadline: at defaults, starvation must persist
+for 23 seconds before that authority latches teardown. This fixes the immediate 5-second/12-second verdicts;
+it does not solve this entry's broader external-supervision problem or save work through a multi-minute
+coordinator stall.
+
 **The strongest evidence is Coral measuring its own stall.** The same window records:
 
 ```
@@ -144,11 +151,12 @@ What is inferred rather than measured: no single death was proven by overlapping
 that channel-close timestamp. The simultaneity establishes a common cause on the coordinator side, and the
 freeze is the only mechanism observed, but the 1:1 attribution for a specific death is not proven.
 
-**What this adds to the record, beyond satisfying the start condition.** Lease expiry cannot distinguish a
-coordinator that died from one that stalled. What was observed is "no renewal arrived within 12,000 ms"; what
-was concluded is that authority was lost. Those are not the same, and the third answer — the question could
-not be answered — has no representation at that site. Raising the constant does not reach it: a three-minute
-stall exceeds any lease value, and the timing constants are a solved inequality system
+**What this added to the record, beyond satisfying the start condition.** Lease expiry cannot distinguish a
+coordinator that died from one that stalled. The old path observed "no renewal arrived within 12,000 ms" and
+concluded that authority was lost. The 2026-08-26 correction above gives that third answer an incident
+disposition and concentrates the destructive silence boundary in the enforcer's adoption deadline. Merely
+raising the lease constant would not have reached it: a three-minute stall exceeds any lease value, and the
+timing constants are a solved inequality system
 (`providerProxyDeadlineTimingIsValid` in `src/provider-proxy/orphan-deadline.ts`) in which 12,000 ms is 1,000 ms
 above the floor set by `2 × PROXY_CONTROL_RPC_TIMEOUT_MS + PROXY_CONTROL_HEARTBEAT_MS`, so moving it alone breaks
 `leaseMs + successorTail < adoptionWindow`.

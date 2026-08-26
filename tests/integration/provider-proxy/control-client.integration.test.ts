@@ -423,8 +423,106 @@ describe('control client', () => {
       jsonRpcCode: -32_600,
       protocolCode: 'invalid_state',
       admissionReason: 'control-active',
+      heartbeatRefusal: null,
     });
     expect((observed as ControlClientError).protocolCode).toBe('invalid_state');
+  });
+
+  it('parses a heartbeat mismatch and its replacement challenge from structured error data', async () => {
+    const { socketPath, sockets } = await startTestServer();
+    const client = await connectControlClient(socketPath, manualTimer(), 5_000);
+    cleanups.push(() => client.close());
+    const serverSocket = await waitForAccept(sockets);
+    respondToNextRequest(serverSocket, (id) => ({
+      jsonrpc: '2.0',
+      id,
+      error: {
+        code: -32_600,
+        message: 'Heartbeat echo was not accepted (challenge-mismatch).',
+        data: {
+          code: 'invalid_request',
+          heartbeatRefusal: 'challenge-mismatch',
+          nextHeartbeatChallenge: 'challenge-2',
+        },
+      },
+    }));
+
+    let observed: unknown;
+    try {
+      await client.call('role.heartbeat.v1', {}, 5_000);
+    } catch (error: unknown) {
+      observed = error;
+    }
+
+    expect((observed as ControlClientError).remoteFailure).toEqual({
+      kind: 'json-rpc-error',
+      jsonRpcCode: -32_600,
+      protocolCode: 'invalid_request',
+      admissionReason: null,
+      heartbeatRefusal: { reason: 'challenge-mismatch', nextHeartbeatChallenge: 'challenge-2' },
+    });
+  });
+
+  it('does not decode an admission refusal as a heartbeat refusal', async () => {
+    const { socketPath, sockets } = await startTestServer();
+    const client = await connectControlClient(socketPath, manualTimer(), 5_000);
+    cleanups.push(() => client.close());
+    const serverSocket = await waitForAccept(sockets);
+    respondToNextRequest(serverSocket, (id) => ({
+      jsonrpc: '2.0',
+      id,
+      error: {
+        code: -32_600,
+        message: 'Control admission was refused (teardown-latched).',
+        data: { code: 'invalid_state', reason: 'teardown-latched' },
+      },
+    }));
+
+    let observed: unknown;
+    try {
+      await client.call('role.redeem.v1', {}, 5_000);
+    } catch (error: unknown) {
+      observed = error;
+    }
+
+    expect((observed as ControlClientError).remoteFailure).toEqual({
+      kind: 'json-rpc-error',
+      jsonRpcCode: -32_600,
+      protocolCode: 'invalid_state',
+      admissionReason: 'teardown-latched',
+      heartbeatRefusal: null,
+    });
+  });
+
+  it('does not decode a teardown-latched heartbeat refusal as an admission refusal', async () => {
+    const { socketPath, sockets } = await startTestServer();
+    const client = await connectControlClient(socketPath, manualTimer(), 5_000);
+    cleanups.push(() => client.close());
+    const serverSocket = await waitForAccept(sockets);
+    respondToNextRequest(serverSocket, (id) => ({
+      jsonrpc: '2.0',
+      id,
+      error: {
+        code: -32_600,
+        message: 'Heartbeat echo was not accepted (teardown-latched).',
+        data: { code: 'invalid_request', heartbeatRefusal: 'teardown-latched' },
+      },
+    }));
+
+    let observed: unknown;
+    try {
+      await client.call('role.heartbeat.v1', {}, 5_000);
+    } catch (error: unknown) {
+      observed = error;
+    }
+
+    expect((observed as ControlClientError).remoteFailure).toEqual({
+      kind: 'json-rpc-error',
+      jsonRpcCode: -32_600,
+      protocolCode: 'invalid_request',
+      admissionReason: null,
+      heartbeatRefusal: { reason: 'teardown-latched', nextHeartbeatChallenge: null },
+    });
   });
 
   it('ignores a data.code the closed set does not recognize', async () => {
@@ -450,6 +548,7 @@ describe('control client', () => {
       jsonRpcCode: -32_600,
       protocolCode: null,
       admissionReason: null,
+      heartbeatRefusal: null,
     });
     expect((observed as ControlClientError).protocolCode).toBeUndefined();
   });

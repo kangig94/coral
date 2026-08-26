@@ -32,6 +32,8 @@ export type ControlCallPolicy =
 export type ProviderProxyRole = 'proxy' | 'guardian' | 'reaper';
 
 export type ProviderProxyHeartbeatMethod = 'control.heartbeat.v1' | 'guardian.heartbeat.v1' | 'reaper.heartbeat.v1';
+export type ProviderProxyHeartbeatTerminalReason = 'teardown-latched';
+export type ProviderProxyHeartbeatIncidentReason = 'unanswered' | 'challenge-resynchronized' | 'unclassified';
 
 export type ProviderProxyAuthorityFault =
   | Readonly<{
@@ -48,15 +50,24 @@ export type ProviderProxyAuthorityFault =
       kind: 'heartbeat-failed';
       role: ProviderProxyRole;
       method: ProviderProxyHeartbeatMethod;
+      terminalReason: ProviderProxyHeartbeatTerminalReason;
       error: unknown;
     }>;
 
-/** A retry-safe operation failure delivered without consuming terminal fault state. */
-export type ProviderProxyOperationIncident = Readonly<{
-  kind: 'operation-control-failed';
-  policy: RetrySafeControlCallPolicy;
-  error: unknown;
-}>;
+/** A retryable authority failure delivered without consuming terminal fault state. */
+export type ProviderProxyAuthorityIncident =
+  | Readonly<{
+      kind: 'operation-control-failed';
+      policy: RetrySafeControlCallPolicy;
+      error: unknown;
+    }>
+  | Readonly<{
+      kind: 'heartbeat-indeterminate';
+      role: ProviderProxyRole;
+      method: ProviderProxyHeartbeatMethod;
+      incidentReason: ProviderProxyHeartbeatIncidentReason;
+      error: unknown;
+    }>;
 
 export type ProviderProxyRoleClients<TClient> = Readonly<{
   proxy: TClient;
@@ -69,15 +80,15 @@ export interface ProviderProxyAuthorityFaultLatch {
   observeControlClient(role: ProviderProxyRole, client: Pick<ControlClient, 'onFault'>): void;
   latch(fault: ProviderProxyAuthorityFault): void;
   onFault(listener: (fault: ProviderProxyAuthorityFault) => void): () => void;
-  reportIncident(incident: ProviderProxyOperationIncident): void;
-  onIncident(listener: (incident: ProviderProxyOperationIncident) => void): () => void;
+  reportIncident(incident: ProviderProxyAuthorityIncident): void;
+  onIncident(listener: (incident: ProviderProxyAuthorityIncident) => void): () => void;
 }
 
 export function createProviderProxyAuthorityFaultLatch(): ProviderProxyAuthorityFaultLatch {
   let resolveFault!: (fault: ProviderProxyAuthorityFault) => void;
   let latchedFault: ProviderProxyAuthorityFault | null = null;
   const listeners = new Set<(fault: ProviderProxyAuthorityFault) => void>();
-  const incidentListeners = new Set<(incident: ProviderProxyOperationIncident) => void>();
+  const incidentListeners = new Set<(incident: ProviderProxyAuthorityIncident) => void>();
   const faulted = new Promise<ProviderProxyAuthorityFault>((resolve) => {
     resolveFault = resolve;
   });

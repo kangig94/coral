@@ -338,14 +338,14 @@ async function guardianLeaseClient(
   const socketPath = `/tmp/coral-inheritance-heartbeat-${randomUUID()}.sock`;
   const scope = Symbol('inheritance-heartbeat');
   const clock = createMonotonicClock(scope, { readMilliseconds: () => BigInt(time.now()) });
-  const lease = new ControlLeaseEvidence(clock, PROXY_CONTROL_LEASE_MS, clock.now(), () => null);
+  const lease = new ControlLeaseEvidence(clock, PROXY_CONTROL_LEASE_MS, clock.now());
   let challengeNumber = 0;
   let acceptedEchoes = 0;
   const mintChallenge = () => `inheritance-challenge-${challengeNumber++}`;
   const challenges: ControlChallengeAuthority = {
     issueFirstChallenge: () => {
       const challenge = mintChallenge();
-      return lease.issueFirstChallenge(challenge, clock.now(), 'recurring')
+      return lease.issueFirstChallenge(challenge)
         ? { accepted: true, challenge }
         : { accepted: false, reason: 'already-issued' };
     },
@@ -1619,7 +1619,18 @@ describe('createProviderProxySetInheritance', () => {
           if (guardianHeartbeats === 1) {
             return { state: 'active', nextHeartbeatChallenge: 'g2' };
           }
-          throw new Error('guardian heartbeat rejected');
+          throw new ControlClientError(
+            'control_call_failed',
+            'Heartbeat echo was not accepted (teardown-latched).',
+            'remote-response',
+            {
+              kind: 'json-rpc-error',
+              jsonRpcCode: -32600,
+              protocolCode: 'invalid_request',
+              admissionReason: null,
+              heartbeatRefusal: { reason: 'teardown-latched', nextHeartbeatChallenge: null },
+            },
+          );
         },
       }),
       [],

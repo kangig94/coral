@@ -70,12 +70,15 @@ function requireRemoteFailure(error: ControlClientError): ControlClientRemoteFai
 
 function remoteFailureDiagnostic(remoteFailure: ControlClientRemoteFailure): string {
   if (remoteFailure.kind === 'invalid-frame') return remoteFailure.kind;
-  return [
+  const diagnostic = [
     remoteFailure.kind,
     String(remoteFailure.jsonRpcCode),
     remoteFailure.protocolCode ?? 'unrecognized',
-    remoteFailure.admissionReason ?? 'none',
   ].join(':');
+  const admission = remoteFailure.admissionReason === null ? '' : `:admission-reason=${remoteFailure.admissionReason}`;
+  const heartbeat =
+    remoteFailure.heartbeatRefusal === null ? '' : `:heartbeat-refusal=${remoteFailure.heartbeatRefusal.reason}`;
+  return `${diagnostic}${admission}${heartbeat}`;
 }
 
 export class ProviderProxyRoleControlRemoteError extends Error {

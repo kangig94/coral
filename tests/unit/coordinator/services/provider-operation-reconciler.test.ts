@@ -56,7 +56,13 @@ import {
 } from '#tests/helpers/provider-proxy-correlation.js';
 
 function proxyHeartbeatFault(error: unknown): ProviderProxyAuthorityFault {
-  return { kind: 'heartbeat-failed', role: 'proxy', method: 'control.heartbeat.v1', error };
+  return {
+    kind: 'heartbeat-failed',
+    role: 'proxy',
+    method: 'control.heartbeat.v1',
+    terminalReason: 'teardown-latched',
+    error,
+  };
 }
 
 import { providerOperationRecord } from '../../store/provider-operation-fixtures.js';

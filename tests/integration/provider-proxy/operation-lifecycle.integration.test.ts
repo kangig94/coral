@@ -1313,7 +1313,7 @@ describe('provider-proxy operation lifecycle', () => {
     await expect(install([first, first])).rejects.toMatchObject({ protocolCode: 'protocol_violation' });
   });
 
-  it('keeps the standalone proxy first challenge subject to ordinary construction-anchored live control', async () => {
+  it('accepts the standalone proxy first challenge after ordinary construction-anchored control loss', async () => {
     const set = await startProxy({ openingDelayMs: 1_000, skipInitialHeartbeat: true });
     set.advanceSilently(PROXY_CONTROL_LEASE_MS - 500);
 
@@ -1326,10 +1326,10 @@ describe('provider-proxy operation lifecycle', () => {
         },
         5_000,
       ),
-    ).rejects.toThrow('control-lost');
+    ).resolves.toMatchObject({ state: 'active' });
   });
 
-  it("keeps a redeemed successor's first challenge answerable for the full lease, unclamped by any ceiling", async () => {
+  it("keeps a redeemed successor's matching challenge answerable after the lease", async () => {
     const set = await startProxy();
     // A grant that names no operations is enough: only the tenancy this redemption opens is under test.
     const redeem = await installGrantForOperations(set, []);
@@ -1343,10 +1343,7 @@ describe('provider-proxy operation lifecycle', () => {
       heartbeatChallenge: string;
     };
 
-    // Right up to — but not reaching — the bare lease boundary measured from redemption itself: operational
-    // control carries no recovery ceiling to clamp this any earlier, unlike the enforcer's own first
-    // challenge, which cannot outlive the containment-recovery window.
-    set.advanceSilently(PROXY_CONTROL_LEASE_MS - 1);
+    set.advanceSilently(PROXY_CONTROL_LEASE_MS + 1);
     const stillLive = (await successor.call(
       'control.heartbeat.v1',
       { controlEpoch: redeemed.controlEpoch, heartbeatChallenge: redeemed.heartbeatChallenge },

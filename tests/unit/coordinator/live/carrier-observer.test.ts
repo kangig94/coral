@@ -132,6 +132,7 @@ function jsonRpcControlError(jsonRpcCode: number, protocolCode: 'method_not_foun
     jsonRpcCode,
     protocolCode,
     admissionReason: null,
+    heartbeatRefusal: null,
   });
 }
 

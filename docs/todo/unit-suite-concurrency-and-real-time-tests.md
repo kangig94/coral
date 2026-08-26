@@ -25,10 +25,11 @@ wall time                 148.1 s
 So the cap trades 1.9x wall time for less than half the stall depth, and does not change how often a stall
 happens at all. That is why this is a cap and not a fix.
 
-**Why it matters beyond test latency.** A live coordinator sharing that filesystem loses its provider control
-lease when the event loop stalls past the heartbeat RPC's 5,000 ms budget, and the reaper then terminates every
-job on the proxy set — see [`wedged-coordinator-self-drain.md`](./wedged-coordinator-self-drain.md). Twelve
-delegated jobs died that way in one day while this suite was running beside them.
+**Why it matters beyond test latency.** A live coordinator sharing that filesystem can miss its provider
+heartbeats. An unanswered 5,000 ms RPC is now retained and retried, but a stall extending beyond the
+enforcer's adoption deadline still makes that enforcer terminate every job on the proxy set — see
+[`wedged-coordinator-self-drain.md`](./wedged-coordinator-self-drain.md). Twelve delegated jobs died through
+the earlier immediate-fault policy in one day while this suite was running beside them.
 
 ## What the cause is, and what it is not
 

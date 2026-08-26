@@ -11,7 +11,7 @@ import type {
   DisappearanceDeliveryAttemptOutcome,
 } from '../provider-containment-disappearance.js';
 import type { ProviderProxySetClaimMirror } from './claim-mirror.js';
-import type { ProviderProxyAuthorityFault, ProviderProxyOperationIncident } from '../provider-proxy-authority-fault.js';
+import type { ProviderProxyAuthorityFault, ProviderProxyAuthorityIncident } from '../provider-proxy-authority-fault.js';
 import type {
   ProviderProxyForeignCapsuleRetirementRetryIncident,
   ProviderProxyRecoveryDispatcher,
@@ -285,6 +285,10 @@ function preserveErrorIdentity(error: unknown): string {
     typeof details.remoteFailure === 'object' && details.remoteFailure !== null
       ? (details.remoteFailure as Record<string, unknown>)
       : {};
+  const heartbeatRefusal =
+    typeof remoteFailure.heartbeatRefusal === 'object' && remoteFailure.heartbeatRefusal !== null
+      ? (remoteFailure.heartbeatRefusal as Record<string, unknown>)
+      : {};
   return JSON.stringify([
     error instanceof Error ? error.name : 'object',
     errorIdentityField(details.kind),
@@ -294,6 +298,7 @@ function preserveErrorIdentity(error: unknown): string {
     errorIdentityField(remoteFailure.jsonRpcCode),
     errorIdentityField(remoteFailure.protocolCode),
     errorIdentityField(remoteFailure.admissionReason),
+    errorIdentityField(heartbeatRefusal.reason),
   ]);
 }
 
@@ -533,7 +538,7 @@ export class ProviderProxySetLifecycle {
     );
   }
 
-  recordAuthorityIncident(identity: ProviderProxySetIdentity, incident: ProviderProxyOperationIncident): void {
+  recordAuthorityIncident(identity: ProviderProxySetIdentity, incident: ProviderProxyAuthorityIncident): void {
     const slot = this.#slots.get(providerProxySetKey(identity));
     if (
       slot === undefined ||
@@ -547,19 +552,29 @@ export class ProviderProxySetLifecycle {
     ) {
       return;
     }
-    this.#recordDecision(
-      slot,
-      {
-        action: 'preserve',
-        reason: 'retry_safe_operation_control_failure',
-        fault: incident.kind,
-        policy: incident.policy,
-        error: singleLineErrorSummary(incident.error),
-        liveClaims: this.#deps.claims.claimsFor(slot.identity).length,
-        setIdentity: slot.identity,
-      },
-      preserveErrorIdentity(incident.error),
-    );
+    const context = {
+      action: 'preserve' as const,
+      error: singleLineErrorSummary(incident.error),
+      liveClaims: this.#deps.claims.claimsFor(slot.identity).length,
+      setIdentity: slot.identity,
+    };
+    const decision: ProviderProxySetPreserveDecision =
+      incident.kind === 'operation-control-failed'
+        ? {
+            ...context,
+            reason: 'retry_safe_operation_control_failure',
+            fault: incident.kind,
+            policy: incident.policy,
+          }
+        : {
+            ...context,
+            reason: 'heartbeat_echo_indeterminate',
+            fault: incident.kind,
+            role: incident.role,
+            method: incident.method,
+            incidentReason: incident.incidentReason,
+          };
+    this.#recordDecision(slot, decision, preserveErrorIdentity(incident.error));
   }
 
   #faultAuthority(identity: ProviderProxySetIdentity, fault: ProviderProxyAuthorityFault): void {
@@ -1128,7 +1143,7 @@ export class ProviderProxySetLifecycle {
   }
 
   #recordDecision(slot: EstablishedSlot, decision: ProviderProxySetDecision, errorIdentity?: string): void {
-    if (decision.reason === 'retry_safe_operation_control_failure') {
+    if (decision.action === 'preserve') {
       this.#recordPreserveDecision(slot, decision, errorIdentity ?? preserveErrorIdentity(decision.error));
       return;
     }
@@ -1142,7 +1157,8 @@ export class ProviderProxySetLifecycle {
     errorIdentity: string,
   ): void {
     const now = this.#deps.time.now();
-    const key = JSON.stringify([decision.policy.method, errorIdentity]);
+    const subject = decision.fault === 'operation-control-failed' ? decision.policy.method : decision.method;
+    const key = JSON.stringify([subject, errorIdentity]);
     const report = slot.preserveReports.get(key);
     if (report === undefined) {
       this.#makeRoomForPreserveReport(slot);
@@ -1232,7 +1248,13 @@ export class ProviderProxySetLifecycle {
       case 'control-channel-fault':
         return { ...context, fault: fault.kind, role: fault.role };
       case 'heartbeat-failed':
-        return { ...context, fault: fault.kind, role: fault.role, method: fault.method };
+        return {
+          ...context,
+          fault: fault.kind,
+          role: fault.role,
+          method: fault.method,
+          terminalReason: fault.terminalReason,
+        };
     }
   }
 

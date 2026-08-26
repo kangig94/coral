@@ -7,7 +7,7 @@ import { ProviderOperationReconciler } from '#src/coordinator/services/provider-
 import {
   createProviderProxyAuthorityFaultLatch,
   type ProviderProxyAuthorityFault,
-  type ProviderProxyOperationIncident,
+  type ProviderProxyAuthorityIncident,
 } from '#src/coordinator/services/provider-proxy-authority-fault.js';
 import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set/claim-mirror.js';
 import { providerProxySetIdentityFromRecord } from '#src/coordinator/services/provider-proxy-set/identity.js';
@@ -154,7 +154,7 @@ export function createProviderOperationRetryHarness(method: RetryMethod, orderin
   claims.initialize([record]);
   const unsubscribeClaims = subscribeProviderOperationMutations(db, (mutation) => claims.applyMutation(mutation));
   const faults = createProviderProxyAuthorityFaultLatch();
-  const incidents: ProviderProxyOperationIncident[] = [];
+  const incidents: ProviderProxyAuthorityIncident[] = [];
   const terminalFaults: ProviderProxyAuthorityFault[] = [];
   faults.onIncident((incident) => incidents.push(incident));
   faults.onFault((fault) => terminalFaults.push(fault));

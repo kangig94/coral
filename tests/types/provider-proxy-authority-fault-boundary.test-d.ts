@@ -2,7 +2,7 @@ import type {
   ContainmentRequiredControlCallPolicy,
   ControlCallPolicy,
   ProviderProxyAuthorityFaultLatch,
-  ProviderProxyOperationIncident,
+  ProviderProxyAuthorityIncident,
   RetrySafeControlCallPolicy,
 } from '#src/coordinator/services/provider-proxy-authority-fault.js';
 import type { ProviderProxySetDecision } from '#src/coordinator/services/provider-proxy-set/decisions.js';
@@ -103,8 +103,45 @@ declare const containmentOperationIncident: Readonly<{
 }>;
 
 // @ts-expect-error the non-consuming incident channel accepts only retry-safe mutations.
-const invalidIncident: ProviderProxyOperationIncident = containmentOperationIncident;
+const invalidIncident: ProviderProxyAuthorityIncident = containmentOperationIncident;
 void invalidIncident;
+
+declare const unansweredHeartbeat: Readonly<{
+  kind: 'heartbeat-indeterminate';
+  role: 'guardian';
+  method: 'guardian.heartbeat.v1';
+  incidentReason: 'unanswered';
+  error: unknown;
+}>;
+
+// @ts-expect-error an unanswered heartbeat cannot consume the terminal authority-fault latch.
+latch.latch(unansweredHeartbeat);
+
+declare const nonDecisiveHeartbeatFault: Readonly<{
+  kind: 'heartbeat-failed';
+  role: 'guardian';
+  method: 'guardian.heartbeat.v1';
+  terminalReason: 'unanswered';
+  error: 'retry later';
+}>;
+
+// @ts-expect-error terminal heartbeat faults accept only decisive refusal reasons.
+latch.latch(nonDecisiveHeartbeatFault);
+
+declare const unqualifiedHeartbeatReap: Readonly<{
+  action: 'stop-and-reap';
+  reason: 'provider_authority_lost';
+  fault: 'heartbeat-failed';
+  role: 'guardian';
+  method: 'guardian.heartbeat.v1';
+  error: string;
+  liveClaims: number;
+  setIdentity: ProviderProxySetIdentity;
+}>;
+
+// @ts-expect-error heartbeat containment must name the decisive refusal that authorized it.
+const invalidHeartbeatReap: ProviderProxySetDecision = unqualifiedHeartbeatReap;
+void invalidHeartbeatReap;
 
 const validRetirementDecision: ProviderProxySetDecision = {
   action: 'stop-and-reap',
@@ -112,9 +149,16 @@ const validRetirementDecision: ProviderProxySetDecision = {
   liveClaims: 0,
   setIdentity,
 };
-const validIncident: ProviderProxyOperationIncident = {
+const validIncident: ProviderProxyAuthorityIncident = {
   kind: 'operation-control-failed',
   policy: retrySafePolicy,
   error: 'retry later',
 };
-void [validRetirementDecision, validIncident, containmentPolicy];
+const validHeartbeatIncident: ProviderProxyAuthorityIncident = {
+  kind: 'heartbeat-indeterminate',
+  role: 'guardian',
+  method: 'guardian.heartbeat.v1',
+  incidentReason: 'unanswered',
+  error: 'retry later',
+};
+void [validRetirementDecision, validIncident, validHeartbeatIncident, containmentPolicy];

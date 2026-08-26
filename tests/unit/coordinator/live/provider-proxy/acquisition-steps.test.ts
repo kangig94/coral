@@ -34,7 +34,7 @@ import { createProviderProxySetAuthority } from '#src/coordinator/live/provider-
 import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set/claim-mirror.js';
 import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set/index.js';
 import type { ControlClient } from '#src/provider-proxy/control-client.js';
-import { connectControlClient } from '#src/provider-proxy/control-client.js';
+import { connectControlClient, ControlClientError } from '#src/provider-proxy/control-client.js';
 import { createControlEndpoint, type ControlChallengeAuthority } from '#src/provider-proxy/control-endpoint.js';
 import { ControlLeaseEvidence } from '#src/provider-proxy/control-lease.js';
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
@@ -63,14 +63,14 @@ async function proxyLeaseSession(time: VirtualTime) {
   const socketPath = `/tmp/coral-acquisition-heartbeat-${randomUUID()}.sock`;
   const scope = Symbol('acquisition-heartbeat');
   const clock = createMonotonicClock(scope, { readMilliseconds: () => BigInt(time.now()) });
-  const lease = new ControlLeaseEvidence(clock, PROXY_CONTROL_LEASE_MS, clock.now(), () => null);
+  const lease = new ControlLeaseEvidence(clock, PROXY_CONTROL_LEASE_MS, clock.now());
   let challengeNumber = 0;
   let acceptedEchoes = 0;
   const mintChallenge = () => `acquisition-challenge-${challengeNumber++}`;
   const challenges: ControlChallengeAuthority = {
     issueFirstChallenge: () => {
       const challenge = mintChallenge();
-      return lease.issueFirstChallenge(challenge, clock.now(), 'recurring')
+      return lease.issueFirstChallenge(challenge)
         ? { accepted: true, challenge }
         : { accepted: false, reason: 'already-issued' };
     },
@@ -230,7 +230,18 @@ describe('createProviderProxyAcquisitionSteps', () => {
     let reaperHeartbeats = 0;
     clients.reaper.call = async () => {
       reaperHeartbeats += 1;
-      throw new Error('reaper heartbeat rejected');
+      throw new ControlClientError(
+        'control_call_failed',
+        'Heartbeat echo was not accepted (teardown-latched).',
+        'remote-response',
+        {
+          kind: 'json-rpc-error',
+          jsonRpcCode: -32600,
+          protocolCode: 'invalid_request',
+          admissionReason: null,
+          heartbeatRefusal: { reason: 'teardown-latched', nextHeartbeatChallenge: null },
+        },
+      );
     };
     mockedEstablishRoleControl.mockImplementation(async (opened, _timer, _retry, plan) => {
       const role = plan.role;

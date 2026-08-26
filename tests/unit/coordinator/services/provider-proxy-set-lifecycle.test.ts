@@ -24,7 +24,7 @@ import {
   type ContainmentRequiredControlCallPolicy,
   type ProviderProxyAuthorityFault,
   type ProviderProxyAuthorityFaultLatch,
-  type ProviderProxyOperationIncident,
+  type ProviderProxyAuthorityIncident,
   type RetrySafeControlCallPolicy,
 } from '#src/coordinator/services/provider-proxy-authority-fault.js';
 import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set/claim-mirror.js';
@@ -99,7 +99,8 @@ function terminalAuthorityFault(): ProviderProxyAuthorityFault {
     kind: 'heartbeat-failed',
     role: 'proxy',
     method: 'control.heartbeat.v1',
-    error: 'control closed',
+    terminalReason: 'teardown-latched',
+    error: 'teardown latched',
   };
 }
 
@@ -464,7 +465,7 @@ describe('ProviderProxySetLifecycle', () => {
       policy: operationPolicy,
       error: 'settlement timeout',
     } as const;
-    const incidents: ProviderProxyOperationIncident[] = [];
+    const incidents: ProviderProxyAuthorityIncident[] = [];
     let terminalFaultObserved = false;
     void faults.faulted.then(() => {
       terminalFaultObserved = true;
@@ -514,6 +515,44 @@ describe('ProviderProxySetLifecycle', () => {
       [
         'info',
         `Provider proxy set action=preserve reason=retry_safe_operation_control_failure fault=operation-control-failed subject=operation.settle.v1 liveClaims=1 set=${setReference(authority.setIdentity)} error=settlement timeout`,
+      ],
+    ]);
+  });
+
+  it('preserves a claim-bearing set when a heartbeat echo is unanswered', () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const stopAndReap = vi.fn(async () => ({ unconfirmed: 'unused' }) as const);
+    const reportLifecycle = vi.fn();
+    const faults = createProviderProxyAuthorityFaultLatch();
+    const authority = fakeAuthority({ record, faults, stopAndReap });
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: new ManualClock(),
+      proveContainmentAbsent: noContainmentProof,
+      reportLifecycle,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.registerInheritedSet(authority);
+
+    faults.reportIncident({
+      kind: 'heartbeat-indeterminate',
+      role: 'guardian',
+      method: 'guardian.heartbeat.v1',
+      incidentReason: 'unanswered',
+      error: 'heartbeat timed out',
+    });
+
+    expect(stopAndReap).not.toHaveBeenCalled();
+    expect(lifecycle.routeFor('codex-route')).toBeNull();
+    expect(reportLifecycle.mock.calls).toEqual([
+      [
+        'info',
+        `Provider proxy set action=preserve reason=heartbeat_echo_indeterminate fault=heartbeat-indeterminate subject=guardian liveClaims=1 set=${setReference(authority.setIdentity)} error=heartbeat timed out incidentReason=unanswered`,
       ],
     ]);
   });
@@ -614,7 +653,7 @@ describe('ProviderProxySetLifecycle', () => {
       ],
       [
         'warn',
-        `Provider proxy set action=stop-and-reap reason=provider_authority_lost fault=heartbeat-failed subject=proxy liveClaims=1 set=${firstReference} error=control closed`,
+        `Provider proxy set action=stop-and-reap reason=provider_authority_lost fault=heartbeat-failed subject=proxy liveClaims=1 set=${firstReference} error=teardown latched terminalReason=teardown-latched`,
       ],
     ]);
     expect(stopAndReap).toHaveBeenCalledOnce();
@@ -644,6 +683,7 @@ describe('ProviderProxySetLifecycle', () => {
       jsonRpcCode: -32_603,
       protocolCode: null,
       admissionReason: null,
+      heartbeatRefusal: null,
     };
     faults.reportIncident({
       kind: 'operation-control-failed',
@@ -680,7 +720,7 @@ describe('ProviderProxySetLifecycle', () => {
     lifecycle.completeStartupDiscovery();
     lifecycle.registerInheritedSet(authority);
 
-    const incident: ProviderProxyOperationIncident = {
+    const incident: ProviderProxyAuthorityIncident = {
       kind: 'operation-control-failed',
       policy: operationPolicy,
       error: 'settlement timeout',
@@ -730,6 +770,7 @@ describe('ProviderProxySetLifecycle', () => {
           jsonRpcCode: code,
           protocolCode: null,
           admissionReason: null,
+          heartbeatRefusal: null,
         }),
       });
     }
@@ -1264,7 +1305,8 @@ describe('ProviderProxySetLifecycle', () => {
       kind: 'heartbeat-failed',
       role: 'proxy',
       method: 'control.heartbeat.v1',
-      error: 'control closed',
+      terminalReason: 'teardown-latched',
+      error: 'teardown latched',
     };
     faults.latch(authorityFault);
     faults.latch(authorityFault);
@@ -1276,7 +1318,7 @@ describe('ProviderProxySetLifecycle', () => {
     expect(reportLifecycle.mock.calls).toEqual([
       [
         'warn',
-        `Provider proxy set action=stop-and-reap reason=provider_authority_lost fault=heartbeat-failed subject=proxy liveClaims=1 set=${setReference(authority.setIdentity)} error=control closed`,
+        `Provider proxy set action=stop-and-reap reason=provider_authority_lost fault=heartbeat-failed subject=proxy liveClaims=1 set=${setReference(authority.setIdentity)} error=teardown latched terminalReason=teardown-latched`,
       ],
     ]);
     await authority.faulted;
@@ -1617,7 +1659,7 @@ describe('ProviderProxySetLifecycle', () => {
       expect.objectContaining({ stage: 'containment-retry', latenessMs: 500 }),
     ]);
     expect(decisions).toEqual([
-      `Provider proxy set action=stop-and-reap reason=provider_authority_lost fault=heartbeat-failed subject=proxy liveClaims=0 set=${setReference(authority.setIdentity)} error=control closed`,
+      `Provider proxy set action=stop-and-reap reason=provider_authority_lost fault=heartbeat-failed subject=proxy liveClaims=0 set=${setReference(authority.setIdentity)} error=teardown latched terminalReason=teardown-latched`,
     ]);
   });
 

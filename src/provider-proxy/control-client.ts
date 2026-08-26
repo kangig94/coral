@@ -7,6 +7,7 @@ import {
   createFrameReader,
   decodeProxyControlFrame,
   encodeProxyControlFrame,
+  heartbeatChallengeSchema,
   providerEventRequestSchema,
   providerEventResultSchema,
   type ProviderEventRequest,
@@ -33,12 +34,17 @@ export type ControlClientErrorCode = 'control_client_connect_failed' | 'control_
 
 export type ControlClientErrorOrigin = 'timeout' | 'write' | 'closed' | 'remote-response';
 
+export type ControlClientHeartbeatRefusal =
+  | Readonly<{ reason: 'challenge-mismatch'; nextHeartbeatChallenge: string }>
+  | Readonly<{ reason: 'teardown-latched'; nextHeartbeatChallenge: null }>;
+
 export type ControlClientRemoteFailure =
   | Readonly<{
       kind: 'json-rpc-error';
       jsonRpcCode: number;
       protocolCode: ProxyControlProtocolErrorCode | null;
       admissionReason: 'control-active' | 'invalid-state' | 'teardown-latched' | null;
+      heartbeatRefusal: ControlClientHeartbeatRefusal | null;
     }>
   | Readonly<{ kind: 'invalid-frame' }>;
 
@@ -98,6 +104,17 @@ function admissionReasonFrom(data: unknown): 'control-active' | 'invalid-state' 
   if (typeof data !== 'object' || data === null) return null;
   const reason = (data as { reason?: unknown }).reason;
   return reason === 'control-active' || reason === 'invalid-state' || reason === 'teardown-latched' ? reason : null;
+}
+
+function heartbeatRefusalFrom(data: unknown): ControlClientHeartbeatRefusal | null {
+  if (typeof data !== 'object' || data === null) return null;
+  const fields = data as { heartbeatRefusal?: unknown; nextHeartbeatChallenge?: unknown };
+  if (fields.heartbeatRefusal === 'teardown-latched') {
+    return { reason: fields.heartbeatRefusal, nextHeartbeatChallenge: null };
+  }
+  if (fields.heartbeatRefusal !== 'challenge-mismatch') return null;
+  const parsed = heartbeatChallengeSchema.safeParse(fields.nextHeartbeatChallenge);
+  return parsed.success ? { reason: fields.heartbeatRefusal, nextHeartbeatChallenge: parsed.data } : null;
 }
 
 export interface ControlClient {
@@ -269,6 +286,7 @@ export async function connectControlClient(
           jsonRpcCode: message.error.code,
           protocolCode: protocolCodeFrom(message.error.data),
           admissionReason: admissionReasonFrom(message.error.data),
+          heartbeatRefusal: heartbeatRefusalFrom(message.error.data),
         }),
       );
     } else {

@@ -27,7 +27,7 @@ import {
 import {
   createProviderProxyAuthorityFaultLatch,
   type ProviderProxyAuthorityFault,
-  type ProviderProxyOperationIncident,
+  type ProviderProxyAuthorityIncident,
 } from '#src/coordinator/services/provider-proxy-authority-fault.js';
 import type { ProviderProxySetIdentity } from '#src/coordinator/services/provider-proxy-set/identity.js';
 import { readProviderOperation } from '#src/store/provider-operation-journal.js';
@@ -121,11 +121,11 @@ function faultRoutingDeps(
 ): Readonly<{
   activationDeps: ProviderProxyOperationActivationDeps;
   faults: ProviderProxyAuthorityFault[];
-  incidents: ProviderProxyOperationIncident[];
+  incidents: ProviderProxyAuthorityIncident[];
 }> {
   const latch = createProviderProxyAuthorityFaultLatch();
   const faults: ProviderProxyAuthorityFault[] = [];
-  const incidents: ProviderProxyOperationIncident[] = [];
+  const incidents: ProviderProxyAuthorityIncident[] = [];
   latch.onFault((fault) => faults.push(fault));
   latch.onIncident((incident) => incidents.push(incident));
   return {

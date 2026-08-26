@@ -7,10 +7,12 @@ import {
   controlHeartbeatResultSchema,
 } from '../../../provider-proxy/protocol.js';
 import type { Runtime } from '../../../runtime/ports.js';
-import type { ControlClient } from '../../../provider-proxy/control-client.js';
+import { ControlClientError, type ControlClient } from '../../../provider-proxy/control-client.js';
 import type {
   ProviderProxyAuthorityFaultLatch,
+  ProviderProxyHeartbeatIncidentReason,
   ProviderProxyHeartbeatMethod,
+  ProviderProxyHeartbeatTerminalReason,
   ProviderProxyRole,
 } from '../../services/provider-proxy-authority-fault.js';
 
@@ -60,19 +62,42 @@ type HeartbeatLoopState =
   | Readonly<{ kind: 'in-flight'; challenge: string; attempt: symbol }>
   | Readonly<{ kind: 'stopped' }>;
 
-/** Keeps one established tenancy alive past its lease by echoing the challenge on the endpoint's own
- *  heartbeat interval. A failed echo is handed to `onError` and not retried early — every production caller
- *  logs it, so a degrading tenancy is visible before its deadline fires, and the enforcer's own deadline,
- *  not this loop, is what bounds the fallout of one that cannot be refreshed. Exported so
- *  `services/provider-proxy-set/inheritance.ts` keeps a redeemed tenancy alive the identical way a freshly
- *  established one is kept alive here — one heartbeat mechanism, not two. */
+type HeartbeatFailureDisposition =
+  | Readonly<{
+      kind: 'retry';
+      challenge: string;
+      incidentReason: ProviderProxyHeartbeatIncidentReason;
+    }>
+  | Readonly<{ kind: 'terminal'; terminalReason: ProviderProxyHeartbeatTerminalReason }>;
+
+function heartbeatFailureDisposition(error: unknown, challenge: string): HeartbeatFailureDisposition {
+  if (error instanceof ControlClientError) {
+    const refusal = error.remoteFailure?.kind === 'json-rpc-error' ? error.remoteFailure.heartbeatRefusal : null;
+    if (refusal?.reason === 'challenge-mismatch') {
+      return {
+        kind: 'retry',
+        challenge: refusal.nextHeartbeatChallenge,
+        incidentReason: 'challenge-resynchronized',
+      };
+    }
+    if (refusal?.reason === 'teardown-latched') {
+      return { kind: 'terminal', terminalReason: 'teardown-latched' };
+    }
+    if (error.origin !== 'remote-response') {
+      return { kind: 'retry', challenge, incidentReason: 'unanswered' };
+    }
+  }
+  return { kind: 'retry', challenge, incidentReason: 'unclassified' };
+}
+
 function startHeartbeatLoop(
   client: ControlClient,
   method: string,
   runtime: Runtime,
   controlEpoch: number,
   firstNextChallenge: string,
-  onError: (error: unknown) => void,
+  onIncident: (error: unknown, reason: ProviderProxyHeartbeatIncidentReason) => void,
+  onTerminal: (error: unknown, reason: ProviderProxyHeartbeatTerminalReason) => void,
 ): HeartbeatLoop {
   let state: HeartbeatLoopState = { kind: 'idle', challenge: firstNextChallenge };
   const tick = (): void => {
@@ -87,9 +112,15 @@ function startHeartbeatLoop(
       },
       (error: unknown) => {
         if (state.kind !== 'in-flight' || state.attempt !== attempt) return;
+        const disposition = heartbeatFailureDisposition(error, challenge);
+        if (disposition.kind === 'retry') {
+          state = { kind: 'idle', challenge: disposition.challenge };
+          onIncident(error, disposition.incidentReason);
+          return;
+        }
         state = { kind: 'stopped' };
         runtime.time.clearInterval(handle);
-        onError(error);
+        onTerminal(error, disposition.terminalReason);
       },
     );
   };
@@ -122,10 +153,13 @@ export function createProviderProxyAuthorityHeartbeatAssembly(
         runtime,
         session.controlEpoch,
         session.nextHeartbeatChallenge,
-        (error) => {
-          faults.latch({ kind: 'heartbeat-failed', role, method, error });
+        (error, incidentReason) => {
+          faults.reportIncident({ kind: 'heartbeat-indeterminate', role, method, incidentReason, error });
+        },
+        (error, terminalReason) => {
+          faults.latch({ kind: 'heartbeat-failed', role, method, terminalReason, error });
           backendLog.warn(
-            `provider-proxy ${role} heartbeat echo failed for ${session.instanceId}: ${errorMessage(error)}`,
+            `provider-proxy ${role} heartbeat echo was refused for ${session.instanceId}: ${errorMessage(error)}`,
           );
         },
       ),

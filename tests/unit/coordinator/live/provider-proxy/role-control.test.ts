@@ -48,6 +48,7 @@ function remoteFailure(
     jsonRpcCode: -32_600,
     protocolCode,
     admissionReason,
+    heartbeatRefusal: null,
   });
 }
 
@@ -109,7 +110,7 @@ describe('role control recovery classification', () => {
     },
   );
 
-  it('keeps every heartbeat JSON-RPC error fatal', async () => {
+  it('keeps an opening heartbeat JSON-RPC error fatal to that acquisition attempt', async () => {
     let calls = 0;
     const fake = client(async () => {
       calls += 1;
