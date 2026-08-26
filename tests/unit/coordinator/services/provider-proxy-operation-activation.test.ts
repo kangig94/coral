@@ -127,7 +127,9 @@ function faultRoutingDeps(
   const faults: ProviderProxyAuthorityFault[] = [];
   const incidents: ProviderProxyAuthorityIncident[] = [];
   latch.onFault((fault) => faults.push(fault));
-  latch.onIncident((incident) => incidents.push(incident));
+  latch.onIncident((observation) => {
+    if (observation.kind !== 'heartbeat-accepted') incidents.push(observation);
+  });
   return {
     activationDeps: {
       ...deps(client, guardianClient),

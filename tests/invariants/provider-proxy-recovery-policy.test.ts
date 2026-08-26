@@ -484,7 +484,11 @@ function callsFor(targetKey: string, references: readonly Reference[]): Referenc
   return references.filter((reference) => reference.target.key === targetKey && ts.isCallExpression(reference.node));
 }
 
-function rejectionFingerprint(owner: ts.FunctionLikeDeclaration, catchClause: ts.CatchClause, ordinal: number): string {
+function rejectionFingerprint(
+  owner: ts.FunctionLikeDeclaration | undefined,
+  catchClause: ts.CatchClause,
+  ordinal: number,
+): string {
   const calls: string[] = [];
   const assignments: string[] = [];
   const visit = (node: ts.Node): void => {
@@ -499,7 +503,7 @@ function rejectionFingerprint(owner: ts.FunctionLikeDeclaration, catchClause: ts
     ts.forEachChild(node, visit);
   };
   visit(catchClause.block);
-  return `${relativePath(owner.getSourceFile())} :: ${ownerName(owner)} :: catch#${ordinal} :: calls=[${calls.join(
+  return `${relativePath(catchClause.getSourceFile())} :: ${ownerName(owner)} :: catch#${ordinal} :: calls=[${calls.join(
     ', ',
   )}] assignments=[${assignments.join(', ')}]`;
 }
@@ -591,14 +595,11 @@ function rejectionNodeInventory(): string[] {
   const catchOrdinals = new Map<string, number>();
   for (const file of SOURCE_FILES) {
     const path = relativePath(file);
+    if (!EXPECTED_REJECTION_FILES.has(path)) continue;
     const visit = (node: ts.Node): void => {
       const owner = namedOwner(node);
       const name = ownerName(owner);
-      if (!EXPECTED_REJECTION_OWNER_KEYS.has(`${path} :: ${name}`)) {
-        ts.forEachChild(node, visit);
-        return;
-      }
-      if (ts.isCatchClause(node) && owner !== undefined) {
+      if (ts.isCatchClause(node)) {
         const ordinalKey = `${path}:${name}`;
         const ordinal = (catchOrdinals.get(ordinalKey) ?? 0) + 1;
         catchOrdinals.set(ordinalKey, ordinal);
@@ -618,9 +619,9 @@ function rejectionNodeInventory(): string[] {
 }
 
 const EXPECTED_REJECTION_NODE_INVENTORY = [
+  'src/coordinator/live/provider-proxy/role-control.ts :: establishHeartbeat :: catch#1 :: calls=[heartbeatFailureDisposition] assignments=[challenge, resynchronized]',
   'src/coordinator/live/provider-proxy/role-control.ts :: establishRoleControl :: catch#1 :: calls=[classifyRoleControlFailure] assignments=[]',
   'src/coordinator/live/provider-proxy/role-control.ts :: establishRoleControl :: catch#2 :: calls=[classifyRoleControlFailure] assignments=[]',
-  'src/coordinator/live/provider-proxy/role-control.ts :: establishRoleControl :: catch#3 :: calls=[classifyRoleControlFailure] assignments=[]',
   'src/coordinator/services/provider-operation-reconciler.ts :: #attemptExecutingAttachment :: catch#1 :: calls=[readProviderOperation, this.#deps.getProgressStore().getDb, this.#deps.getProgressStore, this.#recordRetry] assignments=[]',
   'src/coordinator/services/provider-operation-reconciler.ts :: #awaitAuthority :: Promise.then(rejected) :: pending.then',
   'src/coordinator/services/provider-operation-reconciler.ts :: #awaitAuthority :: catch#1 :: calls=[reject, errorMessage] assignments=[]',
@@ -652,14 +653,17 @@ const EXPECTED_REJECTION_NODE_INVENTORY = [
   'src/coordinator/services/provider-operation-reconciler.ts :: onControlEstablished :: Promise.catch :: this.#reconcileActiveForAuthority(authority).catch',
   'src/coordinator/services/provider-operation-reconciler.ts :: reconcile :: Promise.catch :: this.#driveContext .run(context, () => this.#drive(record, preferredAuthority, context.signal)) .catch',
   'src/coordinator/services/provider-operation-reconciler.ts :: requestStop :: catch#1 :: calls=[this.#deps.onError, providerOperationErrorReason] assignments=[]',
+  'src/coordinator/services/provider-proxy-recovery-policy.ts :: errorCode :: catch#1 :: calls=[] assignments=[]',
   'src/coordinator/services/provider-proxy-recovery-policy.ts :: runProviderProxyRecoveryDeadline :: catch#1 :: calls=[] assignments=[]',
   'src/coordinator/services/provider-proxy-recovery-policy.ts :: start :: Promise.then(rejected) :: Promise.resolve(produced).then',
   'src/coordinator/services/provider-proxy-recovery-policy.ts :: start :: catch#1 :: calls=[submit, classifyRejection] assignments=[]',
+  'src/coordinator/services/provider-proxy-set/index.ts :: #report :: catch#1 :: calls=[] assignments=[]',
   'src/coordinator/services/provider-proxy-set/index.ts :: containmentAbsent :: Promise.catch :: authorityToClose .initiateControlClose() .catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: createInitialDispositionLatch :: Promise.catch :: promise.catch',
   'src/coordinator/services/provider-proxy-set/inheritance.ts :: attemptProviderProxySetInheritance :: catch#1 :: calls=[deps.proveContainmentAbsent] assignments=[]',
   'src/coordinator/services/provider-proxy-set/inheritance.ts :: attemptProviderProxySetInheritance :: catch#2 :: calls=[] assignments=[]',
   'src/coordinator/services/provider-proxy-set/inheritance.ts :: redeemCapsule :: catch#1 :: calls=[heartbeatAssembly.stop, client.close] assignments=[]',
+  'src/jobs/provider-operation-terminalization.ts :: readProviderHostUnserviceableEvidence :: catch#1 :: calls=[] assignments=[]',
   'src/jobs/provider-operation-terminalization.ts :: terminalizeProviderOperation :: catch#1 :: calls=[] assignments=[]',
 ] as const;
 
@@ -685,6 +689,12 @@ function rejectionJustification(fingerprint: string): string {
   if (fingerprint.includes(' :: createInitialDispositionLatch :: ')) {
     return 'No-op observer prevents an unhandled rejection while returning the original promise unchanged.';
   }
+  if (fingerprint.includes(' :: #report :: ')) {
+    return 'Lifecycle observability failure cannot interrupt an authority transition.';
+  }
+  if (fingerprint.includes(' :: readProviderHostUnserviceableEvidence :: ')) {
+    return 'Malformed provider-host evidence cannot authorize terminalization.';
+  }
   return 'Atomic terminalization producer boundary preserves its narrow retry-safety proof.';
 }
 
@@ -693,8 +703,10 @@ const REJECTION_AUTHORIZATIONS = EXPECTED_REJECTION_NODE_INVENTORY.map((fingerpr
   justification: rejectionJustification(fingerprint),
 }));
 
-const EXPECTED_REJECTION_OWNER_KEYS = new Set(
-  EXPECTED_REJECTION_NODE_INVENTORY.map((fingerprint) => fingerprint.split(' :: ').slice(0, 2).join(' :: ')),
+// A recovery-policy rejection helper may move to a new file only after that path is pinned here; otherwise a
+// helper with no tracked symbol remains outside both rejection guards.
+const EXPECTED_REJECTION_FILES = new Set(
+  EXPECTED_REJECTION_NODE_INVENTORY.map((fingerprint) => fingerprint.slice(0, fingerprint.indexOf(' :: '))),
 );
 
 type JustifiedOccurrence = Readonly<{ occurrence: string; justification: string }>;
@@ -974,7 +986,7 @@ function diagnosticsFor(program: ts.Program, path: string): string[] {
  * budget rather than assuming the line above yours applies to you.
  */
 describe('provider proxy recovery policy construction', () => {
-  it('rejects unclassified recovery catches and direct policy effects', () => {
+  it('enforces recovery-policy boundaries and rejection inventories', () => {
     const references = collectReferences();
 
     const beginInventory = callsFor('ProviderProxyRecoveryDispatcher.begin', references)

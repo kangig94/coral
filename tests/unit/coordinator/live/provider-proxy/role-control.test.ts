@@ -52,6 +52,20 @@ function remoteFailure(
   });
 }
 
+function heartbeatRefusal(
+  refusal:
+    | Readonly<{ reason: 'challenge-mismatch'; nextHeartbeatChallenge: string }>
+    | Readonly<{ reason: 'teardown-latched'; nextHeartbeatChallenge: null }>,
+): ControlClientError {
+  return new ControlClientError('control_call_failed', `heartbeat ${refusal.reason}`, 'remote-response', {
+    kind: 'json-rpc-error',
+    jsonRpcCode: -32_600,
+    protocolCode: 'invalid_request',
+    admissionReason: null,
+    heartbeatRefusal: refusal,
+  });
+}
+
 async function establishWith(fake: ControlClient): Promise<unknown> {
   mockedConnect.mockResolvedValueOnce(fake);
   return establishRoleControl([], TIMER, RETRY, {
@@ -110,7 +124,7 @@ describe('role control recovery classification', () => {
     },
   );
 
-  it('keeps an opening heartbeat JSON-RPC error fatal to that acquisition attempt', async () => {
+  it('names an unclassified opening heartbeat as indeterminate availability', async () => {
     let calls = 0;
     const fake = client(async () => {
       calls += 1;
@@ -121,21 +135,104 @@ describe('role control recovery classification', () => {
     });
 
     await expect(establishWith(fake)).rejects.toMatchObject({
+      name: 'ProviderProxyRoleControlUnavailableError',
+      incident: {
+        kind: 'role-heartbeat-indeterminate',
+        role: 'guardian',
+        method: 'guardian.heartbeat.v1',
+        incidentReason: 'unclassified',
+      },
+    });
+  });
+
+  it('resynchronizes the opening heartbeat through the canonical disposition', async () => {
+    const calls: Array<Readonly<{ heartbeatChallenge?: unknown }>> = [];
+    const fake = client(async (_method, params) => {
+      calls.push(params as Readonly<{ heartbeatChallenge?: unknown }>);
+      if (calls.length === 1) {
+        return { controlEpoch: 1, heartbeatChallenge: 'challenge-1', roleId: 'guardian-1' };
+      }
+      if (calls.length === 2) {
+        throw heartbeatRefusal({ reason: 'challenge-mismatch', nextHeartbeatChallenge: 'challenge-2' });
+      }
+      return { state: 'active', nextHeartbeatChallenge: 'challenge-3' };
+    });
+
+    await expect(establishWith(fake)).resolves.toMatchObject({ nextHeartbeatChallenge: 'challenge-3' });
+    expect(calls.slice(1)).toEqual([
+      { controlEpoch: 1, heartbeatChallenge: 'challenge-1' },
+      { controlEpoch: 1, heartbeatChallenge: 'challenge-2' },
+    ]);
+  });
+
+  it('names the successor when opening heartbeat resynchronization is exhausted', async () => {
+    let calls = 0;
+    const fake = client(async () => {
+      calls += 1;
+      if (calls === 1) {
+        return { controlEpoch: 1, heartbeatChallenge: 'challenge-1', roleId: 'guardian-1' };
+      }
+      throw heartbeatRefusal({
+        reason: 'challenge-mismatch',
+        nextHeartbeatChallenge: `challenge-${calls}`,
+      });
+    });
+
+    await expect(establishWith(fake)).rejects.toMatchObject({
+      name: 'ProviderProxyRoleControlUnavailableError',
+      incident: {
+        kind: 'role-heartbeat-indeterminate',
+        role: 'guardian',
+        method: 'guardian.heartbeat.v1',
+        incidentReason: 'challenge-resynchronized',
+      },
+    });
+    expect(calls).toBe(3);
+  });
+
+  it('keeps a teardown-latched opening heartbeat terminal', async () => {
+    let calls = 0;
+    const fake = client(async () => {
+      calls += 1;
+      if (calls === 1) {
+        return { controlEpoch: 1, heartbeatChallenge: 'challenge-1', roleId: 'guardian-1' };
+      }
+      throw heartbeatRefusal({ reason: 'teardown-latched', nextHeartbeatChallenge: null });
+    });
+
+    await expect(establishWith(fake)).rejects.toMatchObject({
       name: 'ProviderProxyRoleControlRemoteError',
       role: 'guardian',
       stage: 'heartbeat',
       method: 'guardian.heartbeat.v1',
+      remoteFailure: {
+        heartbeatRefusal: { reason: 'teardown-latched', nextHeartbeatChallenge: null },
+      },
     });
   });
 
-  it('keeps an invalid remote frame fatal', async () => {
+  it('routes an invalid opening-heartbeat frame through the canonical unclassified disposition', async () => {
     const failure = new ControlClientError('control_call_failed', 'invalid frame', 'remote-response', {
       kind: 'invalid-frame',
     });
+    let calls = 0;
+    const fake = client(async () => {
+      calls += 1;
+      if (calls === 1) {
+        return { controlEpoch: 1, heartbeatChallenge: 'challenge-1', roleId: 'guardian-1' };
+      }
+      throw failure;
+    });
 
-    await expect(establishWith(client(async () => Promise.reject(failure)))).rejects.toBeInstanceOf(
-      ProviderProxyRoleControlRemoteError,
-    );
+    await expect(establishWith(fake)).rejects.toMatchObject({
+      name: 'ProviderProxyRoleControlUnavailableError',
+      incident: {
+        kind: 'role-heartbeat-indeterminate',
+        role: 'guardian',
+        method: 'guardian.heartbeat.v1',
+        incidentReason: 'unclassified',
+      },
+    });
   });
 
   it('exposes availability and remote refusal as distinct typed errors', () => {

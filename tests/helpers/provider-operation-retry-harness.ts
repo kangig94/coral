@@ -156,7 +156,9 @@ export function createProviderOperationRetryHarness(method: RetryMethod, orderin
   const faults = createProviderProxyAuthorityFaultLatch();
   const incidents: ProviderProxyAuthorityIncident[] = [];
   const terminalFaults: ProviderProxyAuthorityFault[] = [];
-  faults.onIncident((incident) => incidents.push(incident));
+  faults.onIncident((observation) => {
+    if (observation.kind !== 'heartbeat-accepted') incidents.push(observation);
+  });
   faults.onFault((fault) => terminalFaults.push(fault));
   const stopAndReap = vi.fn(async () => ({ unconfirmed: 'not requested' }) as const);
   const idleClient = {

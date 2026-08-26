@@ -27,20 +27,15 @@ export default defineConfig({
     // above is a beforeAll that warms the module graph once, which moves that ~1s (much more under a slow or
     // contended filesystem) out of a case's budget and into the hook's — vitest's hook default is only 10s.
     hookTimeout: 30_000,
-    // This suite is I/O-bound (IPC sockets, subprocess spawns, timers), so on a
-    // 2-core CI runner it is worker-bound rather than core-bound: oversubscribing
-    // workers overlaps the I/O waits (measured ~1m11s @2 → ~38s @4). GitHub Actions
-    // sets CI=true.
+    // On a 2-core CI runner, this I/O-bound suite benefits from oversubscription: measured ~1m11s @2 →
+    // ~38s @4. GitHub Actions sets CI=true, so CI uses that measured four-worker setting.
     //
-    // A cap is also needed where cores are plentiful, for the opposite reason. 92 of
-    // these files spawn child processes, so an unbounded fork pool on a many-core box
-    // reaches ~108 node processes all creating temp dirs, opening SQLite with
-    // `synchronous=FULL`, and unlinking. Measured on a 24-core WSL2 host: a third of
-    // the run had processes stuck in uninterruptible sleep on the ext4 journal, which
-    // is enough to push a live coordinator past its 5s provider heartbeat budget and
-    // have the reaper terminate unrelated jobs. Concurrency is what does this rather
-    // than total bytes: one process fsyncing costs ~5ms even behind 300MB of foreign
-    // dirty pages.
+    // On a 24-core WSL2 host, a third of an uncapped run had processes in uninterruptible sleep on the ext4
+    // journal. At eight workers, peak stall depth fell by more than half at a 1.9x wall-time cost. Concurrency
+    // rather than volume causes the stall: one process fsyncing costs ~5 ms even behind 300 MB of foreign dirty
+    // pages. The cap must keep this suite from saturating the shared block device because the live coordinator's
+    // time budgets continue advancing while its process is descheduled. See
+    // docs/todo/unit-suite-concurrency-and-real-time-tests.md for the measurements and correction history.
     ...(process.env.CI ? { maxWorkers: 4, minWorkers: 4 } : { maxWorkers: 8 }),
   },
 });

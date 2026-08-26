@@ -10,6 +10,7 @@ import type {
   ProviderProxyAuthorityFault,
   ProviderProxyAuthorityFaultLatch,
   ProviderProxyAuthorityIncident,
+  ProviderProxyHeartbeatAccepted,
   ProviderProxyRole,
 } from '#src/coordinator/services/provider-proxy-authority-fault.js';
 import { ControlClientError, type ControlClient } from '#src/provider-proxy/control-client.js';
@@ -84,20 +85,26 @@ function recordingFaultLatch(): {
   latch: ProviderProxyAuthorityFaultLatch;
   faults: ProviderProxyAuthorityFault[];
   incidents: ProviderProxyAuthorityIncident[];
+  accepted: ProviderProxyHeartbeatAccepted[];
 } {
   const faults: ProviderProxyAuthorityFault[] = [];
   const incidents: ProviderProxyAuthorityIncident[] = [];
+  const accepted: ProviderProxyHeartbeatAccepted[] = [];
   return {
     latch: {
       faulted: new Promise<never>(() => undefined),
       observeControlClient: () => undefined,
       latch: (fault) => faults.push(fault),
       onFault: () => () => undefined,
-      reportIncident: (incident) => incidents.push(incident),
+      reportIncident: (observation) => {
+        if (observation.kind === 'heartbeat-accepted') accepted.push(observation);
+        else incidents.push(observation);
+      },
       onIncident: () => () => undefined,
     },
     faults,
     incidents,
+    accepted,
   };
 }
 
@@ -297,6 +304,11 @@ describe('provider proxy authority heartbeats', () => {
         error: timeout,
       },
     ]);
+    expect(faults.accepted).toContainEqual({
+      kind: 'heartbeat-accepted',
+      role: 'proxy',
+      method: 'control.heartbeat.v1',
+    });
     expect(faults.faults).toEqual([]);
     stopAll(heartbeats);
   });

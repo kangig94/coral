@@ -308,7 +308,9 @@ describe('provider proxy heartbeat against the real endpoint', () => {
     const clients = { proxy: client, guardian: passiveClient('guardian'), reaper: passiveClient('reaper') };
     const faultLatch = createProviderProxyAuthorityFaultLatch();
     faultLatch.onFault((fault) => failures.push(fault));
-    faultLatch.onIncident((incident) => incidents.push(incident.kind));
+    faultLatch.onIncident((incident) => {
+      if (incident.kind !== 'heartbeat-accepted' || incident.role === 'proxy') incidents.push(incident.kind);
+    });
     const heartbeatSessions = sessions(clients, endpoint.opened);
     const heartbeats = startAll(
       {
@@ -322,13 +324,15 @@ describe('provider proxy heartbeat against the real endpoint', () => {
     time.tick(PROXY_CONTROL_HEARTBEAT_MS);
     await vi.waitFor(() => expect(endpointRejections).toBe(1));
     time.tick(PROXY_CONTROL_HEARTBEAT_MS);
-    await vi.waitFor(() => expect(heartbeatRpcCalls).toBe(2));
+    // The retry's acceptance is published when its promise settles, which is later than the call being
+    // counted at the transport; waiting on the count would assert before the acceptance is observable.
+    await vi.waitFor(() => expect(incidents).toContain('heartbeat-accepted'));
 
     expect({ endpointRejections, heartbeatRpcCalls, failures: failures.length, incidents }).toEqual({
       endpointRejections: 1,
       heartbeatRpcCalls: 2,
       failures: 0,
-      incidents: ['heartbeat-indeterminate'],
+      incidents: ['heartbeat-indeterminate', 'heartbeat-accepted'],
     });
     heartbeats.proxy.stop();
     heartbeats.guardian.stop();

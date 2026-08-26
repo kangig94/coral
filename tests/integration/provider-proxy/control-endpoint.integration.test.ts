@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
 import { createBootstrapNonceCredential } from '#src/provider-proxy/bootstrap-capsule.js';
-import { connectControlClient } from '#src/provider-proxy/control-client.js';
+import { ControlClientError, connectControlClient } from '#src/provider-proxy/control-client.js';
 import {
   activateProviderOperation,
   providerOperationErrorCode,
@@ -327,6 +327,37 @@ describe('provider-proxy control endpoint', () => {
       heartbeatChallenge: 'challenge-3',
     });
     expect(resynchronized.result).toEqual({ state: 'active', nextHeartbeatChallenge: 'challenge-4' });
+  });
+
+  it('round-trips the endpoint heartbeat refusal through the production client discriminator', async () => {
+    const set = await startEndpoint();
+    const client = await connectControlClient(set.socketPath, realTimer(), 5_000);
+    cleanups.push(() => client.close());
+    const opened = (await client.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE }, 5_000)) as {
+      controlEpoch: number;
+      heartbeatChallenge: string;
+    };
+    const heartbeat = {
+      controlEpoch: opened.controlEpoch,
+      heartbeatChallenge: opened.heartbeatChallenge,
+    };
+    await client.call('role.heartbeat.v1', heartbeat, 5_000);
+
+    let observed: unknown;
+    try {
+      await client.call('role.heartbeat.v1', heartbeat, 5_000);
+    } catch (error: unknown) {
+      observed = error;
+    }
+
+    expect(observed).toBeInstanceOf(ControlClientError);
+    expect((observed as ControlClientError).remoteFailure).toEqual({
+      kind: 'json-rpc-error',
+      jsonRpcCode: -32_600,
+      protocolCode: 'invalid_request',
+      admissionReason: null,
+      heartbeatRefusal: { reason: 'challenge-mismatch', nextHeartbeatChallenge: 'challenge-3' },
+    });
   });
 
   it('does not disclose a replacement challenge to a heartbeat arriving off the tenancy socket', async () => {

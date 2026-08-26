@@ -1,4 +1,5 @@
 import { createConnection, type Socket } from 'node:net';
+import { z } from 'zod';
 
 import {
   PROVIDER_EVENT_METHOD,
@@ -47,6 +48,31 @@ export type ControlClientRemoteFailure =
       heartbeatRefusal: ControlClientHeartbeatRefusal | null;
     }>
   | Readonly<{ kind: 'invalid-frame' }>;
+
+const JSON_RPC_INVALID_REQUEST = -32_600;
+
+const admissionRefusalDataSchema = z
+  .object({
+    code: z.literal('invalid_state'),
+    reason: z.enum(['control-active', 'invalid-state', 'teardown-latched']),
+  })
+  .strict();
+
+const heartbeatRefusalDataSchema = z.discriminatedUnion('heartbeatRefusal', [
+  z
+    .object({
+      code: z.literal('invalid_request'),
+      heartbeatRefusal: z.literal('challenge-mismatch'),
+      nextHeartbeatChallenge: heartbeatChallengeSchema,
+    })
+    .strict(),
+  z
+    .object({
+      code: z.literal('invalid_request'),
+      heartbeatRefusal: z.literal('teardown-latched'),
+    })
+    .strict(),
+]);
 
 export class ControlClientError extends Error {
   readonly code: ControlClientErrorCode;
@@ -100,21 +126,22 @@ function protocolCodeFrom(data: unknown): ProxyControlProtocolErrorCode | null {
     : null;
 }
 
-function admissionReasonFrom(data: unknown): 'control-active' | 'invalid-state' | 'teardown-latched' | null {
-  if (typeof data !== 'object' || data === null) return null;
-  const reason = (data as { reason?: unknown }).reason;
-  return reason === 'control-active' || reason === 'invalid-state' || reason === 'teardown-latched' ? reason : null;
+function admissionReasonFrom(
+  jsonRpcCode: number,
+  data: unknown,
+): 'control-active' | 'invalid-state' | 'teardown-latched' | null {
+  if (jsonRpcCode !== JSON_RPC_INVALID_REQUEST) return null;
+  const parsed = admissionRefusalDataSchema.safeParse(data);
+  return parsed.success ? parsed.data.reason : null;
 }
 
-function heartbeatRefusalFrom(data: unknown): ControlClientHeartbeatRefusal | null {
-  if (typeof data !== 'object' || data === null) return null;
-  const fields = data as { heartbeatRefusal?: unknown; nextHeartbeatChallenge?: unknown };
-  if (fields.heartbeatRefusal === 'teardown-latched') {
-    return { reason: fields.heartbeatRefusal, nextHeartbeatChallenge: null };
-  }
-  if (fields.heartbeatRefusal !== 'challenge-mismatch') return null;
-  const parsed = heartbeatChallengeSchema.safeParse(fields.nextHeartbeatChallenge);
-  return parsed.success ? { reason: fields.heartbeatRefusal, nextHeartbeatChallenge: parsed.data } : null;
+function heartbeatRefusalFrom(jsonRpcCode: number, data: unknown): ControlClientHeartbeatRefusal | null {
+  if (jsonRpcCode !== JSON_RPC_INVALID_REQUEST) return null;
+  const parsed = heartbeatRefusalDataSchema.safeParse(data);
+  if (!parsed.success) return null;
+  return parsed.data.heartbeatRefusal === 'challenge-mismatch'
+    ? { reason: parsed.data.heartbeatRefusal, nextHeartbeatChallenge: parsed.data.nextHeartbeatChallenge }
+    : { reason: parsed.data.heartbeatRefusal, nextHeartbeatChallenge: null };
 }
 
 export interface ControlClient {
@@ -209,7 +236,6 @@ export async function connectControlClient(
   // JSON-RPC's own reserved "invalid request"/"internal error" codes. `control-endpoint.ts` uses the same
   // values for its equivalent refusals; redeclared here rather than imported because those constants are
   // private to that module, and this client owns no reach into it.
-  const JSON_RPC_INVALID_REQUEST = -32_600;
   const JSON_RPC_INTERNAL_ERROR = -32_603;
 
   const refuseInboundRequest = (id: string | number, code: ProxyControlProtocolErrorCode, message: string): void => {
@@ -285,8 +311,8 @@ export async function connectControlClient(
           kind: 'json-rpc-error',
           jsonRpcCode: message.error.code,
           protocolCode: protocolCodeFrom(message.error.data),
-          admissionReason: admissionReasonFrom(message.error.data),
-          heartbeatRefusal: heartbeatRefusalFrom(message.error.data),
+          admissionReason: admissionReasonFrom(message.error.code, message.error.data),
+          heartbeatRefusal: heartbeatRefusalFrom(message.error.code, message.error.data),
         }),
       );
     } else {

@@ -54,7 +54,6 @@ export type ProviderProxyAuthorityFault =
       error: unknown;
     }>;
 
-/** A retryable authority failure delivered without consuming terminal fault state. */
 export type ProviderProxyAuthorityIncident =
   | Readonly<{
       kind: 'operation-control-failed';
@@ -69,6 +68,15 @@ export type ProviderProxyAuthorityIncident =
       error: unknown;
     }>;
 
+export type ProviderProxyHeartbeatAccepted = Readonly<{
+  kind: 'heartbeat-accepted';
+  role: ProviderProxyRole;
+  method: ProviderProxyHeartbeatMethod;
+}>;
+
+/** Nothing delivered on this channel may consume terminal fault state. */
+export type ProviderProxyAuthorityObservation = ProviderProxyAuthorityIncident | ProviderProxyHeartbeatAccepted;
+
 export type ProviderProxyRoleClients<TClient> = Readonly<{
   proxy: TClient;
   guardian: TClient;
@@ -80,15 +88,33 @@ export interface ProviderProxyAuthorityFaultLatch {
   observeControlClient(role: ProviderProxyRole, client: Pick<ControlClient, 'onFault'>): void;
   latch(fault: ProviderProxyAuthorityFault): void;
   onFault(listener: (fault: ProviderProxyAuthorityFault) => void): () => void;
-  reportIncident(incident: ProviderProxyAuthorityIncident): void;
-  onIncident(listener: (incident: ProviderProxyAuthorityIncident) => void): () => void;
+  reportIncident(observation: ProviderProxyAuthorityObservation): void;
+  onIncident(listener: (observation: ProviderProxyAuthorityObservation) => void): () => void;
+}
+
+type PendingIncident = {
+  incident: ProviderProxyAuthorityIncident;
+  accepted: ProviderProxyHeartbeatAccepted | null;
+};
+
+const MAX_PENDING_INCIDENTS = 32;
+
+function incidentKey(incident: ProviderProxyAuthorityIncident): string {
+  return incident.kind === 'heartbeat-indeterminate'
+    ? JSON.stringify([incident.role, incident.method])
+    : JSON.stringify([incident.kind, incident.policy.method]);
+}
+
+function acceptedHeartbeatKey(accepted: ProviderProxyHeartbeatAccepted): string {
+  return JSON.stringify([accepted.role, accepted.method]);
 }
 
 export function createProviderProxyAuthorityFaultLatch(): ProviderProxyAuthorityFaultLatch {
   let resolveFault!: (fault: ProviderProxyAuthorityFault) => void;
   let latchedFault: ProviderProxyAuthorityFault | null = null;
   const listeners = new Set<(fault: ProviderProxyAuthorityFault) => void>();
-  const incidentListeners = new Set<(incident: ProviderProxyAuthorityIncident) => void>();
+  const incidentListeners = new Set<(observation: ProviderProxyAuthorityObservation) => void>();
+  const pendingIncidents = new Map<string, PendingIncident>();
   const faulted = new Promise<ProviderProxyAuthorityFault>((resolve) => {
     resolveFault = resolve;
   });
@@ -112,11 +138,33 @@ export function createProviderProxyAuthorityFaultLatch(): ProviderProxyAuthority
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
-    reportIncident(incident) {
-      for (const listener of incidentListeners) listener(incident);
+    reportIncident(observation) {
+      if (incidentListeners.size > 0) {
+        for (const listener of incidentListeners) listener(observation);
+        return;
+      }
+      if (observation.kind === 'heartbeat-accepted') {
+        const pending = pendingIncidents.get(acceptedHeartbeatKey(observation));
+        if (pending !== undefined && pending.incident.kind === 'heartbeat-indeterminate') {
+          pending.accepted = observation;
+        }
+        return;
+      }
+      const key = incidentKey(observation);
+      if (!pendingIncidents.has(key) && pendingIncidents.size === MAX_PENDING_INCIDENTS) {
+        const oldest = pendingIncidents.keys().next().value;
+        if (oldest !== undefined) pendingIncidents.delete(oldest);
+      }
+      pendingIncidents.delete(key);
+      pendingIncidents.set(key, { incident: observation, accepted: null });
     },
     onIncident(listener) {
       incidentListeners.add(listener);
+      for (const pending of pendingIncidents.values()) {
+        listener(pending.incident);
+        if (pending.accepted !== null) listener(pending.accepted);
+      }
+      pendingIncidents.clear();
       return () => incidentListeners.delete(listener);
     },
   };

@@ -470,7 +470,9 @@ describe('ProviderProxySetLifecycle', () => {
     void faults.faulted.then(() => {
       terminalFaultObserved = true;
     });
-    faults.onIncident((next) => incidents.push(next));
+    faults.onIncident((next) => {
+      if (next.kind !== 'heartbeat-accepted') incidents.push(next);
+    });
 
     faults.reportIncident(incident);
     faults.reportIncident(incident);
@@ -555,6 +557,45 @@ describe('ProviderProxySetLifecycle', () => {
         `Provider proxy set action=preserve reason=heartbeat_echo_indeterminate fault=heartbeat-indeterminate subject=guardian liveClaims=1 set=${setReference(authority.setIdentity)} error=heartbeat timed out incidentReason=unanswered`,
       ],
     ]);
+  });
+
+  it('ends a heartbeat preserve episode only when that role accepts an echo', () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const clock = new ManualClock();
+    const reportLifecycle = vi.fn();
+    const faults = createProviderProxyAuthorityFaultLatch();
+    const authority = fakeAuthority({ record, faults });
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+      reportLifecycle,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.registerInheritedSet(authority);
+    faults.reportIncident({
+      kind: 'heartbeat-indeterminate',
+      role: 'guardian',
+      method: 'guardian.heartbeat.v1',
+      incidentReason: 'unanswered',
+      error: 'heartbeat timed out',
+    });
+    reportLifecycle.mockClear();
+
+    clock.elapse(120_000);
+    clock.runDue();
+
+    expect(reportLifecycle).not.toHaveBeenCalled();
+
+    faults.reportIncident({ kind: 'heartbeat-accepted', role: 'guardian', method: 'guardian.heartbeat.v1' });
+
+    expect(reportLifecycle).toHaveBeenCalledExactlyOnceWith('info', expect.stringContaining('subject=guardian'));
+    expect(reportLifecycle).toHaveBeenCalledWith('info', expect.stringContaining('summary=recovered suppressed=0'));
   });
 
   it('keys preserve reports by set and method and flushes a suppressed count before authority loss', () => {

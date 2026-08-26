@@ -28,6 +28,32 @@ function faultSource() {
 }
 
 describe('provider proxy authority fault latch', () => {
+  it('replays an early heartbeat incident and its accepted echo to a late subscriber', () => {
+    const latch = createProviderProxyAuthorityFaultLatch();
+    const observed: unknown[] = [];
+    latch.reportIncident({
+      kind: 'heartbeat-indeterminate',
+      role: 'proxy',
+      method: 'control.heartbeat.v1',
+      incidentReason: 'unanswered',
+      error: 'timed out',
+    });
+    latch.reportIncident({ kind: 'heartbeat-accepted', role: 'proxy', method: 'control.heartbeat.v1' });
+
+    latch.onIncident((observation) => observed.push(observation));
+
+    expect(observed).toEqual([
+      {
+        kind: 'heartbeat-indeterminate',
+        role: 'proxy',
+        method: 'control.heartbeat.v1',
+        incidentReason: 'unanswered',
+        error: 'timed out',
+      },
+      { kind: 'heartbeat-accepted', role: 'proxy', method: 'control.heartbeat.v1' },
+    ]);
+  });
+
   it.each(['proxy', 'guardian', 'reaper'] as const)('latches a %s channel fault with its exact role', (role) => {
     const sources = {
       proxy: faultSource(),

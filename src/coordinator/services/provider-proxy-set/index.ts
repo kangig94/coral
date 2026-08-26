@@ -11,7 +11,11 @@ import type {
   DisappearanceDeliveryAttemptOutcome,
 } from '../provider-containment-disappearance.js';
 import type { ProviderProxySetClaimMirror } from './claim-mirror.js';
-import type { ProviderProxyAuthorityFault, ProviderProxyAuthorityIncident } from '../provider-proxy-authority-fault.js';
+import type {
+  ProviderProxyAuthorityFault,
+  ProviderProxyAuthorityObservation,
+  ProviderProxyHeartbeatAccepted,
+} from '../provider-proxy-authority-fault.js';
 import type {
   ProviderProxyForeignCapsuleRetirementRetryIncident,
   ProviderProxyRecoveryDispatcher,
@@ -538,7 +542,7 @@ export class ProviderProxySetLifecycle {
     );
   }
 
-  recordAuthorityIncident(identity: ProviderProxySetIdentity, incident: ProviderProxyAuthorityIncident): void {
+  recordAuthorityIncident(identity: ProviderProxySetIdentity, incident: ProviderProxyAuthorityObservation): void {
     const slot = this.#slots.get(providerProxySetKey(identity));
     if (
       slot === undefined ||
@@ -550,6 +554,10 @@ export class ProviderProxySetLifecycle {
       slot.kind === 'containing' ||
       slot.kind === 'containment-wait'
     ) {
+      return;
+    }
+    if (incident.kind === 'heartbeat-accepted') {
+      this.#recordHeartbeatAccepted(slot, incident.role, incident.method);
       return;
     }
     const context = {
@@ -1170,7 +1178,7 @@ export class ProviderProxySetLifecycle {
       };
       slot.preserveReports.set(key, newReport);
       this.#reportDecision(decision);
-      this.#schedulePreserveRecovery(slot, key, newReport);
+      if (decision.fault === 'operation-control-failed') this.#schedulePreserveRecovery(slot, key, newReport);
       return;
     }
     report.decision = decision;
@@ -1178,13 +1186,31 @@ export class ProviderProxySetLifecycle {
     slot.preserveReports.set(key, report);
     if (now - report.lastReportedAtMs < PRESERVE_REPORT_INTERVAL_MS) {
       report.suppressed += 1;
-      this.#schedulePreserveRecovery(slot, key, report);
+      if (decision.fault === 'operation-control-failed') this.#schedulePreserveRecovery(slot, key, report);
       return;
     }
     this.#reportDecision(decision, `summary=periodic suppressed=${report.suppressed}`);
     report.lastReportedAtMs = now;
     report.suppressed = 0;
-    this.#schedulePreserveRecovery(slot, key, report);
+    if (decision.fault === 'operation-control-failed') this.#schedulePreserveRecovery(slot, key, report);
+  }
+
+  #recordHeartbeatAccepted(
+    slot: EstablishedSlot,
+    role: ProviderProxyHeartbeatAccepted['role'],
+    method: ProviderProxyHeartbeatAccepted['method'],
+  ): void {
+    for (const [key, report] of slot.preserveReports) {
+      if (
+        report.decision.fault !== 'heartbeat-indeterminate' ||
+        report.decision.role !== role ||
+        report.decision.method !== method
+      ) {
+        continue;
+      }
+      slot.preserveReports.delete(key);
+      this.#reportDecision(report.decision, `summary=recovered suppressed=${report.suppressed}`);
+    }
   }
 
   #makeRoomForPreserveReport(slot: EstablishedSlot): void {

@@ -463,6 +463,42 @@ describe('control client', () => {
     });
   });
 
+  it('does not recognize a heartbeat or admission refusal from a contradictory error envelope', async () => {
+    const { socketPath, sockets } = await startTestServer();
+    const client = await connectControlClient(socketPath, manualTimer(), 5_000);
+    cleanups.push(() => client.close());
+    const serverSocket = await waitForAccept(sockets);
+    respondToNextRequest(serverSocket, (id) => ({
+      jsonrpc: '2.0',
+      id,
+      error: {
+        code: -32_603,
+        message: 'internal failure',
+        data: {
+          code: 'protocol_violation',
+          reason: 'control-active',
+          heartbeatRefusal: 'teardown-latched',
+          nextHeartbeatChallenge: 'contradictory-challenge',
+        },
+      },
+    }));
+
+    let observed: unknown;
+    try {
+      await client.call('role.heartbeat.v1', {}, 5_000);
+    } catch (error: unknown) {
+      observed = error;
+    }
+
+    expect((observed as ControlClientError).remoteFailure).toEqual({
+      kind: 'json-rpc-error',
+      jsonRpcCode: -32_603,
+      protocolCode: 'protocol_violation',
+      admissionReason: null,
+      heartbeatRefusal: null,
+    });
+  });
+
   it('does not decode an admission refusal as a heartbeat refusal', async () => {
     const { socketPath, sockets } = await startTestServer();
     const client = await connectControlClient(socketPath, manualTimer(), 5_000);

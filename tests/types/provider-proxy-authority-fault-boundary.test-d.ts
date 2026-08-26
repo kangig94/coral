@@ -117,6 +117,15 @@ declare const unansweredHeartbeat: Readonly<{
 // @ts-expect-error an unanswered heartbeat cannot consume the terminal authority-fault latch.
 latch.latch(unansweredHeartbeat);
 
+declare const acceptedHeartbeat: Readonly<{
+  kind: 'heartbeat-accepted';
+  role: 'guardian';
+  method: 'guardian.heartbeat.v1';
+}>;
+
+// @ts-expect-error an accepted echo closes a hold and cannot consume the terminal authority-fault latch.
+latch.latch(acceptedHeartbeat);
+
 declare const nonDecisiveHeartbeatFault: Readonly<{
   kind: 'heartbeat-failed';
   role: 'guardian';

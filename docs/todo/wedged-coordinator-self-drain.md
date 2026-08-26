@@ -126,7 +126,7 @@ sets it, not the reverse.
 One reaped set carried `liveClaims=7` — seven jobs ended together because one heartbeat missed its budget.
 
 **Corrected 2026-08-26:** an unanswered heartbeat no longer consumes the terminal fault latch. It is a
-visible, retrying incident, and a matching one-use echo remains admissible after the 12-second lease. The
+non-consuming, retrying incident recorded in lifecycle logs, and a matching one-use echo remains admissible after the 12-second lease. The
 remaining destructive boundary is the enforcer's adoption deadline: at defaults, starvation must persist
 for 23 seconds before that authority latches teardown. This fixes the immediate 5-second/12-second verdicts;
 it does not solve this entry's broader external-supervision problem or save work through a multi-minute

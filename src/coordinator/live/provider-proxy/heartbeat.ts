@@ -62,7 +62,7 @@ type HeartbeatLoopState =
   | Readonly<{ kind: 'in-flight'; challenge: string; attempt: symbol }>
   | Readonly<{ kind: 'stopped' }>;
 
-type HeartbeatFailureDisposition =
+export type HeartbeatFailureDisposition =
   | Readonly<{
       kind: 'retry';
       challenge: string;
@@ -70,7 +70,7 @@ type HeartbeatFailureDisposition =
     }>
   | Readonly<{ kind: 'terminal'; terminalReason: ProviderProxyHeartbeatTerminalReason }>;
 
-function heartbeatFailureDisposition(error: unknown, challenge: string): HeartbeatFailureDisposition {
+export function heartbeatFailureDisposition(error: unknown, challenge: string): HeartbeatFailureDisposition {
   if (error instanceof ControlClientError) {
     const refusal = error.remoteFailure?.kind === 'json-rpc-error' ? error.remoteFailure.heartbeatRefusal : null;
     if (refusal?.reason === 'challenge-mismatch') {
@@ -97,6 +97,7 @@ function startHeartbeatLoop(
   controlEpoch: number,
   firstNextChallenge: string,
   onIncident: (error: unknown, reason: ProviderProxyHeartbeatIncidentReason) => void,
+  onAccepted: () => void,
   onTerminal: (error: unknown, reason: ProviderProxyHeartbeatTerminalReason) => void,
 ): HeartbeatLoop {
   let state: HeartbeatLoopState = { kind: 'idle', challenge: firstNextChallenge };
@@ -109,6 +110,7 @@ function startHeartbeatLoop(
       (beat) => {
         if (state.kind !== 'in-flight' || state.attempt !== attempt) return;
         state = { kind: 'idle', challenge: beat.nextHeartbeatChallenge };
+        onAccepted();
       },
       (error: unknown) => {
         if (state.kind !== 'in-flight' || state.attempt !== attempt) return;
@@ -156,6 +158,7 @@ export function createProviderProxyAuthorityHeartbeatAssembly(
         (error, incidentReason) => {
           faults.reportIncident({ kind: 'heartbeat-indeterminate', role, method, incidentReason, error });
         },
+        () => faults.reportIncident({ kind: 'heartbeat-accepted', role, method }),
         (error, terminalReason) => {
           faults.latch({ kind: 'heartbeat-failed', role, method, terminalReason, error });
           backendLog.warn(

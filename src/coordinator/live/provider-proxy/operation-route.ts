@@ -24,7 +24,7 @@ import type { OperationStopControl } from '../../services/operation-registry.js'
 import type {
   ProviderProxyAuthorityFault,
   ProviderProxyAuthorityFaultLatch,
-  ProviderProxyAuthorityIncident,
+  ProviderProxyAuthorityObservation,
   ProviderProxyRoleClients,
 } from '../../services/provider-proxy-authority-fault.js';
 import type { ProviderProxySetIdentity } from '../../services/provider-proxy-set/identity.js';
@@ -38,7 +38,7 @@ export interface ProviderProxyOperationAuthority extends ProviderProxySetAuthori
 export interface DurableProviderProxyOperationAuthority extends ProviderProxyOperationAuthority {
   readonly faulted: Promise<ProviderProxyAuthorityFault>;
   onFault(listener: (fault: ProviderProxyAuthorityFault) => void): () => void;
-  onIncident(listener: (incident: ProviderProxyAuthorityIncident) => void): () => void;
+  onIncident(listener: (observation: ProviderProxyAuthorityObservation) => void): () => void;
   prepareOperation(attempt: ProviderOperationPrepareAttempt): Promise<PrepareProviderOperationResult>;
   inspectOperation(operation: OperationIdentity, prepareAttemptKey: string): Promise<InspectProviderOperationResult>;
   authorizeOperation(

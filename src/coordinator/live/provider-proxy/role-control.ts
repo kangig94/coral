@@ -14,7 +14,8 @@ import {
   type ControlClientRemoteFailure,
   type ProviderEventHandler,
 } from '../../../provider-proxy/control-client.js';
-import { heartbeatOnce } from './heartbeat.js';
+import type { ProviderProxyHeartbeatIncidentReason } from '../../services/provider-proxy-authority-fault.js';
+import { heartbeatFailureDisposition, heartbeatOnce } from './heartbeat.js';
 
 export type ProviderProxyRole = 'proxy' | 'guardian' | 'reaper';
 
@@ -37,8 +38,8 @@ export type ProviderProxyRoleControlAvailabilityIncident =
   | Readonly<{
       kind: 'role-control-unavailable';
       role: ProviderProxyRole;
-      stage: 'connect' | 'open' | 'heartbeat';
-      method: ProviderProxyRoleOpenMethod | ProviderProxyHeartbeatMethod | null;
+      stage: 'connect' | 'open';
+      method: ProviderProxyRoleOpenMethod | null;
       origin: 'timeout' | 'write' | 'closed';
       controlCode: ControlClientErrorCode;
     }>
@@ -48,6 +49,12 @@ export type ProviderProxyRoleControlAvailabilityIncident =
       method: ProviderProxyRecoveryOpenMethod;
       protocolCode: 'invalid_state';
       admissionReason: 'control-active';
+    }>
+  | Readonly<{
+      kind: 'role-heartbeat-indeterminate';
+      role: ProviderProxyRole;
+      method: ProviderProxyHeartbeatMethod;
+      incidentReason: ProviderProxyHeartbeatIncidentReason;
     }>;
 
 export class ProviderProxyRoleControlUnavailableError extends Error {
@@ -115,16 +122,14 @@ const RECOVERY_OPEN_METHODS = new Set<string>([
   'handoff.redeem.v1',
 ]);
 
-function isRecoveryOpenMethod(
-  method: ProviderProxyRoleOpenMethod | ProviderProxyHeartbeatMethod,
-): method is ProviderProxyRecoveryOpenMethod {
+function isRecoveryOpenMethod(method: ProviderProxyRoleOpenMethod): method is ProviderProxyRecoveryOpenMethod {
   return RECOVERY_OPEN_METHODS.has(method);
 }
 
 function classifyRoleControlFailure(
   role: ProviderProxyRole,
-  stage: 'connect' | 'open' | 'heartbeat',
-  method: ProviderProxyRoleOpenMethod | ProviderProxyHeartbeatMethod | null,
+  stage: 'connect' | 'open',
+  method: ProviderProxyRoleOpenMethod | null,
   error: unknown,
 ): never {
   if (!(error instanceof ControlClientError)) throw error;
@@ -162,6 +167,44 @@ function classifyRoleControlFailure(
     );
   }
   throw new ProviderProxyRoleControlRemoteError(role, stage, method, error);
+}
+
+async function establishHeartbeat(
+  role: ProviderProxyRole,
+  client: ControlClient,
+  method: ProviderProxyHeartbeatMethod,
+  controlEpoch: number,
+  firstChallenge: string,
+): Promise<{ nextHeartbeatChallenge: string }> {
+  let challenge = firstChallenge;
+  let resynchronized = false;
+  for (;;) {
+    try {
+      return await heartbeatOnce(client, method, controlEpoch, challenge);
+    } catch (error: unknown) {
+      const disposition = heartbeatFailureDisposition(error, challenge);
+      if (disposition.kind === 'terminal') {
+        if (!(error instanceof ControlClientError)) {
+          throw new Error('provider_proxy_heartbeat_terminal_error_mismatch', { cause: error });
+        }
+        throw new ProviderProxyRoleControlRemoteError(role, 'heartbeat', method, error);
+      }
+      if (disposition.incidentReason === 'challenge-resynchronized' && !resynchronized) {
+        challenge = disposition.challenge;
+        resynchronized = true;
+        continue;
+      }
+      throw new ProviderProxyRoleControlUnavailableError(
+        {
+          kind: 'role-heartbeat-indeterminate',
+          role,
+          method,
+          incidentReason: disposition.incidentReason,
+        },
+        { cause: error },
+      );
+    }
+  }
 }
 
 /** Compares only the fields this acquisition can independently verify — everything it minted, plus (for the
@@ -269,11 +312,12 @@ export async function establishRoleControl<
   }
   const result = plan.openResultSchema.parse(raw);
   assertIdentityFieldsAgree(plan.role, plan.expectedIdentity, plan.identity(result));
-  let beat: { nextHeartbeatChallenge: string };
-  try {
-    beat = await heartbeatOnce(client, plan.heartbeatMethod, result.controlEpoch, result.heartbeatChallenge);
-  } catch (error: unknown) {
-    classifyRoleControlFailure(plan.role, 'heartbeat', plan.heartbeatMethod, error);
-  }
+  const beat = await establishHeartbeat(
+    plan.role,
+    client,
+    plan.heartbeatMethod,
+    result.controlEpoch,
+    result.heartbeatChallenge,
+  );
   return { client, opened: result, nextHeartbeatChallenge: beat.nextHeartbeatChallenge };
 }
