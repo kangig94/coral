@@ -17,9 +17,9 @@ usefully pre-empt, a mode, a check of that parent property rather than a relianc
 what happens when the entry is already someone else's. Only the socket path does any of this;
 `ensurePrivateSocketDir` (`src/infra/private-socket-directory.ts`) is what the others would reuse.
 
-`socket-address-ownership.md` holds this question for the socket itself and has not answered it. The
-per-user naming below inherits that answer, and so does site 1's directory mode — that site says why the
-two cannot be separated. The file modes and site 2's naming do not, and are worth doing alone. What that
+`socket-address-ownership.md` answered this question for the singleton socket with an installation-keyed
+namespace plus a caller-ownership check. That does not silently choose the same identity for job scratch:
+site 1 must first decide which installation fact its current environment-only path can carry. What that
 entry's part 3 records applies here too: the assertion these sites would reuse proves owner and mode, and
 on macOS that is not effective access.
 
@@ -157,7 +157,6 @@ when it meets a `0700` directory a newer build tightened, which is the
 
 ## Start condition
 
-What remains is site 1's directory mode, its per-user rename, and site 4. The first two want
-`socket-address-ownership.md` part 2 decided first, for the same reason that entry gives: the two options
-put the per-user boundary in different places. Site 4 wants an answer about whose directory it is before
-anything is done to it.
+What remains is site 1's directory mode and rename, and site 4. The socket decision removes site 1's prior
+blocker but does not decide whether job scratch should inherit installation identity; that is the next
+decision. Site 4 wants an answer about whose directory it is before anything is done to it.

@@ -22,7 +22,7 @@ import {
   SocketDirectoryError,
   type SocketDirectoryRefusal,
 } from '../../infra/private-socket-directory.js';
-import { socketFallbackUid } from '../../infra/path/index.js';
+import { isRelocatedSocket } from '../../infra/path/index.js';
 import { documentedCoralSetupError, type DocumentedCoralSetupErrorCode } from '../../runtime/errors.js';
 import { createLineFramer, FrameTooLargeError } from '../line-framing.js';
 import { rpcCatalog, type RpcMethodSpec } from '../rpc/catalog.js';
@@ -380,11 +380,11 @@ const SOCKET_DIRECTORY_REFUSAL_CODES = {
  */
 function prepareSocketParent(socketPath: string): void {
   const directory = resolve(dirname(socketPath));
-  const uid = socketFallbackUid(directory);
-  if (uid === undefined) {
+  if (!isRelocatedSocket(directory)) {
     mkdirSync(directory, { recursive: true });
     return;
   }
+  const uid = process.getuid?.() ?? 0;
   try {
     ensurePrivateSocketDir(directory, uid, { chmodSync, lstatSync, mkdirSync, statSync });
   } catch (error: unknown) {

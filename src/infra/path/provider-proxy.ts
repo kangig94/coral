@@ -9,6 +9,7 @@ import {
   type SocketDirectoryStorage,
 } from '../private-socket-directory.js';
 import { generationRunDir } from './coordinator.js';
+import { generationRoot } from './root.js';
 import { socketFallbackDir, socketPathByteLimit } from './unix-socket.js';
 
 export const PROVIDER_PATH_IDENTITY_HASH_LENGTH = 24;
@@ -103,8 +104,8 @@ function insecureEndpointError(
       "Give this host's administrator this observation, then start Coral again after the directory is repaired.",
   };
   const unverifiedRemediation =
-    observation === 'the owner uid named by the socket address is not usable'
-      ? 'Start Coral in an environment that provides an owner uid the filesystem can represent for the fallback socket address.'
+    observation === 'the required socket-directory owner uid is not usable'
+      ? 'Start Coral in an environment that provides an owner uid the filesystem can represent for the fallback directory.'
       : observation.includes('reported no owner')
         ? 'Start Coral on a filesystem that reports owner identity for the fallback directory; the observation succeeded but did not identify an owner.'
         : 'Resolve the reported filesystem error, then start Coral again.';
@@ -144,7 +145,7 @@ function providerEndpoint(
   const candidate = join(generationRunDir(identity.flavor, { baseDir: env.baseDir }), filename);
   if (Buffer.byteLength(candidate, 'utf8') < limit) return candidate;
 
-  const fallbackDirectory = socketFallbackDir(env.uid);
+  const fallbackDirectory = socketFallbackDir(generationRoot({ baseDir: env.baseDir }));
   const fallback = join(fallbackDirectory, filename);
 
   ensurePrivateFallbackDirectory(fallbackDirectory, env);

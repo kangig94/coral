@@ -52,7 +52,7 @@ describe('coordinatorPaths', () => {
 
     const paths = coordinatorPaths('prod', { baseDir });
     if (fallback) {
-      expect(paths.socketPath.startsWith(`${socketFallbackDir(process.getuid?.() ?? 0)}/`)).toBe(true);
+      expect(paths.socketPath.startsWith(`${socketFallbackDir(join(baseDir, 'gen2'))}/`)).toBe(true);
       expect(paths.socketPath).toMatch(/\/coral-prod-[0-9a-f]{16}\.sock$/);
       return;
     }
@@ -73,7 +73,7 @@ describe('coordinatorPaths', () => {
 
     const paths = coordinatorPaths('dev', { baseDir });
     if (fallback) {
-      expect(paths.socketPath.startsWith(`${socketFallbackDir(process.getuid?.() ?? 0)}/`)).toBe(true);
+      expect(paths.socketPath.startsWith(`${socketFallbackDir(join(baseDir, 'gen2'))}/`)).toBe(true);
       expect(paths.socketPath).toMatch(/\/coral-dev-[0-9a-f]{16}\.sock$/);
       return;
     }
@@ -91,6 +91,20 @@ describe('coordinatorPaths', () => {
 
     const paths = coordinatorPaths('prod', { baseDir });
 
-    expect(paths.socketPath.startsWith(`${socketFallbackDir(process.getuid?.() ?? 0)}/`)).toBe(true);
+    expect(paths.socketPath.startsWith(`${socketFallbackDir(join(baseDir, 'gen2'))}/`)).toBe(true);
+  });
+
+  it('keeps one relocated address for one state root when the calling uid changes', () => {
+    mockState.platform = 'linux';
+    const baseDir = baseDirForSocketLength(150, 'prod');
+    const getuid = vi.spyOn(process, 'getuid');
+
+    getuid.mockReturnValueOnce(1_000).mockReturnValueOnce(0);
+    const userPath = coordinatorPaths('prod', { baseDir }).socketPath;
+    const sudoPath = coordinatorPaths('prod', { baseDir }).socketPath;
+    getuid.mockRestore();
+
+    expect(userPath).toBe(sudoPath);
+    expect(userPath.startsWith(`${socketFallbackDir(join(baseDir, 'gen2'))}/`)).toBe(true);
   });
 });

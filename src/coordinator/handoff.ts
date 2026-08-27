@@ -26,7 +26,7 @@ import {
 const SOCKET_BIND_POLL_MS = 200;
 const SHUTDOWN_RPC_TIMEOUT_MS = 1_000;
 const DEFAULT_SIGNAL_COOLDOWN_MS = 60_000;
-const SIGNAL_LEDGER_FILE = 'handoff-signal.json';
+const LEGACY_SIGNAL_LEDGER_FILE = 'handoff-signal.json';
 export const HANDOFF_SIGNAL_POLICY_ENV = 'CORAL_HANDOFF_SIGNAL_POLICY';
 
 /**
@@ -233,6 +233,7 @@ const HANDOFF_REFUSAL_REGISTRY = {
 } satisfies Record<HandoffRefusalCause, SignalRefusalText>;
 
 const HANDOFF_SIGNAL_RECORD_VERSION = 2 as const;
+const SIGNAL_LEDGER_FILE = `handoff-signal.v${HANDOFF_SIGNAL_RECORD_VERSION}.json`;
 
 export type HandoffSignalRecord = {
   version: typeof HANDOFF_SIGNAL_RECORD_VERSION;
@@ -252,7 +253,7 @@ export type LegacyHandoffSignalAttemptRecord = Omit<HandoffSignalRecord, 'accept
 type HandoffSignalLedgerRecord = HandoffSignalRecord | LegacyHandoffSignalAttemptRecord;
 
 export interface HandoffSignalLedger {
-  read(): HandoffSignalLedgerRecord | null;
+  read(socketPath: string, incumbent: IncumbentIdentity): HandoffSignalLedgerRecord | null;
   write(record: HandoffSignalRecord): void;
 }
 
@@ -263,23 +264,57 @@ export function createFileHandoffSignalLedger(options: {
   runDir: string;
 }): HandoffSignalLedger {
   const path = join(options.runDir, SIGNAL_LEDGER_FILE);
+  const legacyPath = join(options.runDir, LEGACY_SIGNAL_LEDGER_FILE);
+  const readAt = (
+    recordPath: string,
+    version: HandoffSignalLedgerRecord['version'],
+  ): HandoffSignalLedgerRecord | null => {
+    try {
+      const parsed = JSON.parse(options.storage.readFileSync(recordPath, 'utf-8')) as unknown;
+      const record = decodeHandoffSignalLedgerRecord(parsed);
+      return record?.version === version ? record : null;
+    } catch {
+      return null;
+    }
+  };
+  const writeAt = (recordPath: string, record: HandoffSignalLedgerRecord): void => {
+    try {
+      options.storage.writeAtomicSync(recordPath, `${JSON.stringify(record)}\n`, {
+        encoding: 'utf-8',
+        mode: 0o600,
+      });
+    } catch {
+      // Audit/cooldown is best-effort. A write failure must not leave a
+      // verified incumbent permanently unreplaceable.
+    }
+  };
   return {
-    read: () => {
-      try {
-        const parsed = JSON.parse(options.storage.readFileSync(path, 'utf-8')) as unknown;
-        return decodeHandoffSignalLedgerRecord(parsed);
-      } catch {
-        return null;
+    read: (socketPath, incumbent) => {
+      const current = readAt(path, HANDOFF_SIGNAL_RECORD_VERSION);
+      if (current !== null && isSameSignalTarget(current, socketPath, incumbent)) {
+        return current;
       }
+      const legacy = readAt(legacyPath, 1);
+      return legacy !== null && isSameSignalTarget(legacy, socketPath, incumbent) ? legacy : null;
     },
     write: (record) => {
       try {
         options.storage.mkdirSync(options.runDir, { recursive: true });
-        options.storage.writeAtomicSync(path, `${JSON.stringify(record)}\n`, { encoding: 'utf-8', mode: 0o600 });
       } catch {
-        // Audit/cooldown is best-effort. A write failure must not leave a
-        // verified incumbent permanently unreplaceable.
+        return;
       }
+      // The shipped fence must be attempted before current-only detail: interruption between the two writes
+      // may degrade this reader to an indeterminate V1 hold, but must not deliberately expose V2 first.
+      writeAt(legacyPath, {
+        version: 1,
+        socketPath: record.socketPath,
+        pid: record.pid,
+        ...(record.incarnation === undefined ? {} : { incarnation: record.incarnation }),
+        ...(record.instanceId === undefined ? {} : { instanceId: record.instanceId }),
+        signal: record.signal,
+        signaledAtMs: record.signaledAtMs,
+      });
+      writeAt(path, record);
     },
   };
 }
@@ -412,8 +447,8 @@ function assertSignalCooldown(opts: HandoffOptions, incumbent: IncumbentIdentity
   if (ledger === undefined) {
     return;
   }
-  const last = ledger.read();
-  if (last === null || !isSameSignalTarget(last, opts.socketPath, incumbent)) {
+  const last = ledger.read(opts.socketPath, incumbent);
+  if (last === null) {
     return;
   }
   const cooldownMs = opts.signalCooldownMs ?? DEFAULT_SIGNAL_COOLDOWN_MS;

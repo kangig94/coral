@@ -46,7 +46,7 @@ describe('operator coordinator socket bind failures', () => {
     let refusal: unknown;
     try {
       await acquireOperatorSocketGuard({
-        socketPath: join(socketFallbackDir(Number.NaN), 'coordinator.sock'),
+        socketPath: join(socketFallbackDir('/state/unusable-owner'), 'coordinator.sock'),
         flavor: 'prod',
         operation: 'store reset',
         retryCommand: 'retry',

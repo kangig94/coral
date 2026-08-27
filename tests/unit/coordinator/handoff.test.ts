@@ -1,4 +1,4 @@
-import type { ProcessLiveness } from '#src/infra/node-process.js';
+import { isProcessIncarnation, type ProcessLiveness } from '#src/infra/node-process.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
@@ -139,6 +139,49 @@ function shutdownResult(overrides: {
     shutdownUnauthorized: false,
     ...overrides,
   };
+}
+
+function shippedV0109IsHandoffSignalRecord(value: unknown): boolean {
+  if (value === null || typeof value !== 'object') {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return (
+    record.version === 1 &&
+    typeof record.socketPath === 'string' &&
+    Number.isInteger(record.pid) &&
+    (record.incarnation === undefined || isProcessIncarnation(record.incarnation)) &&
+    (record.instanceId === undefined || typeof record.instanceId === 'string') &&
+    (record.signal === 'SIGTERM' || record.signal === 'SIGKILL') &&
+    Number.isFinite(record.signaledAtMs)
+  );
+}
+
+function shippedV0109CooldownApplies(
+  value: unknown,
+  socketPath: string,
+  incumbent: IncumbentIdentity,
+  nowMs: number,
+  cooldownMs: number,
+): boolean {
+  if (!shippedV0109IsHandoffSignalRecord(value)) {
+    return false;
+  }
+  const record = value as {
+    socketPath: string;
+    pid: number;
+    incarnation?: string;
+    instanceId?: string;
+    signaledAtMs: number;
+  };
+  const sameTarget =
+    record.socketPath === socketPath &&
+    record.pid === incumbent.pid &&
+    (record.incarnation === undefined ||
+      incumbent.incarnation === undefined ||
+      record.incarnation === incumbent.incarnation) &&
+    (record.instanceId === undefined || record.instanceId === incumbent.instanceId);
+  return sameTarget && nowMs - record.signaledAtMs < cooldownMs;
 }
 
 beforeEach(() => {
@@ -1382,7 +1425,105 @@ describe('bindWithHandoff', () => {
     expect(killCalls).toEqual([]);
   });
 
-  it('decodes a V1 ledger entry as an indeterminate legacy attempt', async () => {
+  it('writes a shipped-v0.10.9-valid cooldown shadow only for an accepted signal', () => {
+    const files = new Map<string, string>();
+    const writes: string[] = [];
+    const storage = {
+      readFileSync: (path: string) => {
+        const value = files.get(path);
+        if (value === undefined) throw new Error('ENOENT');
+        return value;
+      },
+      mkdirSync: vi.fn(),
+      writeAtomicSync: (path: string, value: string) => {
+        writes.push(path);
+        files.set(path, value);
+      },
+    } as unknown as Parameters<typeof createFileHandoffSignalLedger>[0]['storage'];
+    const signalLedger = createFileHandoffSignalLedger({ storage, runDir: '/tmp/run' });
+
+    signalLedger.write({
+      version: 2,
+      accepted: true,
+      socketPath: '/tmp/coral.sock',
+      pid: 2466,
+      incarnation: testIncarnation(898),
+      instanceId: 'accepted-incumbent',
+      signal: 'SIGTERM',
+      signaledAtMs: 9_000,
+    });
+
+    const shippedShadow = JSON.parse(files.get('/tmp/run/handoff-signal.json') ?? 'null') as unknown;
+    expect(shippedV0109IsHandoffSignalRecord(shippedShadow)).toBe(true);
+    expect(
+      shippedV0109CooldownApplies(
+        shippedShadow,
+        '/tmp/coral.sock',
+        {
+          pid: 2466,
+          incarnation: testIncarnation(898),
+          source: 'discovery',
+          instanceId: 'accepted-incumbent',
+        },
+        9_500,
+        10_000,
+      ),
+    ).toBe(true);
+    expect(shippedShadow).not.toHaveProperty('accepted');
+    expect(files.has('/tmp/run/handoff-signal.v2.json')).toBe(true);
+    expect(writes).toEqual(['/tmp/run/handoff-signal.json', '/tmp/run/handoff-signal.v2.json']);
+  });
+
+  it('prefers its accepted V2 detail over the V1 shadow for the same target', () => {
+    const target: IncumbentIdentity = {
+      pid: 2467,
+      incarnation: testIncarnation(899),
+      source: 'discovery',
+      instanceId: 'same-incumbent',
+    };
+    const records = new Map([
+      [
+        '/tmp/run/handoff-signal.v2.json',
+        JSON.stringify({
+          version: 2,
+          accepted: true,
+          socketPath: '/tmp/coral.sock',
+          pid: target.pid,
+          incarnation: target.incarnation,
+          instanceId: target.instanceId,
+          signal: 'SIGTERM',
+          signaledAtMs: 2_000,
+        }),
+      ],
+      [
+        '/tmp/run/handoff-signal.json',
+        JSON.stringify({
+          version: 1,
+          socketPath: '/tmp/coral.sock',
+          pid: target.pid,
+          incarnation: target.incarnation,
+          instanceId: target.instanceId,
+          signal: 'SIGTERM',
+          signaledAtMs: 2_000,
+        }),
+      ],
+    ]);
+    const storage = {
+      readFileSync: (path: string) => {
+        const value = records.get(path);
+        if (value === undefined) throw new Error('ENOENT');
+        return value;
+      },
+      mkdirSync: vi.fn(),
+      writeAtomicSync: vi.fn(),
+    } as unknown as Parameters<typeof createFileHandoffSignalLedger>[0]['storage'];
+
+    const record = createFileHandoffSignalLedger({ storage, runDir: '/tmp/run' }).read('/tmp/coral.sock', target);
+
+    expect(record).toMatchObject({ version: 2, accepted: true });
+  });
+
+  it('decodes a genuine shipped V1 ledger entry as an indeterminate legacy attempt', async () => {
     const verifiedIdentity: IncumbentIdentity = {
       pid: 2467,
       incarnation: testIncarnation(899),
@@ -1390,8 +1531,9 @@ describe('bindWithHandoff', () => {
     };
     let legacyAttemptedAtMs = 0;
     const storage = {
-      readFileSync: () =>
-        JSON.stringify({
+      readFileSync: (path: string) => {
+        if (path !== '/tmp/run/handoff-signal.json') throw new Error('ENOENT');
+        return JSON.stringify({
           version: 1,
           socketPath: '/tmp/coral.sock',
           pid: verifiedIdentity.pid,
@@ -1399,7 +1541,8 @@ describe('bindWithHandoff', () => {
           instanceId: 'legacy-incumbent',
           signal: 'SIGTERM',
           signaledAtMs: legacyAttemptedAtMs,
-        }),
+        });
+      },
       mkdirSync: vi.fn(),
       writeAtomicSync: vi.fn(),
     } as unknown as Parameters<typeof createFileHandoffSignalLedger>[0]['storage'];
@@ -1485,6 +1628,7 @@ describe('bindWithHandoff', () => {
     const timing = /last SIGTERM was (\d+)ms ago; retry in (\d+)ms/.exec(message);
     expect(outcome).toBeInstanceOf(HandoffEscalationError);
     expect(message).toContain('the handoff signal cooldown has not elapsed');
+    expect(message).not.toContain('legacy V1');
     expect(message).not.toContain('Manual repair required');
     expect(timing).not.toBeNull();
     expect(Number(timing?.[1]) + Number(timing?.[2])).toBe(10_000);

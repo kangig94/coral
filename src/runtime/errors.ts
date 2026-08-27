@@ -217,8 +217,8 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
     },
     remediation: (context) => {
       const cause = stringContextValue(context, 'cause', 'cause unavailable');
-      if (cause === 'the owner uid named by the socket address is not usable') {
-        return 'Start Coral in an environment that provides an owner uid the filesystem can represent for the fallback socket address. Coral will not bind its singleton socket without a usable owner identity.';
+      if (cause === 'the required socket-directory owner uid is not usable') {
+        return 'Start Coral in an environment that provides an owner uid the filesystem can represent for the fallback directory. Coral will not bind its singleton socket without a usable owner identity.';
       }
       if (cause.includes('reported no owner')) {
         return 'Start Coral on a filesystem that reports owner identity for the fallback directory. The observation succeeded but did not identify an owner, so Coral could not settle whether the directory is private.';

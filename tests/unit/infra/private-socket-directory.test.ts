@@ -540,7 +540,7 @@ describe('ensurePrivateSocketDir', () => {
     expect(() => ensurePrivateSocketDir(directory, Number.NaN, realStorage)).toThrowError(
       expect.objectContaining({
         refusal: 'unverified',
-        detail: 'the owner uid named by the socket address is not usable',
+        detail: 'the required socket-directory owner uid is not usable',
       }),
     );
   });
@@ -551,7 +551,7 @@ describe('ensurePrivateSocketDir', () => {
     expect(() => ensurePrivateSocketDir(directory, -1, realStorage)).toThrowError(
       expect.objectContaining({
         refusal: 'unverified',
-        detail: 'the owner uid named by the socket address is not usable',
+        detail: 'the required socket-directory owner uid is not usable',
       }),
     );
   });

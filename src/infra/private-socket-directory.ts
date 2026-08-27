@@ -191,7 +191,7 @@ export function ensurePrivateSocketDir(target: string, uid: number, storage: Soc
       'unverified',
       directory,
       uid,
-      new Error('the owner uid named by the socket address is not usable'),
+      new Error('the required socket-directory owner uid is not usable'),
     );
   }
 

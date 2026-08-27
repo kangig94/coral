@@ -1,10 +1,11 @@
 # TODO — who may own the address the singleton lock lives at
 
-**Status**: open, and narrowed by the fix that produced it. The socket-identity work removed the ambient
-input both resolvers took and moved the overflow fallback under `socketFallbackDir(uid)` —
-`/tmp/coral-<uid>/`. That root is shared with every user on the host, which turns a question that
-`TMPDIR` used to answer by accident into one the tree has to answer on purpose: **who is allowed to own
-the directory the singleton socket sits in, and who checks.**
+**Status**: open for shipped-selector compatibility, binder-local enforcement, and ACL evidence;
+current-build installation identity is closed. Relocated addresses now live under
+`socketFallbackDir(stateRoot)` — `/tmp/coral-<state-root-hash>/`. The directory
+therefore names the installation rather than the caller, while the bind boundary separately requires the
+calling uid to own it with mode `0700`. A second uid over one state root reaches the same directory and
+refuses if it cannot own it; it cannot derive a second coordinator lock.
 
 Three parts. All are about ownership of the address.
 
@@ -12,14 +13,14 @@ Three parts. All are about ownership of the address.
 none of this was about length. Moving the test suites' `TMPDIR` from `/tmp` to a memory-backed root spent
 four of the margin's bytes on the root name and a per-user suffix spent the rest, which pushed
 `provider-<24 hex>.sock` from 104 to 109 bytes against the 108-byte Linux limit. `providerEndpoint`
-(`src/infra/path/provider-proxy.ts`) then did exactly what Part 2 describes — relocated the address under
-`socketFallbackDir(uid)` — and reported nothing. The suite that binds those sockets counts them beneath the
+(`src/infra/path/provider-proxy.ts`) then did exactly what Part 2 historically described — relocated the
+address — and reported nothing. The suite that binds those sockets counts them beneath the
 HOME it created, found none, and failed ten seconds later as a wait that never settled; the cause took hours
 to reach and every gate but that one stayed green.
 
 So length and ownership are the same subject, not neighbouring ones: the overflow is what moves the address
-into the shared root this entry is about, and nothing on either side says it happened. Part 2 already knows
-the relocation is uid-dependent. What it did not say is that **no reader learns the address moved** — not the
+into the shared root this entry is about, and nothing on either side says it happened. Part 2 closed the
+uid-dependent identity defect. What remains is that **no reader learns the address moved** — not the
 binder, not the process that computed the path, not an operator. `tests/invariants/temp-root-socket-budget.test.ts`
 now pins the margin for the suites that bind provider sockets, which keeps the test tree from crossing it
 again but does nothing for a production path that crosses it. A fix for this entry should decide whether
@@ -61,39 +62,27 @@ on its startup path that it does not have today — refusing to start is a hold,
 `.claude/rules/design-philosophy.md` principle 11 asks what ends it. It also has one disposition where the
 coordinator now has three, so the split the coordinator side just made has to reach it.
 
-## Part 2 — the uid participates in installation identity, and nothing says so
+## Part 2 — closed: the installation owns the namespace
 
-When — and only when — the socket beside the run directory overflows `sun_path`, the address relocates and
-becomes a function of the uid as well, because the shared root demands a per-user namespace.
-`coordinatorPaths` reads the uid for that, and the operator store-reset resolver reads it a second time,
-independently.
+The fallback namespace is a hash of the generation state root. Coordinator and provider endpoint paths use
+that same owner, and the operator store-reset resolver receives no uid-shaped path input. Caller identity is
+still checked at the bind boundary: the first caller that can securely create the directory owns it, while a
+different uid reaches the same address and receives the existing `foreign` refusal. This supplies the
+three-answer disposition without adding uid to installation identity.
 
-So two processes over one state root with different uids compute different locks for a relocated socket,
-and both can coordinate one journal. A `sudo -E` invocation that preserves `HOME` reaches it. This is not
-new — an ambient temp directory produced the same divergence, and usually did — but the fix did not close
-it, and nothing in the tree states the boundary.
+## Shipped-selector compatibility — blocked by an unbounded address set
 
-The tree also does not say *which* uid. The path constructors take an injected `env.uid` and are neutral
-about it; every production caller that supplies one — `coordinatorPaths`, the provider acquisition step, and
-the operator store-reset resolver — reads `process.getuid()`, the real uid. The binder no longer reads it at
-all: `prepareSocketParent` recovers the uid the address itself names, so the check cannot answer against a
-different value than the one the path was built from. The directory those paths then create is owned by the
-effective uid, and the mode check compares against the real one, so
-under a setuid invocation Coral would refuse a directory it had just created itself. Real versus effective
-is part of this decision, not a separate one.
+The proposed compatibility listener does not deliver the stated cross-version property. v0.10.9 selects
+`env.TMPDIR ?? tmpdir()` and its launcher inherits the invoking process's complete environment. A later
+v0.10.9 invocation can therefore choose any writable directory. One current process can listen only on a
+finite set of concrete filesystem addresses, so listening on the legacy address derived from its own
+environment leaves another legacy address independently bindable under a different `TMPDIR`.
 
-`docs/design-rationale.md` §8.2 says exactly one coordinator per Coral installation, and
-`docs/todo/store-format-routing.md` states a store authority of canonical state root plus flavor. Neither
-says whether the uid augments that identity. Either:
-
-- define an installation as `(state root, flavor, uid)` and refuse a state root whose owner is not that
-  uid, which makes the divergence impossible rather than undetected; or
-- derive the fallback namespace from the state root's owner rather than the caller's uid, which makes one
-  state root resolve to one lock for every caller that can reach it.
-
-The first is a refusal on a startup path and owes principle 11 an answer about what ends it. The second
-keeps today's behaviour for the ordinary case and needs a `stat` of the state root at composition time,
-which that layer does not do today.
+Reading discovery before binding does not close the later-starting case, and no durable lock unknown to
+v0.10.9 can change its bind decision. A correct replacement needs either a bounded shipped selector (which
+cannot be retrofitted), an operating-system exclusion primitive both builds already acquire, or an explicit
+support decision that narrows the guarantee to a named environment set. Until one of those premises exists,
+there is no compatibility listener or retirement window to own.
 
 ## Part 3 — the assertion proves owner and mode, which is less than privacy
 
@@ -119,18 +108,16 @@ macOS fixture that demonstrates another principal's effective access through a `
 observation boundary and the refusal mapping before writing any of it.
 
 Until then the module says owner-and-mode rather than private, and callers may not read more into it than
-that. Parts 1 and 2 both rest on this assertion, so whatever it cannot establish, they cannot either.
+that. Part 1 and the installation-keyed bind refusal both rest on this assertion, so whatever it cannot
+establish, they cannot either.
 
 ## Explicitly out of scope
 
-The fallback address itself, the byte bound, and the removal of the ambient input — settled, with the
-bound asserted in `tests/invariants/socket-fallback-fits-af-unix.test.ts` by measuring what the resolvers
-return. That test covers length only; the identity property is enforced by the absent parameter, not by
-a test.
+The current-build fallback address and byte bound are settled. Unit coverage changes the calling uid over
+one state root and requires the relocated coordinator and provider addresses to remain unchanged. The
+cross-version overflow address remains blocked as described above.
 
 ## Start condition
 
-None blocking for part 1, though its diagnostic channel is most of its cost. Part 2 wants the
-installation-identity decision first, because the two options put the refusal in different places and only
-one of them adds a hold. Part 3 wants its observation boundary chosen first, and is worth doing only
+None blocking for part 1, though its diagnostic channel is most of its cost. Part 3 wants its observation boundary chosen first, and is worth doing only
 alongside a macOS fixture that can demonstrate the gap.

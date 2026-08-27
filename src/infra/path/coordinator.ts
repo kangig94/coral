@@ -1,5 +1,5 @@
 import { platform } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import type { BuildFlavor } from '../build-flavor.js';
 import { hashToken } from '../hash.js';
@@ -22,7 +22,6 @@ const FALLBACK_HASH_LENGTH = 16;
 
 interface SocketPathEnvironment {
   readonly platform: string;
-  readonly uid: number;
 }
 
 export function generationRunDir(flavor: BuildFlavor, opts?: CoordinatorPathOptions): string {
@@ -47,12 +46,13 @@ export function socketPathForRunDir(runDir: string, flavor: BuildFlavor, env: So
   if (Buffer.byteLength(candidateSocket, 'utf8') < limit) return candidateSocket;
 
   const hash = hashToken(candidateSocket, FALLBACK_HASH_LENGTH);
-  return join(socketFallbackDir(env.uid), `coral-${flavor}-${hash}.sock`);
+  return join(socketFallbackDir(dirname(runDir)), `coral-${flavor}-${hash}.sock`);
 }
 
 export function coordinatorPaths(flavor: BuildFlavor, opts?: CoordinatorPathOptions): CoordinatorPaths {
   const runDir = generationRunDir(flavor, opts);
-  const socketPath = socketPathForRunDir(runDir, flavor, { platform: platform(), uid: process.getuid?.() ?? 0 });
+  const platformName = platform();
+  const socketPath = socketPathForRunDir(runDir, flavor, { platform: platformName });
 
   return {
     runDir,

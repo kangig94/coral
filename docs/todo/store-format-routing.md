@@ -204,11 +204,11 @@ unknown`, with only `absent` treated as an absence. The requirement this item st
 2. **Node has no `flock`.** A round proposed a fixed-path kernel lease as the authority primitive; the `fs`
    API exposes no such operation, verified by runtime inspection. Any future authority argument must use a
    primitive that actually exists.
-3. **The socket became an exclusion primitive, conditionally.** Two processes with the same state root but
-   different `TMPDIR` used to compute different socket paths and both bind. The path no longer reads the
-   environment, so that pair now collides on one address as intended. What remains is narrower and lives in
-   `socket-address-ownership.md`: a path long enough to overflow `sun_path` relocates into a per-uid
-   directory, so two uids over one state root are still two locks.
+3. **The socket is an installation exclusion primitive among current builds.** Two current processes with
+   the same state root but different `TMPDIR` or calling uids now collide on one state-root-derived overflow
+   address. A caller that cannot own the existing installation directory is refused instead of deriving
+   another lock. The shipped v0.10.9 selector remains environment-derived; `socket-address-ownership.md`
+   records why a finite compatibility-listener set cannot guarantee collision with its arbitrary `TMPDIR`.
 4. **A different `HOME` is not a race, it is a different instance.** `coralStateRoot` derives from the home
    relative root, so a different `HOME` means a different journal, store, and run directory. Authority is one
    canonical absolute state root plus flavor; relative or unresolvable roots should fail closed.
