@@ -77,7 +77,7 @@ const HEARTBEAT_METHOD_BY_ROLE = {
 
 type HeartbeatLoopState =
   | Readonly<{ kind: 'idle'; challenge: string }>
-  | Readonly<{ kind: 'in-flight'; challenge: string; attempt: symbol }>
+  | Readonly<{ kind: 'in-flight'; challenge: string; attempt: symbol; schedulerLatenessMs: number }>
   | Readonly<{ kind: 'stopped' }>;
 
 export type HeartbeatFailureDisposition =
@@ -122,28 +122,40 @@ function startHeartbeatLoop(
   runtime: Runtime,
   controlEpoch: number,
   firstNextChallenge: string,
-  onIncident: (error: unknown, reason: ProviderProxyHeartbeatIncidentReason) => void,
+  onIncident: (error: unknown, reason: ProviderProxyHeartbeatIncidentReason, schedulerLatenessMs: number) => void,
   onAccepted: () => void,
   onTerminal: (error: unknown, reason: ProviderProxyHeartbeatTerminalReason) => void,
 ): HeartbeatLoop {
   let state: HeartbeatLoopState = { kind: 'idle', challenge: firstNextChallenge };
+  let requestedWakeMs = runtime.time.monotonicNow() + BigInt(PROXY_CONTROL_HEARTBEAT_MS);
+  let pendingSchedulerLatenessMs = 0;
   const tick = (): void => {
+    const observedWakeMs = runtime.time.monotonicNow();
+    if (observedWakeMs > requestedWakeMs) {
+      pendingSchedulerLatenessMs += Number(observedWakeMs - requestedWakeMs);
+    }
+    requestedWakeMs = observedWakeMs + BigInt(PROXY_CONTROL_HEARTBEAT_MS);
     if (state.kind !== 'idle') return;
     const { challenge } = state;
     const attempt = Symbol('provider-proxy-heartbeat');
-    state = { kind: 'in-flight', challenge, attempt };
+    const schedulerLatenessMs = pendingSchedulerLatenessMs;
+    pendingSchedulerLatenessMs = 0;
+    state = { kind: 'in-flight', challenge, attempt, schedulerLatenessMs };
     void heartbeatOnce(client, method, controlEpoch, challenge).then(
       (beat) => {
         if (state.kind !== 'in-flight' || state.attempt !== attempt) return;
+        pendingSchedulerLatenessMs = 0;
         state = { kind: 'idle', challenge: beat.nextHeartbeatChallenge };
         onAccepted();
       },
       (error: unknown) => {
         if (state.kind !== 'in-flight' || state.attempt !== attempt) return;
+        const observedSchedulerLatenessMs = state.schedulerLatenessMs + pendingSchedulerLatenessMs;
+        pendingSchedulerLatenessMs = 0;
         const disposition = heartbeatFailureDisposition(error, challenge);
         if (disposition.kind === 'retry') {
           state = { kind: 'idle', challenge: disposition.challenge };
-          onIncident(error, disposition.incidentReason);
+          onIncident(error, disposition.incidentReason, observedSchedulerLatenessMs);
           return;
         }
         state = { kind: 'stopped' };
@@ -183,8 +195,15 @@ export function createProviderProxyAuthorityHeartbeatAssembly(
         runtime,
         session.controlEpoch,
         session.nextHeartbeatChallenge,
-        (error, incidentReason) => {
-          faults.reportIncident({ kind: 'heartbeat-indeterminate', role, method, incidentReason, error });
+        (error, incidentReason, schedulerLatenessMs) => {
+          faults.reportIncident({
+            kind: 'heartbeat-indeterminate',
+            role,
+            method,
+            incidentReason,
+            schedulerLatenessMs,
+            error,
+          });
         },
         () => faults.reportIncident({ kind: 'heartbeat-accepted', role, method }),
         (error, terminalReason) => {

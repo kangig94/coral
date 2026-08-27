@@ -69,34 +69,20 @@ export function providerProxyAdoptionWindowMs(
 }
 
 /**
- * `spanMs` is `providerProxyAdoptionWindowMs`'s own tolerance; `attemptFloor` is the minimum number of
- * heartbeat-indeterminate incidents a hold must have accumulated over that span before elapsed time alone may
- * authorize the coordinator's own bounded escalation (`ProviderProxySetLifecycleDeps.heartbeatHoldBound`).
+ * `spanMs` is `providerProxyAdoptionWindowMs`'s own tolerance. `materialSchedulerLatenessMs` is one quarter of
+ * that span: a hold window with at least that much observed scheduler delay cannot authorize the coordinator's
+ * own bounded escalation (`ProviderProxySetLifecycleDeps.heartbeatHoldBound`).
  */
 export type ProviderProxyHeartbeatHoldBound = Readonly<{
   spanMs: number;
-  attemptFloor: number;
+  materialSchedulerLatenessMs: number;
 }>;
 
 /**
- * Both quantities derive from this one function so they cannot drift apart the way two independently chosen
- * numbers could: a future edit to either the span formula or the protocol's own cadence updates both call
- * sites the escalation reads through, instead of one.
- *
- * `attemptFloor` is how many heartbeat attempts a coordinator being scheduled normally issues over `spanMs`:
- * each unanswered attempt costs one heartbeat tick plus one RPC timeout budget, so `spanMs` divided by that
- * cost is the rough count a live, merely-slow-to-answer peer would produce. Issuing a request is an act a
- * descheduled coordinator cannot fake, so requiring at least this many attempts is what makes the escalation's
- * own claim ("asked N times and was never answered") true before it is made — elapsed time alone cannot
- * distinguish a peer that never answered from a coordinator that was never scheduled to ask.
- *
- * `Math.max(1, ...)` guards the short end of the configured range: a span barely longer than one attempt's own
- * cost would otherwise floor to zero, which — since a hold's `attempts` is always at least 2 by the time this
- * bound is consulted — would impose no floor at all.
- *
- * Trade accepted: a genuinely wedged peer whose own coordinator is also slow to be scheduled will clear the
- * span before it clears the floor, and so will escalate later than the span alone would have allowed. That
- * delay is the correct direction — containment deferred, never a premature reap of live work.
+ * A quarter-span scheduler delay is material: below it, at least three quarters of the window remains evidence
+ * about unanswered heartbeats; at or above it, scheduler starvation is too large a competing explanation for
+ * that window. The allowance derives here from the adoption window instead of becoming another independently
+ * configured duration.
  */
 export function providerProxyHeartbeatHoldBound(
   configuration: Pick<ProviderProxyDeadlineTiming, 'orphanTimeoutMs' | 'teardownReserveMs'>,
@@ -104,7 +90,7 @@ export function providerProxyHeartbeatHoldBound(
   const spanMs = providerProxyAdoptionWindowMs(configuration);
   return {
     spanMs,
-    attemptFloor: Math.max(1, Math.floor(spanMs / (PROXY_CONTROL_HEARTBEAT_MS + PROXY_CONTROL_RPC_TIMEOUT_MS))),
+    materialSchedulerLatenessMs: Math.floor(spanMs / 4),
   };
 }
 
@@ -176,7 +162,7 @@ export const providerProxyDeadlineConfigurationSchema = providerProxyDeadlineInp
       context.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['orphanTimeoutMs'],
-        message: 'must satisfy the strict recurrence, process-bootstrap, and successor-adoption timing policy',
+        message: `${CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV} must be at least ${MIN_EFFECTIVE_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS}ms to satisfy the strict recurrence, process-bootstrap, and successor-adoption timing policy`,
       });
     }
     if (PROXY_TEARDOWN_RESERVE_MS !== EXPECTED_PROXY_TEARDOWN_RESERVE_MS) {
@@ -242,6 +228,8 @@ export type ChallengeEchoResult =
 
 export type EnforcerDeadlineStateMachine<Scope extends symbol> = Readonly<{
   state(): EnforcerDeadlineState;
+  /** Recovery grants must name the same orphan timeout this role was bootstrapped to enforce. */
+  orphanTimeoutMs(): number;
   bounds(): ProviderProxyEnforcerBounds<Scope>;
   /** Mints and installs the tenancy's first challenge in one act; the challenge travels back in the result. */
   issueFirstChallenge(): DeadlineChallengeIssueResult;
@@ -347,6 +335,7 @@ export function createEnforcerDeadlineStateMachine<Scope extends symbol>(
 
   return Object.freeze({
     state: (): EnforcerDeadlineState => state,
+    orphanTimeoutMs: (): number => configuration.orphanTimeoutMs,
     // Successor admission and mutation authority share this recent-evidence precondition. Its lapse permits
     // those acts to change disposition; it does not itself end the tenancy.
     controlIsLive: (): boolean => evidence.isControlLive(clock.now()),

@@ -63,6 +63,7 @@ afterEach(async () => {
 
 function deadlinesFor<Scope extends symbol>(clock: MonotonicClock<Scope>): EnforcerDeadlineStateMachine<Scope> {
   return {
+    orphanTimeoutMs: () => 30_000,
     controlIsLive: () => true,
     issueFirstChallenge: () => ({ accepted: true, challenge: 'challenge' }) as const,
     admitSuccessor: () => ({ accepted: true, challenge: 'challenge' }) as const,

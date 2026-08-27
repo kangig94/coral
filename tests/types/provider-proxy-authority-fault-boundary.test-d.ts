@@ -112,6 +112,7 @@ declare const unansweredHeartbeat: Readonly<{
   role: 'guardian';
   method: 'guardian.heartbeat.v1';
   incidentReason: 'unanswered';
+  schedulerLatenessMs: number;
   error: unknown;
 }>;
 
@@ -177,6 +178,7 @@ const validHeartbeatHoldReap: ProviderProxySetDecision = {
   lastIncidentReason: 'unclassified',
   attempts: 3,
   elapsedMs: 23_000,
+  schedulerLatenessMs: 0,
   error: 'answer could not be decoded',
   liveClaims: 1,
   setIdentity,
@@ -198,6 +200,7 @@ const validHeartbeatIncident: ProviderProxyAuthorityIncident = {
   role: 'guardian',
   method: 'guardian.heartbeat.v1',
   incidentReason: 'unanswered',
+  schedulerLatenessMs: 0,
   error: 'retry later',
 };
 // A local failure (this process could not construct or send the call at all) is a second decisive

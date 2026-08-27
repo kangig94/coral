@@ -31,7 +31,11 @@ import {
 import { currentHandoffCapsulePath } from '../../../provider-proxy/handoff-capsule.js';
 import { DETACHED_CONTAINMENT_KIND } from '../../../provider-proxy/guardian.js';
 import type { ControlClient, ProviderEventHandler } from '../../../provider-proxy/control-client.js';
-import { PROXY_CONTROL_ESTABLISH_READY_MS } from '../../../provider-proxy/orphan-deadline.js';
+import {
+  CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV,
+  PROXY_CONTROL_ESTABLISH_READY_MS,
+  resolveProviderProxyDeadlineConfiguration,
+} from '../../../provider-proxy/orphan-deadline.js';
 import {
   PROXY_CONTROL_RPC_TIMEOUT_MS,
   guardianIdentitySchema,
@@ -151,6 +155,7 @@ export function createProviderProxyAcquisitionSteps(
   const { runtime, coordinatorIdentity } = options;
   const { generation, flavor, buildSetId } = coordinatorIdentity;
   const hostFingerprint = options.hostFingerprint;
+  const deadlineConfiguration = resolveProviderProxyDeadlineConfiguration(runtime.env);
   const mintSecret = (): string => runtime.ids.randomBytes(32).toString('hex');
 
   let minted: MintedSet | null = null;
@@ -275,9 +280,10 @@ export function createProviderProxyAcquisitionSteps(
       const spawned = spawnRoleProcess('guardian', setMinted.guardianCapsulePath, spawnPorts, {
         pluginRoot: options.pluginRoot,
         detached: true,
-        // The child strips all inherited CORAL_*, so the flavor that selects which artifact identity the
-        // guardian (and, transitively, the reaper and proxy it spawns) expects is re-asserted explicitly.
-        envAdditions: { [BUILD_FLAVOR_ENV_KEY]: flavor },
+        envAdditions: {
+          [BUILD_FLAVOR_ENV_KEY]: flavor,
+          [CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV]: String(deadlineConfiguration.orphanTimeoutMs),
+        },
       });
       guardianSpawn = spawned;
       return {

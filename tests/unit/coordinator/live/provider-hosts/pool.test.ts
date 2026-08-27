@@ -137,7 +137,7 @@ function createProxySetLifecycleRef(onSlotReleased?: (routeKey: string) => void)
   claims.initialize([]);
   const lifecycle = new ProviderProxySetLifecycle({
     buildSetId: FIXTURE_BUILD_SET_ID,
-    heartbeatHoldBound: { spanMs: Number.MAX_SAFE_INTEGER, attemptFloor: 0 },
+    heartbeatHoldBound: { spanMs: Number.MAX_SAFE_INTEGER, materialSchedulerLatenessMs: Number.MAX_SAFE_INTEGER },
     claims,
     controlEstablished: () => undefined,
     time: runtime.time,

@@ -842,31 +842,30 @@ describe('execution services provider-proxy heartbeat-hold composition', () => {
   // `PROXY_CONTROL_RPC_TIMEOUT_MS`/`PROXY_CONTROL_HEARTBEAT_MS` are each unit-tested on their own, and every
   // lifecycle fixture injects `Number.MAX_SAFE_INTEGER` for isolation — so nothing but this test exercises the
   // actual composed value `execution-services.ts` hands the lifecycle for a real env.
-  it('binds the composed heartbeat-hold span and attempt floor to the derived configuration for a known env', async () => {
+  it('does not reap when heartbeat scheduler lateness is material across the real composed bound', async () => {
     const expected = providerProxyHeartbeatHoldBound(
       resolveProviderProxyDeadlineConfiguration({ get: () => undefined }),
     );
-    expect(expected).toEqual({ spanMs: 23_000, attemptFloor: 3 });
+    expect(expected).toEqual({ spanMs: 23_000, materialSchedulerLatenessMs: 5_750 });
     const { time, faults, stopAndReap, services } = await createHeartbeatHoldHarness();
 
-    const incident = (error: string): void =>
+    const incident = (error: string, schedulerLatenessMs: number): void =>
       faults.reportIncident({
         kind: 'heartbeat-indeterminate',
         role: 'guardian',
         method: 'guardian.heartbeat.v1',
         incidentReason: 'unanswered',
+        schedulerLatenessMs,
         error,
       });
 
-    incident('first');
-    time.tick(expected.spanMs);
-    // One incident short of the derived floor, with the derived span already fully elapsed: a composition
-    // that fell back to the plain adoption-window number (or dropped the floor) would escalate here instead.
-    for (let attempt = 2; attempt < expected.attemptFloor; attempt += 1) incident(`retry-${attempt}`);
-    expect(stopAndReap).not.toHaveBeenCalled();
+    incident('first', 0);
+    for (let attempt = 2; attempt <= 4; attempt += 1) {
+      time.tick(8_000);
+      incident(`retry-${attempt}`, 2_000);
+    }
 
-    incident('final');
-    expect(stopAndReap).toHaveBeenCalledOnce();
+    expect(stopAndReap).not.toHaveBeenCalled();
     services.stopProviderOperationReconciler();
   });
 });

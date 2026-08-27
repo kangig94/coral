@@ -1,9 +1,9 @@
-import { mkdtempSync, rmSync, statfsSync } from 'node:fs';
+import { lstatSync, mkdtempSync, rmSync, statfsSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { testTempEnv, testTempRoot } from '../../../vitest/temp-root.js';
+import { testTempEnv, testTempRoot, userRootName } from '../../../vitest/temp-root.js';
 
 const TMPFS_MAGIC = 0x01021994;
 
@@ -17,6 +17,10 @@ function shmIsUsableTmpfs(): boolean {
 }
 
 const created: string[] = [];
+
+function expectedUserRoot(base: string): string {
+  return join(base, userRootName());
+}
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -39,7 +43,22 @@ describe('test temp root', () => {
     created.push(override);
     vi.stubEnv('CORAL_TEST_TMPDIR', override);
 
-    expect(testTempRoot(['/dev/shm'])).toBe(join(override, 'coral-tests'));
+    const root = testTempRoot(['/dev/shm']);
+    expect(root).toBe(expectedUserRoot(override));
+    const stats = lstatSync(root);
+    expect(stats.isDirectory()).toBe(true);
+    expect(stats.mode & 0o777).toBe(0o700);
+    if (process.getuid !== undefined) expect(stats.uid).toBe(process.getuid());
+  });
+
+  it.runIf(process.platform !== 'win32')('falls back when the per-user root is an existing symlink', () => {
+    const override = mkdtempSync(join(tmpdir(), 'coral-temp-root-symlink-'));
+    created.push(override);
+    const target = mkdtempSync(join(override, 'target-'));
+    symlinkSync(target, expectedUserRoot(override), 'dir');
+    vi.stubEnv('CORAL_TEST_TMPDIR', override);
+
+    expect(testTempRoot()).toBe(tmpdir());
   });
 
   it('publishes one root under every name a temp-directory lookup consults', () => {
@@ -49,7 +68,10 @@ describe('test temp root', () => {
     expect(Object.keys(env).sort()).toEqual(['TEMP', 'TMP', 'TMPDIR']);
   });
 
-  it.runIf(shmIsUsableTmpfs())('prefers a usable memory-backed root over the platform temp directory', () => {
-    expect(testTempRoot()).toBe('/dev/shm/coral-tests');
-  });
+  it.runIf(shmIsUsableTmpfs() && testTempRoot(['/dev/shm']) !== tmpdir())(
+    'prefers a usable executable memory-backed root over the platform temp directory',
+    () => {
+      expect(testTempRoot()).toBe(expectedUserRoot('/dev/shm'));
+    },
+  );
 });

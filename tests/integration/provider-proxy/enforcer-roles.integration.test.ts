@@ -162,6 +162,7 @@ async function startSet(options: { recordContainment?: boolean } = {}) {
     return `roles-challenge-${challengeCount}`;
   };
   const accepting = {
+    orphanTimeoutMs: () => 30_000,
     controlIsLive: () => controlLive,
     issueFirstChallenge: () => ({ accepted: true, challenge: mintRoleChallenge() }) as const,
     admitSuccessor: () => ({ accepted: true, challenge: mintRoleChallenge() }) as const,
@@ -476,6 +477,7 @@ function bareDeadlines<Scope extends symbol>(clock: MonotonicClock<Scope>): Enfo
     return `bare-challenge-${challengeCount}`;
   };
   return {
+    orphanTimeoutMs: () => 30_000,
     controlIsLive: () => true,
     issueFirstChallenge: () => ({ accepted: true, challenge: mintChallenge() }) as const,
     admitSuccessor: () => ({ accepted: true, challenge: mintChallenge() }) as const,
@@ -1498,6 +1500,25 @@ describe('provider-proxy guardian and reaper', () => {
     ).rejects.toThrow(/teardown reserve/u);
   });
 
+  it('refuses guardian.handoff-install.v1 naming an orphan timeout that is not its enforcer’s own', async () => {
+    const set = await startSet();
+
+    await expect(
+      set.control.call(
+        'guardian.handoff-install.v1',
+        {
+          grantId: randomUUID(),
+          secretSha256: createHash('sha256').update(GRANT_SECRET, 'utf8').digest('hex'),
+          successor: set.coordinatorIdentity,
+          operations: [],
+          orphanTimeoutMs: 30_001,
+          teardownReserveMs: 14_000,
+        },
+        5_000,
+      ),
+    ).rejects.toThrow(/orphan timeout/u);
+  });
+
   it('refuses an unsorted or duplicated operation set at guardian.handoff-install.v1 ingress', async () => {
     const set = await startSet();
     const a = set.operationFor();
@@ -1586,6 +1607,26 @@ describe('provider-proxy guardian and reaper', () => {
         5_000,
       ),
     ).rejects.toThrow(/teardown reserve/u);
+  });
+
+  it('refuses reaper.handoff-install.v1 naming an orphan timeout that is not its enforcer’s own', async () => {
+    const set = await startSet();
+    const reaperControl = await openReaperControl(set);
+
+    await expect(
+      reaperControl.call(
+        'reaper.handoff-install.v1',
+        {
+          grantId: randomUUID(),
+          secretSha256: createHash('sha256').update(GRANT_SECRET, 'utf8').digest('hex'),
+          successor: set.coordinatorIdentity,
+          operations: [],
+          orphanTimeoutMs: 30_001,
+          teardownReserveMs: 14_000,
+        },
+        5_000,
+      ),
+    ).rejects.toThrow(/orphan timeout/u);
   });
 
   it('rotates reaper control once the guardian forwards the redemption receipt over the paired channel', async () => {
@@ -1822,6 +1863,7 @@ describe('provider-proxy guardian and reaper', () => {
       },
       clock,
       deadlines: {
+        orphanTimeoutMs: () => 74_000,
         controlIsLive: () => true,
         issueFirstChallenge: () => ({ accepted: true, challenge: randomUUID() }) as const,
         admitSuccessor: () => ({ accepted: true, challenge: randomUUID() }) as const,

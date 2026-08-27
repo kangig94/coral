@@ -38,8 +38,10 @@ import { DETACHED_CONTAINMENT_KIND, createGuardian, type Guardian } from './guar
 import type { ProviderOperationKey } from './ledger.js';
 import {
   createEnforcerDeadlineStateMachine,
+  CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV,
   resolveProviderProxyDeadlineConfiguration,
   type EnforcerDeadlineStateMachine,
+  type ProviderProxyDeadlineConfiguration,
 } from './orphan-deadline.js';
 import type { OperationStageHandle } from './operation-supervisor.js';
 import type { ControlClient } from './control-client.js';
@@ -142,11 +144,10 @@ function buildContainmentEnvironment<Scope extends symbol>(
 
 function buildDeadlines<Scope extends symbol>(
   clock: MonotonicClock<Scope>,
+  configuration: ProviderProxyDeadlineConfiguration,
   ports: ProviderRoleMainPorts,
 ): EnforcerDeadlineStateMachine<Scope> {
-  return createEnforcerDeadlineStateMachine(clock, resolveProviderProxyDeadlineConfiguration(ports.runtime.env), {
-    mintChallenge: () => ports.runtime.ids.uuid(),
-  });
+  return createEnforcerDeadlineStateMachine(clock, configuration, { mintChallenge: () => ports.runtime.ids.uuid() });
 }
 
 function buildSpawnPorts(ports: ProviderRoleMainPorts): RoleSpawnPorts {
@@ -524,13 +525,15 @@ export async function startProviderGuardianRole(
 ): Promise<GuardianRoleHandle> {
   const capsule = consumeProviderBootstrapCapsule(capsulePath, 'guardian', buildCapsuleEnv(ports));
   const clock = createMonotonicClock(guardianRoleClockScope);
-  const deadlines = buildDeadlines(clock, ports);
+  const deadlineConfiguration = resolveProviderProxyDeadlineConfiguration(ports.runtime.env);
+  const deadlines = buildDeadlines(clock, deadlineConfiguration, ports);
   const containmentEnvironment = buildContainmentEnvironment(clock, ports);
   const timer = runtimeControlTimer(ports.runtime);
   const spawnPorts = buildSpawnPorts(ports);
-  // The child inherits none of this process's CORAL_* env (composeChildEnv strips it), so the flavor that
-  // selects which artifact identity a spawned peer expects must be re-asserted explicitly.
-  const flavorEnv = { [BUILD_FLAVOR_ENV_KEY]: capsule.flavor };
+  const roleEnv = {
+    [BUILD_FLAVOR_ENV_KEY]: capsule.flavor,
+    [CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV]: String(deadlineConfiguration.orphanTimeoutMs),
+  };
   const exitProcess = ports.exitProcess ?? ((code: number): void => process.exit(code));
   const schedule = realRoleOutcomeScheduler(ports);
 
@@ -543,7 +546,7 @@ export async function startProviderGuardianRole(
     reaperSpawn = spawnRoleProcess('reaper', reaperCapsulePathFrom(capsule, ports.baseDir), spawnPorts, {
       pluginRoot: ports.pluginRoot,
       detached: false,
-      envAdditions: flavorEnv,
+      envAdditions: roleEnv,
     });
 
     const reaperConnected = connectRoleControlWithRetry(capsule.reaperControlEndpoint, timer, {
@@ -602,7 +605,7 @@ export async function startProviderGuardianRole(
     proxySpawn = spawnRoleProcess('proxy', proxyCapsulePathFrom(capsule, ports.baseDir), spawnPorts, {
       pluginRoot: ports.pluginRoot,
       detached: true,
-      envAdditions: flavorEnv,
+      envAdditions: roleEnv,
     });
 
     const containmentRecorded = guardian.recordContainment({
@@ -645,7 +648,7 @@ export async function startProviderReaperRole(
 ): Promise<ReaperRoleHandle> {
   const capsule = consumeProviderBootstrapCapsule(capsulePath, 'reaper', buildCapsuleEnv(ports));
   const clock = createMonotonicClock(reaperRoleClockScope);
-  const deadlines = buildDeadlines(clock, ports);
+  const deadlines = buildDeadlines(clock, resolveProviderProxyDeadlineConfiguration(ports.runtime.env), ports);
   const exitProcess = ports.exitProcess ?? ((code: number): void => process.exit(code));
 
   // Forward-referenced by `close` below (assigned into `createReaper`'s own `onOutcome` before the reaper it

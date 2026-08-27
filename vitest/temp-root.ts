@@ -1,4 +1,5 @@
-import { mkdirSync, statfsSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, rmSync, statfsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -20,6 +21,46 @@ function tmpfsWithRoom(candidate: string): boolean {
   }
 }
 
+/** Every unix socket the suites bind sits under this root, and `AF_UNIX` truncates `sun_path` at a fixed
+ *  small limit — 108 bytes on Linux — so bytes spent on the name are bytes the rest of the path cannot use.
+ *  `tests/invariants/temp-root-socket-budget.test.ts` holds the arithmetic. */
+export function userRootName(): string {
+  const identity = process.getuid?.() ?? process.env.USERNAME ?? process.env.USER ?? 'unknown';
+  return `coral-${String(identity).replaceAll(/[^a-zA-Z0-9_-]/gu, '_')}`;
+}
+
+function executableRoot(root: string): boolean {
+  if (process.platform === 'win32') return true;
+  let probeDirectory: string | null = null;
+  try {
+    probeDirectory = mkdtempSync(join(root, '.exec-probe-'));
+    const probe = join(probeDirectory, 'probe');
+    writeFileSync(probe, '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+    chmodSync(probe, 0o700);
+    const result = spawnSync(probe, [], { stdio: 'ignore', timeout: 1_000 });
+    return result.error === undefined && result.status === 0;
+  } catch {
+    return false;
+  } finally {
+    if (probeDirectory !== null) rmSync(probeDirectory, { recursive: true, force: true });
+  }
+}
+
+function secureUserRoot(base: string): string | null {
+  const root = join(base, userRootName());
+  try {
+    mkdirSync(root, { recursive: true, mode: 0o700 });
+    const stats = lstatSync(root);
+    const uid = process.getuid?.();
+    if (!stats.isDirectory() || (uid !== undefined && stats.uid !== uid) || (stats.mode & 0o777) !== 0o700) {
+      return null;
+    }
+    return executableRoot(root) ? root : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Where tests put the directories they create with `mkdtempSync(join(tmpdir(), …))`.
  *
@@ -31,10 +72,9 @@ function tmpfsWithRoom(candidate: string): boolean {
  * Durability is the only property given up, and no test can assert it: rename atomicity and write ordering —
  * what the crash-cut and atomic-publication suites actually exercise — hold on tmpfs exactly as on disk.
  *
- * Falls back to the platform temp directory whenever a memory-backed root is absent or too small, so a
- * container with a 64 MiB `/dev/shm`, a macOS runner, and a CI image without one all keep working unchanged.
- * `CORAL_TEST_TMPDIR` overrides the choice outright. `candidates` is a parameter so the fallback itself is
- * reachable from a test on a host that does have a usable tmpfs.
+ * Falls back to the platform temp directory whenever a memory-backed root is absent, too small, unsafe, or
+ * mounted `noexec`. `CORAL_TEST_TMPDIR` overrides candidate selection but must pass the same root checks.
+ * `candidates` is a parameter so the fallback remains reachable on a host with a usable tmpfs.
  */
 export function testTempRoot(candidates: ReadonlyArray<string | undefined> = DEFAULT_CANDIDATES): string {
   const override = process.env.CORAL_TEST_TMPDIR;
@@ -43,13 +83,7 @@ export function testTempRoot(candidates: ReadonlyArray<string | undefined> = DEF
     candidates.find((candidate): candidate is string => candidate !== undefined && tmpfsWithRoom(candidate));
   if (base === undefined) return tmpdir();
 
-  const root = join(base, 'coral-tests');
-  try {
-    mkdirSync(root, { recursive: true });
-  } catch {
-    return tmpdir();
-  }
-  return root;
+  return secureUserRoot(base) ?? tmpdir();
 }
 
 /** `TMPDIR` is what `os.tmpdir()` reads on POSIX; `TMP`/`TEMP` cover the Windows lookup order and any child

@@ -6,7 +6,24 @@ input both resolvers took and moved the overflow fallback under `socketFallbackD
 `TMPDIR` used to answer by accident into one the tree has to answer on purpose: **who is allowed to own
 the directory the singleton socket sits in, and who checks.**
 
-Three parts. All are about ownership of the address; none is about its length, which is settled.
+Three parts. All are about ownership of the address.
+
+**Corrected 2026-08-27: length is not settled, and overflow is silent.** The sentence that stood here said
+none of this was about length. Moving the test suites' `TMPDIR` from `/tmp` to a memory-backed root spent
+four of the margin's bytes on the root name and a per-user suffix spent the rest, which pushed
+`provider-<24 hex>.sock` from 104 to 109 bytes against the 108-byte Linux limit. `providerEndpoint`
+(`src/infra/path/provider-proxy.ts`) then did exactly what Part 2 describes — relocated the address under
+`socketFallbackDir(uid)` — and reported nothing. The suite that binds those sockets counts them beneath the
+HOME it created, found none, and failed ten seconds later as a wait that never settled; the cause took hours
+to reach and every gate but that one stayed green.
+
+So length and ownership are the same subject, not neighbouring ones: the overflow is what moves the address
+into the shared root this entry is about, and nothing on either side says it happened. Part 2 already knows
+the relocation is uid-dependent. What it did not say is that **no reader learns the address moved** — not the
+binder, not the process that computed the path, not an operator. `tests/invariants/temp-root-socket-budget.test.ts`
+now pins the margin for the suites that bind provider sockets, which keeps the test tree from crossing it
+again but does nothing for a production path that crosses it. A fix for this entry should decide whether
+relocation is allowed to be silent at all.
 
 ## Part 1 — the assertion holds at one binder out of four
 

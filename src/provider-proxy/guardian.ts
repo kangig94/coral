@@ -33,6 +33,7 @@ import {
   PROXY_CONTROL_RPC_TIMEOUT_MS,
   ProxyControlProtocolError,
   assertNamedCoordinatorBuild,
+  assertNamedOrphanTimeout,
   assertNamedProxyIdentity,
   assertNamedReaperIdentity,
   assertNamedTeardownReserve,
@@ -333,6 +334,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
           const request = guardianReaperHandoffInstallParamsSchema.parse(params);
           assertNamedCoordinatorBuild(request.successor, capsule);
           assertNamedTeardownReserve(request.teardownReserveMs, PROXY_TEARDOWN_RESERVE_MS);
+          assertNamedOrphanTimeout(request.orphanTimeoutMs, deadlines.orphanTimeoutMs());
           return grants.install({
             grantId: request.grantId,
             secretSha256: request.secretSha256,

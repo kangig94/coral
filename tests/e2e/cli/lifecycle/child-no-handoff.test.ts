@@ -68,7 +68,7 @@ describe('bundled child coordinator confinement', () => {
     }
 
     const flavor = sourceFlavor();
-    const home = mkdtempSync(join(tmpdir(), 'coral-child-no-parent-home-'));
+    const home = mkdtempSync(join(tmpdir(), 'coral-child-noparent-'));
     tempRoots.push(home);
     const fixture = createPluginFixture(tempRoots, { flavor, bundleHash: 'child-no-parent' });
     const paths = coordinatorFilesForHome(home, flavor);
@@ -90,7 +90,7 @@ describe('bundled child coordinator confinement', () => {
     }
 
     const flavor = sourceFlavor();
-    const home = mkdtempSync(join(tmpdir(), 'coral-child-mismatch-home-'));
+    const home = mkdtempSync(join(tmpdir(), 'coral-child-mismatch-'));
     tempRoots.push(home);
     const parentFixture = createPluginFixture(tempRoots, { flavor, bundleHash: 'parent-bundle-a' });
     const childFixture = createPluginFixture(tempRoots, { flavor, bundleHash: 'child-bundle-b' });

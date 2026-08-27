@@ -18,6 +18,7 @@ import {
   guardianProxyOperationReleaseResultSchema,
   guardianRegisterProviderRootParamsSchema,
   guardianStopAndReapParamsSchema,
+  MAX_HEARTBEAT_CHALLENGE_CHARACTERS,
   MAX_PROXY_CONTROL_FRAME_BYTES,
   operationIdentitySchema,
   providerRootSchema,
@@ -268,6 +269,22 @@ describe('provider proxy protocol vocabulary', () => {
 });
 
 describe('shared heartbeat, pairing, and guardian-to-reaper schemas', () => {
+  it('bounds a peer-supplied next challenge far below the shared frame cap', () => {
+    expect(
+      controlHeartbeatResultSchema.safeParse({
+        state: 'active',
+        nextHeartbeatChallenge: 'x'.repeat(MAX_HEARTBEAT_CHALLENGE_CHARACTERS),
+      }).success,
+    ).toBe(true);
+    expect(
+      controlHeartbeatResultSchema.safeParse({
+        state: 'active',
+        nextHeartbeatChallenge: 'x'.repeat(MAX_HEARTBEAT_CHALLENGE_CHARACTERS + 1),
+      }).success,
+    ).toBe(false);
+    expect(MAX_HEARTBEAT_CHALLENGE_CHARACTERS).toBeLessThan(MAX_PROXY_CONTROL_FRAME_BYTES / 1_000);
+  });
+
   it('accepts each exact request and result while rejecting an unknown field', () => {
     const providerRoot = { pid: 7_001, incarnation: testIncarnation(800) };
     const containment = { ...providerRoot, processGroupId: 7_001, containmentKind: 'posix-process-group' };

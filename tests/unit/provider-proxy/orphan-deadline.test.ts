@@ -9,6 +9,7 @@ import {
 } from '#src/infra/process-constants.js';
 import {
   createEnforcerDeadlineStateMachine,
+  CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV,
   DEFAULT_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS,
   MAX_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS,
   MIN_EFFECTIVE_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS,
@@ -153,7 +154,7 @@ describe('provider proxy orphan deadline configuration', () => {
   it('checks the controlling successor boundary on both sides', () => {
     const boundary = PROXY_TEARDOWN_RESERVE_MS + PROXY_CONTROL_LEASE_MS + PROXY_SUCCESSOR_TAIL_MS;
 
-    const issue = 'must satisfy the strict recurrence, process-bootstrap, and successor-adoption timing policy';
+    const issue = `${CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV} must be at least ${MIN_EFFECTIVE_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS}ms to satisfy the strict recurrence, process-bootstrap, and successor-adoption timing policy`;
     expect(issueMessages(String(boundary))).toContain(issue);
     expect(issueMessages(String(boundary + 1))).not.toContain(issue);
     expect(configuration(String(MIN_EFFECTIVE_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS)).orphanTimeoutMs).toBe(
@@ -207,20 +208,14 @@ describe('provider proxy orphan deadline configuration', () => {
     );
   });
 
-  it('derives the heartbeat-hold attempt floor from the same span and the protocol cadence', () => {
-    // 23000ms / (1000ms heartbeat tick + 5000ms RPC timeout budget) = 3.833..., floored.
-    expect(providerProxyHeartbeatHoldBound(configuration())).toEqual({ spanMs: 23_000, attemptFloor: 3 });
+  it('derives material scheduler lateness as one quarter of the same span', () => {
+    expect(providerProxyHeartbeatHoldBound(configuration())).toEqual({
+      spanMs: 23_000,
+      materialSchedulerLatenessMs: 5_750,
+    });
     expect(
       providerProxyHeartbeatHoldBound(configuration(String(MIN_EFFECTIVE_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS))),
-    ).toEqual({ spanMs: 22_001, attemptFloor: 3 });
-  });
-
-  it('never floors the attempt requirement below 1, even for a span shorter than one attempt costs', () => {
-    // A hold's `attempts` is always at least 2 by the time this bound is consulted, so a floor of 0 would
-    // impose no requirement at all.
-    expect(
-      providerProxyHeartbeatHoldBound({ orphanTimeoutMs: 19_001, teardownReserveMs: PROXY_TEARDOWN_RESERVE_MS }),
-    ).toEqual({ spanMs: 5_001, attemptFloor: 1 });
+    ).toEqual({ spanMs: 22_001, materialSchedulerLatenessMs: 5_500 });
   });
 
   it('rejects an unvalidated configuration object at the state-machine boundary', () => {

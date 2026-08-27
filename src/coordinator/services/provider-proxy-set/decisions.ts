@@ -42,6 +42,7 @@ export type ProviderProxySetPreserveDecision =
       role: ProviderProxyRole;
       method: ProviderProxyHeartbeatMethod;
       incidentReason: ProviderProxyHeartbeatIncidentReason;
+      schedulerLatenessMs: number;
       policy?: never;
       error: string;
       liveClaims: number;
@@ -87,9 +88,8 @@ export type ProviderProxySetHeartbeatFaultStopDecision = Readonly<{
 
 /**
  * The coordinator's own bounded exit from a heartbeat hold, distinct from `heartbeat-failed`: nothing the
- * endpoint said authorized this — the coordinator observed indeterminate heartbeat incidents continuously for
- * `elapsedMs` with no accepted echo in between and is invoking containment itself, so the decision names what
- * it observed rather than a verdict about the peer.
+ * endpoint said authorized this — the coordinator observed an evidence window with no peer answer and without
+ * material scheduler lateness, then invoked containment itself.
  */
 export type ProviderProxySetHeartbeatHoldExhaustedStopDecision = Readonly<{
   action: 'stop-and-reap';
@@ -100,6 +100,7 @@ export type ProviderProxySetHeartbeatHoldExhaustedStopDecision = Readonly<{
   lastIncidentReason: ProviderProxyHeartbeatIncidentReason;
   attempts: number;
   elapsedMs: number;
+  schedulerLatenessMs: number;
   policy?: never;
   error: string;
   liveClaims: number;
@@ -186,6 +187,6 @@ export function renderProviderProxySetDecision(
   }
   return {
     severity,
-    message: `Provider proxy set action=${decision.action} reason=${decision.reason} fault=${fault} subject=${subject} liveClaims=${decision.liveClaims} set=${providerProxySetReference(decision.setIdentity)} error=${error}${decision.fault === 'heartbeat-failed' ? ` terminalReason=${decision.terminalReason}` : ''}${decision.fault === 'heartbeat-indeterminate' ? ` incidentReason=${decision.incidentReason}` : ''}${decision.fault === 'heartbeat-hold-exhausted' ? ` attempts=${decision.attempts} elapsedMs=${decision.elapsedMs} lastIncidentReason=${decision.lastIncidentReason}` : ''}${summary === undefined ? '' : ` ${summary}`}`,
+    message: `Provider proxy set action=${decision.action} reason=${decision.reason} fault=${fault} subject=${subject} liveClaims=${decision.liveClaims} set=${providerProxySetReference(decision.setIdentity)} error=${error}${decision.fault === 'heartbeat-failed' ? ` terminalReason=${decision.terminalReason}` : ''}${decision.fault === 'heartbeat-indeterminate' ? ` incidentReason=${decision.incidentReason}` : ''}${decision.fault === 'heartbeat-hold-exhausted' ? ` attempts=${decision.attempts} elapsedMs=${decision.elapsedMs} schedulerLatenessMs=${decision.schedulerLatenessMs} lastIncidentReason=${decision.lastIncidentReason}` : ''}${summary === undefined ? '' : ` ${summary}`}`,
   };
 }

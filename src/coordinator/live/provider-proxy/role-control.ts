@@ -246,12 +246,6 @@ async function establishHeartbeat(
  * pending — an ordering this file does not control and nothing in either file's types enforces; see
  * connectControlClient in control-client.ts. `role-control.integration.test.ts` pins the ordering against a
  * real channel fault arriving while a heartbeat is in flight.
- *
- * `client.faulted` only ever resolves with `'remote-response'` (invalid-frame) or `'closed'` origin — never
- * `'timeout'`/`'write'`, which are per-call rejection origins, not channel-fault origins. Both route through
- * `classifyRoleControlFailure`, the one classifier `connect`/`open` failures already use: `'remote-response'`
- * becomes the same typed remote error `teardown-latched` uses, and `'closed'` becomes a retryable
- * `role-control-unavailable` at the `'heartbeat'` stage — carrying that origin rather than escaping raw.
  */
 async function establishHeartbeatOrChannelFault(
   role: ProviderProxyRole,

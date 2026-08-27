@@ -13,6 +13,7 @@ import {
   type ReaperBootstrapCapsule,
 } from '#src/provider-proxy/bootstrap-capsule.js';
 import type { ControlClient } from '#src/provider-proxy/control-client.js';
+import { CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV } from '#src/provider-proxy/orphan-deadline.js';
 import {
   buildEnforcementOutcomeHandlers,
   runProviderRoleMain,
@@ -209,9 +210,20 @@ function pairingCapsule(role: 'guardian' | 'proxy', directory: string, pairingSe
   };
 }
 
-function roleSenderPorts(directory: string): ProviderRoleMainPorts {
+function roleSenderPorts(directory: string, orphanTimeoutMs?: string): ProviderRoleMainPorts {
+  const runtime = createRealRuntime('prod');
   return {
-    runtime: createRealRuntime('prod'),
+    runtime:
+      orphanTimeoutMs === undefined
+        ? runtime
+        : {
+            ...runtime,
+            env: {
+              ...runtime.env,
+              get: (key: string) =>
+                key === CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV ? orphanTimeoutMs : runtime.env.get(key),
+            },
+          },
     pluginRoot: directory,
     baseDir: directory,
     readProcessIncarnation: (pid) => (pid === process.pid ? testIncarnation(1) : null),
@@ -284,11 +296,14 @@ describe('role pairing sender schemas', () => {
       spawnRoleProcess,
     );
 
-    await expect(startProviderGuardianRole('/unused', roleSenderPorts(directory))).rejects.toMatchObject({
+    await expect(startProviderGuardianRole('/unused', roleSenderPorts(directory, '74000'))).rejects.toMatchObject({
       issues: [expect.objectContaining({ code: 'unrecognized_keys', keys: ['unexpected'], path: [] })],
     });
     expect(call).toHaveBeenCalledOnce();
     expect(spawnRoleProcess).toHaveBeenCalledOnce();
+    expect(spawnRoleProcess.mock.calls[0]?.[3].envAdditions).toMatchObject({
+      [CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV]: '74000',
+    });
   });
 });
 

@@ -36,6 +36,7 @@ describe('provider proxy authority fault latch', () => {
       role: 'proxy',
       method: 'control.heartbeat.v1',
       incidentReason: 'unanswered',
+      schedulerLatenessMs: 0,
       error: 'timed out',
     });
     latch.reportIncident({ kind: 'heartbeat-accepted', role: 'proxy', method: 'control.heartbeat.v1' });
@@ -48,6 +49,7 @@ describe('provider proxy authority fault latch', () => {
         role: 'proxy',
         method: 'control.heartbeat.v1',
         incidentReason: 'unanswered',
+        schedulerLatenessMs: 0,
         error: 'timed out',
       },
       { kind: 'heartbeat-accepted', role: 'proxy', method: 'control.heartbeat.v1' },
@@ -61,6 +63,7 @@ describe('provider proxy authority fault latch', () => {
       role: 'proxy',
       method: 'control.heartbeat.v1',
       incidentReason: 'unanswered',
+      schedulerLatenessMs: 0,
       error: 'timed out',
     });
     latch.reportIncident({
@@ -68,6 +71,7 @@ describe('provider proxy authority fault latch', () => {
       role: 'proxy',
       method: 'control.heartbeat.v1',
       incidentReason: 'unclassified',
+      schedulerLatenessMs: 0,
       error: 'answer could not be decoded',
     });
 
@@ -80,6 +84,7 @@ describe('provider proxy authority fault latch', () => {
         role: 'proxy',
         method: 'control.heartbeat.v1',
         incidentReason: 'unclassified',
+        schedulerLatenessMs: 0,
         error: 'answer could not be decoded',
       },
     ]);

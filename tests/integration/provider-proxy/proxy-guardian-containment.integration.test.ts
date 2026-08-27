@@ -10,6 +10,7 @@ import type * as AppServerTransportModule from '#src/providers/app-server-transp
 import type * as ProviderBootstrapModule from '#src/providers/bootstrap.js';
 import type * as NodeProcessModule from '#src/infra/node-process.js';
 import type * as ProxySetAcquisitionModule from '#src/coordinator/live/provider-hosts/proxy-set-acquisition.js';
+import { DEFAULT_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS } from '#src/provider-proxy/orphan-deadline.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 const rotationDoubles = vi.hoisted(() => ({
@@ -285,6 +286,7 @@ async function startGuardianAndReaper() {
   };
   const deadlines = {
     controlIsLive: () => true,
+    orphanTimeoutMs: () => DEFAULT_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS,
     issueFirstChallenge: () => ({ accepted: true, challenge: mintChallenge() }) as const,
     admitSuccessor: () => ({ accepted: true, challenge: mintChallenge() }) as const,
     reattachControl: () => ({ accepted: true }) as const,
@@ -515,7 +517,7 @@ function establishActivationRoute(setIdentity: ProviderProxySetIdentity) {
   const authorityFaults = createProviderProxyAuthorityFaultLatch();
   const lifecycle = new ProviderProxySetLifecycle({
     buildSetId: FIXTURE_BUILD_SET_ID,
-    heartbeatHoldBound: { spanMs: Number.MAX_SAFE_INTEGER, attemptFloor: 0 },
+    heartbeatHoldBound: { spanMs: Number.MAX_SAFE_INTEGER, materialSchedulerLatenessMs: Number.MAX_SAFE_INTEGER },
     claims,
     controlEstablished: () => undefined,
     time: { ...timer, now: () => 0, monotonicNow: () => 0n },
@@ -1332,7 +1334,7 @@ describe('provider proxy cumulative root rotation', () => {
     claims.initialize([]);
     const lifecycle = new ProviderProxySetLifecycle({
       buildSetId: FIXTURE_BUILD_SET_ID,
-      heartbeatHoldBound: { spanMs: Number.MAX_SAFE_INTEGER, attemptFloor: 0 },
+      heartbeatHoldBound: { spanMs: Number.MAX_SAFE_INTEGER, materialSchedulerLatenessMs: Number.MAX_SAFE_INTEGER },
       claims,
       controlEstablished: () => undefined,
       time: runtime.time,

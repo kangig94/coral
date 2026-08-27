@@ -11,7 +11,7 @@ import {
 import { generationRunDir } from './coordinator.js';
 import { socketFallbackDir, socketPathByteLimit } from './unix-socket.js';
 
-const PROVIDER_PATH_IDENTITY_HASH_LENGTH = 24;
+export const PROVIDER_PATH_IDENTITY_HASH_LENGTH = 24;
 const PROVIDER_ROLE_PREFIX = { guardian: '0', proxy: '1', reaper: '2' } as const;
 
 export type ProviderProxyEndpointEnvironment = {

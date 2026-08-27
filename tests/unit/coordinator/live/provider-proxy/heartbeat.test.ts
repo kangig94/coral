@@ -265,8 +265,22 @@ describe('provider proxy authority heartbeats', () => {
         { controlEpoch, heartbeatChallenge: `${role}-challenge-0` },
       ]);
       expect(faults.incidents).toEqual([
-        { kind: 'heartbeat-indeterminate', role, method, incidentReason: 'unclassified', error },
-        { kind: 'heartbeat-indeterminate', role, method, incidentReason: 'unclassified', error },
+        {
+          kind: 'heartbeat-indeterminate',
+          role,
+          method,
+          incidentReason: 'unclassified',
+          schedulerLatenessMs: 0,
+          error,
+        },
+        {
+          kind: 'heartbeat-indeterminate',
+          role,
+          method,
+          incidentReason: 'unclassified',
+          schedulerLatenessMs: 0,
+          error,
+        },
       ]);
       expect(faults.faults).toEqual([]);
       stopAll(heartbeats);
@@ -301,6 +315,7 @@ describe('provider proxy authority heartbeats', () => {
         role: 'proxy',
         method: 'control.heartbeat.v1',
         incidentReason: 'unanswered',
+        schedulerLatenessMs: 0,
         error: timeout,
       },
     ]);
@@ -310,6 +325,39 @@ describe('provider proxy authority heartbeats', () => {
       method: 'control.heartbeat.v1',
     });
     expect(faults.faults).toEqual([]);
+    stopAll(heartbeats);
+  });
+
+  it('attaches observed scheduler lateness to the unanswered role and method', async () => {
+    const time = new VirtualTime();
+    const actualMonotonicNow = time.monotonicNow.bind(time);
+    let schedulerDelayMs = 0;
+    vi.spyOn(time, 'monotonicNow').mockImplementation(() => actualMonotonicNow() + BigInt(schedulerDelayMs));
+    const timeout = new ControlClientError('control_call_failed', 'heartbeat timed out', 'timeout');
+    const proxy = scriptedClient([timeout]);
+    const guardian = scriptedClient(['guardian-challenge-1']);
+    const reaper = scriptedClient(['reaper-challenge-1']);
+    const faults = recordingFaultLatch();
+    const heartbeats = startAll(
+      sessions({ proxy: proxy.client, guardian: guardian.client, reaper: reaper.client }),
+      runtimeWithTime(time),
+      faults.latch,
+    );
+
+    schedulerDelayMs = 2_000;
+    time.tick(PROXY_CONTROL_HEARTBEAT_MS);
+    await flushMicrotasks();
+
+    expect(faults.incidents).toEqual([
+      {
+        kind: 'heartbeat-indeterminate',
+        role: 'proxy',
+        method: 'control.heartbeat.v1',
+        incidentReason: 'unanswered',
+        schedulerLatenessMs: 2_000,
+        error: timeout,
+      },
+    ]);
     stopAll(heartbeats);
   });
 

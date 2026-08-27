@@ -38,7 +38,12 @@ import { connectControlClient, ControlClientError } from '#src/provider-proxy/co
 import { createControlEndpoint, type ControlChallengeAuthority } from '#src/provider-proxy/control-endpoint.js';
 import { ControlLeaseEvidence } from '#src/provider-proxy/control-lease.js';
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
-import { PROXY_CONTROL_HEARTBEAT_MS, PROXY_CONTROL_LEASE_MS } from '#src/provider-proxy/orphan-deadline.js';
+import {
+  CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV,
+  PROXY_CONTROL_HEARTBEAT_MS,
+  PROXY_CONTROL_LEASE_MS,
+} from '#src/provider-proxy/orphan-deadline.js';
+import { spawnRoleProcess } from '#src/provider-proxy/role-spawn.js';
 import type { CoordinatorIdentity } from '#src/provider-proxy/protocol.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { flushMicrotasks, VirtualTime } from '#tools/simulation/core/virtual-time.js';
@@ -150,7 +155,15 @@ async function advanceEndpointClock(
 describe('createProviderProxyAcquisitionSteps', () => {
   it('keeps proxy control live while guardian and reaper each consume 8500ms', async () => {
     const time = new VirtualTime();
-    const runtime = { ...createRealRuntime('prod'), time };
+    const realRuntime = createRealRuntime('prod');
+    const runtime = {
+      ...realRuntime,
+      time,
+      env: {
+        ...realRuntime.env,
+        get: (key: string) => (key === CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV ? '74000' : realRuntime.env.get(key)),
+      },
+    };
     const proxy = await proxyLeaseSession(time);
     const guardian = passiveClient();
     const reaper = passiveClient();
@@ -207,6 +220,9 @@ describe('createProviderProxyAcquisitionSteps', () => {
     });
     await steps.createCapsules();
     await steps.spawnGuardian();
+    expect(vi.mocked(spawnRoleProcess).mock.calls.at(-1)?.[3].envAdditions).toMatchObject({
+      [CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV]: '74000',
+    });
     const established = await steps.establishControl();
 
     const observation = { recurringEchoes: proxy.acceptedEchoes() - 1, controlIsLive: proxy.controlIsLive() };
@@ -310,7 +326,7 @@ describe('createProviderProxyAcquisitionSteps', () => {
     claims.initialize([]);
     const lifecycle = new ProviderProxySetLifecycle({
       buildSetId: FIXTURE_BUILD_SET_ID,
-      heartbeatHoldBound: { spanMs: Number.MAX_SAFE_INTEGER, attemptFloor: 0 },
+      heartbeatHoldBound: { spanMs: Number.MAX_SAFE_INTEGER, materialSchedulerLatenessMs: Number.MAX_SAFE_INTEGER },
       claims,
       controlEstablished: notifyProviderProxyControlEstablished,
       time,

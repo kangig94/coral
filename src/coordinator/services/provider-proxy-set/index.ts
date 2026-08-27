@@ -62,28 +62,21 @@ type PreserveReportState = {
 };
 
 /**
- * The hold a role's heartbeat channel is under: continuous indeterminate incidents since the last accepted
- * echo, spanning every error identity that run took. Kept separately from `PreserveReportState` because the
+ * The hold a role's heartbeat channel is under: continuous indeterminate incidents without evidence that the
+ * peer answered, spanning every error identity that run took. Kept separately from `PreserveReportState` because the
  * hold is a property of the role's heartbeat, not of any one error shape — `preserveReports` keys by
  * `[subject, errorIdentity]` so it can coalesce a repeating message, but a wedged proxy that alternates
  * between two failure shapes (a timeout, then an undecodable response) would keep each shape's own report
  * arriving too rarely to ever individually reach `heartbeatHoldBound`. Keyed by `[role, method]`, the same
- * pair `#recordHeartbeatAccepted` already clears by, so what starts a hold and what ends one agree on what the
- * hold is.
+ * pair `#recordHeartbeatAccepted` clears by.
  */
 type HeartbeatHoldState = {
-  /** Set once when the first indeterminate incident in a run arrives, and never touched again until an
-   *  accepted echo or this coordinator's own escalation ends the run. Monotonic: an authority-bearing span
-   *  comparison must not be able to move because a wall clock stepped.
-   *
-   *  This anchors on the first *failed* attempt, not on the last accepted echo the enforcer's own adoption
-   *  deadline anchors on — silence that began up to one heartbeat tick plus one RPC timeout budget earlier is
-   *  never counted, so `elapsedMs` at escalation understates the true silence by that much. The span and the
-   *  enforcer's window share a formula and an instrument, not an anchor; the direction is conservative — it can
-   *  only delay this escalation relative to the enforcer's, never move it earlier. */
+  /** Monotonic: an authority-bearing span comparison must not move because a wall clock stepped. */
   firstObservedAtMonotonicMs: bigint;
   /** Every heartbeat-indeterminate incident folded into this hold, across every error identity it took. */
   attempts: number;
+  /** Scheduler delay observed by the heartbeat loop during this evidence window. */
+  schedulerLatenessMs: number;
 };
 
 type EstablishedSlot = {
@@ -291,11 +284,8 @@ export type ProviderProxySetLifecycleDeps = Readonly<{
   time: Pick<TimePort, 'now' | 'monotonicNow' | 'setTimeout' | 'clearTimeout'>;
   recoveryDispatcher: ProviderProxyRecoveryDispatcher;
   /**
-   * How long a `heartbeat-indeterminate` hold may run, continuously and without an accepted echo, and how many
-   * such incidents it must have accumulated over that span, before this coordinator escalates into containment
-   * on its own. Derived from `providerProxyHeartbeatHoldBound` at composition — one dependency rather than two
-   * numbers a future change could drift out of step with each other or with the enforcer's own adoption
-   * window.
+   * How long a `heartbeat-indeterminate` hold may run and how much scheduler delay makes that evidence window
+   * inconclusive. Derived from `providerProxyHeartbeatHoldBound` at composition.
    */
   heartbeatHoldBound: ProviderProxyHeartbeatHoldBound;
   onProgressPremiseViolation?: (violation: ProviderProxySetLifecycleProgressViolation) => void;
@@ -621,6 +611,7 @@ export class ProviderProxySetLifecycle {
             role: incident.role,
             method: incident.method,
             incidentReason: incident.incidentReason,
+            schedulerLatenessMs: incident.schedulerLatenessMs,
           };
     this.#recordDecision(slot, decision, preserveErrorIdentity(incident.error));
   }
@@ -1205,10 +1196,10 @@ export class ProviderProxySetLifecycle {
     decision: ProviderProxySetPreserveDecision,
     errorIdentity: string,
   ): void {
-    const now = this.#deps.time.now();
     if (decision.fault === 'heartbeat-indeterminate' && this.#advanceHeartbeatHold(slot, decision)) {
       return;
     }
+    const now = this.#deps.time.now();
     const subject = decision.fault === 'operation-control-failed' ? decision.policy.method : decision.method;
     const key = JSON.stringify([subject, errorIdentity]);
     const report = slot.preserveReports.get(key);
@@ -1247,33 +1238,39 @@ export class ProviderProxySetLifecycle {
    * a hold's clock advances, or a wedged proxy that alternates failure shapes never trips the bound on either
    * shape alone.
    *
-   * Escalation requires both the span and the attempt floor: elapsed time alone cannot tell a peer that never
-   * answered from a coordinator that was never scheduled to ask it, so the decision also requires the number
-   * of attempts a normally-scheduled coordinator would have issued over that span (see
-   * `providerProxyHeartbeatHoldBound`). Issuing a heartbeat is an act a descheduled coordinator cannot fake.
-   *
-   * `challenge-resynchronized` is excluded from all of this: it is the peer answering correctly — this
-   * coordinator's own prior acknowledgement was lost, not the peer's response — so it is positive evidence of
-   * liveness, never silence. It must not start a hold, advance one, or count toward escalating it; it falls
-   * through to the ordinary preserve-report path untouched, exactly as it did before holds existed.
+   * A challenge resynchronization clears the same role/method hold as an accepted echo because it is a completed
+   * round trip on the current tenancy. Scheduler lateness at or above the derived material share resets the
+   * evidence window instead of authorizing containment from a span the scheduler itself substantially caused.
    */
   #advanceHeartbeatHold(
     slot: EstablishedSlot,
     decision: Extract<ProviderProxySetPreserveDecision, { fault: 'heartbeat-indeterminate' }>,
   ): boolean {
-    if (decision.incidentReason === 'challenge-resynchronized') return false;
+    if (decision.incidentReason === 'challenge-resynchronized') {
+      this.#recordHeartbeatAccepted(slot, decision.role, decision.method);
+      return false;
+    }
     const key = JSON.stringify([decision.role, decision.method]);
     const hold = slot.heartbeatHolds.get(key);
     const nowMonotonicMs = this.#deps.time.monotonicNow();
     if (hold === undefined) {
-      slot.heartbeatHolds.set(key, { firstObservedAtMonotonicMs: nowMonotonicMs, attempts: 1 });
+      slot.heartbeatHolds.set(key, {
+        firstObservedAtMonotonicMs: nowMonotonicMs,
+        attempts: 1,
+        schedulerLatenessMs: 0,
+      });
       return false;
     }
-    // Counted before the bound check below, so `attempts` on an escalating decision includes the incident
-    // that triggered it rather than undercounting by one.
     hold.attempts += 1;
+    hold.schedulerLatenessMs += decision.schedulerLatenessMs;
     const bound = this.#deps.heartbeatHoldBound;
-    if (nowMonotonicMs - hold.firstObservedAtMonotonicMs < BigInt(bound.spanMs) || hold.attempts < bound.attemptFloor) {
+    if (nowMonotonicMs - hold.firstObservedAtMonotonicMs < BigInt(bound.spanMs)) {
+      return false;
+    }
+    if (hold.schedulerLatenessMs >= bound.materialSchedulerLatenessMs) {
+      hold.firstObservedAtMonotonicMs = nowMonotonicMs;
+      hold.attempts = 1;
+      hold.schedulerLatenessMs = 0;
       return false;
     }
     this.#escalateHeartbeatHold(slot, decision, hold, nowMonotonicMs);
@@ -1283,8 +1280,9 @@ export class ProviderProxySetLifecycle {
   /**
    * The coordinator's own bounded exit from a heartbeat hold that an accepted echo never closed: `hold` has
    * carried indeterminate incidents for `decision.role`/`decision.method` continuously since
-   * `hold.firstObservedAtMonotonicMs` — across every error identity that run took — and that span, plus the
-   * accumulated attempt count, has now cleared `heartbeatHoldBound`. This starts a containment attempt — dual
+   * `hold.firstObservedAtMonotonicMs` — across every error identity that run took — and that span has cleared
+   * `heartbeatHoldBound` while accumulated scheduler lateness stayed below its material share. This starts a
+   * containment attempt — dual
    * evidence, `stop-and-reap` plus `containment-proof` — not a verdict that the peer is gone; containment never
    * settles on silence alone. The decision names what was observed (attempts, elapsed span, last incident
    * reason) rather than a bare "exhausted".
@@ -1303,6 +1301,7 @@ export class ProviderProxySetLifecycle {
       method: decision.method,
       lastIncidentReason: decision.incidentReason,
       attempts: hold.attempts,
+      schedulerLatenessMs: hold.schedulerLatenessMs,
       // The decision's `elapsedMs` is log text, not authority, so this is the one place the monotonic span
       // leaves bigint for a plain millisecond count.
       elapsedMs: Number(nowMonotonicMs - hold.firstObservedAtMonotonicMs),
@@ -1331,15 +1330,6 @@ export class ProviderProxySetLifecycle {
     }
   }
 
-  /**
-   * Evicts the oldest `operation-control-failed` report first: that kind alone gets a recovery timer from
-   * `#schedulePreserveRecovery` and so self-clears, while a `heartbeat-indeterminate` report has none and
-   * waits for an accepted echo (or this coordinator's own hold escalation, tracked separately in
-   * `heartbeatHolds`) to close it — losing one to eviction would leave `#recordHeartbeatAccepted` nothing to
-   * close and no periodic log until a fresh incident starts a new report. Falls back to the actual oldest
-   * entry only when every held report is itself a heartbeat hold, since some entry must still be evicted to
-   * honor the bound.
-   */
   #makeRoomForPreserveReport(slot: EstablishedSlot): void {
     if (slot.preserveReports.size < MAX_PRESERVE_REPORTS_PER_SET) return;
     let victim: readonly [string, PreserveReportState] | undefined;
@@ -1357,13 +1347,6 @@ export class ProviderProxySetLifecycle {
     this.#reportDecision(report.decision, `summary=evicted suppressed=${report.suppressed}`);
   }
 
-  /**
-   * The single owner of "no timer may clear a heartbeat hold": only an accepted echo
-   * (`#recordHeartbeatAccepted`) or this coordinator's own bounded escalation (`#escalateHeartbeatHold`) may
-   * end one, never a recovery timer assuming silence means the trouble passed. Refusing here rather than at
-   * each call site means a future call site cannot silently reintroduce timer-based recovery for a heartbeat
-   * report by omitting a condition.
-   */
   #schedulePreserveRecovery(slot: EstablishedSlot, key: string, report: PreserveReportState): void {
     if (report.decision.fault !== 'operation-control-failed') return;
     if (report.recoveryTimer !== null) this.#deps.time.clearTimeout(report.recoveryTimer);
@@ -1384,6 +1367,7 @@ export class ProviderProxySetLifecycle {
       }
     }
     slot.preserveReports.clear();
+    slot.heartbeatHolds.clear();
   }
 
   #reportDecision(decision: ProviderProxySetDecision, summary?: string): void {

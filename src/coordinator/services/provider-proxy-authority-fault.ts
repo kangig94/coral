@@ -33,7 +33,7 @@ export type ProviderProxyRole = 'proxy' | 'guardian' | 'reaper';
 
 export type ProviderProxyHeartbeatMethod = 'control.heartbeat.v1' | 'guardian.heartbeat.v1' | 'reaper.heartbeat.v1';
 /** `teardown-latched` is the endpoint's own decisive refusal. `local-failure` is this process's own — it
- *  could not construct or decode a heartbeat call at all, so nothing about the peer was ever in question. */
+ *  could not construct or send a heartbeat call at all, so nothing about the peer was ever in question. */
 export type ProviderProxyHeartbeatTerminalReason = 'teardown-latched' | 'local-failure';
 export type ProviderProxyHeartbeatIncidentReason = 'unanswered' | 'challenge-resynchronized' | 'unclassified';
 
@@ -67,6 +67,7 @@ export type ProviderProxyAuthorityIncident =
       role: ProviderProxyRole;
       method: ProviderProxyHeartbeatMethod;
       incidentReason: ProviderProxyHeartbeatIncidentReason;
+      schedulerLatenessMs: number;
       error: unknown;
     }>;
 
@@ -114,11 +115,8 @@ export function createProviderProxyAuthorityFaultLatch(): ProviderProxyAuthority
   let latchedFault: ProviderProxyAuthorityFault | null = null;
   const listeners = new Set<(fault: ProviderProxyAuthorityFault) => void>();
   const incidentListeners = new Set<(observation: ProviderProxyAuthorityObservation) => void>();
-  // Keyed by `incidentKey`, which is drawn from a closed vocabulary — the three `ProviderProxyRole` values
-  // (one heartbeat method each) plus whatever `RetrySafeControlCallPolicy.method` values this build's protocol
-  // surface declares — so a later report to the same key overwrites rather than accumulates. Growing this
-  // vocabulary is a reviewed code change, not runtime input, so no eviction cap is needed here the way
-  // `MAX_PRESERVE_REPORTS_PER_SET` needs one for a map keyed by arbitrary runtime error identity.
+  // The key vocabulary is build-owned, so overwriting the pending observation cannot grow this map from
+  // runtime input.
   const pendingIncidents = new Map<string, PendingIncident>();
   const faulted = new Promise<ProviderProxyAuthorityFault>((resolve) => {
     resolveFault = resolve;
