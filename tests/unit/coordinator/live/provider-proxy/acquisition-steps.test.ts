@@ -197,7 +197,6 @@ describe('createProviderProxyAcquisitionSteps', () => {
     mockedCreateSetAuthority.mockImplementation((options) => ({
       proxyInstanceId: options.proxyInstanceId,
       autonomousDeadline: {
-        owner: 'guardian-and-reaper',
         orphanTimeoutMs: Number.MAX_SAFE_INTEGER,
         heartbeatHoldBound: {
           spanMs: Number.MAX_SAFE_INTEGER,
@@ -211,8 +210,12 @@ describe('createProviderProxyAcquisitionSteps', () => {
       },
       stopAndReap: () => new Promise<never>(() => undefined),
       initiateControlClose: async () => undefined,
-      installRecoveryCredential: async () => undefined,
-      registerSuccessionOperation: async () => undefined,
+      installRecoveryCredential: async () =>
+        ({
+          kind: 'installed',
+          receipt: { kind: 'installed-recovery-credential', grantId: randomUUID() },
+        }) as never,
+      registerSuccessionOperation: async () => ({ kind: 'registered' as const }),
     }));
     const coordinatorIdentity: CoordinatorIdentity = {
       instanceId: randomUUID(),
@@ -296,7 +299,6 @@ describe('createProviderProxyAcquisitionSteps', () => {
     mockedCreateSetAuthority.mockImplementation((options) => ({
       proxyInstanceId: options.proxyInstanceId,
       autonomousDeadline: {
-        owner: 'guardian-and-reaper',
         orphanTimeoutMs: Number.MAX_SAFE_INTEGER,
         heartbeatHoldBound: {
           spanMs: Number.MAX_SAFE_INTEGER,
@@ -310,8 +312,12 @@ describe('createProviderProxyAcquisitionSteps', () => {
       },
       stopAndReap: () => new Promise<never>(() => undefined),
       initiateControlClose: async () => undefined,
-      installRecoveryCredential: async () => undefined,
-      registerSuccessionOperation: async () => undefined,
+      installRecoveryCredential: async () =>
+        ({
+          kind: 'installed',
+          receipt: { kind: 'installed-recovery-credential', grantId: randomUUID() },
+        }) as never,
+      registerSuccessionOperation: async () => ({ kind: 'registered' as const }),
     }));
     const coordinatorIdentity: CoordinatorIdentity = {
       instanceId: randomUUID(),

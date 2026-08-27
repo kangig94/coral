@@ -126,11 +126,11 @@ export interface BackendHealth {
     }>;
     providerProxySets?: Array<{
       setIdentity: { buildSetId: string; hostFingerprint: string; proxyInstanceId: string };
-      disposition: 'held' | 'awaiting-containment-absence' | 'released';
+      disposition: 'held' | 'awaiting-containment-absence';
       role?: string;
       method?: string;
       incidentReason: string;
-      waitingFor: 'heartbeat-evidence-window' | 'independent-containment-absence' | 'none-successor-accepted';
+      waitingFor: 'heartbeat-evidence-window' | 'independent-containment-absence';
     }>;
   };
 }
@@ -189,15 +189,11 @@ function isProviderProxySets(value: unknown): value is NonNullable<BackendHealth
         typeof entry.setIdentity.buildSetId === 'string' &&
         typeof entry.setIdentity.hostFingerprint === 'string' &&
         typeof entry.setIdentity.proxyInstanceId === 'string' &&
-        (entry.disposition === 'held' ||
-          entry.disposition === 'awaiting-containment-absence' ||
-          entry.disposition === 'released') &&
+        (entry.disposition === 'held' || entry.disposition === 'awaiting-containment-absence') &&
         (entry.role === undefined || typeof entry.role === 'string') &&
         (entry.method === undefined || typeof entry.method === 'string') &&
         typeof entry.incidentReason === 'string' &&
-        (entry.waitingFor === 'heartbeat-evidence-window' ||
-          entry.waitingFor === 'independent-containment-absence' ||
-          entry.waitingFor === 'none-successor-accepted'),
+        (entry.waitingFor === 'heartbeat-evidence-window' || entry.waitingFor === 'independent-containment-absence'),
     )
   );
 }

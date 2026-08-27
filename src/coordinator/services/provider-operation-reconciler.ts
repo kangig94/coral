@@ -973,7 +973,12 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
 
     let result: Awaited<ReturnType<DurableProviderProxyOperationAuthority['prepareOperation']>>;
     try {
-      result = await this.#sendJournaledPrepare(record, publication.attempt, authority);
+      const send = await this.#sendJournaledPrepare(record, publication.attempt, authority);
+      if (send.kind !== 'sent') {
+        await this.#recordRetry(record, new Error(`Provider recovery credential is ${send.kind}.`));
+        return null;
+      }
+      result = send.result;
     } catch (error: unknown) {
       if (!providerOperationErrorIsAmbiguous(error)) {
         return this.#transition(
@@ -1041,12 +1046,22 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
     record: Extract<ProviderOperationRecord, { phase: 'prepare-pending' }>,
     attempt: ProviderOperationPrepareAttempt,
     authority: DurableProviderProxyOperationAuthority,
-  ): Promise<Awaited<ReturnType<DurableProviderProxyOperationAuthority['prepareOperation']>>> {
+  ): Promise<
+    | Readonly<{
+        kind: 'sent';
+        result: Awaited<ReturnType<DurableProviderProxyOperationAuthority['prepareOperation']>>;
+      }>
+    | Exclude<
+        Awaited<ReturnType<DurableProviderProxyOperationAuthority['registerSuccessionOperation']>>,
+        { kind: 'registered' }
+      >
+  > {
     if (!this.#attemptMatchesRecord(record, attempt)) {
       throw new Error('Provider operation prepare send is not backed by the committed journal attempt.');
     }
-    await this.#awaitAuthority(authority.registerSuccessionOperation(record.operation));
-    return this.#awaitAuthority(authority.prepareOperation(attempt));
+    const registration = await this.#awaitAuthority(authority.registerSuccessionOperation(record.operation));
+    if (registration.kind !== 'registered') return registration;
+    return { kind: 'sent', result: await this.#awaitAuthority(authority.prepareOperation(attempt)) };
   }
 
   #acceptPrepareResult(
@@ -1158,8 +1173,12 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
       if (rotation.kind === 'conflict') return rotation.current;
 
       try {
-        const result = await this.#sendJournaledPrepare(rotated, attempt, authority);
-        return this.#acceptPrepareResult(rotated, result);
+        const send = await this.#sendJournaledPrepare(rotated, attempt, authority);
+        if (send.kind !== 'sent') {
+          await this.#recordRetry(rotated, new Error(`Provider recovery credential is ${send.kind}.`));
+          return null;
+        }
+        return this.#acceptPrepareResult(rotated, send.result);
       } catch (error: unknown) {
         if (!providerOperationErrorIsAmbiguous(error)) {
           return this.#transition(

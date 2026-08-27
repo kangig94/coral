@@ -58,14 +58,13 @@ function fakeInheritedProxySet(proxyInstanceId: string): ProviderProxyOperationA
   return {
     ...base,
     autonomousDeadline: {
-      owner: 'guardian-and-reaper',
       orphanTimeoutMs: Number.MAX_SAFE_INTEGER,
       heartbeatHoldBound: {
         spanMs: Number.MAX_SAFE_INTEGER,
         materialSchedulerLatenessMs: Number.MAX_SAFE_INTEGER,
       },
     },
-    registerSuccessionOperation: async () => {},
+    registerSuccessionOperation: async () => ({ kind: 'registered' as const }),
     setIdentity: {
       buildSetId: randomUUID(),
       hostFingerprint: 'a'.repeat(64),

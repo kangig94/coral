@@ -8,6 +8,7 @@ import type {
 } from '#src/coordinator/services/provider-proxy-authority-fault.js';
 import type { ProviderProxySetDecision } from '#src/coordinator/services/provider-proxy-set/decisions.js';
 import type { ProviderProxySetIdentity } from '#src/coordinator/services/provider-proxy-set/identity.js';
+import type { ProviderProxySetDischarge } from '#src/coordinator/services/provider-proxy-set/index.js';
 import type { ControlClientError, ControlExchange } from '#src/provider-proxy/control-client.js';
 import {
   applyNoResponse,
@@ -123,6 +124,15 @@ declare const forgedHeartbeatObservation: Readonly<{
 // @ts-expect-error only the heartbeat owner can mint the provenance brand; matching fields are insufficient.
 const invalidForgedHeartbeatObservation: HeartbeatObservation = forgedHeartbeatObservation;
 void invalidForgedHeartbeatObservation;
+
+declare const forgedSetDischarge: Readonly<{
+  process: Readonly<{ kind: 'containment-absent'; receipt: string }>;
+  claims: Readonly<{ kind: 'claims-discharged'; operations: readonly [] }>;
+}>;
+
+// @ts-expect-error slot removal requires both owner-minted discharge brands; matching literals carry no authority.
+const invalidForgedSetDischarge: ProviderProxySetDischarge = forgedSetDischarge;
+void invalidForgedSetDischarge;
 
 declare const controlExchange: ControlExchange;
 const ownerClassifiedObservation = heartbeatObservationFromExchange(controlExchange);

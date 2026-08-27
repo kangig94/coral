@@ -175,11 +175,11 @@ export type HealthSnapshot = {
     }>;
     providerProxySets?: Array<{
       setIdentity: { buildSetId: string; hostFingerprint: string; proxyInstanceId: string };
-      disposition: 'held' | 'awaiting-containment-absence' | 'released';
+      disposition: 'held' | 'awaiting-containment-absence';
       role?: string;
       method?: string;
       incidentReason: string;
-      waitingFor: 'heartbeat-evidence-window' | 'independent-containment-absence' | 'none-successor-accepted';
+      waitingFor: 'heartbeat-evidence-window' | 'independent-containment-absence';
     }>;
   };
 };

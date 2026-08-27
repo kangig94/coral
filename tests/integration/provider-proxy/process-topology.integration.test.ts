@@ -1230,7 +1230,8 @@ describe('provider-proxy process topology: acquisition', () => {
     applyBundledStoreSchema(db, currentCoralStoreFormat());
     insertProviderOperation(db, providerOperationRecord('prepare-pending', { operation, locator: reference.locator }));
 
-    await acquired.set.registerSuccessionOperation(operation);
+    const registration = await acquired.set.registerSuccessionOperation(operation);
+    expect(registration).toEqual({ kind: 'registered' });
     acquired.set.stopHeartbeats();
     await acquired.set.initiateControlClose();
 

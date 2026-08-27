@@ -48,7 +48,6 @@ import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 /** The build these fixture worlds belong to; capsules built from the same fixtures are inheritable, not foreign. */
 const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
 const TEST_AUTONOMOUS_DEADLINE = {
-  owner: 'guardian-and-reaper' as const,
   orphanTimeoutMs: 37_000,
   heartbeatHoldBound: providerProxyHeartbeatHoldBound({ orphanTimeoutMs: 37_000, teardownReserveMs: 14_000 }),
 };
@@ -58,6 +57,39 @@ type SharedSetControl = 'settlement-timeout' | 'control-channel-fault' | 'heartb
 function setReference(identity: ProviderProxySetIdentity): string {
   return `proxyInstanceId=${identity.proxyInstanceId},buildSetId=${identity.buildSetId}`;
 }
+
+describe('provider proxy operation routing', () => {
+  it('reads the current set deadline after the routed authority is constructed', () => {
+    const setIdentity = providerProxySetIdentityFromRecord(providerOperationRecord('executing'));
+    let deadline = TEST_AUTONOMOUS_DEADLINE;
+    const base = {
+      proxyInstanceId: setIdentity.proxyInstanceId,
+      get autonomousDeadline() {
+        return deadline;
+      },
+      stopAndReap: async () => ({ unconfirmed: 'unused' }) as const,
+      stopHeartbeats: () => undefined,
+      initiateControlClose: async () => undefined,
+      registerSuccessionOperation: async () => ({ kind: 'registered' as const }),
+    };
+    const faults = createProviderProxyAuthorityFaultLatch();
+    const authority = createProviderProxyOperationAuthority({
+      base,
+      setIdentity,
+      clients: {} as never,
+      faults,
+      mutationRpcTimeoutMs: 5_000,
+    });
+    const changed = {
+      orphanTimeoutMs: 45_000,
+      heartbeatHoldBound: { spanMs: 31_000, materialSchedulerLatenessMs: 7_750 },
+    };
+
+    deadline = changed;
+
+    expect(authority.autonomousDeadline).toBe(changed);
+  });
+});
 
 async function createSharedSetHarness(control: SharedSetControl) {
   const namespace = `execution-services-shared-set-${control}`;
@@ -160,7 +192,7 @@ async function createSharedSetHarness(control: SharedSetControl) {
       stopAndReap,
       stopHeartbeats: () => undefined,
       initiateControlClose: async () => undefined,
-      registerSuccessionOperation: async () => undefined,
+      registerSuccessionOperation: async () => ({ kind: 'registered' as const }),
     },
     setIdentity,
     clients: { proxy: proxyClient, guardian: idleClient, reaper: idleClient },
@@ -391,7 +423,7 @@ describe('execution services provider-proxy proof composition', () => {
       stopAndReap: async () => ({ unconfirmed: 'stored fault' }),
       stopHeartbeats: () => undefined,
       initiateControlClose: async () => undefined,
-      registerSuccessionOperation: async () => undefined,
+      registerSuccessionOperation: async () => ({ kind: 'registered' as const }),
     } as unknown as DurableProviderProxyOperationAuthority;
 
     lifecycle.registerInheritedSet(authority);
@@ -472,7 +504,7 @@ describe('execution services provider-proxy proof composition', () => {
       stopAndReap: async () => ({ unconfirmed: 'not requested' }),
       stopHeartbeats: () => undefined,
       initiateControlClose: async () => undefined,
-      registerSuccessionOperation: async () => undefined,
+      registerSuccessionOperation: async () => ({ kind: 'registered' as const }),
       buildOperationControl,
     } as unknown as DurableProviderProxyOperationAuthority;
     const admission = lifecycle.beginFreshAcquisition('fresh-publication');
@@ -676,7 +708,7 @@ describe('execution services provider-proxy proof composition', () => {
       },
       stopHeartbeats: () => undefined,
       initiateControlClose: async () => undefined,
-      registerSuccessionOperation: async () => undefined,
+      registerSuccessionOperation: async () => ({ kind: 'registered' as const }),
     } as unknown as DurableProviderProxyOperationAuthority;
     lifecycle.registerInheritedSet(authority);
     const faultListener = faultSubscription.listener;
@@ -858,13 +890,19 @@ describe('execution services provider-proxy heartbeat-hold composition', () => {
       containmentKind: setIdentity.containmentKind,
     };
     const roleClient = (role: 'guardian' | 'reaper' | 'proxy'): ControlClient => ({
-      exchange: () => {
-        throw new Error(`unexpected ${role} control exchange`);
+      exchange: async (method: string) => {
+        if (method.endsWith('handoff-install.v1') || method === 'handoff.install.v1') {
+          return {
+            kind: 'response',
+            response: {
+              kind: 'result',
+              value: { state: 'installed-dormant', grantId: recoveryCapsule.grantId },
+            },
+          };
+        }
+        throw new Error(`unexpected ${role} control exchange: ${method}`);
       },
       call: async (method: string) => {
-        if (method.endsWith('handoff-install.v1') || method === 'handoff.install.v1') {
-          return { state: 'installed-dormant', grantId: recoveryCapsule.grantId };
-        }
         if (method === 'guardian.stop-and-reap.v1' || method === 'reaper.stop-and-reap.v1') {
           return { state: 'containment-absent', disappearanceReceipt: `${role}-gone` };
         }
@@ -936,11 +974,15 @@ describe('execution services provider-proxy heartbeat-hold composition', () => {
       recoveryOperations: [],
       operationRegistry: new LocalOperationRegistry(),
     });
-    await base.installRecoveryCredential(new AbortController().signal);
+    const installation = await base.installRecoveryCredential(new AbortController().signal);
+    if (installation.kind !== 'installed') throw new Error(`recovery credential ${installation.kind}`);
     const stopAndReap = vi.fn(base.stopAndReap);
     const authority = createProviderProxyOperationAuthority({
       base: {
         ...base,
+        get autonomousDeadline() {
+          return base.autonomousDeadline;
+        },
         stopAndReap,
       },
       setIdentity,

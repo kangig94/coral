@@ -35,10 +35,7 @@ import {
   type ProviderProxySetDecision,
   type ProviderProxySetDrainDecision,
   type ProviderProxySetHeartbeatAwaitAbsenceDecision,
-  type ProviderProxySetHeartbeatAnswerUnusableReleaseDecision,
   type ProviderProxySetHeartbeatHoldExhaustedStopDecision,
-  type ProviderProxySetHeartbeatProtocolReleaseDecision,
-  type ProviderProxySetHeartbeatReleaseDecision,
   type ProviderProxySetLogSeverity,
   type ProviderProxySetPreserveDecision,
   type ProviderProxySetRetirementReason,
@@ -60,6 +57,28 @@ import {
 
 export const MAX_COORDINATOR_PROXY_SET_SLOTS = 4;
 const CONTAINMENT_ATTEMPT_MS = 30_000;
+
+declare const processContainmentEvidenceBrand: unique symbol;
+declare const durableClaimDischargeBrand: unique symbol;
+declare const providerProxySetDischargeBrand: unique symbol;
+
+export type ProcessContainmentEvidence = Readonly<{
+  kind: 'containment-absent';
+  receipt: string;
+}> &
+  Readonly<{ [processContainmentEvidenceBrand]: true }>;
+
+export type DurableClaimDischarge = Readonly<{
+  kind: 'claims-discharged';
+  operations: readonly OperationIdentity[];
+}> &
+  Readonly<{ [durableClaimDischargeBrand]: true }>;
+
+export type ProviderProxySetDischarge = Readonly<{
+  process: ProcessContainmentEvidence;
+  claims: DurableClaimDischarge;
+}> &
+  Readonly<{ [providerProxySetDischargeBrand]: true }>;
 
 type CapacityClass = 'retained' | 'excess';
 type EstablishmentIntent = 'serve' | 'contain-unclaimed-discovery';
@@ -137,7 +156,9 @@ type ProviderProxySetSlot =
       identity: ProviderProxySetIdentity;
       address: ProviderProxySetAddress;
       capacityClass: CapacityClass;
-      disappearanceReceipt: string;
+      processEvidence: ProcessContainmentEvidence;
+      claimOperations: readonly OperationIdentity[];
+      claimDischarge: DurableClaimDischarge | null;
       pendingOperations: Map<string, OperationIdentity>;
       initialDeliveries: Map<string, AbsenceDeliveryState>;
       deliveryRetryTimers: Map<string, TimerHandle>;
@@ -221,11 +242,11 @@ export type ProviderProxySetLifecycleSnapshot = Readonly<{
 
 export type ProviderProxySetOperatorDisposition = Readonly<{
   setIdentity: ProviderProxySetAddress;
-  disposition: 'held' | 'awaiting-containment-absence' | 'released';
+  disposition: 'held' | 'awaiting-containment-absence';
   role?: string;
   method?: string;
   incidentReason: string;
-  waitingFor: 'heartbeat-evidence-window' | 'independent-containment-absence' | 'none-successor-accepted';
+  waitingFor: 'heartbeat-evidence-window' | 'independent-containment-absence';
 }>;
 
 export type ProviderProxySetLifecycleProgressViolation = Readonly<{
@@ -623,7 +644,8 @@ export class ProviderProxySetLifecycle {
   }
 
   containmentAbsent(identity: ProviderProxySetIdentity, disappearanceReceipt: string): ContainmentAbsenceAcceptance {
-    const commit = this.#commitContainmentAbsence(identity, disappearanceReceipt);
+    const processEvidence = this.#processContainmentEvidence(disappearanceReceipt);
+    const commit = this.#commitContainmentAbsence(identity, processEvidence);
     if (commit.kind === 'unchanged') return this.#absenceAcceptance(commit.pending);
     const { pending, authorityToClose } = commit;
     this.#report(
@@ -651,19 +673,51 @@ export class ProviderProxySetLifecycle {
   #absenceAcceptance(slot: AbsenceDeliveryPendingSlot): ContainmentAbsenceAcceptance {
     return {
       kind: 'accepted',
-      disappearanceReceipt: slot.disappearanceReceipt,
+      disappearanceReceipt: slot.processEvidence.receipt,
       initialDisposition: slot.initialDisposition.promise,
     };
   }
 
-  #commitContainmentAbsence(
-    identity: ProviderProxySetIdentity,
-    disappearanceReceipt: string,
-  ): ContainmentAbsenceCommit {
-    const key = providerProxySetKey(identity);
+  #processContainmentEvidence(disappearanceReceipt: string): ProcessContainmentEvidence {
     if (typeof disappearanceReceipt !== 'string' || disappearanceReceipt.length === 0) {
       throw new Error('provider_proxy_containment_absence_receipt_invalid');
     }
+    return Object.freeze({
+      kind: 'containment-absent',
+      receipt: disappearanceReceipt,
+    }) as ProcessContainmentEvidence;
+  }
+
+  #noLiveClaimsDischarge(identity: ProviderProxySetIdentity): DurableClaimDischarge {
+    if (this.#deps.claims.claimsFor(identity).length !== 0) {
+      throw new Error('provider_proxy_no_live_claims_discharge_with_live_claims');
+    }
+    return this.#durableClaimDischarge([]);
+  }
+
+  #durableClaimDischarge(operations: readonly OperationIdentity[]): DurableClaimDischarge {
+    return Object.freeze({
+      kind: 'claims-discharged',
+      operations: Object.freeze([...operations]),
+    }) as DurableClaimDischarge;
+  }
+
+  #providerProxySetDischarge(slot: AbsenceDeliveryPendingSlot): ProviderProxySetDischarge {
+    if (slot.claimOperations.length === 0) {
+      slot.claimDischarge = this.#noLiveClaimsDischarge(slot.identity);
+    }
+    if (slot.claimDischarge === null) throw new Error('provider_proxy_claim_discharge_missing');
+    return Object.freeze({
+      process: slot.processEvidence,
+      claims: slot.claimDischarge,
+    }) as ProviderProxySetDischarge;
+  }
+
+  #commitContainmentAbsence(
+    identity: ProviderProxySetIdentity,
+    processEvidence: ProcessContainmentEvidence,
+  ): ContainmentAbsenceCommit {
+    const key = providerProxySetKey(identity);
     const slot = this.#slots.get(key);
     if (slot === undefined) throw new Error('provider_proxy_containment_absence_slot_missing');
     if (
@@ -674,7 +728,7 @@ export class ProviderProxySetLifecycle {
       throw new Error('provider_proxy_containment_absence_identity_mismatch');
     }
     if (slot.kind === 'absence-delivery-pending') {
-      if (slot.disappearanceReceipt !== disappearanceReceipt) {
+      if (slot.processEvidence.receipt !== processEvidence.receipt) {
         throw new Error('provider_proxy_containment_absence_conflict');
       }
       return { kind: 'unchanged', pending: slot };
@@ -683,9 +737,8 @@ export class ProviderProxySetLifecycle {
       throw new Error('provider_proxy_containment_absence_before_authority_fault');
     }
 
-    const pendingOperations = new Map(
-      this.#deps.claims.claimsFor(slot.identity).map((claim) => [operationKey(claim.operation), claim.operation]),
-    );
+    const claimOperations = this.#deps.claims.claimsFor(slot.identity).map((claim) => claim.operation);
+    const pendingOperations = new Map(claimOperations.map((operation) => [operationKey(operation), operation]));
     const initialDeliveries = new Map(
       [...pendingOperations.keys()].map((key) => [key, { kind: 'initial-pending' } as const]),
     );
@@ -695,7 +748,9 @@ export class ProviderProxySetLifecycle {
       identity: slot.identity,
       address: slot.address,
       capacityClass: slot.capacityClass,
-      disappearanceReceipt,
+      processEvidence,
+      claimOperations,
+      claimDischarge: claimOperations.length === 0 ? this.#noLiveClaimsDischarge(slot.identity) : null,
       pendingOperations,
       initialDeliveries,
       deliveryRetryTimers: new Map(),
@@ -1218,14 +1273,6 @@ export class ProviderProxySetLifecycle {
       ...(method === undefined ? {} : { method }),
       incidentReason,
     };
-    if (decision.action === 'release') {
-      this.#operatorDispositions.set(key, {
-        ...shared,
-        disposition: 'released',
-        waitingFor: 'none-successor-accepted',
-      });
-      return;
-    }
     if (decision.action === 'preserve') {
       this.#operatorDispositions.set(key, {
         ...shared,
@@ -1299,17 +1346,10 @@ export class ProviderProxySetLifecycle {
 
   #applyHeartbeatDisposition(
     slot: EstablishedSlot,
-    disposition:
-      | ProviderProxySetHeartbeatHoldExhaustedStopDecision
-      | ProviderProxySetHeartbeatReleaseDecision
-      | ProviderProxySetHeartbeatAwaitAbsenceDecision,
+    disposition: ProviderProxySetHeartbeatHoldExhaustedStopDecision | ProviderProxySetHeartbeatAwaitAbsenceDecision,
   ): void {
     if (disposition.action === 'stop-and-reap') {
       this.#beginFaultContainment(slot, disposition);
-      return;
-    }
-    if (disposition.action === 'release') {
-      this.#releaseAnsweredHeartbeat(slot, disposition);
       return;
     }
     this.#beginContainment(slot, disposition);
@@ -1332,7 +1372,10 @@ export class ProviderProxySetLifecycle {
         return;
       }
       if (transition.effect === 'method-not-found') {
-        this.#applyHeartbeatDisposition(slot, this.#heartbeatProtocolReleaseDecision(slot, incident, transition.error));
+        this.#applyHeartbeatDisposition(
+          slot,
+          this.#heartbeatProtocolContainmentDecision(slot, incident, transition.error),
+        );
         return;
       }
       if (transition.effect === 'teardown-latched') {
@@ -1410,18 +1453,11 @@ export class ProviderProxySetLifecycle {
     hold: Extract<HeartbeatEvidenceWindow, { kind: 'answered-unusable' }>,
     error: unknown,
     nowMonotonicMs: bigint,
-  ): ProviderProxySetHeartbeatAnswerUnusableReleaseDecision | ProviderProxySetHeartbeatAwaitAbsenceDecision {
+  ): ProviderProxySetHeartbeatAwaitAbsenceDecision {
     const liveClaims = this.#deps.claims.claimsFor(slot.identity).length;
-    const disposition =
-      liveClaims === 0 && slot.authority.autonomousDeadline.owner !== undefined
-        ? {
-            action: 'release' as const,
-            successorOwner: slot.authority.autonomousDeadline.owner,
-            liveClaims: 0 as const,
-          }
-        : { action: 'await-containment-absence' as const, liveClaims };
     return {
-      ...disposition,
+      action: 'await-containment-absence',
+      liveClaims,
       reason: 'heartbeat_answer_unusable_hold_exhausted',
       fault: 'heartbeat-answer-unusable-hold-exhausted',
       role: incident.role,
@@ -1435,22 +1471,15 @@ export class ProviderProxySetLifecycle {
     };
   }
 
-  #heartbeatProtocolReleaseDecision(
+  #heartbeatProtocolContainmentDecision(
     slot: EstablishedSlot,
     incident: ProviderProxyHeartbeatObservation,
     error: unknown,
-  ): ProviderProxySetHeartbeatProtocolReleaseDecision | ProviderProxySetHeartbeatAwaitAbsenceDecision {
+  ): ProviderProxySetHeartbeatAwaitAbsenceDecision {
     const liveClaims = this.#deps.claims.claimsFor(slot.identity).length;
-    const disposition =
-      liveClaims === 0 && slot.authority.autonomousDeadline.owner !== undefined
-        ? {
-            action: 'release' as const,
-            successorOwner: slot.authority.autonomousDeadline.owner,
-            liveClaims: 0 as const,
-          }
-        : { action: 'await-containment-absence' as const, liveClaims };
     return {
-      ...disposition,
+      action: 'await-containment-absence',
+      liveClaims,
       reason: 'heartbeat_protocol_incompatible',
       fault: 'heartbeat-method-not-found',
       role: incident.role,
@@ -1488,25 +1517,10 @@ export class ProviderProxySetLifecycle {
     }
   }
 
-  #releaseAnsweredHeartbeat(slot: EstablishedSlot, decision: ProviderProxySetHeartbeatReleaseDecision): void {
-    if (this.#slots.get(slot.key) !== slot) return;
-    this.#recordDecision(slot, decision);
-    this.#removeRoute(slot);
-    slot.authority.stopHeartbeats();
-    this.#slots.delete(slot.key);
-    this.#identityIndex.delete(slot.identity);
-    void slot.authority.initiateControlClose().catch((error: unknown) => {
-      this.#deps.onError?.(
-        `Provider proxy control close after heartbeat release failed: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    });
-    if (slot.routeKey !== null) this.#deps.onSlotReleased?.(slot.routeKey);
-  }
-
   #dispositionProtocolIncompatibleCapsule(
     slot: Extract<ProviderProxySetSlot, { kind: 'capsule-recovering' }>,
-    role: ProviderProxySetHeartbeatProtocolReleaseDecision['role'],
-    method: ProviderProxySetHeartbeatProtocolReleaseDecision['method'],
+    role: ProviderProxySetHeartbeatAwaitAbsenceDecision['role'],
+    method: ProviderProxySetHeartbeatAwaitAbsenceDecision['method'],
   ): void {
     if (this.#slots.get(slot.key) !== slot) return;
     const decision: ProviderProxySetHeartbeatAwaitAbsenceDecision = {
@@ -1738,7 +1752,7 @@ export class ProviderProxySetLifecycle {
     const notice: ContainmentDisappearanceNotice = {
       operation,
       setIdentity: slot.identity,
-      disappearanceReceipt: slot.disappearanceReceipt,
+      disappearanceReceipt: slot.processEvidence.receipt,
     };
     const currentDelivery = (): boolean =>
       this.#slots.get(slot.key) === slot && slot.pendingOperations.has(operationKey(operation));
@@ -1779,7 +1793,10 @@ export class ProviderProxySetLifecycle {
     if (timer !== undefined) this.#deps.time.clearTimeout(timer);
     slot.deliveryRetryTimers.delete(key);
     slot.initialDeliveries.set(key, { kind: 'accepted' });
-    if (slot.pendingOperations.size === 0) this.#startRetirement(slot);
+    if (slot.pendingOperations.size === 0) {
+      slot.claimDischarge ??= this.#durableClaimDischarge(slot.claimOperations);
+      this.#startRetirement(slot);
+    }
     this.#finishInitialDisposition(slot);
   }
 
@@ -1827,13 +1844,14 @@ export class ProviderProxySetLifecycle {
     if (
       this.#slots.get(slot.key) !== slot ||
       slot.pendingOperations.size !== 0 ||
+      slot.claimDischarge === null ||
       slot.retirementState !== 'not-ready'
     ) {
       return;
     }
     if (slot.capsulePath === null) {
       slot.retirementState = 'retired';
-      this.#releaseAbsenceSlot(slot);
+      this.#releaseAbsenceSlot(slot, this.#providerProxySetDischarge(slot));
       this.#finishInitialDisposition(slot);
       return;
     }
@@ -1852,7 +1870,7 @@ export class ProviderProxySetLifecycle {
         evidence: () => {
           if (this.#slots.get(slot.key) !== slot) return;
           slot.retirementState = 'retired';
-          this.#releaseAbsenceSlot(slot);
+          this.#releaseAbsenceSlot(slot, this.#providerProxySetDischarge(slot));
           this.#finishInitialDisposition(slot);
         },
         retry: (retry) => {
@@ -1896,8 +1914,11 @@ export class ProviderProxySetLifecycle {
     });
   }
 
-  #releaseAbsenceSlot(slot: AbsenceDeliveryPendingSlot): void {
+  #releaseAbsenceSlot(slot: AbsenceDeliveryPendingSlot, discharge: ProviderProxySetDischarge): void {
     if (this.#slots.get(slot.key) !== slot) return;
+    if (discharge.process !== slot.processEvidence || discharge.claims !== slot.claimDischarge) {
+      throw new Error('provider_proxy_set_discharge_mismatch');
+    }
     this.#slots.delete(slot.key);
     this.#operatorDispositions.delete(slot.key);
     this.#identityIndex.delete(slot.identity);

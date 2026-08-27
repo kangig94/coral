@@ -28,7 +28,8 @@ import type {
   ProviderProxyRoleClients,
 } from '../../services/provider-proxy-authority-fault.js';
 import type { ProviderProxySetIdentity } from '../../services/provider-proxy-set/identity.js';
-import type { ProviderProxySetAuthority, ProviderProxySetRecoveryAuthority } from './authority.js';
+import type { ProviderProxySetAuthority } from './authority.js';
+import type { ProviderProxySetRecoveryAuthority } from './set-authority.js';
 
 export interface ProviderProxyOperationAuthority
   extends ProviderProxySetAuthority, Pick<ProviderProxySetRecoveryAuthority, 'autonomousDeadline'> {
@@ -88,7 +89,6 @@ export function isProviderProxyOperationAuthority(
   const deadline = candidate.autonomousDeadline;
   return (
     deadline !== undefined &&
-    (deadline.owner === 'guardian-and-reaper' || deadline.acceptanceFailure === 'role-acknowledgement-unavailable') &&
     typeof deadline.orphanTimeoutMs === 'number' &&
     typeof deadline.heartbeatHoldBound?.spanMs === 'number' &&
     typeof deadline.heartbeatHoldBound.materialSchedulerLatenessMs === 'number' &&
@@ -125,6 +125,9 @@ export function createProviderProxyOperationAuthority(deps: {
   };
   return {
     ...deps.base,
+    get autonomousDeadline() {
+      return deps.base.autonomousDeadline;
+    },
     faulted: deps.faults.faulted,
     onFault: deps.faults.onFault,
     onIncident: deps.faults.onIncident,

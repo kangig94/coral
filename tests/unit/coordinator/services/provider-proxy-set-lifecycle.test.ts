@@ -357,7 +357,6 @@ function fakeAuthority(
     stopHeartbeats?: DurableProviderProxyOperationAuthority['stopHeartbeats'];
     initiateControlClose?: DurableProviderProxyOperationAuthority['initiateControlClose'];
     heartbeatHoldBound?: ProviderProxyHeartbeatHoldBound;
-    autonomousDeadlineAccepted?: boolean;
   } = {},
 ): DurableProviderProxyOperationAuthority {
   const record = options.record ?? providerOperationRecord('executing');
@@ -366,9 +365,6 @@ function fakeAuthority(
   const authority: DurableProviderProxyOperationAuthority = {
     proxyInstanceId: record.operation.proxyInstanceId,
     autonomousDeadline: {
-      ...(options.autonomousDeadlineAccepted === false
-        ? { acceptanceFailure: 'role-acknowledgement-unavailable' as const }
-        : { owner: 'guardian-and-reaper' as const }),
       orphanTimeoutMs: Number.MAX_SAFE_INTEGER,
       heartbeatHoldBound: options.heartbeatHoldBound ?? {
         spanMs: Number.MAX_SAFE_INTEGER,
@@ -384,7 +380,7 @@ function fakeAuthority(
         return () => undefined;
       }),
     onIncident: faults?.onIncident ?? (() => () => undefined),
-    registerSuccessionOperation: async () => undefined,
+    registerSuccessionOperation: async () => ({ kind: 'registered' as const }),
     stopAndReap: options.stopAndReap ?? (async () => ({ unconfirmed: 'not proved' })),
     stopHeartbeats: options.stopHeartbeats ?? (() => undefined),
     initiateControlClose: options.initiateControlClose ?? (async () => undefined),
@@ -1002,7 +998,7 @@ describe('ProviderProxySetLifecycle', () => {
     expect(stopHeartbeats).toHaveBeenCalledOnce();
     expect(initiateControlClose).toHaveBeenCalledOnce();
     expect(lifecycle.snapshot()).toEqual(expect.objectContaining({ represented: 1, states: ['containing'] }));
-    expect(reportLifecycle).toHaveBeenCalledExactlyOnceWith(
+    expect(reportLifecycle).toHaveBeenLastCalledWith(
       'warn',
       `Provider proxy set action=await-containment-absence reason=heartbeat_protocol_incompatible fault=heartbeat-method-not-found subject=guardian liveClaims=1 set=${setReference(authority.setIdentity)} error=method not found incidentReason=method-not-found`,
     );
@@ -1011,7 +1007,7 @@ describe('ProviderProxySetLifecycle', () => {
     await vi.waitFor(() => expect(lifecycle.snapshot().represented).toBe(0));
   });
 
-  it('releases a no-claim method-not-found set to its accepted deadline roles', () => {
+  it('requires independent containment absence for a no-claim method-not-found set', async () => {
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([]);
     const faults = createProviderProxyAuthorityFaultLatch();
@@ -1019,59 +1015,6 @@ describe('ProviderProxySetLifecycle', () => {
     const stopHeartbeats = vi.fn();
     const initiateControlClose = vi.fn(async () => undefined);
     const authority = fakeAuthority({ faults, stopAndReap, stopHeartbeats, initiateControlClose });
-    const reportLifecycle = vi.fn();
-    const lifecycle = lifecycleFor({
-      claims,
-      controlEstablished: ignoreControlEstablished,
-      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
-      time: new ManualClock(),
-      proveContainmentAbsent: noContainmentProof,
-      reportLifecycle,
-    });
-    lifecycle.initializeClaimSlots();
-    lifecycle.completeStartupDiscovery();
-    lifecycle.registerInheritedSet(authority);
-
-    faults.reportIncident(heartbeatAuthorityObservation({ kind: 'method-not-found', error: 'method not found' }));
-
-    expect(stopAndReap).not.toHaveBeenCalled();
-    expect(stopHeartbeats).toHaveBeenCalledOnce();
-    expect(initiateControlClose).toHaveBeenCalledOnce();
-    expect(lifecycle.snapshot().states).toEqual([]);
-    expect(lifecycle.snapshot().operatorDispositions).toEqual([
-      expect.objectContaining({
-        setIdentity: {
-          buildSetId: authority.setIdentity.buildSetId,
-          hostFingerprint: authority.setIdentity.hostFingerprint,
-          proxyInstanceId: authority.setIdentity.proxyInstanceId,
-        },
-        disposition: 'released',
-        role: 'guardian',
-        method: 'guardian.heartbeat.v1',
-        incidentReason: 'method-not-found',
-        waitingFor: 'none-successor-accepted',
-      }),
-    ]);
-    expect(reportLifecycle).toHaveBeenCalledExactlyOnceWith(
-      'warn',
-      `Provider proxy set action=release reason=heartbeat_protocol_incompatible fault=heartbeat-method-not-found subject=guardian liveClaims=0 set=${setReference(authority.setIdentity)} error=method not found incidentReason=method-not-found successorOwner=guardian-and-reaper`,
-    );
-  });
-
-  it('keeps a no-claim method-not-found set whose deadline acknowledgement is unproven', async () => {
-    const claims = new ProviderProxySetClaimMirror();
-    claims.initialize([]);
-    const faults = createProviderProxyAuthorityFaultLatch();
-    const stopAndReap = vi.fn(async () => ({ unconfirmed: 'unused' }) as const);
-    const stopHeartbeats = vi.fn();
-    const initiateControlClose = vi.fn(async () => undefined);
-    const authority = fakeAuthority({
-      faults,
-      stopAndReap,
-      stopHeartbeats,
-      initiateControlClose,
-      autonomousDeadlineAccepted: false,
-    });
     const absence = deferred<string | null>();
     const reportLifecycle = vi.fn();
     const lifecycle = lifecycleFor({
@@ -1089,12 +1032,72 @@ describe('ProviderProxySetLifecycle', () => {
     faults.reportIncident(heartbeatAuthorityObservation({ kind: 'method-not-found', error: 'method not found' }));
 
     expect(stopAndReap).not.toHaveBeenCalled();
-    expect(lifecycle.snapshot().represented).toBe(1);
+    expect(stopHeartbeats).toHaveBeenCalledOnce();
+    expect(initiateControlClose).toHaveBeenCalledOnce();
+    expect(lifecycle.snapshot().states).toEqual(['containing']);
+    expect(lifecycle.snapshot().operatorDispositions).toEqual([
+      expect.objectContaining({
+        setIdentity: {
+          buildSetId: authority.setIdentity.buildSetId,
+          hostFingerprint: authority.setIdentity.hostFingerprint,
+          proxyInstanceId: authority.setIdentity.proxyInstanceId,
+        },
+        disposition: 'awaiting-containment-absence',
+        role: 'guardian',
+        method: 'guardian.heartbeat.v1',
+        incidentReason: 'method-not-found',
+        waitingFor: 'independent-containment-absence',
+      }),
+    ]);
     expect(reportLifecycle).toHaveBeenCalledExactlyOnceWith(
       'warn',
       `Provider proxy set action=await-containment-absence reason=heartbeat_protocol_incompatible fault=heartbeat-method-not-found subject=guardian liveClaims=0 set=${setReference(authority.setIdentity)} error=method not found incidentReason=method-not-found`,
     );
-    absence.resolve('unproven-deadline-absence');
+    absence.resolve('method-not-found-no-claim-absence');
+    await vi.waitFor(() => expect(lifecycle.snapshot().represented).toBe(0));
+    expect(lifecycle.snapshot().operatorDispositions).toEqual([]);
+  });
+
+  it('requires containment absence after a no-claim unusable-answer window exhausts', async () => {
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([]);
+    const faults = createProviderProxyAuthorityFaultLatch();
+    const stopAndReap = vi.fn(async () => ({ unconfirmed: 'unused' }) as const);
+    const stopHeartbeats = vi.fn();
+    const initiateControlClose = vi.fn(async () => undefined);
+    const clock = new ManualClock();
+    const authority = fakeAuthority({
+      faults,
+      stopAndReap,
+      stopHeartbeats,
+      initiateControlClose,
+      heartbeatHoldBound: { spanMs: 5_000, materialSchedulerLatenessMs: 1_250 },
+    });
+    const absence = deferred<string | null>();
+    const reportLifecycle = vi.fn();
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: clock,
+      proveContainmentAbsent: () => absence.promise,
+      reportLifecycle,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.registerInheritedSet(authority);
+
+    faults.reportIncident(heartbeatAuthorityObservation({ kind: 'unusable', error: 'first unusable answer' }));
+    clock.elapse(5_000);
+    faults.reportIncident(heartbeatAuthorityObservation({ kind: 'unusable', error: 'second unusable answer' }));
+
+    expect(stopAndReap).not.toHaveBeenCalled();
+    expect(lifecycle.snapshot().represented).toBe(1);
+    expect(reportLifecycle).toHaveBeenLastCalledWith(
+      'warn',
+      `Provider proxy set action=await-containment-absence reason=heartbeat_answer_unusable_hold_exhausted fault=heartbeat-answer-unusable-hold-exhausted subject=guardian liveClaims=0 set=${setReference(authority.setIdentity)} error=second unusable answer attempts=2 elapsedMs=5000 schedulerLatenessMs=0 lastIncidentReason=unclassified`,
+    );
+    absence.resolve('answered-unusable-no-claim-absence');
     await vi.waitFor(() => expect(lifecycle.snapshot().represented).toBe(0));
   });
 

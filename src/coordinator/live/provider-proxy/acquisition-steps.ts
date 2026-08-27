@@ -441,7 +441,10 @@ export function createProviderProxyAcquisitionSteps(
           runtime,
           operationRegistry: options.operationRegistry,
         });
-        await base.installRecoveryCredential(new AbortController().signal);
+        const installation = await base.installRecoveryCredential(new AbortController().signal);
+        if (installation.kind !== 'installed') {
+          throw new Error(`provider_proxy_recovery_credential_${installation.kind}`);
+        }
         // The set-level identity `operation.prepare.v1`'s coordinator meta commit needs (W2.3): fixed for
         // this set's whole lifetime, built from the exact same verified fields `base`'s identity checks just
         // confirmed rather than re-derived, so the two can never disagree.

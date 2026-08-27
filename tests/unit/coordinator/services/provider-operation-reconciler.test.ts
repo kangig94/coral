@@ -488,7 +488,6 @@ function createHarness(
   const authority: DurableProviderProxyOperationAuthority = {
     proxyInstanceId: record.operation.proxyInstanceId,
     autonomousDeadline: {
-      owner: 'guardian-and-reaper',
       orphanTimeoutMs: Number.MAX_SAFE_INTEGER,
       heartbeatHoldBound: {
         spanMs: Number.MAX_SAFE_INTEGER,
@@ -516,7 +515,8 @@ function createHarness(
       proxyProcessGroupId: record.locator.containment.processGroupId,
       canonicalEndpoint: record.locator.proxy.controlEndpoint,
     },
-    registerSuccessionOperation: overrides.registerSuccessionOperation ?? (async () => undefined),
+    registerSuccessionOperation:
+      overrides.registerSuccessionOperation ?? (async () => ({ kind: 'registered' as const })),
     stopAndReap: async () => ({ disappearanceReceipt: 'gone' }),
     stopHeartbeats: () => undefined,
     initiateControlClose: async () => undefined,
@@ -902,6 +902,50 @@ describe('ProviderOperationReconciler publication', () => {
     expect(readProviderOperation(harness.db, harness.record.operation)?.phase).toBe('executing');
     expect(harness.appended).toEqual([expect.objectContaining({ type: 'job.runtime.started' })]);
     expect(harness.registry.activate).toHaveBeenCalledOnce();
+  });
+
+  it('does not send prepare until recovery credential installation is explicit', async () => {
+    let registrationAttempts = 0;
+    const registerSuccessionOperation = vi.fn<DurableProviderProxyOperationAuthority['registerSuccessionOperation']>(
+      async () => {
+        registrationAttempts += 1;
+        return registrationAttempts === 1
+          ? {
+              kind: 'retryable',
+              incident: {
+                role: 'guardian',
+                method: 'guardian.handoff-install.v1',
+                exchange: { kind: 'not-sent', cause: 'write-threw', error: new Error('transient write failure') },
+              },
+            }
+          : { kind: 'registered' };
+      },
+    );
+    const prepareOperation = vi.fn(async () => ({
+      state: 'pending-activation' as const,
+      reservation: asReservation('00000000-0000-4000-8000-000000000007'),
+      leaseExpiresInMs: 15_000,
+      providerRoot: { pid: 104, incarnation: testIncarnation(1_003) },
+      jointContainmentReceipt: asJointContainmentReceipt('containment-receipt'),
+    }));
+    const harness = createHarness({ registerSuccessionOperation, prepareOperation });
+
+    const publication = harness.begin();
+    await vi.waitFor(() =>
+      expect(readProviderOperation(harness.db, harness.record.operation)).toMatchObject({
+        phase: 'prepare-pending',
+        retryCount: 1,
+      }),
+    );
+
+    expect(prepareOperation).not.toHaveBeenCalled();
+    const retry = readProviderOperation(harness.db, harness.record.operation);
+    if (retry?.phase !== 'prepare-pending') throw new Error('expected retryable prepare registration');
+    await harness.reconciler.reconcile(retry, harness.authority);
+
+    await expect(publication).resolves.toEqual({ kind: 'remote-executing' });
+    expect(registerSuccessionOperation).toHaveBeenCalledTimes(2);
+    expect(prepareOperation).toHaveBeenCalledOnce();
   });
 
   it('honors the recorded abort intent at every publication cut before registry registration', async () => {
@@ -1808,6 +1852,7 @@ describe('ProviderOperationReconciler publication', () => {
       registerSuccessionOperation: async (operation) => {
         successorCalls.push('register');
         modeledProxyState.register(operation);
+        return { kind: 'registered' };
       },
       prepareOperation: async (attempt) => {
         successorCalls.push('prepare');

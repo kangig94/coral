@@ -132,31 +132,14 @@ type ProviderProxySetHeartbeatProtocolFields = ProviderProxySetHeartbeatDisposit
     incidentReason: 'method-not-found';
   }>;
 
-type ProviderProxySetHeartbeatReleaseFields = Readonly<{
-  action: 'release';
-  successorOwner: 'guardian-and-reaper';
-  liveClaims: 0;
-}>;
-
 type ProviderProxySetHeartbeatAwaitAbsenceFields = Readonly<{
   action: 'await-containment-absence';
-  successorOwner?: never;
   liveClaims: number;
 }>;
-
-export type ProviderProxySetHeartbeatAnswerUnusableReleaseDecision = ProviderProxySetHeartbeatAnswerUnusableFields &
-  ProviderProxySetHeartbeatReleaseFields;
-
-export type ProviderProxySetHeartbeatProtocolReleaseDecision = ProviderProxySetHeartbeatProtocolFields &
-  ProviderProxySetHeartbeatReleaseFields;
 
 export type ProviderProxySetHeartbeatAwaitAbsenceDecision =
   | (ProviderProxySetHeartbeatAnswerUnusableFields & ProviderProxySetHeartbeatAwaitAbsenceFields)
   | (ProviderProxySetHeartbeatProtocolFields & ProviderProxySetHeartbeatAwaitAbsenceFields);
-
-export type ProviderProxySetHeartbeatReleaseDecision =
-  | ProviderProxySetHeartbeatAnswerUnusableReleaseDecision
-  | ProviderProxySetHeartbeatProtocolReleaseDecision;
 
 export type ProviderProxySetDrainDecision = FaultlessDecisionFields &
   Readonly<{
@@ -190,8 +173,7 @@ export type ProviderProxySetContainmentDecision =
 export type ProviderProxySetDecision =
   | ProviderProxySetPreserveDecision
   | ProviderProxySetContainmentDecision
-  | ProviderProxySetDrainDecision
-  | ProviderProxySetHeartbeatReleaseDecision;
+  | ProviderProxySetDrainDecision;
 
 export type ProviderProxySetLogSeverity = 'info' | 'warn';
 
@@ -207,7 +189,6 @@ export function renderProviderProxySetDecision(
   const severity: ProviderProxySetLogSeverity =
     decision.reason === 'provider_authority_lost' ||
     decision.reason === 'heartbeat_hold_exhausted' ||
-    decision.action === 'release' ||
     decision.action === 'await-containment-absence'
       ? 'warn'
       : 'info';
@@ -251,6 +232,6 @@ export function renderProviderProxySetDecision(
   }
   return {
     severity,
-    message: `Provider proxy set action=${decision.action} reason=${decision.reason} fault=${fault} subject=${subject} liveClaims=${decision.liveClaims} set=${providerProxySetReference(decision.setIdentity)} error=${error}${decision.fault === 'heartbeat-failed' ? ` terminalReason=${decision.terminalReason}` : ''}${decision.fault === 'heartbeat-indeterminate' ? ` incidentReason=${decision.incidentReason}` : ''}${decision.fault === 'heartbeat-hold-exhausted' || decision.fault === 'heartbeat-answer-unusable-hold-exhausted' ? ` attempts=${decision.attempts} elapsedMs=${decision.elapsedMs} schedulerLatenessMs=${decision.schedulerLatenessMs} lastIncidentReason=${decision.lastIncidentReason}` : ''}${decision.fault === 'heartbeat-method-not-found' ? ` incidentReason=${decision.incidentReason}` : ''}${decision.action === 'release' ? ` successorOwner=${decision.successorOwner}` : ''}${summary === undefined ? '' : ` ${summary}`}`,
+    message: `Provider proxy set action=${decision.action} reason=${decision.reason} fault=${fault} subject=${subject} liveClaims=${decision.liveClaims} set=${providerProxySetReference(decision.setIdentity)} error=${error}${decision.fault === 'heartbeat-failed' ? ` terminalReason=${decision.terminalReason}` : ''}${decision.fault === 'heartbeat-indeterminate' ? ` incidentReason=${decision.incidentReason}` : ''}${decision.fault === 'heartbeat-hold-exhausted' || decision.fault === 'heartbeat-answer-unusable-hold-exhausted' ? ` attempts=${decision.attempts} elapsedMs=${decision.elapsedMs} schedulerLatenessMs=${decision.schedulerLatenessMs} lastIncidentReason=${decision.lastIncidentReason}` : ''}${decision.fault === 'heartbeat-method-not-found' ? ` incidentReason=${decision.incidentReason}` : ''}${summary === undefined ? '' : ` ${summary}`}`,
   };
 }

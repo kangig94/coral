@@ -9,6 +9,7 @@ import {
   writeHandoffCapsuleFile,
   type HandoffCapsuleV3,
   proxyHandoffInstallParamsSchema,
+  canonicalHandoffOperationSet,
 } from '../../../provider-proxy/handoff-capsule.js';
 import type { ProviderProxyOperationSnapshot } from '../../services/operation-registry.js';
 import {
@@ -36,10 +37,10 @@ import {
   type ProxyIdentity,
   type ReaperIdentity,
 } from '../../../provider-proxy/protocol.js';
-import type { ControlClient } from '../../../provider-proxy/control-client.js';
+import type { ControlClient, ControlExchange } from '../../../provider-proxy/control-client.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { ProviderProxyRoleHeartbeats } from './heartbeat.js';
-import type { ProviderProxyAutonomousDeadline, ProviderProxySetRecoveryAuthority } from './authority.js';
+import type { ProviderProxyAutonomousDeadline, ProviderProxySetAuthority } from './authority.js';
 
 const handoffInstallAckSchema = z
   .object({ state: z.literal('installed-dormant'), grantId: canonicalUuidSchema })
@@ -50,6 +51,72 @@ function assertHandoffInstallAck(value: unknown, expectedGrantId: string): void 
   if (acknowledgement.grantId !== expectedGrantId) {
     throw new Error('provider_proxy_handoff_install_ack_grant_mismatch');
   }
+}
+
+declare const installedRecoveryCredentialBrand: unique symbol;
+type InstalledRecoveryCredentialBrand = Readonly<{ [installedRecoveryCredentialBrand]: true }>;
+
+export type InstalledRecoveryCredential = Readonly<{
+  kind: 'installed-recovery-credential';
+  grantId: string;
+}> &
+  InstalledRecoveryCredentialBrand;
+
+type RecoveryCredentialInstallRole = 'guardian' | 'reaper' | 'proxy';
+type ControlResponse = Extract<ControlExchange, { kind: 'response' }>;
+type ControlRefusalExchange = Readonly<{
+  kind: 'response';
+  response: Extract<ControlResponse['response'], { kind: 'refusal' }>;
+}>;
+type ControlInstallIncidentExchange = Exclude<ControlExchange, ControlResponse> | ControlRefusalExchange;
+
+export type RecoveryCredentialInstallIncident = Readonly<{
+  role: RecoveryCredentialInstallRole;
+  method: 'guardian.handoff-install.v1' | 'reaper.handoff-install.v1' | 'handoff.install.v1';
+  exchange: ControlInstallIncidentExchange;
+}>;
+
+export type RecoveryCredentialInstallOutcome =
+  | Readonly<{ kind: 'installed'; receipt: InstalledRecoveryCredential }>
+  | Readonly<{ kind: 'retryable'; incident: RecoveryCredentialInstallIncident }>
+  | Readonly<{ kind: 'refused'; incident: RecoveryCredentialInstallIncident }>
+  | Readonly<{ kind: 'cancelled' }>;
+
+export type SuccessionOperationRegistrationOutcome =
+  | Readonly<{ kind: 'registered' }>
+  | Exclude<RecoveryCredentialInstallOutcome, { kind: 'installed' }>;
+
+export interface ProviderProxySetRecoveryAuthority extends ProviderProxySetAuthority {
+  readonly autonomousDeadline: ProviderProxyAutonomousDeadline;
+  installRecoveryCredential(signal: AbortSignal): Promise<RecoveryCredentialInstallOutcome>;
+  registerSuccessionOperation(
+    operation: OperationIdentity,
+    signal?: AbortSignal,
+  ): Promise<SuccessionOperationRegistrationOutcome>;
+}
+
+type RecoveryCredentialInstallState =
+  | Readonly<{ kind: 'idle' }>
+  | Readonly<{ kind: 'installing'; completion: Promise<RecoveryCredentialInstallOutcome> }>
+  | Readonly<{ kind: 'installed'; receipt: InstalledRecoveryCredential }>;
+
+function installExchangeOutcome(
+  role: RecoveryCredentialInstallRole,
+  method: RecoveryCredentialInstallIncident['method'],
+  exchange: ControlExchange,
+  expectedGrantId: string,
+): Exclude<RecoveryCredentialInstallOutcome, { kind: 'installed' | 'cancelled' }> | null {
+  if (exchange.kind !== 'response') {
+    return { kind: 'retryable', incident: { role, method, exchange } };
+  }
+  if (exchange.response.kind === 'refusal') {
+    return {
+      kind: 'refused',
+      incident: { role, method, exchange: { kind: 'response', response: exchange.response } },
+    };
+  }
+  assertHandoffInstallAck(exchange.response.value, expectedGrantId);
+  return null;
 }
 
 /** Lets `signal` cut a pending call short without requiring `ControlClient.call` itself to understand
@@ -98,7 +165,7 @@ export type ProviderProxySetAuthorityDependencies = ProviderProxySetAuthorityCom
 
 /**
  * Builds the `ProviderProxySetAuthority` shutdown sees, from three already-established role sessions. Split
- * out from `establishControl` so tests can exercise recovery installation and containment release without a
+ * out from `establishControl` so tests can exercise recovery installation and containment without a
  * real socket handshake.
  */
 export function createProviderProxySetAuthority(
@@ -120,8 +187,7 @@ export function createProviderProxySetAuthority(
   } = deps;
 
   const deadlineConfiguration = deps.recoveryCapsule ?? resolveProviderProxyDeadlineConfiguration(runtime.env);
-  let autonomousDeadline: ProviderProxyAutonomousDeadline = Object.freeze({
-    acceptanceFailure: 'role-acknowledgement-unavailable' as const,
+  const autonomousDeadline: ProviderProxyAutonomousDeadline = Object.freeze({
     orphanTimeoutMs: deadlineConfiguration.orphanTimeoutMs,
     heartbeatHoldBound: providerProxyHeartbeatHoldBound(deadlineConfiguration),
   });
@@ -158,91 +224,125 @@ export function createProviderProxySetAuthority(
     };
     return mintedRecoveryCapsule;
   };
-  let recoveryCredentialInstalled = deps.recoveryCapsule !== undefined;
-  let recoveryCredentialInstall: Promise<void> | null = null;
+  let recoveryCredentialInstallState: RecoveryCredentialInstallState = { kind: 'idle' };
 
-  const installRecoveryCredential = async (signal: AbortSignal): Promise<void> => {
-    if (recoveryCredentialInstalled && autonomousDeadline.owner !== undefined) return;
-    signal.throwIfAborted();
-    recoveryCredentialInstall ??= (async () => {
-      const capsule = deps.recoveryCapsule ?? mintRecoveryCapsule();
-      const operations = deps.recoveryCapsule === undefined ? [] : deps.recoveryOperations;
-      const secretSha256 = handoffSecretDigest(capsule.secret);
-      const guardianReaperInstallPayload = guardianReaperHandoffInstallParamsSchema.parse({
-        grantId: capsule.grantId,
-        secretSha256,
-        successor: coordinatorIdentity,
-        operations,
-        orphanTimeoutMs: capsule.orphanTimeoutMs,
-        teardownReserveMs: capsule.teardownReserveMs,
-      });
-      const proxyInstall = () =>
-        proxyClient.call(
-          'handoff.install.v1',
-          proxyHandoffInstallParamsSchema.parse({
-            grantId: capsule.grantId,
-            secretSha256,
-            generation: capsule.generation,
-            hostFingerprint: capsule.hostFingerprint,
-            buildSetId: capsule.buildSetId,
-            proxyInstanceId: capsule.proxyInstanceId,
-            operations,
-            orphanTimeoutMs: capsule.orphanTimeoutMs,
-          }),
+  const performRecoveryCredentialInstall = async (): Promise<RecoveryCredentialInstallOutcome> => {
+    const capsule = deps.recoveryCapsule ?? mintRecoveryCapsule();
+    const operations = deps.recoveryCapsule === undefined ? [] : canonicalHandoffOperationSet(deps.recoveryOperations);
+    const secretSha256 = handoffSecretDigest(capsule.secret);
+    const guardianReaperInstallPayload = guardianReaperHandoffInstallParamsSchema.parse({
+      grantId: capsule.grantId,
+      secretSha256,
+      successor: coordinatorIdentity,
+      operations,
+      orphanTimeoutMs: capsule.orphanTimeoutMs,
+      teardownReserveMs: capsule.teardownReserveMs,
+    });
+    const proxyInstall = () =>
+      proxyClient.exchange(
+        'handoff.install.v1',
+        proxyHandoffInstallParamsSchema.parse({
+          grantId: capsule.grantId,
+          secretSha256,
+          generation: capsule.generation,
+          hostFingerprint: capsule.hostFingerprint,
+          buildSetId: capsule.buildSetId,
+          proxyInstanceId: capsule.proxyInstanceId,
+          operations,
+          orphanTimeoutMs: capsule.orphanTimeoutMs,
+        }),
+        PROXY_CONTROL_RPC_TIMEOUT_MS,
+      );
+    let guardianExchange: ControlExchange;
+    let reaperExchange: ControlExchange;
+    let proxyExchange: ControlExchange;
+    if (deps.recoveryCapsule === undefined) {
+      [guardianExchange, reaperExchange, proxyExchange] = await Promise.all([
+        guardianClient.exchange(
+          'guardian.handoff-install.v1',
+          guardianReaperInstallPayload,
           PROXY_CONTROL_RPC_TIMEOUT_MS,
-        );
-      let guardianAck: unknown;
-      let reaperAck: unknown;
-      let proxyAck: unknown;
-      if (deps.recoveryCapsule === undefined) {
-        [guardianAck, reaperAck, proxyAck] = await Promise.all([
-          guardianClient.call(
-            'guardian.handoff-install.v1',
-            guardianReaperInstallPayload,
-            PROXY_CONTROL_RPC_TIMEOUT_MS,
-          ),
-          reaperClient.call('reaper.handoff-install.v1', guardianReaperInstallPayload, PROXY_CONTROL_RPC_TIMEOUT_MS),
-          proxyInstall(),
-        ]);
-      } else {
-        [guardianAck, reaperAck] = await Promise.all([
-          guardianClient.call(
-            'guardian.handoff-install.v1',
-            guardianReaperInstallPayload,
-            PROXY_CONTROL_RPC_TIMEOUT_MS,
-          ),
-          reaperClient.call('reaper.handoff-install.v1', guardianReaperInstallPayload, PROXY_CONTROL_RPC_TIMEOUT_MS),
-        ]);
-        assertHandoffInstallAck(guardianAck, capsule.grantId);
-        assertHandoffInstallAck(reaperAck, capsule.grantId);
-        proxyAck = await proxyInstall();
-      }
-      assertHandoffInstallAck(guardianAck, capsule.grantId);
-      assertHandoffInstallAck(reaperAck, capsule.grantId);
-      assertHandoffInstallAck(proxyAck, capsule.grantId);
-      if (deps.recoveryCapsule === undefined) {
-        writeHandoffCapsuleFile(handoffCapsulePath, capsule, {
-          storage: runtime.storage,
-          uid: process.getuid?.() ?? 0,
-        });
-      }
-      recoveryCredentialInstalled = true;
-      autonomousDeadline = Object.freeze({
-        owner: 'guardian-and-reaper' as const,
-        orphanTimeoutMs: deadlineConfiguration.orphanTimeoutMs,
-        heartbeatHoldBound: providerProxyHeartbeatHoldBound(deadlineConfiguration),
+        ),
+        reaperClient.exchange('reaper.handoff-install.v1', guardianReaperInstallPayload, PROXY_CONTROL_RPC_TIMEOUT_MS),
+        proxyInstall(),
+      ]);
+    } else {
+      [guardianExchange, reaperExchange] = await Promise.all([
+        guardianClient.exchange(
+          'guardian.handoff-install.v1',
+          guardianReaperInstallPayload,
+          PROXY_CONTROL_RPC_TIMEOUT_MS,
+        ),
+        reaperClient.exchange('reaper.handoff-install.v1', guardianReaperInstallPayload, PROXY_CONTROL_RPC_TIMEOUT_MS),
+      ]);
+      const guardianOutcome = installExchangeOutcome(
+        'guardian',
+        'guardian.handoff-install.v1',
+        guardianExchange,
+        capsule.grantId,
+      );
+      const reaperOutcome = installExchangeOutcome(
+        'reaper',
+        'reaper.handoff-install.v1',
+        reaperExchange,
+        capsule.grantId,
+      );
+      if (guardianOutcome?.kind === 'refused') return guardianOutcome;
+      if (reaperOutcome?.kind === 'refused') return reaperOutcome;
+      if (guardianOutcome !== null) return guardianOutcome;
+      if (reaperOutcome !== null) return reaperOutcome;
+      proxyExchange = await proxyInstall();
+    }
+    const outcomes = [
+      installExchangeOutcome('guardian', 'guardian.handoff-install.v1', guardianExchange, capsule.grantId),
+      installExchangeOutcome('reaper', 'reaper.handoff-install.v1', reaperExchange, capsule.grantId),
+      installExchangeOutcome('proxy', 'handoff.install.v1', proxyExchange, capsule.grantId),
+    ];
+    const refusal = outcomes.find((outcome) => outcome?.kind === 'refused');
+    if (refusal !== undefined && refusal !== null) return refusal;
+    const retryable = outcomes.find((outcome) => outcome?.kind === 'retryable');
+    if (retryable !== undefined && retryable !== null) return retryable;
+    if (deps.recoveryCapsule === undefined) {
+      writeHandoffCapsuleFile(handoffCapsulePath, capsule, {
+        storage: runtime.storage,
+        uid: process.getuid?.() ?? 0,
       });
-    })();
-    await recoveryCredentialInstall;
-    signal.throwIfAborted();
+    }
+    const receipt = Object.freeze({
+      kind: 'installed-recovery-credential',
+      grantId: capsule.grantId,
+    }) as InstalledRecoveryCredential;
+    return { kind: 'installed', receipt };
   };
 
-  const registerSuccessionOperation = async (
+  const installRecoveryCredential = async (signal: AbortSignal): Promise<RecoveryCredentialInstallOutcome> => {
+    if (recoveryCredentialInstallState.kind === 'installed') {
+      return { kind: 'installed', receipt: recoveryCredentialInstallState.receipt };
+    }
+    if (recoveryCredentialInstallState.kind === 'idle') {
+      if (signal.aborted) return { kind: 'cancelled' };
+      const completion = (async (): Promise<RecoveryCredentialInstallOutcome> => {
+        try {
+          const outcome = await performRecoveryCredentialInstall();
+          recoveryCredentialInstallState =
+            outcome.kind === 'installed' ? { kind: 'installed', receipt: outcome.receipt } : { kind: 'idle' };
+          return outcome;
+        } catch (error: unknown) {
+          recoveryCredentialInstallState = { kind: 'idle' };
+          throw error;
+        }
+      })();
+      recoveryCredentialInstallState = { kind: 'installing', completion };
+    }
+    const completion = recoveryCredentialInstallState.completion;
+    return completion;
+  };
+
+  const registerInstalledSuccessionOperation = async (
+    _credential: InstalledRecoveryCredential,
     operation: OperationIdentity,
-    signal: AbortSignal = new AbortController().signal,
-  ): Promise<void> => {
-    await installRecoveryCredential(signal);
-    signal.throwIfAborted();
+    signal: AbortSignal,
+  ): Promise<Extract<SuccessionOperationRegistrationOutcome, { kind: 'registered' | 'cancelled' }>> => {
     if (operation.proxyInstanceId !== proxyInstanceId || operation.buildSetId !== guardianIdentity.buildSetId) {
       throw new Error('Succession registration named an operation from another proxy set.');
     }
@@ -255,7 +355,18 @@ export function createProviderProxySetAuthority(
     successionOperationRegisterResultSchema.parse(guardianResult);
     successionOperationRegisterResultSchema.parse(reaperResult);
     successionOperationRegisterResultSchema.parse(proxyResult);
-    signal.throwIfAborted();
+    if (signal.aborted) return { kind: 'cancelled' };
+    return { kind: 'registered' };
+  };
+
+  const registerSuccessionOperation = async (
+    operation: OperationIdentity,
+    signal: AbortSignal = new AbortController().signal,
+  ): Promise<SuccessionOperationRegistrationOutcome> => {
+    const installation = await installRecoveryCredential(signal);
+    if (installation.kind !== 'installed') return installation;
+    if (signal.aborted) return { kind: 'cancelled' };
+    return registerInstalledSuccessionOperation(installation.receipt, operation, signal);
   };
 
   return {

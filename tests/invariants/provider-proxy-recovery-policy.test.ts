@@ -665,14 +665,12 @@ const EXPECTED_REJECTION_NODE_INVENTORY = [
   'src/coordinator/services/provider-proxy-recovery-policy.ts :: start :: Promise.then(rejected) :: Promise.resolve(produced).then',
   'src/coordinator/services/provider-proxy-recovery-policy.ts :: start :: catch#1 :: calls=[submit, classifyRejection] assignments=[]',
   'src/coordinator/services/provider-proxy-set/index.ts :: #beginContainment :: Promise.catch :: slot.authority.initiateControlClose().catch',
-  'src/coordinator/services/provider-proxy-set/index.ts :: #releaseAnsweredHeartbeat :: Promise.catch :: slot.authority.initiateControlClose().catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: #report :: catch#1 :: calls=[] assignments=[]',
   'src/coordinator/services/provider-proxy-set/index.ts :: containmentAbsent :: Promise.catch :: authorityToClose .initiateControlClose() .catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: createInitialDispositionLatch :: Promise.catch :: promise.catch',
   'src/coordinator/services/provider-proxy-set/inheritance.ts :: attemptProviderProxySetInheritance :: catch#1 :: calls=[deps.proveContainmentAbsent] assignments=[]',
   'src/coordinator/services/provider-proxy-set/inheritance.ts :: attemptProviderProxySetInheritance :: catch#2 :: calls=[] assignments=[]',
-  'src/coordinator/services/provider-proxy-set/inheritance.ts :: redeemCapsule :: catch#1 :: calls=[signal.throwIfAborted] assignments=[]',
-  'src/coordinator/services/provider-proxy-set/inheritance.ts :: redeemCapsule :: catch#2 :: calls=[heartbeatAssembly.stop, client.close] assignments=[]',
+  'src/coordinator/services/provider-proxy-set/inheritance.ts :: redeemCapsule :: catch#1 :: calls=[heartbeatAssembly.stop, client.close] assignments=[]',
   'src/jobs/provider-operation-terminalization.ts :: readProviderHostUnserviceableEvidence :: catch#1 :: calls=[] assignments=[]',
   'src/jobs/provider-operation-terminalization.ts :: terminalizeProviderOperation :: catch#1 :: calls=[] assignments=[]',
 ] as const;
@@ -692,9 +690,6 @@ function rejectionJustification(fingerprint: string): string {
   }
   if (fingerprint.startsWith('src/coordinator/services/provider-proxy-set/inheritance.ts')) {
     return 'Producer-side inheritance protocol cleanup preserves causal evidence without consuming a dispatcher façade.';
-  }
-  if (fingerprint.includes(' :: #releaseAnsweredHeartbeat :: ')) {
-    return 'A best-effort close cannot revoke a release the successor owner already holds.';
   }
   if (fingerprint.includes(' :: #beginContainment :: ')) {
     return 'A best-effort close cannot revoke a containment the lifecycle has already entered.';

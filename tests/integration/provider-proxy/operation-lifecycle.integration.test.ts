@@ -543,11 +543,10 @@ async function launchThroughRoute(
   const base = {
     proxyInstanceId: set.shared.proxyInstanceId,
     autonomousDeadline: {
-      owner: 'guardian-and-reaper',
       orphanTimeoutMs: 37_000,
       heartbeatHoldBound: { spanMs: 23_000, materialSchedulerLatenessMs: 5_750 },
     },
-    registerSuccessionOperation: async () => undefined,
+    registerSuccessionOperation: async () => ({ kind: 'registered' as const }),
     stopAndReap: async () => ({ disappearanceReceipt: 'gone' }),
     stopHeartbeats: () => undefined,
     initiateControlClose: async () => undefined,

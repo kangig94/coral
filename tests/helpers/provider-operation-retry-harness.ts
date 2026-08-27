@@ -177,14 +177,13 @@ export function createProviderOperationRetryHarness(method: RetryMethod, orderin
     base: {
       proxyInstanceId: record.operation.proxyInstanceId,
       autonomousDeadline: {
-        owner: 'guardian-and-reaper',
         orphanTimeoutMs: 37_000,
         heartbeatHoldBound: { spanMs: 23_000, materialSchedulerLatenessMs: 5_750 },
       },
       stopAndReap,
       stopHeartbeats: () => undefined,
       initiateControlClose: async () => undefined,
-      registerSuccessionOperation: async () => undefined,
+      registerSuccessionOperation: async () => ({ kind: 'registered' as const }),
     },
     setIdentity: providerProxySetIdentityFromRecord(record),
     clients: { proxy: endpoint.client, guardian: idleClient, reaper: idleClient },

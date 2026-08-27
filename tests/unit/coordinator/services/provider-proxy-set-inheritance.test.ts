@@ -898,7 +898,6 @@ describe('attemptProviderProxySetInheritance', () => {
         expect(sawGuardianReceiptOnRotate).toBe(true);
         expect(outcome.set.proxyInstanceId).toBe(loc.operation.proxyInstanceId);
         expect(outcome.set.autonomousDeadline).toMatchObject({
-          owner: 'guardian-and-reaper',
           orphanTimeoutMs: capsule.orphanTimeoutMs,
         });
         expect(connectionOrder).toEqual([
@@ -919,7 +918,7 @@ describe('attemptProviderProxySetInheritance', () => {
     }
   });
 
-  it('returns a redeemed authority with an unproven deadline when an enforcer rejects the capsule timeout', async () => {
+  it('returns a redeemed authority with capsule timing when credential installation is refused', async () => {
     const loc = locator();
     const capsule = capsuleFor(loc);
     if (capsule.version !== 3) throw new Error('expected a V3 recovery capsule');
@@ -928,7 +927,18 @@ describe('attemptProviderProxySetInheritance', () => {
     const client = fakeClient(
       redemptionResponses(loc, matchingOperationSets([]), {
         'guardian.handoff-install.v1': () => {
-          throw new Error("identity_mismatch: the named orphan timeout is not this role's default");
+          throw new ControlClientError(
+            'control_call_failed',
+            "identity_mismatch: the named orphan timeout is not this role's default",
+            'remote-response',
+            {
+              kind: 'json-rpc-error',
+              jsonRpcCode: -32_000,
+              protocolCode: 'identity_mismatch',
+              admissionReason: null,
+              heartbeatRefusal: null,
+            },
+          );
         },
       }),
       calls,
@@ -948,7 +958,6 @@ describe('attemptProviderProxySetInheritance', () => {
 
     if (outcome.kind !== 'inherited') throw new Error('inheritance did not return its operation authority');
     expect(outcome.set.autonomousDeadline).toEqual({
-      acceptanceFailure: 'role-acknowledgement-unavailable',
       orphanTimeoutMs: capsule.orphanTimeoutMs,
       heartbeatHoldBound: providerProxyHeartbeatHoldBound(capsule),
     });

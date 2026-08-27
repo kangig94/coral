@@ -66,7 +66,6 @@ function authority(): DurableProviderProxyOperationAuthority {
     proxyInstanceId,
     faulted: new Promise<never>(() => {}),
     autonomousDeadline: {
-      owner: 'guardian-and-reaper',
       orphanTimeoutMs: Number.MAX_SAFE_INTEGER,
       heartbeatHoldBound: {
         spanMs: Number.MAX_SAFE_INTEGER,
@@ -93,7 +92,7 @@ function authority(): DurableProviderProxyOperationAuthority {
       proxyProcessGroupId: 200,
       canonicalEndpoint: '/tmp/proxy.sock',
     },
-    registerSuccessionOperation: async () => undefined,
+    registerSuccessionOperation: async () => ({ kind: 'registered' as const }),
     stopAndReap: async () => ({ disappearanceReceipt: 'gone' }),
     stopHeartbeats: () => undefined,
     initiateControlClose: async () => undefined,

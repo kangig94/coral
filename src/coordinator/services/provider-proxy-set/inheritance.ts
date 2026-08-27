@@ -618,10 +618,18 @@ async function redeemCapsule(
       recoveryOperations: guardianSession.opened.operations,
       operationRegistry: deps.operationRegistry,
     });
-    try {
-      await base.installRecoveryCredential(signal);
-    } catch {
-      signal.throwIfAborted();
+    const installation = await base.installRecoveryCredential(signal);
+    switch (installation.kind) {
+      case 'installed':
+        break;
+      case 'retryable':
+      case 'refused':
+        // Redemption already established control. Publish the set with installation idle so the first
+        // succession registration sends a fresh, idempotent grant-install attempt.
+        break;
+      case 'cancelled':
+        signal.throwIfAborted();
+        throw new Error('provider_proxy_recovery_credential_install_cancelled');
     }
     const set = createProviderProxyOperationAuthority({
       base,

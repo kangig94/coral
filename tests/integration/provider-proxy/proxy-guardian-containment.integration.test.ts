@@ -530,7 +530,6 @@ function establishActivationRoute(setIdentity: ProviderProxySetIdentity) {
   const authority = {
     proxyInstanceId: setIdentity.proxyInstanceId,
     autonomousDeadline: {
-      owner: 'guardian-and-reaper',
       orphanTimeoutMs: Number.MAX_SAFE_INTEGER,
       heartbeatHoldBound: {
         spanMs: Number.MAX_SAFE_INTEGER,
@@ -748,7 +747,7 @@ async function completeCapacityLocalHandoff(
     // The driving proxy call above already proved this exact no-ledger capacity answer. Replaying it through
     // the durable local-handoff constructor must not try to install succession after rotation has already
     // closed the old controls: a capacity answer owns no remote operation to succeed.
-    registerSuccessionOperation: async () => undefined,
+    registerSuccessionOperation: async () => ({ kind: 'registered' as const }),
     prepareOperation: async () => capacity,
   };
   const commit: JobProgressStore['commit'] = (callback) => {
