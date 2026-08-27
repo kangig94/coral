@@ -87,9 +87,8 @@ export type ProviderProxySetHeartbeatFaultStopDecision = Readonly<{
 }>;
 
 /**
- * The coordinator's own bounded exit from a heartbeat hold, distinct from `heartbeat-failed`: nothing the
- * endpoint said authorized this — the coordinator observed an evidence window with no peer answer and without
- * material scheduler lateness, then invoked containment itself.
+ * This decision requires a continuous window with no peer answer and without material scheduler lateness.
+ * It starts containment but must not itself settle peer disappearance.
  */
 export type ProviderProxySetHeartbeatHoldExhaustedStopDecision = Readonly<{
   action: 'stop-and-reap';

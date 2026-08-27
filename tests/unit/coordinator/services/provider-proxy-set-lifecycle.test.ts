@@ -944,7 +944,7 @@ describe('ProviderProxySetLifecycle', () => {
     );
   });
 
-  it('does not let answered-but-unusable incidents carry a silence hold across its bound', () => {
+  it('ends a silence window when unusable answers arrive before another unanswered incident', () => {
     const record = providerOperationRecord('executing');
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([record]);
@@ -957,7 +957,7 @@ describe('ProviderProxySetLifecycle', () => {
       faults,
       stopAndReap,
       initiateControlClose,
-      heartbeatHoldBound: { spanMs: 5_000, materialSchedulerLatenessMs: 1_250 },
+      heartbeatHoldBound: { spanMs: 23_000, materialSchedulerLatenessMs: 5_750 },
     });
     const lifecycle = lifecycleFor({
       claims,
@@ -970,23 +970,23 @@ describe('ProviderProxySetLifecycle', () => {
     lifecycle.completeStartupDiscovery();
     lifecycle.registerInheritedSet(authority);
 
-    faults.reportIncident({
-      kind: 'heartbeat-indeterminate',
-      role: 'guardian',
-      method: 'guardian.heartbeat.v1',
-      incidentReason: 'unanswered',
-      schedulerLatenessMs: 0,
-      error: 'heartbeat timed out',
-    });
-    clock.elapse(5_000);
-    faults.reportIncident({
-      kind: 'heartbeat-indeterminate',
-      role: 'guardian',
-      method: 'guardian.heartbeat.v1',
-      incidentReason: 'unclassified',
-      schedulerLatenessMs: 0,
-      error: 'answer could not be decoded',
-    });
+    const incident = (incidentReason: 'unanswered' | 'unclassified'): void =>
+      faults.reportIncident({
+        kind: 'heartbeat-indeterminate',
+        role: 'guardian',
+        method: 'guardian.heartbeat.v1',
+        incidentReason,
+        schedulerLatenessMs: 0,
+        error: incidentReason,
+      });
+
+    incident('unanswered');
+    for (let second = 1; second <= 22; second += 1) {
+      clock.elapse(1_000);
+      incident('unclassified');
+    }
+    clock.elapse(1_000);
+    incident('unanswered');
 
     expect(stopAndReap).not.toHaveBeenCalled();
     expect(initiateControlClose).not.toHaveBeenCalled();

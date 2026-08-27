@@ -65,11 +65,9 @@ type PreserveReportState = {
 };
 
 /**
- * One evidence disposition a role's heartbeat channel is holding, spanning every error identity that run
- * took. Silence and answered-but-unusable evidence are separate holds: neither can advance the other's clock.
- * Within either hold, error identity is deliberately irrelevant — alternating timeout and closed failures
- * must still advance one silence clock, just as alternating undecodable and unrecognised error replies must
- * still advance one answered-but-unusable clock. `#recordHeartbeatAccepted` clears both for the role/method.
+ * A silence hold may authorize containment only while no answer has arrived for its exact role and method.
+ * An unusable answer must end that silence hold without ending the answered-but-unusable hold it advances.
+ * Error identity must not split either evidence window.
  */
 type HeartbeatHoldState = {
   /** Monotonic: an authority-bearing span comparison must not move because a wall clock stepped. */
@@ -1242,13 +1240,8 @@ export class ProviderProxySetLifecycle {
   }
 
   /**
-   * Advances exactly one of `decision.role`/`decision.method`'s two heartbeat holds. A hold is created on its
-   * first incident and every later incident of that disposition extends it regardless of error identity; the
-   * per-error-identity `preserveReports` key must never gate whether either hold's clock advances.
-   *
-   * A challenge resynchronization clears the same role/method hold as an accepted echo because it is a completed
-   * round trip on the current tenancy. Scheduler lateness at or above the derived material share resets the
-   * evidence window instead of authorizing containment from a span the scheduler itself substantially caused.
+   * Error identity must not split either hold, and answered evidence must end silence without being reported as
+   * heartbeat recovery. Scheduler lateness at or above the material share must reset the candidate window.
    */
   #advanceHeartbeatHold(
     slot: EstablishedSlot,
@@ -1264,6 +1257,9 @@ export class ProviderProxySetLifecycle {
     }
     if (decision.incidentReason === 'method-not-found') {
       return this.#heartbeatProtocolReleaseDecision(slot, decision);
+    }
+    if (decision.incidentReason === 'unclassified') {
+      slot.heartbeatHolds.delete(JSON.stringify([decision.role, decision.method, 'silence']));
     }
     const holdKind = decision.incidentReason === 'unanswered' ? 'silence' : 'answered-but-unusable';
     const key = JSON.stringify([decision.role, decision.method, holdKind]);
@@ -1295,14 +1291,8 @@ export class ProviderProxySetLifecycle {
   }
 
   /**
-   * The coordinator's own bounded exit from a silence hold that an accepted echo never closed: `hold` has
-   * carried unanswered incidents for `decision.role`/`decision.method` continuously since
-   * `hold.firstObservedAtMonotonicMs` — across every error identity that run took — and that span has cleared
-   * `heartbeatHoldBound` while accumulated scheduler lateness stayed below its material share. This starts a
-   * containment attempt — dual
-   * evidence, `stop-and-reap` plus `containment-proof` — not a verdict that the peer is gone; containment never
-   * settles on silence alone. The decision names what was observed (attempts, elapsed span, last incident
-   * reason) rather than a bare "exhausted".
+   * This decision requires a continuous answer-free window for the exact role and method, below the material
+   * scheduler-lateness share. It may start dual-evidence containment but must not settle disappearance alone.
    */
   #silenceHoldExhaustedDecision(
     slot: EstablishedSlot,

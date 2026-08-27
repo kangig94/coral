@@ -248,9 +248,14 @@ export type HandoffSignalRecord = {
 
 export type LegacyHandoffSignalAttemptRecord = Omit<HandoffSignalRecord, 'accepted' | 'version'> & {
   version: 1;
+  accepted?: never;
 };
 
-type HandoffSignalLedgerRecord = HandoffSignalRecord | LegacyHandoffSignalAttemptRecord;
+type HandoffSignalShadowRecord = Omit<HandoffSignalRecord, 'version'> & {
+  version: 1;
+};
+
+type HandoffSignalLedgerRecord = HandoffSignalRecord | HandoffSignalShadowRecord | LegacyHandoffSignalAttemptRecord;
 
 export interface HandoffSignalLedger {
   read(socketPath: string, incumbent: IncumbentIdentity): HandoffSignalLedgerRecord | null;
@@ -277,25 +282,31 @@ export function createFileHandoffSignalLedger(options: {
       return null;
     }
   };
-  const writeAt = (recordPath: string, record: HandoffSignalLedgerRecord): void => {
+  const writeAt = (recordPath: string, record: HandoffSignalLedgerRecord): boolean => {
     try {
       options.storage.writeAtomicSync(recordPath, `${JSON.stringify(record)}\n`, {
         encoding: 'utf-8',
         mode: 0o600,
       });
+      return true;
     } catch {
-      // Audit/cooldown is best-effort. A write failure must not leave a
-      // verified incumbent permanently unreplaceable.
+      // Ledger persistence must fail open so a verified incumbent cannot become permanently unreplaceable.
+      return false;
     }
   };
   return {
     read: (socketPath, incumbent) => {
       const current = readAt(path, HANDOFF_SIGNAL_RECORD_VERSION);
-      if (current !== null && isSameSignalTarget(current, socketPath, incumbent)) {
-        return current;
-      }
       const legacy = readAt(legacyPath, 1);
-      return legacy !== null && isSameSignalTarget(legacy, socketPath, incumbent) ? legacy : null;
+      const matchingCurrent = current !== null && isSameSignalTarget(current, socketPath, incumbent) ? current : null;
+      const matchingLegacy = legacy !== null && isSameSignalTarget(legacy, socketPath, incumbent) ? legacy : null;
+      if (matchingCurrent === null) {
+        return matchingLegacy;
+      }
+      if (matchingLegacy === null || matchingCurrent.signaledAtMs >= matchingLegacy.signaledAtMs) {
+        return matchingCurrent;
+      }
+      return matchingLegacy;
     },
     write: (record) => {
       try {
@@ -303,10 +314,9 @@ export function createFileHandoffSignalLedger(options: {
       } catch {
         return;
       }
-      // The shipped fence must be attempted before current-only detail: interruption between the two writes
-      // may degrade this reader to an indeterminate V1 hold, but must not deliberately expose V2 first.
-      writeAt(legacyPath, {
+      const shadowWritten = writeAt(legacyPath, {
         version: 1,
+        accepted: true,
         socketPath: record.socketPath,
         pid: record.pid,
         ...(record.incarnation === undefined ? {} : { incarnation: record.incarnation }),
@@ -314,6 +324,9 @@ export function createFileHandoffSignalLedger(options: {
         signal: record.signal,
         signaledAtMs: record.signaledAtMs,
       });
+      if (!shadowWritten) {
+        return;
+      }
       writeAt(path, record);
     },
   };
@@ -335,7 +348,9 @@ function decodeHandoffSignalLedgerRecord(value: unknown): HandoffSignalLedgerRec
     return null;
   }
   if (record.version === 1) {
-    return record as LegacyHandoffSignalAttemptRecord;
+    return record.accepted === true
+      ? (record as HandoffSignalShadowRecord)
+      : (record as LegacyHandoffSignalAttemptRecord);
   }
   return record.version === HANDOFF_SIGNAL_RECORD_VERSION && record.accepted === true
     ? (record as HandoffSignalRecord)
@@ -456,7 +471,7 @@ function assertSignalCooldown(opts: HandoffOptions, incumbent: IncumbentIdentity
   if (ageMs >= cooldownMs) {
     return;
   }
-  if (last.version === 1) {
+  if (last.version === 1 && last.accepted !== true) {
     refuseHandoff(
       `Refusing ${signal} for pid=${incumbent.pid}`,
       'legacy-signal-attempt-indeterminate',

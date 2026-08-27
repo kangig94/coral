@@ -1425,9 +1425,14 @@ describe('bindWithHandoff', () => {
     expect(killCalls).toEqual([]);
   });
 
-  it('writes a shipped-v0.10.9-valid cooldown shadow only for an accepted signal', () => {
+  it('writes a shipped-v0.10.9-valid cooldown shadow before accepted V2 detail', async () => {
     const files = new Map<string, string>();
     const writes: string[] = [];
+    const verifiedIdentity: IncumbentIdentity = {
+      pid: 2466,
+      incarnation: testIncarnation(898),
+      source: 'health',
+    };
     const storage = {
       readFileSync: (path: string) => {
         const value = files.get(path);
@@ -1441,19 +1446,35 @@ describe('bindWithHandoff', () => {
       },
     } as unknown as Parameters<typeof createFileHandoffSignalLedger>[0]['storage'];
     const signalLedger = createFileHandoffSignalLedger({ storage, runDir: '/tmp/run' });
-
-    signalLedger.write({
-      version: 2,
-      accepted: true,
-      socketPath: '/tmp/coral.sock',
-      pid: 2466,
-      incarnation: testIncarnation(898),
-      instanceId: 'accepted-incumbent',
-      signal: 'SIGTERM',
-      signaledAtMs: 9_000,
+    let signalAccepted = false;
+    const { options, time, killCalls } = buildHarness({
+      bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }, { kind: 'bound' }],
+      totalBudgetMs: 0,
+      observeLiveness: () => (signalAccepted ? 'absent' : 'alive'),
+      killReturns: () => {
+        signalAccepted = true;
+        return true;
+      },
+      signalLedger,
+      readDiscovery: () => ({
+        ...verifiedIdentity,
+        source: 'discovery',
+        instanceId: 'accepted-incumbent',
+        token: 'accepted-token',
+        bootToken: 'accepted-boot-token',
+        shutdownToken: 'accepted-shutdown-token',
+      }),
     });
+    mockedProbe.mockImplementation(() => (signalAccepted ? null : (verifiedIdentity.incarnation ?? null)));
+
+    const promise = bindWithHandoff(options);
+    await flush();
+    time.tick(200);
+    await flush();
+    await expect(promise).resolves.toMatchObject({ acquiredViaHandoff: true });
 
     const shippedShadow = JSON.parse(files.get('/tmp/run/handoff-signal.json') ?? 'null') as unknown;
+    const shadowSignaledAtMs = (shippedShadow as { signaledAtMs: number }).signaledAtMs;
     expect(shippedV0109IsHandoffSignalRecord(shippedShadow)).toBe(true);
     expect(
       shippedV0109CooldownApplies(
@@ -1465,62 +1486,133 @@ describe('bindWithHandoff', () => {
           source: 'discovery',
           instanceId: 'accepted-incumbent',
         },
-        9_500,
+        shadowSignaledAtMs + 500,
         10_000,
       ),
     ).toBe(true);
-    expect(shippedShadow).not.toHaveProperty('accepted');
+    expect(shippedShadow).toHaveProperty('accepted', true);
     expect(files.has('/tmp/run/handoff-signal.v2.json')).toBe(true);
     expect(writes).toEqual(['/tmp/run/handoff-signal.json', '/tmp/run/handoff-signal.v2.json']);
+    expect(killCalls).toEqual([{ pid: verifiedIdentity.pid, signal: 'SIGTERM' }]);
   });
 
-  it('prefers its accepted V2 detail over the V1 shadow for the same target', () => {
+  it('uses a newer accepted V1 shadow instead of stale matching V2 detail for cooldown', async () => {
     const target: IncumbentIdentity = {
       pid: 2467,
       incarnation: testIncarnation(899),
       source: 'discovery',
       instanceId: 'same-incumbent',
     };
-    const records = new Map([
-      [
-        '/tmp/run/handoff-signal.v2.json',
-        JSON.stringify({
-          version: 2,
-          accepted: true,
-          socketPath: '/tmp/coral.sock',
-          pid: target.pid,
-          incarnation: target.incarnation,
-          instanceId: target.instanceId,
-          signal: 'SIGTERM',
-          signaledAtMs: 2_000,
-        }),
-      ],
-      [
-        '/tmp/run/handoff-signal.json',
-        JSON.stringify({
-          version: 1,
-          socketPath: '/tmp/coral.sock',
-          pid: target.pid,
-          incarnation: target.incarnation,
-          instanceId: target.instanceId,
-          signal: 'SIGTERM',
-          signaledAtMs: 2_000,
-        }),
-      ],
-    ]);
+    let nowMs = 0;
     const storage = {
       readFileSync: (path: string) => {
-        const value = records.get(path);
-        if (value === undefined) throw new Error('ENOENT');
-        return value;
+        if (path === '/tmp/run/handoff-signal.v2.json') {
+          return JSON.stringify({
+            version: 2,
+            accepted: true,
+            socketPath: '/tmp/coral.sock',
+            pid: target.pid,
+            incarnation: target.incarnation,
+            instanceId: target.instanceId,
+            signal: 'SIGTERM',
+            signaledAtMs: nowMs - 70_000,
+          });
+        }
+        if (path === '/tmp/run/handoff-signal.json') {
+          return JSON.stringify({
+            version: 1,
+            accepted: true,
+            socketPath: '/tmp/coral.sock',
+            pid: target.pid,
+            incarnation: target.incarnation,
+            instanceId: target.instanceId,
+            signal: 'SIGTERM',
+            signaledAtMs: nowMs - 1_000,
+          });
+        }
+        throw new Error('ENOENT');
       },
       mkdirSync: vi.fn(),
       writeAtomicSync: vi.fn(),
     } as unknown as Parameters<typeof createFileHandoffSignalLedger>[0]['storage'];
+    const signalLedger = createFileHandoffSignalLedger({ storage, runDir: '/tmp/run' });
+    const { options, time, killCalls } = buildHarness({
+      bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
+      totalBudgetMs: 0,
+      signalLedger,
+      signalCooldownMs: 60_000,
+      killReturns: () => false,
+      readDiscovery: () => ({
+        ...target,
+        token: 'same-token',
+        bootToken: 'same-boot-token',
+        shutdownToken: 'same-shutdown-token',
+      }),
+    });
+    nowMs = time.now();
+    mockedProbe.mockReturnValue(target.incarnation ?? null);
 
-    const record = createFileHandoffSignalLedger({ storage, runDir: '/tmp/run' }).read('/tmp/coral.sock', target);
+    const outcome = await bindWithHandoff(options).catch((error: Error) => error);
+    const message = String((outcome as Error).message);
 
-    expect(record).toMatchObject({ version: 2, accepted: true });
+    expect(outcome).toBeInstanceOf(HandoffEscalationError);
+    expect(message).toContain('the handoff signal cooldown has not elapsed');
+    expect(message).not.toContain('legacy V1');
+    expect(killCalls).toEqual([]);
+  });
+
+  it('does not publish V2 detail when the shipped cooldown shadow write fails', async () => {
+    const files = new Map<string, string>();
+    const writes: string[] = [];
+    const verifiedIdentity: IncumbentIdentity = {
+      pid: 2469,
+      incarnation: testIncarnation(901),
+      source: 'health',
+    };
+    const storage = {
+      readFileSync: (path: string) => {
+        const value = files.get(path);
+        if (value === undefined) throw new Error('ENOENT');
+        return value;
+      },
+      mkdirSync: vi.fn(),
+      writeAtomicSync: (path: string, value: string) => {
+        writes.push(path);
+        if (path === '/tmp/run/handoff-signal.json') throw new Error('shadow write failed');
+        files.set(path, value);
+      },
+    } as unknown as Parameters<typeof createFileHandoffSignalLedger>[0]['storage'];
+    const signalLedger = createFileHandoffSignalLedger({ storage, runDir: '/tmp/run' });
+    let signalAccepted = false;
+    const { options, time, killCalls } = buildHarness({
+      bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }, { kind: 'bound' }],
+      totalBudgetMs: 0,
+      observeLiveness: () => (signalAccepted ? 'absent' : 'alive'),
+      killReturns: () => {
+        signalAccepted = true;
+        return true;
+      },
+      signalLedger,
+      readDiscovery: () => ({
+        ...verifiedIdentity,
+        source: 'discovery',
+        instanceId: 'shadow-failure-incumbent',
+        token: 'shadow-failure-token',
+        bootToken: 'shadow-failure-boot-token',
+        shutdownToken: 'shadow-failure-shutdown-token',
+      }),
+    });
+    mockedProbe.mockImplementation(() => (signalAccepted ? null : (verifiedIdentity.incarnation ?? null)));
+
+    const promise = bindWithHandoff(options);
+    await flush();
+    time.tick(200);
+    await flush();
+    await expect(promise).resolves.toMatchObject({ acquiredViaHandoff: true });
+
+    expect(writes).toEqual(['/tmp/run/handoff-signal.json']);
+    expect(files.has('/tmp/run/handoff-signal.v2.json')).toBe(false);
+    expect(killCalls).toEqual([{ pid: verifiedIdentity.pid, signal: 'SIGTERM' }]);
   });
 
   it('decodes a genuine shipped V1 ledger entry as an indeterminate legacy attempt', async () => {
