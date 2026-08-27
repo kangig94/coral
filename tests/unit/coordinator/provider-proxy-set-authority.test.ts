@@ -14,6 +14,7 @@ import {
 } from '#src/coordinator/live/provider-proxy/set-authority.js';
 import {
   ControlClientError,
+  controlExchangeForTest,
   type ControlClient,
   type ControlClientRemoteFailure,
   type ControlExchange,
@@ -141,7 +142,7 @@ function fakeControlClient(time: VirtualTime, resolveAtMs: number, result: unkno
           if (settled) return;
           settled = true;
           time.clearTimeout(timeoutHandle);
-          resolve({ kind: 'response', response: { kind: 'result', value: result } });
+          resolve(controlExchangeForTest({ kind: 'response', response: { kind: 'result', value: result } }));
         }, resolveAtMs);
       }),
     faulted: new Promise<never>(() => undefined),
@@ -249,40 +250,42 @@ describe('createProviderProxySetAuthority: RPC response validation', () => {
   it('rejects a non-canonical inventory cwd at the real proxy response receiver', async () => {
     const proxyClient: ControlClient = {
       exchange: () =>
-        Promise.resolve({
-          kind: 'response',
-          response: {
-            kind: 'result',
-            value: {
-              hosts: [
-                {
-                  ref: {
-                    provider: 'codex',
-                    fingerprint: 'a'.repeat(64),
-                    instanceId: 'host-instance',
-                    leaseMode: 'shared',
+        Promise.resolve(
+          controlExchangeForTest({
+            kind: 'response',
+            response: {
+              kind: 'result',
+              value: {
+                hosts: [
+                  {
+                    ref: {
+                      provider: 'codex',
+                      fingerprint: 'a'.repeat(64),
+                      instanceId: 'host-instance',
+                      leaseMode: 'shared',
+                    },
+                    status: 'live',
+                    spec: {
+                      provider: 'codex',
+                      command: 'codex',
+                      args: ['app-server'],
+                      cwd: 'relative/provider-host',
+                      leaseMode: 'shared',
+                      idleRetirement: 'never',
+                    },
+                    host: { owner: 'provider-proxy' },
+                    diagnostics: {
+                      hostLog: { entries: [], retainedBytes: 0, truncatedBeforeSeq: 0 },
+                      completedObservations: [],
+                      factsTruncatedBeforeSeq: 0,
+                    },
+                    diagnosticsRetention: { ownerBudgetTruncated: false },
                   },
-                  status: 'live',
-                  spec: {
-                    provider: 'codex',
-                    command: 'codex',
-                    args: ['app-server'],
-                    cwd: 'relative/provider-host',
-                    leaseMode: 'shared',
-                    idleRetirement: 'never',
-                  },
-                  host: { owner: 'provider-proxy' },
-                  diagnostics: {
-                    hostLog: { entries: [], retainedBytes: 0, truncatedBeforeSeq: 0 },
-                    completedObservations: [],
-                    factsTruncatedBeforeSeq: 0,
-                  },
-                  diagnosticsRetention: { ownerBudgetTruncated: false },
-                },
-              ],
+                ],
+              },
             },
-          },
-        }),
+          }),
+        ),
       faulted: new Promise<never>(() => undefined),
       onFault: () => () => undefined,
       close: () => {},
@@ -300,10 +303,12 @@ describe('createProviderProxySetAuthority: stopAndReap providerRoots', () => {
     const client: ControlClient = {
       exchange: (_method, params) => {
         calls.push(params);
-        return Promise.resolve({
-          kind: 'response',
-          response: { kind: 'result', value: { state: 'containment-absent', disappearanceReceipt: 'gone' } },
-        });
+        return Promise.resolve(
+          controlExchangeForTest({
+            kind: 'response',
+            response: { kind: 'result', value: { state: 'containment-absent', disappearanceReceipt: 'gone' } },
+          }),
+        );
       },
       faulted: new Promise<never>(() => undefined),
       onFault: () => () => undefined,
@@ -329,10 +334,12 @@ describe('createProviderProxySetAuthority: stopAndReap providerRoots', () => {
     const client: ControlClient = {
       exchange: (_method, params) => {
         calls.push(params);
-        return Promise.resolve({
-          kind: 'response',
-          response: { kind: 'result', value: { state: 'containment-absent', disappearanceReceipt: 'gone' } },
-        });
+        return Promise.resolve(
+          controlExchangeForTest({
+            kind: 'response',
+            response: { kind: 'result', value: { state: 'containment-absent', disappearanceReceipt: 'gone' } },
+          }),
+        );
       },
       faulted: new Promise<never>(() => undefined),
       onFault: () => () => undefined,
@@ -381,7 +388,7 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
         calls.push({ role, method, params });
         await installGate;
         if (method.includes('succession.register') || method.includes('succession-register')) {
-          return {
+          return controlExchangeForTest({
             kind: 'response',
             response: {
               kind: 'result',
@@ -390,15 +397,15 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
                 operation: (params as { operation: unknown }).operation,
               },
             },
-          };
+          });
         }
         if (transientRemaining) {
           transientRemaining = false;
-          return {
+          return controlExchangeForTest({
             kind: 'no-response',
             cause: 'timeout',
             error: new ControlClientError('control_call_failed', `${role} timed out`, 'timeout'),
-          };
+          });
         }
         if (fail !== undefined && method === fail && (!refuseOnce || refusalRemaining)) {
           refusalRemaining = false;
@@ -409,7 +416,7 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
             admissionReason: null,
             heartbeatRefusal: null,
           };
-          return {
+          return controlExchangeForTest({
             kind: 'response',
             response: {
               kind: 'refusal',
@@ -421,9 +428,9 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
                 failure,
               ),
             },
-          };
+          });
         }
-        return {
+        return controlExchangeForTest({
           kind: 'response',
           response: {
             kind: 'result',
@@ -432,7 +439,7 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
               grantId: ackGrantId ?? (params as { grantId: string }).grantId,
             },
           },
-        };
+        });
       },
       faulted: new Promise<never>(() => undefined),
       onFault: () => () => undefined,

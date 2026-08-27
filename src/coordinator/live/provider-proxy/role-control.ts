@@ -179,7 +179,9 @@ async function establishHeartbeat(
   let resynchronized = false;
   for (;;) {
     const observation = await heartbeatOnce(client, method, controlEpoch, challenge);
-    if (observation.kind === 'locally-unsent') throw observation.error;
+    if (observation.kind === 'locally-unsent' || observation.kind === 'delivery-unconfirmed') {
+      throw observation.error;
+    }
     if (observation.kind === 'channel-fault') {
       classifyRoleControlFailure(role, 'heartbeat', method, observation.error);
     }
@@ -203,10 +205,6 @@ async function establishHeartbeat(
   }
 }
 
-/**
- * Correctness depends on `client.faulted` settling before the same event settles the pending heartbeat exchange;
- * the types do not enforce that ordering. See `connectControlClient` in `src/provider-proxy/control-client.ts`.
- */
 async function establishHeartbeatOrChannelFault(
   role: ProviderProxyRole,
   client: ControlClient,

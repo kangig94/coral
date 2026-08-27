@@ -13,7 +13,11 @@ import {
   type ProviderProxyAuthorityFault,
 } from '#src/coordinator/services/provider-proxy-authority-fault.js';
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
-import { connectControlClient, type ControlClient } from '#src/provider-proxy/control-client.js';
+import {
+  connectControlClient,
+  controlExchangeForTest,
+  type ControlClient,
+} from '#src/provider-proxy/control-client.js';
 import { createControlEndpoint, type ControlChallengeAuthority } from '#src/provider-proxy/control-endpoint.js';
 import { ControlLeaseEvidence } from '#src/provider-proxy/control-lease.js';
 import { PROXY_CONTROL_HEARTBEAT_MS, PROXY_CONTROL_LEASE_MS } from '#src/provider-proxy/orphan-deadline.js';
@@ -38,13 +42,14 @@ function runtimeWithTime(time: VirtualTime): Runtime {
 function passiveClient(role: 'guardian' | 'reaper'): ControlClient {
   let challenge = 0;
   return {
-    exchange: async () => ({
-      kind: 'response',
-      response: {
-        kind: 'result',
-        value: { state: 'active', nextHeartbeatChallenge: `${role}-challenge-${++challenge}` },
-      },
-    }),
+    exchange: async () =>
+      controlExchangeForTest({
+        kind: 'response',
+        response: {
+          kind: 'result',
+          value: { state: 'active', nextHeartbeatChallenge: `${role}-challenge-${++challenge}` },
+        },
+      }),
     faulted: new Promise<never>(() => undefined),
     onFault: () => () => undefined,
     close: () => undefined,

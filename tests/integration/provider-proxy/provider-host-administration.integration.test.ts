@@ -1,5 +1,6 @@
 import type { ProcessIncarnation } from '#src/infra/node-process.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
+import { strictControlExchangeResult as strictTestExchange } from '#tests/support/control-exchange.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -46,13 +47,6 @@ const timer: ControlEndpointTimer = {
   setTimeout: (callback, ms) => setTimeout(callback, ms),
   clearTimeout: (handle) => clearTimeout(handle as NodeJS.Timeout),
 };
-
-async function strictTestExchange(control: ControlClient, method: string, params: unknown): Promise<unknown> {
-  const exchange = await control.exchange(method, params, 5_000);
-  if (exchange.kind !== 'response') throw exchange.error;
-  if (exchange.response.kind === 'result') return exchange.response.value;
-  throw exchange.response.error;
-}
 
 const buildSetId = '44444444-4444-4444-8444-444444444444';
 const proxyInstanceId = '33333333-3333-4333-8333-333333333333';

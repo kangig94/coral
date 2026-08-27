@@ -1,4 +1,5 @@
 import type { ProcessLiveness } from '#src/infra/node-process.js';
+import { strictControlExchangeResult as strictTestExchange } from '#tests/support/control-exchange.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -11,7 +12,11 @@ import { createProviderProxySetAuthority } from '#src/coordinator/live/provider-
 import { LocalOperationRegistry } from '#src/coordinator/services/operation-registry.js';
 import { providerOperationRecordSchema } from '#src/store/provider-operation-record.js';
 import type { Runtime } from '#src/runtime/ports.js';
-import { connectControlClient, type ControlClient } from '#src/provider-proxy/control-client.js';
+import {
+  connectControlClient,
+  controlExchangeForTest,
+  type ControlClient,
+} from '#src/provider-proxy/control-client.js';
 import { createGuardian } from '#src/provider-proxy/guardian.js';
 import { createReaper, type Reaper } from '#src/provider-proxy/reaper.js';
 import {
@@ -52,18 +57,6 @@ const timer = {
   setTimeout: (callback: () => void, ms: number) => setTimeout(callback, ms),
   clearTimeout: (handle: { unref?: () => void }) => clearTimeout(handle as unknown as NodeJS.Timeout),
 };
-
-async function strictTestExchange(
-  control: Pick<ControlClient, 'exchange'>,
-  method: string,
-  params: unknown,
-  timeoutMs: number,
-): Promise<unknown> {
-  const exchange = await control.exchange(method, params, timeoutMs);
-  if (exchange.kind !== 'response') throw exchange.error;
-  if (exchange.response.kind === 'result') return exchange.response.value;
-  throw exchange.response.error;
-}
 
 /** Never fires on its own; these tests drive teardown through the RPC, not the deadline. */
 const idleScheduler: EnforcementScheduler = { schedule: () => ({}), cancel: () => {} };
@@ -1094,17 +1087,17 @@ describe('provider-proxy guardian and reaper', () => {
       reaperChannel: {
         exchange: async (method, params) =>
           method === 'reaper.record-containment.v1'
-            ? {
+            ? controlExchangeForTest({
                 kind: 'response' as const,
                 response: {
                   kind: 'result' as const,
                   value: { state: 'containment-recorded', reaper: reaperIdentity },
                 },
-              }
-            : {
+              })
+            : controlExchangeForTest({
                 kind: 'response' as const,
                 response: { kind: 'result' as const, value: await stubReaperCall(method, params) },
-              },
+              }),
         faulted: new Promise<never>(() => undefined),
         onFault: () => () => undefined,
         close: (): void => {},
@@ -1525,7 +1518,11 @@ describe('provider-proxy guardian and reaper', () => {
     );
 
     const other = { ...set.coordinatorIdentity, instanceId: randomUUID() };
-    await expect(redeemOn({ ...request, successor: other })).rejects.toThrow(/control channel closed/u);
+    // The endpoint answers a foreign successor by destroying the channel, so the caller sees a transport
+    // death; which errno reaches it first depends on whether the write or the read loses the race.
+    await expect(redeemOn({ ...request, successor: other })).rejects.toThrow(
+      /control channel closed|EPIPE|ECONNRESET/u,
+    );
   });
 
   it('refuses a redemption request that still names an operation set — the field no longer exists on the wire', async () => {
@@ -2202,13 +2199,13 @@ describe('provider-proxy guardian and reaper', () => {
       reaperChannel: {
         exchange: async (method) => {
           if (method !== 'reaper.record-containment.v1') throw new Error(`Unexpected reaper exchange: ${method}`);
-          return {
+          return controlExchangeForTest({
             kind: 'response' as const,
             response: {
               kind: 'result' as const,
               value: { state: 'containment-recorded', reaper: reaperIdentity },
             },
-          };
+          });
         },
         faulted: new Promise<never>(() => undefined),
         onFault: () => () => undefined,

@@ -1011,8 +1011,10 @@ describe('provider-proxy process topology: guardian role main', () => {
     cleanups.push(() => closeHandles(environment));
     const { guardianCapsulePath } = writeCapsuleSet(environment.outerRuntime(), baseDir, shared);
 
+    // The reaper handle is closed under the forward, so the guardian sees a transport death; which errno
+    // reaches it first depends on whether the write or the read loses the race.
     await expect(startProviderGuardianRole(guardianCapsulePath, environment.topLevelPorts())).rejects.toThrow(
-      /control channel closed/u,
+      /control channel closed|EPIPE|ECONNRESET/u,
     );
 
     // Both the reaper (an ordinary child, signalled by its own pid) and the proxy (a detached leader,

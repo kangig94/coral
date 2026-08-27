@@ -31,7 +31,11 @@ import {
 } from '#src/coordinator/services/provider-proxy-authority-fault.js';
 import type { ProviderProxySetIdentity } from '#src/coordinator/services/provider-proxy-set/identity.js';
 import { readProviderOperation } from '#src/store/provider-operation-journal.js';
-import { ControlClientError, type ControlExchange } from '#src/provider-proxy/control-client.js';
+import {
+  ControlClientError,
+  controlExchangeForTest,
+  type ControlExchange,
+} from '#src/provider-proxy/control-client.js';
 
 const SET_IDENTITY: ProviderProxySetIdentity = {
   buildSetId: randomUUID(),
@@ -99,7 +103,10 @@ function scriptedClient(answers: Record<string, unknown>): {
       exchange: async (method, params) => {
         calls.push({ method, params });
         if (!(method in answers)) throw new Error(`unscripted call to ${method}`);
-        return { kind: 'response', response: { kind: 'result', value: answers[method] } } satisfies ControlExchange;
+        return controlExchangeForTest({
+          kind: 'response',
+          response: { kind: 'result', value: answers[method] },
+        });
       },
     },
   };
@@ -443,10 +450,12 @@ describe('provider proxy operation mutations', () => {
   it('reports a malformed settlement reply without consuming the authority fault latch', async () => {
     const routing = faultRoutingDeps({
       exchange: () =>
-        Promise.resolve({
-          kind: 'response',
-          response: { kind: 'result', value: { state: 'released-after-terminal' } },
-        }),
+        Promise.resolve(
+          controlExchangeForTest({
+            kind: 'response',
+            response: { kind: 'result', value: { state: 'released-after-terminal' } },
+          }),
+        ),
     });
 
     await expect(settleProviderOperation(routing.activationDeps, OPERATION, 7)).rejects.toThrow();
@@ -599,14 +608,14 @@ describe('provider proxy operation mutations', () => {
         admissionReason: null,
         heartbeatRefusal: null,
       };
-      return {
+      return controlExchangeForTest({
         kind: 'response',
         response: {
           kind: 'refusal',
           failure,
           error: new ControlClientError('control_call_failed', protocolCode, 'remote-response', failure),
         },
-      };
+      });
     };
     const observed: Array<readonly [ProxyControlProtocolErrorCode, number]> = [];
 

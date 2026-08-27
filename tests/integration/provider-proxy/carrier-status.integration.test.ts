@@ -1,4 +1,5 @@
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
+import { strictControlExchangeResult as strictTestExchange } from '#tests/support/control-exchange.js';
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -13,7 +14,7 @@ import {
 } from '#src/coordinator/live/carrier-observer.js';
 import { heartbeatOnce } from '#src/coordinator/live/provider-proxy/heartbeat.js';
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
-import { connectControlClient, type ControlClient } from '#src/provider-proxy/control-client.js';
+import { connectControlClient } from '#src/provider-proxy/control-client.js';
 import type { ControlEndpointTimer } from '#src/provider-proxy/control-endpoint.js';
 import type { OperationStageHandle, SemanticOperationHost } from '#src/provider-proxy/operation-supervisor.js';
 import {
@@ -37,13 +38,6 @@ const timer: ControlEndpointTimer = {
   setTimeout: (callback, ms) => setTimeout(callback, ms),
   clearTimeout: (handle) => clearTimeout(handle as unknown as NodeJS.Timeout),
 };
-
-async function strictTestExchange(control: ControlClient, method: string, params: unknown): Promise<unknown> {
-  const exchange = await control.exchange(method, params, PROXY_CONTROL_RPC_TIMEOUT_MS);
-  if (exchange.kind !== 'response') throw exchange.error;
-  if (exchange.response.kind === 'result') return exchange.response.value;
-  throw exchange.response.error;
-}
 
 const PREPARED: ProxyPreparedAppServerOperation = {
   version: 1,

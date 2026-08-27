@@ -12,7 +12,11 @@ import {
 import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set/claim-mirror.js';
 import { providerProxySetIdentityFromRecord } from '#src/coordinator/services/provider-proxy-set/identity.js';
 import { JobStore } from '#src/jobs/store.js';
-import type { ControlClient, ControlExchange } from '#src/provider-proxy/control-client.js';
+import {
+  controlExchangeForTest,
+  type ControlClient,
+  type ControlExchange,
+} from '#src/provider-proxy/control-client.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
@@ -78,7 +82,7 @@ function statefulRetryEndpoint(method: RetryMethod, ordering: RetryOrdering) {
   };
 
   const client = {
-    exchange: vi.fn(async (controlMethod: string, params: unknown) => {
+    exchange: vi.fn(async (controlMethod: string, params: unknown): Promise<ControlExchange> => {
       let value: unknown;
       if (controlMethod === 'operation.attach.v1') {
         const watermark = (params as { committedThroughProviderSeq: number }).committedThroughProviderSeq;
@@ -94,7 +98,7 @@ function statefulRetryEndpoint(method: RetryMethod, ordering: RetryOrdering) {
       } else {
         throw new Error(`unexpected control exchange: ${controlMethod}`);
       }
-      return { kind: 'response', response: { kind: 'result', value } } satisfies ControlExchange;
+      return controlExchangeForTest({ kind: 'response', response: { kind: 'result', value } });
     }),
     faulted: new Promise<never>(() => undefined),
     onFault: () => () => undefined,

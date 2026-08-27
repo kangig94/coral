@@ -23,7 +23,7 @@ import {
 import { ProviderProxySetLifecycleRef } from '#src/coordinator/services/provider-proxy-set/lifecycle-ref.js';
 import { backendLog } from '#src/infra/backend-log.js';
 import { JobStore } from '#src/jobs/store.js';
-import { ControlClientError, type ControlClient } from '#src/provider-proxy/control-client.js';
+import { ControlClientError, controlExchangeForTest, type ControlClient } from '#src/provider-proxy/control-client.js';
 import { heartbeatObservationFromExchange } from '#src/provider-proxy/heartbeat-observation.js';
 import { CURRENT_HANDOFF_CAPSULE_VERSION, type HandoffCapsuleV3 } from '#src/provider-proxy/handoff-capsule.js';
 import {
@@ -157,13 +157,13 @@ async function createSharedSetHarness(control: SharedSetControl) {
       if (method === 'operation.attach.v1') {
         const committedThroughProviderSeq = (params as { committedThroughProviderSeq: number })
           .committedThroughProviderSeq;
-        return {
+        return controlExchangeForTest({
           kind: 'response',
           response: {
             kind: 'result',
             value: { state: 'attached', replayFromProviderSeq: committedThroughProviderSeq + 1 },
           },
-        };
+        });
       }
       if (method === 'operation.settle.v1' && control === 'settlement-timeout') throw timeout;
       throw new Error(`unexpected proxy control exchange: ${method}`);
@@ -893,22 +893,22 @@ describe('execution services provider-proxy heartbeat-hold composition', () => {
     const roleClient = (role: 'guardian' | 'reaper' | 'proxy'): ControlClient => ({
       exchange: async (method: string) => {
         if (method.endsWith('handoff-install.v1') || method === 'handoff.install.v1') {
-          return {
+          return controlExchangeForTest({
             kind: 'response',
             response: {
               kind: 'result',
               value: { state: 'installed-dormant', grantId: recoveryCapsule.grantId },
             },
-          };
+          });
         }
         if (method === 'guardian.stop-and-reap.v1' || method === 'reaper.stop-and-reap.v1') {
-          return {
+          return controlExchangeForTest({
             kind: 'response',
             response: {
               kind: 'result',
               value: { state: 'containment-absent', disappearanceReceipt: `${role}-gone` },
             },
-          };
+          });
         }
         throw new Error(`unexpected ${role} control exchange: ${method}`);
       },
@@ -1010,11 +1010,13 @@ describe('execution services provider-proxy heartbeat-hold composition', () => {
         kind: 'heartbeat-observation',
         role: 'guardian',
         method: 'guardian.heartbeat.v1',
-        observation: heartbeatObservationFromExchange({
-          kind: 'no-response',
-          cause: 'timeout',
-          error: new ControlClientError('control_call_failed', error, 'timeout'),
-        }),
+        observation: heartbeatObservationFromExchange(
+          controlExchangeForTest({
+            kind: 'no-response',
+            cause: 'timeout',
+            error: new ControlClientError('control_call_failed', error, 'timeout'),
+          }),
+        ),
         schedulerLatenessMs: 0,
       });
 

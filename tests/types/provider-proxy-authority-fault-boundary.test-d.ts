@@ -128,6 +128,23 @@ declare const forgedHeartbeatObservation: Readonly<{
 const invalidForgedHeartbeatObservation: HeartbeatObservation = forgedHeartbeatObservation;
 void invalidForgedHeartbeatObservation;
 
+declare const forgedControlExchange: Readonly<{
+  kind: 'no-response';
+  cause: 'timeout';
+  error: ControlClientError;
+}>;
+
+// @ts-expect-error only the transport owner can mint the exchange brand; matching fields are insufficient.
+const invalidForgedControlExchange: ControlExchange = forgedControlExchange;
+void invalidForgedControlExchange;
+
+// @ts-expect-error the heartbeat mint accepts only transport-minted exchanges, not a matching object literal.
+heartbeatObservationFromExchange({
+  kind: 'no-response',
+  cause: 'timeout',
+  error: {} as ControlClientError,
+});
+
 declare const forgedSetDischarge: Readonly<{
   process: Readonly<{ kind: 'containment-absent'; receipt: string }>;
   claims: Readonly<{ kind: 'claims-discharged'; operations: readonly [] }>;

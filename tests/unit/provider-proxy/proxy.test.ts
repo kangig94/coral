@@ -1,4 +1,5 @@
 import type { ProcessIncarnation } from '#src/infra/node-process.js';
+import { strictControlExchangeResult as strictTestExchange } from '#tests/support/control-exchange.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -9,7 +10,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
 import type { HostRef } from '#src/providers/contract.js';
 import type { ControlEndpointTimer } from '#src/provider-proxy/control-endpoint.js';
-import { connectControlClient, type ControlClient, type ControlExchange } from '#src/provider-proxy/control-client.js';
+import { connectControlClient, type ControlClient } from '#src/provider-proxy/control-client.js';
 import { createProxy } from '#src/provider-proxy/proxy.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { SemanticOperationCancellationTimeoutError } from '#src/provider-proxy/semantic-operation-runner.js';
@@ -68,18 +69,6 @@ const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
-
-async function strictTestExchange(
-  control: Pick<ControlClient, 'exchange'>,
-  method: string,
-  params: unknown,
-  timeoutMs: number,
-): Promise<unknown> {
-  const exchange: ControlExchange = await control.exchange(method, params, timeoutMs);
-  if (exchange.kind !== 'response') throw exchange.error;
-  if (exchange.response.kind === 'result') return exchange.response.value;
-  throw exchange.response.error;
-}
 
 const PREPARED: ProxyPreparedAppServerOperation = {
   version: 1,

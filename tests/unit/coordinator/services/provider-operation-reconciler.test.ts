@@ -1,3 +1,5 @@
+import type { SuccessionOperationRegistrationOutcome } from '#src/coordinator/live/provider-proxy/set-authority.js';
+import { controlExchangeForTest } from '#src/provider-proxy/control-client.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -907,7 +909,7 @@ describe('ProviderOperationReconciler publication', () => {
   it('does not send prepare until recovery credential installation is explicit', async () => {
     let registrationAttempts = 0;
     const registerSuccessionOperation = vi.fn<DurableProviderProxyOperationAuthority['registerSuccessionOperation']>(
-      async () => {
+      async (): Promise<SuccessionOperationRegistrationOutcome> => {
         registrationAttempts += 1;
         return registrationAttempts === 1
           ? {
@@ -915,7 +917,11 @@ describe('ProviderOperationReconciler publication', () => {
               incident: {
                 role: 'guardian',
                 method: 'guardian.handoff-install.v1',
-                exchange: { kind: 'not-sent', cause: 'write-threw', error: new Error('transient write failure') },
+                exchange: controlExchangeForTest({
+                  kind: 'not-sent',
+                  cause: 'write-threw',
+                  error: new Error('transient write failure'),
+                }),
               },
             }
           : { kind: 'registered' };

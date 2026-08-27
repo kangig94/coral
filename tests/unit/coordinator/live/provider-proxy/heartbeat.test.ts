@@ -12,7 +12,12 @@ import type {
   ProviderProxyHeartbeatObservation,
   ProviderProxyRole,
 } from '#src/coordinator/services/provider-proxy-authority-fault.js';
-import { ControlClientError, type ControlClient, type ControlExchange } from '#src/provider-proxy/control-client.js';
+import {
+  ControlClientError,
+  controlExchangeForTest,
+  type ControlClient,
+  type ControlExchange,
+} from '#src/provider-proxy/control-client.js';
 import { PROXY_CONTROL_HEARTBEAT_MS } from '#src/provider-proxy/orphan-deadline.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { flushMicrotasks, VirtualTime } from '#tools/simulation/core/virtual-time.js';
@@ -35,10 +40,10 @@ function scriptedClient(replies: readonly (string | ControlExchange)[]): {
       index += 1;
       return Promise.resolve(
         typeof reply === 'string'
-          ? {
+          ? controlExchangeForTest({
               kind: 'response',
               response: { kind: 'result', value: { state: 'active', nextHeartbeatChallenge: reply } },
-            }
+            })
           : reply,
       );
     },
@@ -51,11 +56,14 @@ function scriptedClient(replies: readonly (string | ControlExchange)[]): {
 
 function refusal(error: ControlClientError): ControlExchange {
   if (error.remoteFailure === null) throw new Error('test refusal requires a remote failure');
-  return { kind: 'response', response: { kind: 'refusal', failure: error.remoteFailure, error } };
+  return controlExchangeForTest({
+    kind: 'response',
+    response: { kind: 'refusal', failure: error.remoteFailure, error },
+  });
 }
 
 function noResponse(error: ControlClientError): ControlExchange {
-  return { kind: 'no-response', cause: 'timeout', error };
+  return controlExchangeForTest({ kind: 'no-response', cause: 'timeout', error });
 }
 
 function runtimeWithTime(time: VirtualTime): Runtime {
@@ -165,10 +173,11 @@ describe('provider proxy authority heartbeats', () => {
 
   it('rejects an invalid heartbeat before the untyped control client can write it', async () => {
     const exchange = vi.fn(
-      async (): Promise<ControlExchange> => ({
-        kind: 'response',
-        response: { kind: 'result', value: { state: 'active', nextHeartbeatChallenge: 'challenge-1' } },
-      }),
+      async (): Promise<ControlExchange> =>
+        controlExchangeForTest({
+          kind: 'response',
+          response: { kind: 'result', value: { state: 'active', nextHeartbeatChallenge: 'challenge-1' } },
+        }),
     );
     const client: ControlClient = {
       exchange,
@@ -216,10 +225,12 @@ describe('provider proxy authority heartbeats', () => {
     const exchange = vi
       .fn<ControlClient['exchange']>()
       .mockImplementationOnce(() => first)
-      .mockResolvedValue({
-        kind: 'response',
-        response: { kind: 'result', value: { state: 'active', nextHeartbeatChallenge: 'challenge-2' } },
-      });
+      .mockResolvedValue(
+        controlExchangeForTest({
+          kind: 'response',
+          response: { kind: 'result', value: { state: 'active', nextHeartbeatChallenge: 'challenge-2' } },
+        }),
+      );
     const client = {
       exchange,
       faulted: new Promise<never>(() => undefined),
@@ -241,10 +252,12 @@ describe('provider proxy authority heartbeats', () => {
     expect(exchange).toHaveBeenCalledTimes(1);
     expect(faults.faults).toEqual([]);
 
-    resolveFirst({
-      kind: 'response',
-      response: { kind: 'result', value: { state: 'active', nextHeartbeatChallenge: 'challenge-1' } },
-    });
+    resolveFirst(
+      controlExchangeForTest({
+        kind: 'response',
+        response: { kind: 'result', value: { state: 'active', nextHeartbeatChallenge: 'challenge-1' } },
+      }),
+    );
     await flushMicrotasks();
     time.tick(PROXY_CONTROL_HEARTBEAT_MS);
     await flushMicrotasks();
@@ -516,7 +529,9 @@ describe('provider proxy authority heartbeats', () => {
     // Not a `ControlClientError` at all — the raw `ProxyControlProtocolError`/`ZodError` shape this process's
     // own encode/decode path can raise, reaching the loop unwrapped.
     const localBug = new Error('cannot encode heartbeat');
-    const proxy = scriptedClient([{ kind: 'not-sent', cause: 'encode-failed', error: localBug }]);
+    const proxy = scriptedClient([
+      controlExchangeForTest({ kind: 'not-sent', cause: 'encode-failed', error: localBug }),
+    ]);
     const guardian = scriptedClient(['guardian-challenge-1']);
     const reaper = scriptedClient(['reaper-challenge-1']);
     const faults = recordingFaultLatch();
@@ -561,7 +576,8 @@ describe('provider proxy authority heartbeats', () => {
     // reply, not about whether this process could ask, so it must not latch a local-failure terminal.
     const time = new VirtualTime();
     const proxyClient: ControlClient = {
-      exchange: async () => ({ kind: 'response', response: { kind: 'result', value: { unexpected: 'shape' } } }),
+      exchange: async () =>
+        controlExchangeForTest({ kind: 'response', response: { kind: 'result', value: { unexpected: 'shape' } } }),
       faulted: new Promise<never>(() => undefined),
       onFault: () => () => undefined,
       close: () => {},

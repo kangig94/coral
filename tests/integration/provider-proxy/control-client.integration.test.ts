@@ -178,7 +178,25 @@ describe('control client', () => {
     });
   });
 
-  it('names channel closure with a written request pending as no-response', async () => {
+  it('names an orderly channel closure with a written request pending as no-response', async () => {
+    const { socketPath, sockets } = await startTestServer();
+    const client = await connectControlClient(socketPath, manualTimer(), 5_000);
+    cleanups.push(() => client.close());
+    const serverSocket = await waitForAccept(sockets);
+
+    const exchange = client.exchange('role.work.v1', {}, 5_000);
+    // `end` sends FIN and produces no socket error, which is what makes this an answerless close rather than
+    // an interrupted one.
+    serverSocket.end();
+
+    await expect(exchange).resolves.toEqual({
+      kind: 'no-response',
+      cause: 'connection-closed-after-write',
+      error: expect.objectContaining({ code: 'control_client_closed', origin: 'closed' }),
+    });
+  });
+
+  it('names a reset with a written request pending as delivery-unconfirmed', async () => {
     const { socketPath, sockets } = await startTestServer();
     const client = await connectControlClient(socketPath, manualTimer(), 5_000);
     cleanups.push(() => client.close());
@@ -187,10 +205,11 @@ describe('control client', () => {
     const exchange = client.exchange('role.work.v1', {}, 5_000);
     serverSocket.destroy();
 
-    await expect(exchange).resolves.toEqual({
-      kind: 'no-response',
-      cause: 'connection-closed-after-write',
-      error: expect.objectContaining({ code: 'control_client_closed', origin: 'closed' }),
+    // A reset says the request may or may not have arrived, which is not the same as the peer declining to
+    // answer one it received.
+    await expect(exchange).resolves.toMatchObject({
+      kind: 'delivery-unconfirmed',
+      cause: 'socket-error-after-write',
     });
   });
 
@@ -239,6 +258,32 @@ describe('control client', () => {
       cause: 'write-threw',
       error: sentinel,
     });
+  });
+
+  it('reports a pending asynchronous socket error before settling delivery as unconfirmed', async () => {
+    const { socketPath, sockets } = await startTestServer();
+    const client = await connectControlClient(socketPath, manualTimer(), 5_000);
+    cleanups.push(() => client.close());
+    await waitForAccept(sockets);
+    const sentinel = new Error('asynchronous socket sentinel');
+    const write = vi.spyOn(Socket.prototype, 'write').mockImplementationOnce(function (this: Socket) {
+      setImmediate(() => this.emit('error', sentinel));
+      return true;
+    });
+    cleanups.push(() => write.mockRestore());
+    const settlements: string[] = [];
+    void client.faulted.then(() => settlements.push('faulted'));
+
+    const exchange = client.exchange('role.write.v1', {}, 5_000);
+    void exchange.then(() => settlements.push('exchange'));
+
+    await expect(exchange).resolves.toEqual({
+      kind: 'delivery-unconfirmed',
+      cause: 'socket-error-after-write',
+      error: sentinel,
+    });
+    await Promise.resolve();
+    expect(settlements).toEqual(['faulted', 'exchange']);
   });
 
   it('names an invalid unattributable frame as a channel fault', async () => {

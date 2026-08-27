@@ -1,4 +1,5 @@
 import type { ProcessLiveness } from '#src/infra/node-process.js';
+import { strictControlExchangeResult as strictTestExchange } from '#tests/support/control-exchange.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -98,7 +99,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { readProviderOperation } from '#src/store/provider-operation-journal.js';
-import { connectControlClient, type ControlClient } from '#src/provider-proxy/control-client.js';
+import { connectControlClient } from '#src/provider-proxy/control-client.js';
 import type { EnforcementScheduler } from '#src/provider-proxy/enforcement.js';
 import { createGuardian } from '#src/provider-proxy/guardian.js';
 import { createOperationLedger, operationPrepareAttemptKey } from '#src/provider-proxy/ledger.js';
@@ -197,18 +198,6 @@ const timer = {
   setTimeout: (callback: () => void, ms: number) => setTimeout(callback, ms),
   clearTimeout: (handle: { unref?: () => void }) => clearTimeout(handle as unknown as NodeJS.Timeout),
 };
-
-async function strictTestExchange(
-  control: Pick<ControlClient, 'exchange'>,
-  method: string,
-  params: unknown,
-  timeoutMs: number,
-): Promise<unknown> {
-  const exchange = await control.exchange(method, params, timeoutMs);
-  if (exchange.kind !== 'response') throw exchange.error;
-  if (exchange.response.kind === 'result') return exchange.response.value;
-  throw exchange.response.error;
-}
 
 /** Never fires on its own; this test drives every transition through the RPCs themselves. */
 const idleScheduler: EnforcementScheduler = { schedule: () => ({}), cancel: () => {} };

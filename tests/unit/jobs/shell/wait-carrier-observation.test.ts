@@ -1,4 +1,4 @@
-import type { ControlExchange } from '#src/provider-proxy/control-client.js';
+import { controlExchangeForTest, type ControlExchange } from '#src/provider-proxy/control-client.js';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createObserveCarriers } from '#src/coordinator/composition/carrier-observation.js';
@@ -147,7 +147,7 @@ describe('wait carrier observation composition', () => {
       exchange: async (_method: string, params: unknown): Promise<ControlExchange> => {
         const request = proxyOperationStatusParamsSchema.parse(params);
         requests.push(request);
-        return {
+        return controlExchangeForTest({
           kind: 'response',
           response: {
             kind: 'result',
@@ -160,7 +160,7 @@ describe('wait carrier observation composition', () => {
               operations: request.operations.map((operation) => ({ operation, state: 'held' })),
             }),
           },
-        };
+        });
       },
       close,
     }));

@@ -12,7 +12,11 @@ import {
   type ProxyBootstrapCapsule,
   type ReaperBootstrapCapsule,
 } from '#src/provider-proxy/bootstrap-capsule.js';
-import type { ControlClient, ControlExchange } from '#src/provider-proxy/control-client.js';
+import {
+  controlExchangeForTest,
+  type ControlClient,
+  type ControlExchange,
+} from '#src/provider-proxy/control-client.js';
 import { CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV } from '#src/provider-proxy/orphan-deadline.js';
 import {
   buildEnforcementOutcomeHandlers,
@@ -284,10 +288,11 @@ describe('role pairing sender schemas', () => {
   it('refuses a malformed reaper pairing reply before spawning or constructing the proxy', async () => {
     const directory = scopedTempDir('coral-reaper-pair-reply-');
     const exchange = vi.fn(
-      async (): Promise<ControlExchange> => ({
-        kind: 'response',
-        response: { kind: 'result', value: { state: 'paired', unexpected: true } },
-      }),
+      async (): Promise<ControlExchange> =>
+        controlExchangeForTest({
+          kind: 'response',
+          response: { kind: 'result', value: { state: 'paired', unexpected: true } },
+        }),
     );
     const spawnRoleProcess = vi
       .fn()
@@ -384,7 +389,10 @@ describe('runProviderRoleMain', () => {
     const pairingExchange = vi.fn(async (method: string): Promise<ControlExchange> => {
       if (method !== 'guardian.pair.v1') throw new Error(`unexpected guardian method: ${method}`);
       guardianArmed = true;
-      return { kind: 'response', response: { kind: 'result', value: { state: 'paired' } } } satisfies ControlExchange;
+      return controlExchangeForTest({
+        kind: 'response',
+        response: { kind: 'result', value: { state: 'paired' } },
+      });
     });
     enableRoleSender(pairingCapsule('proxy', directory, randomBytes(32).toString('hex')), {
       exchange: pairingExchange,
@@ -431,10 +439,11 @@ describe('runProviderRoleMain', () => {
     const pairingClose = vi.fn();
     enableRoleSender(pairingCapsule('proxy', directory, randomBytes(32).toString('hex')), {
       exchange: vi.fn(
-        async (): Promise<ControlExchange> => ({
-          kind: 'response',
-          response: { kind: 'result', value: { state: 'paired' } },
-        }),
+        async (): Promise<ControlExchange> =>
+          controlExchangeForTest({
+            kind: 'response',
+            response: { kind: 'result', value: { state: 'paired' } },
+          }),
       ),
       close: pairingClose,
     });

@@ -76,8 +76,12 @@ export function v0109CoordinatorSocketGuardSetForRunDir(
 ): V0109CoordinatorSocketGuardSet {
   const path = env.platform === 'win32' ? win32 : posix;
   const candidateSocket = path.join(runDir, 'coordinator.sock');
-  if (Buffer.byteLength(candidateSocket, 'utf8') < v0109SocketPathByteLimit(env.platform)) {
+  const candidateBytes = Buffer.byteLength(candidateSocket, 'utf8');
+  if (candidateBytes < socketPathByteLimit(env.platform)) {
     return { kind: 'primary-address', paths: [] };
+  }
+  if (candidateBytes < v0109SocketPathByteLimit(env.platform)) {
+    return { kind: 'guarded-addresses', paths: [candidateSocket] };
   }
   if (env.configuredTempDirectory !== undefined && !path.isAbsolute(env.configuredTempDirectory)) {
     return {

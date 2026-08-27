@@ -117,27 +117,46 @@ describe('coordinatorPaths', () => {
     { platform: 'darwin', socketBytes: 104, kind: 'guarded-addresses' },
     { platform: 'linux', socketBytes: 107, kind: 'primary-address' },
     { platform: 'linux', socketBytes: 108, kind: 'guarded-addresses' },
-    { platform: 'freebsd', socketBytes: 107, kind: 'primary-address' },
+    { platform: 'freebsd', socketBytes: 107, kind: 'guarded-addresses' },
     { platform: 'freebsd', socketBytes: 108, kind: 'guarded-addresses' },
-    { platform: 'win32', socketBytes: 107, kind: 'primary-address' },
+    { platform: 'win32', socketBytes: 107, kind: 'guarded-addresses' },
     { platform: 'win32', socketBytes: 108, kind: 'guarded-addresses' },
-  ])('uses the tagged v0.10.9 byte limit on $platform at $socketBytes bytes', ({ platform, socketBytes, kind }) => {
-    const path = platform === 'win32' ? win32 : posix;
-    const root = platform === 'win32' ? 'C:\\' : '/';
-    // `path.join` adds a separator to a run directory but not to a root that already ends in one, so the
-    // suffix has to be measured against a non-root directory or the target length lands a byte high.
-    const suffixBytes =
-      Buffer.byteLength(path.join(`${root}a`, 'coordinator.sock'), 'utf8') - Buffer.byteLength(`${root}a`, 'utf8');
-    const runDir = `${root}${'a'.repeat(socketBytes - suffixBytes - Buffer.byteLength(root, 'utf8'))}`;
+  ])(
+    'guards the address selected across current and tagged limits on $platform at $socketBytes bytes',
+    ({ platform, socketBytes, kind }) => {
+      const path = platform === 'win32' ? win32 : posix;
+      const root = platform === 'win32' ? 'C:\\' : '/';
+      // `path.join` adds a separator to a run directory but not to a root that already ends in one, so the
+      // suffix has to be measured against a non-root directory or the target length lands a byte high.
+      const suffixBytes =
+        Buffer.byteLength(path.join(`${root}a`, 'coordinator.sock'), 'utf8') - Buffer.byteLength(`${root}a`, 'utf8');
+      const runDir = `${root}${'a'.repeat(socketBytes - suffixBytes - Buffer.byteLength(root, 'utf8'))}`;
 
-    expect(Buffer.byteLength(path.join(runDir, 'coordinator.sock'), 'utf8')).toBe(socketBytes);
-    expect(
-      v0109CoordinatorSocketGuardSetForRunDir(runDir, 'dev', {
-        platform,
-        configuredTempDirectory: undefined,
-        systemTempDirectory: platform === 'win32' ? 'C:\\Temp' : '/tmp',
-      }).kind,
-    ).toBe(kind);
+      expect(Buffer.byteLength(path.join(runDir, 'coordinator.sock'), 'utf8')).toBe(socketBytes);
+      expect(
+        v0109CoordinatorSocketGuardSetForRunDir(runDir, 'dev', {
+          platform,
+          configuredTempDirectory: undefined,
+          systemTempDirectory: platform === 'win32' ? 'C:\\Temp' : '/tmp',
+        }).kind,
+      ).toBe(kind);
+    },
+  );
+
+  it('guards the primary address a tagged build uses when only this build would relocate', () => {
+    const socketBytes = 106;
+    const suffixBytes = Buffer.byteLength(posix.join('/a', 'coordinator.sock'), 'utf8') - 2;
+    const runDir = `/${'a'.repeat(socketBytes - suffixBytes - 1)}`;
+    const taggedAddress = posix.join(runDir, 'coordinator.sock');
+
+    const selection = v0109CoordinatorSocketGuardSetForRunDir(runDir, 'prod', {
+      platform: 'freebsd',
+      configuredTempDirectory: undefined,
+      systemTempDirectory: '/tmp',
+    });
+
+    expect(Buffer.byteLength(taggedAddress, 'utf8')).toBe(socketBytes);
+    expect(selection).toEqual({ kind: 'guarded-addresses', paths: [taggedAddress] });
   });
 
   it.each([

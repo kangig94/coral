@@ -17,7 +17,11 @@ import type {
   HandoffCapsuleV2,
   HandoffCapsuleV3,
 } from '#src/provider-proxy/handoff-capsule.js';
-import { ControlClientError, type ControlExchange } from '#src/provider-proxy/control-client.js';
+import {
+  ControlClientError,
+  controlExchangeForTest,
+  type ControlExchange,
+} from '#src/provider-proxy/control-client.js';
 import { heartbeatObservationFromExchange } from '#src/provider-proxy/heartbeat-observation.js';
 import type { ProviderProxyHeartbeatHoldBound } from '#src/provider-proxy/orphan-deadline.js';
 import type { DurableProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
@@ -118,7 +122,10 @@ type HeartbeatTestObservation =
 
 function heartbeatRefusalExchange(error: ControlClientError): ControlExchange {
   if (error.remoteFailure === null) throw new Error('test heartbeat refusal lacks remote failure');
-  return { kind: 'response', response: { kind: 'refusal', failure: error.remoteFailure, error } };
+  return controlExchangeForTest({
+    kind: 'response',
+    response: { kind: 'refusal', failure: error.remoteFailure, error },
+  });
 }
 
 function heartbeatAuthorityObservation(
@@ -133,13 +140,13 @@ function heartbeatAuthorityObservation(
   let exchange: ControlExchange;
   switch (observation.kind) {
     case 'accepted':
-      exchange = {
+      exchange = controlExchangeForTest({
         kind: 'response',
         response: {
           kind: 'result',
           value: { state: 'active', nextHeartbeatChallenge: observation.nextChallenge ?? 'next-challenge' },
         },
-      };
+      });
       break;
     case 'challenge-mismatch': {
       const error = new ControlClientError('control_call_failed', message, 'remote-response', {
@@ -182,7 +189,7 @@ function heartbeatAuthorityObservation(
         observation.error instanceof ControlClientError
           ? observation.error
           : new ControlClientError('control_call_failed', message, 'timeout');
-      exchange = { kind: 'no-response', cause: 'timeout', error };
+      exchange = controlExchangeForTest({ kind: 'no-response', cause: 'timeout', error });
       break;
     }
   }
@@ -872,6 +879,51 @@ describe('ProviderProxySetLifecycle', () => {
     expect(stopAndReap).toHaveBeenCalledOnce();
   });
 
+  it("keeps concurrent role evidence visible when one role's heartbeat recovers", () => {
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([]);
+    const faults = createProviderProxyAuthorityFaultLatch();
+    const authority = fakeAuthority({ faults });
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: new ManualClock(),
+      proveContainmentAbsent: noContainmentProof,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.registerInheritedSet(authority);
+
+    faults.reportIncident(
+      heartbeatAuthorityObservation({ kind: 'no-response-before-deadline', error: 'guardian timed out' }),
+    );
+    faults.reportIncident(
+      heartbeatAuthorityObservation(
+        { kind: 'no-response-before-deadline', error: 'proxy timed out' },
+        { role: 'proxy', method: 'control.heartbeat.v1' },
+      ),
+    );
+
+    expect(lifecycle.snapshot().operatorDispositions).toHaveLength(2);
+    expect(lifecycle.snapshot().operatorDispositions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          disposition: 'held',
+          role: 'guardian',
+          method: 'guardian.heartbeat.v1',
+        }),
+        expect.objectContaining({ disposition: 'held', role: 'proxy', method: 'control.heartbeat.v1' }),
+      ]),
+    );
+
+    faults.reportIncident(heartbeatAuthorityObservation({ kind: 'accepted' }));
+
+    expect(lifecycle.snapshot().operatorDispositions).toEqual([
+      expect.objectContaining({ disposition: 'held', role: 'proxy', method: 'control.heartbeat.v1' }),
+    ]);
+  });
+
   it('keeps a claim-bearing answered-but-unusable set until disappearance reaches the claim', async () => {
     const record = providerOperationRecord('executing');
     const claims = new ProviderProxySetClaimMirror();
@@ -992,6 +1044,13 @@ describe('ProviderProxySetLifecycle', () => {
     lifecycle.completeStartupDiscovery();
     lifecycle.registerInheritedSet(authority);
 
+    faults.reportIncident(
+      heartbeatAuthorityObservation(
+        { kind: 'no-response-before-deadline', error: 'proxy timed out' },
+        { role: 'proxy', method: 'control.heartbeat.v1' },
+      ),
+    );
+    reportLifecycle.mockClear();
     faults.reportIncident(heartbeatAuthorityObservation({ kind: 'method-not-found', error: 'method not found' }));
 
     expect(stopAndReap).not.toHaveBeenCalled();
@@ -1035,6 +1094,7 @@ describe('ProviderProxySetLifecycle', () => {
     expect(stopHeartbeats).toHaveBeenCalledOnce();
     expect(initiateControlClose).toHaveBeenCalledOnce();
     expect(lifecycle.snapshot().states).toEqual(['containing']);
+    // Only the guardian was observed, so only the guardian's subject has a disposition.
     expect(lifecycle.snapshot().operatorDispositions).toEqual([
       expect.objectContaining({
         setIdentity: {

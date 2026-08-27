@@ -425,7 +425,7 @@ export class ProviderProxySetLifecycle {
   readonly #capsuleAddresses = new Map<string, string>();
   readonly #capsuleGrants = new Map<string, string>();
   readonly #foreignRetirementOwners = new Map<string, ForeignCapsuleRetirementOwner>();
-  readonly #operatorDispositions = new Map<string, ProviderProxySetOperatorDisposition>();
+  readonly #operatorDispositions = new Map<ProviderProxySetKey, Map<string, ProviderProxySetOperatorDisposition>>();
   #nextSlotId = 1;
   #startupDiscoveryCompleted = false;
 
@@ -783,7 +783,9 @@ export class ProviderProxySetLifecycle {
       pendingOperationCounts: slots.flatMap((slot) =>
         slot.kind === 'absence-delivery-pending' ? [slot.pendingOperations.size] : [],
       ),
-      operatorDispositions: [...this.#operatorDispositions.values()],
+      operatorDispositions: [...this.#operatorDispositions.values()].flatMap((dispositions) => [
+        ...dispositions.values(),
+      ]),
     };
   }
 
@@ -1251,14 +1253,20 @@ export class ProviderProxySetLifecycle {
   }
 
   #recordOperatorDisposition(decision: ProviderProxySetDecision): void {
-    const key = providerProxySetKey(decision.setIdentity);
     if (decision.action === 'preserve' && decision.fault !== 'heartbeat-indeterminate') return;
+    const setKey = providerProxySetKey(decision.setIdentity);
     if (decision.action === 'drain') {
-      this.#operatorDispositions.delete(key);
+      this.#operatorDispositions.delete(setKey);
       return;
     }
     const role = 'role' in decision && typeof decision.role === 'string' ? decision.role : undefined;
     const method = 'method' in decision && typeof decision.method === 'string' ? decision.method : undefined;
+    const subjectKey = JSON.stringify([role ?? null, method ?? null]);
+    let dispositions = this.#operatorDispositions.get(setKey);
+    if (dispositions === undefined) {
+      dispositions = new Map();
+      this.#operatorDispositions.set(setKey, dispositions);
+    }
     const incidentReason =
       'incidentReason' in decision && typeof decision.incidentReason === 'string'
         ? decision.incidentReason
@@ -1274,14 +1282,14 @@ export class ProviderProxySetLifecycle {
       incidentReason,
     };
     if (decision.action === 'preserve') {
-      this.#operatorDispositions.set(key, {
+      dispositions.set(subjectKey, {
         ...shared,
         disposition: 'held',
         waitingFor: 'heartbeat-evidence-window',
       });
       return;
     }
-    this.#operatorDispositions.set(key, {
+    dispositions.set(subjectKey, {
       ...shared,
       disposition: 'awaiting-containment-absence',
       waitingFor: 'independent-containment-absence',
@@ -1495,14 +1503,13 @@ export class ProviderProxySetLifecycle {
     role: ProviderProxyHeartbeatObservation['role'],
     method: ProviderProxyHeartbeatObservation['method'],
   ): void {
-    const operatorKey = providerProxySetKey(slot.identity);
-    const operatorDisposition = this.#operatorDispositions.get(operatorKey);
-    if (
-      operatorDisposition?.disposition === 'held' &&
-      operatorDisposition.role === role &&
-      operatorDisposition.method === method
-    ) {
-      this.#operatorDispositions.delete(operatorKey);
+    const setKey = providerProxySetKey(slot.identity);
+    const dispositions = this.#operatorDispositions.get(setKey);
+    const subjectKey = JSON.stringify([role, method]);
+    const operatorDisposition = dispositions?.get(subjectKey);
+    if (operatorDisposition?.disposition === 'held') {
+      dispositions?.delete(subjectKey);
+      if (dispositions?.size === 0) this.#operatorDispositions.delete(setKey);
     }
     for (const [key, report] of slot.preserveReports) {
       if (

@@ -232,6 +232,7 @@ function heartbeatObservationAvailabilityReason(observation: HeartbeatObservatio
     case 'reply':
       return observation.reply.kind;
     case 'no-response-before-deadline':
+    case 'delivery-unconfirmed':
     case 'channel-fault':
       return observation.kind;
     case 'locally-unsent':

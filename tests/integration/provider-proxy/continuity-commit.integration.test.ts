@@ -1,4 +1,5 @@
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
+import { strictControlExchangeResult as strictTestExchange } from '#tests/support/control-exchange.js';
 import { mkdtempSync } from 'node:fs';
 import { createConnection } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -38,6 +39,7 @@ import type { Runtime } from '#src/runtime/ports.js';
 import type { ProxyAppServerHostAuthority } from '#src/provider-proxy/provider-root-authority.js';
 import {
   connectControlClient,
+  controlExchangeForTest,
   ControlClientError,
   type ControlClient,
   type ProviderEventHandler,
@@ -84,18 +86,6 @@ import {
 
 const NONCE = 'a'.repeat(64);
 const HOST_FINGERPRINT = 'b'.repeat(64);
-
-async function strictTestExchange(
-  control: Pick<ControlClient, 'exchange'>,
-  method: string,
-  params: unknown,
-  timeoutMs: number,
-): Promise<unknown> {
-  const exchange = await control.exchange(method, params, timeoutMs);
-  if (exchange.kind !== 'response') throw exchange.error;
-  if (exchange.response.kind === 'result') return exchange.response.value;
-  throw exchange.response.error;
-}
 
 function deferred<T = void>(): Readonly<{ promise: Promise<T>; resolve(value?: T): void }> {
   let resolve!: (value?: T) => void;
@@ -167,11 +157,11 @@ async function connectRawProviderEventControlClient(
   const pending = new Map<
     number,
     Readonly<{
-      resolve(value: unknown): void;
-      reject(error: Error): void;
+      resolve(value: ControlExchange): void;
       budget: { unref?: () => void };
     }>
   >();
+  let socketError: Error | null = null;
   let latchedFault: ControlClientError | null = null;
   let resolveFault!: (error: ControlClientError) => void;
   const faulted = new Promise<ControlClientError>((resolve) => {
@@ -183,7 +173,22 @@ async function connectRawProviderEventControlClient(
     latchedFault = new ControlClientError('control_client_closed', 'The raw test control channel closed.', 'closed');
     resolveFault(latchedFault);
     for (const listener of listeners) listener(latchedFault);
-    for (const waiter of pending.values()) waiter.reject(latchedFault);
+    for (const waiter of pending.values()) {
+      timer.clearTimeout(waiter.budget);
+      waiter.resolve(
+        socketError === null
+          ? controlExchangeForTest({
+              kind: 'no-response',
+              cause: 'connection-closed-after-write',
+              error: latchedFault,
+            })
+          : controlExchangeForTest({
+              kind: 'delivery-unconfirmed',
+              cause: 'socket-error-after-write',
+              error: socketError,
+            }),
+      );
+    }
     pending.clear();
   };
 
@@ -217,21 +222,33 @@ async function connectRawProviderEventControlClient(
           admissionReason: null,
           heartbeatRefusal: null,
         } as const;
-        waiter.resolve({
-          kind: 'response',
-          response: {
-            kind: 'refusal',
-            failure,
-            error: new ControlClientError('control_call_failed', message.error.message, 'remote-response', failure),
-          },
-        });
-      } else waiter.resolve({ kind: 'response', response: { kind: 'result', value: message.result } });
+        waiter.resolve(
+          controlExchangeForTest({
+            kind: 'response',
+            response: {
+              kind: 'refusal',
+              failure,
+              error: new ControlClientError('control_call_failed', message.error.message, 'remote-response', failure),
+            },
+          }),
+        );
+      } else {
+        waiter.resolve(
+          controlExchangeForTest({ kind: 'response', response: { kind: 'result', value: message.result } }),
+        );
+      }
     },
     () => socket.destroy(),
   );
   socket.on('data', read);
-  socket.on('error', () => socket.destroy());
-  socket.on('close', latchFault);
+  socket.on('error', (error) => {
+    socketError ??= error;
+    socket.destroy();
+  });
+  socket.on('close', () => {
+    closed = true;
+    latchFault();
+  });
 
   return {
     faulted,
@@ -245,28 +262,32 @@ async function connectRawProviderEventControlClient(
     },
     exchange(method, params, timeoutMs) {
       if (closed) {
-        return Promise.resolve({
-          kind: 'not-sent',
-          cause: 'connection-already-closed',
-          error: new Error('The raw test control channel is closed.'),
-        } satisfies ControlExchange);
+        return Promise.resolve(
+          controlExchangeForTest({
+            kind: 'not-sent',
+            cause: 'connection-already-closed',
+            error: new Error('The raw test control channel is closed.'),
+          }),
+        );
       }
       const id = nextId;
       nextId += 1;
       return new Promise<ControlExchange>((resolve) => {
         const budget = timer.setTimeout(() => {
           pending.delete(id);
-          resolve({
-            kind: 'no-response',
-            cause: 'timeout',
-            error: new ControlClientError(
-              'control_call_failed',
-              `${method} exceeded its ${timeoutMs}ms budget.`,
-              'timeout',
-            ),
-          });
+          resolve(
+            controlExchangeForTest({
+              kind: 'no-response',
+              cause: 'timeout',
+              error: new ControlClientError(
+                'control_call_failed',
+                `${method} exceeded its ${timeoutMs}ms budget.`,
+                'timeout',
+              ),
+            }),
+          );
         }, timeoutMs);
-        pending.set(id, { resolve, reject: () => undefined, budget });
+        pending.set(id, { resolve, budget });
         socket.write(encodeProxyControlFrame({ jsonrpc: '2.0', id, method, params }));
       });
     },

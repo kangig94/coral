@@ -44,8 +44,12 @@ export type ControlClientRemoteFailure =
     }>
   | Readonly<{ kind: 'invalid-frame' }>;
 
-/** The transport owner's closed classification of one attempted request/reply exchange. */
-export type ControlExchange =
+declare const controlExchangeBrand: unique symbol;
+/** Exported so a generic factory's return type can be named; the symbol stays private, so this alias
+ *  still cannot be satisfied by construction. */
+export type ControlExchangeBrand = Readonly<{ [controlExchangeBrand]: true }>;
+
+type ControlExchangeShape =
   | Readonly<{
       kind: 'response';
       response:
@@ -62,6 +66,11 @@ export type ControlExchange =
       error: ControlClientError;
     }>
   | Readonly<{
+      kind: 'delivery-unconfirmed';
+      cause: 'socket-error-after-write';
+      error: Error;
+    }>
+  | Readonly<{
       kind: 'not-sent';
       cause: 'connection-already-closed' | 'encode-failed' | 'write-threw';
       error: unknown;
@@ -71,6 +80,18 @@ export type ControlExchange =
       cause: 'invalid-unattributable-frame';
       error: ControlClientError;
     }>;
+
+/** The transport owner's closed classification of one attempted request/reply exchange. */
+export type ControlExchange = ControlExchangeShape & ControlExchangeBrand;
+
+function observedExchange<T extends ControlExchangeShape>(exchange: T): T & ControlExchangeBrand {
+  return exchange as T & ControlExchangeBrand;
+}
+
+/** Lets a test double produce transport-owned exchange evidence without publishing the brand or raw shape. */
+export function controlExchangeForTest<T extends ControlExchangeShape>(exchange: T): T & ControlExchangeBrand {
+  return observedExchange(exchange);
+}
 
 const JSON_RPC_INVALID_REQUEST = -32_600;
 
@@ -221,7 +242,7 @@ export async function connectControlClient(
       { kind: 'invalid-frame' },
     );
     latchFault(error);
-    settleAll({ kind: 'channel-fault', cause: 'invalid-unattributable-frame', error });
+    settleAll(observedExchange({ kind: 'channel-fault', cause: 'invalid-unattributable-frame', error }));
     socket.destroy();
   };
 
@@ -306,27 +327,37 @@ export async function connectControlClient(
         heartbeatRefusal: heartbeatRefusalFrom(message.error.code, message.error.data),
       };
       const error = new ControlClientError('control_call_failed', message.error.message, 'remote-response', failure);
-      waiter.resolve({ kind: 'response', response: { kind: 'refusal', failure, error } });
+      waiter.resolve(observedExchange({ kind: 'response', response: { kind: 'refusal', failure, error } }));
     } else {
-      waiter.resolve({ kind: 'response', response: { kind: 'result', value: message.result } });
+      waiter.resolve(observedExchange({ kind: 'response', response: { kind: 'result', value: message.result } }));
     }
   }, faultInvalidFrame);
   socket.on('data', read);
-  socket.on('error', () => socket.destroy());
+  let socketError: Error | null = null;
+  socket.on('error', (error) => {
+    socketError ??= error;
+    socket.destroy();
+  });
   socket.on('close', () => {
     closed = true;
     const error = new ControlClientError('control_client_closed', 'The control channel closed.', 'closed');
     latchFault(error);
-    settleAll({ kind: 'no-response', cause: 'connection-closed-after-write', error });
+    settleAll(
+      socketError === null
+        ? observedExchange({ kind: 'no-response', cause: 'connection-closed-after-write', error })
+        : observedExchange({ kind: 'delivery-unconfirmed', cause: 'socket-error-after-write', error: socketError }),
+    );
   });
 
   const exchange = (method: string, params: unknown, timeoutMs: number): Promise<ControlExchange> => {
     if (closed) {
-      return Promise.resolve({
-        kind: 'not-sent',
-        cause: 'connection-already-closed',
-        error: new ControlClientError('control_client_closed', 'The control channel closed.', 'closed'),
-      });
+      return Promise.resolve(
+        observedExchange({
+          kind: 'not-sent',
+          cause: 'connection-already-closed',
+          error: new ControlClientError('control_client_closed', 'The control channel closed.', 'closed'),
+        }),
+      );
     }
 
     const id = nextId;
@@ -335,21 +366,23 @@ export async function connectControlClient(
     try {
       frame = encodeProxyControlFrame({ jsonrpc: '2.0', id, method, params });
     } catch (error: unknown) {
-      return Promise.resolve({ kind: 'not-sent', cause: 'encode-failed', error });
+      return Promise.resolve(observedExchange({ kind: 'not-sent', cause: 'encode-failed', error }));
     }
 
     return new Promise<ControlExchange>((resolve) => {
       const budget = timer.setTimeout(() => {
         pending.delete(id);
-        resolve({
-          kind: 'no-response',
-          cause: 'timeout',
-          error: new ControlClientError(
-            'control_call_failed',
-            `${method} exceeded its ${timeoutMs}ms budget.`,
-            'timeout',
-          ),
-        });
+        resolve(
+          observedExchange({
+            kind: 'no-response',
+            cause: 'timeout',
+            error: new ControlClientError(
+              'control_call_failed',
+              `${method} exceeded its ${timeoutMs}ms budget.`,
+              'timeout',
+            ),
+          }),
+        );
       }, timeoutMs);
       budget.unref?.();
       pending.set(id, { resolve, budget });
@@ -358,7 +391,7 @@ export async function connectControlClient(
       } catch (error: unknown) {
         pending.delete(id);
         timer.clearTimeout(budget);
-        resolve({ kind: 'not-sent', cause: 'write-threw', error });
+        resolve(observedExchange({ kind: 'not-sent', cause: 'write-threw', error }));
       }
     });
   };

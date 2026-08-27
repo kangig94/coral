@@ -5,7 +5,11 @@ import type { z } from 'zod';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createMonotonicClock, type MonotonicClock } from '#src/infra/monotonic-clock.js';
-import type { ControlClient, ControlExchange } from '#src/provider-proxy/control-client.js';
+import {
+  controlExchangeForTest,
+  type ControlClient,
+  type ControlExchange,
+} from '#src/provider-proxy/control-client.js';
 import type {
   ControlEndpointOptions,
   ControlMethod,
@@ -145,7 +149,7 @@ function createGuardianHarness() {
     } else {
       value = { state: 'root-recorded' };
     }
-    return { kind: 'response', response: { kind: 'result', value } } satisfies ControlExchange;
+    return controlExchangeForTest({ kind: 'response', response: { kind: 'result', value } });
   });
   const reaperChannel: ControlClient = {
     exchange: reaperExchange,
@@ -363,10 +367,12 @@ describe('guardian outbound schemas', () => {
     const harness = createGuardianHarness();
     await armGuardian(harness);
     harness.mintReceipt.mockClear();
-    harness.reaperExchange.mockResolvedValueOnce({
-      kind: 'response',
-      response: { kind: 'result', value: { state: 'root-recorded', unexpected: true } },
-    });
+    harness.reaperExchange.mockResolvedValueOnce(
+      controlExchangeForTest({
+        kind: 'response',
+        response: { kind: 'result', value: { state: 'root-recorded', unexpected: true } },
+      }),
+    );
 
     await expect(
       harness.method('guardian.register-provider-root.v1').handle({

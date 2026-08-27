@@ -67,6 +67,7 @@ type HeartbeatObservationShape =
       stage: 'request-encode' | 'write' | 'channel-not-open';
       error: unknown;
     }>
+  | Readonly<{ kind: 'delivery-unconfirmed'; error: Error }>
   | Readonly<{ kind: 'channel-fault'; error: ControlClientError }>;
 
 /**
@@ -79,7 +80,7 @@ export type HeartbeatReplyObservation = Extract<HeartbeatObservation, { kind: 'r
 export type HeartbeatNoResponseObservation = Extract<HeartbeatObservation, { kind: 'no-response-before-deadline' }>;
 export type HeartbeatLocalFailureObservation = Extract<
   HeartbeatObservation,
-  { kind: 'locally-unsent' | 'channel-fault' }
+  { kind: 'locally-unsent' | 'delivery-unconfirmed' | 'channel-fault' }
 >;
 
 function observed<T extends HeartbeatObservationShape>(observation: T): T & HeartbeatObservationBrand {
@@ -99,6 +100,9 @@ export function heartbeatObservationFromExchange(exchange: ControlExchange): Hea
           ? 'write'
           : 'channel-not-open';
     return observed({ kind: 'locally-unsent', stage, error: exchange.error });
+  }
+  if (exchange.kind === 'delivery-unconfirmed') {
+    return observed({ kind: 'delivery-unconfirmed', error: exchange.error });
   }
   if (exchange.kind === 'channel-fault') {
     return observed({ kind: 'channel-fault', error: exchange.error });
@@ -255,11 +259,14 @@ export type HeartbeatLocalFailureTransition =
       stage: Extract<HeartbeatObservation, { kind: 'locally-unsent' }>['stage'];
       error: unknown;
     }>
+  | Readonly<{ effect: 'delivery-unconfirmed'; error: Error }>
   | Readonly<{ effect: 'channel-fault'; error: ControlClientError }>;
 
 /** Local and channel failures deliberately return no evidence-window state. */
 export function applyLocalFailure(observation: HeartbeatLocalFailureObservation): HeartbeatLocalFailureTransition {
-  return observation.kind === 'locally-unsent'
-    ? { effect: observation.kind, stage: observation.stage, error: observation.error }
-    : { effect: observation.kind, error: observation.error };
+  if (observation.kind === 'locally-unsent') {
+    return { effect: observation.kind, stage: observation.stage, error: observation.error };
+  }
+  if (observation.kind === 'delivery-unconfirmed') return { effect: observation.kind, error: observation.error };
+  return { effect: observation.kind, error: observation.error };
 }

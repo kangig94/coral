@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { ControlClientError, type ControlExchange } from '#src/provider-proxy/control-client.js';
+import {
+  ControlClientError,
+  controlExchangeForTest,
+  type ControlExchange,
+} from '#src/provider-proxy/control-client.js';
 import {
   applyAnswer,
   applyLocalFailure,
@@ -46,14 +50,16 @@ function refusal(
     heartbeatRefusal,
   };
   const error = new ControlClientError('control_call_failed', message, 'remote-response', failure);
-  return { kind: 'response', response: { kind: 'refusal', failure, error } };
+  return controlExchangeForTest({ kind: 'response', response: { kind: 'refusal', failure, error } });
 }
 
 const REPLIES = [
-  heartbeatObservationFromExchange({
-    kind: 'response',
-    response: { kind: 'result', value: { state: 'active', nextHeartbeatChallenge: 'accepted-next' } },
-  }),
+  heartbeatObservationFromExchange(
+    controlExchangeForTest({
+      kind: 'response',
+      response: { kind: 'result', value: { state: 'active', nextHeartbeatChallenge: 'accepted-next' } },
+    }),
+  ),
   heartbeatObservationFromExchange(
     refusal('challenge mismatch', 'invalid_request', {
       reason: 'challenge-mismatch',
@@ -74,30 +80,52 @@ const REPLIES = [
 }) satisfies readonly HeartbeatReplyObservation[];
 
 const timeout = new ControlClientError('control_call_failed', 'heartbeat timed out', 'timeout');
-const NO_RESPONSE = heartbeatObservationFromExchange({ kind: 'no-response', cause: 'timeout', error: timeout });
+const NO_RESPONSE = heartbeatObservationFromExchange(
+  controlExchangeForTest({ kind: 'no-response', cause: 'timeout', error: timeout }),
+);
 if (NO_RESPONSE.kind !== 'no-response-before-deadline') throw new Error('test exchange did not produce silence');
 
 const localEncodeError = new Error('cannot encode heartbeat');
 const localWriteError = new Error('cannot write heartbeat');
+const deliveryError = new Error('socket failed after write');
 const channelNotOpenError = new ControlClientError('control_client_closed', 'channel not open', 'closed');
 const channelFaultError = new ControlClientError('control_call_failed', 'invalid frame', 'remote-response', {
   kind: 'invalid-frame',
 });
 const LOCAL_FAILURES = [
-  heartbeatObservationFromExchange({ kind: 'not-sent', cause: 'encode-failed', error: localEncodeError }),
-  heartbeatObservationFromExchange({ kind: 'not-sent', cause: 'write-threw', error: localWriteError }),
-  heartbeatObservationFromExchange({
-    kind: 'not-sent',
-    cause: 'connection-already-closed',
-    error: channelNotOpenError,
-  }),
-  heartbeatObservationFromExchange({
-    kind: 'channel-fault',
-    cause: 'invalid-unattributable-frame',
-    error: channelFaultError,
-  }),
+  heartbeatObservationFromExchange(
+    controlExchangeForTest({ kind: 'not-sent', cause: 'encode-failed', error: localEncodeError }),
+  ),
+  heartbeatObservationFromExchange(
+    controlExchangeForTest({ kind: 'not-sent', cause: 'write-threw', error: localWriteError }),
+  ),
+  heartbeatObservationFromExchange(
+    controlExchangeForTest({
+      kind: 'not-sent',
+      cause: 'connection-already-closed',
+      error: channelNotOpenError,
+    }),
+  ),
+  heartbeatObservationFromExchange(
+    controlExchangeForTest({
+      kind: 'channel-fault',
+      cause: 'invalid-unattributable-frame',
+      error: channelFaultError,
+    }),
+  ),
+  heartbeatObservationFromExchange(
+    controlExchangeForTest({
+      kind: 'delivery-unconfirmed',
+      cause: 'socket-error-after-write',
+      error: deliveryError,
+    }),
+  ),
 ].map((observation) => {
-  if (observation.kind !== 'locally-unsent' && observation.kind !== 'channel-fault') {
+  if (
+    observation.kind !== 'locally-unsent' &&
+    observation.kind !== 'delivery-unconfirmed' &&
+    observation.kind !== 'channel-fault'
+  ) {
     throw new Error('test exchange did not produce a local failure');
   }
   return observation;
@@ -105,26 +133,30 @@ const LOCAL_FAILURES = [
 
 describe('heartbeat evidence-window reducer', () => {
   it('owns the strict result bound for a peer-supplied next challenge', () => {
-    const atLimit = heartbeatObservationFromExchange({
-      kind: 'response',
-      response: {
-        kind: 'result',
-        value: {
-          state: 'active',
-          nextHeartbeatChallenge: 'x'.repeat(MAX_HEARTBEAT_CHALLENGE_CHARACTERS),
+    const atLimit = heartbeatObservationFromExchange(
+      controlExchangeForTest({
+        kind: 'response',
+        response: {
+          kind: 'result',
+          value: {
+            state: 'active',
+            nextHeartbeatChallenge: 'x'.repeat(MAX_HEARTBEAT_CHALLENGE_CHARACTERS),
+          },
         },
-      },
-    });
-    const overLimit = heartbeatObservationFromExchange({
-      kind: 'response',
-      response: {
-        kind: 'result',
-        value: {
-          state: 'active',
-          nextHeartbeatChallenge: 'x'.repeat(MAX_HEARTBEAT_CHALLENGE_CHARACTERS + 1),
+      }),
+    );
+    const overLimit = heartbeatObservationFromExchange(
+      controlExchangeForTest({
+        kind: 'response',
+        response: {
+          kind: 'result',
+          value: {
+            state: 'active',
+            nextHeartbeatChallenge: 'x'.repeat(MAX_HEARTBEAT_CHALLENGE_CHARACTERS + 1),
+          },
         },
-      },
-    });
+      }),
+    );
 
     expect(atLimit).toMatchObject({ kind: 'reply', reply: { kind: 'accepted' } });
     expect(overLimit).toMatchObject({ kind: 'reply', reply: { kind: 'unusable' } });
@@ -238,12 +270,26 @@ describe('heartbeat evidence-window reducer', () => {
   });
 
   it('maps a not-sent exchange to locally-unsent rather than silence', () => {
-    const observation = heartbeatObservationFromExchange({
-      kind: 'not-sent',
-      cause: 'write-threw',
-      error: localWriteError,
-    });
+    const observation = heartbeatObservationFromExchange(
+      controlExchangeForTest({
+        kind: 'not-sent',
+        cause: 'write-threw',
+        error: localWriteError,
+      }),
+    );
     expect(observation).toEqual({ kind: 'locally-unsent', stage: 'write', error: localWriteError });
+    expect(observation.kind).not.toBe('no-response-before-deadline');
+  });
+
+  it('maps an asynchronous socket failure to delivery-unconfirmed rather than silence', () => {
+    const observation = heartbeatObservationFromExchange(
+      controlExchangeForTest({
+        kind: 'delivery-unconfirmed',
+        cause: 'socket-error-after-write',
+        error: deliveryError,
+      }),
+    );
+    expect(observation).toEqual({ kind: 'delivery-unconfirmed', error: deliveryError });
     expect(observation.kind).not.toBe('no-response-before-deadline');
   });
 });

@@ -1,4 +1,5 @@
 import type { ProcessIncarnation } from '#src/infra/node-process.js';
+import { strictControlExchangeResult as strictTestExchange } from '#tests/support/control-exchange.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -35,6 +36,7 @@ import type { HostRef } from '#src/providers/contract.js';
 import { heartbeatOnce } from '#src/coordinator/live/provider-proxy/heartbeat.js';
 import {
   connectControlClient,
+  controlExchangeForTest,
   ControlClientError,
   type ControlClient,
   type ControlExchange,
@@ -108,32 +110,20 @@ const timer: ControlEndpointTimer = {
   clearTimeout: (handle: { unref?: () => void }) => clearTimeout(handle as unknown as NodeJS.Timeout),
 };
 
-async function strictTestExchange(
-  control: Pick<ControlClient, 'exchange'>,
-  method: string,
-  params: unknown,
-  timeoutMs: number,
-): Promise<unknown> {
-  const exchange = await control.exchange(method, params, timeoutMs);
-  if (exchange.kind !== 'response') throw exchange.error;
-  if (exchange.response.kind === 'result') return exchange.response.value;
-  throw exchange.response.error;
-}
-
 function resultExchange(value: unknown): ControlExchange {
-  return { kind: 'response', response: { kind: 'result', value } } satisfies ControlExchange;
+  return controlExchangeForTest({ kind: 'response', response: { kind: 'result', value } });
 }
 
 function noResponse(error: ControlClientError): ControlExchange {
-  return { kind: 'no-response', cause: 'connection-closed-after-write', error };
+  return controlExchangeForTest({ kind: 'no-response', cause: 'connection-closed-after-write', error });
 }
 
 function refusedExchange(error: ControlClientError): ControlExchange {
   if (error.remoteFailure === null) return noResponse(error);
-  return {
+  return controlExchangeForTest({
     kind: 'response',
     response: { kind: 'refusal', failure: error.remoteFailure, error },
-  };
+  });
 }
 
 type Started = { jobId: string; operationId: string };

@@ -12,6 +12,7 @@ import {
 } from '#src/coordinator/live/provider-proxy/role-control.js';
 import {
   ControlClientError,
+  controlExchangeForTest,
   type ControlClient,
   type ControlClientTimer,
   type ControlExchange,
@@ -58,12 +59,15 @@ function openingClient(exchange: ControlClient['exchange']): ControlClient {
 }
 
 function result(value: unknown): ControlExchange {
-  return { kind: 'response', response: { kind: 'result', value } } satisfies ControlExchange;
+  return controlExchangeForTest({ kind: 'response', response: { kind: 'result', value } });
 }
 
 function refusal(error: ControlClientError): ControlExchange {
   if (error.remoteFailure === null) throw new Error('test refusal requires a remote failure');
-  return { kind: 'response', response: { kind: 'refusal', failure: error.remoteFailure, error } };
+  return controlExchangeForTest({
+    kind: 'response',
+    response: { kind: 'refusal', failure: error.remoteFailure, error },
+  });
 }
 
 function remoteFailure(
@@ -182,7 +186,9 @@ describe('role control recovery classification', () => {
 
   it('names an unanswered opening heartbeat as indeterminate availability, distinctly from an unclassified one', async () => {
     const timeout = new ControlClientError('control_call_failed', 'heartbeat timed out', 'timeout');
-    const fake = openingClient(async () => ({ kind: 'no-response', cause: 'timeout', error: timeout }));
+    const fake = openingClient(async () =>
+      controlExchangeForTest({ kind: 'no-response', cause: 'timeout', error: timeout }),
+    );
 
     await expect(establishWith(fake)).rejects.toMatchObject({
       name: 'ProviderProxyRoleControlUnavailableError',
@@ -276,15 +282,16 @@ describe('role control recovery classification', () => {
     // Not a disposition about the peer — this process's own encode/decode bug, guaranteed to recur
     // identically on retry. `establishHeartbeat` must not wrap it into a retryable availability error.
     const localBug = new Error('cannot encode heartbeat');
-    const fake = openingClient(async () => ({ kind: 'not-sent', cause: 'encode-failed', error: localBug }));
+    const fake = openingClient(async () =>
+      controlExchangeForTest({ kind: 'not-sent', cause: 'encode-failed', error: localBug }),
+    );
 
     await expect(establishWith(fake)).rejects.toBe(localBug);
   });
 
   it('treats a channel fault that arrives mid-establishment as decisive, not an indeterminate hold', async () => {
-    // `control-client.ts`'s own `faulted` promise resolves the instant the channel permanently faults —
-    // strictly before the same event rejects whatever call was pending. Nothing subscribes to it via
-    // `observeControlClient` this early, so `establishRoleControl` must race it directly, or an open-stage
+    // Nothing subscribes through `observeControlClient` this early, so `establishRoleControl` must race the
+    // channel's own fault surface directly, or an open-stage
     // channel death would otherwise reach only the generic indeterminate disposition a lone RPC rejection
     // carries — and retry unboundedly against a socket that has already been destroyed.
     let resolveFaulted!: (fault: ControlClientError) => void;

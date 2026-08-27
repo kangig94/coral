@@ -1,4 +1,5 @@
 import type { ProcessLiveness } from '#src/infra/node-process.js';
+import { strictControlExchangeResult as strictTestExchange } from '#tests/support/control-exchange.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -33,6 +34,7 @@ import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
 import {
   connectControlClient,
   ControlClientError,
+  controlExchangeForTest,
   type ControlClient,
   type ControlExchange,
 } from '#src/provider-proxy/control-client.js';
@@ -78,13 +80,6 @@ const retainsEveryCapsule = { observeRecordedProcess: () => 'unknown' as const }
 const mockedReadCapsule = vi.mocked(readHandoffCapsuleFile);
 const mockedConnect = vi.mocked(connectRoleControlWithRetry);
 const mockedProbe = vi.mocked(probeProcessIncarnation);
-
-async function strictTestExchange(client: ControlClient, method: string, params: unknown): Promise<unknown> {
-  const exchange = await client.exchange(method, params, 5_000);
-  if (exchange.kind !== 'response') throw exchange.error;
-  if (exchange.response.kind === 'result') return exchange.response.value;
-  throw exchange.response.error;
-}
 
 // Call history, not implementations, so `mockedProbe`'s default `1_700_000_000` (set in the `vi.mock` factory
 // above) survives — only each test's own explicit `.mockReturnValueOnce`/`.mockResolvedValueOnce` setup and
@@ -288,14 +283,17 @@ async function scriptedHeartbeatExchange(
   if (entry === undefined) throw new Error(`unexpected exchange to ${method}`);
   try {
     const value = typeof entry === 'function' ? (entry as (value: unknown) => unknown)(params) : entry;
-    return { kind: 'response', response: { kind: 'result', value } } satisfies ControlExchange;
+    return controlExchangeForTest({ kind: 'response', response: { kind: 'result', value } });
   } catch (error: unknown) {
     if (!(error instanceof ControlClientError)) throw error;
     if (error.remoteFailure !== null) {
-      return { kind: 'response', response: { kind: 'refusal', failure: error.remoteFailure, error } };
+      return controlExchangeForTest({
+        kind: 'response',
+        response: { kind: 'refusal', failure: error.remoteFailure, error },
+      });
     }
-    if (error.origin === 'timeout') return { kind: 'no-response', cause: 'timeout', error };
-    return { kind: 'not-sent', cause: 'connection-already-closed', error };
+    if (error.origin === 'timeout') return controlExchangeForTest({ kind: 'no-response', cause: 'timeout', error });
+    return controlExchangeForTest({ kind: 'not-sent', cause: 'connection-already-closed', error });
   }
 }
 
@@ -416,17 +414,19 @@ async function guardianLeaseClient(
   const client: ControlClient = {
     exchange: (method, params, timeoutMs) =>
       method === 'guardian.handoff-redeem.v1'
-        ? Promise.resolve({
-            kind: 'response',
-            response: {
-              kind: 'result',
-              value: {
-                ...openResponse,
-                controlEpoch: opened.controlEpoch,
-                heartbeatChallenge: opened.heartbeatChallenge,
+        ? Promise.resolve(
+            controlExchangeForTest({
+              kind: 'response',
+              response: {
+                kind: 'result',
+                value: {
+                  ...openResponse,
+                  controlEpoch: opened.controlEpoch,
+                  heartbeatChallenge: opened.heartbeatChallenge,
+                },
               },
-            },
-          })
+            }),
+          )
         : realClient.exchange(method, params, timeoutMs),
     faulted: realClient.faulted,
     onFault: (listener) => realClient.onFault(listener),
@@ -1048,7 +1048,7 @@ describe('attemptProviderProxySetInheritance', () => {
     mockedConnect.mockImplementation(async (socketPath: string) => ({
       exchange: async (method: string) => {
         if (method === 'guardian.handoff-redeem.v1') {
-          return {
+          return controlExchangeForTest({
             kind: 'response' as const,
             response: {
               kind: 'result' as const,
@@ -1062,16 +1062,16 @@ describe('attemptProviderProxySetInheritance', () => {
                 containment: containmentFor(loc),
               },
             },
-          };
+          });
         }
         if (method === 'guardian.heartbeat.v1') {
-          return {
+          return controlExchangeForTest({
             kind: 'response' as const,
             response: {
               kind: 'result' as const,
               value: { state: 'active', nextHeartbeatChallenge: 'g2' },
             },
-          };
+          });
         }
         if (method === 'reaper.handoff-rotate.v1') throw new Error('grant_invalid: replayed');
         throw new Error(`unexpected exchange ${method} for ${socketPath}`);

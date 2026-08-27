@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { ControlClientError } from '#src/provider-proxy/control-client.js';
+import { ControlClientError, controlExchangeForTest } from '#src/provider-proxy/control-client.js';
 import { heartbeatObservationFromExchange } from '#src/provider-proxy/heartbeat-observation.js';
 import {
   createProviderProxyAuthorityFaultLatch,
@@ -37,17 +37,21 @@ describe('provider proxy authority fault latch', () => {
       kind: 'heartbeat-observation',
       role: 'proxy',
       method: 'control.heartbeat.v1',
-      observation: heartbeatObservationFromExchange({ kind: 'no-response', cause: 'timeout', error: timeout }),
+      observation: heartbeatObservationFromExchange(
+        controlExchangeForTest({ kind: 'no-response', cause: 'timeout', error: timeout }),
+      ),
       schedulerLatenessMs: 0,
     } as const;
     const accepted = {
       kind: 'heartbeat-observation',
       role: 'proxy',
       method: 'control.heartbeat.v1',
-      observation: heartbeatObservationFromExchange({
-        kind: 'response',
-        response: { kind: 'result', value: { state: 'active', nextHeartbeatChallenge: 'next-challenge' } },
-      }),
+      observation: heartbeatObservationFromExchange(
+        controlExchangeForTest({
+          kind: 'response',
+          response: { kind: 'result', value: { state: 'active', nextHeartbeatChallenge: 'next-challenge' } },
+        }),
+      ),
       schedulerLatenessMs: 0,
     } as const;
     latch.reportIncident(unanswered);
@@ -65,7 +69,9 @@ describe('provider proxy authority fault latch', () => {
       kind: 'heartbeat-observation',
       role: 'proxy',
       method: 'control.heartbeat.v1',
-      observation: heartbeatObservationFromExchange({ kind: 'no-response', cause: 'timeout', error: timeout }),
+      observation: heartbeatObservationFromExchange(
+        controlExchangeForTest({ kind: 'no-response', cause: 'timeout', error: timeout }),
+      ),
       schedulerLatenessMs: 0,
     });
     const refusal = new ControlClientError('control_call_failed', 'answer could not be decoded', 'remote-response', {
@@ -80,10 +86,12 @@ describe('provider proxy authority fault latch', () => {
       kind: 'heartbeat-observation',
       role: 'proxy',
       method: 'control.heartbeat.v1',
-      observation: heartbeatObservationFromExchange({
-        kind: 'response',
-        response: { kind: 'refusal', failure: refusal.remoteFailure, error: refusal },
-      }),
+      observation: heartbeatObservationFromExchange(
+        controlExchangeForTest({
+          kind: 'response',
+          response: { kind: 'refusal', failure: refusal.remoteFailure, error: refusal },
+        }),
+      ),
       schedulerLatenessMs: 0,
     } as const;
     latch.reportIncident(unusable);

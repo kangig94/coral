@@ -1,4 +1,5 @@
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
+import { strictControlExchangeResult as strictTestExchange } from '#tests/support/control-exchange.js';
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -34,7 +35,11 @@ import { createProviderProxySetAuthority } from '#src/coordinator/live/provider-
 import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set/claim-mirror.js';
 import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set/index.js';
 import type { ControlClient } from '#src/provider-proxy/control-client.js';
-import { connectControlClient, ControlClientError } from '#src/provider-proxy/control-client.js';
+import {
+  connectControlClient,
+  ControlClientError,
+  controlExchangeForTest,
+} from '#src/provider-proxy/control-client.js';
 import { createControlEndpoint, type ControlChallengeAuthority } from '#src/provider-proxy/control-endpoint.js';
 import { ControlLeaseEvidence } from '#src/provider-proxy/control-lease.js';
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
@@ -57,21 +62,15 @@ const mockedCreateSetAuthority = vi.mocked(createProviderProxySetAuthority);
 
 function passiveClient(): ControlClient {
   return {
-    exchange: async () => ({
-      kind: 'response',
-      response: { kind: 'result', value: { state: 'active', nextHeartbeatChallenge: 'next' } },
-    }),
+    exchange: async () =>
+      controlExchangeForTest({
+        kind: 'response',
+        response: { kind: 'result', value: { state: 'active', nextHeartbeatChallenge: 'next' } },
+      }),
     faulted: new Promise<never>(() => undefined),
     onFault: () => () => undefined,
     close: () => undefined,
   };
-}
-
-async function strictTestExchange(client: ControlClient, method: string, params: unknown): Promise<unknown> {
-  const exchange = await client.exchange(method, params, 5_000);
-  if (exchange.kind !== 'response') throw exchange.error;
-  if (exchange.response.kind === 'result') return exchange.response.value;
-  throw exchange.response.error;
 }
 
 async function proxyLeaseSession(time: VirtualTime) {
@@ -279,7 +278,10 @@ describe('createProviderProxyAcquisitionSteps', () => {
         },
       );
       if (error.remoteFailure === null) throw new Error('test refusal lacks remote failure');
-      return { kind: 'response', response: { kind: 'refusal', failure: error.remoteFailure, error } };
+      return controlExchangeForTest({
+        kind: 'response',
+        response: { kind: 'refusal', failure: error.remoteFailure, error },
+      });
     };
     mockedEstablishRoleControl.mockImplementation(async (opened, _timer, _retry, plan) => {
       const role = plan.role;
