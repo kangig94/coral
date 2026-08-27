@@ -72,8 +72,7 @@ type HeartbeatObservationShape =
 
 /**
  * The heartbeat owner's closed observation. The private brand prevents another module from manufacturing an
- * observation by choosing a convenient field combination; tests obtain values through
- * `heartbeatObservationFromExchange`.
+ * observation by choosing a convenient field combination.
  */
 export type HeartbeatObservation = HeartbeatObservationShape & HeartbeatObservationBrand;
 export type HeartbeatReplyObservation = Extract<HeartbeatObservation, { kind: 'reply' }>;

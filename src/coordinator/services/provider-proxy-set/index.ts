@@ -1387,7 +1387,6 @@ export class ProviderProxySetLifecycle {
         return;
       }
       if (transition.effect === 'teardown-latched') {
-        // The heartbeat assembly reports this observation before it uses the existing terminal-fault latch.
         // This boundary owns only the evidence-window transition; finalization stays on that latch.
         return;
       }
@@ -1422,7 +1421,6 @@ export class ProviderProxySetLifecycle {
       );
       return;
     }
-    // No window state is written. The assembly follows this observation through the existing terminal-fault path.
     applyLocalFailure(observation);
   }
 

@@ -344,7 +344,8 @@ export function createProviderProxySetAuthority(
       recoveryCredentialInstallState = { kind: 'installing', completion };
     }
     const completion = recoveryCredentialInstallState.completion;
-    return completion;
+    const outcome = await completion;
+    return signal.aborted ? { kind: 'cancelled' } : outcome;
   };
 
   const registerInstalledSuccessionOperation = async (

@@ -652,6 +652,30 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
     expect(secondOutcome).toEqual(firstOutcome);
   });
 
+  it('cancels only a joining caller while retaining the shared installed outcome', async () => {
+    const calls: InstallCall[] = [];
+    let releaseInstall!: () => void;
+    const installGate = new Promise<void>((resolve) => {
+      releaseInstall = resolve;
+    });
+    const { authority } = authorityForInstall({ calls, installGate });
+    const joiningCaller = new AbortController();
+
+    const first = authority.installRecoveryCredential(new AbortController().signal);
+    const joining = authority.installRecoveryCredential(joiningCaller.signal);
+    joiningCaller.abort();
+    releaseInstall();
+    const [firstOutcome, joiningOutcome] = await Promise.all([first, joining]);
+    const laterOutcome = await authority.installRecoveryCredential(new AbortController().signal);
+
+    expect(firstOutcome).toMatchObject({ kind: 'installed' });
+    expect(joiningOutcome).toEqual({ kind: 'cancelled' });
+    expect(laterOutcome).toEqual(firstOutcome);
+    expect(
+      calls.filter(({ method }) => method.includes('handoff-install') || method === 'handoff.install.v1'),
+    ).toHaveLength(3);
+  });
+
   it('accepts a shipped-v0.10.9-shaped acknowledgement only as proof that the grant was stored', async () => {
     const freshCalls: InstallCall[] = [];
     const fresh = authorityForInstall({ calls: freshCalls });
