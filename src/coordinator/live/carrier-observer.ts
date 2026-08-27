@@ -89,7 +89,7 @@ export type CarrierStatusRecord = Readonly<{
   locator: Readonly<{ proxy: ProviderOperationRecord['locator']['proxy'] }>;
 }>;
 
-type CarrierStatusClient = Pick<ControlClient, 'call' | 'close'>;
+type CarrierStatusClient = Pick<ControlClient, 'exchange' | 'close'>;
 
 /** Test seam for transport outcomes; production omits it and uses `connectControlClient`. */
 export type CarrierStatusConnector = (
@@ -274,7 +274,6 @@ function unansweredBatch(): CarrierStatusBatchResult<string> {
 
 function isUnsupportedStatusMethod(error: unknown): boolean {
   if (!(error instanceof ControlClientError)) return false;
-  if (error.protocolCode === 'method_not_found') return true;
   const failure = error.remoteFailure;
   return (
     failure?.kind === 'json-rpc-error' &&
@@ -396,7 +395,12 @@ async function callCarrierStatusBatch(
 
   try {
     const client = await clientFor(endpoint);
-    const rawResult = await client.call('operation.status.v1', request.data, PROXY_STATUS_RPC_TIMEOUT_MS);
+    const exchange = await client.exchange('operation.status.v1', request.data, PROXY_STATUS_RPC_TIMEOUT_MS);
+    if (exchange.kind !== 'response') return unansweredBatch();
+    if (exchange.response.kind === 'refusal') {
+      return isUnsupportedStatusMethod(exchange.response.error) ? { kind: 'unsupported' } : unansweredBatch();
+    }
+    const rawResult = exchange.response.value;
     const batchOutcomes = relationalOutcomes(request.data, endpoint, rawResult);
     return batchOutcomes === null ? unansweredBatch() : { kind: 'supported', outcomes: batchOutcomes };
   } catch (error) {

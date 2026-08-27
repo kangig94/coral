@@ -98,7 +98,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { readProviderOperation } from '#src/store/provider-operation-journal.js';
-import { connectControlClient } from '#src/provider-proxy/control-client.js';
+import { connectControlClient, type ControlClient } from '#src/provider-proxy/control-client.js';
 import type { EnforcementScheduler } from '#src/provider-proxy/enforcement.js';
 import { createGuardian } from '#src/provider-proxy/guardian.js';
 import { createOperationLedger, operationPrepareAttemptKey } from '#src/provider-proxy/ledger.js';
@@ -197,6 +197,18 @@ const timer = {
   setTimeout: (callback: () => void, ms: number) => setTimeout(callback, ms),
   clearTimeout: (handle: { unref?: () => void }) => clearTimeout(handle as unknown as NodeJS.Timeout),
 };
+
+async function strictTestExchange(
+  control: Pick<ControlClient, 'exchange'>,
+  method: string,
+  params: unknown,
+  timeoutMs: number,
+): Promise<unknown> {
+  const exchange = await control.exchange(method, params, timeoutMs);
+  if (exchange.kind !== 'response') throw exchange.error;
+  if (exchange.response.kind === 'result') return exchange.response.value;
+  throw exchange.response.error;
+}
 
 /** Never fires on its own; this test drives every transition through the RPCs themselves. */
 const idleScheduler: EnforcementScheduler = { schedule: () => ({}), cancel: () => {} };
@@ -332,8 +344,8 @@ async function startGuardianAndReaper() {
   // `startProviderGuardianRole` does in production.
   const reaperChannel = await connectControlClient(reaperEndpoint, timer, 5_000);
   cleanups.push(() => reaperChannel.close());
-  await reaperChannel.call('reaper.pair.v1', { pairingSecret: PAIR_SECRET }, 5_000);
-  await reaperChannel.call('reaper.record-containment.v1', CONTAINMENT, 5_000);
+  await strictTestExchange(reaperChannel, 'reaper.pair.v1', { pairingSecret: PAIR_SECRET }, 5_000);
+  await strictTestExchange(reaperChannel, 'reaper.record-containment.v1', CONTAINMENT, 5_000);
 
   const guardian = createGuardian({
     capsule: {
@@ -365,12 +377,14 @@ async function startGuardianAndReaper() {
   // over, exactly as `provider-proxy-operation-activation.ts` issues it in production.
   const control = await connectControlClient(guardianEndpoint, timer, 5_000);
   cleanups.push(() => control.close());
-  const opened = (await control.call(
+  const opened = (await strictTestExchange(
+    control,
     'guardian.open.v1',
     { bootstrapNonce: NONCE, coordinator: coordinatorIdentity, proxy: proxyIdentity },
     5_000,
   )) as { controlEpoch: number; heartbeatChallenge: string };
-  const guardianHeartbeat = (await control.call(
+  const guardianHeartbeat = (await strictTestExchange(
+    control,
     'guardian.heartbeat.v1',
     { controlEpoch: opened.controlEpoch, heartbeatChallenge: opened.heartbeatChallenge },
     5_000,
@@ -378,7 +392,8 @@ async function startGuardianAndReaper() {
 
   const reaperControl = await connectControlClient(reaperEndpoint, timer, 5_000);
   cleanups.push(() => reaperControl.close());
-  const reaperOpened = (await reaperControl.call(
+  const reaperOpened = (await strictTestExchange(
+    reaperControl,
     'reaper.open.v1',
     {
       bootstrapNonce: NONCE,
@@ -398,7 +413,8 @@ async function startGuardianAndReaper() {
     },
     5_000,
   )) as { controlEpoch: number; heartbeatChallenge: string };
-  await reaperControl.call(
+  await strictTestExchange(
+    reaperControl,
     'reaper.heartbeat.v1',
     { controlEpoch: reaperOpened.controlEpoch, heartbeatChallenge: reaperOpened.heartbeatChallenge },
     5_000,
@@ -408,7 +424,7 @@ async function startGuardianAndReaper() {
   // `guardianChannel` `startProviderProxyRole` hands to `createProxyGuardianContainment`.
   const guardianChannel = await connectControlClient(guardianEndpoint, timer, 5_000);
   cleanups.push(() => guardianChannel.close());
-  await guardianChannel.call('guardian.pair.v1', { pairingSecret: PAIR_SECRET }, 5_000);
+  await strictTestExchange(guardianChannel, 'guardian.pair.v1', { pairingSecret: PAIR_SECRET }, 5_000);
 
   return {
     control,
@@ -475,12 +491,14 @@ async function startCoordinatorActivationSet() {
 
   const proxyControl = await connectControlClient(set.proxyEndpoint, timer, 5_000);
   cleanups.push(() => proxyControl.close());
-  const opened = (await proxyControl.call(
+  const opened = (await strictTestExchange(
+    proxyControl,
     'control.open.v1',
     { bootstrapNonce: NONCE, coordinator: set.coordinatorIdentity },
     5_000,
   )) as { controlEpoch: number; heartbeatChallenge: string };
-  await proxyControl.call(
+  await strictTestExchange(
+    proxyControl,
     'control.heartbeat.v1',
     { controlEpoch: opened.controlEpoch, heartbeatChallenge: opened.heartbeatChallenge },
     5_000,
@@ -648,12 +666,14 @@ async function startRotationSet(operationRegistry: LocalOperationRegistry) {
 
   const proxyControl = await connectControlClient(set.proxyEndpoint, timer, 5_000);
   cleanups.push(() => proxyControl.close());
-  const opened = (await proxyControl.call(
+  const opened = (await strictTestExchange(
+    proxyControl,
     'control.open.v1',
     { bootstrapNonce: NONCE, coordinator: set.coordinatorIdentity },
     5_000,
   )) as { controlEpoch: number; heartbeatChallenge: string };
-  await proxyControl.call(
+  await strictTestExchange(
+    proxyControl,
     'control.heartbeat.v1',
     { controlEpoch: opened.controlEpoch, heartbeatChallenge: opened.heartbeatChallenge },
     5_000,
@@ -881,7 +901,7 @@ describe('provider proxy activation against a real guardian', () => {
       prepareAttemptNumber: 1,
       prepared: PREPARED,
     });
-    const prepared = (await set.proxyControl.call('operation.prepare.v1', prepareRequest, 5_000)) as {
+    const prepared = (await strictTestExchange(set.proxyControl, 'operation.prepare.v1', prepareRequest, 5_000)) as {
       reservation: string;
       jointContainmentReceipt: string;
       providerRoot: typeof ROOT;
@@ -894,7 +914,7 @@ describe('provider proxy activation against a real guardian', () => {
     });
 
     const cancelResult = proxyOperationCancelResultSchema.parse(
-      await set.proxyControl.call('operation.cancel.v1', cancelRequest, 5_000),
+      await strictTestExchange(set.proxyControl, 'operation.cancel.v1', cancelRequest, 5_000),
     );
     expect(cancelResult).toEqual({
       state: 'released-never-started',
@@ -908,7 +928,8 @@ describe('provider proxy activation against a real guardian', () => {
     expect(guardianReleaseParses).toHaveBeenCalledTimes(2);
     expect(guardianReleaseResultParses).toHaveBeenCalledTimes(2);
     await expect(
-      set.control.call(
+      strictTestExchange(
+        set.control,
         'guardian.operation-activate.v1',
         {
           operation,
@@ -1116,7 +1137,8 @@ describe('provider proxy activation against a real guardian', () => {
     // this same ledger entry — not one this test invents separately. Before the fix, `stageProviderRoot`
     // forwarded a freshly minted value to the guardian instead of this one, so the guardian's stored
     // membership could never agree with what is presented here.
-    const activated = (await control.call(
+    const activated = (await strictTestExchange(
+      control,
       'guardian.operation-activate.v1',
       {
         operation: {
@@ -1237,7 +1259,8 @@ describe('provider proxy cancellation relinquishment against a real guardian pai
     const started = semantic.host.start({ key, prepared: PREPARED });
     await started.result;
 
-    const liveHeartbeat = (await set.control.call(
+    const liveHeartbeat = (await strictTestExchange(
+      set.control,
       'guardian.heartbeat.v1',
       {
         controlEpoch: set.guardianControlEpoch,
@@ -1252,7 +1275,8 @@ describe('provider proxy cancellation relinquishment against a real guardian pai
 
     await pairingClosed;
     await expect(
-      set.control.call(
+      strictTestExchange(
+        set.control,
         'guardian.heartbeat.v1',
         {
           controlEpoch: set.guardianControlEpoch,
@@ -1261,7 +1285,7 @@ describe('provider proxy cancellation relinquishment against a real guardian pai
         5_000,
       ),
     ).resolves.toMatchObject({ state: 'active' });
-    await expect(set.guardianChannel.call('guardian.operation-release.v1', {}, 5_000)).rejects.toThrow(
+    await expect(strictTestExchange(set.guardianChannel, 'guardian.operation-release.v1', {}, 5_000)).rejects.toThrow(
       /closed|write|socket/u,
     );
   });

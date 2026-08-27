@@ -4,7 +4,6 @@ import { z } from 'zod';
 import {
   PROVIDER_EVENT_METHOD,
   PROXY_CONTROL_PROTOCOL_ERROR_CODES,
-  ProxyControlProtocolError,
   createFrameReader,
   decodeProxyControlFrame,
   encodeProxyControlFrame,
@@ -33,7 +32,7 @@ export interface ControlClientTimer {
 
 export type ControlClientErrorCode = 'control_client_connect_failed' | 'control_client_closed' | 'control_call_failed';
 
-export type ControlClientErrorOrigin = 'timeout' | 'write' | 'closed' | 'remote-response';
+export type ControlClientErrorOrigin = 'timeout' | 'closed' | 'remote-response';
 
 export type ControlClientRemoteFailure =
   | Readonly<{
@@ -86,8 +85,6 @@ export class ControlClientError extends Error {
   readonly code: ControlClientErrorCode;
   readonly origin: ControlClientErrorOrigin;
   readonly remoteFailure: ControlClientRemoteFailure | null;
-  /** Compatibility projection for operation-control policy while it migrates to `remoteFailure`. */
-  readonly protocolCode?: ProxyControlProtocolErrorCode;
 
   constructor(
     code: ControlClientErrorCode,
@@ -114,9 +111,6 @@ export class ControlClientError extends Error {
     this.code = code;
     this.origin = origin;
     this.remoteFailure = remoteFailure;
-    if (remoteFailure?.kind === 'json-rpc-error' && remoteFailure.protocolCode !== null) {
-      this.protocolCode = remoteFailure.protocolCode;
-    }
     Object.setPrototypeOf(this, ControlClientError.prototype);
   }
 }
@@ -145,7 +139,6 @@ function admissionReasonFrom(
 
 export interface ControlClient {
   exchange(method: string, params: unknown, timeoutMs: number): Promise<ControlExchange>;
-  call(method: string, params: unknown, timeoutMs: number): Promise<unknown>;
   readonly faulted: Promise<ControlClientError>;
   onFault(listener: (error: ControlClientError) => void): () => void;
   close(): void;
@@ -370,18 +363,6 @@ export async function connectControlClient(
     });
   };
 
-  const compatibilityCall = async (method: string, params: unknown, timeoutMs: number): Promise<unknown> => {
-    const outcome = await exchange(method, params, timeoutMs);
-    if (outcome.kind === 'response') {
-      if (outcome.response.kind === 'result') return outcome.response.value;
-      throw outcome.response.error;
-    }
-    if (outcome.kind === 'no-response' || outcome.kind === 'channel-fault') throw outcome.error;
-    if (outcome.error instanceof ProxyControlProtocolError) throw outcome.error;
-    if (outcome.cause === 'connection-already-closed') throw outcome.error;
-    throw new ControlClientError('control_call_failed', `${method} could not be sent.`, 'write');
-  };
-
   return {
     exchange,
     faulted,
@@ -394,9 +375,6 @@ export async function connectControlClient(
       faultListeners.add(listener);
       return () => faultListeners.delete(listener);
     },
-    // Stage 1 compatibility adapter. New transport classification belongs in `exchange`; later stages can
-    // find the remaining lossy surface by this name without interpreting resolve-versus-reject themselves.
-    call: compatibilityCall,
     close(): void {
       closed = true;
       socket.destroy();

@@ -13,7 +13,7 @@ import {
 } from '#src/coordinator/live/carrier-observer.js';
 import { heartbeatOnce } from '#src/coordinator/live/provider-proxy/heartbeat.js';
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
-import { connectControlClient } from '#src/provider-proxy/control-client.js';
+import { connectControlClient, type ControlClient } from '#src/provider-proxy/control-client.js';
 import type { ControlEndpointTimer } from '#src/provider-proxy/control-endpoint.js';
 import type { OperationStageHandle, SemanticOperationHost } from '#src/provider-proxy/operation-supervisor.js';
 import {
@@ -37,6 +37,13 @@ const timer: ControlEndpointTimer = {
   setTimeout: (callback, ms) => setTimeout(callback, ms),
   clearTimeout: (handle) => clearTimeout(handle as unknown as NodeJS.Timeout),
 };
+
+async function strictTestExchange(control: ControlClient, method: string, params: unknown): Promise<unknown> {
+  const exchange = await control.exchange(method, params, PROXY_CONTROL_RPC_TIMEOUT_MS);
+  if (exchange.kind !== 'response') throw exchange.error;
+  if (exchange.response.kind === 'result') return exchange.response.value;
+  throw exchange.response.error;
+}
 
 const PREPARED: ProxyPreparedAppServerOperation = {
   version: 1,
@@ -148,11 +155,10 @@ async function startStatusProxy(): Promise<
 
   const control = await connectControlClient(controlEndpoint, timer, PROXY_CONTROL_RPC_TIMEOUT_MS);
   cleanups.push(() => control.close());
-  const opened = (await control.call(
-    'control.open.v1',
-    { bootstrapNonce: BOOTSTRAP_NONCE, coordinator },
-    PROXY_CONTROL_RPC_TIMEOUT_MS,
-  )) as { controlEpoch: number; heartbeatChallenge: string };
+  const opened = (await strictTestExchange(control, 'control.open.v1', {
+    bootstrapNonce: BOOTSTRAP_NONCE,
+    coordinator,
+  })) as { controlEpoch: number; heartbeatChallenge: string };
   const heartbeat = await heartbeatOnce(
     control,
     'control.heartbeat.v1',
@@ -175,16 +181,12 @@ async function startStatusProxy(): Promise<
     proxyInstanceId,
     buildSetId,
   });
-  await control.call(
-    'operation.prepare.v1',
-    {
-      operation: held,
-      hostFingerprint: HOST_FINGERPRINT,
-      prepareAttemptNumber: 1,
-      prepared: PREPARED,
-    },
-    PROXY_CONTROL_RPC_TIMEOUT_MS,
-  );
+  await strictTestExchange(control, 'operation.prepare.v1', {
+    operation: held,
+    hostFingerprint: HOST_FINGERPRINT,
+    prepareAttemptNumber: 1,
+    prepared: PREPARED,
+  });
   expect(proxy.ledger().get(held), 'integration setup must create the live ledger row').not.toBeNull();
 
   const locator = {
@@ -241,11 +243,14 @@ describe('carrier status observer wire seam', () => {
     const receiverProbe = await connectControlClient(set.controlEndpoint, timer, PROXY_CONTROL_RPC_TIMEOUT_MS);
     cleanups.push(() => receiverProbe.close());
     await expect(
-      receiverProbe.call(
+      receiverProbe.exchange(
         'operation.status.v1',
         { operations: [set.held, set.missing], nonce: 'malformed-nonce' },
         PROXY_CONTROL_RPC_TIMEOUT_MS,
       ),
-    ).rejects.toMatchObject({ protocolCode: 'protocol_violation' });
+    ).resolves.toMatchObject({
+      kind: 'response',
+      response: { kind: 'refusal', failure: { kind: 'json-rpc-error', protocolCode: 'protocol_violation' } },
+    });
   });
 });

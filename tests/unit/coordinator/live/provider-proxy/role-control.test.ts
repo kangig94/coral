@@ -40,10 +40,9 @@ const openResultSchema = z
   .object({ controlEpoch: z.number(), heartbeatChallenge: z.string(), roleId: z.string() })
   .strict();
 
-function client(call: ControlClient['call'], exchange?: ControlClient['exchange']): ControlClient {
+function client(exchange: ControlClient['exchange']): ControlClient {
   return {
-    exchange: exchange ?? (() => Promise.reject(new Error('unexpected control exchange'))),
-    call,
+    exchange,
     faulted: NEVER,
     onFault: () => () => undefined,
     close: () => undefined,
@@ -51,11 +50,15 @@ function client(call: ControlClient['call'], exchange?: ControlClient['exchange'
 }
 
 function openingClient(exchange: ControlClient['exchange']): ControlClient {
-  return client(async () => ({ controlEpoch: 1, heartbeatChallenge: 'challenge-1', roleId: 'guardian-1' }), exchange);
+  return client((method, params, timeoutMs) =>
+    method === 'guardian.handoff-redeem.v1'
+      ? Promise.resolve(result({ controlEpoch: 1, heartbeatChallenge: 'challenge-1', roleId: 'guardian-1' }))
+      : exchange(method, params, timeoutMs),
+  );
 }
 
 function result(value: unknown): ControlExchange {
-  return { kind: 'response', response: { kind: 'result', value } };
+  return { kind: 'response', response: { kind: 'result', value } } satisfies ControlExchange;
 }
 
 function refusal(error: ControlClientError): ControlExchange {
@@ -108,7 +111,7 @@ async function establishWith(fake: ControlClient): Promise<unknown> {
 describe('role control recovery classification', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it.each(['timeout', 'write', 'closed'] as const)('classifies %s transport origin as availability', async (origin) => {
+  it.each(['timeout', 'closed'] as const)('classifies %s transport origin as availability', async (origin) => {
     const failure = new ControlClientError('control_call_failed', 'transport failed', origin);
 
     await expect(establishWith(client(async () => Promise.reject(failure)))).rejects.toMatchObject({
@@ -290,12 +293,12 @@ describe('role control recovery classification', () => {
     });
     let heartbeatCallStarted = false;
     const fake: ControlClient = {
-      exchange: () => {
+      exchange: (method) => {
+        if (method === 'guardian.handoff-redeem.v1') {
+          return Promise.resolve(result({ controlEpoch: 1, heartbeatChallenge: 'challenge-1', roleId: 'guardian-1' }));
+        }
         heartbeatCallStarted = true;
         return new Promise(() => undefined);
-      },
-      call: async () => {
-        return { controlEpoch: 1, heartbeatChallenge: 'challenge-1', roleId: 'guardian-1' };
       },
       faulted,
       onFault: () => () => undefined,
@@ -327,12 +330,12 @@ describe('role control recovery classification', () => {
     });
     let heartbeatCallStarted = false;
     const fake: ControlClient = {
-      exchange: () => {
+      exchange: (method) => {
+        if (method === 'guardian.handoff-redeem.v1') {
+          return Promise.resolve(result({ controlEpoch: 1, heartbeatChallenge: 'challenge-1', roleId: 'guardian-1' }));
+        }
         heartbeatCallStarted = true;
         return new Promise(() => undefined);
-      },
-      call: async () => {
-        return { controlEpoch: 1, heartbeatChallenge: 'challenge-1', roleId: 'guardian-1' };
       },
       faulted,
       onFault: () => () => undefined,

@@ -29,6 +29,7 @@ function setupErrorStatusCode(code: string): number {
     case 'workflow_lifecycle_invalid':
     case 'legacy_foreign_generation':
     case 'legacy_source_not_quiescent':
+    case 'legacy_source_writer_observation_unknown':
     case 'active_store_coordination_invalid':
     case 'startup_bundle_unresolvable':
     case 'store_newer_incompatible':

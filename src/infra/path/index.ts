@@ -12,7 +12,7 @@ import {
   coordinatorPaths,
   handoffRoutingStatusPathForRunDir,
   socketPathForRunDir,
-  v0109CoordinatorSocketGuardPathsForRunDir,
+  v0109CoordinatorSocketGuardSetForRunDir,
 } from './coordinator.js';
 import { coralStateRoot, generationRoot, generationStateRoot, kbVaultRoot } from './root.js';
 import { type EnginePaths, enginePaths } from './engine.js';
@@ -71,7 +71,8 @@ export type CoralPaths = {
 // Stable path construction stays behind the eager runtime port; instance-keyed
 // provider endpoint and capsule paths are dynamic and therefore publish their constructors here.
 export type { CoordinatorPaths } from './coordinator.js';
-export { handoffRoutingStatusPathForRunDir, socketPathForRunDir, v0109CoordinatorSocketGuardPathsForRunDir };
+export type { V0109CoordinatorSocketGuardSet } from './coordinator.js';
+export { handoffRoutingStatusPathForRunDir, socketPathForRunDir, v0109CoordinatorSocketGuardSetForRunDir };
 export { isRelocatedSocket } from './unix-socket.js';
 export type {
   ProviderBootstrapCapsulePathOptions,

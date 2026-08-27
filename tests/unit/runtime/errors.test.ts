@@ -116,11 +116,10 @@ describe('CoralSetupError', () => {
       "Run this build's own 'coral-cli backend shutdown'. Wait for 'install:kiwi (pid 42)' to exit and release its lease or lock, then retry 'coral-cli backend store-reset discard --target gen2 --flavor prod'.",
     ],
     [
-      'legacy_source_not_quiescent',
+      'legacy_source_writer_observation_unknown',
       {
         operation: 'store-reset',
         holder: 'routing-status:handoff-routing-status (pid 42), process identity unobservable',
-        writerObservation: 'unknown',
         flavor: 'prod',
       },
       'The generation-boundary operation cannot determine whether routing-status:handoff-routing-status (pid 42), process identity unobservable is still active.',

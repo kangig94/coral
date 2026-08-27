@@ -144,12 +144,14 @@ async function discardGeneratedStore(
         try {
           maintenance = await acquireGenerationMaintenanceLease(options.runtime, options.maintenanceTimeoutMs);
         } catch (error: unknown) {
-          if (error instanceof CoralSetupError && error.code === 'legacy_source_not_quiescent') {
+          if (
+            error instanceof CoralSetupError &&
+            (error.code === 'legacy_source_not_quiescent' || error.code === 'legacy_source_writer_observation_unknown')
+          ) {
             throw documentedCoralSetupError({
-              code: 'legacy_source_not_quiescent',
+              code: error.code,
               operation: 'store-reset',
               holder: error.context?.holder,
-              ...(error.context?.writerObservation === 'unknown' ? { writerObservation: 'unknown' } : {}),
               flavor: options.runtime.flavor,
               baseDir: paths.baseDir,
             });

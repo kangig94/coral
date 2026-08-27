@@ -5,7 +5,7 @@ import type { z } from 'zod';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createMonotonicClock, type MonotonicClock } from '#src/infra/monotonic-clock.js';
-import type { ControlClient } from '#src/provider-proxy/control-client.js';
+import type { ControlClient, ControlExchange } from '#src/provider-proxy/control-client.js';
 import type {
   ControlEndpointOptions,
   ControlMethod,
@@ -136,18 +136,19 @@ function createGuardianHarness() {
     canonicalControlEndpoint: '/reaper.sock',
     containmentKind: CONTAINMENT.containmentKind,
   };
-  const reaperCall = vi.fn(async (method: string): Promise<unknown> => {
+  const reaperExchange = vi.fn(async (method: string): Promise<ControlExchange> => {
+    let value: unknown;
     if (method === 'reaper.record-containment.v1') {
-      return { state: 'containment-recorded', reaper: reaperIdentity };
+      value = { state: 'containment-recorded', reaper: reaperIdentity };
+    } else if (method === 'reaper.record-redemption.v1') {
+      value = { state: 'redemption-recorded' };
+    } else {
+      value = { state: 'root-recorded' };
     }
-    if (method === 'reaper.record-redemption.v1') return { state: 'redemption-recorded' };
-    return { state: 'root-recorded' };
+    return { kind: 'response', response: { kind: 'result', value } } satisfies ControlExchange;
   });
   const reaperChannel: ControlClient = {
-    exchange: () => {
-      throw new Error('unexpected reaper control exchange');
-    },
-    call: reaperCall,
+    exchange: reaperExchange,
     faulted: new Promise<never>(() => undefined),
     onFault: () => () => undefined,
     close: vi.fn(),
@@ -203,16 +204,16 @@ function createGuardianHarness() {
     buildSetId: shared.buildSetId,
   });
 
-  return { guardian, method, reaperCall, mintReceipt, coordinatorIdentity, proxyIdentity, operation };
+  return { guardian, method, reaperExchange, mintReceipt, coordinatorIdentity, proxyIdentity, operation };
 }
 
 async function armGuardian(harness: GuardianHarness): Promise<void> {
   await harness.guardian.recordContainment(CONTAINMENT);
-  harness.reaperCall.mockClear();
+  harness.reaperExchange.mockClear();
 }
 
 function refuseReceiverConsultation(harness: GuardianHarness): void {
-  harness.reaperCall.mockRejectedValueOnce(new Error('receiver was consulted'));
+  harness.reaperExchange.mockRejectedValueOnce(new Error('receiver was consulted'));
 }
 
 describe('guardian outbound schemas', () => {
@@ -229,7 +230,7 @@ describe('guardian outbound schemas', () => {
       providerIncarnation: ROOT.incarnation,
     })) as { jointContainmentReceipt: string };
     harness.mintReceipt.mockClear();
-    harness.reaperCall.mockClear();
+    harness.reaperExchange.mockClear();
     const activation = {
       operation,
       reservation,
@@ -242,7 +243,7 @@ describe('guardian outbound schemas', () => {
 
     expect(replay).toEqual(first);
     expect(harness.mintReceipt).toHaveBeenCalledOnce();
-    expect(harness.reaperCall).toHaveBeenCalledOnce();
+    expect(harness.reaperExchange).toHaveBeenCalledOnce();
   });
 
   it('lets the paired proxy release membership idempotently', async () => {
@@ -280,7 +281,7 @@ describe('guardian outbound schemas', () => {
     ).rejects.toMatchObject({
       issues: [expect.objectContaining({ code: 'unrecognized_keys', keys: ['unexpected'], path: [] })],
     });
-    expect(harness.reaperCall).not.toHaveBeenCalled();
+    expect(harness.reaperExchange).not.toHaveBeenCalled();
   });
 
   it('refuses malformed register-provider-root params before consulting the reaper', async () => {
@@ -299,7 +300,7 @@ describe('guardian outbound schemas', () => {
     await expect(harness.method('guardian.register-provider-root.v1').handle(request)).rejects.toMatchObject({
       issues: [expect.objectContaining({ code: 'invalid_type', path: ['providerRoot', 'pid'] })],
     });
-    expect(harness.reaperCall).not.toHaveBeenCalled();
+    expect(harness.reaperExchange).not.toHaveBeenCalled();
   });
 
   it('refuses malformed confirm-provider-root params before consulting the reaper', async () => {
@@ -314,7 +315,7 @@ describe('guardian outbound schemas', () => {
       providerPid: ROOT.pid,
       providerIncarnation: ROOT.incarnation,
     })) as { jointContainmentReceipt: string };
-    harness.reaperCall.mockClear();
+    harness.reaperExchange.mockClear();
     refuseReceiverConsultation(harness);
     const request = {
       operation,
@@ -327,7 +328,7 @@ describe('guardian outbound schemas', () => {
     await expect(harness.method('guardian.operation-activate.v1').handle(request)).rejects.toMatchObject({
       issues: [expect.objectContaining({ code: 'unrecognized_keys', keys: ['unexpected'], path: ['providerRoot'] })],
     });
-    expect(harness.reaperCall).not.toHaveBeenCalled();
+    expect(harness.reaperExchange).not.toHaveBeenCalled();
   });
 
   it('refuses malformed record-redemption params before consulting the reaper', async () => {
@@ -355,14 +356,17 @@ describe('guardian outbound schemas', () => {
     await expect(harness.method('guardian.handoff-redeem.v1').handle(request)).rejects.toMatchObject({
       issues: [expect.objectContaining({ code: 'unrecognized_keys', keys: ['unexpected'], path: ['successor'] })],
     });
-    expect(harness.reaperCall).not.toHaveBeenCalled();
+    expect(harness.reaperExchange).not.toHaveBeenCalled();
   });
 
   it('refuses a malformed reaper reply before recording the root or minting its receipt', async () => {
     const harness = createGuardianHarness();
     await armGuardian(harness);
     harness.mintReceipt.mockClear();
-    harness.reaperCall.mockResolvedValueOnce({ state: 'root-recorded', unexpected: true });
+    harness.reaperExchange.mockResolvedValueOnce({
+      kind: 'response',
+      response: { kind: 'result', value: { state: 'root-recorded', unexpected: true } },
+    });
 
     await expect(
       harness.method('guardian.register-provider-root.v1').handle({
@@ -375,7 +379,7 @@ describe('guardian outbound schemas', () => {
     ).rejects.toMatchObject({
       issues: [expect.objectContaining({ code: 'unrecognized_keys', keys: ['unexpected'], path: [] })],
     });
-    expect(harness.reaperCall).toHaveBeenCalledOnce();
+    expect(harness.reaperExchange).toHaveBeenCalledOnce();
     expect(harness.guardian.enforcer()?.recordedRoots()).toEqual([]);
     expect(harness.mintReceipt).not.toHaveBeenCalled();
   });

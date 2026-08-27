@@ -61,11 +61,17 @@ function passiveClient(): ControlClient {
       kind: 'response',
       response: { kind: 'result', value: { state: 'active', nextHeartbeatChallenge: 'next' } },
     }),
-    call: async () => ({ state: 'active', nextHeartbeatChallenge: 'next' }),
     faulted: new Promise<never>(() => undefined),
     onFault: () => () => undefined,
     close: () => undefined,
   };
+}
+
+async function strictTestExchange(client: ControlClient, method: string, params: unknown): Promise<unknown> {
+  const exchange = await client.exchange(method, params, 5_000);
+  if (exchange.kind !== 'response') throw exchange.error;
+  if (exchange.response.kind === 'result') return exchange.response.value;
+  throw exchange.response.error;
 }
 
 async function proxyLeaseSession(time: VirtualTime) {
@@ -112,15 +118,14 @@ async function proxyLeaseSession(time: VirtualTime) {
   });
   await endpoint.listen();
   const client = await connectControlClient(socketPath, time, 5_000);
-  const opened = (await client.call('role.open.v1', {}, 5_000)) as {
+  const opened = (await strictTestExchange(client, 'role.open.v1', {})) as {
     controlEpoch: number;
     heartbeatChallenge: string;
   };
-  const first = (await client.call(
-    'control.heartbeat.v1',
-    { controlEpoch: opened.controlEpoch, heartbeatChallenge: opened.heartbeatChallenge },
-    5_000,
-  )) as { nextHeartbeatChallenge: string };
+  const first = (await strictTestExchange(client, 'control.heartbeat.v1', {
+    controlEpoch: opened.controlEpoch,
+    heartbeatChallenge: opened.heartbeatChallenge,
+  })) as { nextHeartbeatChallenge: string };
   const watchdog = time.setInterval(() => {
     if (!lease.isControlLive(clock.now())) void endpoint.close();
   }, 1_000);

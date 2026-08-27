@@ -1,5 +1,8 @@
 import { isProcessIncarnation, type ProcessLiveness } from '#src/infra/node-process.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import {
@@ -9,6 +12,7 @@ import {
   registerCoordinatorStartupRecovery,
   type BoundCoordinator,
   type HandoffOptions,
+  type HandoffSignalCooldownDisposition,
   type HandoffSignalLedger,
   type HandoffSignalPolicy,
 } from '#src/coordinator/handoff.js';
@@ -190,9 +194,44 @@ beforeEach(() => {
   mockedProbe.mockReset();
 });
 
+const ledgerTempRoots: string[] = [];
+
 afterEach(() => {
   vi.clearAllMocks();
+  for (const root of ledgerTempRoots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
+
+function durableLedgerDisposition(input: {
+  detail?: unknown;
+  shadow?: unknown;
+  nowMs: number;
+  cooldownMs?: number;
+}): HandoffSignalCooldownDisposition {
+  const runDir = mkdtempSync(join(tmpdir(), 'coral-handoff-ledger-'));
+  ledgerTempRoots.push(runDir);
+  if (input.detail !== undefined) {
+    writeFileSync(join(runDir, 'handoff-signal.v2.json'), `${JSON.stringify(input.detail)}\n`, 'utf-8');
+  }
+  if (input.shadow !== undefined) {
+    writeFileSync(join(runDir, 'handoff-signal.json'), `${JSON.stringify(input.shadow)}\n`, 'utf-8');
+  }
+  const storage = {
+    readFileSync,
+    mkdirSync,
+    writeAtomicSync: writeFileSync,
+  } as unknown as Parameters<typeof createFileHandoffSignalLedger>[0]['storage'];
+  return createFileHandoffSignalLedger({ storage, ids: countingIds(), runDir }).cooldownDisposition({
+    socketPath: '/tmp/coral.sock',
+    incumbent: {
+      pid: 2467,
+      incarnation: testIncarnation(899),
+      instanceId: 'same-incumbent',
+      source: 'discovery',
+    },
+    nowMs: input.nowMs,
+    cooldownMs: input.cooldownMs ?? 60_000,
+  });
+}
 
 /** Sequential rather than random so a test can say which publication is newer without reading a clock. */
 function countingIds(): IdPort {
@@ -582,7 +621,7 @@ describe('bindWithHandoff', () => {
       incarnation: testIncarnation(558_000),
       source: 'health',
     };
-    const signalLedger: HandoffSignalLedger = { read: () => null, write: vi.fn() };
+    const signalLedger: HandoffSignalLedger = { cooldownDisposition: () => ({ kind: 'clear' }), write: vi.fn() };
     const { options, time, killCalls } = buildHarness({
       bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
       totalBudgetMs: 1_000,
@@ -622,7 +661,7 @@ describe('bindWithHandoff', () => {
       incarnation: testIncarnation(559_000),
       source: 'health',
     };
-    const signalLedger: HandoffSignalLedger = { read: () => null, write: vi.fn() };
+    const signalLedger: HandoffSignalLedger = { cooldownDisposition: () => ({ kind: 'clear' }), write: vi.fn() };
     const { options, time, killCalls } = buildHarness({
       bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
       totalBudgetMs: 1_000,
@@ -667,7 +706,7 @@ describe('bindWithHandoff', () => {
       incarnation: testIncarnation(560_000),
       source: 'health',
     };
-    const signalLedger: HandoffSignalLedger = { read: () => null, write: vi.fn() };
+    const signalLedger: HandoffSignalLedger = { cooldownDisposition: () => ({ kind: 'clear' }), write: vi.fn() };
     const { options, time, killCalls } = buildHarness({
       bindSequence: [
         ...Array.from({ length: 8 }, () => ({ kind: 'incumbent', reason: 'live-listener' }) as const),
@@ -709,7 +748,7 @@ describe('bindWithHandoff', () => {
       incarnation: testIncarnation(561_000),
       source: 'health',
     };
-    const signalLedger: HandoffSignalLedger = { read: () => null, write: vi.fn() };
+    const signalLedger: HandoffSignalLedger = { cooldownDisposition: () => ({ kind: 'clear' }), write: vi.fn() };
     const { options, time, killCalls } = buildHarness({
       bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
       totalBudgetMs: 1_000,
@@ -1436,6 +1475,129 @@ describe('bindWithHandoff', () => {
     expect(killCalls).toEqual([]);
   });
 
+  it.each([
+    {
+      case: 'genuine v0.10.9 bytes',
+      nowMs: 2_000,
+      shadow: {
+        version: 1,
+        socketPath: '/tmp/coral.sock',
+        pid: 2467,
+        incarnation: testIncarnation(899),
+        instanceId: 'same-incumbent',
+        signal: 'SIGTERM',
+        signaledAtMs: 1_000,
+      },
+      expected: { kind: 'foreign-signal-attempt', signal: 'SIGTERM', ageMs: 1_000, retryInMs: 59_000 },
+    },
+    {
+      case: 'this build paired shadow and detail',
+      nowMs: 2_000,
+      detail: {
+        version: 2,
+        accepted: true,
+        socketPath: '/tmp/coral.sock',
+        pid: 2467,
+        incarnation: testIncarnation(899),
+        instanceId: 'same-incumbent',
+        signal: 'SIGKILL',
+        signaledAtMs: 1_000,
+        publicationId: 'paired-publication',
+      },
+      shadow: {
+        version: 1,
+        accepted: true,
+        socketPath: '/tmp/coral.sock',
+        pid: 2467,
+        incarnation: testIncarnation(899),
+        instanceId: 'same-incumbent',
+        signal: 'SIGKILL',
+        signaledAtMs: 1_000,
+        publicationId: 'paired-publication',
+      },
+      expected: { kind: 'accepted-signal', signal: 'SIGKILL', ageMs: 1_000, retryInMs: 59_000 },
+    },
+    {
+      case: 'two independent publications',
+      nowMs: 3_000,
+      detail: {
+        version: 2,
+        accepted: true,
+        socketPath: '/tmp/coral.sock',
+        pid: 2467,
+        incarnation: testIncarnation(899),
+        instanceId: 'same-incumbent',
+        signal: 'SIGTERM',
+        signaledAtMs: 1_000,
+        publicationId: 'detail-publication',
+      },
+      shadow: {
+        version: 1,
+        socketPath: '/tmp/coral.sock',
+        pid: 2467,
+        incarnation: testIncarnation(899),
+        instanceId: 'same-incumbent',
+        signal: 'SIGKILL',
+        signaledAtMs: 2_000,
+      },
+      expected: { kind: 'foreign-signal-attempt', signal: 'SIGKILL', ageMs: 1_000, retryInMs: 59_000 },
+    },
+    {
+      case: 'a wall clock that stepped backward',
+      nowMs: 1_000,
+      detail: {
+        version: 2,
+        accepted: true,
+        socketPath: '/tmp/coral.sock',
+        pid: 2467,
+        incarnation: testIncarnation(899),
+        instanceId: 'same-incumbent',
+        signal: 'SIGTERM',
+        signaledAtMs: 10_000,
+        publicationId: 'before-clock-step',
+      },
+      shadow: {
+        version: 1,
+        accepted: true,
+        socketPath: '/tmp/coral.sock',
+        pid: 2467,
+        incarnation: testIncarnation(899),
+        instanceId: 'same-incumbent',
+        signal: 'SIGKILL',
+        signaledAtMs: 1_000,
+        publicationId: 'after-clock-step',
+      },
+      expected: { kind: 'accepted-signal', signal: 'SIGTERM', ageMs: -9_000, retryInMs: 69_000 },
+    },
+    {
+      case: 'an independent conservative record tied on recency',
+      nowMs: 2_000,
+      detail: {
+        version: 2,
+        accepted: true,
+        socketPath: '/tmp/coral.sock',
+        pid: 2467,
+        incarnation: testIncarnation(899),
+        instanceId: 'same-incumbent',
+        signal: 'SIGTERM',
+        signaledAtMs: 1_000,
+        publicationId: 'independent-detail',
+      },
+      shadow: {
+        version: 1,
+        socketPath: '/tmp/coral.sock',
+        pid: 2467,
+        incarnation: testIncarnation(899),
+        instanceId: 'same-incumbent',
+        signal: 'SIGKILL',
+        signaledAtMs: 1_000,
+      },
+      expected: { kind: 'foreign-signal-attempt', signal: 'SIGKILL', ageMs: 1_000, retryInMs: 59_000 },
+    },
+  ])('classifies ledger cooldown disposition from durable $case', ({ detail, shadow, nowMs, expected }) => {
+    expect(durableLedgerDisposition({ detail, shadow, nowMs })).toEqual(expected);
+  });
+
   it('writes a shipped-v0.10.9-valid cooldown shadow before accepted V2 detail', async () => {
     const files = new Map<string, string>();
     const writes: string[] = [];
@@ -1608,10 +1770,18 @@ describe('bindWithHandoff', () => {
     rejectDetail = true;
     signalLedger.write({ ...record, signal: 'SIGKILL', signaledAtMs: 1_000 });
 
-    expect(signalLedger.read('/tmp/coral.sock', target)).toMatchObject({
-      version: 1,
-      signal: 'SIGKILL',
-      signaledAtMs: 1_000,
+    expect(
+      signalLedger.cooldownDisposition({
+        socketPath: '/tmp/coral.sock',
+        incumbent: target,
+        nowMs: 1_000,
+        cooldownMs: 60_000,
+      }),
+    ).toEqual({
+      kind: 'accepted-signal',
+      signal: 'SIGTERM',
+      ageMs: -9_000,
+      retryInMs: 69_000,
     });
   });
 
@@ -1734,15 +1904,11 @@ describe('bindWithHandoff', () => {
     };
     let lastSignaledAtMs = 0;
     const signalLedger: HandoffSignalLedger = {
-      read: () => ({
-        version: 2,
-        accepted: true,
-        socketPath: '/tmp/coral.sock',
-        pid: verifiedIdentity.pid,
-        incarnation: verifiedIdentity.incarnation,
-        instanceId: 'same-incumbent',
+      cooldownDisposition: ({ nowMs, cooldownMs }) => ({
+        kind: 'accepted-signal',
         signal: 'SIGTERM',
-        signaledAtMs: lastSignaledAtMs,
+        ageMs: nowMs - lastSignaledAtMs,
+        retryInMs: cooldownMs - (nowMs - lastSignaledAtMs),
       }),
       write: vi.fn(),
     };
@@ -1929,7 +2095,7 @@ describe('bindWithHandoff', () => {
     };
     let sigtermAccepted = false;
     let targetObservedGone = false;
-    const signalLedger: HandoffSignalLedger = { read: () => null, write: vi.fn() };
+    const signalLedger: HandoffSignalLedger = { cooldownDisposition: () => ({ kind: 'clear' }), write: vi.fn() };
     const { options, time, killCalls } = buildHarness({
       bindAttempt: async () =>
         targetObservedGone ? { kind: 'bound' } : { kind: 'incumbent', reason: 'live-listener' },

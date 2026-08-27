@@ -94,7 +94,6 @@ function unreachableClient(): ControlClient {
     exchange: () => {
       throw new Error('unreachable: this client was not expected to exchange');
     },
-    call: () => Promise.reject(new Error('unreachable: this client was not expected to be called')),
     faulted: new Promise<never>(() => undefined),
     onFault: () => () => undefined,
     close: () => {},
@@ -122,17 +121,14 @@ function unusedRuntimePorts(): Pick<Runtime, 'ids' | 'env' | 'storage'> {
 }
 
 /**
- * Mirrors the real `ControlClient.call`'s own race, without a real socket: a timeout timer at `timeoutMs`
+ * Mirrors the real `ControlClient.exchange`'s own race, without a real socket: a timeout timer at `timeoutMs`
  * (the budget the caller under test passed in) races a result timer fixed at `resolveAtMs`. Both are
  * scheduled on the injected `VirtualTime`, so a test drives the outcome with `time.tick(...)` instead of
  * sleeping in real time.
  */
 function fakeControlClient(time: VirtualTime, resolveAtMs: number, result: unknown): ControlClient {
   return {
-    exchange: () => {
-      throw new Error('unexpected control exchange');
-    },
-    call: (_method, _params, timeoutMs) =>
+    exchange: (_method, _params, timeoutMs) =>
       new Promise((resolve, reject) => {
         let settled = false;
         const timeoutHandle = time.setTimeout(() => {
@@ -145,7 +141,7 @@ function fakeControlClient(time: VirtualTime, resolveAtMs: number, result: unkno
           if (settled) return;
           settled = true;
           time.clearTimeout(timeoutHandle);
-          resolve(result);
+          resolve({ kind: 'response', response: { kind: 'result', value: result } });
         }, resolveAtMs);
       }),
     faulted: new Promise<never>(() => undefined),
@@ -252,37 +248,40 @@ describe('createProviderProxySetAuthority: RPC response validation', () => {
 
   it('rejects a non-canonical inventory cwd at the real proxy response receiver', async () => {
     const proxyClient: ControlClient = {
-      exchange: () => {
-        throw new Error('unexpected proxy control exchange');
-      },
-      call: () =>
+      exchange: () =>
         Promise.resolve({
-          hosts: [
-            {
-              ref: {
-                provider: 'codex',
-                fingerprint: 'a'.repeat(64),
-                instanceId: 'host-instance',
-                leaseMode: 'shared',
-              },
-              status: 'live',
-              spec: {
-                provider: 'codex',
-                command: 'codex',
-                args: ['app-server'],
-                cwd: 'relative/provider-host',
-                leaseMode: 'shared',
-                idleRetirement: 'never',
-              },
-              host: { owner: 'provider-proxy' },
-              diagnostics: {
-                hostLog: { entries: [], retainedBytes: 0, truncatedBeforeSeq: 0 },
-                completedObservations: [],
-                factsTruncatedBeforeSeq: 0,
-              },
-              diagnosticsRetention: { ownerBudgetTruncated: false },
+          kind: 'response',
+          response: {
+            kind: 'result',
+            value: {
+              hosts: [
+                {
+                  ref: {
+                    provider: 'codex',
+                    fingerprint: 'a'.repeat(64),
+                    instanceId: 'host-instance',
+                    leaseMode: 'shared',
+                  },
+                  status: 'live',
+                  spec: {
+                    provider: 'codex',
+                    command: 'codex',
+                    args: ['app-server'],
+                    cwd: 'relative/provider-host',
+                    leaseMode: 'shared',
+                    idleRetirement: 'never',
+                  },
+                  host: { owner: 'provider-proxy' },
+                  diagnostics: {
+                    hostLog: { entries: [], retainedBytes: 0, truncatedBeforeSeq: 0 },
+                    completedObservations: [],
+                    factsTruncatedBeforeSeq: 0,
+                  },
+                  diagnosticsRetention: { ownerBudgetTruncated: false },
+                },
+              ],
             },
-          ],
+          },
         }),
       faulted: new Promise<never>(() => undefined),
       onFault: () => () => undefined,
@@ -299,12 +298,12 @@ describe('createProviderProxySetAuthority: stopAndReap providerRoots', () => {
   it('names this coordinator’s own recorded provider roots, not an empty claim the guardian would refuse', async () => {
     const calls: unknown[] = [];
     const client: ControlClient = {
-      exchange: () => {
-        throw new Error('unexpected control exchange');
-      },
-      call: (_method, params) => {
+      exchange: (_method, params) => {
         calls.push(params);
-        return Promise.resolve({ state: 'containment-absent', disappearanceReceipt: 'gone' });
+        return Promise.resolve({
+          kind: 'response',
+          response: { kind: 'result', value: { state: 'containment-absent', disappearanceReceipt: 'gone' } },
+        });
       },
       faulted: new Promise<never>(() => undefined),
       onFault: () => () => undefined,
@@ -328,12 +327,12 @@ describe('createProviderProxySetAuthority: stopAndReap providerRoots', () => {
   it('names an empty set when this coordinator holds no live operations against the proxy', async () => {
     const calls: unknown[] = [];
     const client: ControlClient = {
-      exchange: () => {
-        throw new Error('unexpected control exchange');
-      },
-      call: (_method, params) => {
+      exchange: (_method, params) => {
         calls.push(params);
-        return Promise.resolve({ state: 'containment-absent', disappearanceReceipt: 'gone' });
+        return Promise.resolve({
+          kind: 'response',
+          response: { kind: 'result', value: { state: 'containment-absent', disappearanceReceipt: 'gone' } },
+        });
       },
       faulted: new Promise<never>(() => undefined),
       onFault: () => () => undefined,
@@ -373,12 +372,26 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
     ackGrantId?: string,
     transientOnce = false,
     installGate?: Promise<void>,
+    refuseOnce = false,
   ): ControlClient {
     let transientRemaining = transientOnce;
+    let refusalRemaining = refuseOnce;
     return {
       exchange: async (method: string, params: unknown): Promise<ControlExchange> => {
         calls.push({ role, method, params });
         await installGate;
+        if (method.includes('succession.register') || method.includes('succession-register')) {
+          return {
+            kind: 'response',
+            response: {
+              kind: 'result',
+              value: {
+                state: 'succession-registered',
+                operation: (params as { operation: unknown }).operation,
+              },
+            },
+          };
+        }
         if (transientRemaining) {
           transientRemaining = false;
           return {
@@ -387,7 +400,8 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
             error: new ControlClientError('control_call_failed', `${role} timed out`, 'timeout'),
           };
         }
-        if (fail !== undefined && method === fail) {
+        if (fail !== undefined && method === fail && (!refuseOnce || refusalRemaining)) {
+          refusalRemaining = false;
           const failure: ControlClientRemoteFailure = {
             kind: 'json-rpc-error',
             jsonRpcCode: -32_000,
@@ -420,16 +434,6 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
           },
         };
       },
-      call: (method: string, params: unknown) => {
-        calls.push({ role, method, params });
-        if (method.includes('succession.register') || method.includes('succession-register')) {
-          return Promise.resolve({
-            state: 'succession-registered',
-            operation: (params as { operation: unknown }).operation,
-          });
-        }
-        return Promise.reject(new Error(`unexpected ${role} compatibility call ${method}`));
-      },
       faulted: new Promise<never>(() => undefined),
       onFault: () => () => undefined,
       close: () => {},
@@ -442,6 +446,7 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
     failMethod?: string;
     ackGrantId?: string;
     transientOnce?: 'guardian' | 'reaper' | 'proxy';
+    refuseOnce?: 'guardian' | 'reaper' | 'proxy';
     installGate?: Promise<void>;
     recovery?: Readonly<{ capsule: HandoffCapsuleV3; operations: ReadonlyArray<typeof OPERATION> }>;
   }): { authority: ReturnType<typeof createProviderProxySetAuthority>; handoffCapsulePath: string } {
@@ -458,6 +463,7 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
         options.ackGrantId,
         options.transientOnce === 'guardian',
         options.installGate,
+        options.refuseOnce === 'guardian',
       ),
       reaperClient: recordingClient(
         'reaper',
@@ -466,6 +472,7 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
         options.ackGrantId,
         options.transientOnce === 'reaper',
         options.installGate,
+        options.refuseOnce === 'reaper',
       ),
       proxyClient: recordingClient(
         'proxy',
@@ -474,6 +481,7 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
         options.ackGrantId,
         options.transientOnce === 'proxy',
         options.installGate,
+        options.refuseOnce === 'proxy',
       ),
       guardianIdentity: GUARDIAN_IDENTITY,
       reaperIdentity: REAPER_IDENTITY,
@@ -556,22 +564,27 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
     expect((statSync(handoffCapsulePath).mode & 0o777).toString(8)).toBe('600');
   });
 
-  it('writes no capsule when one authority refuses its install exchange', async () => {
+  it('returns to idle after a refusal so the next attempt can install', async () => {
     const calls: InstallCall[] = [];
-    const { authority, handoffCapsulePath } = authorityForInstall({ calls, fail: 'reaper' });
+    const { authority, handoffCapsulePath } = authorityForInstall({
+      calls,
+      fail: 'reaper',
+      refuseOnce: 'reaper',
+    });
 
     const outcome = await authority.installRecoveryCredential(new AbortController().signal);
+    expect(() => statSync(handoffCapsulePath)).toThrow();
     const retry = await authority.installRecoveryCredential(new AbortController().signal);
 
     expect(outcome).toMatchObject({
       kind: 'refused',
       incident: { role: 'reaper', method: 'reaper.handoff-install.v1', exchange: { kind: 'response' } },
     });
-    expect(retry).toMatchObject({ kind: 'refused', incident: { role: 'reaper' } });
+    expect(retry).toMatchObject({ kind: 'installed' });
     expect(
       calls.filter(({ method }) => method.includes('handoff-install') || method === 'handoff.install.v1'),
     ).toHaveLength(6);
-    expect(() => statSync(handoffCapsulePath)).toThrow();
+    expect(statSync(handoffCapsulePath).isFile()).toBe(true);
   });
 
   it('returns an idle cancellation without starting an exchange', async () => {
@@ -596,11 +609,11 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
 
     const first = await authority.registerSuccessionOperation(OPERATION);
     const second = await authority.registerSuccessionOperation(OPERATION);
-    const memoized = await authority.installRecoveryCredential(new AbortController().signal);
+    const installed = await authority.installRecoveryCredential(new AbortController().signal);
 
     expect(first).toMatchObject({ kind: 'retryable', incident: { role: 'guardian' } });
     expect(second).toEqual({ kind: 'registered' });
-    expect(memoized).toMatchObject({ kind: 'installed' });
+    expect(installed).toMatchObject({ kind: 'installed' });
     expect(
       calls.filter(({ role, method }) => role === 'guardian' && method === 'guardian.handoff-install.v1'),
     ).toHaveLength(2);

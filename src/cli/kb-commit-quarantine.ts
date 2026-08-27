@@ -117,13 +117,15 @@ function boundQuarantineLeaseError(
       retryCommand,
     });
   }
-  if (error instanceof CoralSetupError && error.code === 'legacy_source_not_quiescent') {
+  if (
+    error instanceof CoralSetupError &&
+    (error.code === 'legacy_source_not_quiescent' || error.code === 'legacy_source_writer_observation_unknown')
+  ) {
     return documentedCoralSetupError({
-      code: 'legacy_source_not_quiescent',
+      code: error.code,
       operation: 'kb-commit',
       flavor: runtime.flavor,
       holder: error.context?.holder,
-      ...(error.context?.writerObservation === 'unknown' ? { writerObservation: 'unknown' } : {}),
       retryCommand,
     });
   }

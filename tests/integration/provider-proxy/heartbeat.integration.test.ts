@@ -45,7 +45,6 @@ function passiveClient(role: 'guardian' | 'reaper'): ControlClient {
         value: { state: 'active', nextHeartbeatChallenge: `${role}-challenge-${++challenge}` },
       },
     }),
-    call: async () => ({ state: 'active', nextHeartbeatChallenge: `${role}-challenge-${++challenge}` }),
     faulted: new Promise<never>(() => undefined),
     onFault: () => () => undefined,
     close: () => undefined,
@@ -162,7 +161,11 @@ async function openLeaseEndpoint(
   cleanups.push(() => client.close());
   if (options.time === undefined) elapsed = 1_000n;
   else options.time.tick(1_000);
-  const opened = (await client.call('role.open.v1', {}, 5_000)) as {
+  const openedExchange = await client.exchange('role.open.v1', {}, 5_000);
+  if (openedExchange.kind !== 'response' || openedExchange.response.kind !== 'result') {
+    throw new Error('heartbeat fixture control did not open');
+  }
+  const opened = openedExchange.response.value as {
     controlEpoch: number;
     heartbeatChallenge: string;
   };

@@ -12,7 +12,7 @@ import {
 import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set/claim-mirror.js';
 import { providerProxySetIdentityFromRecord } from '#src/coordinator/services/provider-proxy-set/identity.js';
 import { JobStore } from '#src/jobs/store.js';
-import type { ControlClient } from '#src/provider-proxy/control-client.js';
+import type { ControlClient, ControlExchange } from '#src/provider-proxy/control-client.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
@@ -78,24 +78,23 @@ function statefulRetryEndpoint(method: RetryMethod, ordering: RetryOrdering) {
   };
 
   const client = {
-    exchange: () => {
-      throw new Error('unexpected control exchange');
-    },
-    call: vi.fn(async (controlMethod: string, params: unknown) => {
+    exchange: vi.fn(async (controlMethod: string, params: unknown) => {
+      let value: unknown;
       if (controlMethod === 'operation.attach.v1') {
         const watermark = (params as { committedThroughProviderSeq: number }).committedThroughProviderSeq;
         attachmentWatermarks.push(watermark);
         if (method === 'attach') applyTargetEffect(() => applyAttachment(watermark));
         else applyAttachment(watermark);
-        return { state: 'attached', replayFromProviderSeq: watermark + 1 };
-      }
-      if (controlMethod === 'operation.stop.v1' && method === 'stop') {
+        value = { state: 'attached', replayFromProviderSeq: watermark + 1 };
+      } else if (controlMethod === 'operation.stop.v1' && method === 'stop') {
         const cause = (params as { cause: string }).cause;
         stopIntents.push(cause);
         applyTargetEffect(() => applyStop(cause));
-        return { state: 'terminal-awaiting-journal-ack', committedThroughProviderSeq: attachedWatermark };
+        value = { state: 'terminal-awaiting-journal-ack', committedThroughProviderSeq: attachedWatermark };
+      } else {
+        throw new Error(`unexpected control exchange: ${controlMethod}`);
       }
-      throw new Error(`unexpected control call: ${controlMethod}`);
+      return { kind: 'response', response: { kind: 'result', value } } satisfies ControlExchange;
     }),
     faulted: new Promise<never>(() => undefined),
     onFault: () => () => undefined,
@@ -163,11 +162,8 @@ export function createProviderOperationRetryHarness(method: RetryMethod, orderin
   faults.onFault((fault) => terminalFaults.push(fault));
   const stopAndReap = vi.fn(async () => ({ unconfirmed: 'not requested' }) as const);
   const idleClient = {
-    exchange: () => {
-      throw new Error('unexpected role control exchange');
-    },
-    call: async (controlMethod: string) => {
-      throw new Error(`unexpected role control call: ${controlMethod}`);
+    exchange: async (controlMethod: string): Promise<never> => {
+      throw new Error(`unexpected role control exchange: ${controlMethod}`);
     },
     faulted: new Promise<never>(() => undefined),
     onFault: () => () => undefined,

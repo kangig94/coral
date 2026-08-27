@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
 import { createBootstrapNonceCredential } from '#src/provider-proxy/bootstrap-capsule.js';
-import { ControlClientError, connectControlClient } from '#src/provider-proxy/control-client.js';
+import { connectControlClient } from '#src/provider-proxy/control-client.js';
 import {
   activateProviderOperation,
   providerOperationErrorCode,
@@ -333,7 +333,11 @@ describe('provider-proxy control endpoint', () => {
     const set = await startEndpoint();
     const client = await connectControlClient(set.socketPath, realTimer(), 5_000);
     cleanups.push(() => client.close());
-    const opened = (await client.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE }, 5_000)) as {
+    const openedExchange = await client.exchange('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE }, 5_000);
+    if (openedExchange.kind !== 'response' || openedExchange.response.kind !== 'result') {
+      throw new Error('production client did not open the test endpoint');
+    }
+    const opened = openedExchange.response.value as {
       controlEpoch: number;
       heartbeatChallenge: string;
     };
@@ -341,22 +345,23 @@ describe('provider-proxy control endpoint', () => {
       controlEpoch: opened.controlEpoch,
       heartbeatChallenge: opened.heartbeatChallenge,
     };
-    await client.call('role.heartbeat.v1', heartbeat, 5_000);
-
-    let observed: unknown;
-    try {
-      await client.call('role.heartbeat.v1', heartbeat, 5_000);
-    } catch (error: unknown) {
-      observed = error;
+    const accepted = await client.exchange('role.heartbeat.v1', heartbeat, 5_000);
+    if (accepted.kind !== 'response' || accepted.response.kind !== 'result') {
+      throw new Error('production client opening heartbeat was not accepted');
     }
 
-    expect(observed).toBeInstanceOf(ControlClientError);
-    expect((observed as ControlClientError).remoteFailure).toEqual({
-      kind: 'json-rpc-error',
-      jsonRpcCode: -32_600,
-      protocolCode: 'invalid_request',
-      admissionReason: null,
-      heartbeatRefusal: { reason: 'challenge-mismatch', nextHeartbeatChallenge: 'challenge-3' },
+    await expect(client.exchange('role.heartbeat.v1', heartbeat, 5_000)).resolves.toMatchObject({
+      kind: 'response',
+      response: {
+        kind: 'refusal',
+        failure: {
+          kind: 'json-rpc-error',
+          jsonRpcCode: -32_600,
+          protocolCode: 'invalid_request',
+          admissionReason: null,
+          heartbeatRefusal: { reason: 'challenge-mismatch', nextHeartbeatChallenge: 'challenge-3' },
+        },
+      },
     });
   });
 

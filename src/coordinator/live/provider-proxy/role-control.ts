@@ -204,7 +204,7 @@ async function establishHeartbeat(
 }
 
 /**
- * Correctness depends on `client.faulted` settling before the same event rejects the pending heartbeat call;
+ * Correctness depends on `client.faulted` settling before the same event settles the pending heartbeat exchange;
  * the types do not enforce that ordering. See `connectControlClient` in `src/provider-proxy/control-client.ts`.
  */
 async function establishHeartbeatOrChannelFault(
@@ -319,7 +319,13 @@ export async function establishRoleControl<
   const params = plan.openParamsSchema.parse(plan.openParams) as z.output<TOpenParams>;
   let raw: unknown;
   try {
-    raw = await client.call(plan.openMethod, params, PROXY_CONTROL_RPC_TIMEOUT_MS);
+    const exchange = await client.exchange(plan.openMethod, params, PROXY_CONTROL_RPC_TIMEOUT_MS);
+    if (exchange.kind === 'response') {
+      if (exchange.response.kind === 'result') raw = exchange.response.value;
+      else classifyRoleControlFailure(plan.role, 'open', plan.openMethod, exchange.response.error);
+    } else {
+      classifyRoleControlFailure(plan.role, 'open', plan.openMethod, exchange.error);
+    }
   } catch (error: unknown) {
     classifyRoleControlFailure(plan.role, 'open', plan.openMethod, error);
   }

@@ -8,7 +8,10 @@ import type {
 } from '#src/coordinator/services/provider-proxy-authority-fault.js';
 import type { ProviderProxySetDecision } from '#src/coordinator/services/provider-proxy-set/decisions.js';
 import type { ProviderProxySetIdentity } from '#src/coordinator/services/provider-proxy-set/identity.js';
-import type { ProviderProxySetDischarge } from '#src/coordinator/services/provider-proxy-set/index.js';
+import type {
+  ProcessContainmentEvidence,
+  ProviderProxySetDischarge,
+} from '#src/coordinator/services/provider-proxy-set/index.js';
 import type { ControlClientError, ControlExchange } from '#src/provider-proxy/control-client.js';
 import {
   applyNoResponse,
@@ -133,6 +136,15 @@ declare const forgedSetDischarge: Readonly<{
 // @ts-expect-error slot removal requires both owner-minted discharge brands; matching literals carry no authority.
 const invalidForgedSetDischarge: ProviderProxySetDischarge = forgedSetDischarge;
 void invalidForgedSetDischarge;
+
+declare const roleAcknowledgement: Readonly<{ disappearanceReceipt: string }>;
+
+// @ts-expect-error a role acknowledgement cannot mint the containment owner's discharge capability.
+const invalidAcknowledgementDischarge: ProcessContainmentEvidence = {
+  kind: 'containment-absent',
+  receipt: roleAcknowledgement.disappearanceReceipt,
+};
+void invalidAcknowledgementDischarge;
 
 declare const controlExchange: ControlExchange;
 const ownerClassifiedObservation = heartbeatObservationFromExchange(controlExchange);

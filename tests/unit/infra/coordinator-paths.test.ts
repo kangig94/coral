@@ -1,4 +1,4 @@
-import { join } from 'node:path';
+import { join, posix, win32 } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
 
@@ -14,7 +14,7 @@ vi.mock('node:os', async () => {
 import {
   coordinatorPaths,
   handoffRoutingStatusPath,
-  v0109CoordinatorSocketGuardPathsForRunDir,
+  v0109CoordinatorSocketGuardSetForRunDir,
 } from '#src/infra/path/coordinator.js';
 import { socketFallbackDir } from '#src/infra/path/unix-socket.js';
 
@@ -112,25 +112,75 @@ describe('coordinatorPaths', () => {
     expect(userPath.startsWith(`${socketFallbackDir(join(baseDir, 'gen2'))}/`)).toBe(true);
   });
 
-  it('names the v0.10.9 fallback addresses for the current and platform-default temp directories', () => {
-    const runDir = baseDirOfLength(120);
+  it.each([
+    { platform: 'darwin', socketBytes: 103, kind: 'primary-address' },
+    { platform: 'darwin', socketBytes: 104, kind: 'guarded-addresses' },
+    { platform: 'linux', socketBytes: 107, kind: 'primary-address' },
+    { platform: 'linux', socketBytes: 108, kind: 'guarded-addresses' },
+    { platform: 'freebsd', socketBytes: 107, kind: 'primary-address' },
+    { platform: 'freebsd', socketBytes: 108, kind: 'guarded-addresses' },
+    { platform: 'win32', socketBytes: 107, kind: 'primary-address' },
+    { platform: 'win32', socketBytes: 108, kind: 'guarded-addresses' },
+  ])('uses the tagged v0.10.9 byte limit on $platform at $socketBytes bytes', ({ platform, socketBytes, kind }) => {
+    const path = platform === 'win32' ? win32 : posix;
+    const root = platform === 'win32' ? 'C:\\' : '/';
+    // `path.join` adds a separator to a run directory but not to a root that already ends in one, so the
+    // suffix has to be measured against a non-root directory or the target length lands a byte high.
+    const suffixBytes =
+      Buffer.byteLength(path.join(`${root}a`, 'coordinator.sock'), 'utf8') - Buffer.byteLength(`${root}a`, 'utf8');
+    const runDir = `${root}${'a'.repeat(socketBytes - suffixBytes - Buffer.byteLength(root, 'utf8'))}`;
 
-    const guardPaths = v0109CoordinatorSocketGuardPathsForRunDir(runDir, 'prod', {
-      platform: 'linux',
-      tempDirectories: ['/custom-temp', '/tmp', '/custom-temp'],
-    });
-
-    expect(guardPaths).toHaveLength(2);
-    expect(guardPaths[0]).toMatch(/^\/custom-temp\/coral-prod-[0-9a-f]{8}\.sock$/u);
-    expect(guardPaths[1]).toBe(guardPaths[0]?.replace('/custom-temp/', '/tmp/'));
+    expect(Buffer.byteLength(path.join(runDir, 'coordinator.sock'), 'utf8')).toBe(socketBytes);
+    expect(
+      v0109CoordinatorSocketGuardSetForRunDir(runDir, 'dev', {
+        platform,
+        configuredTempDirectory: undefined,
+        systemTempDirectory: platform === 'win32' ? 'C:\\Temp' : '/tmp',
+      }).kind,
+    ).toBe(kind);
   });
 
-  it('does not add a v0.10.9 fallback guard when that release used the primary address', () => {
-    expect(
-      v0109CoordinatorSocketGuardPathsForRunDir('/short/run', 'dev', {
-        platform: 'linux',
-        tempDirectories: ['/tmp'],
-      }),
-    ).toEqual([]);
+  it.each([
+    { semantics: 'posix', configured: undefined, expected: 'guarded-addresses' },
+    { semantics: 'posix', configured: '', expected: 'address-unenumerable' },
+    { semantics: 'posix', configured: '   ', expected: 'address-unenumerable' },
+    { semantics: 'posix', configured: 'relative/temp', expected: 'address-unenumerable' },
+    { semantics: 'posix', configured: '/custom-temp', expected: 'guarded-addresses' },
+    { semantics: 'win32', configured: undefined, expected: 'guarded-addresses' },
+    { semantics: 'win32', configured: '', expected: 'address-unenumerable' },
+    { semantics: 'win32', configured: '   ', expected: 'address-unenumerable' },
+    { semantics: 'win32', configured: 'relative\\temp', expected: 'address-unenumerable' },
+    { semantics: 'win32', configured: 'C:\\custom-temp', expected: 'guarded-addresses' },
+  ] as const)(
+    'classifies configured temp input $configured with $semantics semantics',
+    ({ semantics, configured, expected }) => {
+      const windows = semantics === 'win32';
+      const selection = v0109CoordinatorSocketGuardSetForRunDir(
+        windows ? `C:\\${'a'.repeat(120)}` : `/${'a'.repeat(120)}`,
+        'prod',
+        {
+          platform: windows ? 'win32' : 'linux',
+          configuredTempDirectory: configured,
+          systemTempDirectory: windows ? 'C:\\Temp' : '/tmp',
+        },
+      );
+
+      expect(selection.kind).toBe(expected);
+      if (selection.kind === 'guarded-addresses') {
+        expect(selection.paths).toHaveLength(configured === undefined ? 1 : 2);
+        expect(selection.paths.every((path) => (windows ? win32.isAbsolute(path) : posix.isAbsolute(path)))).toBe(true);
+      }
+    },
+  );
+
+  it('deduplicates equal configured and system temp addresses', () => {
+    const selection = v0109CoordinatorSocketGuardSetForRunDir(`/${'a'.repeat(120)}`, 'prod', {
+      platform: 'linux',
+      configuredTempDirectory: '/tmp',
+      systemTempDirectory: '/tmp',
+    });
+
+    expect(selection).toMatchObject({ kind: 'guarded-addresses' });
+    if (selection.kind === 'guarded-addresses') expect(selection.paths).toHaveLength(1);
   });
 });

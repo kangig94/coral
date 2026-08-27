@@ -119,9 +119,18 @@ function installExchangeOutcome(
   return null;
 }
 
-/** Lets `signal` cut a pending call short without requiring `ControlClient.call` itself to understand
- *  `AbortSignal` — it only ever takes a millisecond budget. If the signal wins the race the pending call is
- *  left to settle on its own; `stopAndReap`'s caller treats a lost race and a rejected call identically
+function requireControlResult(method: string, exchange: ControlExchange): unknown {
+  if (exchange.kind === 'response') {
+    if (exchange.response.kind === 'result') return exchange.response.value;
+    throw exchange.response.error;
+  }
+  if (exchange.error instanceof Error) throw exchange.error;
+  throw new Error(`${method} could not be sent.`, { cause: exchange.error });
+}
+
+/** Lets `signal` cut a pending exchange short without requiring `ControlClient.exchange` itself to understand
+ *  `AbortSignal` — it only ever takes a millisecond budget. If the signal wins the race the pending exchange is
+ *  left to settle on its own; `stopAndReap`'s caller treats a lost race and a refused exchange identically
  *  (both become `{ unconfirmed }`), so there is nothing further to do with it either way. */
 function raceAgainstAbort<T>(pending: Promise<T>, signal: AbortSignal): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -347,11 +356,14 @@ export function createProviderProxySetAuthority(
       throw new Error('Succession registration named an operation from another proxy set.');
     }
     const params = successionOperationRegisterParamsSchema.parse({ operation });
-    const [guardianResult, reaperResult, proxyResult] = await Promise.all([
-      guardianClient.call('guardian.succession-register-operation.v1', params, PROXY_CONTROL_RPC_TIMEOUT_MS),
-      reaperClient.call('reaper.succession-register-operation.v1', params, PROXY_CONTROL_RPC_TIMEOUT_MS),
-      proxyClient.call('succession.register-operation.v1', params, PROXY_CONTROL_RPC_TIMEOUT_MS),
+    const [guardianExchange, reaperExchange, proxyExchange] = await Promise.all([
+      guardianClient.exchange('guardian.succession-register-operation.v1', params, PROXY_CONTROL_RPC_TIMEOUT_MS),
+      reaperClient.exchange('reaper.succession-register-operation.v1', params, PROXY_CONTROL_RPC_TIMEOUT_MS),
+      proxyClient.exchange('succession.register-operation.v1', params, PROXY_CONTROL_RPC_TIMEOUT_MS),
     ]);
+    const guardianResult = requireControlResult('guardian.succession-register-operation.v1', guardianExchange);
+    const reaperResult = requireControlResult('reaper.succession-register-operation.v1', reaperExchange);
+    const proxyResult = requireControlResult('succession.register-operation.v1', proxyExchange);
     successionOperationRegisterResultSchema.parse(guardianResult);
     successionOperationRegisterResultSchema.parse(reaperResult);
     successionOperationRegisterResultSchema.parse(proxyResult);
@@ -377,18 +389,27 @@ export function createProviderProxySetAuthority(
     providerHosts: Object.freeze({
       list: async () => {
         const params = providerHostListParamsSchema.parse({});
-        const raw = await proxyClient.call('provider-host.list.v1', params, PROXY_STATUS_RPC_TIMEOUT_MS);
+        const raw = requireControlResult(
+          'provider-host.list.v1',
+          await proxyClient.exchange('provider-host.list.v1', params, PROXY_STATUS_RPC_TIMEOUT_MS),
+        );
         return providerHostListResultSchema.parse(raw).hosts;
       },
       inspect: async (hostRef) => {
         const params = providerHostInspectParamsSchema.parse({ hostRef });
-        const raw = await proxyClient.call('provider-host.inspect.v1', params, PROXY_STATUS_RPC_TIMEOUT_MS);
+        const raw = requireControlResult(
+          'provider-host.inspect.v1',
+          await proxyClient.exchange('provider-host.inspect.v1', params, PROXY_STATUS_RPC_TIMEOUT_MS),
+        );
         const result = providerHostInspectResultSchema.parse(raw);
         return result.state === 'matched' ? result.host : null;
       },
       evict: async (hostRef) => {
         const params = providerHostEvictParamsSchema.parse({ hostRef });
-        const raw = await proxyClient.call('provider-host.evict.v1', params, PROXY_CONTROL_RPC_TIMEOUT_MS);
+        const raw = requireControlResult(
+          'provider-host.evict.v1',
+          await proxyClient.exchange('provider-host.evict.v1', params, PROXY_CONTROL_RPC_TIMEOUT_MS),
+        );
         return providerHostEvictResultSchema.parse(raw).state === 'evicted';
       },
     }),
@@ -421,7 +442,7 @@ export function createProviderProxySetAuthority(
         });
         const [rawGuardian, rawReaper] = await Promise.all([
           raceAgainstAbort(
-            guardianClient.call(
+            guardianClient.exchange(
               'guardian.stop-and-reap.v1',
               guardianStopAndReapPayload,
               // Both role methods are declared `budgetMs: 'caller-deadline'`: a legitimate hard reap can
@@ -432,12 +453,16 @@ export function createProviderProxySetAuthority(
             signal,
           ),
           raceAgainstAbort(
-            reaperClient.call('reaper.stop-and-reap.v1', reaperStopAndReapPayload, PROXY_TEARDOWN_RESERVE_MS),
+            reaperClient.exchange('reaper.stop-and-reap.v1', reaperStopAndReapPayload, PROXY_TEARDOWN_RESERVE_MS),
             signal,
           ),
         ]);
-        const guardianReceipt = guardianStopAndReapResultSchema.parse(rawGuardian).disappearanceReceipt;
-        const reaperReceipt = reaperStopAndReapResultSchema.parse(rawReaper).disappearanceReceipt;
+        const guardianReceipt = guardianStopAndReapResultSchema.parse(
+          requireControlResult('guardian.stop-and-reap.v1', rawGuardian),
+        ).disappearanceReceipt;
+        const reaperReceipt = reaperStopAndReapResultSchema.parse(
+          requireControlResult('reaper.stop-and-reap.v1', rawReaper),
+        ).disappearanceReceipt;
         return { disappearanceReceipt: `guardian:${guardianReceipt};reaper:${reaperReceipt}` };
       } catch (error: unknown) {
         return { unconfirmed: error instanceof Error ? error.message : 'stop-and-reap did not confirm absence' };

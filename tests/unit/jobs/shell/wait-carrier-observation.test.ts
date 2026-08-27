@@ -1,3 +1,4 @@
+import type { ControlExchange } from '#src/provider-proxy/control-client.js';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createObserveCarriers } from '#src/coordinator/composition/carrier-observation.js';
@@ -143,17 +144,23 @@ describe('wait carrier observation composition', () => {
     const requests: ReturnType<typeof proxyOperationStatusParamsSchema.parse>[] = [];
     const close = vi.fn();
     const connect: CarrierStatusConnector = vi.fn(async () => ({
-      call: async (_method: string, params: unknown) => {
+      exchange: async (_method: string, params: unknown): Promise<ControlExchange> => {
         const request = proxyOperationStatusParamsSchema.parse(params);
         requests.push(request);
-        return proxyOperationStatusResultSchema.parse({
-          proxy: {
-            proxyInstanceId: record.operation.proxyInstanceId,
-            buildSetId: record.operation.buildSetId,
+        return {
+          kind: 'response',
+          response: {
+            kind: 'result',
+            value: proxyOperationStatusResultSchema.parse({
+              proxy: {
+                proxyInstanceId: record.operation.proxyInstanceId,
+                buildSetId: record.operation.buildSetId,
+              },
+              nonce: request.nonce,
+              operations: request.operations.map((operation) => ({ operation, state: 'held' })),
+            }),
           },
-          nonce: request.nonce,
-          operations: request.operations.map((operation) => ({ operation, state: 'held' })),
-        });
+        };
       },
       close,
     }));

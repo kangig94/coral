@@ -30,7 +30,12 @@ import {
 } from '#src/provider-proxy/handoff-capsule.js';
 import { probeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
-import { connectControlClient, ControlClientError } from '#src/provider-proxy/control-client.js';
+import {
+  connectControlClient,
+  ControlClientError,
+  type ControlClient,
+  type ControlExchange,
+} from '#src/provider-proxy/control-client.js';
 import { createControlEndpoint, type ControlChallengeAuthority } from '#src/provider-proxy/control-endpoint.js';
 import { ControlLeaseEvidence } from '#src/provider-proxy/control-lease.js';
 import {
@@ -40,7 +45,6 @@ import {
 } from '#src/provider-proxy/orphan-deadline.js';
 import { createProxy } from '#src/provider-proxy/proxy.js';
 import { connectRoleControlWithRetry, runtimeControlTimer } from '#src/provider-proxy/role-spawn.js';
-import type { ControlClient, ControlExchange } from '#src/provider-proxy/control-client.js';
 import { applyBundledStoreSchema, type Database } from '#src/store/db.js';
 import { insertProviderOperation } from '#src/store/provider-operation-journal.js';
 import { providerOperationRecordSchema, type ProviderOperationRecord } from '#src/store/provider-operation-record.js';
@@ -74,6 +78,13 @@ const retainsEveryCapsule = { observeRecordedProcess: () => 'unknown' as const }
 const mockedReadCapsule = vi.mocked(readHandoffCapsuleFile);
 const mockedConnect = vi.mocked(connectRoleControlWithRetry);
 const mockedProbe = vi.mocked(probeProcessIncarnation);
+
+async function strictTestExchange(client: ControlClient, method: string, params: unknown): Promise<unknown> {
+  const exchange = await client.exchange(method, params, 5_000);
+  if (exchange.kind !== 'response') throw exchange.error;
+  if (exchange.response.kind === 'result') return exchange.response.value;
+  throw exchange.response.error;
+}
 
 // Call history, not implementations, so `mockedProbe`'s default `1_700_000_000` (set in the `vi.mock` factory
 // above) survives — only each test's own explicit `.mockReturnValueOnce`/`.mockResolvedValueOnce` setup and
@@ -277,14 +288,13 @@ async function scriptedHeartbeatExchange(
   if (entry === undefined) throw new Error(`unexpected exchange to ${method}`);
   try {
     const value = typeof entry === 'function' ? (entry as (value: unknown) => unknown)(params) : entry;
-    return { kind: 'response', response: { kind: 'result', value } };
+    return { kind: 'response', response: { kind: 'result', value } } satisfies ControlExchange;
   } catch (error: unknown) {
     if (!(error instanceof ControlClientError)) throw error;
     if (error.remoteFailure !== null) {
       return { kind: 'response', response: { kind: 'refusal', failure: error.remoteFailure, error } };
     }
     if (error.origin === 'timeout') return { kind: 'no-response', cause: 'timeout', error };
-    if (error.origin === 'write') return { kind: 'not-sent', cause: 'write-threw', error };
     return { kind: 'not-sent', cause: 'connection-already-closed', error };
   }
 }
@@ -301,12 +311,6 @@ function fakeClient(
   const faulted = new Promise<never>(() => undefined);
   return {
     exchange: (method, params) => scriptedHeartbeatExchange(responses, calls, method, params),
-    call: async (method: string, params: unknown) => {
-      calls.push({ method, params });
-      const entry = responses[method];
-      if (entry === undefined) throw new Error(`unexpected call to ${method}`);
-      return typeof entry === 'function' ? (entry as (p: unknown) => unknown)(params) : entry;
-    },
     faulted,
     onFault: () => () => undefined,
     close,
@@ -325,12 +329,6 @@ function faultableClient(
   });
   const client: ControlClient = {
     exchange: (method, params) => scriptedHeartbeatExchange(responses, calls, method, params),
-    call: async (method, params) => {
-      calls.push({ method, params });
-      const entry = responses[method];
-      if (entry === undefined) throw new Error(`unexpected call to ${method}`);
-      return typeof entry === 'function' ? (entry as (value: unknown) => unknown)(params) : entry;
-    },
     faulted,
     onFault(listener) {
       if (latchedFault !== null) {
@@ -407,20 +405,29 @@ async function guardianLeaseClient(
   });
   await endpoint.listen();
   const realClient = await connectControlClient(socketPath, time, 5_000);
-  const opened = (await realClient.call('role.open.v1', {}, 5_000)) as {
+  const openedExchange = await realClient.exchange('role.open.v1', {}, 5_000);
+  if (openedExchange.kind !== 'response' || openedExchange.response.kind !== 'result') {
+    throw new Error('test role did not open');
+  }
+  const opened = openedExchange.response.value as {
     controlEpoch: number;
     heartbeatChallenge: string;
   };
   const client: ControlClient = {
-    exchange: (method, params, timeoutMs) => realClient.exchange(method, params, timeoutMs),
-    call: (method, params, timeoutMs) =>
+    exchange: (method, params, timeoutMs) =>
       method === 'guardian.handoff-redeem.v1'
         ? Promise.resolve({
-            ...openResponse,
-            controlEpoch: opened.controlEpoch,
-            heartbeatChallenge: opened.heartbeatChallenge,
+            kind: 'response',
+            response: {
+              kind: 'result',
+              value: {
+                ...openResponse,
+                controlEpoch: opened.controlEpoch,
+                heartbeatChallenge: opened.heartbeatChallenge,
+              },
+            },
           })
-        : realClient.call(method, params, timeoutMs),
+        : realClient.exchange(method, params, timeoutMs),
     faulted: realClient.faulted,
     onFault: (listener) => realClient.onFault(listener),
     close: () => realClient.close(),
@@ -627,32 +634,26 @@ async function startRegisteredProxy(
 
   const predecessor = await connectControlClient(capsule.proxyEndpoint, timer, 5_000);
   try {
-    const opened = (await predecessor.call(
-      'control.open.v1',
-      { bootstrapNonce, coordinator: COORDINATOR_IDENTITY },
-      5_000,
-    )) as { controlEpoch: number; heartbeatChallenge: string };
-    await predecessor.call(
-      'control.heartbeat.v1',
-      { controlEpoch: opened.controlEpoch, heartbeatChallenge: opened.heartbeatChallenge },
-      5_000,
-    );
-    await predecessor.call(
-      'handoff.install.v1',
-      {
-        grantId: capsule.grantId,
-        secretSha256: createHash('sha256').update(capsule.secret).digest('hex'),
-        generation: capsule.generation,
-        hostFingerprint: capsule.hostFingerprint,
-        buildSetId: capsule.buildSetId,
-        proxyInstanceId: capsule.proxyInstanceId,
-        operations: installedOperations,
-        orphanTimeoutMs: capsule.orphanTimeoutMs,
-      },
-      5_000,
-    );
+    const opened = (await strictTestExchange(predecessor, 'control.open.v1', {
+      bootstrapNonce,
+      coordinator: COORDINATOR_IDENTITY,
+    })) as { controlEpoch: number; heartbeatChallenge: string };
+    await strictTestExchange(predecessor, 'control.heartbeat.v1', {
+      controlEpoch: opened.controlEpoch,
+      heartbeatChallenge: opened.heartbeatChallenge,
+    });
+    await strictTestExchange(predecessor, 'handoff.install.v1', {
+      grantId: capsule.grantId,
+      secretSha256: createHash('sha256').update(capsule.secret).digest('hex'),
+      generation: capsule.generation,
+      hostFingerprint: capsule.hostFingerprint,
+      buildSetId: capsule.buildSetId,
+      proxyInstanceId: capsule.proxyInstanceId,
+      operations: installedOperations,
+      orphanTimeoutMs: capsule.orphanTimeoutMs,
+    });
     for (const operation of registeredOperations) {
-      await predecessor.call('succession.register-operation.v1', { operation }, 5_000);
+      await strictTestExchange(predecessor, 'succession.register-operation.v1', { operation });
     }
   } finally {
     predecessor.close();
@@ -1046,6 +1047,23 @@ describe('attemptProviderProxySetInheritance', () => {
     const closed: string[] = [];
     mockedConnect.mockImplementation(async (socketPath: string) => ({
       exchange: async (method: string) => {
+        if (method === 'guardian.handoff-redeem.v1') {
+          return {
+            kind: 'response' as const,
+            response: {
+              kind: 'result' as const,
+              value: {
+                ...OPENING,
+                state: 'redeemed-provisional',
+                redemptionReceipt: 'g',
+                operations: [],
+                guardian: guardianIdentityFor(loc),
+                reaper: reaperIdentityFor(loc),
+                containment: containmentFor(loc),
+              },
+            },
+          };
+        }
         if (method === 'guardian.heartbeat.v1') {
           return {
             kind: 'response' as const,
@@ -1055,23 +1073,8 @@ describe('attemptProviderProxySetInheritance', () => {
             },
           };
         }
-        throw new Error(`unexpected exchange ${method} for ${socketPath}`);
-      },
-      call: async (method: string) => {
-        if (method === 'guardian.handoff-redeem.v1') {
-          return {
-            ...OPENING,
-            state: 'redeemed-provisional',
-            redemptionReceipt: 'g',
-            operations: [],
-            guardian: guardianIdentityFor(loc),
-            reaper: reaperIdentityFor(loc),
-            containment: containmentFor(loc),
-          };
-        }
-        if (method === 'guardian.heartbeat.v1') return { state: 'active', nextHeartbeatChallenge: 'g2' };
         if (method === 'reaper.handoff-rotate.v1') throw new Error('grant_invalid: replayed');
-        throw new Error(`unexpected ${method} for ${socketPath}`);
+        throw new Error(`unexpected exchange ${method} for ${socketPath}`);
       },
       faulted: new Promise<never>(() => undefined),
       onFault: () => () => undefined,

@@ -1,3 +1,4 @@
+import type { ControlExchange } from '#src/provider-proxy/control-client.js';
 import { randomUUID } from 'node:crypto';
 
 import { describe, expect, it, vi } from 'vitest';
@@ -152,28 +153,28 @@ async function createSharedSetHarness(control: SharedSetControl) {
   const formattedTimeout = 'settlement timed out';
   const timeout = Object.assign(new Error(formattedTimeout), { code: 'control_call_failed' });
   const proxyClient = {
-    exchange: () => {
-      throw new Error('unexpected proxy control exchange');
-    },
-    call: vi.fn(async (method: string, params: unknown) => {
+    exchange: vi.fn(async (method: string, params: unknown): Promise<ControlExchange> => {
       if (method === 'operation.attach.v1') {
         const committedThroughProviderSeq = (params as { committedThroughProviderSeq: number })
           .committedThroughProviderSeq;
-        return { state: 'attached', replayFromProviderSeq: committedThroughProviderSeq + 1 };
+        return {
+          kind: 'response',
+          response: {
+            kind: 'result',
+            value: { state: 'attached', replayFromProviderSeq: committedThroughProviderSeq + 1 },
+          },
+        };
       }
       if (method === 'operation.settle.v1' && control === 'settlement-timeout') throw timeout;
-      throw new Error(`unexpected proxy control call: ${method}`);
+      throw new Error(`unexpected proxy control exchange: ${method}`);
     }),
     faulted: new Promise<never>(() => undefined),
     onFault: () => () => undefined,
     close: () => undefined,
   } satisfies ControlClient;
   const idleClient = {
-    exchange: () => {
-      throw new Error('unexpected role control exchange');
-    },
-    call: async (method: string) => {
-      throw new Error(`unexpected role control call: ${method}`);
+    exchange: async (method: string): Promise<never> => {
+      throw new Error(`unexpected role control exchange: ${method}`);
     },
     faulted: new Promise<never>(() => undefined),
     onFault: () => () => undefined,
@@ -900,13 +901,16 @@ describe('execution services provider-proxy heartbeat-hold composition', () => {
             },
           };
         }
-        throw new Error(`unexpected ${role} control exchange: ${method}`);
-      },
-      call: async (method: string) => {
         if (method === 'guardian.stop-and-reap.v1' || method === 'reaper.stop-and-reap.v1') {
-          return { state: 'containment-absent', disappearanceReceipt: `${role}-gone` };
+          return {
+            kind: 'response',
+            response: {
+              kind: 'result',
+              value: { state: 'containment-absent', disappearanceReceipt: `${role}-gone` },
+            },
+          };
         }
-        throw new Error(`unexpected role control call: ${method}`);
+        throw new Error(`unexpected ${role} control exchange: ${method}`);
       },
       faulted: new Promise<never>(() => undefined),
       onFault: () => () => undefined,

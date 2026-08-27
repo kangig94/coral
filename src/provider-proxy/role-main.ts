@@ -44,7 +44,7 @@ import {
   type ProviderProxyDeadlineConfiguration,
 } from './orphan-deadline.js';
 import type { OperationStageHandle } from './operation-supervisor.js';
-import type { ControlClient } from './control-client.js';
+import type { ControlClient, ControlExchange } from './control-client.js';
 import {
   guardianRegisterProviderRootParamsSchema,
   guardianProxyOperationReleaseParamsSchema,
@@ -71,6 +71,15 @@ import {
   type SpawnedRoleProcess,
 } from './role-spawn.js';
 import type { ProviderRoleArgv } from './role-argv.js';
+
+function requireRolePeerResult(method: string, exchange: ControlExchange): unknown {
+  if (exchange.kind === 'response') {
+    if (exchange.response.kind === 'result') return exchange.response.value;
+    throw exchange.response.error;
+  }
+  if (exchange.error instanceof Error) throw exchange.error;
+  throw new Error(`${method} could not be sent.`, { cause: exchange.error });
+}
 
 /**
  * Runs one provider-role process: guardian, reaper, or proxy.
@@ -557,10 +566,13 @@ export async function startProviderGuardianRole(
       sleep: (ms) => ports.runtime.time.sleep(ms),
     });
     reaperChannel = await raceReadinessAgainstSpawnFailure(reaperConnected, reaperSpawn.spawnFailed);
-    const pairingResult = await reaperChannel.call(
+    const pairingResult = requireRolePeerResult(
       'reaper.pair.v1',
-      controlPairParamsSchema.parse({ pairingSecret: capsule.guardianReaperAuthSecret }),
-      PROXY_CONTROL_RPC_TIMEOUT_MS,
+      await reaperChannel.exchange(
+        'reaper.pair.v1',
+        controlPairParamsSchema.parse({ pairingSecret: capsule.guardianReaperAuthSecret }),
+        PROXY_CONTROL_RPC_TIMEOUT_MS,
+      ),
     );
     controlPairResultSchema.parse(pairingResult);
 
@@ -709,7 +721,7 @@ const registerProviderRootResultSchema = z
  *  parameter. */
 export type ProxyGuardianContainmentDeps = Readonly<{
   identity: ProxyIdentity;
-  guardianChannel: Pick<ControlClient, 'call'>;
+  guardianChannel: Pick<ControlClient, 'exchange'>;
   stageProviderRoot(key: ProviderOperationKey, prepared: ProxyPreparedAppServerOperation): SemanticOperationStageHandle;
 }>;
 
@@ -751,10 +763,13 @@ export function createProxyGuardianContainment(
           providerIncarnation: root.incarnation,
         });
         guardianMayHoldMembership = true;
-        const response = await deps.guardianChannel.call(
+        const response = requireRolePeerResult(
           'guardian.register-provider-root.v1',
-          params,
-          PROXY_CONTROL_RPC_TIMEOUT_MS,
+          await deps.guardianChannel.exchange(
+            'guardian.register-provider-root.v1',
+            params,
+            PROXY_CONTROL_RPC_TIMEOUT_MS,
+          ),
         );
         const parsed = registerProviderRootResultSchema.parse(response);
         recognisedReceipt = parsed.jointContainmentReceipt;
@@ -797,10 +812,9 @@ export function createProxyGuardianContainment(
             },
             reservation: reserved.reservation,
           });
-          const response = await deps.guardianChannel.call(
+          const response = requireRolePeerResult(
             'guardian.operation-release.v1',
-            params,
-            PROXY_CONTROL_RPC_TIMEOUT_MS,
+            await deps.guardianChannel.exchange('guardian.operation-release.v1', params, PROXY_CONTROL_RPC_TIMEOUT_MS),
           );
           guardianProxyOperationReleaseResultSchema.parse(response);
           guardianReleased = true;
@@ -849,10 +863,13 @@ export async function startProviderProxyRole(
     now: () => ports.runtime.time.now(),
     sleep: (ms) => ports.runtime.time.sleep(ms),
   });
-  const pairingResult = await guardianChannel.call(
+  const pairingResult = requireRolePeerResult(
     'guardian.pair.v1',
-    controlPairParamsSchema.parse({ pairingSecret: capsule.proxyGuardianAuthSecret }),
-    PROXY_CONTROL_RPC_TIMEOUT_MS,
+    await guardianChannel.exchange(
+      'guardian.pair.v1',
+      controlPairParamsSchema.parse({ pairingSecret: capsule.proxyGuardianAuthSecret }),
+      PROXY_CONTROL_RPC_TIMEOUT_MS,
+    ),
   );
   controlPairResultSchema.parse(pairingResult);
 

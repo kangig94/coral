@@ -73,14 +73,20 @@ three-answer disposition without adding uid to installation identity.
 
 ## Shipped-selector compatibility — narrowed to computable rollback addresses
 
-The current coordinator serves its complete IPC surface at the v0.10.9 fallback addresses derived from both
-this process's `TMPDIR ?? tmpdir()` selection and the Unix platform default `/tmp`. The two addresses are
-deduplicated. Binding is atomic with the current address: an incumbent at any guarded address prevents this
-coordinator from starting, and shutdown closes every listener. This covers the common rollback launched in
-the same environment as the current coordinator and a rollback with `TMPDIR` unset on Unix.
+The path owner computes v0.10.9 guards from the raw configured temp value and the runtime's system temp
+directory, admits only non-empty absolute directories, and deduplicates the result. It decides whether the
+tagged build relocated with v0.10.9's own 104-byte Darwin/108-byte non-Darwin rule rather than this build's
+more conservative limit. Binding is atomic with the current address: an incumbent at any guarded address
+prevents this coordinator from starting, and shutdown closes every listener.
+
+An empty, whitespace-only, or relative configured value is not an empty guard set. If the tagged ordinary
+socket would overflow, v0.10.9 joined that value into a relative address resolved from its working directory;
+this process cannot enumerate that address. Startup therefore refuses and names the unenumerable selector.
+The operator can unset `TMPDIR` or set it to a non-empty absolute directory and retry; Coral will not claim
+that no shipped address exists.
 
 The guarantee is deliberately finite. v0.10.9 inherited its launcher's environment and accepted any writable
-`TMPDIR`, so a later rollback launched with a different custom directory can still derive an address this
+`TMPDIR`, so a later rollback launched with a different absolute custom directory can still derive an address this
 process could not predict. Such a process can bind there and coexist. An operator using a custom rollback
 directory outside the guarded set must either launch the rollback with the current coordinator's `TMPDIR` (or
 the platform default) or stop the current coordinator first. A total cross-environment guarantee still needs

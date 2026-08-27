@@ -224,10 +224,7 @@ describe('generation mutation writer identity', () => {
     const lease = writer(writerRuntime);
     try {
       await expect(acquireGenerationMaintenanceLease(maintenanceRuntime, 25)).rejects.toMatchObject({
-        code: 'legacy_source_not_quiescent',
-        context: {
-          writerObservation: 'unknown',
-        },
+        code: 'legacy_source_writer_observation_unknown',
       });
     } finally {
       lease.release();

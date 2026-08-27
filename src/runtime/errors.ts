@@ -31,6 +31,7 @@ export type DocumentedCoralSetupErrorCode =
   | 'store_schema_outdated'
   | 'legacy_foreign_generation'
   | 'legacy_source_not_quiescent'
+  | 'legacy_source_writer_observation_unknown'
   | 'active_store_coordination_invalid'
   | 'store_newer_incompatible'
   | 'store_older_incompatible'
@@ -250,9 +251,7 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
   },
   legacy_source_not_quiescent: {
     userMessage: (context) =>
-      context?.writerObservation === 'unknown'
-        ? `The generation-boundary operation cannot determine whether ${stringContextValue(context, 'holder', '<writer-lease-holder>')} is still active.`
-        : `The generation-boundary operation cannot proceed while ${stringContextValue(context, 'holder', '<writer-lease-holder>')} remains active.`,
+      `The generation-boundary operation cannot proceed while ${stringContextValue(context, 'holder', '<writer-lease-holder>')} remains active.`,
     remediation: (context) => {
       const retry = stringContextValue(
         context,
@@ -261,11 +260,24 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
           ? `coral-cli backend store-reset discard --target gen2 --flavor ${stringContextValue(context, 'flavor', '<prod|dev>')}`
           : 'the operator command you ran',
       );
-      if (context?.writerObservation === 'unknown') {
-        return `Restore process-identity and liveness observation for '${stringContextValue(context, 'holder', '<writer-lease-holder>')}', then retry '${retry}'. If that writer has exited, its lease becomes reclaimable after ten minutes without a heartbeat; retry after that bound instead of deleting the lease.`;
-      }
       return `Run this build's own 'coral-cli backend shutdown'. Wait for '${stringContextValue(context, 'holder', '<writer-lease-holder>')}' to exit and release its lease or lock, then retry '${retry}'.`;
     },
+  },
+  legacy_source_writer_observation_unknown: {
+    userMessage: (context) =>
+      `The generation-boundary operation cannot determine whether ${stringContextValue(context, 'holder', '<writer-lease-holder>')} is still active.`,
+    remediation: (context) => {
+      const retry = stringContextValue(
+        context,
+        'retryCommand',
+        context?.operation === 'store-reset'
+          ? `coral-cli backend store-reset discard --target gen2 --flavor ${stringContextValue(context, 'flavor', '<prod|dev>')}`
+          : 'the operator command you ran',
+      );
+      return `Restore process-identity and liveness observation for '${stringContextValue(context, 'holder', '<writer-lease-holder>')}', then retry '${retry}'. If that writer has exited, its lease becomes reclaimable after ten minutes without a heartbeat; retry after that bound instead of deleting the lease.`;
+    },
+    exitCode: 75,
+    observation: 'not_observed',
   },
   active_store_coordination_invalid: {
     userMessage: (context) =>

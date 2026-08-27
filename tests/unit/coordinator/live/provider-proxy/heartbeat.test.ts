@@ -42,7 +42,6 @@ function scriptedClient(replies: readonly (string | ControlExchange)[]): {
           : reply,
       );
     },
-    call: () => Promise.reject(new Error('unexpected compatibility call')),
     faulted: new Promise<never>(() => undefined),
     onFault: () => () => undefined,
     close: () => {},
@@ -173,7 +172,6 @@ describe('provider proxy authority heartbeats', () => {
     );
     const client: ControlClient = {
       exchange,
-      call: () => Promise.reject(new Error('unexpected compatibility call')),
       faulted: new Promise<never>(() => undefined),
       onFault: () => () => undefined,
       close: () => {},
@@ -224,7 +222,6 @@ describe('provider proxy authority heartbeats', () => {
       });
     const client = {
       exchange,
-      call: () => Promise.reject(new Error('unexpected compatibility call')),
       faulted: new Promise<never>(() => undefined),
       onFault: () => () => undefined,
       close: () => {},
@@ -565,7 +562,6 @@ describe('provider proxy authority heartbeats', () => {
     const time = new VirtualTime();
     const proxyClient: ControlClient = {
       exchange: async () => ({ kind: 'response', response: { kind: 'result', value: { unexpected: 'shape' } } }),
-      call: () => Promise.reject(new Error('unexpected compatibility call')),
       faulted: new Promise<never>(() => undefined),
       onFault: () => () => undefined,
       close: () => {},

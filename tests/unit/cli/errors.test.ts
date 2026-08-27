@@ -154,9 +154,8 @@ describe('cli errors', () => {
         const live = documentedCoralSetupError('legacy_source_not_quiescent', {
           holder: 'install:kiwi (pid 42)',
         });
-        const unknown = documentedCoralSetupError('legacy_source_not_quiescent', {
+        const unknown = documentedCoralSetupError('legacy_source_writer_observation_unknown', {
           holder: 'install:kiwi (pid 42)',
-          writerObservation: 'unknown',
         });
         const carry = (error: ReturnType<typeof documentedCoralSetupError>) => {
           if (transport === 'direct') return error;
@@ -172,7 +171,7 @@ describe('cli errors', () => {
         expect(buildErrorEnvelope(carry(live)).envelope.code).toBe('legacy_source_not_quiescent');
         expect(buildErrorEnvelope(carry(unknown))).toMatchObject({
           envelope: { code: 'legacy_source_writer_observation_unknown' },
-          exitCode: 1,
+          exitCode: 75,
         });
       },
     );
@@ -394,6 +393,7 @@ describe('cli errors', () => {
         'coordinator_unreachable',
         'coordinator_record_unreadable',
         'coordinator_socket_dir_unverified',
+        'legacy_source_writer_observation_unknown',
       ];
       const { NOT_OBSERVED_CORAL_SETUP_ERROR_CODES } = await import('#src/runtime/errors.js');
       const { expansionExitCode } = await import('#src/cli/commands/expansion.js');

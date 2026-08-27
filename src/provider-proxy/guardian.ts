@@ -4,7 +4,7 @@ import type { z } from 'zod';
 import type { MonotonicClock } from '../infra/monotonic-clock.js';
 import type { ProcessContainmentEnvironment, RecordedContainmentIdentity } from '../infra/process-containment.js';
 import { createBootstrapNonceCredential, type GuardianBootstrapCapsule } from './bootstrap-capsule.js';
-import type { ControlClient } from './control-client.js';
+import type { ControlClient, ControlExchange } from './control-client.js';
 import {
   createControlEndpoint,
   type ControlEndpoint,
@@ -63,6 +63,15 @@ import {
   type ReaperIdentity,
   type Reservation,
 } from './protocol.js';
+
+function requireReaperResult(method: string, exchange: ControlExchange): unknown {
+  if (exchange.kind === 'response') {
+    if (exchange.response.kind === 'result') return exchange.response.value;
+    throw exchange.response.error;
+  }
+  if (exchange.error instanceof Error) throw exchange.error;
+  throw new Error(`${method} could not be sent.`, { cause: exchange.error });
+}
 import { MAX_PROXY_OPERATION_LEDGERS } from './ledger.js';
 import { PROXY_TEARDOWN_RESERVE_MS, type EnforcerDeadlineStateMachine } from './orphan-deadline.js';
 
@@ -378,10 +387,13 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
             operations: redemption.grant.operations,
             redemptionReceipt: redemption.redemptionReceipt,
           });
-          const reaperResult = await options.reaperChannel.call(
+          const reaperResult = requireReaperResult(
             'reaper.record-redemption.v1',
-            reaperParams,
-            PROXY_CONTROL_RPC_TIMEOUT_MS,
+            await options.reaperChannel.exchange(
+              'reaper.record-redemption.v1',
+              reaperParams,
+              PROXY_CONTROL_RPC_TIMEOUT_MS,
+            ),
           );
           reaperRecordRedemptionResultSchema.parse(reaperResult);
           return {
@@ -458,10 +470,13 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
           // reaper is asked to record a root, not an operation — it has no operation vocabulary to forward.
           const reaperParams = reaperRegisterProviderRootParamsSchema.parse({ providerRoot: root });
           const acknowledgement = acknowledgeReaperRoot(
-            await options.reaperChannel.call(
+            requireReaperResult(
               'reaper.register-provider-root.v1',
-              reaperParams,
-              PROXY_CONTROL_RPC_TIMEOUT_MS,
+              await options.reaperChannel.exchange(
+                'reaper.register-provider-root.v1',
+                reaperParams,
+                PROXY_CONTROL_RPC_TIMEOUT_MS,
+              ),
             ),
             root,
           );
@@ -525,10 +540,13 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
             const reaperParams = reaperConfirmProviderRootParamsSchema.parse({
               providerRoot: request.providerRoot,
             });
-            const reaperResult = await options.reaperChannel.call(
+            const reaperResult = requireReaperResult(
               'reaper.confirm-provider-root.v1',
-              reaperParams,
-              PROXY_CONTROL_RPC_TIMEOUT_MS,
+              await options.reaperChannel.exchange(
+                'reaper.confirm-provider-root.v1',
+                reaperParams,
+                PROXY_CONTROL_RPC_TIMEOUT_MS,
+              ),
             );
             reaperConfirmProviderRootResultSchema.parse(reaperResult);
             const result = guardianOperationActivateResultSchema.parse({
@@ -674,10 +692,13 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
       enforcer.arm();
 
       const reaperParams = recordedContainmentSchema.parse(containment);
-      const reaperResult = await options.reaperChannel.call(
+      const reaperResult = requireReaperResult(
         'reaper.record-containment.v1',
-        reaperParams,
-        PROXY_CONTROL_RPC_TIMEOUT_MS,
+        await options.reaperChannel.exchange(
+          'reaper.record-containment.v1',
+          reaperParams,
+          PROXY_CONTROL_RPC_TIMEOUT_MS,
+        ),
       );
       reaperRecordContainmentResultSchema.parse(reaperResult);
     },

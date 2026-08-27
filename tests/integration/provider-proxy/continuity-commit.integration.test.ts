@@ -41,6 +41,8 @@ import {
   ControlClientError,
   type ControlClient,
   type ProviderEventHandler,
+  type ControlExchange,
+  type ControlClientRemoteFailure,
 } from '#src/provider-proxy/control-client.js';
 import type { ControlEndpointTimer } from '#src/provider-proxy/control-endpoint.js';
 import { createProxy, type Proxy } from '#src/provider-proxy/proxy.js';
@@ -82,6 +84,18 @@ import {
 
 const NONCE = 'a'.repeat(64);
 const HOST_FINGERPRINT = 'b'.repeat(64);
+
+async function strictTestExchange(
+  control: Pick<ControlClient, 'exchange'>,
+  method: string,
+  params: unknown,
+  timeoutMs: number,
+): Promise<unknown> {
+  const exchange = await control.exchange(method, params, timeoutMs);
+  if (exchange.kind !== 'response') throw exchange.error;
+  if (exchange.response.kind === 'result') return exchange.response.value;
+  throw exchange.response.error;
+}
 
 function deferred<T = void>(): Readonly<{ promise: Promise<T>; resolve(value?: T): void }> {
   let resolve!: (value?: T) => void;
@@ -192,8 +206,26 @@ async function connectRawProviderEventControlClient(
       if (waiter === undefined) return;
       pending.delete(Number(message.id));
       timer.clearTimeout(waiter.budget);
-      if ('error' in message) waiter.reject(new Error(message.error.message));
-      else waiter.resolve(message.result);
+      if ('error' in message) {
+        const failure = {
+          kind: 'json-rpc-error',
+          jsonRpcCode: message.error.code,
+          protocolCode: ((message.error.data as { code?: unknown } | undefined)?.code ?? null) as Extract<
+            ControlClientRemoteFailure,
+            { kind: 'json-rpc-error' }
+          >['protocolCode'],
+          admissionReason: null,
+          heartbeatRefusal: null,
+        } as const;
+        waiter.resolve({
+          kind: 'response',
+          response: {
+            kind: 'refusal',
+            failure,
+            error: new ControlClientError('control_call_failed', message.error.message, 'remote-response', failure),
+          },
+        });
+      } else waiter.resolve({ kind: 'response', response: { kind: 'result', value: message.result } });
     },
     () => socket.destroy(),
   );
@@ -202,9 +234,6 @@ async function connectRawProviderEventControlClient(
   socket.on('close', latchFault);
 
   return {
-    exchange: () => {
-      throw new Error('unexpected raw control exchange');
-    },
     faulted,
     onFault(listener) {
       if (latchedFault !== null) {
@@ -214,16 +243,30 @@ async function connectRawProviderEventControlClient(
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
-    call(method, params, timeoutMs) {
-      if (closed) return Promise.reject(new Error('The raw test control channel is closed.'));
+    exchange(method, params, timeoutMs) {
+      if (closed) {
+        return Promise.resolve({
+          kind: 'not-sent',
+          cause: 'connection-already-closed',
+          error: new Error('The raw test control channel is closed.'),
+        } satisfies ControlExchange);
+      }
       const id = nextId;
       nextId += 1;
-      return new Promise<unknown>((resolve, reject) => {
+      return new Promise<ControlExchange>((resolve) => {
         const budget = timer.setTimeout(() => {
           pending.delete(id);
-          reject(new Error(`${method} exceeded its ${timeoutMs}ms budget.`));
+          resolve({
+            kind: 'no-response',
+            cause: 'timeout',
+            error: new ControlClientError(
+              'control_call_failed',
+              `${method} exceeded its ${timeoutMs}ms budget.`,
+              'timeout',
+            ),
+          });
         }, timeoutMs);
-        pending.set(id, { resolve, reject, budget });
+        pending.set(id, { resolve, reject: () => undefined, budget });
         socket.write(encodeProxyControlFrame({ jsonrpc: '2.0', id, method, params }));
       });
     },
@@ -276,16 +319,15 @@ function ledgerEntry(harness: Harness) {
 async function controlFaultDisposition(harness: Harness): Promise<'faulted' | 'route-available'> {
   return Promise.race([
     harness.control.faulted.then(() => 'faulted' as const),
-    harness.control
-      .call(
-        'operation.inspect.v1',
-        { operation: harness.operation, prepareAttemptKey: harness.prepareAttemptKey },
-        5_000,
-      )
-      .then(
-        () => 'route-available' as const,
-        () => 'faulted' as const,
-      ),
+    strictTestExchange(
+      harness.control,
+      'operation.inspect.v1',
+      { operation: harness.operation, prepareAttemptKey: harness.prepareAttemptKey },
+      5_000,
+    ).then(
+      () => 'route-available' as const,
+      () => 'faulted' as const,
+    ),
   ]);
 }
 
@@ -588,11 +630,17 @@ async function createHarness(
     flavor: 'prod' as const,
     buildSetId,
   };
-  const opened = (await activeControl.call('control.open.v1', { bootstrapNonce: NONCE, coordinator }, 5_000)) as {
+  const opened = (await strictTestExchange(
+    activeControl,
+    'control.open.v1',
+    { bootstrapNonce: NONCE, coordinator },
+    5_000,
+  )) as {
     controlEpoch: number;
     heartbeatChallenge: string;
   };
-  await activeControl.call(
+  await strictTestExchange(
+    activeControl,
     'control.heartbeat.v1',
     { controlEpoch: opened.controlEpoch, heartbeatChallenge: opened.heartbeatChallenge },
     5_000,
@@ -636,7 +684,8 @@ async function createHarness(
         proxyInstanceId,
       };
       const secret = 'd'.repeat(64);
-      await activeControl.call(
+      await strictTestExchange(
+        activeControl,
         'handoff.install.v1',
         {
           ...grant,
@@ -651,11 +700,12 @@ async function createHarness(
       await drainMicrotasks();
       const successor = await connectHarnessControl();
       controls.push(successor);
-      const redeemed = (await successor.call('handoff.redeem.v1', handoffRedeem, 5_000)) as {
+      const redeemed = (await strictTestExchange(successor, 'handoff.redeem.v1', handoffRedeem, 5_000)) as {
         controlEpoch: number;
         heartbeatChallenge: string;
       };
-      const heartbeat = (await successor.call(
+      const heartbeat = (await strictTestExchange(
+        successor,
         'control.heartbeat.v1',
         { controlEpoch: redeemed.controlEpoch, heartbeatChallenge: redeemed.heartbeatChallenge },
         5_000,
@@ -670,10 +720,11 @@ async function createHarness(
       const stale = activeControl;
       const replacement = await connectHarnessControl();
       controls.push(replacement);
-      const reattached = (await replacement.call('handoff.redeem.v1', handoffRedeem, 5_000)) as {
+      const reattached = (await strictTestExchange(replacement, 'handoff.redeem.v1', handoffRedeem, 5_000)) as {
         controlEpoch: number;
       };
-      const heartbeat = (await replacement.call(
+      const heartbeat = (await strictTestExchange(
+        replacement,
         'control.heartbeat.v1',
         {
           controlEpoch: reattached.controlEpoch,
@@ -689,7 +740,7 @@ async function createHarness(
       const request = { operation, hostFingerprint: HOST_FINGERPRINT, prepareAttemptNumber: 1, prepared };
       const staged = (await withinDiagnosticDeadline(
         'continuity prepare',
-        activeControl.call('operation.prepare.v1', request, 5_000),
+        strictTestExchange(activeControl, 'operation.prepare.v1', request, 5_000),
         () => ({ trace, ledger: proxy.ledger().get(operation) }),
       )) as {
         reservation: Reservation;
@@ -703,7 +754,7 @@ async function createHarness(
       };
       const result = (await withinDiagnosticDeadline(
         'continuity activation',
-        activeControl.call('operation.activate.v1', activation, 5_000),
+        strictTestExchange(activeControl, 'operation.activate.v1', activation, 5_000),
         () => ({ trace, ledger: proxy.ledger().get(operation) }),
       )) as {
         activationFingerprint: string;
@@ -715,7 +766,8 @@ async function createHarness(
       expect(operationPrepareAttemptKey(request)).toHaveLength(64);
       await withinDiagnosticDeadline(
         'continuity attach',
-        activeControl.call(
+        strictTestExchange(
+          activeControl,
           'operation.attach.v1',
           { operation, committedThroughProviderSeq: durableWatermark(harness) },
           5_000,
@@ -852,7 +904,8 @@ describe('provider proxy continuity commit bridge', () => {
     await harness.activate();
     await harness.firstProviderEventSeen;
 
-    const stop = harness.control.call(
+    const stop = strictTestExchange(
+      harness.control,
       'operation.stop.v1',
       { operation: harness.operation, cause: 'signal_abort' },
       5_000,
@@ -874,7 +927,7 @@ describe('provider proxy continuity commit bridge', () => {
     );
 
     expect(await stopFailure).toMatchObject({
-      protocolCode: 'semantic_operation_cancellation_unconfirmed',
+      remoteFailure: { protocolCode: 'semantic_operation_cancellation_unconfirmed' },
       message: expect.stringContaining('The operation was cancelled before the continuity checkpoint was committed.'),
     });
     expect(harness.trace).toEqual({ threadStarts: 1, turnStarts: 0 });

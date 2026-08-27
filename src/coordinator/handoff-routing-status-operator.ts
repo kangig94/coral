@@ -97,14 +97,14 @@ function generationMaintenanceRefusal(
   if (isDirectoryLockTimeoutError(error)) {
     return { kind: 'generation-maintenance-unavailable', cause: 'contended' };
   }
+  if (error instanceof CoralSetupError && error.code === 'legacy_source_writer_observation_unknown') {
+    return {
+      kind: 'generation-maintenance-unavailable',
+      cause: 'writer-observation-unknown',
+      holder: typeof error.context?.holder === 'string' ? error.context.holder : '<writer-lease-holder>',
+    };
+  }
   if (error instanceof CoralSetupError && error.code === 'legacy_source_not_quiescent') {
-    if (error.context?.writerObservation === 'unknown') {
-      return {
-        kind: 'generation-maintenance-unavailable',
-        cause: 'writer-observation-unknown',
-        holder: typeof error.context.holder === 'string' ? error.context.holder : '<writer-lease-holder>',
-      };
-    }
     return { kind: 'generation-maintenance-unavailable', cause: 'contended' };
   }
   if (error instanceof DirectoryLockOwnershipLostError) {

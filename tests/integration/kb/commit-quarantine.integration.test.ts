@@ -145,10 +145,9 @@ describe('KB commit quarantine', () => {
       }
       const serialized = serializeCoralSetupError(refusal);
       expect(serialized).toMatchObject({
-        code: 'legacy_source_not_quiescent',
+        code: 'legacy_source_writer_observation_unknown',
         context: {
           operation: 'kb-commit',
-          writerObservation: 'unknown',
           holder: expect.stringContaining('unobservable-kb-daemon'),
           retryCommand: `coral-cli backend kb-commit quarantine --flavor prod --commit ${commitId}`,
         },

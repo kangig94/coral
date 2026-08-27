@@ -258,8 +258,34 @@ type HandoffSignalShadowRecord = Omit<HandoffSignalRecord, 'version'> & {
 
 type HandoffSignalLedgerRecord = HandoffSignalRecord | HandoffSignalShadowRecord | LegacyHandoffSignalAttemptRecord;
 
+type HandoffSignalLedgerCandidate = Readonly<{
+  address: 'detail' | 'shadow';
+  provenance: 'detail-publication' | 'paired-shadow' | 'foreign-publication';
+  record: HandoffSignalLedgerRecord;
+}>;
+
+export type HandoffSignalCooldownDisposition =
+  | Readonly<{ kind: 'clear' }>
+  | Readonly<{
+      kind: 'accepted-signal';
+      signal: HandoffSignal;
+      ageMs: number;
+      retryInMs: number;
+    }>
+  | Readonly<{
+      kind: 'foreign-signal-attempt';
+      signal: HandoffSignal;
+      ageMs: number;
+      retryInMs: number;
+    }>;
+
 export interface HandoffSignalLedger {
-  read(socketPath: string, incumbent: IncumbentIdentity): HandoffSignalLedgerRecord | null;
+  cooldownDisposition(input: {
+    socketPath: string;
+    incumbent: IncumbentIdentity;
+    nowMs: number;
+    cooldownMs: number;
+  }): HandoffSignalCooldownDisposition;
   write(record: HandoffSignalRecord): void;
 }
 
@@ -297,25 +323,47 @@ export function createFileHandoffSignalLedger(options: {
     }
   };
   return {
-    read: (socketPath, incumbent) => {
+    cooldownDisposition: ({ socketPath, incumbent, nowMs, cooldownMs }) => {
       const current = readAt(path, HANDOFF_SIGNAL_RECORD_VERSION);
       const legacy = readAt(legacyPath, 1);
       const matchingCurrent = current !== null && isSameSignalTarget(current, socketPath, incumbent) ? current : null;
       const matchingLegacy = legacy !== null && isSameSignalTarget(legacy, socketPath, incumbent) ? legacy : null;
-      if (matchingCurrent === null) {
-        return matchingLegacy;
-      }
-      if (matchingLegacy === null) {
-        return matchingCurrent;
-      }
-      if (matchingCurrent.publicationId !== undefined || matchingLegacy.publicationId !== undefined) {
-        if (matchingCurrent.publicationId === matchingLegacy.publicationId) {
-          return matchingCurrent;
-        }
-        return matchingLegacy.publicationId === undefined ? matchingCurrent : matchingLegacy;
-      }
-      if (matchingCurrent.signaledAtMs >= matchingLegacy.signaledAtMs) return matchingCurrent;
-      return matchingLegacy;
+      const paired =
+        matchingCurrent !== null &&
+        matchingLegacy !== null &&
+        matchingCurrent.publicationId !== undefined &&
+        matchingCurrent.publicationId === matchingLegacy.publicationId;
+      const candidates: HandoffSignalLedgerCandidate[] = [
+        ...(matchingCurrent === null
+          ? []
+          : [{ address: 'detail', provenance: 'detail-publication', record: matchingCurrent } as const]),
+        ...(matchingLegacy === null
+          ? []
+          : [
+              {
+                address: 'shadow',
+                provenance: paired ? 'paired-shadow' : 'foreign-publication',
+                record: matchingLegacy,
+              } as const,
+            ]),
+      ];
+      const independent = candidates.filter((candidate) => candidate.provenance !== 'paired-shadow');
+      const active = independent.filter((candidate) => nowMs - candidate.record.signaledAtMs < cooldownMs);
+      active.sort((left, right) => {
+        const recency = right.record.signaledAtMs - left.record.signaledAtMs;
+        if (recency !== 0) return recency;
+        const leftIsIndeterminate = left.record.version === 1 && left.record.accepted !== true;
+        const rightIsIndeterminate = right.record.version === 1 && right.record.accepted !== true;
+        return Number(rightIsIndeterminate) - Number(leftIsIndeterminate);
+      });
+      const selectedCandidate = active[0];
+      if (selectedCandidate === undefined) return { kind: 'clear' };
+      const selected = selectedCandidate.record;
+      const ageMs = nowMs - selected.signaledAtMs;
+      const timing = { signal: selected.signal, ageMs, retryInMs: cooldownMs - ageMs };
+      return selected.version === 1 && selected.accepted !== true
+        ? { kind: 'foreign-signal-attempt', ...timing }
+        : { kind: 'accepted-signal', ...timing };
     },
     write: (record) => {
       try {
@@ -475,26 +523,25 @@ function assertSignalCooldown(opts: HandoffOptions, incumbent: IncumbentIdentity
   if (ledger === undefined) {
     return;
   }
-  const last = ledger.read(opts.socketPath, incumbent);
-  if (last === null) {
-    return;
-  }
   const cooldownMs = opts.signalCooldownMs ?? DEFAULT_SIGNAL_COOLDOWN_MS;
-  const ageMs = opts.runtime.time.now() - last.signaledAtMs;
-  if (ageMs >= cooldownMs) {
-    return;
-  }
-  if (last.version === 1 && last.accepted !== true) {
+  const disposition = ledger.cooldownDisposition({
+    socketPath: opts.socketPath,
+    incumbent,
+    nowMs: opts.runtime.time.now(),
+    cooldownMs,
+  });
+  if (disposition.kind === 'clear') return;
+  if (disposition.kind === 'foreign-signal-attempt') {
     refuseHandoff(
       `Refusing ${signal} for pid=${incumbent.pid}`,
       'legacy-signal-attempt-indeterminate',
-      `legacy ${last.signal} attempt was ${ageMs}ms ago; retry in ${cooldownMs - ageMs}ms`,
+      `legacy ${disposition.signal} attempt was ${disposition.ageMs}ms ago; retry in ${disposition.retryInMs}ms`,
     );
   }
   refuseHandoff(
     `Refusing repeated ${signal} for pid=${incumbent.pid}`,
     'signal-cooldown-active',
-    `last ${last.signal} was ${ageMs}ms ago; retry in ${cooldownMs - ageMs}ms`,
+    `last ${disposition.signal} was ${disposition.ageMs}ms ago; retry in ${disposition.retryInMs}ms`,
   );
 }
 
