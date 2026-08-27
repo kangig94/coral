@@ -24,6 +24,7 @@ import {
   reaperHandoffRotateParamsSchema,
 } from '../../../provider-proxy/protocol.js';
 import type { ControlClient, ProviderEventHandler } from '../../../provider-proxy/control-client.js';
+import type { HeartbeatObservation } from '../../../provider-proxy/heartbeat-observation.js';
 import { runtimeControlTimer, type RoleConnectRetryOptions } from '../../../provider-proxy/role-spawn.js';
 import {
   MAX_PROXY_RECORDED_PROVIDER_ROOTS,
@@ -226,6 +227,18 @@ export class ProviderProxySetInheritanceCorruptionError extends Error {
   }
 }
 
+function heartbeatObservationAvailabilityReason(observation: HeartbeatObservation): string {
+  switch (observation.kind) {
+    case 'reply':
+      return observation.reply.kind;
+    case 'no-response-before-deadline':
+    case 'channel-fault':
+      return observation.kind;
+    case 'locally-unsent':
+      return `${observation.kind}:${observation.stage}`;
+  }
+}
+
 export function providerProxySetAvailabilityReason(incident: ProviderProxySetAvailabilityIncident): string {
   switch (incident.kind) {
     case 'role-control-unavailable':
@@ -244,9 +257,7 @@ export function providerProxySetAvailabilityReason(incident: ProviderProxySetAva
         incident.kind,
         incident.role,
         incident.method,
-        incident.incidentReason,
-        incident.origin ?? 'reply-undecodable',
-        incident.controlCode ?? 'reply-undecodable',
+        heartbeatObservationAvailabilityReason(incident.observation),
       ].join(':');
     case 'recovery-deadline':
       return `${incident.kind}:${incident.timeoutMs}`;
@@ -825,7 +836,8 @@ export function createProviderProxySetInheritance(
       if (
         deadline.kind === 'unavailable' &&
         deadline.incident.kind === 'role-heartbeat-indeterminate' &&
-        deadline.incident.incidentReason === 'method-not-found'
+        deadline.incident.observation.kind === 'reply' &&
+        deadline.incident.observation.reply.kind === 'method-not-found'
       ) {
         return {
           kind: 'protocol-incompatible',

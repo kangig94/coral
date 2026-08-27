@@ -57,9 +57,10 @@ const mockedCreateSetAuthority = vi.mocked(createProviderProxySetAuthority);
 
 function passiveClient(): ControlClient {
   return {
-    exchange: () => {
-      throw new Error('unexpected control exchange');
-    },
+    exchange: async () => ({
+      kind: 'response',
+      response: { kind: 'result', value: { state: 'active', nextHeartbeatChallenge: 'next' } },
+    }),
     call: async () => ({ state: 'active', nextHeartbeatChallenge: 'next' }),
     faulted: new Promise<never>(() => undefined),
     onFault: () => () => undefined,
@@ -255,9 +256,9 @@ describe('createProviderProxyAcquisitionSteps', () => {
       reaper: passiveClient(),
     };
     let reaperHeartbeats = 0;
-    clients.reaper.call = async () => {
+    clients.reaper.exchange = async () => {
       reaperHeartbeats += 1;
-      throw new ControlClientError(
+      const error = new ControlClientError(
         'control_call_failed',
         'Heartbeat echo was not accepted (teardown-latched).',
         'remote-response',
@@ -269,6 +270,8 @@ describe('createProviderProxyAcquisitionSteps', () => {
           heartbeatRefusal: { reason: 'teardown-latched', nextHeartbeatChallenge: null },
         },
       );
+      if (error.remoteFailure === null) throw new Error('test refusal lacks remote failure');
+      return { kind: 'response', response: { kind: 'refusal', failure: error.remoteFailure, error } };
     };
     mockedEstablishRoleControl.mockImplementation(async (opened, _timer, _retry, plan) => {
       const role = plan.role;

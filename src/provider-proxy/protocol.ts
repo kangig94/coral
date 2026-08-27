@@ -65,10 +65,6 @@ export const controlHeartbeatParamsSchema = z
   .object({ controlEpoch: controlEpochSchema, heartbeatChallenge: heartbeatChallengeSchema })
   .strict();
 
-export const controlHeartbeatResultSchema = z
-  .object({ state: z.literal('active'), nextHeartbeatChallenge: heartbeatChallengeSchema })
-  .strict();
-
 export const controlPairParamsSchema = z.object({ pairingSecret: z.string().min(1) }).strict();
 export const controlPairResultSchema = z.object({ state: z.literal('paired') }).strict();
 

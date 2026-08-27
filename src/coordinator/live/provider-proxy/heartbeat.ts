@@ -1,51 +1,31 @@
 import { backendLog } from '../../../infra/backend-log.js';
 import { errorMessage } from '../../../infra/error-format.js';
 import { PROXY_CONTROL_HEARTBEAT_MS } from '../../../provider-proxy/orphan-deadline.js';
-import {
-  PROXY_CONTROL_RPC_TIMEOUT_MS,
-  controlHeartbeatParamsSchema,
-  controlHeartbeatResultSchema,
-} from '../../../provider-proxy/protocol.js';
+import { PROXY_CONTROL_RPC_TIMEOUT_MS, controlHeartbeatParamsSchema } from '../../../provider-proxy/protocol.js';
 import type { Runtime } from '../../../runtime/ports.js';
-import { ControlClientError, type ControlClient } from '../../../provider-proxy/control-client.js';
+import type { ControlClient } from '../../../provider-proxy/control-client.js';
+import {
+  applyLocalFailure,
+  heartbeatObservationFromExchange,
+  type HeartbeatObservation,
+} from '../../../provider-proxy/heartbeat-observation.js';
 import type {
   ProviderProxyAuthorityFaultLatch,
-  ProviderProxyHeartbeatIncidentReason,
   ProviderProxyHeartbeatMethod,
   ProviderProxyHeartbeatTerminalReason,
   ProviderProxyRole,
 } from '../../services/provider-proxy-authority-fault.js';
 
-/**
- * The peer answered, but this build could not decode the reply into `controlHeartbeatResultSchema` — a
- * disposition about what came back over the wire, never about whether this process could ask. Thrown by
- * `heartbeatOnce` so `heartbeatFailureDisposition` can tell it apart from a schema failure on the request side,
- * which never reaches the wire at all.
- */
-export class HeartbeatReplyUndecodableError extends Error {
-  constructor(cause: unknown) {
-    super('provider_proxy_heartbeat_reply_undecodable', { cause });
-    this.name = 'HeartbeatReplyUndecodableError';
-    Object.setPrototypeOf(this, HeartbeatReplyUndecodableError.prototype);
-  }
-}
-
-/** Sends one heartbeat and returns the next challenge. Exported so `role-control.ts`'s `establishRoleControl`
- *  can send the first heartbeat immediately after a role opens, on the identical call `startHeartbeatLoop`
- *  below uses on every later tick. */
+/** Sends one heartbeat through the transport's provenance-preserving exchange surface. */
 export async function heartbeatOnce(
   client: ControlClient,
   method: string,
   controlEpoch: number,
   heartbeatChallenge: string,
-): Promise<{ nextHeartbeatChallenge: string }> {
+): Promise<HeartbeatObservation> {
   const params = controlHeartbeatParamsSchema.parse({ controlEpoch, heartbeatChallenge });
-  const raw = await client.call(method, params, PROXY_CONTROL_RPC_TIMEOUT_MS);
-  try {
-    return controlHeartbeatResultSchema.parse(raw);
-  } catch (error: unknown) {
-    throw new HeartbeatReplyUndecodableError(error);
-  }
+  const exchange = await client.exchange(method, params, PROXY_CONTROL_RPC_TIMEOUT_MS);
+  return heartbeatObservationFromExchange(exchange);
 }
 
 export type HeartbeatLoop = Readonly<{ stop(): void }>;
@@ -80,58 +60,14 @@ type HeartbeatLoopState =
   | Readonly<{ kind: 'in-flight'; challenge: string; attempt: symbol; schedulerLatenessMs: number }>
   | Readonly<{ kind: 'stopped' }>;
 
-export type HeartbeatFailureDisposition =
-  | Readonly<{
-      kind: 'retry';
-      challenge: string;
-      incidentReason: ProviderProxyHeartbeatIncidentReason;
-    }>
-  | Readonly<{ kind: 'terminal'; terminalReason: ProviderProxyHeartbeatTerminalReason; error: ControlClientError }>
-  | Readonly<{
-      kind: 'protocol-incompatible';
-      incidentReason: 'method-not-found';
-      error: ControlClientError;
-    }>
-  /** Not a disposition about the peer: this process could not construct or send the call at all. Retrying
-   *  reproduces the identical failure, so a caller must treat this as decisive rather than folding it into a
-   *  hold. */
-  | Readonly<{ kind: 'local-failure'; error: unknown }>;
-
-export function heartbeatFailureDisposition(error: unknown, challenge: string): HeartbeatFailureDisposition {
-  if (error instanceof HeartbeatReplyUndecodableError) {
-    return { kind: 'retry', challenge, incidentReason: 'unclassified' };
-  }
-  if (!(error instanceof ControlClientError)) {
-    return { kind: 'local-failure', error };
-  }
-  const refusal = error.remoteFailure?.kind === 'json-rpc-error' ? error.remoteFailure.heartbeatRefusal : null;
-  if (refusal?.reason === 'challenge-mismatch') {
-    return {
-      kind: 'retry',
-      challenge: refusal.nextHeartbeatChallenge,
-      incidentReason: 'challenge-resynchronized',
-    };
-  }
-  if (refusal?.reason === 'teardown-latched') {
-    return { kind: 'terminal', terminalReason: 'teardown-latched', error };
-  }
-  if (error.remoteFailure?.kind === 'json-rpc-error' && error.remoteFailure.protocolCode === 'method_not_found') {
-    return { kind: 'protocol-incompatible', incidentReason: 'method-not-found', error };
-  }
-  if (error.origin !== 'remote-response') {
-    return { kind: 'retry', challenge, incidentReason: 'unanswered' };
-  }
-  return { kind: 'retry', challenge, incidentReason: 'unclassified' };
-}
-
 function startHeartbeatLoop(
   client: ControlClient,
   method: string,
   runtime: Runtime,
   controlEpoch: number,
   firstNextChallenge: string,
-  onIncident: (error: unknown, reason: ProviderProxyHeartbeatIncidentReason, schedulerLatenessMs: number) => void,
-  onAccepted: () => void,
+  onObservation: (observation: HeartbeatObservation, schedulerLatenessMs: number) => void,
+  onChannelFault: (error: Extract<HeartbeatObservation, { kind: 'channel-fault' }>['error']) => void,
   onTerminal: (error: unknown, reason: ProviderProxyHeartbeatTerminalReason) => void,
 ): HeartbeatLoop {
   let state: HeartbeatLoopState = { kind: 'idle', challenge: firstNextChallenge };
@@ -150,31 +86,52 @@ function startHeartbeatLoop(
     pendingSchedulerLatenessMs = 0;
     state = { kind: 'in-flight', challenge, attempt, schedulerLatenessMs };
     void heartbeatOnce(client, method, controlEpoch, challenge).then(
-      (beat) => {
-        if (state.kind !== 'in-flight' || state.attempt !== attempt) return;
-        pendingSchedulerLatenessMs = 0;
-        state = { kind: 'idle', challenge: beat.nextHeartbeatChallenge };
-        onAccepted();
-      },
-      (error: unknown) => {
+      (observation) => {
         if (state.kind !== 'in-flight' || state.attempt !== attempt) return;
         const observedSchedulerLatenessMs = state.schedulerLatenessMs + pendingSchedulerLatenessMs;
         pendingSchedulerLatenessMs = 0;
-        const disposition = heartbeatFailureDisposition(error, challenge);
-        if (disposition.kind === 'retry') {
-          state = { kind: 'idle', challenge: disposition.challenge };
-          onIncident(error, disposition.incidentReason, observedSchedulerLatenessMs);
+        if (observation.kind === 'reply') {
+          if (observation.reply.kind === 'teardown-latched') {
+            state = { kind: 'stopped' };
+            runtime.time.clearInterval(handle);
+            onObservation(observation, observedSchedulerLatenessMs);
+            onTerminal(observation.reply.error, 'teardown-latched');
+            return;
+          }
+          if (observation.reply.kind === 'method-not-found') {
+            state = { kind: 'stopped' };
+            runtime.time.clearInterval(handle);
+            onObservation(observation, observedSchedulerLatenessMs);
+            return;
+          }
+          const nextChallenge =
+            observation.reply.kind === 'accepted' || observation.reply.kind === 'challenge-mismatch'
+              ? observation.reply.nextChallenge
+              : challenge;
+          state = { kind: 'idle', challenge: nextChallenge };
+          onObservation(observation, observedSchedulerLatenessMs);
+          return;
+        }
+        if (observation.kind === 'no-response-before-deadline') {
+          state = { kind: 'idle', challenge };
+          onObservation(observation, observedSchedulerLatenessMs);
           return;
         }
         state = { kind: 'stopped' };
         runtime.time.clearInterval(handle);
-        if (disposition.kind === 'protocol-incompatible') {
-          onIncident(disposition.error, disposition.incidentReason, observedSchedulerLatenessMs);
+        const localFailure = applyLocalFailure(observation);
+        onObservation(observation, observedSchedulerLatenessMs);
+        if (localFailure.effect === 'channel-fault') {
+          onChannelFault(localFailure.error);
           return;
         }
-        // `local-failure` is not a peer disposition, but this loop still has only one way to stop and report a
-        // decisive end — the same terminal path `teardown-latched` uses, distinguished by its own reason.
-        onTerminal(disposition.error, disposition.kind === 'terminal' ? disposition.terminalReason : 'local-failure');
+        onTerminal(localFailure.error, 'local-failure');
+      },
+      (error: unknown) => {
+        if (state.kind !== 'in-flight' || state.attempt !== attempt) return;
+        state = { kind: 'stopped' };
+        runtime.time.clearInterval(handle);
+        onTerminal(error, 'local-failure');
       },
     );
   };
@@ -207,17 +164,16 @@ export function createProviderProxyAuthorityHeartbeatAssembly(
         runtime,
         session.controlEpoch,
         session.nextHeartbeatChallenge,
-        (error, incidentReason, schedulerLatenessMs) => {
+        (observation, schedulerLatenessMs) => {
           faults.reportIncident({
-            kind: 'heartbeat-indeterminate',
+            kind: 'heartbeat-observation',
             role,
             method,
-            incidentReason,
+            observation,
             schedulerLatenessMs,
-            error,
           });
         },
-        () => faults.reportIncident({ kind: 'heartbeat-accepted', role, method }),
+        (error) => faults.latch({ kind: 'control-channel-fault', role, error }),
         (error, terminalReason) => {
           faults.latch({ kind: 'heartbeat-failed', role, method, terminalReason, error });
           const observed =

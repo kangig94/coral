@@ -8,7 +8,6 @@ import {
   createFrameReader,
   decodeProxyControlFrame,
   encodeProxyControlFrame,
-  heartbeatChallengeSchema,
   providerEventRequestSchema,
   providerEventResultSchema,
   type ProviderEventRequest,
@@ -16,6 +15,7 @@ import {
   type ProxyControlJsonRpcMessage,
   type ProxyControlProtocolErrorCode,
 } from './protocol.js';
+import { heartbeatRefusalFrom, type HeartbeatRefusal } from './heartbeat-observation.js';
 
 /**
  * Answers the one inbound method this client ever serves: `provider.event.v1`, the proxy's own push of one
@@ -35,17 +35,13 @@ export type ControlClientErrorCode = 'control_client_connect_failed' | 'control_
 
 export type ControlClientErrorOrigin = 'timeout' | 'write' | 'closed' | 'remote-response';
 
-export type ControlClientHeartbeatRefusal =
-  | Readonly<{ reason: 'challenge-mismatch'; nextHeartbeatChallenge: string }>
-  | Readonly<{ reason: 'teardown-latched'; nextHeartbeatChallenge: null }>;
-
 export type ControlClientRemoteFailure =
   | Readonly<{
       kind: 'json-rpc-error';
       jsonRpcCode: number;
       protocolCode: ProxyControlProtocolErrorCode | null;
       admissionReason: 'control-active' | 'invalid-state' | 'teardown-latched' | null;
-      heartbeatRefusal: ControlClientHeartbeatRefusal | null;
+      heartbeatRefusal: HeartbeatRefusal | null;
     }>
   | Readonly<{ kind: 'invalid-frame' }>;
 
@@ -85,22 +81,6 @@ const admissionRefusalDataSchema = z
     reason: z.enum(['control-active', 'invalid-state', 'teardown-latched']),
   })
   .strict();
-
-const heartbeatRefusalDataSchema = z.discriminatedUnion('heartbeatRefusal', [
-  z
-    .object({
-      code: z.literal('invalid_request'),
-      heartbeatRefusal: z.literal('challenge-mismatch'),
-      nextHeartbeatChallenge: heartbeatChallengeSchema,
-    })
-    .strict(),
-  z
-    .object({
-      code: z.literal('invalid_request'),
-      heartbeatRefusal: z.literal('teardown-latched'),
-    })
-    .strict(),
-]);
 
 export class ControlClientError extends Error {
   readonly code: ControlClientErrorCode;
@@ -161,15 +141,6 @@ function admissionReasonFrom(
   if (jsonRpcCode !== JSON_RPC_INVALID_REQUEST) return null;
   const parsed = admissionRefusalDataSchema.safeParse(data);
   return parsed.success ? parsed.data.reason : null;
-}
-
-function heartbeatRefusalFrom(jsonRpcCode: number, data: unknown): ControlClientHeartbeatRefusal | null {
-  if (jsonRpcCode !== JSON_RPC_INVALID_REQUEST) return null;
-  const parsed = heartbeatRefusalDataSchema.safeParse(data);
-  if (!parsed.success) return null;
-  return parsed.data.heartbeatRefusal === 'challenge-mismatch'
-    ? { reason: parsed.data.heartbeatRefusal, nextHeartbeatChallenge: parsed.data.nextHeartbeatChallenge }
-    : { reason: parsed.data.heartbeatRefusal, nextHeartbeatChallenge: null };
 }
 
 export interface ControlClient {

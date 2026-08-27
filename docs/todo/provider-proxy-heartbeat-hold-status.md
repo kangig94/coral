@@ -1,9 +1,8 @@
 # TODO — project live provider-proxy heartbeat holds into operator status
 
-**Status**: open only across coordinator restart. The lifecycle retains separate silence and
-answered-but-unusable holds. Any answer ends the
-exact role-and-method silence window: `unclassified` preserves and advances answered-but-unusable evidence,
-while an accepted echo or current-tenancy challenge resynchronization clears both holds. Silence may end in the
+**Status**: open only across coordinator restart. The lifecycle retains one exclusive `clear | silence |
+answered-unusable` window per role and method. An unusable answer replaces silence with answered-unusable
+evidence, while an accepted echo or current-tenancy challenge resynchronization clears the window. Silence may end in the
 coordinator's bounded `heartbeat_hold_exhausted` stop-and-reap decision. Answered-but-unusable and protocol
 incompatibility either await independent containment absence while claims or deadline acceptance remain, or
 release a no-claim set to roles whose deadline acknowledgement was verified. The current process projects those
@@ -13,7 +12,7 @@ dies.
 ## What exists
 
 `ProviderProxySetLifecycle` keys each live set by its exact `ProviderProxySetIdentity` and keeps active
-preservation episodes in the established slot. Its in-memory status projection retains the set address, role,
+preservation episodes and the exclusive evidence window in the established slot. Its in-memory status projection retains the set address, role,
 method, incident reason, disposition, and current wait. `coral-cli backend status` renders that projection while
 the coordinator lives, including a no-claim release after the represented slot has been dropped.
 

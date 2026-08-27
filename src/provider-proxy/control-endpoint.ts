@@ -5,7 +5,6 @@ import { truncate } from '../infra/text.js';
 import {
   ProxyControlProtocolError,
   controlHeartbeatParamsSchema,
-  controlHeartbeatResultSchema,
   controlPairParamsSchema,
   controlPairResultSchema,
   createFrameReader,
@@ -13,6 +12,7 @@ import {
   encodeProxyControlFrame,
   type ProxyControlJsonRpcMessage,
 } from './protocol.js';
+import { acceptedHeartbeatResult } from './heartbeat-observation.js';
 
 /** JSON-RPC error codes this endpoint reports. Reserved-range values follow the JSON-RPC 2.0 spec. */
 const JSON_RPC_INVALID_REQUEST = -32_600;
@@ -406,7 +406,7 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
     const becameActive = !live.active;
     live.active = true;
     if (becameActive) observer.onControlActive?.(live.epoch);
-    return controlHeartbeatResultSchema.parse({ state: 'active', nextHeartbeatChallenge: recorded.nextChallenge });
+    return acceptedHeartbeatResult(recorded.nextChallenge);
   };
 
   const dispatch = async (socket: Socket, method: string, params: unknown): Promise<unknown> => {

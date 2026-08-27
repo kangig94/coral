@@ -1,4 +1,5 @@
 import type { ControlClient, ControlClientError } from '../../provider-proxy/control-client.js';
+import type { HeartbeatObservation } from '../../provider-proxy/heartbeat-observation.js';
 import type { ProxyControlProtocolErrorCode } from '../../provider-proxy/protocol.js';
 
 export type ProviderOperationSagaPhase =
@@ -35,11 +36,6 @@ export type ProviderProxyHeartbeatMethod = 'control.heartbeat.v1' | 'guardian.he
 /** `teardown-latched` is the endpoint's own decisive refusal. `local-failure` is this process's own — it
  *  could not construct or send a heartbeat call at all, so nothing about the peer was ever in question. */
 export type ProviderProxyHeartbeatTerminalReason = 'teardown-latched' | 'local-failure';
-export type ProviderProxyHeartbeatIncidentReason =
-  | 'unanswered'
-  | 'challenge-resynchronized'
-  | 'unclassified'
-  | 'method-not-found';
 
 export type ProviderProxyAuthorityFault =
   | Readonly<{
@@ -66,23 +62,18 @@ export type ProviderProxyAuthorityIncident =
       policy: RetrySafeControlCallPolicy;
       error: unknown;
     }>
-  | Readonly<{
-      kind: 'heartbeat-indeterminate';
-      role: ProviderProxyRole;
-      method: ProviderProxyHeartbeatMethod;
-      incidentReason: ProviderProxyHeartbeatIncidentReason;
-      schedulerLatenessMs: number;
-      error: unknown;
-    }>;
+  | ProviderProxyHeartbeatObservation;
 
-export type ProviderProxyHeartbeatAccepted = Readonly<{
-  kind: 'heartbeat-accepted';
+export type ProviderProxyHeartbeatObservation = Readonly<{
+  kind: 'heartbeat-observation';
   role: ProviderProxyRole;
   method: ProviderProxyHeartbeatMethod;
+  observation: HeartbeatObservation;
+  schedulerLatenessMs: number;
 }>;
 
 /** Nothing delivered on this channel may consume terminal fault state. */
-export type ProviderProxyAuthorityObservation = ProviderProxyAuthorityIncident | ProviderProxyHeartbeatAccepted;
+export type ProviderProxyAuthorityObservation = ProviderProxyAuthorityIncident;
 
 export type ProviderProxyRoleClients<TClient> = Readonly<{
   proxy: TClient;
@@ -101,17 +92,23 @@ export interface ProviderProxyAuthorityFaultLatch {
 
 type PendingIncident = {
   incident: ProviderProxyAuthorityIncident;
-  accepted: ProviderProxyHeartbeatAccepted | null;
+  accepted: ProviderProxyHeartbeatObservation | null;
 };
 
 function incidentKey(incident: ProviderProxyAuthorityIncident): string {
-  return incident.kind === 'heartbeat-indeterminate'
+  return incident.kind === 'heartbeat-observation'
     ? JSON.stringify([incident.role, incident.method])
     : JSON.stringify([incident.kind, incident.policy.method]);
 }
 
-function acceptedHeartbeatKey(accepted: ProviderProxyHeartbeatAccepted): string {
-  return JSON.stringify([accepted.role, accepted.method]);
+function isAcceptedHeartbeat(
+  observation: ProviderProxyAuthorityObservation,
+): observation is ProviderProxyHeartbeatObservation {
+  return (
+    observation.kind === 'heartbeat-observation' &&
+    observation.observation.kind === 'reply' &&
+    observation.observation.reply.kind === 'accepted'
+  );
 }
 
 export function createProviderProxyAuthorityFaultLatch(): ProviderProxyAuthorityFaultLatch {
@@ -150,9 +147,9 @@ export function createProviderProxyAuthorityFaultLatch(): ProviderProxyAuthority
         for (const listener of incidentListeners) listener(observation);
         return;
       }
-      if (observation.kind === 'heartbeat-accepted') {
-        const pending = pendingIncidents.get(acceptedHeartbeatKey(observation));
-        if (pending !== undefined && pending.incident.kind === 'heartbeat-indeterminate') {
+      if (isAcceptedHeartbeat(observation)) {
+        const pending = pendingIncidents.get(incidentKey(observation));
+        if (pending !== undefined && pending.incident.kind === 'heartbeat-observation') {
           pending.accepted = observation;
         }
         return;

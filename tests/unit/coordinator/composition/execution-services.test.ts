@@ -22,7 +22,8 @@ import {
 import { ProviderProxySetLifecycleRef } from '#src/coordinator/services/provider-proxy-set/lifecycle-ref.js';
 import { backendLog } from '#src/infra/backend-log.js';
 import { JobStore } from '#src/jobs/store.js';
-import type { ControlClient } from '#src/provider-proxy/control-client.js';
+import { ControlClientError, type ControlClient } from '#src/provider-proxy/control-client.js';
+import { heartbeatObservationFromExchange } from '#src/provider-proxy/heartbeat-observation.js';
 import { CURRENT_HANDOFF_CAPSULE_VERSION, type HandoffCapsuleV3 } from '#src/provider-proxy/handoff-capsule.js';
 import {
   CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV,
@@ -960,12 +961,15 @@ describe('execution services provider-proxy heartbeat-hold composition', () => {
 
     const incident = (error: string): void =>
       faults.reportIncident({
-        kind: 'heartbeat-indeterminate',
+        kind: 'heartbeat-observation',
         role: 'guardian',
         method: 'guardian.heartbeat.v1',
-        incidentReason: 'unanswered',
+        observation: heartbeatObservationFromExchange({
+          kind: 'no-response',
+          cause: 'timeout',
+          error: new ControlClientError('control_call_failed', error, 'timeout'),
+        }),
         schedulerLatenessMs: 0,
-        error,
       });
 
     incident('first');

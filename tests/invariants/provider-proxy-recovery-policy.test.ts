@@ -627,7 +627,6 @@ function rejectionNodeInventory(references: readonly Reference[]): string[] {
 }
 
 const EXPECTED_REJECTION_NODE_INVENTORY = [
-  'src/coordinator/live/provider-proxy/role-control.ts :: establishHeartbeat :: catch#1 :: calls=[heartbeatFailureDisposition] assignments=[challenge, resynchronized]',
   'src/coordinator/live/provider-proxy/role-control.ts :: establishRoleControl :: catch#1 :: calls=[classifyRoleControlFailure] assignments=[]',
   'src/coordinator/live/provider-proxy/role-control.ts :: establishRoleControl :: catch#2 :: calls=[classifyRoleControlFailure] assignments=[]',
   'src/coordinator/services/provider-operation-reconciler.ts :: #attemptExecutingAttachment :: catch#1 :: calls=[readProviderOperation, this.#deps.getProgressStore().getDb, this.#deps.getProgressStore, this.#recordRetry] assignments=[]',

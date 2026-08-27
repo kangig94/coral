@@ -59,6 +59,29 @@ vi.mock('#src/provider-proxy/role-spawn.js', async (importOriginal) => {
     }
     return {
       ...client,
+      async exchange(method: string, params: unknown, timeoutMs: number) {
+        if (method === 'guardian.heartbeat.v1') {
+          bootstrapTimingHarness.heartbeatCalls += 1;
+          if (bootstrapTimingHarness.heartbeatCalls === 1) {
+            bootstrapTimingHarness.nowMs = bootstrapTimingHarness.initialHeartbeatAcceptanceMs;
+          }
+        }
+        const outcome = await client.exchange(method, params, timeoutMs);
+        if (method !== 'guardian.heartbeat.v1') return outcome;
+        // An exchange resolves for a refusal too, so the event trail reads the variant rather than settlement.
+        const accepted = outcome.kind === 'response' && outcome.response.kind === 'result';
+        const ordinal = bootstrapTimingHarness.heartbeatCalls;
+        const detail =
+          outcome.kind === 'response' && outcome.response.kind === 'refusal'
+            ? `:${String(outcome.response.error)}`
+            : `:${outcome.kind}`;
+        bootstrapTimingHarness.events.push(
+          ordinal === 1
+            ? `initial-heartbeat-${accepted ? 'accepted' : `rejected${detail}`}`
+            : `recurring-heartbeat-${accepted ? `settled:${ordinal}` : `rejected${detail}`}`,
+        );
+        return outcome;
+      },
       async call(method: string, params: unknown, timeoutMs: number): Promise<unknown> {
         if (method === 'guardian.open.v1') {
           bootstrapTimingHarness.nowMs = bootstrapTimingHarness.openingChallengeIssuedAtMs;

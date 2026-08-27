@@ -341,9 +341,16 @@ async function startProxy(
   };
   let heartbeatChallenge = opened.heartbeatChallenge;
   if (options.skipInitialHeartbeat !== true) {
-    heartbeatChallenge = (
-      await heartbeatOnce(control, 'control.heartbeat.v1', opened.controlEpoch, opened.heartbeatChallenge)
-    ).nextHeartbeatChallenge;
+    const observation = await heartbeatOnce(
+      control,
+      'control.heartbeat.v1',
+      opened.controlEpoch,
+      opened.heartbeatChallenge,
+    );
+    if (observation.kind !== 'reply' || observation.reply.kind !== 'accepted') {
+      throw new Error(`opening heartbeat was not accepted: ${observation.kind}`);
+    }
+    heartbeatChallenge = observation.reply.nextChallenge;
   }
 
   const advanceWithHeartbeat = async (ms: number): Promise<void> => {
@@ -353,9 +360,16 @@ async function startProxy(
       elapsed += BigInt(stepMs);
       remainingMs -= stepMs;
       if (stepMs === PROXY_CONTROL_HEARTBEAT_MS) {
-        heartbeatChallenge = (
-          await heartbeatOnce(control, 'control.heartbeat.v1', opened.controlEpoch, heartbeatChallenge)
-        ).nextHeartbeatChallenge;
+        const observation = await heartbeatOnce(
+          control,
+          'control.heartbeat.v1',
+          opened.controlEpoch,
+          heartbeatChallenge,
+        );
+        if (observation.kind !== 'reply' || observation.reply.kind !== 'accepted') {
+          throw new Error(`periodic heartbeat was not accepted: ${observation.kind}`);
+        }
+        heartbeatChallenge = observation.reply.nextChallenge;
       }
     }
   };

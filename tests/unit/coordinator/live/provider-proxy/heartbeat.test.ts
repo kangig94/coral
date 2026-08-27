@@ -9,40 +9,54 @@ import {
 import type {
   ProviderProxyAuthorityFault,
   ProviderProxyAuthorityFaultLatch,
-  ProviderProxyAuthorityIncident,
-  ProviderProxyHeartbeatAccepted,
+  ProviderProxyHeartbeatObservation,
   ProviderProxyRole,
 } from '#src/coordinator/services/provider-proxy-authority-fault.js';
-import { ControlClientError, type ControlClient } from '#src/provider-proxy/control-client.js';
+import { ControlClientError, type ControlClient, type ControlExchange } from '#src/provider-proxy/control-client.js';
 import { PROXY_CONTROL_HEARTBEAT_MS } from '#src/provider-proxy/orphan-deadline.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { flushMicrotasks, VirtualTime } from '#tools/simulation/core/virtual-time.js';
 
 type RecordedCall = Readonly<{ controlEpoch: number; heartbeatChallenge: string }>;
 
-/** Answers each `call` with the next scripted reply — a challenge string to echo `state: 'active'`, or an
- *  `Error` to reject with. The last entry repeats once exhausted, so a test can assert on ticks past its
+/** Answers each `exchange` with the next scripted transport outcome. A challenge string is shorthand for an
+ *  accepted result. The last entry repeats once exhausted, so a test can assert on ticks past its
  *  scripted list without needing one entry per tick. */
-function scriptedClient(replies: readonly (string | Error)[]): { client: ControlClient; calls: RecordedCall[] } {
+function scriptedClient(replies: readonly (string | ControlExchange)[]): {
+  client: ControlClient;
+  calls: RecordedCall[];
+} {
   const calls: RecordedCall[] = [];
   let index = 0;
   const client: ControlClient = {
-    exchange: () => {
-      throw new Error('unexpected control exchange');
-    },
-    call: (_method, params) => {
+    exchange: (_method, params): Promise<ControlExchange> => {
       calls.push(params as RecordedCall);
       const reply = replies[Math.min(index, replies.length - 1)];
       index += 1;
-      return reply instanceof Error
-        ? Promise.reject(reply)
-        : Promise.resolve({ state: 'active', nextHeartbeatChallenge: reply });
+      return Promise.resolve(
+        typeof reply === 'string'
+          ? {
+              kind: 'response',
+              response: { kind: 'result', value: { state: 'active', nextHeartbeatChallenge: reply } },
+            }
+          : reply,
+      );
     },
+    call: () => Promise.reject(new Error('unexpected compatibility call')),
     faulted: new Promise<never>(() => undefined),
     onFault: () => () => undefined,
     close: () => {},
   };
   return { client, calls };
+}
+
+function refusal(error: ControlClientError): ControlExchange {
+  if (error.remoteFailure === null) throw new Error('test refusal requires a remote failure');
+  return { kind: 'response', response: { kind: 'refusal', failure: error.remoteFailure, error } };
+}
+
+function noResponse(error: ControlClientError): ControlExchange {
+  return { kind: 'no-response', cause: 'timeout', error };
 }
 
 function runtimeWithTime(time: VirtualTime): Runtime {
@@ -87,12 +101,12 @@ function startAll(
 function recordingFaultLatch(): {
   latch: ProviderProxyAuthorityFaultLatch;
   faults: ProviderProxyAuthorityFault[];
-  incidents: ProviderProxyAuthorityIncident[];
-  accepted: ProviderProxyHeartbeatAccepted[];
+  incidents: ProviderProxyHeartbeatObservation[];
+  accepted: ProviderProxyHeartbeatObservation[];
 } {
   const faults: ProviderProxyAuthorityFault[] = [];
-  const incidents: ProviderProxyAuthorityIncident[] = [];
-  const accepted: ProviderProxyHeartbeatAccepted[] = [];
+  const incidents: ProviderProxyHeartbeatObservation[] = [];
+  const accepted: ProviderProxyHeartbeatObservation[] = [];
   return {
     latch: {
       faulted: new Promise<never>(() => undefined),
@@ -100,8 +114,12 @@ function recordingFaultLatch(): {
       latch: (fault) => faults.push(fault),
       onFault: () => () => undefined,
       reportIncident: (observation) => {
-        if (observation.kind === 'heartbeat-accepted') accepted.push(observation);
-        else incidents.push(observation);
+        if (observation.kind !== 'heartbeat-observation') return;
+        if (observation.observation.kind === 'reply' && observation.observation.reply.kind === 'accepted') {
+          accepted.push(observation);
+        } else {
+          incidents.push(observation);
+        }
       },
       onIncident: () => () => undefined,
     },
@@ -147,12 +165,15 @@ describe('provider proxy authority heartbeats', () => {
   });
 
   it('rejects an invalid heartbeat before the untyped control client can write it', async () => {
-    const call = vi.fn(async () => ({ state: 'active', nextHeartbeatChallenge: 'challenge-1' }));
+    const exchange = vi.fn(
+      async (): Promise<ControlExchange> => ({
+        kind: 'response',
+        response: { kind: 'result', value: { state: 'active', nextHeartbeatChallenge: 'challenge-1' } },
+      }),
+    );
     const client: ControlClient = {
-      exchange: () => {
-        throw new Error('unexpected control exchange');
-      },
-      call,
+      exchange,
+      call: () => Promise.reject(new Error('unexpected compatibility call')),
       faulted: new Promise<never>(() => undefined),
       onFault: () => () => undefined,
       close: () => {},
@@ -160,7 +181,7 @@ describe('provider proxy authority heartbeats', () => {
 
     await expect(heartbeatOnce(client, 'control.heartbeat.v1', -1, 'challenge-0')).rejects.toThrow();
 
-    expect(call).not.toHaveBeenCalled();
+    expect(exchange).not.toHaveBeenCalled();
   });
 
   it('echoes the current challenge on every tick and carries the reply into the next one', async () => {
@@ -190,19 +211,20 @@ describe('provider proxy authority heartbeats', () => {
 
   it('skips interval ticks while an accepted heartbeat response is pending', async () => {
     const time = new VirtualTime();
-    let resolveFirst!: (value: { state: 'active'; nextHeartbeatChallenge: string }) => void;
-    const first = new Promise<{ state: 'active'; nextHeartbeatChallenge: string }>((resolve) => {
+    let resolveFirst!: (value: ControlExchange) => void;
+    const first = new Promise<ControlExchange>((resolve) => {
       resolveFirst = resolve;
     });
-    const call = vi
-      .fn<ControlClient['call']>()
+    const exchange = vi
+      .fn<ControlClient['exchange']>()
       .mockImplementationOnce(() => first)
-      .mockResolvedValue({ state: 'active', nextHeartbeatChallenge: 'challenge-2' });
+      .mockResolvedValue({
+        kind: 'response',
+        response: { kind: 'result', value: { state: 'active', nextHeartbeatChallenge: 'challenge-2' } },
+      });
     const client = {
-      exchange: () => {
-        throw new Error('unexpected control exchange');
-      },
-      call,
+      exchange,
+      call: () => Promise.reject(new Error('unexpected compatibility call')),
       faulted: new Promise<never>(() => undefined),
       onFault: () => () => undefined,
       close: () => {},
@@ -219,16 +241,19 @@ describe('provider proxy authority heartbeats', () => {
     time.tick(PROXY_CONTROL_HEARTBEAT_MS * 3);
     await flushMicrotasks();
 
-    expect(call).toHaveBeenCalledTimes(1);
+    expect(exchange).toHaveBeenCalledTimes(1);
     expect(faults.faults).toEqual([]);
 
-    resolveFirst({ state: 'active', nextHeartbeatChallenge: 'challenge-1' });
+    resolveFirst({
+      kind: 'response',
+      response: { kind: 'result', value: { state: 'active', nextHeartbeatChallenge: 'challenge-1' } },
+    });
     await flushMicrotasks();
     time.tick(PROXY_CONTROL_HEARTBEAT_MS);
     await flushMicrotasks();
 
-    expect(call).toHaveBeenCalledTimes(2);
-    expect(call.mock.calls[1]?.[1]).toEqual({ controlEpoch: 7, heartbeatChallenge: 'challenge-1' });
+    expect(exchange).toHaveBeenCalledTimes(2);
+    expect(exchange.mock.calls[1]?.[1]).toEqual({ controlEpoch: 7, heartbeatChallenge: 'challenge-1' });
     stopAll(heartbeats);
   });
 
@@ -248,9 +273,9 @@ describe('provider proxy authority heartbeats', () => {
         heartbeatRefusal: null,
       });
       const sources: Record<ProviderProxyRole, ReturnType<typeof scriptedClient>> = {
-        proxy: scriptedClient(role === 'proxy' ? [error] : ['proxy-challenge-1']),
-        guardian: scriptedClient(role === 'guardian' ? [error] : ['guardian-challenge-1']),
-        reaper: scriptedClient(role === 'reaper' ? [error] : ['reaper-challenge-1']),
+        proxy: scriptedClient(role === 'proxy' ? [refusal(error)] : ['proxy-challenge-1']),
+        guardian: scriptedClient(role === 'guardian' ? [refusal(error)] : ['guardian-challenge-1']),
+        reaper: scriptedClient(role === 'reaper' ? [refusal(error)] : ['reaper-challenge-1']),
       };
       const faults = recordingFaultLatch();
       const heartbeats = startAll(
@@ -275,20 +300,18 @@ describe('provider proxy authority heartbeats', () => {
       ]);
       expect(faults.incidents).toEqual([
         {
-          kind: 'heartbeat-indeterminate',
+          kind: 'heartbeat-observation',
           role,
           method,
-          incidentReason: 'unclassified',
+          observation: { kind: 'reply', reply: { kind: 'unusable', error } },
           schedulerLatenessMs: 0,
-          error,
         },
         {
-          kind: 'heartbeat-indeterminate',
+          kind: 'heartbeat-observation',
           role,
           method,
-          incidentReason: 'unclassified',
+          observation: { kind: 'reply', reply: { kind: 'unusable', error } },
           schedulerLatenessMs: 0,
-          error,
         },
       ]);
       expect(faults.faults).toEqual([]);
@@ -305,7 +328,7 @@ describe('provider proxy authority heartbeats', () => {
       admissionReason: null,
       heartbeatRefusal: null,
     });
-    const proxy = scriptedClient([methodNotFound]);
+    const proxy = scriptedClient([refusal(methodNotFound)]);
     const guardian = scriptedClient(['guardian-challenge-1']);
     const reaper = scriptedClient(['reaper-challenge-1']);
     const faults = recordingFaultLatch();
@@ -323,12 +346,11 @@ describe('provider proxy authority heartbeats', () => {
     expect(proxy.calls).toEqual([{ controlEpoch: 7, heartbeatChallenge: 'proxy-challenge-0' }]);
     expect(faults.incidents).toEqual([
       {
-        kind: 'heartbeat-indeterminate',
+        kind: 'heartbeat-observation',
         role: 'proxy',
         method: 'control.heartbeat.v1',
-        incidentReason: 'method-not-found',
+        observation: { kind: 'reply', reply: { kind: 'method-not-found', error: methodNotFound } },
         schedulerLatenessMs: 0,
-        error: methodNotFound,
       },
     ]);
     expect(faults.faults).toEqual([]);
@@ -338,7 +360,7 @@ describe('provider proxy authority heartbeats', () => {
   it('reports an unanswered echo as an incident and retries the same challenge on the next tick', async () => {
     const time = new VirtualTime();
     const timeout = new ControlClientError('control_call_failed', 'heartbeat timed out', 'timeout');
-    const proxy = scriptedClient([timeout, 'proxy-challenge-1']);
+    const proxy = scriptedClient([noResponse(timeout), 'proxy-challenge-1']);
     const guardian = scriptedClient(['guardian-challenge-1']);
     const reaper = scriptedClient(['reaper-challenge-1']);
     const faults = recordingFaultLatch();
@@ -359,18 +381,19 @@ describe('provider proxy authority heartbeats', () => {
     ]);
     expect(faults.incidents).toEqual([
       {
-        kind: 'heartbeat-indeterminate',
+        kind: 'heartbeat-observation',
         role: 'proxy',
         method: 'control.heartbeat.v1',
-        incidentReason: 'unanswered',
+        observation: { kind: 'no-response-before-deadline', error: timeout },
         schedulerLatenessMs: 0,
-        error: timeout,
       },
     ]);
     expect(faults.accepted).toContainEqual({
-      kind: 'heartbeat-accepted',
+      kind: 'heartbeat-observation',
       role: 'proxy',
       method: 'control.heartbeat.v1',
+      observation: { kind: 'reply', reply: { kind: 'accepted', nextChallenge: 'proxy-challenge-1' } },
+      schedulerLatenessMs: 0,
     });
     expect(faults.faults).toEqual([]);
     stopAll(heartbeats);
@@ -382,7 +405,7 @@ describe('provider proxy authority heartbeats', () => {
     let schedulerDelayMs = 0;
     vi.spyOn(time, 'monotonicNow').mockImplementation(() => actualMonotonicNow() + BigInt(schedulerDelayMs));
     const timeout = new ControlClientError('control_call_failed', 'heartbeat timed out', 'timeout');
-    const proxy = scriptedClient([timeout]);
+    const proxy = scriptedClient([noResponse(timeout)]);
     const guardian = scriptedClient(['guardian-challenge-1']);
     const reaper = scriptedClient(['reaper-challenge-1']);
     const faults = recordingFaultLatch();
@@ -398,12 +421,11 @@ describe('provider proxy authority heartbeats', () => {
 
     expect(faults.incidents).toEqual([
       {
-        kind: 'heartbeat-indeterminate',
+        kind: 'heartbeat-observation',
         role: 'proxy',
         method: 'control.heartbeat.v1',
-        incidentReason: 'unanswered',
+        observation: { kind: 'no-response-before-deadline', error: timeout },
         schedulerLatenessMs: 2_000,
-        error: timeout,
       },
     ]);
     stopAll(heartbeats);
@@ -419,7 +441,7 @@ describe('provider proxy authority heartbeats', () => {
       admissionReason: null,
       heartbeatRefusal: { reason: 'challenge-mismatch', nextHeartbeatChallenge: 'proxy-challenge-fresh' },
     });
-    const proxy = scriptedClient([timeout, mismatch, 'proxy-challenge-2']);
+    const proxy = scriptedClient([noResponse(timeout), refusal(mismatch), 'proxy-challenge-2']);
     const guardian = scriptedClient(['guardian-challenge-1']);
     const reaper = scriptedClient(['reaper-challenge-1']);
     const faults = recordingFaultLatch();
@@ -443,14 +465,15 @@ describe('provider proxy authority heartbeats', () => {
     ]);
     expect(faults.incidents).toEqual([
       expect.objectContaining({
-        kind: 'heartbeat-indeterminate',
-        incidentReason: 'unanswered',
-        error: timeout,
+        kind: 'heartbeat-observation',
+        observation: { kind: 'no-response-before-deadline', error: timeout },
       }),
       expect.objectContaining({
-        kind: 'heartbeat-indeterminate',
-        incidentReason: 'challenge-resynchronized',
-        error: mismatch,
+        kind: 'heartbeat-observation',
+        observation: {
+          kind: 'reply',
+          reply: { kind: 'challenge-mismatch', nextChallenge: 'proxy-challenge-fresh' },
+        },
       }),
     ]);
     expect(faults.faults).toEqual([]);
@@ -459,14 +482,14 @@ describe('provider proxy authority heartbeats', () => {
 
   it('latches teardown-latched as a terminal heartbeat fault', async () => {
     const time = new VirtualTime();
-    const refusal = new ControlClientError('control_call_failed', 'teardown latched', 'remote-response', {
+    const teardownRefusal = new ControlClientError('control_call_failed', 'teardown latched', 'remote-response', {
       kind: 'json-rpc-error',
       jsonRpcCode: -32_600,
       protocolCode: 'invalid_request',
       admissionReason: null,
       heartbeatRefusal: { reason: 'teardown-latched', nextHeartbeatChallenge: null },
     });
-    const proxy = scriptedClient([refusal]);
+    const proxy = scriptedClient([refusal(teardownRefusal)]);
     const guardian = scriptedClient(['guardian-challenge-1']);
     const reaper = scriptedClient(['reaper-challenge-1']);
     const faults = recordingFaultLatch();
@@ -485,7 +508,7 @@ describe('provider proxy authority heartbeats', () => {
         role: 'proxy',
         method: 'control.heartbeat.v1',
         terminalReason: 'teardown-latched',
-        error: refusal,
+        error: teardownRefusal,
       },
     ]);
     stopAll(heartbeats);
@@ -496,7 +519,7 @@ describe('provider proxy authority heartbeats', () => {
     // Not a `ControlClientError` at all — the raw `ProxyControlProtocolError`/`ZodError` shape this process's
     // own encode/decode path can raise, reaching the loop unwrapped.
     const localBug = new Error('cannot encode heartbeat');
-    const proxy = scriptedClient([localBug]);
+    const proxy = scriptedClient([{ kind: 'not-sent', cause: 'encode-failed', error: localBug }]);
     const guardian = scriptedClient(['guardian-challenge-1']);
     const reaper = scriptedClient(['reaper-challenge-1']);
     const faults = recordingFaultLatch();
@@ -518,8 +541,16 @@ describe('provider proxy authority heartbeats', () => {
         error: localBug,
       },
     ]);
-    // Not a disposition about the peer: it must never reach the non-consuming incident channel either.
-    expect(faults.incidents).toEqual([]);
+    // The authority channel preserves the owner-classified observation, while the terminal path remains local.
+    expect(faults.incidents).toEqual([
+      {
+        kind: 'heartbeat-observation',
+        role: 'proxy',
+        method: 'control.heartbeat.v1',
+        observation: { kind: 'locally-unsent', stage: 'request-encode', error: localBug },
+        schedulerLatenessMs: 0,
+      },
+    ]);
 
     // The loop stopped rather than retrying a call that is guaranteed to fail identically again.
     time.tick(PROXY_CONTROL_HEARTBEAT_MS * 3);
@@ -529,15 +560,12 @@ describe('provider proxy authority heartbeats', () => {
   });
 
   it('reports an undecodable heartbeat reply as an unclassified incident, never a local failure', async () => {
-    // The peer answered — `client.call` resolved — but the reply fails `controlHeartbeatResultSchema`. That is
-    // a fact about what came back over the wire, not about whether this process could ask, so it must retry
-    // through the ordinary indeterminate channel rather than latch a decisive `local-failure` terminal.
+    // The peer answered, but the result fails the heartbeat owner's strict schema. That is a fact about the
+    // reply, not about whether this process could ask, so it must not latch a local-failure terminal.
     const time = new VirtualTime();
     const proxyClient: ControlClient = {
-      exchange: () => {
-        throw new Error('unexpected control exchange');
-      },
-      call: async () => ({ unexpected: 'shape' }),
+      exchange: async () => ({ kind: 'response', response: { kind: 'result', value: { unexpected: 'shape' } } }),
+      call: () => Promise.reject(new Error('unexpected compatibility call')),
       faulted: new Promise<never>(() => undefined),
       onFault: () => () => undefined,
       close: () => {},
@@ -555,7 +583,11 @@ describe('provider proxy authority heartbeats', () => {
     await flushMicrotasks();
 
     expect(faults.incidents).toEqual([
-      expect.objectContaining({ kind: 'heartbeat-indeterminate', role: 'proxy', incidentReason: 'unclassified' }),
+      expect.objectContaining({
+        kind: 'heartbeat-observation',
+        role: 'proxy',
+        observation: { kind: 'reply', reply: expect.objectContaining({ kind: 'unusable' }) },
+      }),
     ]);
     expect(faults.faults).toEqual([]);
     stopAll(heartbeats);

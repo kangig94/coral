@@ -40,7 +40,7 @@ import {
 } from '#src/provider-proxy/orphan-deadline.js';
 import { createProxy } from '#src/provider-proxy/proxy.js';
 import { connectRoleControlWithRetry, runtimeControlTimer } from '#src/provider-proxy/role-spawn.js';
-import type { ControlClient } from '#src/provider-proxy/control-client.js';
+import type { ControlClient, ControlExchange } from '#src/provider-proxy/control-client.js';
 import { applyBundledStoreSchema, type Database } from '#src/store/db.js';
 import { insertProviderOperation } from '#src/store/provider-operation-journal.js';
 import { providerOperationRecordSchema, type ProviderOperationRecord } from '#src/store/provider-operation-record.js';
@@ -266,6 +266,29 @@ function byteSorted(operations: readonly OperationKey[]): OperationKey[] {
   return [...operations].sort((a, b) => (a.operationId < b.operationId ? -1 : a.operationId > b.operationId ? 1 : 0));
 }
 
+async function scriptedHeartbeatExchange(
+  responses: Record<string, unknown | ((params: unknown) => unknown)>,
+  calls: { method: string; params: unknown }[],
+  method: string,
+  params: unknown,
+): Promise<ControlExchange> {
+  calls.push({ method, params });
+  const entry = responses[method];
+  if (entry === undefined) throw new Error(`unexpected exchange to ${method}`);
+  try {
+    const value = typeof entry === 'function' ? (entry as (value: unknown) => unknown)(params) : entry;
+    return { kind: 'response', response: { kind: 'result', value } };
+  } catch (error: unknown) {
+    if (!(error instanceof ControlClientError)) throw error;
+    if (error.remoteFailure !== null) {
+      return { kind: 'response', response: { kind: 'refusal', failure: error.remoteFailure, error } };
+    }
+    if (error.origin === 'timeout') return { kind: 'no-response', cause: 'timeout', error };
+    if (error.origin === 'write') return { kind: 'not-sent', cause: 'write-threw', error };
+    return { kind: 'not-sent', cause: 'connection-already-closed', error };
+  }
+}
+
 /** Method-dispatched fake `ControlClient`, shared across all three role connects — the wire methods this
  *  redemption calls (`guardian.handoff-redeem.v1`, `reaper.handoff-rotate.v1`, `handoff.redeem.v1`, and
  *  `*.heartbeat.v1`) never collide across roles, so one responder
@@ -277,9 +300,7 @@ function fakeClient(
 ): ControlClient {
   const faulted = new Promise<never>(() => undefined);
   return {
-    exchange: () => {
-      throw new Error('unexpected control exchange');
-    },
+    exchange: (method, params) => scriptedHeartbeatExchange(responses, calls, method, params),
     call: async (method: string, params: unknown) => {
       calls.push({ method, params });
       const entry = responses[method];
@@ -303,9 +324,7 @@ function faultableClient(
     resolveFault = resolve;
   });
   const client: ControlClient = {
-    exchange: () => {
-      throw new Error('unexpected control exchange');
-    },
+    exchange: (method, params) => scriptedHeartbeatExchange(responses, calls, method, params),
     call: async (method, params) => {
       calls.push({ method, params });
       const entry = responses[method];
@@ -393,9 +412,7 @@ async function guardianLeaseClient(
     heartbeatChallenge: string;
   };
   const client: ControlClient = {
-    exchange: () => {
-      throw new Error('unexpected control exchange');
-    },
+    exchange: (method, params, timeoutMs) => realClient.exchange(method, params, timeoutMs),
     call: (method, params, timeoutMs) =>
       method === 'guardian.handoff-redeem.v1'
         ? Promise.resolve({
@@ -1019,8 +1036,17 @@ describe('attemptProviderProxySetInheritance', () => {
     mockedReadCapsule.mockReturnValueOnce(capsuleFor(loc));
     const closed: string[] = [];
     mockedConnect.mockImplementation(async (socketPath: string) => ({
-      exchange: () => {
-        throw new Error('unexpected raw control exchange');
+      exchange: async (method: string) => {
+        if (method === 'guardian.heartbeat.v1') {
+          return {
+            kind: 'response' as const,
+            response: {
+              kind: 'result' as const,
+              value: { state: 'active', nextHeartbeatChallenge: 'g2' },
+            },
+          };
+        }
+        throw new Error(`unexpected exchange ${method} for ${socketPath}`);
       },
       call: async (method: string) => {
         if (method === 'guardian.handoff-redeem.v1') {

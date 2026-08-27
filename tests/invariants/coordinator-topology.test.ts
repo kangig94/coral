@@ -67,6 +67,7 @@ const CONTRACT_TARGETS = new Set([
   'src/provider-proxy/control-client.ts',
   'src/provider-proxy/guardian.ts',
   'src/provider-proxy/handoff-capsule.ts',
+  'src/provider-proxy/heartbeat-observation.ts',
   'src/provider-proxy/ledger.ts',
   'src/provider-proxy/orphan-deadline.ts',
   'src/provider-proxy/protocol.ts',

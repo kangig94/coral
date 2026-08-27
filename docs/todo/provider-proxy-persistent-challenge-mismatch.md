@@ -1,7 +1,7 @@
 # TODO — bound persistent heartbeat challenge mismatch
 
-**Status**: open. A `challenge-resynchronized` response proves the current control tenancy answered and therefore
-clears both heartbeat holds. It does not prove the peer ever accepted the echoed challenge.
+**Status**: open. A `challenge-mismatch` observation proves the current control tenancy answered and therefore
+clears the role-and-method evidence window. It does not prove the peer ever accepted the echoed challenge.
 
 ## Why this is separate
 
@@ -13,7 +13,7 @@ Persistent mismatch asks a different question: whether a peer that keeps answeri
 complete a heartbeat indefinitely. Against same-build peers, the population is empty for a stronger reason
 than challenge rotation alone: every path that clears a control tenancy also destroys that tenancy's socket,
 both displacement paths destroy the displaced socket, heartbeat dispatch precedes the unauthorized-control
-check, and `echoChallenge` validates the reply with the caller's strict result schema. A peer with no tenancy
+check, and `echoChallenge` validates the reply with the heartbeat observation owner's strict result schema. A peer with no tenancy
 therefore cannot retain a live socket that keeps answering, while a peer with a live tenancy either returns an
 accepted echo or the one fresh mismatch challenge.
 

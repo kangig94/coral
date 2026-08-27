@@ -11,16 +11,12 @@ import {
   ControlClientError,
   type ControlClient,
   type ControlClientErrorCode,
-  type ControlClientErrorOrigin,
   type ControlClientRemoteFailure,
   type ProviderEventHandler,
 } from '../../../provider-proxy/control-client.js';
-import type {
-  ProviderProxyHeartbeatIncidentReason,
-  ProviderProxyHeartbeatMethod,
-  ProviderProxyRole,
-} from '../../services/provider-proxy-authority-fault.js';
-import { HeartbeatReplyUndecodableError, heartbeatFailureDisposition, heartbeatOnce } from './heartbeat.js';
+import type { HeartbeatObservation } from '../../../provider-proxy/heartbeat-observation.js';
+import type { ProviderProxyHeartbeatMethod, ProviderProxyRole } from '../../services/provider-proxy-authority-fault.js';
+import { heartbeatOnce } from './heartbeat.js';
 
 export type ProviderProxyRoleOpenMethod =
   | 'control.open.v1'
@@ -55,10 +51,7 @@ export type ProviderProxyRoleControlAvailabilityIncident =
       kind: 'role-heartbeat-indeterminate';
       role: ProviderProxyRole;
       method: ProviderProxyHeartbeatMethod;
-      incidentReason: ProviderProxyHeartbeatIncidentReason;
-      /** See `heartbeatFailureDisposition` in `src/coordinator/live/provider-proxy/heartbeat.ts`. */
-      origin: ControlClientErrorOrigin | null;
-      controlCode: ControlClientErrorCode | null;
+      observation: HeartbeatObservation;
     }>;
 
 export class ProviderProxyRoleControlUnavailableError extends Error {
@@ -185,55 +178,28 @@ async function establishHeartbeat(
   let challenge = firstChallenge;
   let resynchronized = false;
   for (;;) {
-    try {
-      return await heartbeatOnce(client, method, controlEpoch, challenge);
-    } catch (error: unknown) {
-      const disposition = heartbeatFailureDisposition(error, challenge);
-      if (disposition.kind === 'local-failure') {
-        // Not a disposition about the peer, and guaranteed to recur identically on retry — restore the
-        // definitive handling this call site had before it grew a heartbeat-specific classification.
-        throw disposition.error;
+    const observation = await heartbeatOnce(client, method, controlEpoch, challenge);
+    if (observation.kind === 'locally-unsent') throw observation.error;
+    if (observation.kind === 'channel-fault') {
+      classifyRoleControlFailure(role, 'heartbeat', method, observation.error);
+    }
+    if (observation.kind === 'reply') {
+      if (observation.reply.kind === 'accepted') {
+        return { nextHeartbeatChallenge: observation.reply.nextChallenge };
       }
-      if (disposition.kind === 'terminal') {
-        throw new ProviderProxyRoleControlRemoteError(role, 'heartbeat', method, disposition.error);
-      }
-      if (
-        disposition.kind === 'retry' &&
-        disposition.incidentReason === 'challenge-resynchronized' &&
-        !resynchronized
-      ) {
-        challenge = disposition.challenge;
+      if (observation.reply.kind === 'challenge-mismatch' && !resynchronized) {
+        challenge = observation.reply.nextChallenge;
         resynchronized = true;
         continue;
       }
-      if (error instanceof HeartbeatReplyUndecodableError) {
-        throw new ProviderProxyRoleControlUnavailableError(
-          {
-            kind: 'role-heartbeat-indeterminate',
-            role,
-            method,
-            incidentReason: disposition.incidentReason,
-            origin: null,
-            controlCode: null,
-          },
-          { cause: error },
-        );
+      if (observation.reply.kind === 'teardown-latched') {
+        throw new ProviderProxyRoleControlRemoteError(role, 'heartbeat', method, observation.reply.error);
       }
-      if (!(error instanceof ControlClientError)) {
-        throw new Error('provider_proxy_heartbeat_indeterminate_error_mismatch', { cause: error });
-      }
-      throw new ProviderProxyRoleControlUnavailableError(
-        {
-          kind: 'role-heartbeat-indeterminate',
-          role,
-          method,
-          incidentReason: disposition.incidentReason,
-          origin: error.origin,
-          controlCode: error.code,
-        },
-        { cause: error },
-      );
     }
+    throw new ProviderProxyRoleControlUnavailableError(
+      { kind: 'role-heartbeat-indeterminate', role, method, observation },
+      { cause: observation },
+    );
   }
 }
 

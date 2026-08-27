@@ -8,6 +8,14 @@ import type {
 } from '#src/coordinator/services/provider-proxy-authority-fault.js';
 import type { ProviderProxySetDecision } from '#src/coordinator/services/provider-proxy-set/decisions.js';
 import type { ProviderProxySetIdentity } from '#src/coordinator/services/provider-proxy-set/identity.js';
+import type { ControlClientError, ControlExchange } from '#src/provider-proxy/control-client.js';
+import {
+  applyNoResponse,
+  heartbeatObservationFromExchange,
+  type HeartbeatObservation,
+  type HeartbeatReplyObservation,
+} from '#src/provider-proxy/heartbeat-observation.js';
+import type { ProviderProxyHeartbeatHoldBound } from '#src/provider-proxy/orphan-deadline.js';
 
 declare const setIdentity: ProviderProxySetIdentity;
 declare const retrySafePolicy: RetrySafeControlCallPolicy;
@@ -107,26 +115,33 @@ declare const containmentOperationIncident: Readonly<{
 const invalidIncident: ProviderProxyAuthorityIncident = containmentOperationIncident;
 void invalidIncident;
 
-declare const unansweredHeartbeat: Readonly<{
-  kind: 'heartbeat-indeterminate';
-  role: 'guardian';
-  method: 'guardian.heartbeat.v1';
-  incidentReason: 'unanswered';
-  schedulerLatenessMs: number;
-  error: unknown;
+declare const forgedHeartbeatObservation: Readonly<{
+  kind: 'no-response-before-deadline';
+  error: ControlClientError;
 }>;
 
-// @ts-expect-error an unanswered heartbeat cannot consume the terminal authority-fault latch.
-latch.latch(unansweredHeartbeat);
+// @ts-expect-error only the heartbeat owner can mint the provenance brand; matching fields are insufficient.
+const invalidForgedHeartbeatObservation: HeartbeatObservation = forgedHeartbeatObservation;
+void invalidForgedHeartbeatObservation;
 
-declare const acceptedHeartbeat: Readonly<{
-  kind: 'heartbeat-accepted';
-  role: 'guardian';
-  method: 'guardian.heartbeat.v1';
-}>;
+declare const controlExchange: ControlExchange;
+const ownerClassifiedObservation = heartbeatObservationFromExchange(controlExchange);
+const heartbeatAuthorityObservation = {
+  kind: 'heartbeat-observation' as const,
+  role: 'guardian' as const,
+  method: 'guardian.heartbeat.v1' as const,
+  observation: ownerClassifiedObservation,
+  schedulerLatenessMs: 0,
+};
 
-// @ts-expect-error an accepted echo closes a hold and cannot consume the terminal authority-fault latch.
-latch.latch(acceptedHeartbeat);
+// @ts-expect-error heartbeat observations cannot consume the terminal authority-fault latch.
+latch.latch(heartbeatAuthorityObservation);
+
+declare const replyObservation: HeartbeatReplyObservation;
+declare const heartbeatHoldBound: ProviderProxyHeartbeatHoldBound;
+const heartbeatTiming = { nowMonotonicMs: 0n, schedulerLatenessMs: 0, bound: heartbeatHoldBound };
+// @ts-expect-error a reply observation cannot enter the no-response reducer.
+applyNoResponse({ kind: 'clear' }, replyObservation, heartbeatTiming);
 
 declare const nonDecisiveHeartbeatFault: Readonly<{
   kind: 'heartbeat-failed';
@@ -196,12 +211,11 @@ const validIncident: ProviderProxyAuthorityIncident = {
   error: 'retry later',
 };
 const validHeartbeatIncident: ProviderProxyAuthorityIncident = {
-  kind: 'heartbeat-indeterminate',
+  kind: 'heartbeat-observation',
   role: 'guardian',
   method: 'guardian.heartbeat.v1',
-  incidentReason: 'unanswered',
+  observation: ownerClassifiedObservation,
   schedulerLatenessMs: 0,
-  error: 'retry later',
 };
 // A local failure (this process could not construct or send the call at all) is a second decisive
 // terminal reason alongside `teardown-latched` — not a disposition about the peer, but still terminal.

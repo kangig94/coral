@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { ControlClientError } from '#src/provider-proxy/control-client.js';
+import { heartbeatObservationFromExchange } from '#src/provider-proxy/heartbeat-observation.js';
 import {
   createProviderProxyAuthorityFaultLatch,
   type ProviderProxyRole,
@@ -31,63 +32,66 @@ describe('provider proxy authority fault latch', () => {
   it('replays an early heartbeat incident and its accepted echo to a late subscriber', () => {
     const latch = createProviderProxyAuthorityFaultLatch();
     const observed: unknown[] = [];
-    latch.reportIncident({
-      kind: 'heartbeat-indeterminate',
+    const timeout = new ControlClientError('control_call_failed', 'timed out', 'timeout');
+    const unanswered = {
+      kind: 'heartbeat-observation',
       role: 'proxy',
       method: 'control.heartbeat.v1',
-      incidentReason: 'unanswered',
+      observation: heartbeatObservationFromExchange({ kind: 'no-response', cause: 'timeout', error: timeout }),
       schedulerLatenessMs: 0,
-      error: 'timed out',
-    });
-    latch.reportIncident({ kind: 'heartbeat-accepted', role: 'proxy', method: 'control.heartbeat.v1' });
+    } as const;
+    const accepted = {
+      kind: 'heartbeat-observation',
+      role: 'proxy',
+      method: 'control.heartbeat.v1',
+      observation: heartbeatObservationFromExchange({
+        kind: 'response',
+        response: { kind: 'result', value: { state: 'active', nextHeartbeatChallenge: 'next-challenge' } },
+      }),
+      schedulerLatenessMs: 0,
+    } as const;
+    latch.reportIncident(unanswered);
+    latch.reportIncident(accepted);
 
     latch.onIncident((observation) => observed.push(observation));
 
-    expect(observed).toEqual([
-      {
-        kind: 'heartbeat-indeterminate',
-        role: 'proxy',
-        method: 'control.heartbeat.v1',
-        incidentReason: 'unanswered',
-        schedulerLatenessMs: 0,
-        error: 'timed out',
-      },
-      { kind: 'heartbeat-accepted', role: 'proxy', method: 'control.heartbeat.v1' },
-    ]);
+    expect(observed).toEqual([unanswered, accepted]);
   });
 
   it('replays only the latest of two pending incidents for the same role and method', () => {
     const latch = createProviderProxyAuthorityFaultLatch();
+    const timeout = new ControlClientError('control_call_failed', 'timed out', 'timeout');
     latch.reportIncident({
-      kind: 'heartbeat-indeterminate',
+      kind: 'heartbeat-observation',
       role: 'proxy',
       method: 'control.heartbeat.v1',
-      incidentReason: 'unanswered',
+      observation: heartbeatObservationFromExchange({ kind: 'no-response', cause: 'timeout', error: timeout }),
       schedulerLatenessMs: 0,
-      error: 'timed out',
     });
-    latch.reportIncident({
-      kind: 'heartbeat-indeterminate',
+    const refusal = new ControlClientError('control_call_failed', 'answer could not be decoded', 'remote-response', {
+      kind: 'json-rpc-error',
+      jsonRpcCode: -32_600,
+      protocolCode: 'invalid_request',
+      admissionReason: null,
+      heartbeatRefusal: null,
+    });
+    if (refusal.remoteFailure === null) throw new Error('test heartbeat refusal lacks remote failure');
+    const unusable = {
+      kind: 'heartbeat-observation',
       role: 'proxy',
       method: 'control.heartbeat.v1',
-      incidentReason: 'unclassified',
+      observation: heartbeatObservationFromExchange({
+        kind: 'response',
+        response: { kind: 'refusal', failure: refusal.remoteFailure, error: refusal },
+      }),
       schedulerLatenessMs: 0,
-      error: 'answer could not be decoded',
-    });
+    } as const;
+    latch.reportIncident(unusable);
 
     const observed: unknown[] = [];
     latch.onIncident((observation) => observed.push(observation));
 
-    expect(observed).toEqual([
-      {
-        kind: 'heartbeat-indeterminate',
-        role: 'proxy',
-        method: 'control.heartbeat.v1',
-        incidentReason: 'unclassified',
-        schedulerLatenessMs: 0,
-        error: 'answer could not be decoded',
-      },
-    ]);
+    expect(observed).toEqual([unusable]);
   });
 
   it.each(['proxy', 'guardian', 'reaper'] as const)('latches a %s channel fault with its exact role', (role) => {

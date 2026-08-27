@@ -1,6 +1,5 @@
 import type {
   ContainmentRequiredControlCallPolicy,
-  ProviderProxyHeartbeatIncidentReason,
   ProviderProxyHeartbeatMethod,
   ProviderProxyHeartbeatTerminalReason,
   ProviderProxyRole,
@@ -41,7 +40,8 @@ export type ProviderProxySetPreserveDecision =
       fault: 'heartbeat-indeterminate';
       role: ProviderProxyRole;
       method: ProviderProxyHeartbeatMethod;
-      incidentReason: ProviderProxyHeartbeatIncidentReason;
+      /** A rendered label derived after the owner-classified observation has transitioned the evidence window. */
+      incidentReason: 'unanswered' | 'unclassified';
       schedulerLatenessMs: number;
       policy?: never;
       error: string;

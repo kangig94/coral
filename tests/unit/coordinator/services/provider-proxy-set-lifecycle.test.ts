@@ -17,7 +17,8 @@ import type {
   HandoffCapsuleV2,
   HandoffCapsuleV3,
 } from '#src/provider-proxy/handoff-capsule.js';
-import { ControlClientError } from '#src/provider-proxy/control-client.js';
+import { ControlClientError, type ControlExchange } from '#src/provider-proxy/control-client.js';
+import { heartbeatObservationFromExchange } from '#src/provider-proxy/heartbeat-observation.js';
 import type { ProviderProxyHeartbeatHoldBound } from '#src/provider-proxy/orphan-deadline.js';
 import type { DurableProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
 import {
@@ -26,6 +27,7 @@ import {
   type ProviderProxyAuthorityFault,
   type ProviderProxyAuthorityFaultLatch,
   type ProviderProxyAuthorityIncident,
+  type ProviderProxyHeartbeatObservation,
   type RetrySafeControlCallPolicy,
 } from '#src/coordinator/services/provider-proxy-authority-fault.js';
 import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set/claim-mirror.js';
@@ -104,6 +106,92 @@ function terminalAuthorityFault(): ProviderProxyAuthorityFault {
     method: 'control.heartbeat.v1',
     terminalReason: 'teardown-latched',
     error: 'teardown latched',
+  };
+}
+
+type HeartbeatTestObservation =
+  | Readonly<{ kind: 'accepted'; nextChallenge?: string }>
+  | Readonly<{ kind: 'challenge-mismatch'; nextChallenge?: string }>
+  | Readonly<{ kind: 'unusable'; error?: string | ControlClientError }>
+  | Readonly<{ kind: 'method-not-found'; error?: string | ControlClientError }>
+  | Readonly<{ kind: 'no-response-before-deadline'; error?: string | ControlClientError }>;
+
+function heartbeatRefusalExchange(error: ControlClientError): ControlExchange {
+  if (error.remoteFailure === null) throw new Error('test heartbeat refusal lacks remote failure');
+  return { kind: 'response', response: { kind: 'refusal', failure: error.remoteFailure, error } };
+}
+
+function heartbeatAuthorityObservation(
+  observation: HeartbeatTestObservation,
+  options: Readonly<{
+    role?: ProviderProxyHeartbeatObservation['role'];
+    method?: ProviderProxyHeartbeatObservation['method'];
+    schedulerLatenessMs?: number;
+  }> = {},
+): ProviderProxyHeartbeatObservation {
+  const message = 'error' in observation ? String(observation.error ?? observation.kind) : observation.kind;
+  let exchange: ControlExchange;
+  switch (observation.kind) {
+    case 'accepted':
+      exchange = {
+        kind: 'response',
+        response: {
+          kind: 'result',
+          value: { state: 'active', nextHeartbeatChallenge: observation.nextChallenge ?? 'next-challenge' },
+        },
+      };
+      break;
+    case 'challenge-mismatch': {
+      const error = new ControlClientError('control_call_failed', message, 'remote-response', {
+        kind: 'json-rpc-error',
+        jsonRpcCode: -32_600,
+        protocolCode: 'invalid_request',
+        admissionReason: null,
+        heartbeatRefusal: {
+          reason: 'challenge-mismatch',
+          nextHeartbeatChallenge: observation.nextChallenge ?? 'resynchronized-challenge',
+        },
+      });
+      exchange = heartbeatRefusalExchange(error);
+      break;
+    }
+    case 'method-not-found': {
+      const error = new ControlClientError('control_call_failed', message, 'remote-response', {
+        kind: 'json-rpc-error',
+        jsonRpcCode: -32_601,
+        protocolCode: 'method_not_found',
+        admissionReason: null,
+        heartbeatRefusal: null,
+      });
+      exchange = heartbeatRefusalExchange(error);
+      break;
+    }
+    case 'unusable': {
+      const error = new ControlClientError('control_call_failed', message, 'remote-response', {
+        kind: 'json-rpc-error',
+        jsonRpcCode: -32_600,
+        protocolCode: 'invalid_request',
+        admissionReason: null,
+        heartbeatRefusal: null,
+      });
+      exchange = heartbeatRefusalExchange(error);
+      break;
+    }
+    case 'no-response-before-deadline': {
+      const error =
+        observation.error instanceof ControlClientError
+          ? observation.error
+          : new ControlClientError('control_call_failed', message, 'timeout');
+      exchange = { kind: 'no-response', cause: 'timeout', error };
+      break;
+    }
+  }
+  return {
+    kind: 'heartbeat-observation',
+    role: options.role ?? 'guardian',
+    method: options.method ?? 'guardian.heartbeat.v1',
+    observation: heartbeatObservationFromExchange(exchange),
+    schedulerLatenessMs: options.schedulerLatenessMs ?? 0,
   };
 }
 
@@ -499,7 +587,7 @@ describe('ProviderProxySetLifecycle', () => {
       terminalFaultObserved = true;
     });
     faults.onIncident((next) => {
-      if (next.kind !== 'heartbeat-accepted') incidents.push(next);
+      incidents.push(next);
     });
 
     faults.reportIncident(incident);
@@ -569,14 +657,9 @@ describe('ProviderProxySetLifecycle', () => {
     lifecycle.completeStartupDiscovery();
     lifecycle.registerInheritedSet(authority);
 
-    faults.reportIncident({
-      kind: 'heartbeat-indeterminate',
-      role: 'guardian',
-      method: 'guardian.heartbeat.v1',
-      incidentReason: 'unanswered',
-      schedulerLatenessMs: 0,
-      error: 'heartbeat timed out',
-    });
+    faults.reportIncident(
+      heartbeatAuthorityObservation({ kind: 'no-response-before-deadline', error: 'heartbeat timed out' }),
+    );
 
     expect(stopAndReap).not.toHaveBeenCalled();
     expect(lifecycle.routeFor('codex-route')).toBeNull();
@@ -607,14 +690,9 @@ describe('ProviderProxySetLifecycle', () => {
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
     lifecycle.registerInheritedSet(authority);
-    faults.reportIncident({
-      kind: 'heartbeat-indeterminate',
-      role: 'guardian',
-      method: 'guardian.heartbeat.v1',
-      incidentReason: 'unanswered',
-      schedulerLatenessMs: 0,
-      error: 'heartbeat timed out',
-    });
+    faults.reportIncident(
+      heartbeatAuthorityObservation({ kind: 'no-response-before-deadline', error: 'heartbeat timed out' }),
+    );
     reportLifecycle.mockClear();
 
     clock.elapse(120_000);
@@ -622,13 +700,13 @@ describe('ProviderProxySetLifecycle', () => {
 
     expect(reportLifecycle).not.toHaveBeenCalled();
 
-    faults.reportIncident({ kind: 'heartbeat-accepted', role: 'guardian', method: 'guardian.heartbeat.v1' });
+    faults.reportIncident(heartbeatAuthorityObservation({ kind: 'accepted' }));
 
     expect(reportLifecycle).toHaveBeenCalledExactlyOnceWith('info', expect.stringContaining('subject=guardian'));
     expect(reportLifecycle).toHaveBeenCalledWith('info', expect.stringContaining('summary=recovered suppressed=0'));
   });
 
-  it('clears both heartbeat holds when that role accepts an echo', () => {
+  it('clears the exclusive heartbeat window when that role accepts an echo', () => {
     const record = providerOperationRecord('executing');
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([record]);
@@ -652,22 +730,16 @@ describe('ProviderProxySetLifecycle', () => {
     lifecycle.completeStartupDiscovery();
     lifecycle.registerInheritedSet(authority);
 
-    const incident = (incidentReason: 'unanswered' | 'unclassified'): void =>
-      faults.reportIncident({
-        kind: 'heartbeat-indeterminate',
-        role: 'guardian',
-        method: 'guardian.heartbeat.v1',
-        incidentReason,
-        schedulerLatenessMs: 0,
-        error: incidentReason,
-      });
+    const noResponse = (): void =>
+      faults.reportIncident(heartbeatAuthorityObservation({ kind: 'no-response-before-deadline' }));
+    const unusable = (): void => faults.reportIncident(heartbeatAuthorityObservation({ kind: 'unusable' }));
 
-    incident('unanswered');
-    incident('unclassified');
-    faults.reportIncident({ kind: 'heartbeat-accepted', role: 'guardian', method: 'guardian.heartbeat.v1' });
+    noResponse();
+    unusable();
+    faults.reportIncident(heartbeatAuthorityObservation({ kind: 'accepted' }));
     clock.elapse(2);
-    incident('unanswered');
-    incident('unclassified');
+    noResponse();
+    unusable();
 
     expect(stopAndReap).not.toHaveBeenCalled();
     expect(lifecycle.snapshot().states).toEqual(['available']);
@@ -693,25 +765,15 @@ describe('ProviderProxySetLifecycle', () => {
     lifecycle.completeStartupDiscovery();
     lifecycle.registerInheritedSet(authority);
 
-    faults.reportIncident({
-      kind: 'heartbeat-indeterminate',
-      role: 'guardian',
-      method: 'guardian.heartbeat.v1',
-      incidentReason: 'unanswered',
-      schedulerLatenessMs: 0,
-      error: 'heartbeat timed out',
-    });
+    faults.reportIncident(
+      heartbeatAuthorityObservation({ kind: 'no-response-before-deadline', error: 'heartbeat timed out' }),
+    );
     reportLifecycle.mockClear();
 
     clock.elapse(PRESERVE_REPORT_INTERVAL_MS);
-    faults.reportIncident({
-      kind: 'heartbeat-indeterminate',
-      role: 'guardian',
-      method: 'guardian.heartbeat.v1',
-      incidentReason: 'unanswered',
-      schedulerLatenessMs: 0,
-      error: 'heartbeat timed out',
-    });
+    faults.reportIncident(
+      heartbeatAuthorityObservation({ kind: 'no-response-before-deadline', error: 'heartbeat timed out' }),
+    );
 
     // `main` said "suppressed repeats while the preservation condition remains active" — true of either
     // preserve kind. `summary=periodic` must not be narrowed to operation-control alone.
@@ -742,34 +804,19 @@ describe('ProviderProxySetLifecycle', () => {
     lifecycle.registerInheritedSet(authority);
 
     // First incident: the `report === undefined` branch.
-    faults.reportIncident({
-      kind: 'heartbeat-indeterminate',
-      role: 'guardian',
-      method: 'guardian.heartbeat.v1',
-      incidentReason: 'unanswered',
-      schedulerLatenessMs: 0,
-      error: 'heartbeat timed out',
-    });
+    faults.reportIncident(
+      heartbeatAuthorityObservation({ kind: 'no-response-before-deadline', error: 'heartbeat timed out' }),
+    );
     // Second incident inside the suppression window: the "suppressed" existing-report branch.
     clock.elapse(1_000);
-    faults.reportIncident({
-      kind: 'heartbeat-indeterminate',
-      role: 'guardian',
-      method: 'guardian.heartbeat.v1',
-      incidentReason: 'unanswered',
-      schedulerLatenessMs: 0,
-      error: 'heartbeat timed out',
-    });
+    faults.reportIncident(
+      heartbeatAuthorityObservation({ kind: 'no-response-before-deadline', error: 'heartbeat timed out' }),
+    );
     // Third incident past the suppression window: the "periodic" existing-report branch.
     clock.elapse(PRESERVE_REPORT_INTERVAL_MS);
-    faults.reportIncident({
-      kind: 'heartbeat-indeterminate',
-      role: 'guardian',
-      method: 'guardian.heartbeat.v1',
-      incidentReason: 'unanswered',
-      schedulerLatenessMs: 0,
-      error: 'heartbeat timed out',
-    });
+    faults.reportIncident(
+      heartbeatAuthorityObservation({ kind: 'no-response-before-deadline', error: 'heartbeat timed out' }),
+    );
     reportLifecycle.mockClear();
 
     // No accepted echo ever arrives. If any of the three branches above scheduled a recovery timer for this
@@ -806,36 +853,21 @@ describe('ProviderProxySetLifecycle', () => {
     lifecycle.completeStartupDiscovery();
     lifecycle.registerInheritedSet(authority);
 
-    faults.reportIncident({
-      kind: 'heartbeat-indeterminate',
-      role: 'guardian',
-      method: 'guardian.heartbeat.v1',
-      incidentReason: 'unanswered',
-      schedulerLatenessMs: 0,
-      error: 'heartbeat timed out',
-    });
+    faults.reportIncident(
+      heartbeatAuthorityObservation({ kind: 'no-response-before-deadline', error: 'heartbeat timed out' }),
+    );
     reportLifecycle.mockClear();
 
     clock.elapse(2_500);
-    faults.reportIncident({
-      kind: 'heartbeat-indeterminate',
-      role: 'guardian',
-      method: 'guardian.heartbeat.v1',
-      incidentReason: 'unanswered',
-      schedulerLatenessMs: 0,
-      error: 'heartbeat timed out again',
-    });
+    faults.reportIncident(
+      heartbeatAuthorityObservation({ kind: 'no-response-before-deadline', error: 'heartbeat timed out again' }),
+    );
     expect(reportLifecycle.mock.calls.some(([, message]) => message.includes('stop-and-reap'))).toBe(false);
 
     clock.elapse(2_500);
-    faults.reportIncident({
-      kind: 'heartbeat-indeterminate',
-      role: 'guardian',
-      method: 'guardian.heartbeat.v1',
-      incidentReason: 'unanswered',
-      schedulerLatenessMs: 0,
-      error: 'heartbeat still unanswered',
-    });
+    faults.reportIncident(
+      heartbeatAuthorityObservation({ kind: 'no-response-before-deadline', error: 'heartbeat still unanswered' }),
+    );
 
     expect(reportLifecycle).toHaveBeenCalledWith(
       'warn',
@@ -885,17 +917,10 @@ describe('ProviderProxySetLifecycle', () => {
     lifecycle.completeStartupDiscovery();
     lifecycle.registerInheritedSet(authority);
 
-    const unclassified = (error: string): void =>
-      faults.reportIncident({
-        kind: 'heartbeat-indeterminate',
-        role: 'guardian',
-        method: 'guardian.heartbeat.v1',
-        incidentReason: 'unclassified',
-        schedulerLatenessMs: 0,
-        error,
-      });
+    const unusable = (error: string): void =>
+      faults.reportIncident(heartbeatAuthorityObservation({ kind: 'unusable', error }));
 
-    unclassified('answer could not be decoded');
+    unusable('answer could not be decoded');
     expect(lifecycle.snapshot().operatorDispositions).toEqual([
       expect.objectContaining({
         disposition: 'held',
@@ -906,7 +931,7 @@ describe('ProviderProxySetLifecycle', () => {
       }),
     ]);
     clock.elapse(5_000);
-    unclassified('answer still could not be decoded');
+    unusable('answer still could not be decoded');
 
     expect(stopAndReap).not.toHaveBeenCalled();
     expect(stopHeartbeats).toHaveBeenCalledOnce();
@@ -971,14 +996,7 @@ describe('ProviderProxySetLifecycle', () => {
     lifecycle.completeStartupDiscovery();
     lifecycle.registerInheritedSet(authority);
 
-    faults.reportIncident({
-      kind: 'heartbeat-indeterminate',
-      role: 'guardian',
-      method: 'guardian.heartbeat.v1',
-      incidentReason: 'method-not-found',
-      schedulerLatenessMs: 0,
-      error: 'method not found',
-    });
+    faults.reportIncident(heartbeatAuthorityObservation({ kind: 'method-not-found', error: 'method not found' }));
 
     expect(stopAndReap).not.toHaveBeenCalled();
     expect(stopHeartbeats).toHaveBeenCalledOnce();
@@ -1014,14 +1032,7 @@ describe('ProviderProxySetLifecycle', () => {
     lifecycle.completeStartupDiscovery();
     lifecycle.registerInheritedSet(authority);
 
-    faults.reportIncident({
-      kind: 'heartbeat-indeterminate',
-      role: 'guardian',
-      method: 'guardian.heartbeat.v1',
-      incidentReason: 'method-not-found',
-      schedulerLatenessMs: 0,
-      error: 'method not found',
-    });
+    faults.reportIncident(heartbeatAuthorityObservation({ kind: 'method-not-found', error: 'method not found' }));
 
     expect(stopAndReap).not.toHaveBeenCalled();
     expect(stopHeartbeats).toHaveBeenCalledOnce();
@@ -1075,14 +1086,7 @@ describe('ProviderProxySetLifecycle', () => {
     lifecycle.completeStartupDiscovery();
     lifecycle.registerInheritedSet(authority);
 
-    faults.reportIncident({
-      kind: 'heartbeat-indeterminate',
-      role: 'guardian',
-      method: 'guardian.heartbeat.v1',
-      incidentReason: 'method-not-found',
-      schedulerLatenessMs: 0,
-      error: 'method not found',
-    });
+    faults.reportIncident(heartbeatAuthorityObservation({ kind: 'method-not-found', error: 'method not found' }));
 
     expect(stopAndReap).not.toHaveBeenCalled();
     expect(lifecycle.snapshot().represented).toBe(1);
@@ -1120,23 +1124,17 @@ describe('ProviderProxySetLifecycle', () => {
     lifecycle.completeStartupDiscovery();
     lifecycle.registerInheritedSet(authority);
 
-    const incident = (incidentReason: 'unanswered' | 'unclassified'): void =>
-      faults.reportIncident({
-        kind: 'heartbeat-indeterminate',
-        role: 'guardian',
-        method: 'guardian.heartbeat.v1',
-        incidentReason,
-        schedulerLatenessMs: 0,
-        error: incidentReason,
-      });
+    const noResponse = (): void =>
+      faults.reportIncident(heartbeatAuthorityObservation({ kind: 'no-response-before-deadline' }));
+    const unusable = (): void => faults.reportIncident(heartbeatAuthorityObservation({ kind: 'unusable' }));
 
-    incident('unanswered');
+    noResponse();
     for (let second = 1; second <= 22; second += 1) {
       clock.elapse(1_000);
-      incident('unclassified');
+      unusable();
     }
     clock.elapse(1_000);
-    incident('unanswered');
+    noResponse();
 
     expect(stopAndReap).not.toHaveBeenCalled();
     expect(initiateControlClose).not.toHaveBeenCalled();
@@ -1169,24 +1167,17 @@ describe('ProviderProxySetLifecycle', () => {
     lifecycle.completeStartupDiscovery();
     lifecycle.registerInheritedSet(authority);
 
-    faults.reportIncident({
-      kind: 'heartbeat-indeterminate',
-      role: 'guardian',
-      method: 'guardian.heartbeat.v1',
-      incidentReason: 'unanswered',
-      schedulerLatenessMs: 0,
-      error: 'heartbeat timed out',
-    });
+    faults.reportIncident(
+      heartbeatAuthorityObservation({ kind: 'no-response-before-deadline', error: 'heartbeat timed out' }),
+    );
 
     clock.elapse(23_000);
-    faults.reportIncident({
-      kind: 'heartbeat-indeterminate',
-      role: 'guardian',
-      method: 'guardian.heartbeat.v1',
-      incidentReason: 'unanswered',
-      schedulerLatenessMs: 18_000,
-      error: 'heartbeat timed out',
-    });
+    faults.reportIncident(
+      heartbeatAuthorityObservation(
+        { kind: 'no-response-before-deadline', error: 'heartbeat timed out' },
+        { schedulerLatenessMs: 18_000 },
+      ),
+    );
 
     expect(stopAndReap).not.toHaveBeenCalled();
     expect(reportLifecycle.mock.calls.some(([, message]) => message.includes('stop-and-reap'))).toBe(false);
@@ -1221,24 +1212,14 @@ describe('ProviderProxySetLifecycle', () => {
     lifecycle.completeStartupDiscovery();
     lifecycle.registerInheritedSet(authority);
 
-    faults.reportIncident({
-      kind: 'heartbeat-indeterminate',
-      role: 'guardian',
-      method: 'guardian.heartbeat.v1',
-      incidentReason: 'unanswered',
-      schedulerLatenessMs: 0,
-      error: 'heartbeat timed out',
-    });
+    faults.reportIncident(
+      heartbeatAuthorityObservation({ kind: 'no-response-before-deadline', error: 'heartbeat timed out' }),
+    );
 
     clock.stepWallClock(60_000);
-    faults.reportIncident({
-      kind: 'heartbeat-indeterminate',
-      role: 'guardian',
-      method: 'guardian.heartbeat.v1',
-      incidentReason: 'unanswered',
-      schedulerLatenessMs: 0,
-      error: 'heartbeat timed out',
-    });
+    faults.reportIncident(
+      heartbeatAuthorityObservation({ kind: 'no-response-before-deadline', error: 'heartbeat timed out' }),
+    );
 
     expect(stopAndReap).not.toHaveBeenCalled();
     expect(reportLifecycle.mock.calls.some(([, message]) => message.includes('stop-and-reap'))).toBe(false);
@@ -1272,30 +1253,20 @@ describe('ProviderProxySetLifecycle', () => {
     lifecycle.completeStartupDiscovery();
     lifecycle.registerInheritedSet(authority);
 
-    faults.reportIncident({
-      kind: 'heartbeat-indeterminate',
-      role: 'guardian',
-      method: 'guardian.heartbeat.v1',
-      incidentReason: 'unanswered',
-      schedulerLatenessMs: 0,
-      error: 'heartbeat timed out',
-    });
+    faults.reportIncident(
+      heartbeatAuthorityObservation({ kind: 'no-response-before-deadline', error: 'heartbeat timed out' }),
+    );
 
     clock.elapse(6_000);
     clock.stepWallClock(-60_000);
-    faults.reportIncident({
-      kind: 'heartbeat-indeterminate',
-      role: 'guardian',
-      method: 'guardian.heartbeat.v1',
-      incidentReason: 'unanswered',
-      schedulerLatenessMs: 0,
-      error: 'heartbeat timed out',
-    });
+    faults.reportIncident(
+      heartbeatAuthorityObservation({ kind: 'no-response-before-deadline', error: 'heartbeat timed out' }),
+    );
 
     expect(stopAndReap).toHaveBeenCalledOnce();
   });
 
-  it('never escalates a heartbeat hold from challenge-resynchronized incidents alone', () => {
+  it('never escalates a heartbeat window from challenge-mismatch observations alone', () => {
     // A resynchronized challenge is the peer answering correctly — this coordinator's own prior
     // acknowledgement of an earlier echo was lost, not the peer's response. It must never start, advance, or
     // help satisfy a hold whose whole premise is continuous silence.
@@ -1326,14 +1297,12 @@ describe('ProviderProxySetLifecycle', () => {
 
     // Six incidents over 12000ms clear the span by a wide margin if they were counted.
     for (let attempt = 0; attempt < 6; attempt += 1) {
-      faults.reportIncident({
-        kind: 'heartbeat-indeterminate',
-        role: 'guardian',
-        method: 'guardian.heartbeat.v1',
-        incidentReason: 'challenge-resynchronized',
-        schedulerLatenessMs: 0,
-        error: `resynchronized-${attempt}`,
-      });
+      faults.reportIncident(
+        heartbeatAuthorityObservation({
+          kind: 'challenge-mismatch',
+          nextChallenge: `resynchronized-${attempt}`,
+        }),
+      );
       clock.elapse(2_000);
     }
 
@@ -1341,7 +1310,7 @@ describe('ProviderProxySetLifecycle', () => {
     expect(reportLifecycle.mock.calls.some(([, message]) => message.includes('stop-and-reap'))).toBe(false);
   });
 
-  it('clears both heartbeat holds without opening a preserve episode when the tenancy resynchronizes', () => {
+  it('clears the exclusive heartbeat window without opening a preserve episode when the tenancy resynchronizes', () => {
     const record = providerOperationRecord('executing');
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([record]);
@@ -1367,39 +1336,32 @@ describe('ProviderProxySetLifecycle', () => {
     lifecycle.completeStartupDiscovery();
     lifecycle.registerInheritedSet(authority);
 
-    const report = (incidentReason: 'unanswered' | 'unclassified' | 'challenge-resynchronized'): void =>
-      faults.reportIncident({
-        kind: 'heartbeat-indeterminate',
-        role: 'guardian',
-        method: 'guardian.heartbeat.v1',
-        incidentReason,
-        schedulerLatenessMs: 0,
-        error: incidentReason,
-      });
+    const noResponse = (): void =>
+      faults.reportIncident(heartbeatAuthorityObservation({ kind: 'no-response-before-deadline' }));
+    const unusable = (): void => faults.reportIncident(heartbeatAuthorityObservation({ kind: 'unusable' }));
 
-    report('unanswered');
-    report('unclassified');
+    noResponse();
+    unusable();
     reportLifecycle.mockClear();
     clock.elapse(1_000);
-    report('challenge-resynchronized');
-    expect(reportLifecycle).toHaveBeenCalledExactlyOnceWith(
-      'info',
-      expect.stringContaining('summary=recovered suppressed=1'),
-    );
+    faults.reportIncident(heartbeatAuthorityObservation({ kind: 'challenge-mismatch' }));
+    // Two incident shapes opened two preserve reports, so resynchronization recovers each one.
+    expect(reportLifecycle.mock.calls.map(([severity]) => severity)).toEqual(['info', 'info']);
+    expect(reportLifecycle.mock.calls.every(([, message]) => message.includes('summary=recovered'))).toBe(true);
     expect(
       reportLifecycle.mock.calls.some(([, message]) => message.includes('incidentReason=challenge-resynchronized')),
     ).toBe(false);
     reportLifecycle.mockClear();
     clock.elapse(24_000);
-    report('unanswered');
-    report('unclassified');
+    noResponse();
+    unusable();
 
     expect(stopAndReap).not.toHaveBeenCalled();
     expect(reportLifecycle.mock.calls.some(([, message]) => message.includes('stop-and-reap'))).toBe(false);
     expect(lifecycle.snapshot().states).toEqual(['available']);
   });
 
-  it('escalates a silence hold that never repeats the same error identity twice', () => {
+  it('does not split a silence hold when consecutive no-response exchanges have different error identities', () => {
     // The defect this guards against: keying the hold by `[subject, errorIdentity]` (as `preserveReports`
     // does for its own, unrelated log-coalescing purpose) gives each error shape its own `firstObservedAtMonotonicMs`.
     // Every incident below carries an error identity `preserveErrorIdentity` has never seen before on this
@@ -1431,44 +1393,22 @@ describe('ProviderProxySetLifecycle', () => {
     lifecycle.completeStartupDiscovery();
     lifecycle.registerInheritedSet(authority);
 
-    // Three pairwise-distinct unanswered error identities — `preserveErrorIdentity` disagrees on `code` or
-    // `origin` between every pair, while all three still advance the one silence hold.
+    // The transport can name timeout and connection-closed-after-write without changing the observation:
+    // both are no response to a request that was sent, and both advance the one silence window.
     const timeout = new ControlClientError('control_call_failed', 'heartbeat timed out', 'timeout');
     const closed = new ControlClientError('control_client_closed', 'the control channel closed', 'closed');
-    const writeFailed = new ControlClientError('control_call_failed', 'heartbeat write failed', 'write');
 
-    faults.reportIncident({
-      kind: 'heartbeat-indeterminate',
-      role: 'guardian',
-      method: 'guardian.heartbeat.v1',
-      incidentReason: 'unanswered',
-      schedulerLatenessMs: 0,
-      error: timeout,
-    });
+    faults.reportIncident(heartbeatAuthorityObservation({ kind: 'no-response-before-deadline', error: timeout }));
     clock.elapse(2_500);
-    faults.reportIncident({
-      kind: 'heartbeat-indeterminate',
-      role: 'guardian',
-      method: 'guardian.heartbeat.v1',
-      incidentReason: 'unanswered',
-      schedulerLatenessMs: 0,
-      error: writeFailed,
-    });
+    faults.reportIncident(heartbeatAuthorityObservation({ kind: 'no-response-before-deadline', error: closed }));
     reportLifecycle.mockClear();
 
     clock.elapse(2_500);
-    faults.reportIncident({
-      kind: 'heartbeat-indeterminate',
-      role: 'guardian',
-      method: 'guardian.heartbeat.v1',
-      incidentReason: 'unanswered',
-      schedulerLatenessMs: 0,
-      error: closed,
-    });
+    faults.reportIncident(heartbeatAuthorityObservation({ kind: 'no-response-before-deadline', error: timeout }));
 
     expect(reportLifecycle).toHaveBeenCalledExactlyOnceWith(
       'warn',
-      `Provider proxy set action=stop-and-reap reason=heartbeat_hold_exhausted fault=heartbeat-hold-exhausted subject=guardian liveClaims=1 set=${setReference(authority.setIdentity)} error=the control channel closed attempts=3 elapsedMs=5000 schedulerLatenessMs=0 lastIncidentReason=unanswered`,
+      `Provider proxy set action=stop-and-reap reason=heartbeat_hold_exhausted fault=heartbeat-hold-exhausted subject=guardian liveClaims=1 set=${setReference(authority.setIdentity)} error=heartbeat timed out attempts=3 elapsedMs=5000 schedulerLatenessMs=0 lastIncidentReason=unanswered`,
     );
     expect(stopAndReap).toHaveBeenCalledOnce();
   });
@@ -1499,23 +1439,13 @@ describe('ProviderProxySetLifecycle', () => {
     lifecycle.completeStartupDiscovery();
     lifecycle.registerInheritedSet(authority);
 
-    faults.reportIncident({
-      kind: 'heartbeat-indeterminate',
-      role: 'guardian',
-      method: 'guardian.heartbeat.v1',
-      incidentReason: 'unanswered',
-      schedulerLatenessMs: 0,
-      error: 'heartbeat timed out',
-    });
+    faults.reportIncident(
+      heartbeatAuthorityObservation({ kind: 'no-response-before-deadline', error: 'heartbeat timed out' }),
+    );
     clock.elapse(4_999);
-    faults.reportIncident({
-      kind: 'heartbeat-indeterminate',
-      role: 'guardian',
-      method: 'guardian.heartbeat.v1',
-      incidentReason: 'unanswered',
-      schedulerLatenessMs: 0,
-      error: 'heartbeat timed out',
-    });
+    faults.reportIncident(
+      heartbeatAuthorityObservation({ kind: 'no-response-before-deadline', error: 'heartbeat timed out' }),
+    );
 
     expect(stopAndReap).not.toHaveBeenCalled();
     expect(reportLifecycle.mock.calls.some(([, message]) => message.includes('stop-and-reap'))).toBe(false);
@@ -1541,14 +1471,9 @@ describe('ProviderProxySetLifecycle', () => {
     lifecycle.registerInheritedSet(authority);
 
     // The oldest report of all, inserted first: a live heartbeat hold that must survive eviction pressure.
-    faults.reportIncident({
-      kind: 'heartbeat-indeterminate',
-      role: 'guardian',
-      method: 'guardian.heartbeat.v1',
-      incidentReason: 'unanswered',
-      schedulerLatenessMs: 0,
-      error: 'heartbeat timed out',
-    });
+    faults.reportIncident(
+      heartbeatAuthorityObservation({ kind: 'no-response-before-deadline', error: 'heartbeat timed out' }),
+    );
 
     // 32 distinct operation-control-failed keys fill the set to capacity (1 heartbeat + 31 operation-control),
     // and the 32nd forces an eviction.
@@ -1571,7 +1496,7 @@ describe('ProviderProxySetLifecycle', () => {
 
     // The heartbeat hold's own record survived eviction: an accepted echo still finds it and closes it.
     reportLifecycle.mockClear();
-    faults.reportIncident({ kind: 'heartbeat-accepted', role: 'guardian', method: 'guardian.heartbeat.v1' });
+    faults.reportIncident(heartbeatAuthorityObservation({ kind: 'accepted' }));
     expect(reportLifecycle).toHaveBeenCalledExactlyOnceWith(
       'info',
       expect.stringContaining('summary=recovered suppressed=0'),
@@ -2991,14 +2916,9 @@ describe('ProviderProxySetLifecycle', () => {
     lifecycle.registerInheritedSet(authority);
 
     const unanswered = (): void =>
-      faults.reportIncident({
-        kind: 'heartbeat-indeterminate',
-        role: 'guardian',
-        method: 'guardian.heartbeat.v1',
-        incidentReason: 'unanswered',
-        schedulerLatenessMs: 0,
-        error: 'heartbeat timed out',
-      });
+      faults.reportIncident(
+        heartbeatAuthorityObservation({ kind: 'no-response-before-deadline', error: 'heartbeat timed out' }),
+      );
 
     unanswered();
     lifecycle.beginGracefulDrain(authority.setIdentity);

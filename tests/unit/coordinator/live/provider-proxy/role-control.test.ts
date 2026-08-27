@@ -10,7 +10,12 @@ import {
   ProviderProxyRoleControlRemoteError,
   ProviderProxyRoleControlUnavailableError,
 } from '#src/coordinator/live/provider-proxy/role-control.js';
-import { ControlClientError, type ControlClient, type ControlClientTimer } from '#src/provider-proxy/control-client.js';
+import {
+  ControlClientError,
+  type ControlClient,
+  type ControlClientTimer,
+  type ControlExchange,
+} from '#src/provider-proxy/control-client.js';
 import {
   PROXY_CONTROL_PROTOCOL_ERROR_CODES,
   type ProxyControlProtocolErrorCode,
@@ -35,16 +40,27 @@ const openResultSchema = z
   .object({ controlEpoch: z.number(), heartbeatChallenge: z.string(), roleId: z.string() })
   .strict();
 
-function client(call: ControlClient['call']): ControlClient {
+function client(call: ControlClient['call'], exchange?: ControlClient['exchange']): ControlClient {
   return {
-    exchange: () => {
-      throw new Error('unexpected control exchange');
-    },
+    exchange: exchange ?? (() => Promise.reject(new Error('unexpected control exchange'))),
     call,
     faulted: NEVER,
     onFault: () => () => undefined,
     close: () => undefined,
   };
+}
+
+function openingClient(exchange: ControlClient['exchange']): ControlClient {
+  return client(async () => ({ controlEpoch: 1, heartbeatChallenge: 'challenge-1', roleId: 'guardian-1' }), exchange);
+}
+
+function result(value: unknown): ControlExchange {
+  return { kind: 'response', response: { kind: 'result', value } };
+}
+
+function refusal(error: ControlClientError): ControlExchange {
+  if (error.remoteFailure === null) throw new Error('test refusal requires a remote failure');
+  return { kind: 'response', response: { kind: 'refusal', failure: error.remoteFailure, error } };
 }
 
 function remoteFailure(
@@ -133,14 +149,8 @@ describe('role control recovery classification', () => {
   );
 
   it('names an unclassified opening heartbeat as indeterminate availability', async () => {
-    let calls = 0;
-    const fake = client(async () => {
-      calls += 1;
-      if (calls === 1) {
-        return { controlEpoch: 1, heartbeatChallenge: 'challenge-1', roleId: 'guardian-1' };
-      }
-      throw remoteFailure('invalid_state', 'control-active');
-    });
+    const error = remoteFailure('invalid_state', 'control-active');
+    const fake = openingClient(async () => refusal(error));
 
     await expect(establishWith(fake)).rejects.toMatchObject({
       name: 'ProviderProxyRoleControlUnavailableError',
@@ -148,26 +158,13 @@ describe('role control recovery classification', () => {
         kind: 'role-heartbeat-indeterminate',
         role: 'guardian',
         method: 'guardian.heartbeat.v1',
-        incidentReason: 'unclassified',
-        origin: 'remote-response',
-        controlCode: 'control_call_failed',
+        observation: { kind: 'reply', reply: { kind: 'unusable', error } },
       },
     });
   });
 
-  it('names an undecodable opening heartbeat reply as indeterminate availability with no ControlClientError origin', async () => {
-    // The peer answered — `client.call` resolved — but not in a shape `controlHeartbeatResultSchema` accepts.
-    // That is never a `ControlClientError`, so it must not fall into the defensive
-    // `provider_proxy_heartbeat_indeterminate_error_mismatch` branch that guards against a genuinely
-    // unclassified error shape; `origin`/`controlCode` are `null` because there is no wire-level error to name.
-    let calls = 0;
-    const fake = client(async () => {
-      calls += 1;
-      if (calls === 1) {
-        return { controlEpoch: 1, heartbeatChallenge: 'challenge-1', roleId: 'guardian-1' };
-      }
-      return { unexpected: 'shape' };
-    });
+  it('names an undecodable opening heartbeat reply as answered but unusable', async () => {
+    const fake = openingClient(async () => result({ unexpected: 'shape' }));
 
     await expect(establishWith(fake)).rejects.toMatchObject({
       name: 'ProviderProxyRoleControlUnavailableError',
@@ -175,22 +172,14 @@ describe('role control recovery classification', () => {
         kind: 'role-heartbeat-indeterminate',
         role: 'guardian',
         method: 'guardian.heartbeat.v1',
-        incidentReason: 'unclassified',
-        origin: null,
-        controlCode: null,
+        observation: { kind: 'reply', reply: { kind: 'unusable' } },
       },
     });
   });
 
   it('names an unanswered opening heartbeat as indeterminate availability, distinctly from an unclassified one', async () => {
-    let calls = 0;
-    const fake = client(async () => {
-      calls += 1;
-      if (calls === 1) {
-        return { controlEpoch: 1, heartbeatChallenge: 'challenge-1', roleId: 'guardian-1' };
-      }
-      throw new ControlClientError('control_call_failed', 'heartbeat timed out', 'timeout');
-    });
+    const timeout = new ControlClientError('control_call_failed', 'heartbeat timed out', 'timeout');
+    const fake = openingClient(async () => ({ kind: 'no-response', cause: 'timeout', error: timeout }));
 
     await expect(establishWith(fake)).rejects.toMatchObject({
       name: 'ProviderProxyRoleControlUnavailableError',
@@ -198,28 +187,23 @@ describe('role control recovery classification', () => {
         kind: 'role-heartbeat-indeterminate',
         role: 'guardian',
         method: 'guardian.heartbeat.v1',
-        incidentReason: 'unanswered',
-        origin: 'timeout',
-        controlCode: 'control_call_failed',
+        observation: { kind: 'no-response-before-deadline', error: timeout },
       },
     });
   });
 
   it('resynchronizes the opening heartbeat through the canonical disposition', async () => {
     const calls: Array<Readonly<{ heartbeatChallenge?: unknown }>> = [];
-    const fake = client(async (_method, params) => {
+    const mismatch = heartbeatRefusal({ reason: 'challenge-mismatch', nextHeartbeatChallenge: 'challenge-2' });
+    const fake = openingClient(async (_method, params) => {
       calls.push(params as Readonly<{ heartbeatChallenge?: unknown }>);
-      if (calls.length === 1) {
-        return { controlEpoch: 1, heartbeatChallenge: 'challenge-1', roleId: 'guardian-1' };
-      }
-      if (calls.length === 2) {
-        throw heartbeatRefusal({ reason: 'challenge-mismatch', nextHeartbeatChallenge: 'challenge-2' });
-      }
-      return { state: 'active', nextHeartbeatChallenge: 'challenge-3' };
+      return calls.length === 1
+        ? refusal(mismatch)
+        : result({ state: 'active', nextHeartbeatChallenge: 'challenge-3' });
     });
 
     await expect(establishWith(fake)).resolves.toMatchObject({ nextHeartbeatChallenge: 'challenge-3' });
-    expect(calls.slice(1)).toEqual([
+    expect(calls).toEqual([
       { controlEpoch: 1, heartbeatChallenge: 'challenge-1' },
       { controlEpoch: 1, heartbeatChallenge: 'challenge-2' },
     ]);
@@ -227,15 +211,14 @@ describe('role control recovery classification', () => {
 
   it('names the successor when opening heartbeat resynchronization is exhausted', async () => {
     let calls = 0;
-    const fake = client(async () => {
+    const fake = openingClient(async () => {
       calls += 1;
-      if (calls === 1) {
-        return { controlEpoch: 1, heartbeatChallenge: 'challenge-1', roleId: 'guardian-1' };
-      }
-      throw heartbeatRefusal({
-        reason: 'challenge-mismatch',
-        nextHeartbeatChallenge: `challenge-${calls}`,
-      });
+      return refusal(
+        heartbeatRefusal({
+          reason: 'challenge-mismatch',
+          nextHeartbeatChallenge: `challenge-${calls}`,
+        }),
+      );
     });
 
     await expect(establishWith(fake)).rejects.toMatchObject({
@@ -244,23 +227,15 @@ describe('role control recovery classification', () => {
         kind: 'role-heartbeat-indeterminate',
         role: 'guardian',
         method: 'guardian.heartbeat.v1',
-        incidentReason: 'challenge-resynchronized',
-        origin: 'remote-response',
-        controlCode: 'control_call_failed',
+        observation: { kind: 'reply', reply: { kind: 'challenge-mismatch', nextChallenge: 'challenge-2' } },
       },
     });
-    expect(calls).toBe(3);
+    expect(calls).toBe(2);
   });
 
   it('keeps a teardown-latched opening heartbeat terminal', async () => {
-    let calls = 0;
-    const fake = client(async () => {
-      calls += 1;
-      if (calls === 1) {
-        return { controlEpoch: 1, heartbeatChallenge: 'challenge-1', roleId: 'guardian-1' };
-      }
-      throw heartbeatRefusal({ reason: 'teardown-latched', nextHeartbeatChallenge: null });
-    });
+    const error = heartbeatRefusal({ reason: 'teardown-latched', nextHeartbeatChallenge: null });
+    const fake = openingClient(async () => refusal(error));
 
     await expect(establishWith(fake)).rejects.toMatchObject({
       name: 'ProviderProxyRoleControlRemoteError',
@@ -277,14 +252,7 @@ describe('role control recovery classification', () => {
     const failure = new ControlClientError('control_call_failed', 'invalid frame', 'remote-response', {
       kind: 'invalid-frame',
     });
-    let calls = 0;
-    const fake = client(async () => {
-      calls += 1;
-      if (calls === 1) {
-        return { controlEpoch: 1, heartbeatChallenge: 'challenge-1', roleId: 'guardian-1' };
-      }
-      throw failure;
-    });
+    const fake = openingClient(async () => refusal(failure));
 
     await expect(establishWith(fake)).rejects.toMatchObject({
       name: 'ProviderProxyRoleControlUnavailableError',
@@ -292,9 +260,7 @@ describe('role control recovery classification', () => {
         kind: 'role-heartbeat-indeterminate',
         role: 'guardian',
         method: 'guardian.heartbeat.v1',
-        incidentReason: 'unclassified',
-        origin: 'remote-response',
-        controlCode: 'control_call_failed',
+        observation: { kind: 'reply', reply: { kind: 'unusable', error: failure } },
       },
     });
   });
@@ -307,14 +273,7 @@ describe('role control recovery classification', () => {
     // Not a disposition about the peer — this process's own encode/decode bug, guaranteed to recur
     // identically on retry. `establishHeartbeat` must not wrap it into a retryable availability error.
     const localBug = new Error('cannot encode heartbeat');
-    let calls = 0;
-    const fake = client(async () => {
-      calls += 1;
-      if (calls === 1) {
-        return { controlEpoch: 1, heartbeatChallenge: 'challenge-1', roleId: 'guardian-1' };
-      }
-      throw localBug;
-    });
+    const fake = openingClient(async () => ({ kind: 'not-sent', cause: 'encode-failed', error: localBug }));
 
     await expect(establishWith(fake)).rejects.toBe(localBug);
   });
@@ -329,19 +288,14 @@ describe('role control recovery classification', () => {
     const faulted = new Promise<ControlClientError>((resolve) => {
       resolveFaulted = resolve;
     });
-    let calls = 0;
     let heartbeatCallStarted = false;
     const fake: ControlClient = {
       exchange: () => {
-        throw new Error('unexpected control exchange');
-      },
-      call: async () => {
-        calls += 1;
-        if (calls === 1) {
-          return { controlEpoch: 1, heartbeatChallenge: 'challenge-1', roleId: 'guardian-1' };
-        }
         heartbeatCallStarted = true;
         return new Promise(() => undefined);
+      },
+      call: async () => {
+        return { controlEpoch: 1, heartbeatChallenge: 'challenge-1', roleId: 'guardian-1' };
       },
       faulted,
       onFault: () => () => undefined,
@@ -371,19 +325,14 @@ describe('role control recovery classification', () => {
     const faulted = new Promise<ControlClientError>((resolve) => {
       resolveFaulted = resolve;
     });
-    let calls = 0;
     let heartbeatCallStarted = false;
     const fake: ControlClient = {
       exchange: () => {
-        throw new Error('unexpected control exchange');
-      },
-      call: async () => {
-        calls += 1;
-        if (calls === 1) {
-          return { controlEpoch: 1, heartbeatChallenge: 'challenge-1', roleId: 'guardian-1' };
-        }
         heartbeatCallStarted = true;
         return new Promise(() => undefined);
+      },
+      call: async () => {
+        return { controlEpoch: 1, heartbeatChallenge: 'challenge-1', roleId: 'guardian-1' };
       },
       faulted,
       onFault: () => () => undefined,

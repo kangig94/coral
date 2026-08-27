@@ -2,6 +2,12 @@ import type { TimePort, TimerHandle } from '../../../infra/port-types.js';
 import type { ProcessIncarnation, RecordedProcessObserver } from '../../../infra/node-process.js';
 import { errorMessage } from '../../../infra/error-format.js';
 import type { OperationIdentity } from '../../../provider-proxy/protocol.js';
+import {
+  applyAnswer,
+  applyLocalFailure,
+  applyNoResponse,
+  type HeartbeatEvidenceWindow,
+} from '../../../provider-proxy/heartbeat-observation.js';
 import { type HandoffCapsule, type HandoffCapsuleV3 } from '../../../provider-proxy/handoff-capsule.js';
 import type { DurableProviderProxyOperationAuthority } from '../../live/provider-proxy/operation-route.js';
 import type { ProviderHandoffCapsuleRetirementOutcome } from '../provider-proxy-capsule-discovery.js';
@@ -14,7 +20,7 @@ import type { ProviderProxySetClaimMirror } from './claim-mirror.js';
 import type {
   ProviderProxyAuthorityFault,
   ProviderProxyAuthorityObservation,
-  ProviderProxyHeartbeatAccepted,
+  ProviderProxyHeartbeatObservation,
 } from '../provider-proxy-authority-fault.js';
 import type {
   ProviderProxyForeignCapsuleRetirementRetryIncident,
@@ -65,20 +71,6 @@ type PreserveReportState = {
   recoveryTimer: TimerHandle | null;
 };
 
-/**
- * A silence hold may authorize containment only while no answer has arrived for its exact role and method.
- * An unusable answer must end that silence hold without ending the answered-but-unusable hold it advances.
- * Error identity must not split either evidence window.
- */
-type HeartbeatHoldState = {
-  /** Monotonic: an authority-bearing span comparison must not move because a wall clock stepped. */
-  firstObservedAtMonotonicMs: bigint;
-  /** Every incident of this hold's disposition, across every error identity it took. */
-  attempts: number;
-  /** Scheduler delay observed by the heartbeat loop during this evidence window. */
-  schedulerLatenessMs: number;
-};
-
 type EstablishedSlot = {
   kind: 'available' | 'draining' | 'containing' | 'containment-wait';
   key: ProviderProxySetKey;
@@ -93,7 +85,7 @@ type EstablishedSlot = {
   retryTimer: TimerHandle | null;
   retirementDecision: ProviderProxySetDrainDecision | null;
   preserveReports: Map<string, PreserveReportState>;
-  heartbeatHolds: Map<string, HeartbeatHoldState>;
+  heartbeatEvidenceWindows: Map<string, HeartbeatEvidenceWindow>;
   heartbeatHoldBound: DurableProviderProxyOperationAuthority['autonomousDeadline']['heartbeatHoldBound'];
 };
 
@@ -594,8 +586,8 @@ export class ProviderProxySetLifecycle {
     ) {
       return;
     }
-    if (incident.kind === 'heartbeat-accepted') {
-      this.#recordHeartbeatAccepted(slot, incident.role, incident.method);
+    if (incident.kind === 'heartbeat-observation') {
+      this.#recordHeartbeatObservation(slot, incident);
       return;
     }
     const context = {
@@ -604,23 +596,12 @@ export class ProviderProxySetLifecycle {
       liveClaims: this.#deps.claims.claimsFor(slot.identity).length,
       setIdentity: slot.identity,
     };
-    const decision: ProviderProxySetPreserveDecision =
-      incident.kind === 'operation-control-failed'
-        ? {
-            ...context,
-            reason: 'retry_safe_operation_control_failure',
-            fault: incident.kind,
-            policy: incident.policy,
-          }
-        : {
-            ...context,
-            reason: 'heartbeat_echo_indeterminate',
-            fault: incident.kind,
-            role: incident.role,
-            method: incident.method,
-            incidentReason: incident.incidentReason,
-            schedulerLatenessMs: incident.schedulerLatenessMs,
-          };
+    const decision: ProviderProxySetPreserveDecision = {
+      ...context,
+      reason: 'retry_safe_operation_control_failure',
+      fault: incident.kind,
+      policy: incident.policy,
+    };
     this.#recordDecision(slot, decision, preserveErrorIdentity(incident.error));
   }
 
@@ -1111,7 +1092,7 @@ export class ProviderProxySetLifecycle {
       retryTimer: null,
       retirementDecision: null,
       preserveReports: new Map(),
-      heartbeatHolds: new Map(),
+      heartbeatEvidenceWindows: new Map(),
       heartbeatHoldBound: authority.autonomousDeadline.heartbeatHoldBound,
     };
     this.#slots.set(key, slot);
@@ -1265,22 +1246,6 @@ export class ProviderProxySetLifecycle {
     decision: ProviderProxySetPreserveDecision,
     errorIdentity: string,
   ): void {
-    if (decision.fault === 'heartbeat-indeterminate') {
-      const disposition = this.#advanceHeartbeatHold(slot, decision);
-      if (disposition.action === 'recovered') return;
-      if (disposition.action === 'stop-and-reap') {
-        this.#beginFaultContainment(slot, disposition);
-        return;
-      }
-      if (disposition.action === 'release') {
-        this.#releaseAnsweredHeartbeat(slot, disposition);
-        return;
-      }
-      if (disposition.action === 'await-containment-absence') {
-        this.#beginContainment(slot, disposition);
-        return;
-      }
-    }
     const now = this.#deps.time.now();
     const subject = decision.fault === 'operation-control-failed' ? decision.policy.method : decision.method;
     const key = JSON.stringify([subject, errorIdentity]);
@@ -1312,56 +1277,102 @@ export class ProviderProxySetLifecycle {
     this.#schedulePreserveRecovery(slot, key, report);
   }
 
-  /**
-   * Error identity must not split either hold, and answered evidence must end silence without being reported as
-   * heartbeat recovery. Scheduler lateness at or above the material share must reset the candidate window.
-   */
-  #advanceHeartbeatHold(
+  #heartbeatPreserveDecision(
     slot: EstablishedSlot,
-    decision: Extract<ProviderProxySetPreserveDecision, { fault: 'heartbeat-indeterminate' }>,
-  ):
-    | Extract<ProviderProxySetPreserveDecision, { fault: 'heartbeat-indeterminate' }>
-    | ProviderProxySetHeartbeatHoldExhaustedStopDecision
-    | ProviderProxySetHeartbeatReleaseDecision
-    | ProviderProxySetHeartbeatAwaitAbsenceDecision
-    | Readonly<{ action: 'recovered' }> {
-    if (decision.incidentReason === 'challenge-resynchronized') {
-      this.#recordHeartbeatAccepted(slot, decision.role, decision.method);
-      return { action: 'recovered' };
+    incident: ProviderProxyHeartbeatObservation,
+    incidentReason: 'unanswered' | 'unclassified',
+    error: unknown,
+  ): Extract<ProviderProxySetPreserveDecision, { fault: 'heartbeat-indeterminate' }> {
+    return {
+      action: 'preserve',
+      reason: 'heartbeat_echo_indeterminate',
+      fault: 'heartbeat-indeterminate',
+      role: incident.role,
+      method: incident.method,
+      incidentReason,
+      schedulerLatenessMs: incident.schedulerLatenessMs,
+      error: singleLineErrorSummary(error),
+      liveClaims: this.#deps.claims.claimsFor(slot.identity).length,
+      setIdentity: slot.identity,
+    };
+  }
+
+  #applyHeartbeatDisposition(
+    slot: EstablishedSlot,
+    disposition:
+      | ProviderProxySetHeartbeatHoldExhaustedStopDecision
+      | ProviderProxySetHeartbeatReleaseDecision
+      | ProviderProxySetHeartbeatAwaitAbsenceDecision,
+  ): void {
+    if (disposition.action === 'stop-and-reap') {
+      this.#beginFaultContainment(slot, disposition);
+      return;
     }
-    if (decision.incidentReason === 'method-not-found') {
-      return this.#heartbeatProtocolReleaseDecision(slot, decision);
+    if (disposition.action === 'release') {
+      this.#releaseAnsweredHeartbeat(slot, disposition);
+      return;
     }
-    if (decision.incidentReason === 'unclassified') {
-      slot.heartbeatHolds.delete(JSON.stringify([decision.role, decision.method, 'silence']));
+    this.#beginContainment(slot, disposition);
+  }
+
+  #recordHeartbeatObservation(slot: EstablishedSlot, incident: ProviderProxyHeartbeatObservation): void {
+    const key = JSON.stringify([incident.role, incident.method]);
+    const current = slot.heartbeatEvidenceWindows.get(key) ?? { kind: 'clear' };
+    const timing = {
+      nowMonotonicMs: this.#deps.time.monotonicNow(),
+      schedulerLatenessMs: incident.schedulerLatenessMs,
+      bound: slot.heartbeatHoldBound,
+    };
+    const { observation } = incident;
+    if (observation.kind === 'reply') {
+      const transition = applyAnswer(current, observation, timing);
+      slot.heartbeatEvidenceWindows.set(key, transition.window);
+      if (transition.effect === 'accepted' || transition.effect === 'challenge-mismatch') {
+        this.#recordHeartbeatAccepted(slot, incident.role, incident.method);
+        return;
+      }
+      if (transition.effect === 'method-not-found') {
+        this.#applyHeartbeatDisposition(slot, this.#heartbeatProtocolReleaseDecision(slot, incident, transition.error));
+        return;
+      }
+      if (transition.effect === 'teardown-latched') {
+        // The heartbeat assembly reports this observation before it uses the existing terminal-fault latch.
+        // This boundary owns only the evidence-window transition; finalization stays on that latch.
+        return;
+      }
+      const decision = this.#heartbeatPreserveDecision(slot, incident, 'unclassified', transition.error);
+      if (transition.effect === 'unusable-holding') {
+        this.#recordDecision(slot, decision, preserveErrorIdentity(transition.error));
+        return;
+      }
+      this.#applyHeartbeatDisposition(
+        slot,
+        this.#answeredHeartbeatHoldExhaustedDecision(
+          slot,
+          incident,
+          transition.window,
+          transition.error,
+          timing.nowMonotonicMs,
+        ),
+      );
+      return;
     }
-    const holdKind = decision.incidentReason === 'unanswered' ? 'silence' : 'answered-but-unusable';
-    const key = JSON.stringify([decision.role, decision.method, holdKind]);
-    const hold = slot.heartbeatHolds.get(key);
-    const nowMonotonicMs = this.#deps.time.monotonicNow();
-    if (hold === undefined) {
-      slot.heartbeatHolds.set(key, {
-        firstObservedAtMonotonicMs: nowMonotonicMs,
-        attempts: 1,
-        schedulerLatenessMs: 0,
-      });
-      return decision;
+    if (observation.kind === 'no-response-before-deadline') {
+      const transition = applyNoResponse(current, observation, timing);
+      slot.heartbeatEvidenceWindows.set(key, transition.window);
+      const decision = this.#heartbeatPreserveDecision(slot, incident, 'unanswered', transition.error);
+      if (transition.effect === 'silence-holding') {
+        this.#recordDecision(slot, decision, preserveErrorIdentity(transition.error));
+        return;
+      }
+      this.#applyHeartbeatDisposition(
+        slot,
+        this.#silenceHoldExhaustedDecision(slot, incident, transition.window, transition.error, timing.nowMonotonicMs),
+      );
+      return;
     }
-    hold.attempts += 1;
-    hold.schedulerLatenessMs += decision.schedulerLatenessMs;
-    const bound = slot.heartbeatHoldBound;
-    if (nowMonotonicMs - hold.firstObservedAtMonotonicMs < BigInt(bound.spanMs)) {
-      return decision;
-    }
-    if (hold.schedulerLatenessMs >= bound.materialSchedulerLatenessMs) {
-      hold.firstObservedAtMonotonicMs = nowMonotonicMs;
-      hold.attempts = 1;
-      hold.schedulerLatenessMs = 0;
-      return decision;
-    }
-    return decision.incidentReason === 'unanswered'
-      ? this.#silenceHoldExhaustedDecision(slot, decision, hold, nowMonotonicMs)
-      : this.#answeredHeartbeatHoldExhaustedDecision(slot, decision, hold, nowMonotonicMs);
+    // No window state is written. The assembly follows this observation through the existing terminal-fault path.
+    applyLocalFailure(observation);
   }
 
   /**
@@ -1370,23 +1381,24 @@ export class ProviderProxySetLifecycle {
    */
   #silenceHoldExhaustedDecision(
     slot: EstablishedSlot,
-    decision: Extract<ProviderProxySetPreserveDecision, { fault: 'heartbeat-indeterminate' }>,
-    hold: HeartbeatHoldState,
+    incident: ProviderProxyHeartbeatObservation,
+    hold: Extract<HeartbeatEvidenceWindow, { kind: 'silence' }>,
+    error: unknown,
     nowMonotonicMs: bigint,
   ): ProviderProxySetHeartbeatHoldExhaustedStopDecision {
     return {
       action: 'stop-and-reap',
       reason: 'heartbeat_hold_exhausted',
       fault: 'heartbeat-hold-exhausted',
-      role: decision.role,
-      method: decision.method,
+      role: incident.role,
+      method: incident.method,
       lastIncidentReason: 'unanswered',
       attempts: hold.attempts,
-      schedulerLatenessMs: hold.schedulerLatenessMs,
+      schedulerLatenessMs: hold.schedulerLatenessAfterFirstObservationMs,
       // The decision's `elapsedMs` is log text, not authority, so this is the one place the monotonic span
       // leaves bigint for a plain millisecond count.
       elapsedMs: Number(nowMonotonicMs - hold.firstObservedAtMonotonicMs),
-      error: decision.error,
+      error: singleLineErrorSummary(error),
       liveClaims: this.#deps.claims.claimsFor(slot.identity).length,
       setIdentity: slot.identity,
     };
@@ -1394,8 +1406,9 @@ export class ProviderProxySetLifecycle {
 
   #answeredHeartbeatHoldExhaustedDecision(
     slot: EstablishedSlot,
-    decision: Extract<ProviderProxySetPreserveDecision, { fault: 'heartbeat-indeterminate' }>,
-    hold: HeartbeatHoldState,
+    incident: ProviderProxyHeartbeatObservation,
+    hold: Extract<HeartbeatEvidenceWindow, { kind: 'answered-unusable' }>,
+    error: unknown,
     nowMonotonicMs: bigint,
   ): ProviderProxySetHeartbeatAnswerUnusableReleaseDecision | ProviderProxySetHeartbeatAwaitAbsenceDecision {
     const liveClaims = this.#deps.claims.claimsFor(slot.identity).length;
@@ -1411,20 +1424,21 @@ export class ProviderProxySetLifecycle {
       ...disposition,
       reason: 'heartbeat_answer_unusable_hold_exhausted',
       fault: 'heartbeat-answer-unusable-hold-exhausted',
-      role: decision.role,
-      method: decision.method,
+      role: incident.role,
+      method: incident.method,
       lastIncidentReason: 'unclassified',
       attempts: hold.attempts,
-      schedulerLatenessMs: hold.schedulerLatenessMs,
+      schedulerLatenessMs: hold.schedulerLatenessAfterFirstObservationMs,
       elapsedMs: Number(nowMonotonicMs - hold.firstObservedAtMonotonicMs),
-      error: decision.error,
+      error: singleLineErrorSummary(error),
       setIdentity: slot.identity,
     };
   }
 
   #heartbeatProtocolReleaseDecision(
     slot: EstablishedSlot,
-    decision: Extract<ProviderProxySetPreserveDecision, { fault: 'heartbeat-indeterminate' }>,
+    incident: ProviderProxyHeartbeatObservation,
+    error: unknown,
   ): ProviderProxySetHeartbeatProtocolReleaseDecision | ProviderProxySetHeartbeatAwaitAbsenceDecision {
     const liveClaims = this.#deps.claims.claimsFor(slot.identity).length;
     const disposition =
@@ -1439,18 +1453,18 @@ export class ProviderProxySetLifecycle {
       ...disposition,
       reason: 'heartbeat_protocol_incompatible',
       fault: 'heartbeat-method-not-found',
-      role: decision.role,
-      method: decision.method,
+      role: incident.role,
+      method: incident.method,
       incidentReason: 'method-not-found',
-      error: decision.error,
+      error: singleLineErrorSummary(error),
       setIdentity: slot.identity,
     };
   }
 
   #recordHeartbeatAccepted(
     slot: EstablishedSlot,
-    role: ProviderProxyHeartbeatAccepted['role'],
-    method: ProviderProxyHeartbeatAccepted['method'],
+    role: ProviderProxyHeartbeatObservation['role'],
+    method: ProviderProxyHeartbeatObservation['method'],
   ): void {
     const operatorKey = providerProxySetKey(slot.identity);
     const operatorDisposition = this.#operatorDispositions.get(operatorKey);
@@ -1461,8 +1475,6 @@ export class ProviderProxySetLifecycle {
     ) {
       this.#operatorDispositions.delete(operatorKey);
     }
-    slot.heartbeatHolds.delete(JSON.stringify([role, method, 'silence']));
-    slot.heartbeatHolds.delete(JSON.stringify([role, method, 'answered-but-unusable']));
     for (const [key, report] of slot.preserveReports) {
       if (
         report.decision.fault !== 'heartbeat-indeterminate' ||
@@ -1551,7 +1563,7 @@ export class ProviderProxySetLifecycle {
       }
     }
     slot.preserveReports.clear();
-    slot.heartbeatHolds.clear();
+    slot.heartbeatEvidenceWindows.clear();
   }
 
   #reportDecision(decision: ProviderProxySetDecision, summary?: string): void {

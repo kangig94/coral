@@ -153,7 +153,15 @@ async function startStatusProxy(): Promise<
     { bootstrapNonce: BOOTSTRAP_NONCE, coordinator },
     PROXY_CONTROL_RPC_TIMEOUT_MS,
   )) as { controlEpoch: number; heartbeatChallenge: string };
-  await heartbeatOnce(control, 'control.heartbeat.v1', opened.controlEpoch, opened.heartbeatChallenge);
+  const heartbeat = await heartbeatOnce(
+    control,
+    'control.heartbeat.v1',
+    opened.controlEpoch,
+    opened.heartbeatChallenge,
+  );
+  if (heartbeat.kind !== 'reply' || heartbeat.reply.kind !== 'accepted') {
+    throw new Error(`opening heartbeat was not accepted: ${heartbeat.kind}`);
+  }
 
   const held = operationIdentitySchema.parse({
     jobId: randomUUID(),
