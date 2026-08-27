@@ -16,6 +16,20 @@ import type {
   ProviderProxyRole,
 } from '../../services/provider-proxy-authority-fault.js';
 
+/**
+ * The peer answered, but this build could not decode the reply into `controlHeartbeatResultSchema` — a
+ * disposition about what came back over the wire, never about whether this process could ask. Thrown by
+ * `heartbeatOnce` so `heartbeatFailureDisposition` can tell it apart from a schema failure on the request side,
+ * which never reaches the wire at all.
+ */
+export class HeartbeatReplyUndecodableError extends Error {
+  constructor(cause: unknown) {
+    super('provider_proxy_heartbeat_reply_undecodable', { cause });
+    this.name = 'HeartbeatReplyUndecodableError';
+    Object.setPrototypeOf(this, HeartbeatReplyUndecodableError.prototype);
+  }
+}
+
 /** Sends one heartbeat and returns the next challenge. Exported so `role-control.ts`'s `establishRoleControl`
  *  can send the first heartbeat immediately after a role opens, on the identical call `startHeartbeatLoop`
  *  below uses on every later tick. */
@@ -27,7 +41,11 @@ export async function heartbeatOnce(
 ): Promise<{ nextHeartbeatChallenge: string }> {
   const params = controlHeartbeatParamsSchema.parse({ controlEpoch, heartbeatChallenge });
   const raw = await client.call(method, params, PROXY_CONTROL_RPC_TIMEOUT_MS);
-  return controlHeartbeatResultSchema.parse(raw);
+  try {
+    return controlHeartbeatResultSchema.parse(raw);
+  } catch (error: unknown) {
+    throw new HeartbeatReplyUndecodableError(error);
+  }
 }
 
 export type HeartbeatLoop = Readonly<{ stop(): void }>;
@@ -69,13 +87,15 @@ export type HeartbeatFailureDisposition =
       incidentReason: ProviderProxyHeartbeatIncidentReason;
     }>
   | Readonly<{ kind: 'terminal'; terminalReason: ProviderProxyHeartbeatTerminalReason; error: ControlClientError }>
-  /** Not a disposition about the peer: this process could not construct or decode the call at all (a raw
-   *  `ProxyControlProtocolError` from `control-client.ts`'s own write path, or a schema failure this build's
-   *  own code raised before or after talking to the wire). Retrying reproduces the identical failure, so a
-   *  caller must treat this as decisive rather than folding it into a hold. */
+  /** Not a disposition about the peer: this process could not construct or send the call at all. Retrying
+   *  reproduces the identical failure, so a caller must treat this as decisive rather than folding it into a
+   *  hold. */
   | Readonly<{ kind: 'local-failure'; error: unknown }>;
 
 export function heartbeatFailureDisposition(error: unknown, challenge: string): HeartbeatFailureDisposition {
+  if (error instanceof HeartbeatReplyUndecodableError) {
+    return { kind: 'retry', challenge, incidentReason: 'unclassified' };
+  }
   if (!(error instanceof ControlClientError)) {
     return { kind: 'local-failure', error };
   }

@@ -59,13 +59,53 @@ export type ProviderProxyDeadlineTiming = Readonly<{
  * How long a role's own enforcer tolerates silence before its adoption deadline can fire, derived from the
  * same two configuration fields `adoptionDeadline()` (below) itself subtracts. Exported so a consumer that
  * needs to agree with this tolerance — the coordinator's own bounded heartbeat-hold escalation
- * (`ProviderProxySetLifecycleDeps.heartbeatHoldBoundMs`) — derives it from this one formula instead of
- * restating it as an independently chosen number.
+ * (`providerProxyHeartbeatHoldBound`, below) — derives it from this one formula instead of restating it as an
+ * independently chosen number.
  */
 export function providerProxyAdoptionWindowMs(
   configuration: Pick<ProviderProxyDeadlineTiming, 'orphanTimeoutMs' | 'teardownReserveMs'>,
 ): number {
   return configuration.orphanTimeoutMs - configuration.teardownReserveMs;
+}
+
+/**
+ * `spanMs` is `providerProxyAdoptionWindowMs`'s own tolerance; `attemptFloor` is the minimum number of
+ * heartbeat-indeterminate incidents a hold must have accumulated over that span before elapsed time alone may
+ * authorize the coordinator's own bounded escalation (`ProviderProxySetLifecycleDeps.heartbeatHoldBound`).
+ */
+export type ProviderProxyHeartbeatHoldBound = Readonly<{
+  spanMs: number;
+  attemptFloor: number;
+}>;
+
+/**
+ * Both quantities derive from this one function so they cannot drift apart the way two independently chosen
+ * numbers could: a future edit to either the span formula or the protocol's own cadence updates both call
+ * sites the escalation reads through, instead of one.
+ *
+ * `attemptFloor` is how many heartbeat attempts a coordinator being scheduled normally issues over `spanMs`:
+ * each unanswered attempt costs one heartbeat tick plus one RPC timeout budget, so `spanMs` divided by that
+ * cost is the rough count a live, merely-slow-to-answer peer would produce. Issuing a request is an act a
+ * descheduled coordinator cannot fake, so requiring at least this many attempts is what makes the escalation's
+ * own claim ("asked N times and was never answered") true before it is made — elapsed time alone cannot
+ * distinguish a peer that never answered from a coordinator that was never scheduled to ask.
+ *
+ * `Math.max(1, ...)` guards the short end of the configured range: a span barely longer than one attempt's own
+ * cost would otherwise floor to zero, which — since a hold's `attempts` is always at least 2 by the time this
+ * bound is consulted — would impose no floor at all.
+ *
+ * Trade accepted: a genuinely wedged peer whose own coordinator is also slow to be scheduled will clear the
+ * span before it clears the floor, and so will escalate later than the span alone would have allowed. That
+ * delay is the correct direction — containment deferred, never a premature reap of live work.
+ */
+export function providerProxyHeartbeatHoldBound(
+  configuration: Pick<ProviderProxyDeadlineTiming, 'orphanTimeoutMs' | 'teardownReserveMs'>,
+): ProviderProxyHeartbeatHoldBound {
+  const spanMs = providerProxyAdoptionWindowMs(configuration);
+  return {
+    spanMs,
+    attemptFloor: Math.max(1, Math.floor(spanMs / (PROXY_CONTROL_HEARTBEAT_MS + PROXY_CONTROL_RPC_TIMEOUT_MS))),
+  };
 }
 
 export function providerProxyDeadlineTimingIsValid(timing: ProviderProxyDeadlineTiming): boolean {

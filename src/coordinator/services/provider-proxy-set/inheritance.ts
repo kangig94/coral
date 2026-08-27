@@ -240,8 +240,8 @@ export function providerProxySetAvailabilityReason(incident: ProviderProxySetAva
         incident.role,
         incident.method,
         incident.incidentReason,
-        incident.origin,
-        incident.controlCode,
+        incident.origin ?? 'reply-undecodable',
+        incident.controlCode ?? 'reply-undecodable',
       ].join(':');
     case 'recovery-deadline':
       return `${incident.kind}:${incident.timeoutMs}`;

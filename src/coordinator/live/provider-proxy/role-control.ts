@@ -20,7 +20,7 @@ import type {
   ProviderProxyHeartbeatMethod,
   ProviderProxyRole,
 } from '../../services/provider-proxy-authority-fault.js';
-import { heartbeatFailureDisposition, heartbeatOnce } from './heartbeat.js';
+import { HeartbeatReplyUndecodableError, heartbeatFailureDisposition, heartbeatOnce } from './heartbeat.js';
 
 export type ProviderProxyRoleOpenMethod =
   | 'control.open.v1'
@@ -56,12 +56,11 @@ export type ProviderProxyRoleControlAvailabilityIncident =
       role: ProviderProxyRole;
       method: ProviderProxyHeartbeatMethod;
       incidentReason: ProviderProxyHeartbeatIncidentReason;
-      /** The same distinction `role-control-unavailable` carries: `heartbeatFailureDisposition` folds
-       *  `timeout`/`write`/`closed` into one `unanswered` reason and every `remote-response` refusal it does
-       *  not recognize into `unclassified`, so without this field a dead socket and a slow one render the
-       *  identical durable retry reason. */
-      origin: ControlClientErrorOrigin;
-      controlCode: ControlClientErrorCode;
+      /** See heartbeatFailureDisposition in heartbeat.ts — carried because the durable retry reason it folds
+       *  incidents into is coarser than this. `null` when this incident is `heartbeatOnce`'s own reply-decode
+       *  failure rather than a `ControlClientError` this build actually received off the wire. */
+      origin: ControlClientErrorOrigin | null;
+      controlCode: ControlClientErrorCode | null;
     }>;
 
 export class ProviderProxyRoleControlUnavailableError extends Error {
@@ -205,8 +204,19 @@ async function establishHeartbeat(
         resynchronized = true;
         continue;
       }
-      // `heartbeatFailureDisposition` returns `'retry'`/`'terminal'` only for a `ControlClientError` — anything
-      // else is `'local-failure'`, already returned above — so `error` is one here whenever this line runs.
+      if (error instanceof HeartbeatReplyUndecodableError) {
+        throw new ProviderProxyRoleControlUnavailableError(
+          {
+            kind: 'role-heartbeat-indeterminate',
+            role,
+            method,
+            incidentReason: disposition.incidentReason,
+            origin: null,
+            controlCode: null,
+          },
+          { cause: error },
+        );
+      }
       if (!(error instanceof ControlClientError)) {
         throw new Error('provider_proxy_heartbeat_indeterminate_error_mismatch', { cause: error });
       }
@@ -228,17 +238,14 @@ async function establishHeartbeat(
 /**
  * Races the opening heartbeat against this client's own channel-fault signal, so a channel that dies mid
  * establishment is reported as decisive rather than as the generic indeterminate disposition a single RPC
- * rejection carries on its own.
+ * rejection carries on its own. Nothing subscribes to `observeControlClient` this early during establishment,
+ * so without this race, establishment would see only `heartbeatFailureDisposition`'s per-call verdict —
+ * `retry`, since a lone rejection cannot tell a dead channel from a live one that merely answered oddly once.
  *
- * `client.faulted` already resolves the instant `control-client.ts` latches a permanent fault — an invalid
- * frame or an ordinary close — and it does so strictly before the same event rejects whatever call was
- * pending, since `faultInvalidFrame`/the socket's `'close'` handler both call `latchFault` before `failAll`.
- * Once a set exists, that identical fact reaches `control-channel-fault` (a claim-bearing stop-and-reap)
- * through `observeControlClient`; nothing subscribes that early during establishment, so establishment would
- * otherwise see only `heartbeatFailureDisposition`'s per-call verdict — `retry`, since a lone rejection cannot
- * tell a dead channel from a live one that merely answered oddly once. Racing against `client.faulted` closes
- * that gap without changing what a single rejection means, so it does not disturb the disposition
- * `establishHeartbeat` already gives an ordinary indeterminate refusal.
+ * Correctness depends on `client.faulted` settling before the same event rejects whatever heartbeat call was
+ * pending — an ordering this file does not control and nothing in either file's types enforces; see
+ * connectControlClient in control-client.ts. `role-control.integration.test.ts` pins the ordering against a
+ * real channel fault arriving while a heartbeat is in flight.
  *
  * `client.faulted` only ever resolves with `'remote-response'` (invalid-frame) or `'closed'` origin — never
  * `'timeout'`/`'write'`, which are per-call rejection origins, not channel-fault origins. Both route through
@@ -256,11 +263,6 @@ async function establishHeartbeatOrChannelFault(
   const channelFaulted = client.faulted.then((fault): never =>
     classifyRoleControlFailure(role, 'heartbeat', method, fault),
   );
-  // A losing race leaves `channelFaulted` pending until the channel eventually faults for some ordinary later
-  // reason (or never); either way nothing will ever await it again, so it needs its own handler to avoid
-  // reporting as an unhandled rejection. `Promise.race` below still observes this same promise's rejection
-  // independently, so this does not change which side can win.
-  channelFaulted.catch(() => undefined);
   return Promise.race([establishHeartbeat(role, client, method, controlEpoch, firstChallenge), channelFaulted]);
 }
 

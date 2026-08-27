@@ -147,6 +147,33 @@ describe('role control recovery classification', () => {
     });
   });
 
+  it('names an undecodable opening heartbeat reply as indeterminate availability with no ControlClientError origin', async () => {
+    // The peer answered — `client.call` resolved — but not in a shape `controlHeartbeatResultSchema` accepts.
+    // That is never a `ControlClientError`, so it must not fall into the defensive
+    // `provider_proxy_heartbeat_indeterminate_error_mismatch` branch that guards against a genuinely
+    // unclassified error shape; `origin`/`controlCode` are `null` because there is no wire-level error to name.
+    let calls = 0;
+    const fake = client(async () => {
+      calls += 1;
+      if (calls === 1) {
+        return { controlEpoch: 1, heartbeatChallenge: 'challenge-1', roleId: 'guardian-1' };
+      }
+      return { unexpected: 'shape' };
+    });
+
+    await expect(establishWith(fake)).rejects.toMatchObject({
+      name: 'ProviderProxyRoleControlUnavailableError',
+      incident: {
+        kind: 'role-heartbeat-indeterminate',
+        role: 'guardian',
+        method: 'guardian.heartbeat.v1',
+        incidentReason: 'unclassified',
+        origin: null,
+        controlCode: null,
+      },
+    });
+  });
+
   it('names an unanswered opening heartbeat as indeterminate availability, distinctly from an unclassified one', async () => {
     let calls = 0;
     const fake = client(async () => {

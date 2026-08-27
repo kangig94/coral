@@ -432,6 +432,36 @@ describe('provider proxy authority heartbeats', () => {
     stopAll(heartbeats);
   });
 
+  it('reports an undecodable heartbeat reply as an unclassified incident, never a local failure', async () => {
+    // The peer answered — `client.call` resolved — but the reply fails `controlHeartbeatResultSchema`. That is
+    // a fact about what came back over the wire, not about whether this process could ask, so it must retry
+    // through the ordinary indeterminate channel rather than latch a decisive `local-failure` terminal.
+    const time = new VirtualTime();
+    const proxyClient: ControlClient = {
+      call: async () => ({ unexpected: 'shape' }),
+      faulted: new Promise<never>(() => undefined),
+      onFault: () => () => undefined,
+      close: () => {},
+    };
+    const guardian = scriptedClient(['guardian-challenge-1']);
+    const reaper = scriptedClient(['reaper-challenge-1']);
+    const faults = recordingFaultLatch();
+    const heartbeats = startAll(
+      sessions({ proxy: proxyClient, guardian: guardian.client, reaper: reaper.client }),
+      runtimeWithTime(time),
+      faults.latch,
+    );
+
+    time.tick(PROXY_CONTROL_HEARTBEAT_MS);
+    await flushMicrotasks();
+
+    expect(faults.incidents).toEqual([
+      expect.objectContaining({ kind: 'heartbeat-indeterminate', role: 'proxy', incidentReason: 'unclassified' }),
+    ]);
+    expect(faults.faults).toEqual([]);
+    stopAll(heartbeats);
+  });
+
   it('stop() clears the interval on the runtime, not just its own internal flag', async () => {
     const time = new VirtualTime();
     // A spy on `clearInterval` itself, not just an absence of later calls: the loop's own `stopped` flag

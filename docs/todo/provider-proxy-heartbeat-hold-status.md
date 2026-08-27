@@ -1,7 +1,7 @@
 # TODO — project live provider-proxy heartbeat holds into operator status
 
 **Status**: open. The lifecycle now retains a heartbeat hold until that exact role accepts an echo *or* the
-coordinator's own bounded escalation (`heartbeatHoldBoundMs`, `#escalateHeartbeatHold` in
+coordinator's own bounded escalation (`heartbeatHoldBound`, `#escalateHeartbeatHold` in
 `provider-proxy-set/index.ts`) ends it, but the state is coordinator-local and no existing command reads it —
 this entry is about the read path, not the exit, which the escalation now supplies.
 

@@ -169,7 +169,7 @@ and reaper's own heartbeat methods), its `adoptionDeadline()` is anchored on tha
 evidence — the coordinator's heartbeat *to the guardian*, not the coordinator's separate heartbeat *to the
 proxy* — so a coordinator starved specifically toward the proxy, while the guardian and reaper keep answering
 normally, never reaches that deadline either. The actual boundary for this scenario is now the coordinator's
-own bounded escalation (`heartbeatHoldBoundMs`, `#escalateHeartbeatHold` in `provider-proxy-set/index.ts`),
+own bounded escalation (`heartbeatHoldBound`, `#escalateHeartbeatHold` in `provider-proxy-set/index.ts`),
 derived from the identical `providerProxyAdoptionWindowMs` formula so it does not drift from the enforcer's own
 tolerance, and reported as `reason=heartbeat_hold_exhausted` with what it observed rather than a claim that
 silence proved the peer dead.

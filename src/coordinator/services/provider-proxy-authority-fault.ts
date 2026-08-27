@@ -99,8 +99,6 @@ type PendingIncident = {
   accepted: ProviderProxyHeartbeatAccepted | null;
 };
 
-const MAX_PENDING_INCIDENTS = 32;
-
 function incidentKey(incident: ProviderProxyAuthorityIncident): string {
   return incident.kind === 'heartbeat-indeterminate'
     ? JSON.stringify([incident.role, incident.method])
@@ -116,6 +114,11 @@ export function createProviderProxyAuthorityFaultLatch(): ProviderProxyAuthority
   let latchedFault: ProviderProxyAuthorityFault | null = null;
   const listeners = new Set<(fault: ProviderProxyAuthorityFault) => void>();
   const incidentListeners = new Set<(observation: ProviderProxyAuthorityObservation) => void>();
+  // Keyed by `incidentKey`, which is drawn from a closed vocabulary — the three `ProviderProxyRole` values
+  // (one heartbeat method each) plus whatever `RetrySafeControlCallPolicy.method` values this build's protocol
+  // surface declares — so a later report to the same key overwrites rather than accumulates. Growing this
+  // vocabulary is a reviewed code change, not runtime input, so no eviction cap is needed here the way
+  // `MAX_PRESERVE_REPORTS_PER_SET` needs one for a map keyed by arbitrary runtime error identity.
   const pendingIncidents = new Map<string, PendingIncident>();
   const faulted = new Promise<ProviderProxyAuthorityFault>((resolve) => {
     resolveFault = resolve;
@@ -153,10 +156,6 @@ export function createProviderProxyAuthorityFaultLatch(): ProviderProxyAuthority
         return;
       }
       const key = incidentKey(observation);
-      if (!pendingIncidents.has(key) && pendingIncidents.size === MAX_PENDING_INCIDENTS) {
-        const oldest = pendingIncidents.keys().next().value;
-        if (oldest !== undefined) pendingIncidents.delete(oldest);
-      }
       pendingIncidents.delete(key);
       pendingIncidents.set(key, { incident: observation, accepted: null });
     },

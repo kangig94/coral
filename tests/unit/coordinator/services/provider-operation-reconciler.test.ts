@@ -146,11 +146,12 @@ function lifecycleForSchedule(
   claims.initialize([record]);
   const lifecycle = new ProviderProxySetLifecycle({
     buildSetId: FIXTURE_BUILD_SET_ID,
-    heartbeatHoldBoundMs: Number.MAX_SAFE_INTEGER,
+    heartbeatHoldBound: { spanMs: Number.MAX_SAFE_INTEGER, attemptFloor: 0 },
     claims,
     controlEstablished: () => undefined,
     time: {
       now: () => 100,
+      monotonicNow: () => 100n,
       setTimeout: () => ({ unref: () => undefined }),
       clearTimeout: () => undefined,
     },

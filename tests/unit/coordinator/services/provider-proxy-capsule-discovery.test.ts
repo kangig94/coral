@@ -190,7 +190,7 @@ describe('provider proxy capsule discovery', () => {
     claims.initialize([]);
     const lifecycle = new ProviderProxySetLifecycle({
       buildSetId: FIXTURE_BUILD_SET_ID,
-      heartbeatHoldBoundMs: Number.MAX_SAFE_INTEGER,
+      heartbeatHoldBound: { spanMs: Number.MAX_SAFE_INTEGER, attemptFloor: 0 },
       claims,
       controlEstablished: () => undefined,
       time: runtime.time,

@@ -200,7 +200,7 @@ const validHeartbeatIncident: ProviderProxyAuthorityIncident = {
   incidentReason: 'unanswered',
   error: 'retry later',
 };
-// A local failure (this process could not construct or decode the call at all) is a second decisive
+// A local failure (this process could not construct or send the call at all) is a second decisive
 // terminal reason alongside `teardown-latched` — not a disposition about the peer, but still terminal.
 const validLocalFailureHeartbeatFault: ProviderProxyAuthorityFault = {
   kind: 'heartbeat-failed',

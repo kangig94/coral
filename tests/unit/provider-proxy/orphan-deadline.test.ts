@@ -25,6 +25,7 @@ import {
   PROXY_TEARDOWN_RESERVE_MS,
   providerProxyAdoptionWindowMs,
   providerProxyDeadlineTimingIsValid,
+  providerProxyHeartbeatHoldBound,
   providerProxyDeadlineConfigurationSchema,
   resolveProviderProxyDeadlineConfiguration,
   type EnforcerChallengePolicy,
@@ -204,6 +205,22 @@ describe('provider proxy orphan deadline configuration', () => {
     expect(providerProxyAdoptionWindowMs(configuration(String(MIN_EFFECTIVE_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS)))).toBe(
       22_001,
     );
+  });
+
+  it('derives the heartbeat-hold attempt floor from the same span and the protocol cadence', () => {
+    // 23000ms / (1000ms heartbeat tick + 5000ms RPC timeout budget) = 3.833..., floored.
+    expect(providerProxyHeartbeatHoldBound(configuration())).toEqual({ spanMs: 23_000, attemptFloor: 3 });
+    expect(
+      providerProxyHeartbeatHoldBound(configuration(String(MIN_EFFECTIVE_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS))),
+    ).toEqual({ spanMs: 22_001, attemptFloor: 3 });
+  });
+
+  it('never floors the attempt requirement below 1, even for a span shorter than one attempt costs', () => {
+    // A hold's `attempts` is always at least 2 by the time this bound is consulted, so a floor of 0 would
+    // impose no requirement at all.
+    expect(
+      providerProxyHeartbeatHoldBound({ orphanTimeoutMs: 19_001, teardownReserveMs: PROXY_TEARDOWN_RESERVE_MS }),
+    ).toEqual({ spanMs: 5_001, attemptFloor: 1 });
   });
 
   it('rejects an unvalidated configuration object at the state-machine boundary', () => {

@@ -22,6 +22,11 @@ import { ProviderProxySetLifecycleRef } from '#src/coordinator/services/provider
 import { backendLog } from '#src/infra/backend-log.js';
 import { JobStore } from '#src/jobs/store.js';
 import type { ControlClient } from '#src/provider-proxy/control-client.js';
+import {
+  CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV,
+  providerProxyHeartbeatHoldBound,
+  resolveProviderProxyDeadlineConfiguration,
+} from '#src/provider-proxy/orphan-deadline.js';
 import type { Database } from '#src/store/db.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
@@ -751,6 +756,117 @@ describe('execution services provider-proxy proof composition', () => {
       states: ['acquiring', 'acquiring', 'acquiring', 'acquiring'],
       acceptedAdmissions: 4,
     });
+    services.stopProviderOperationReconciler();
+  });
+});
+
+describe('execution services provider-proxy heartbeat-hold composition', () => {
+  async function createHeartbeatHoldHarness() {
+    const namespace = 'execution-services-heartbeat-hold';
+    const time = new VirtualTime();
+    const baseRuntime = createRealRuntime('prod');
+    const runtime = {
+      ...baseRuntime,
+      time,
+      env: {
+        ...baseRuntime.env,
+        // Forced regardless of the ambient process env, so this test's expectation never depends on whatever
+        // a developer or CI happens to have exported for this variable.
+        get: (key: string) =>
+          key === CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV ? undefined : baseRuntime.env.get(key),
+      },
+    };
+    const db = newRawDatabase(':memory:');
+    applyBundledStoreSchema(db, currentCoralStoreFormat());
+    const progressStore = new JobStore(namespace, runtime, createEventBodyCodec(), {
+      db,
+      providers: permissiveProviderLookupPort,
+    });
+    const lifecycleRef = new ProviderProxySetLifecycleRef();
+    const world = {
+      identity: { buildSetId: FIXTURE_BUILD_SET_ID },
+      storeServicesRef: { tryGet: () => ({ progressStore }) },
+      operationRegistry: new LocalOperationRegistry(),
+      providerProxyClaims: new ProviderProxySetClaimMirror(),
+      providerProxyLifecycleRef: lifecycleRef,
+      providerHostManager: {},
+    } as never;
+    const services = createExecutionServices({
+      world,
+      runtime,
+      bundleHash: namespace,
+      backendNamespace: namespace,
+      onProviderProxyLifecycleFatal: (error) => {
+        throw error;
+      },
+      createExecutionService: (() => {
+        throw new Error('execution service creation was not expected');
+      }) as never,
+    });
+    await services.reconcileProviderOperationsAtStartup(new AbortController().signal);
+    const lifecycle = lifecycleRef.get();
+    if (lifecycle === null) throw new Error('provider proxy lifecycle was not composed');
+
+    const setIdentity = providerProxySetIdentityFromRecord(providerOperationRecord('executing'));
+    const idleClient = {
+      call: async (method: string) => {
+        throw new Error(`unexpected role control call: ${method}`);
+      },
+      faulted: new Promise<never>(() => undefined),
+      onFault: () => () => undefined,
+      close: () => undefined,
+    } satisfies ControlClient;
+    const stopAndReap = vi.fn(async () => ({ disappearanceReceipt: 'heartbeat-hold-containment-absent' }) as const);
+    const faults = createProviderProxyAuthorityFaultLatch();
+    const authority = createProviderProxyOperationAuthority({
+      base: {
+        proxyInstanceId: setIdentity.proxyInstanceId,
+        stopAndReap,
+        stopHeartbeats: () => undefined,
+        initiateControlClose: async () => undefined,
+        registerSuccessionOperation: async () => undefined,
+      },
+      setIdentity,
+      clients: { proxy: idleClient, guardian: idleClient, reaper: idleClient },
+      faults,
+      mutationRpcTimeoutMs: 5_000,
+    });
+    const admission = lifecycle.beginFreshAcquisition('heartbeat-hold-route');
+    if (admission.kind !== 'accepted') throw new Error(`fresh set was not admitted: ${admission.kind}`);
+    lifecycle.acquisitionSucceeded(admission.slotId, authority);
+
+    return { time, faults, stopAndReap, services };
+  }
+
+  // The join `docs/design-rationale.md` §9 warns can go silently stale: `providerProxyAdoptionWindowMs` and
+  // `PROXY_CONTROL_RPC_TIMEOUT_MS`/`PROXY_CONTROL_HEARTBEAT_MS` are each unit-tested on their own, and every
+  // lifecycle fixture injects `Number.MAX_SAFE_INTEGER` for isolation — so nothing but this test exercises the
+  // actual composed value `execution-services.ts` hands the lifecycle for a real env.
+  it('binds the composed heartbeat-hold span and attempt floor to the derived configuration for a known env', async () => {
+    const expected = providerProxyHeartbeatHoldBound(
+      resolveProviderProxyDeadlineConfiguration({ get: () => undefined }),
+    );
+    expect(expected).toEqual({ spanMs: 23_000, attemptFloor: 3 });
+    const { time, faults, stopAndReap, services } = await createHeartbeatHoldHarness();
+
+    const incident = (error: string): void =>
+      faults.reportIncident({
+        kind: 'heartbeat-indeterminate',
+        role: 'guardian',
+        method: 'guardian.heartbeat.v1',
+        incidentReason: 'unanswered',
+        error,
+      });
+
+    incident('first');
+    time.tick(expected.spanMs);
+    // One incident short of the derived floor, with the derived span already fully elapsed: a composition
+    // that fell back to the plain adoption-window number (or dropped the floor) would escalate here instead.
+    for (let attempt = 2; attempt < expected.attemptFloor; attempt += 1) incident(`retry-${attempt}`);
+    expect(stopAndReap).not.toHaveBeenCalled();
+
+    incident('final');
+    expect(stopAndReap).toHaveBeenCalledOnce();
     services.stopProviderOperationReconciler();
   });
 });
