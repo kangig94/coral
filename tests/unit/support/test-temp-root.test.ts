@@ -44,12 +44,27 @@ describe('test temp root', () => {
     created.push(override);
     vi.stubEnv('CORAL_TEST_TMPDIR', override);
 
-    const root = testTempRoot(['/dev/shm']);
+    const classifyCandidate = vi.fn(() => false);
+    const root = testTempRoot(['/dev/shm'], classifyCandidate);
     expect(root).toBe(expectedUserRoot(override));
+    expect(classifyCandidate).not.toHaveBeenCalled();
     const stats = lstatSync(root);
     expect(stats.isDirectory()).toBe(true);
     expect(stats.mode & 0o777).toBe(0o700);
     if (process.getuid !== undefined) expect(stats.uid).toBe(process.getuid());
+  });
+
+  it('treats an empty override as absent instead of publishing a relative temp root', () => {
+    vi.stubEnv('CORAL_TEST_TMPDIR', '');
+
+    const root = testTempRoot([], () => false);
+
+    expect(root).toBe(tmpdir());
+    expect(root).not.toBe(userRootName());
+  });
+
+  it('bounds the longest uid accepted by the per-user root name', () => {
+    expect(userRootName(4_294_967_294)).toMatch(/^coral-[a-zA-Z0-9_-]{7}$/u);
   });
 
   it.runIf(process.platform !== 'win32')('falls back when the per-user root is an existing symlink', () => {

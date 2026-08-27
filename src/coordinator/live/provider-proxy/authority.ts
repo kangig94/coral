@@ -36,17 +36,18 @@ export interface ProviderProxySetAuthority {
   }>;
 }
 
+export type ProviderProxyAutonomousDeadline = Readonly<{
+  orphanTimeoutMs: number;
+  heartbeatHoldBound: ProviderProxyHeartbeatHoldBound;
+}> &
+  (
+    | Readonly<{ owner: 'guardian-and-reaper'; acceptanceFailure?: never }>
+    | Readonly<{ owner?: never; acceptanceFailure: 'role-acknowledgement-unavailable' }>
+  );
+
 export interface ProviderProxySetRecoveryAuthority extends ProviderProxySetAuthority {
-  /**
-   * The deadline agreement the established roles accepted. The lifecycle may relinquish a live set to this
-   * owner only because the role boundary already verified the same orphan timeout it uses to derive the hold
-   * bound.
-   */
-  readonly autonomousDeadline: Readonly<{
-    owner: 'guardian-and-reaper';
-    orphanTimeoutMs: number;
-    heartbeatHoldBound: ProviderProxyHeartbeatHoldBound;
-  }>;
+  /** Local ownership may transfer to the named owner only on the accepted variant. */
+  readonly autonomousDeadline: ProviderProxyAutonomousDeadline;
   installRecoveryCredential(signal: AbortSignal): Promise<void>;
   registerSuccessionOperation(operation: OperationIdentity, signal?: AbortSignal): Promise<void>;
 }

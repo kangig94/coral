@@ -7,6 +7,7 @@ import {
   createProviderProxyOperationAuthority,
   type DurableProviderProxyOperationAuthority,
 } from '#src/coordinator/live/provider-proxy/operation-route.js';
+import { createProviderProxySetAuthority } from '#src/coordinator/live/provider-proxy/set-authority.js';
 import { LocalOperationRegistry } from '#src/coordinator/services/operation-registry.js';
 import { ProviderOperationReconciler } from '#src/coordinator/services/provider-operation-reconciler.js';
 import {
@@ -22,6 +23,7 @@ import { ProviderProxySetLifecycleRef } from '#src/coordinator/services/provider
 import { backendLog } from '#src/infra/backend-log.js';
 import { JobStore } from '#src/jobs/store.js';
 import type { ControlClient } from '#src/provider-proxy/control-client.js';
+import { CURRENT_HANDOFF_CAPSULE_VERSION, type HandoffCapsuleV3 } from '#src/provider-proxy/handoff-capsule.js';
 import {
   CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV,
   MAX_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS,
@@ -40,6 +42,7 @@ import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { seedTestSessionProjection } from '#tests/helpers/session.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
 /** The build these fixture worlds belong to; capsules built from the same fixtures are inheritable, not foreign. */
 const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
@@ -821,35 +824,117 @@ describe('execution services provider-proxy heartbeat-hold composition', () => {
     if (lifecycle === null) throw new Error('provider proxy lifecycle was not composed');
 
     const setIdentity = providerProxySetIdentityFromRecord(providerOperationRecord('executing'));
-    const idleClient = {
+    const faults = createProviderProxyAuthorityFaultLatch();
+    const recoveryCapsule: HandoffCapsuleV3 = {
+      version: CURRENT_HANDOFF_CAPSULE_VERSION,
+      grantId: randomUUID(),
+      secret: 'f'.repeat(64),
+      generation: 'gen2',
+      flavor: 'prod',
+      buildSetId: setIdentity.buildSetId,
+      hostFingerprint: setIdentity.hostFingerprint,
+      guardianInstanceId: setIdentity.guardianInstanceId,
+      reaperInstanceId: setIdentity.reaperInstanceId,
+      proxyInstanceId: setIdentity.proxyInstanceId,
+      guardianControlEndpoint: setIdentity.guardianControlEndpoint,
+      reaperControlEndpoint: setIdentity.reaperControlEndpoint,
+      proxyEndpoint: setIdentity.canonicalEndpoint,
+      orphanTimeoutMs: MIN_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS,
+      teardownReserveMs: PROXY_TEARDOWN_RESERVE_MS,
+      guardianPid: setIdentity.guardianPid,
+      guardianIncarnation: setIdentity.guardianIncarnation,
+      reaperPid: setIdentity.reaperPid,
+      reaperIncarnation: setIdentity.reaperIncarnation,
+      proxyPid: setIdentity.proxyPid,
+      proxyIncarnation: setIdentity.proxyIncarnation,
+      proxyProcessGroupId: setIdentity.proxyProcessGroupId,
+      containmentKind: setIdentity.containmentKind,
+    };
+    const roleClient = (role: 'guardian' | 'reaper' | 'proxy'): ControlClient => ({
       call: async (method: string) => {
+        if (method.endsWith('handoff-install.v1') || method === 'handoff.install.v1') {
+          return { state: 'installed-dormant', grantId: recoveryCapsule.grantId };
+        }
+        if (method === 'guardian.stop-and-reap.v1' || method === 'reaper.stop-and-reap.v1') {
+          return { state: 'containment-absent', disappearanceReceipt: `${role}-gone` };
+        }
         throw new Error(`unexpected role control call: ${method}`);
       },
       faulted: new Promise<never>(() => undefined),
       onFault: () => () => undefined,
       close: () => undefined,
-    } satisfies ControlClient;
-    const stopAndReap = vi.fn(async () => ({ disappearanceReceipt: 'heartbeat-hold-containment-absent' }) as const);
-    const faults = createProviderProxyAuthorityFaultLatch();
-    const redeemedDeadline = {
-      owner: 'guardian-and-reaper' as const,
-      orphanTimeoutMs: MIN_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS,
-      heartbeatHoldBound: providerProxyHeartbeatHoldBound({
-        orphanTimeoutMs: MIN_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS,
-        teardownReserveMs: PROXY_TEARDOWN_RESERVE_MS,
-      }),
-    };
+    });
+    const guardianClient = roleClient('guardian');
+    const reaperClient = roleClient('reaper');
+    const proxyClient = roleClient('proxy');
+    const base = createProviderProxySetAuthority({
+      proxyInstanceId: setIdentity.proxyInstanceId,
+      guardianClient,
+      reaperClient,
+      proxyClient,
+      guardianIdentity: {
+        guardianInstanceId: setIdentity.guardianInstanceId,
+        pid: setIdentity.guardianPid,
+        incarnation: setIdentity.guardianIncarnation,
+        generation: 'gen2',
+        flavor: 'prod',
+        buildSetId: setIdentity.buildSetId,
+        hostFingerprint: setIdentity.hostFingerprint,
+        canonicalControlEndpoint: setIdentity.guardianControlEndpoint,
+      },
+      reaperIdentity: {
+        reaperInstanceId: setIdentity.reaperInstanceId,
+        pid: setIdentity.reaperPid,
+        incarnation: setIdentity.reaperIncarnation,
+        guardianInstanceId: setIdentity.guardianInstanceId,
+        generation: 'gen2',
+        flavor: 'prod',
+        buildSetId: setIdentity.buildSetId,
+        hostFingerprint: setIdentity.hostFingerprint,
+        canonicalControlEndpoint: setIdentity.reaperControlEndpoint,
+        containmentKind: setIdentity.containmentKind,
+      },
+      proxyIdentityFields: {
+        proxyInstanceId: setIdentity.proxyInstanceId,
+        pid: setIdentity.proxyPid,
+        incarnation: setIdentity.proxyIncarnation,
+        processGroupId: setIdentity.proxyProcessGroupId,
+        guardianInstanceId: setIdentity.guardianInstanceId,
+        reaperInstanceId: setIdentity.reaperInstanceId,
+        generation: 'gen2',
+        flavor: 'prod',
+        buildSetId: setIdentity.buildSetId,
+        hostFingerprint: setIdentity.hostFingerprint,
+        canonicalEndpoint: setIdentity.canonicalEndpoint,
+      },
+      heartbeats: {
+        guardian: { stop: () => undefined },
+        reaper: { stop: () => undefined },
+        proxy: { stop: () => undefined },
+      },
+      coordinatorIdentity: {
+        instanceId: randomUUID(),
+        pid: 1,
+        incarnation: testIncarnation(1),
+        generation: 'gen2',
+        flavor: 'prod',
+        buildSetId: setIdentity.buildSetId,
+      },
+      handoffCapsulePath: '/unused/redeemed-capsule.json',
+      runtime,
+      recoveryCapsule,
+      recoveryOperations: [],
+      operationRegistry: new LocalOperationRegistry(),
+    });
+    await base.installRecoveryCredential(new AbortController().signal);
+    const stopAndReap = vi.fn(base.stopAndReap);
     const authority = createProviderProxyOperationAuthority({
       base: {
-        proxyInstanceId: setIdentity.proxyInstanceId,
-        autonomousDeadline: redeemedDeadline,
+        ...base,
         stopAndReap,
-        stopHeartbeats: () => undefined,
-        initiateControlClose: async () => undefined,
-        registerSuccessionOperation: async () => undefined,
       },
       setIdentity,
-      clients: { proxy: idleClient, guardian: idleClient, reaper: idleClient },
+      clients: { proxy: proxyClient, guardian: guardianClient, reaper: reaperClient },
       faults,
       mutationRpcTimeoutMs: 5_000,
     });
@@ -857,7 +942,7 @@ describe('execution services provider-proxy heartbeat-hold composition', () => {
     if (admission.kind !== 'accepted') throw new Error(`fresh set was not admitted: ${admission.kind}`);
     lifecycle.acquisitionSucceeded(admission.slotId, authority);
 
-    return { time, faults, stopAndReap, redeemedDeadline, services };
+    return { time, faults, stopAndReap, redeemedDeadline: base.autonomousDeadline, services };
   }
 
   it("uses a redeemed set's capsule deadline instead of the successor coordinator's environment", async () => {

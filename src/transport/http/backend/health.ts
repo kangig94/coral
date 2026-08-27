@@ -124,6 +124,14 @@ export interface BackendHealth {
       contentSeq?: number;
       metadataSeq?: number;
     }>;
+    providerProxySets?: Array<{
+      setIdentity: { buildSetId: string; hostFingerprint: string; proxyInstanceId: string };
+      disposition: 'held' | 'awaiting-containment-absence' | 'released';
+      role?: string;
+      method?: string;
+      incidentReason: string;
+      waitingFor: 'heartbeat-evidence-window' | 'independent-containment-absence' | 'none-successor-accepted';
+    }>;
   };
 }
 
@@ -169,6 +177,29 @@ function isConsumerStuck(value: unknown): value is NonNullable<BackendHealth['di
     }
     return entry.metadataSeq === undefined || Number.isFinite(entry.metadataSeq);
   });
+}
+
+function isProviderProxySets(value: unknown): value is NonNullable<BackendHealth['diagnostics']>['providerProxySets'] {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (entry) =>
+        isRecord(entry) &&
+        isRecord(entry.setIdentity) &&
+        typeof entry.setIdentity.buildSetId === 'string' &&
+        typeof entry.setIdentity.hostFingerprint === 'string' &&
+        typeof entry.setIdentity.proxyInstanceId === 'string' &&
+        (entry.disposition === 'held' ||
+          entry.disposition === 'awaiting-containment-absence' ||
+          entry.disposition === 'released') &&
+        (entry.role === undefined || typeof entry.role === 'string') &&
+        (entry.method === undefined || typeof entry.method === 'string') &&
+        typeof entry.incidentReason === 'string' &&
+        (entry.waitingFor === 'heartbeat-evidence-window' ||
+          entry.waitingFor === 'independent-containment-absence' ||
+          entry.waitingFor === 'none-successor-accepted'),
+    )
+  );
 }
 
 function isDegradedReason(
@@ -331,6 +362,9 @@ function isDiagnostics(value: unknown): value is NonNullable<BackendHealth['diag
     return false;
   }
   if (value.consumerStuck !== undefined && !isConsumerStuck(value.consumerStuck)) {
+    return false;
+  }
+  if (value.providerProxySets !== undefined && !isProviderProxySets(value.providerProxySets)) {
     return false;
   }
   if (

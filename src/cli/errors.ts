@@ -137,6 +137,15 @@ function withExitCode(envelope: CliErrorEnvelope, exitCode: number): { envelope:
 
 type CliErrorResult = ReturnType<typeof withExitCode>;
 
+function cliSetupErrorCode(setupError: {
+  readonly code: string;
+  readonly context?: Readonly<Record<string, unknown>>;
+}): string {
+  return setupError.code === 'legacy_source_not_quiescent' && setupError.context?.writerObservation === 'unknown'
+    ? 'legacy_source_writer_observation_unknown'
+    : setupError.code;
+}
+
 export function errorCodeToExit(code: string, httpStatus?: number): number {
   if (code === 'invalid_usage') {
     return 2;
@@ -187,14 +196,15 @@ function structuredBodyError(
 ): CliErrorResult {
   const setupError = serializeCoralSetupError(value);
   if (setupError !== null) {
+    const code = cliSetupErrorCode(setupError);
     return withExitCode(
       {
         error: true,
-        code: setupError.code,
+        code,
         message: setupError.userMessage,
         remediation: setupError.remediation,
       },
-      errorCodeToExit(setupError.code, fallback.httpStatus),
+      errorCodeToExit(code, fallback.httpStatus),
     );
   }
 
@@ -278,14 +288,15 @@ export function buildErrorEnvelope(error: unknown): CliErrorResult {
 
   const setupError = serializeCoralSetupError(error);
   if (setupError) {
+    const code = cliSetupErrorCode(setupError);
     return withExitCode(
       {
         error: true,
-        code: setupError.code,
+        code,
         message: setupError.userMessage,
         remediation: setupError.remediation,
       },
-      errorCodeToExit(setupError.code),
+      errorCodeToExit(code),
     );
   }
 

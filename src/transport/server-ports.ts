@@ -173,6 +173,14 @@ export type HealthSnapshot = {
       contentSeq?: number;
       metadataSeq?: number;
     }>;
+    providerProxySets?: Array<{
+      setIdentity: { buildSetId: string; hostFingerprint: string; proxyInstanceId: string };
+      disposition: 'held' | 'awaiting-containment-absence' | 'released';
+      role?: string;
+      method?: string;
+      incidentReason: string;
+      waitingFor: 'heartbeat-evidence-window' | 'independent-containment-absence' | 'none-successor-accepted';
+    }>;
   };
 };
 

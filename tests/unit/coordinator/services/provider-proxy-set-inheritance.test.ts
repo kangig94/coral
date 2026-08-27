@@ -33,7 +33,11 @@ import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
 import { connectControlClient, ControlClientError } from '#src/provider-proxy/control-client.js';
 import { createControlEndpoint, type ControlChallengeAuthority } from '#src/provider-proxy/control-endpoint.js';
 import { ControlLeaseEvidence } from '#src/provider-proxy/control-lease.js';
-import { PROXY_CONTROL_HEARTBEAT_MS, PROXY_CONTROL_LEASE_MS } from '#src/provider-proxy/orphan-deadline.js';
+import {
+  PROXY_CONTROL_HEARTBEAT_MS,
+  PROXY_CONTROL_LEASE_MS,
+  providerProxyHeartbeatHoldBound,
+} from '#src/provider-proxy/orphan-deadline.js';
 import { createProxy } from '#src/provider-proxy/proxy.js';
 import { connectRoleControlWithRetry, runtimeControlTimer } from '#src/provider-proxy/role-spawn.js';
 import type { ControlClient } from '#src/provider-proxy/control-client.js';
@@ -508,6 +512,10 @@ function redemptionResponses(
   operationSets: RedemptionOperationSets,
   overrides: Record<string, unknown | ((params: unknown) => unknown)> = {},
 ): Record<string, unknown | ((params: unknown) => unknown)> {
+  const installAck = (params: unknown) => ({
+    state: 'installed-dormant',
+    grantId: (params as { grantId: string }).grantId,
+  });
   return {
     'guardian.handoff-redeem.v1': {
       ...OPENING,
@@ -535,6 +543,9 @@ function redemptionResponses(
       operations: operationSets.proxy,
     },
     'control.heartbeat.v1': { state: 'active', nextHeartbeatChallenge: 'p2' },
+    'guardian.handoff-install.v1': installAck,
+    'reaper.handoff-install.v1': installAck,
+    'handoff.install.v1': installAck,
     ...overrides,
   };
 }
@@ -807,6 +818,7 @@ describe('attemptProviderProxySetInheritance', () => {
       },
     };
     const capsule = capsuleFor(loc);
+    if (capsule.version !== 3) throw new Error('expected a V3 recovery capsule');
     mockedReadCapsule.mockReturnValueOnce(capsule);
     const otherIdentity = { jobId: randomUUID(), operationId: randomUUID() };
     const guardianOperations = byteSorted([operationFor(loc), operationFor(loc, otherIdentity)]);
@@ -859,12 +871,19 @@ describe('attemptProviderProxySetInheritance', () => {
       try {
         expect(sawGuardianReceiptOnRotate).toBe(true);
         expect(outcome.set.proxyInstanceId).toBe(loc.operation.proxyInstanceId);
+        expect(outcome.set.autonomousDeadline).toMatchObject({
+          owner: 'guardian-and-reaper',
+          orphanTimeoutMs: capsule.orphanTimeoutMs,
+        });
         expect(connectionOrder).toEqual([
           loc.locator.guardian.controlEndpoint,
           loc.locator.reaper.controlEndpoint,
           loc.locator.proxy.controlEndpoint,
         ]);
         expect(calls.some((call) => call.method.startsWith('operation.'))).toBe(false);
+        expect(calls.map(({ method }) => method)).toEqual(
+          expect.arrayContaining(['guardian.handoff-install.v1', 'reaper.handoff-install.v1']),
+        );
       } finally {
         outcome.set.stopHeartbeats();
         await outcome.set.initiateControlClose();
@@ -872,6 +891,45 @@ describe('attemptProviderProxySetInheritance', () => {
     } finally {
       await proxy.close();
     }
+  });
+
+  it('returns a redeemed authority with an unproven deadline when an enforcer rejects the capsule timeout', async () => {
+    const loc = locator();
+    const capsule = capsuleFor(loc);
+    if (capsule.version !== 3) throw new Error('expected a V3 recovery capsule');
+    mockedReadCapsule.mockReturnValueOnce(capsule);
+    const calls: { method: string; params: unknown }[] = [];
+    const client = fakeClient(
+      redemptionResponses(loc, matchingOperationSets([]), {
+        'guardian.handoff-install.v1': () => {
+          throw new Error("identity_mismatch: the named orphan timeout is not this role's default");
+        },
+      }),
+      calls,
+    );
+    stubConnect(client);
+
+    const outcome = await attemptProviderProxySetInheritance(
+      loc,
+      unusedDb,
+      {
+        runtime,
+        coordinatorIdentity: COORDINATOR_IDENTITY,
+        operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
+      },
+      neverAborts,
+    );
+
+    if (outcome.kind !== 'inherited') throw new Error('inheritance did not return its operation authority');
+    expect(outcome.set.autonomousDeadline).toEqual({
+      acceptanceFailure: 'role-acknowledgement-unavailable',
+      orphanTimeoutMs: capsule.orphanTimeoutMs,
+      heartbeatHoldBound: providerProxyHeartbeatHoldBound(capsule),
+    });
+    expect(isProviderProxyOperationAuthority(outcome.set)).toBe(true);
+    expect(calls.some(({ method }) => method === 'handoff.install.v1')).toBe(false);
+    outcome.set.stopHeartbeats();
+    await outcome.set.initiateControlClose();
   });
 
   it('rejects and closes every opened role when one redeemed operation set is a strict subset', async () => {

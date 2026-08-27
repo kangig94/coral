@@ -738,6 +738,17 @@ function formatRunningStatus(health: RunningHealth): string {
   if (typeof health.queueDepth === 'number') {
     lines.push(`Queue depth: ${health.queueDepth}`);
   }
+  const providerProxySets = health.diagnostics?.providerProxySets ?? [];
+  if (providerProxySets.length > 0) {
+    lines.push('', 'Provider proxy sets:');
+    for (const set of providerProxySets) {
+      const subject = [set.role, set.method].filter((value) => value !== undefined).join(' ');
+      lines.push(
+        `  buildSetId=${set.setIdentity.buildSetId} proxyInstanceId=${set.setIdentity.proxyInstanceId} hostFingerprint=${set.setIdentity.hostFingerprint}`,
+        `    disposition=${set.disposition}${subject.length === 0 ? '' : ` subject=${subject}`} incident=${set.incidentReason} waitingFor=${set.waitingFor}`,
+      );
+    }
+  }
   return lines.join('\n');
 }
 

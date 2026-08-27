@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, rmSync, statfsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -11,6 +12,7 @@ const TMPFS_MAGIC = 0x01021994;
 const REQUIRED_FREE_BYTES = 1024 * 1024 * 1024;
 
 const DEFAULT_CANDIDATES: ReadonlyArray<string | undefined> = ['/dev/shm', process.env.XDG_RUNTIME_DIR];
+const USER_ROOT_IDENTITY_LENGTH = 7;
 
 function tmpfsWithRoom(candidate: string): boolean {
   try {
@@ -24,9 +26,15 @@ function tmpfsWithRoom(candidate: string): boolean {
 /** Every unix socket the suites bind sits under this root, and `AF_UNIX` truncates `sun_path` at a fixed
  *  small limit — 108 bytes on Linux — so bytes spent on the name are bytes the rest of the path cannot use.
  *  `tests/invariants/temp-root-socket-budget.test.ts` holds the arithmetic. */
-export function userRootName(): string {
-  const identity = process.getuid?.() ?? process.env.USERNAME ?? process.env.USER ?? 'unknown';
-  return `coral-${String(identity).replaceAll(/[^a-zA-Z0-9_-]/gu, '_')}`;
+export function userRootName(
+  identity: string | number = process.getuid?.() ?? process.env.USERNAME ?? process.env.USER ?? 'unknown',
+): string {
+  const normalized = String(identity).replaceAll(/[^a-zA-Z0-9_-]/gu, '_');
+  const bounded =
+    normalized.length <= USER_ROOT_IDENTITY_LENGTH
+      ? normalized
+      : createHash('sha256').update(String(identity)).digest('base64url').slice(0, USER_ROOT_IDENTITY_LENGTH);
+  return `coral-${bounded}`;
 }
 
 function executableRoot(root: string): boolean {
@@ -73,7 +81,8 @@ function secureUserRoot(base: string): string | null {
  * what the crash-cut and atomic-publication suites actually exercise — hold on tmpfs exactly as on disk.
  *
  * Falls back to the platform temp directory whenever a memory-backed root is absent, too small, unsafe, or
- * mounted `noexec`. `CORAL_TEST_TMPDIR` overrides candidate selection but must pass the same root checks.
+ * mounted `noexec`. A non-empty `CORAL_TEST_TMPDIR` deliberately bypasses memory-device selection, then its
+ * per-user directory must pass the same ownership, mode, and executability checks as a selected candidate.
  * `candidates` and its classifier are parameters so the fallback remains reachable without assuming what
  * filesystem the checkout or platform temp directory uses.
  */
@@ -83,7 +92,7 @@ export function testTempRoot(
 ): string {
   const override = process.env.CORAL_TEST_TMPDIR;
   const base =
-    override ??
+    (override === undefined || override.length === 0 ? undefined : override) ??
     candidates.find((candidate): candidate is string => candidate !== undefined && isUsableTmpfs(candidate));
   if (base === undefined) return tmpdir();
 

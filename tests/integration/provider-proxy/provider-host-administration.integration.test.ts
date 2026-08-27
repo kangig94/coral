@@ -179,6 +179,7 @@ beforeEach(async () => {
     handoffCapsulePath: join(directory, 'unused.json'),
     runtime: unusedRuntimePorts(),
     recoveryCapsule: {} as never,
+    recoveryOperations: [],
     operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
   });
   cleanup = async () => {

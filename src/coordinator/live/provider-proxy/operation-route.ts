@@ -85,11 +85,13 @@ export function isProviderProxyOperationAuthority(
   value: ProviderProxySetAuthority,
 ): value is DurableProviderProxyOperationAuthority {
   const candidate = value as Partial<DurableProviderProxyOperationAuthority>;
+  const deadline = candidate.autonomousDeadline;
   return (
-    candidate.autonomousDeadline?.owner === 'guardian-and-reaper' &&
-    typeof candidate.autonomousDeadline.orphanTimeoutMs === 'number' &&
-    typeof candidate.autonomousDeadline.heartbeatHoldBound?.spanMs === 'number' &&
-    typeof candidate.autonomousDeadline.heartbeatHoldBound.materialSchedulerLatenessMs === 'number' &&
+    deadline !== undefined &&
+    (deadline.owner === 'guardian-and-reaper' || deadline.acceptanceFailure === 'role-acknowledgement-unavailable') &&
+    typeof deadline.orphanTimeoutMs === 'number' &&
+    typeof deadline.heartbeatHoldBound?.spanMs === 'number' &&
+    typeof deadline.heartbeatHoldBound.materialSchedulerLatenessMs === 'number' &&
     candidate.setIdentity !== undefined &&
     candidate.faulted instanceof Promise &&
     typeof candidate.onFault === 'function' &&

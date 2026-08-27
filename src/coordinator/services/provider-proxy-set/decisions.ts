@@ -106,18 +106,16 @@ export type ProviderProxySetHeartbeatHoldExhaustedStopDecision = Readonly<{
   setIdentity: ProviderProxySetIdentity;
 }>;
 
-type ProviderProxySetHeartbeatReleaseFields = Readonly<{
-  action: 'release';
+type ProviderProxySetHeartbeatDispositionFields = Readonly<{
   role: ProviderProxyRole;
   method: ProviderProxyHeartbeatMethod;
-  successorOwner: 'guardian-and-reaper';
   policy?: never;
   error: string;
   liveClaims: number;
   setIdentity: ProviderProxySetIdentity;
 }>;
 
-export type ProviderProxySetHeartbeatAnswerUnusableReleaseDecision = ProviderProxySetHeartbeatReleaseFields &
+type ProviderProxySetHeartbeatAnswerUnusableFields = ProviderProxySetHeartbeatDispositionFields &
   Readonly<{
     reason: 'heartbeat_answer_unusable_hold_exhausted';
     fault: 'heartbeat-answer-unusable-hold-exhausted';
@@ -127,12 +125,34 @@ export type ProviderProxySetHeartbeatAnswerUnusableReleaseDecision = ProviderPro
     schedulerLatenessMs: number;
   }>;
 
-export type ProviderProxySetHeartbeatProtocolReleaseDecision = ProviderProxySetHeartbeatReleaseFields &
+type ProviderProxySetHeartbeatProtocolFields = ProviderProxySetHeartbeatDispositionFields &
   Readonly<{
     reason: 'heartbeat_protocol_incompatible';
     fault: 'heartbeat-method-not-found';
     incidentReason: 'method-not-found';
   }>;
+
+type ProviderProxySetHeartbeatReleaseFields = Readonly<{
+  action: 'release';
+  successorOwner: 'guardian-and-reaper';
+  liveClaims: 0;
+}>;
+
+type ProviderProxySetHeartbeatAwaitAbsenceFields = Readonly<{
+  action: 'await-containment-absence';
+  successorOwner?: never;
+  liveClaims: number;
+}>;
+
+export type ProviderProxySetHeartbeatAnswerUnusableReleaseDecision = ProviderProxySetHeartbeatAnswerUnusableFields &
+  ProviderProxySetHeartbeatReleaseFields;
+
+export type ProviderProxySetHeartbeatProtocolReleaseDecision = ProviderProxySetHeartbeatProtocolFields &
+  ProviderProxySetHeartbeatReleaseFields;
+
+export type ProviderProxySetHeartbeatAwaitAbsenceDecision =
+  | (ProviderProxySetHeartbeatAnswerUnusableFields & ProviderProxySetHeartbeatAwaitAbsenceFields)
+  | (ProviderProxySetHeartbeatProtocolFields & ProviderProxySetHeartbeatAwaitAbsenceFields);
 
 export type ProviderProxySetHeartbeatReleaseDecision =
   | ProviderProxySetHeartbeatAnswerUnusableReleaseDecision
@@ -164,7 +184,8 @@ export type ProviderProxySetAuthorityStopDecision =
 
 export type ProviderProxySetContainmentDecision =
   | ProviderProxySetAuthorityStopDecision
-  | ProviderProxySetRetirementStopDecision;
+  | ProviderProxySetRetirementStopDecision
+  | ProviderProxySetHeartbeatAwaitAbsenceDecision;
 
 export type ProviderProxySetDecision =
   | ProviderProxySetPreserveDecision
@@ -186,7 +207,8 @@ export function renderProviderProxySetDecision(
   const severity: ProviderProxySetLogSeverity =
     decision.reason === 'provider_authority_lost' ||
     decision.reason === 'heartbeat_hold_exhausted' ||
-    decision.action === 'release'
+    decision.action === 'release' ||
+    decision.action === 'await-containment-absence'
       ? 'warn'
       : 'info';
   let fault: string;

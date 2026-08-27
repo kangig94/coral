@@ -91,6 +91,8 @@ export type IpcServerOptions = {
 export type IpcListener = {
   readonly server: NetServer;
   readonly sockets: Set<Socket>;
+  readonly compatibilityListeners?: IpcListener[];
+  createCompatibilityListener?(): IpcListener;
   socketPath: string | null;
   /**
    * Optional callback invoked alongside `transport.shutdown`'s `requestDrain`.
@@ -455,7 +457,11 @@ export async function bindSocket(server: NetServer, socketPath: string): Promise
   }
 }
 
-export async function listenIpcServer(listener: IpcListener, socketPath: string): Promise<{ socketPath: string }> {
+export async function listenIpcServer(
+  listener: IpcListener,
+  socketPath: string,
+  compatibilitySocketPaths: readonly string[] = [],
+): Promise<{ socketPath: string }> {
   const result = await bindSocket(listener.server, socketPath);
   if (result.kind === 'incumbent') {
     const error = new Error(`IPC socket already in use: ${socketPath}`) as NodeJS.ErrnoException;
@@ -463,6 +469,29 @@ export async function listenIpcServer(listener: IpcListener, socketPath: string)
     throw error;
   }
   listener.socketPath = socketPath;
+  try {
+    for (const compatibilitySocketPath of new Set(compatibilitySocketPaths)) {
+      if (compatibilitySocketPath === socketPath) continue;
+      const compatibility = listener.createCompatibilityListener?.();
+      if (compatibility === undefined || listener.compatibilityListeners === undefined) {
+        throw new Error('IPC listener does not support compatibility sockets');
+      }
+      compatibility.onShutdownRequest = (reason) => listener.onShutdownRequest?.(reason);
+      const compatibilityResult = await bindSocket(compatibility.server, compatibilitySocketPath);
+      if (compatibilityResult.kind === 'incumbent') {
+        const error = new Error(
+          `IPC compatibility socket already in use: ${compatibilitySocketPath}`,
+        ) as NodeJS.ErrnoException;
+        error.code = 'EADDRINUSE';
+        throw error;
+      }
+      compatibility.socketPath = compatibilitySocketPath;
+      listener.compatibilityListeners.push(compatibility);
+    }
+  } catch (error: unknown) {
+    await closeIpcServer(listener);
+    throw error;
+  }
   return { socketPath };
 }
 
@@ -474,6 +503,9 @@ export async function listenIpcServer(listener: IpcListener, socketPath: string)
  * a SIGKILL or OOM kill skipped it, not a graceful shutdown that reached it.
  */
 export async function closeIpcServer(listener: IpcListener): Promise<void> {
+  for (const compatibility of listener.compatibilityListeners?.splice(0) ?? []) {
+    await closeIpcServer(compatibility);
+  }
   for (const socket of listener.sockets) {
     socket.destroy();
   }
@@ -956,6 +988,8 @@ export function createIpcServer(rpcPorts: HttpHandlerPorts, options: IpcServerOp
   const listener: IpcListener = {
     server,
     sockets,
+    compatibilityListeners: [],
+    createCompatibilityListener: () => createIpcServer(rpcPorts, options),
     socketPath: null,
     onShutdownRequest: null,
   };

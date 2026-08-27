@@ -36,6 +36,7 @@ import {
 import { createHttpHandler, sendJson } from '../../transport/http/handler.js';
 import { closeIpcServer, createIpcServer, listenIpcServer } from '../../transport/ipc/server.js';
 import { probeProcessIncarnation, type ProcessIncarnation } from '../../infra/node-process.js';
+import { v0109CoordinatorSocketGuardPathsForRunDir } from '../../infra/path/index.js';
 import type { RpcPorts } from '../../transport/rpc/ports.js';
 import {
   providerHostEvictResponseSchema,
@@ -1122,6 +1123,7 @@ export function createCoordinatorCore(
           carriers?: NonNullable<NonNullable<HealthSnapshot['diagnostics']>['carriers']>;
           mutationBlocked?: { owner: string; ageMs: number; signaledAtMs: number };
           consumerStuck?: NonNullable<HealthSnapshot['diagnostics']>['consumerStuck'];
+          providerProxySets?: NonNullable<HealthSnapshot['diagnostics']>['providerProxySets'];
         } = { carriers: carrierDiagnostics };
         if (mutationBlocked !== undefined) {
           diagnostics.mutationBlocked = mutationBlocked;
@@ -1129,10 +1131,15 @@ export function createCoordinatorCore(
         if (consumerStuck.length > 0) {
           diagnostics.consumerStuck = consumerStuck;
         }
+        const providerProxySets = world.providerProxyLifecycleRef.get()?.snapshot().operatorDispositions ?? [];
+        if (providerProxySets.length > 0) {
+          diagnostics.providerProxySets = [...providerProxySets];
+        }
         const hasDiagnostics =
           diagnostics.carriers !== undefined ||
           diagnostics.mutationBlocked !== undefined ||
-          diagnostics.consumerStuck !== undefined;
+          diagnostics.consumerStuck !== undefined ||
+          diagnostics.providerProxySets !== undefined;
 
         return {
           status: coarseStatus,
@@ -1237,6 +1244,15 @@ export function createCoordinatorCore(
     });
   });
 
+  const platform = runtime.env.platform();
+  const v0109SocketGuardPaths = v0109CoordinatorSocketGuardPathsForRunDir(
+    runtime.paths.coral.coordinator.runDir,
+    identity.flavor,
+    {
+      platform,
+      tempDirectories: [runtime.env.get('TMPDIR') ?? runtime.env.tmpdir(), ...(platform === 'win32' ? [] : ['/tmp'])],
+    },
+  );
   const lifecycleDeps: LifecycleDeps = {
     identity,
     storeFormat: options.storeFormat,
@@ -1294,7 +1310,8 @@ export function createCoordinatorCore(
     ipcServer,
     closeIpcServerFn: closeIpcServer,
     listenIpcFn:
-      options.listenIpcFn ?? ((listener) => listenIpcServer(listener, runtime.paths.coral.coordinator.socketPath)),
+      options.listenIpcFn ??
+      ((listener) => listenIpcServer(listener, runtime.paths.coral.coordinator.socketPath, v0109SocketGuardPaths)),
     onStopped: options.onStopped,
     onFatalShutdownError: options.onFatalShutdownError,
   };

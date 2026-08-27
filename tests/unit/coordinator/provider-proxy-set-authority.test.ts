@@ -13,6 +13,7 @@ import {
   type ProviderProxySetAuthorityDependencies,
 } from '#src/coordinator/live/provider-proxy/set-authority.js';
 import type { ControlClient } from '#src/provider-proxy/control-client.js';
+import type { HandoffCapsuleV3 } from '#src/provider-proxy/handoff-capsule.js';
 import {
   CONTAINMENT_DISAPPEARANCE_CONFIRM_MS,
   SIGKILL_GRACE_MS,
@@ -336,7 +337,6 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
     proxyInstanceId: PROXY_IDENTITY.proxyInstanceId,
     buildSetId: GUARDIAN_IDENTITY.buildSetId,
   };
-  const INSTALL_ACK = { state: 'installed-dormant' as const, grantId: '77777777-7777-4777-8777-777777777777' };
   type InstallCall = { role: string; method: string; params: unknown };
 
   const tempRoots: string[] = [];
@@ -346,7 +346,12 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
 
   /** Records every call made to a role's client and answers the named install method with the fixture above,
    *  or the configured failure for that one role. */
-  function recordingClient(role: 'guardian' | 'reaper' | 'proxy', calls: InstallCall[], fail?: string): ControlClient {
+  function recordingClient(
+    role: 'guardian' | 'reaper' | 'proxy',
+    calls: InstallCall[],
+    fail?: string,
+    ackGrantId?: string,
+  ): ControlClient {
     return {
       call: (method: string, params: unknown) => {
         calls.push({ role, method, params });
@@ -359,7 +364,10 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
             operation: (params as { operation: unknown }).operation,
           });
         }
-        return Promise.resolve(INSTALL_ACK);
+        return Promise.resolve({
+          state: 'installed-dormant',
+          grantId: ackGrantId ?? (params as { grantId: string }).grantId,
+        });
       },
       faulted: new Promise<never>(() => undefined),
       onFault: () => () => undefined,
@@ -371,27 +379,32 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
     calls: InstallCall[];
     fail?: 'guardian' | 'reaper' | 'proxy';
     failMethod?: string;
+    ackGrantId?: string;
+    recovery?: Readonly<{ capsule: HandoffCapsuleV3; operations: ReadonlyArray<typeof OPERATION> }>;
   }): { authority: ReturnType<typeof createProviderProxySetAuthority>; handoffCapsulePath: string } {
     const tempRoot = mkdtempSync(join(tmpdir(), 'coral-install-handoff-grant-'));
     tempRoots.push(tempRoot);
     const handoffCapsulePath = join(tempRoot, 'proxy.handoff.json');
     const runtime = createRealRuntime('dev', { baseDir: tempRoot });
-    const deps: ProviderProxySetAuthorityDependencies = {
+    const common = {
       proxyInstanceId: PROXY_IDENTITY.proxyInstanceId,
       guardianClient: recordingClient(
         'guardian',
         options.calls,
         options.fail === 'guardian' ? (options.failMethod ?? 'guardian.handoff-install.v1') : undefined,
+        options.ackGrantId,
       ),
       reaperClient: recordingClient(
         'reaper',
         options.calls,
         options.fail === 'reaper' ? (options.failMethod ?? 'reaper.handoff-install.v1') : undefined,
+        options.ackGrantId,
       ),
       proxyClient: recordingClient(
         'proxy',
         options.calls,
         options.fail === 'proxy' ? (options.failMethod ?? 'handoff.install.v1') : undefined,
+        options.ackGrantId,
       ),
       guardianIdentity: GUARDIAN_IDENTITY,
       reaperIdentity: REAPER_IDENTITY,
@@ -402,6 +415,14 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
       runtime,
       operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
     };
+    const deps: ProviderProxySetAuthorityDependencies =
+      options.recovery === undefined
+        ? common
+        : {
+            ...common,
+            recoveryCapsule: options.recovery.capsule,
+            recoveryOperations: options.recovery.operations,
+          };
     return { authority: createProviderProxySetAuthority(deps), handoffCapsulePath };
   }
 
@@ -466,6 +487,80 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
 
     await expect(authority.installRecoveryCredential(new AbortController().signal)).rejects.toThrow(/reaper refused/u);
     expect(() => statSync(handoffCapsulePath)).toThrow();
+  });
+
+  it('claims an inherited deadline only after every redeemed role acknowledges the existing grant', async () => {
+    const freshCalls: InstallCall[] = [];
+    const fresh = authorityForInstall({ calls: freshCalls });
+    await fresh.authority.installRecoveryCredential(new AbortController().signal);
+    const capsule = JSON.parse(readFileSync(fresh.handoffCapsulePath, 'utf-8')) as HandoffCapsuleV3;
+    const recoveredCalls: InstallCall[] = [];
+    const recovered = authorityForInstall({
+      calls: recoveredCalls,
+      recovery: { capsule, operations: [OPERATION] },
+    }).authority;
+
+    expect(recovered.autonomousDeadline).toMatchObject({
+      acceptanceFailure: 'role-acknowledgement-unavailable',
+      orphanTimeoutMs: capsule.orphanTimeoutMs,
+    });
+    await recovered.installRecoveryCredential(new AbortController().signal);
+
+    expect(recovered.autonomousDeadline).toMatchObject({
+      owner: 'guardian-and-reaper',
+      orphanTimeoutMs: capsule.orphanTimeoutMs,
+    });
+    expect(recoveredCalls.map(({ role, method }) => `${role}:${method}`)).toEqual([
+      'guardian:guardian.handoff-install.v1',
+      'reaper:reaper.handoff-install.v1',
+      'proxy:handoff.install.v1',
+    ]);
+    expect(recoveredCalls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ params: expect.objectContaining({ operations: [OPERATION] }) }),
+      ]),
+    );
+  });
+
+  it('keeps a redeemed deadline unproven and does not contact the proxy when an enforcer refuses it', async () => {
+    const freshCalls: InstallCall[] = [];
+    const fresh = authorityForInstall({ calls: freshCalls });
+    await fresh.authority.installRecoveryCredential(new AbortController().signal);
+    const capsule = JSON.parse(readFileSync(fresh.handoffCapsulePath, 'utf-8')) as HandoffCapsuleV3;
+    const recoveredCalls: InstallCall[] = [];
+    const recovered = authorityForInstall({
+      calls: recoveredCalls,
+      fail: 'guardian',
+      recovery: { capsule, operations: [OPERATION] },
+    }).authority;
+
+    await expect(recovered.installRecoveryCredential(new AbortController().signal)).rejects.toThrow(
+      /guardian refused/u,
+    );
+
+    expect(recovered.autonomousDeadline).toMatchObject({
+      acceptanceFailure: 'role-acknowledgement-unavailable',
+      orphanTimeoutMs: capsule.orphanTimeoutMs,
+    });
+    expect(recoveredCalls.some(({ role }) => role === 'proxy')).toBe(false);
+  });
+
+  it('does not accept an acknowledgement for a different recovered grant', async () => {
+    const fresh = authorityForInstall({ calls: [] });
+    await fresh.authority.installRecoveryCredential(new AbortController().signal);
+    const capsule = JSON.parse(readFileSync(fresh.handoffCapsulePath, 'utf-8')) as HandoffCapsuleV3;
+    const recovered = authorityForInstall({
+      calls: [],
+      ackGrantId: '77777777-7777-4777-8777-777777777777',
+      recovery: { capsule, operations: [OPERATION] },
+    }).authority;
+
+    await expect(recovered.installRecoveryCredential(new AbortController().signal)).rejects.toThrow(
+      /provider_proxy_handoff_install_ack_grant_mismatch/u,
+    );
+    expect(recovered.autonomousDeadline).toMatchObject({
+      acceptanceFailure: 'role-acknowledgement-unavailable',
+    });
   });
 
   it('registers a non-executing journal operation in standing succession membership', async () => {

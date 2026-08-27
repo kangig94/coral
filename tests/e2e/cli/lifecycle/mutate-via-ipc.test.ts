@@ -200,7 +200,7 @@ rl.on('line', (line) => {
 `;
 
 function createFixture(): Fixture {
-  const root = mkdtempSync(join(tmpdir(), 'coral-ipc-mutate-plugin-'));
+  const root = mkdtempSync(join(tmpdir(), 'coral-ipc-mut-plugin-'));
   const home = mkdtempSync(join(tmpdir(), 'coral-ipc-mutate-home-'));
   const projectRoot = join(root, 'project');
   const binDir = join(root, 'bin');

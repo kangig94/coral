@@ -39,11 +39,18 @@ import {
 import type { ControlClient } from '../../../provider-proxy/control-client.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { ProviderProxyRoleHeartbeats } from './heartbeat.js';
-import type { ProviderProxySetRecoveryAuthority } from './authority.js';
+import type { ProviderProxyAutonomousDeadline, ProviderProxySetRecoveryAuthority } from './authority.js';
 
 const handoffInstallAckSchema = z
   .object({ state: z.literal('installed-dormant'), grantId: canonicalUuidSchema })
   .strict();
+
+function assertHandoffInstallAck(value: unknown, expectedGrantId: string): void {
+  const acknowledgement = handoffInstallAckSchema.parse(value);
+  if (acknowledgement.grantId !== expectedGrantId) {
+    throw new Error('provider_proxy_handoff_install_ack_grant_mismatch');
+  }
+}
 
 /** Lets `signal` cut a pending call short without requiring `ControlClient.call` itself to understand
  *  `AbortSignal` — it only ever takes a millisecond budget. If the signal wins the race the pending call is
@@ -61,7 +68,7 @@ function raceAgainstAbort<T>(pending: Promise<T>, signal: AbortSignal): Promise<
   });
 }
 
-export type ProviderProxySetAuthorityDependencies = Readonly<{
+type ProviderProxySetAuthorityCommonDependencies = Readonly<{
   proxyInstanceId: string;
   guardianClient: ControlClient;
   proxyClient: ControlClient;
@@ -79,13 +86,15 @@ export type ProviderProxySetAuthorityDependencies = Readonly<{
   handoffCapsulePath: string;
   /** Kept outside SQLite so the credential secret never enters durable domain records. */
   runtime: Pick<Runtime, 'ids' | 'env' | 'storage'>;
-  /** The capsule this set was redeemed from, when it was redeemed rather than freshly acquired. Only its
-   *  presence is read: a redeemed set already has its credential installed, so this authority mints and
-   *  writes nothing for it. Only V3 can reach redemption, and a minted capsule is always V3. */
-  recoveryCapsule?: HandoffCapsuleV3;
   /** `stopAndReap`'s source for provider roots this generation can still name in set agreement. */
   operationRegistry: ProviderProxyOperationSnapshot;
 }>;
+
+export type ProviderProxySetAuthorityDependencies = ProviderProxySetAuthorityCommonDependencies &
+  (
+    | Readonly<{ recoveryCapsule?: never; recoveryOperations?: never }>
+    | Readonly<{ recoveryCapsule: HandoffCapsuleV3; recoveryOperations: readonly OperationIdentity[] }>
+  );
 
 /**
  * Builds the `ProviderProxySetAuthority` shutdown sees, from three already-established role sessions. Split
@@ -111,8 +120,8 @@ export function createProviderProxySetAuthority(
   } = deps;
 
   const deadlineConfiguration = deps.recoveryCapsule ?? resolveProviderProxyDeadlineConfiguration(runtime.env);
-  const autonomousDeadline = Object.freeze({
-    owner: 'guardian-and-reaper' as const,
+  let autonomousDeadline: ProviderProxyAutonomousDeadline = Object.freeze({
+    acceptanceFailure: 'role-acknowledgement-unavailable' as const,
     orphanTimeoutMs: deadlineConfiguration.orphanTimeoutMs,
     heartbeatHoldBound: providerProxyHeartbeatHoldBound(deadlineConfiguration),
   });
@@ -153,22 +162,21 @@ export function createProviderProxySetAuthority(
   let recoveryCredentialInstall: Promise<void> | null = null;
 
   const installRecoveryCredential = async (signal: AbortSignal): Promise<void> => {
-    if (recoveryCredentialInstalled) return;
+    if (recoveryCredentialInstalled && autonomousDeadline.owner !== undefined) return;
     signal.throwIfAborted();
     recoveryCredentialInstall ??= (async () => {
-      const capsule = mintRecoveryCapsule();
+      const capsule = deps.recoveryCapsule ?? mintRecoveryCapsule();
+      const operations = deps.recoveryCapsule === undefined ? [] : deps.recoveryOperations;
       const secretSha256 = handoffSecretDigest(capsule.secret);
       const guardianReaperInstallPayload = guardianReaperHandoffInstallParamsSchema.parse({
         grantId: capsule.grantId,
         secretSha256,
         successor: coordinatorIdentity,
-        operations: [],
+        operations,
         orphanTimeoutMs: capsule.orphanTimeoutMs,
         teardownReserveMs: capsule.teardownReserveMs,
       });
-      const [guardianAck, reaperAck, proxyAck] = await Promise.all([
-        guardianClient.call('guardian.handoff-install.v1', guardianReaperInstallPayload, PROXY_CONTROL_RPC_TIMEOUT_MS),
-        reaperClient.call('reaper.handoff-install.v1', guardianReaperInstallPayload, PROXY_CONTROL_RPC_TIMEOUT_MS),
+      const proxyInstall = () =>
         proxyClient.call(
           'handoff.install.v1',
           proxyHandoffInstallParamsSchema.parse({
@@ -178,20 +186,52 @@ export function createProviderProxySetAuthority(
             hostFingerprint: capsule.hostFingerprint,
             buildSetId: capsule.buildSetId,
             proxyInstanceId: capsule.proxyInstanceId,
-            operations: [],
+            operations,
             orphanTimeoutMs: capsule.orphanTimeoutMs,
           }),
           PROXY_CONTROL_RPC_TIMEOUT_MS,
-        ),
-      ]);
-      handoffInstallAckSchema.parse(guardianAck);
-      handoffInstallAckSchema.parse(reaperAck);
-      handoffInstallAckSchema.parse(proxyAck);
-      writeHandoffCapsuleFile(handoffCapsulePath, capsule, {
-        storage: runtime.storage,
-        uid: process.getuid?.() ?? 0,
-      });
+        );
+      let guardianAck: unknown;
+      let reaperAck: unknown;
+      let proxyAck: unknown;
+      if (deps.recoveryCapsule === undefined) {
+        [guardianAck, reaperAck, proxyAck] = await Promise.all([
+          guardianClient.call(
+            'guardian.handoff-install.v1',
+            guardianReaperInstallPayload,
+            PROXY_CONTROL_RPC_TIMEOUT_MS,
+          ),
+          reaperClient.call('reaper.handoff-install.v1', guardianReaperInstallPayload, PROXY_CONTROL_RPC_TIMEOUT_MS),
+          proxyInstall(),
+        ]);
+      } else {
+        [guardianAck, reaperAck] = await Promise.all([
+          guardianClient.call(
+            'guardian.handoff-install.v1',
+            guardianReaperInstallPayload,
+            PROXY_CONTROL_RPC_TIMEOUT_MS,
+          ),
+          reaperClient.call('reaper.handoff-install.v1', guardianReaperInstallPayload, PROXY_CONTROL_RPC_TIMEOUT_MS),
+        ]);
+        assertHandoffInstallAck(guardianAck, capsule.grantId);
+        assertHandoffInstallAck(reaperAck, capsule.grantId);
+        proxyAck = await proxyInstall();
+      }
+      assertHandoffInstallAck(guardianAck, capsule.grantId);
+      assertHandoffInstallAck(reaperAck, capsule.grantId);
+      assertHandoffInstallAck(proxyAck, capsule.grantId);
+      if (deps.recoveryCapsule === undefined) {
+        writeHandoffCapsuleFile(handoffCapsulePath, capsule, {
+          storage: runtime.storage,
+          uid: process.getuid?.() ?? 0,
+        });
+      }
       recoveryCredentialInstalled = true;
+      autonomousDeadline = Object.freeze({
+        owner: 'guardian-and-reaper' as const,
+        orphanTimeoutMs: deadlineConfiguration.orphanTimeoutMs,
+        heartbeatHoldBound: providerProxyHeartbeatHoldBound(deadlineConfiguration),
+      });
     })();
     await recoveryCredentialInstall;
     signal.throwIfAborted();
@@ -220,7 +260,9 @@ export function createProviderProxySetAuthority(
 
   return {
     proxyInstanceId,
-    autonomousDeadline,
+    get autonomousDeadline() {
+      return autonomousDeadline;
+    },
     providerHosts: Object.freeze({
       list: async () => {
         const params = providerHostListParamsSchema.parse({});

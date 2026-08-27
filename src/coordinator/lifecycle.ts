@@ -925,6 +925,7 @@ async function runLifecycleStartup({
           ),
         signalLedger: createFileHandoffSignalLedger({
           storage: runtime.storage,
+          ids: runtime.ids,
           runDir: runtime.paths.coral.coordinator.runDir,
         }),
         signal,

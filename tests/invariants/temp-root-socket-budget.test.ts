@@ -1,11 +1,11 @@
 import { readFileSync, readdirSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { basename, dirname, join, relative } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { generationRunDir } from '#src/infra/path/coordinator.js';
 import { PROVIDER_PATH_IDENTITY_HASH_LENGTH } from '#src/infra/path/provider-proxy.js';
 import { socketPathByteLimit } from '#src/infra/path/unix-socket.js';
-import { testTempRoot } from '../../vitest/temp-root.js';
+import { testTempRoot, userRootName } from '../../vitest/temp-root.js';
 
 const REPO_ROOT = join(__dirname, '..', '..');
 
@@ -43,10 +43,13 @@ describe('temp root socket budget', () => {
   it('leaves the lifecycle suites room to bind a provider socket inside the AF_UNIX limit', () => {
     const limit = socketPathByteLimit(process.platform);
     const filename = `provider-${'0'.repeat(PROVIDER_PATH_IDENTITY_HASH_LENGTH)}.sock`;
+    const currentRoot = testTempRoot();
+    const secureRootParent = basename(currentRoot) === userRootName() ? dirname(currentRoot) : currentRoot;
+    const longestIdentityRoot = join(secureRootParent, userRootName(4_294_967_294));
 
     const overBudget = temporaryHomePrefixes()
       .map(({ prefix, file }) => {
-        const home = join(testTempRoot(), `${prefix}${'a'.repeat(MKDTEMP_SUFFIX_LENGTH)}`);
+        const home = join(longestIdentityRoot, `${prefix}${'a'.repeat(MKDTEMP_SUFFIX_LENGTH)}`);
         const socket = join(generationRunDir('prod', { baseDir: join(home, '.coral') }), filename);
         return { file, prefix, bytes: Buffer.byteLength(socket, 'utf-8'), limit };
       })

@@ -604,8 +604,14 @@ async function redeemCapsule(
       handoffCapsulePath: capsulePath,
       runtime,
       recoveryCapsule: capsule,
+      recoveryOperations: guardianSession.opened.operations,
       operationRegistry: deps.operationRegistry,
     });
+    try {
+      await base.installRecoveryCredential(signal);
+    } catch {
+      signal.throwIfAborted();
+    }
     const set = createProviderProxyOperationAuthority({
       base,
       setIdentity,

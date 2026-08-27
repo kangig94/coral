@@ -12,7 +12,7 @@ import { writeAuditEvent } from '../infra/audit-log.js';
 import { incarnationMayAuthorizeSignal, isProcessIncarnation, type ProcessIncarnation } from '../infra/node-process.js';
 import { backendLog } from '../infra/backend-log.js';
 import { SIGKILL_GRACE_MS, SIGTERM_GRACE_MS } from '../infra/process-constants.js';
-import type { Runtime } from '../runtime/ports.js';
+import type { IdPort, Runtime } from '../runtime/ports.js';
 import type { StoragePort } from '../infra/port-types.js';
 import type { RunStartupRecoveryFn, RunStartupRecoveryOrchestratorFn } from './lifecycle.js';
 import type { RunCoordinatorStartupRecoveryFn } from './services/recovery/index.js';
@@ -244,6 +244,7 @@ export type HandoffSignalRecord = {
   instanceId?: string;
   signal: HandoffSignal;
   signaledAtMs: number;
+  publicationId?: string;
 };
 
 export type LegacyHandoffSignalAttemptRecord = Omit<HandoffSignalRecord, 'accepted' | 'version'> & {
@@ -266,6 +267,7 @@ type HandoffSignalLedgerStorage = Pick<StoragePort, 'mkdirSync' | 'readFileSync'
 
 export function createFileHandoffSignalLedger(options: {
   storage: HandoffSignalLedgerStorage;
+  ids: IdPort;
   runDir: string;
 }): HandoffSignalLedger {
   const path = join(options.runDir, SIGNAL_LEDGER_FILE);
@@ -303,9 +305,16 @@ export function createFileHandoffSignalLedger(options: {
       if (matchingCurrent === null) {
         return matchingLegacy;
       }
-      if (matchingLegacy === null || matchingCurrent.signaledAtMs >= matchingLegacy.signaledAtMs) {
+      if (matchingLegacy === null) {
         return matchingCurrent;
       }
+      if (matchingCurrent.publicationId !== undefined || matchingLegacy.publicationId !== undefined) {
+        if (matchingCurrent.publicationId === matchingLegacy.publicationId) {
+          return matchingCurrent;
+        }
+        return matchingLegacy.publicationId === undefined ? matchingCurrent : matchingLegacy;
+      }
+      if (matchingCurrent.signaledAtMs >= matchingLegacy.signaledAtMs) return matchingCurrent;
       return matchingLegacy;
     },
     write: (record) => {
@@ -314,6 +323,7 @@ export function createFileHandoffSignalLedger(options: {
       } catch {
         return;
       }
+      const publicationId = options.ids.uuid();
       const shadowWritten = writeAt(legacyPath, {
         version: 1,
         accepted: true,
@@ -323,11 +333,12 @@ export function createFileHandoffSignalLedger(options: {
         ...(record.instanceId === undefined ? {} : { instanceId: record.instanceId }),
         signal: record.signal,
         signaledAtMs: record.signaledAtMs,
+        publicationId,
       });
       if (!shadowWritten) {
         return;
       }
-      writeAt(path, record);
+      writeAt(path, { ...record, publicationId });
     },
   };
 }
@@ -343,7 +354,9 @@ function decodeHandoffSignalLedgerRecord(value: unknown): HandoffSignalLedgerRec
     (record.incarnation === undefined || isProcessIncarnation(record.incarnation)) &&
     (record.instanceId === undefined || typeof record.instanceId === 'string') &&
     (record.signal === 'SIGTERM' || record.signal === 'SIGKILL') &&
-    Number.isFinite(record.signaledAtMs);
+    Number.isFinite(record.signaledAtMs) &&
+    (record.publicationId === undefined ||
+      (typeof record.publicationId === 'string' && record.publicationId.length > 0));
   if (!commonShapeIsValid) {
     return null;
   }

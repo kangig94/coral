@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { createConnection, type Socket } from 'node:net';
 import { join } from 'node:path';
@@ -358,6 +358,45 @@ afterEach(() => {
 });
 
 describe('ipc server', () => {
+  it('serves and closes the same IPC surface at compatibility addresses', async () => {
+    const ports = createPorts();
+    const listener = createIpcServer(ports);
+    const socketPath = makeSocketPath();
+    const compatibilityPaths = [makeSocketPath(), makeSocketPath()];
+
+    await listenIpcServer(listener, socketPath, compatibilityPaths);
+    try {
+      for (const address of [socketPath, ...compatibilityPaths]) {
+        await expect(requestIpcMethod(address, 'transport.ping')).resolves.toMatchObject({
+          status: 'ok',
+          instanceId: 'test-instance',
+        });
+      }
+    } finally {
+      await closeIpcServer(listener);
+    }
+
+    expect([socketPath, ...compatibilityPaths].some(existsSync)).toBe(false);
+  });
+
+  it('rolls back every address when a compatibility address has an incumbent', async () => {
+    const occupiedPath = makeSocketPath();
+    const incumbent = createIpcServer(createPorts());
+    const contender = createIpcServer(createPorts());
+    const contenderPath = makeSocketPath();
+    await listenIpcServer(incumbent, occupiedPath);
+
+    try {
+      await expect(listenIpcServer(contender, contenderPath, [occupiedPath])).rejects.toMatchObject({
+        code: 'EADDRINUSE',
+      });
+      expect(existsSync(contenderPath)).toBe(false);
+    } finally {
+      await closeIpcServer(contender);
+      await closeIpcServer(incumbent);
+    }
+  });
+
   it('dispatches catalog-backed unary methods over the socket', async () => {
     const ports = createPorts();
     const listener = createIpcServer(ports);

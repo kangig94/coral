@@ -1194,6 +1194,59 @@ describe('backend status recovery quarantine propagation', () => {
   });
 });
 
+describe('backend status provider proxy dispositions', () => {
+  it('renders the running coordinator wait with set, role, method, and incident identity', () => {
+    const produced = {
+      status: 'ok',
+      kernel: { phase: 'running', readyAt: 1_700_000_000_000 },
+      version: '0.10.4',
+      bundleHash: 'bundle-hash',
+      flavor: 'prod',
+      namespace: 'test-ns',
+      instanceId: 'instance-1',
+      pid: 4242,
+      uptimeMs: 1_000,
+      active: 0,
+      activeJobs: 0,
+      liveDiscuss: 0,
+      queueDepth: 0,
+      inflightRequests: 0,
+      textProjectionState: 'idle',
+      env: {},
+      components: [],
+      diagnostics: {
+        providerProxySets: [
+          {
+            setIdentity: {
+              buildSetId: '11111111-1111-4111-8111-111111111111',
+              hostFingerprint: 'a'.repeat(64),
+              proxyInstanceId: '22222222-2222-4222-8222-222222222222',
+            },
+            disposition: 'awaiting-containment-absence',
+            role: 'guardian',
+            method: 'guardian.heartbeat.v1',
+            incidentReason: 'method-not-found',
+            waitingFor: 'independent-containment-absence',
+          },
+        ],
+      },
+    } satisfies HealthSnapshot;
+    expect(isBackendHealth(produced)).toBe(true);
+    if (!isBackendHealth(produced)) throw new Error('expected the produced health snapshot to validate');
+    const { namespace: _namespace, status: _status, ...health } = produced;
+    const status = { status: 'ok', health: { ...health, status: 'ok' } } satisfies BackendStatusFull;
+
+    expect(formatBackendStatus(status, { kind: 'absent' }, null)).toContain(
+      [
+        'Provider proxy sets:',
+        '  buildSetId=11111111-1111-4111-8111-111111111111 proxyInstanceId=22222222-2222-4222-8222-222222222222 hostFingerprint=' +
+          'a'.repeat(64),
+        '    disposition=awaiting-containment-absence subject=guardian guardian.heartbeat.v1 incident=method-not-found waitingFor=independent-containment-absence',
+      ].join('\n'),
+    );
+  });
+});
+
 describe('backend startup diagnostic classification', () => {
   const now = Date.parse('2026-08-02T12:00:00.000Z');
 

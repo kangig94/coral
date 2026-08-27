@@ -269,6 +269,7 @@ function fakeAuthority(
     stopHeartbeats?: DurableProviderProxyOperationAuthority['stopHeartbeats'];
     initiateControlClose?: DurableProviderProxyOperationAuthority['initiateControlClose'];
     heartbeatHoldBound?: ProviderProxyHeartbeatHoldBound;
+    autonomousDeadlineAccepted?: boolean;
   } = {},
 ): DurableProviderProxyOperationAuthority {
   const record = options.record ?? providerOperationRecord('executing');
@@ -277,7 +278,9 @@ function fakeAuthority(
   const authority: DurableProviderProxyOperationAuthority = {
     proxyInstanceId: record.operation.proxyInstanceId,
     autonomousDeadline: {
-      owner: 'guardian-and-reaper',
+      ...(options.autonomousDeadlineAccepted === false
+        ? { acceptanceFailure: 'role-acknowledgement-unavailable' as const }
+        : { owner: 'guardian-and-reaper' as const }),
       orphanTimeoutMs: Number.MAX_SAFE_INTEGER,
       heartbeatHoldBound: options.heartbeatHoldBound ?? {
         spanMs: Number.MAX_SAFE_INTEGER,
@@ -841,7 +844,7 @@ describe('ProviderProxySetLifecycle', () => {
     expect(stopAndReap).toHaveBeenCalledOnce();
   });
 
-  it('releases an answered-but-unusable hold without authorizing stop-and-reap', () => {
+  it('keeps a claim-bearing answered-but-unusable set until disappearance reaches the claim', async () => {
     const record = providerOperationRecord('executing');
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([record]);
@@ -851,6 +854,17 @@ describe('ProviderProxySetLifecycle', () => {
     const stopAndReap = vi.fn(async () => ({ unconfirmed: 'unused' }) as const);
     const stopHeartbeats = vi.fn();
     const initiateControlClose = vi.fn(async () => undefined);
+    const absence = deferred<string | null>();
+    const containmentDisappeared = vi.fn(
+      async (notice: Parameters<ProviderContainmentDisappearanceConsumer['containmentDisappeared']>[0]) => ({
+        kind: 'accepted' as const,
+        acceptance: {
+          kind: 'accepted' as const,
+          operation: notice.operation,
+          disposition: 'terminalization-committed' as const,
+        },
+      }),
+    );
     const authority = fakeAuthority({
       record,
       faults,
@@ -862,9 +876,9 @@ describe('ProviderProxySetLifecycle', () => {
     const lifecycle = lifecycleFor({
       claims,
       controlEstablished: ignoreControlEstablished,
-      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      disappearanceConsumer: { containmentDisappeared },
       time: clock,
-      proveContainmentAbsent: noContainmentProof,
+      proveContainmentAbsent: () => absence.promise,
       reportLifecycle,
     });
     lifecycle.initializeClaimSlots();
@@ -882,20 +896,41 @@ describe('ProviderProxySetLifecycle', () => {
       });
 
     unclassified('answer could not be decoded');
+    expect(lifecycle.snapshot().operatorDispositions).toEqual([
+      expect.objectContaining({
+        disposition: 'held',
+        role: 'guardian',
+        method: 'guardian.heartbeat.v1',
+        incidentReason: 'unclassified',
+        waitingFor: 'heartbeat-evidence-window',
+      }),
+    ]);
     clock.elapse(5_000);
     unclassified('answer still could not be decoded');
 
     expect(stopAndReap).not.toHaveBeenCalled();
     expect(stopHeartbeats).toHaveBeenCalledOnce();
     expect(initiateControlClose).toHaveBeenCalledOnce();
-    expect(lifecycle.snapshot().states).toEqual([]);
+    expect(lifecycle.snapshot()).toEqual(expect.objectContaining({ represented: 1, states: ['containing'] }));
+    expect(lifecycle.snapshot().operatorDispositions).toEqual([
+      expect.objectContaining({
+        disposition: 'awaiting-containment-absence',
+        role: 'guardian',
+        method: 'guardian.heartbeat.v1',
+        incidentReason: 'unclassified',
+        waitingFor: 'independent-containment-absence',
+      }),
+    ]);
     expect(reportLifecycle).toHaveBeenCalledWith(
       'warn',
-      `Provider proxy set action=release reason=heartbeat_answer_unusable_hold_exhausted fault=heartbeat-answer-unusable-hold-exhausted subject=guardian liveClaims=1 set=${setReference(authority.setIdentity)} error=answer still could not be decoded attempts=2 elapsedMs=5000 schedulerLatenessMs=0 lastIncidentReason=unclassified successorOwner=guardian-and-reaper`,
+      `Provider proxy set action=await-containment-absence reason=heartbeat_answer_unusable_hold_exhausted fault=heartbeat-answer-unusable-hold-exhausted subject=guardian liveClaims=1 set=${setReference(authority.setIdentity)} error=answer still could not be decoded attempts=2 elapsedMs=5000 schedulerLatenessMs=0 lastIncidentReason=unclassified`,
     );
+    absence.resolve('answered-unusable-absence');
+    await vi.waitFor(() => expect(containmentDisappeared).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(lifecycle.snapshot().represented).toBe(0));
   });
 
-  it('releases method-not-found immediately without accumulating a heartbeat hold', () => {
+  it('keeps a claim-bearing method-not-found set until disappearance reaches the claim', async () => {
     const record = providerOperationRecord('executing');
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([record]);
@@ -905,6 +940,17 @@ describe('ProviderProxySetLifecycle', () => {
     const stopAndReap = vi.fn(async () => ({ unconfirmed: 'unused' }) as const);
     const stopHeartbeats = vi.fn();
     const initiateControlClose = vi.fn(async () => undefined);
+    const absence = deferred<string | null>();
+    const containmentDisappeared = vi.fn(
+      async (notice: Parameters<ProviderContainmentDisappearanceConsumer['containmentDisappeared']>[0]) => ({
+        kind: 'accepted' as const,
+        acceptance: {
+          kind: 'accepted' as const,
+          operation: notice.operation,
+          disposition: 'terminalization-committed' as const,
+        },
+      }),
+    );
     const authority = fakeAuthority({
       record,
       faults,
@@ -916,8 +962,51 @@ describe('ProviderProxySetLifecycle', () => {
     const lifecycle = lifecycleFor({
       claims,
       controlEstablished: ignoreControlEstablished,
-      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      disappearanceConsumer: { containmentDisappeared },
       time: clock,
+      proveContainmentAbsent: () => absence.promise,
+      reportLifecycle,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.registerInheritedSet(authority);
+
+    faults.reportIncident({
+      kind: 'heartbeat-indeterminate',
+      role: 'guardian',
+      method: 'guardian.heartbeat.v1',
+      incidentReason: 'method-not-found',
+      schedulerLatenessMs: 0,
+      error: 'method not found',
+    });
+
+    expect(stopAndReap).not.toHaveBeenCalled();
+    expect(stopHeartbeats).toHaveBeenCalledOnce();
+    expect(initiateControlClose).toHaveBeenCalledOnce();
+    expect(lifecycle.snapshot()).toEqual(expect.objectContaining({ represented: 1, states: ['containing'] }));
+    expect(reportLifecycle).toHaveBeenCalledExactlyOnceWith(
+      'warn',
+      `Provider proxy set action=await-containment-absence reason=heartbeat_protocol_incompatible fault=heartbeat-method-not-found subject=guardian liveClaims=1 set=${setReference(authority.setIdentity)} error=method not found incidentReason=method-not-found`,
+    );
+    absence.resolve('method-not-found-absence');
+    await vi.waitFor(() => expect(containmentDisappeared).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(lifecycle.snapshot().represented).toBe(0));
+  });
+
+  it('releases a no-claim method-not-found set to its accepted deadline roles', () => {
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([]);
+    const faults = createProviderProxyAuthorityFaultLatch();
+    const stopAndReap = vi.fn(async () => ({ unconfirmed: 'unused' }) as const);
+    const stopHeartbeats = vi.fn();
+    const initiateControlClose = vi.fn(async () => undefined);
+    const authority = fakeAuthority({ faults, stopAndReap, stopHeartbeats, initiateControlClose });
+    const reportLifecycle = vi.fn();
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: new ManualClock(),
       proveContainmentAbsent: noContainmentProof,
       reportLifecycle,
     });
@@ -938,10 +1027,71 @@ describe('ProviderProxySetLifecycle', () => {
     expect(stopHeartbeats).toHaveBeenCalledOnce();
     expect(initiateControlClose).toHaveBeenCalledOnce();
     expect(lifecycle.snapshot().states).toEqual([]);
+    expect(lifecycle.snapshot().operatorDispositions).toEqual([
+      expect.objectContaining({
+        setIdentity: {
+          buildSetId: authority.setIdentity.buildSetId,
+          hostFingerprint: authority.setIdentity.hostFingerprint,
+          proxyInstanceId: authority.setIdentity.proxyInstanceId,
+        },
+        disposition: 'released',
+        role: 'guardian',
+        method: 'guardian.heartbeat.v1',
+        incidentReason: 'method-not-found',
+        waitingFor: 'none-successor-accepted',
+      }),
+    ]);
     expect(reportLifecycle).toHaveBeenCalledExactlyOnceWith(
       'warn',
-      `Provider proxy set action=release reason=heartbeat_protocol_incompatible fault=heartbeat-method-not-found subject=guardian liveClaims=1 set=${setReference(authority.setIdentity)} error=method not found incidentReason=method-not-found successorOwner=guardian-and-reaper`,
+      `Provider proxy set action=release reason=heartbeat_protocol_incompatible fault=heartbeat-method-not-found subject=guardian liveClaims=0 set=${setReference(authority.setIdentity)} error=method not found incidentReason=method-not-found successorOwner=guardian-and-reaper`,
     );
+  });
+
+  it('keeps a no-claim method-not-found set whose deadline acknowledgement is unproven', async () => {
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([]);
+    const faults = createProviderProxyAuthorityFaultLatch();
+    const stopAndReap = vi.fn(async () => ({ unconfirmed: 'unused' }) as const);
+    const stopHeartbeats = vi.fn();
+    const initiateControlClose = vi.fn(async () => undefined);
+    const authority = fakeAuthority({
+      faults,
+      stopAndReap,
+      stopHeartbeats,
+      initiateControlClose,
+      autonomousDeadlineAccepted: false,
+    });
+    const absence = deferred<string | null>();
+    const reportLifecycle = vi.fn();
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: new ManualClock(),
+      proveContainmentAbsent: () => absence.promise,
+      reportLifecycle,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.registerInheritedSet(authority);
+
+    faults.reportIncident({
+      kind: 'heartbeat-indeterminate',
+      role: 'guardian',
+      method: 'guardian.heartbeat.v1',
+      incidentReason: 'method-not-found',
+      schedulerLatenessMs: 0,
+      error: 'method not found',
+    });
+
+    expect(stopAndReap).not.toHaveBeenCalled();
+    expect(lifecycle.snapshot().represented).toBe(1);
+    expect(reportLifecycle).toHaveBeenCalledExactlyOnceWith(
+      'warn',
+      `Provider proxy set action=await-containment-absence reason=heartbeat_protocol_incompatible fault=heartbeat-method-not-found subject=guardian liveClaims=0 set=${setReference(authority.setIdentity)} error=method not found incidentReason=method-not-found`,
+    );
+    absence.resolve('unproven-deadline-absence');
+    await vi.waitFor(() => expect(lifecycle.snapshot().represented).toBe(0));
   });
 
   it('ends a silence window when unusable answers arrive before another unanswered incident', () => {
@@ -1908,7 +2058,7 @@ describe('ProviderProxySetLifecycle', () => {
     expect(reportLifecycle).not.toHaveBeenCalled();
   });
 
-  it('releases an exact capsule immediately when its heartbeat method is not implemented', async () => {
+  it('keeps a claim-bearing protocol-incompatible capsule until disappearance reaches the claim', async () => {
     const record = providerOperationRecord('executing');
     const claims = new ProviderProxySetClaimMirror();
     // A claim held before `initializeClaimSlots` is claim-matched and creates no capsule slot, so the
@@ -1916,13 +2066,28 @@ describe('ProviderProxySetLifecycle', () => {
     claims.initialize([]);
     const authority = fakeAuthority({ record });
     const redemption = deferred<ProviderProxySetRedemptionOutcome>();
+    const absence = deferred<string | null>();
+    const proveContainmentAbsent = vi
+      .fn<ProviderProxySetLifecycleFixtureDeps['proveContainmentAbsent']>()
+      .mockResolvedValueOnce(null)
+      .mockImplementationOnce(() => absence.promise);
+    const containmentDisappeared = vi.fn(
+      async (notice: Parameters<ProviderContainmentDisappearanceConsumer['containmentDisappeared']>[0]) => ({
+        kind: 'accepted' as const,
+        acceptance: {
+          kind: 'accepted' as const,
+          operation: notice.operation,
+          disposition: 'terminalization-committed' as const,
+        },
+      }),
+    );
     const reportLifecycle = vi.fn();
     const lifecycle = lifecycleFor({
       claims,
       controlEstablished: ignoreControlEstablished,
-      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      disappearanceConsumer: { containmentDisappeared },
       time: new ManualClock(),
-      proveContainmentAbsent: noContainmentProof,
+      proveContainmentAbsent,
       redeemCapsule: () => redemption.promise,
       reportLifecycle,
     });
@@ -1936,11 +2101,55 @@ describe('ProviderProxySetLifecycle', () => {
     redemption.resolve({ kind: 'protocol-incompatible', role: 'guardian', method: 'guardian.heartbeat.v1' });
     await vi.waitFor(() => expect(reportLifecycle).toHaveBeenCalledOnce());
 
-    expect(lifecycle.authorityFor(authority.setIdentity)).toBeNull();
+    expect(lifecycle.snapshot().represented).toBe(1);
+    expect(proveContainmentAbsent).toHaveBeenCalledTimes(2);
     expect(reportLifecycle).toHaveBeenCalledExactlyOnceWith(
       'warn',
-      `Provider proxy set action=release reason=heartbeat_protocol_incompatible fault=heartbeat-method-not-found subject=guardian liveClaims=1 set=${setReference(authority.setIdentity)} error=this set speaks a heartbeat protocol this build cannot use incidentReason=method-not-found successorOwner=guardian-and-reaper`,
+      `Provider proxy set action=await-containment-absence reason=heartbeat_protocol_incompatible fault=heartbeat-method-not-found subject=guardian liveClaims=1 set=${setReference(authority.setIdentity)} error=this set speaks a heartbeat protocol this build cannot use incidentReason=method-not-found`,
     );
+    absence.resolve('protocol-incompatible-absence');
+    await vi.waitFor(() => expect(containmentDisappeared).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(lifecycle.snapshot().represented).toBe(0));
+  });
+
+  it('keeps a no-claim protocol-incompatible capsule until independent absence proof', async () => {
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([]);
+    const authority = fakeAuthority();
+    const reportLifecycle = vi.fn();
+    const absence = deferred<string | null>();
+    const proveContainmentAbsent = vi
+      .fn<ProviderProxySetLifecycleFixtureDeps['proveContainmentAbsent']>()
+      .mockResolvedValueOnce(null)
+      .mockImplementationOnce(() => absence.promise);
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: new ManualClock(),
+      proveContainmentAbsent,
+      redeemCapsule: async () => ({
+        kind: 'protocol-incompatible',
+        role: 'guardian',
+        method: 'guardian.heartbeat.v1',
+      }),
+      reportLifecycle,
+    });
+    lifecycle.initializeClaimSlots();
+
+    lifecycle.installDiscoveredCapsules(
+      [{ path: '/capsules/no-claim-protocol-incompatible.handoff.v3.json', capsule: capsuleV3For(authority) }],
+      retainsEveryCapsule,
+    );
+    await vi.waitFor(() => expect(reportLifecycle).toHaveBeenCalledOnce());
+
+    expect(lifecycle.snapshot().represented).toBe(1);
+    expect(reportLifecycle).toHaveBeenCalledExactlyOnceWith(
+      'warn',
+      `Provider proxy set action=await-containment-absence reason=heartbeat_protocol_incompatible fault=heartbeat-method-not-found subject=guardian liveClaims=0 set=${setReference(authority.setIdentity)} error=this set speaks a heartbeat protocol this build cannot use incidentReason=method-not-found`,
+    );
+    absence.resolve('no-claim-protocol-incompatible-absence');
+    await vi.waitFor(() => expect(lifecycle.snapshot().represented).toBe(0));
   });
 
   it('retires an unmatched exact v3 capsule after independent absence proof', async () => {
@@ -2061,6 +2270,7 @@ describe('ProviderProxySetLifecycle', () => {
         available: 0,
         states: ['capsule-recovering'],
         pendingOperationCounts: [],
+        operatorDispositions: [],
       },
       activeTimers: 0,
     });

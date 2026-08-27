@@ -19,6 +19,7 @@ export interface CoordinatorPathOptions {
 }
 
 const FALLBACK_HASH_LENGTH = 16;
+const V0109_FALLBACK_HASH_LENGTH = 8;
 
 interface SocketPathEnvironment {
   readonly platform: string;
@@ -47,6 +48,17 @@ export function socketPathForRunDir(runDir: string, flavor: BuildFlavor, env: So
 
   const hash = hashToken(candidateSocket, FALLBACK_HASH_LENGTH);
   return join(socketFallbackDir(dirname(runDir)), `coral-${flavor}-${hash}.sock`);
+}
+
+export function v0109CoordinatorSocketGuardPathsForRunDir(
+  runDir: string,
+  flavor: BuildFlavor,
+  env: SocketPathEnvironment & Readonly<{ tempDirectories: readonly string[] }>,
+): readonly string[] {
+  const candidateSocket = join(runDir, 'coordinator.sock');
+  if (Buffer.byteLength(candidateSocket, 'utf8') < socketPathByteLimit(env.platform)) return [];
+  const hash = hashToken(candidateSocket, V0109_FALLBACK_HASH_LENGTH);
+  return [...new Set(env.tempDirectories.map((directory) => join(directory, `coral-${flavor}-${hash}.sock`)))];
 }
 
 export function coordinatorPaths(flavor: BuildFlavor, opts?: CoordinatorPathOptions): CoordinatorPaths {

@@ -1,7 +1,8 @@
 # TODO — who may own the address the singleton lock lives at
 
-**Status**: open for shipped-selector compatibility, binder-local enforcement, and ACL evidence;
-current-build installation identity is closed. Relocated addresses now live under
+**Status**: open for binder-local enforcement, ACL evidence, and legacy invocations with an unguarded
+custom temp directory. Current-build installation identity and the common v0.10.9 rollback addresses are
+closed. Relocated addresses now live under
 `socketFallbackDir(stateRoot)` — `/tmp/coral-<state-root-hash>/`. The directory
 therefore names the installation rather than the caller, while the bind boundary separately requires the
 calling uid to own it with mode `0700`. A second uid over one state root reaches the same directory and
@@ -70,19 +71,21 @@ still checked at the bind boundary: the first caller that can securely create th
 different uid reaches the same address and receives the existing `foreign` refusal. This supplies the
 three-answer disposition without adding uid to installation identity.
 
-## Shipped-selector compatibility — blocked by an unbounded address set
+## Shipped-selector compatibility — narrowed to computable rollback addresses
 
-The proposed compatibility listener does not deliver the stated cross-version property. v0.10.9 selects
-`env.TMPDIR ?? tmpdir()` and its launcher inherits the invoking process's complete environment. A later
-v0.10.9 invocation can therefore choose any writable directory. One current process can listen only on a
-finite set of concrete filesystem addresses, so listening on the legacy address derived from its own
-environment leaves another legacy address independently bindable under a different `TMPDIR`.
+The current coordinator serves its complete IPC surface at the v0.10.9 fallback addresses derived from both
+this process's `TMPDIR ?? tmpdir()` selection and the Unix platform default `/tmp`. The two addresses are
+deduplicated. Binding is atomic with the current address: an incumbent at any guarded address prevents this
+coordinator from starting, and shutdown closes every listener. This covers the common rollback launched in
+the same environment as the current coordinator and a rollback with `TMPDIR` unset on Unix.
 
-Reading discovery before binding does not close the later-starting case, and no durable lock unknown to
-v0.10.9 can change its bind decision. A correct replacement needs either a bounded shipped selector (which
-cannot be retrofitted), an operating-system exclusion primitive both builds already acquire, or an explicit
-support decision that narrows the guarantee to a named environment set. Until one of those premises exists,
-there is no compatibility listener or retirement window to own.
+The guarantee is deliberately finite. v0.10.9 inherited its launcher's environment and accepted any writable
+`TMPDIR`, so a later rollback launched with a different custom directory can still derive an address this
+process could not predict. Such a process can bind there and coexist. An operator using a custom rollback
+directory outside the guarded set must either launch the rollback with the current coordinator's `TMPDIR` (or
+the platform default) or stop the current coordinator first. A total cross-environment guarantee still needs
+an operating-system exclusion primitive both builds already acquire; it cannot be retrofitted into v0.10.9's
+unbounded selector.
 
 ## Part 3 — the assertion proves owner and mode, which is less than privacy
 
@@ -114,8 +117,8 @@ establish, they cannot either.
 ## Explicitly out of scope
 
 The current-build fallback address and byte bound are settled. Unit coverage changes the calling uid over
-one state root and requires the relocated coordinator and provider addresses to remain unchanged. The
-cross-version overflow address remains blocked as described above.
+one state root and requires the relocated coordinator and provider addresses to remain unchanged. Arbitrary
+custom legacy temp directories remain outside the narrowed compatibility guarantee described above.
 
 ## Start condition
 

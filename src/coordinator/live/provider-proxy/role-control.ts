@@ -56,8 +56,7 @@ export type ProviderProxyRoleControlAvailabilityIncident =
       role: ProviderProxyRole;
       method: ProviderProxyHeartbeatMethod;
       incidentReason: ProviderProxyHeartbeatIncidentReason;
-      /** See heartbeatFailureDisposition in heartbeat.ts. `null` only when `heartbeatOnce` rejected the
-       *  reply shape rather than receiving a `ControlClientError`. */
+      /** See `heartbeatFailureDisposition` in `src/coordinator/live/provider-proxy/heartbeat.ts`. */
       origin: ControlClientErrorOrigin | null;
       controlCode: ControlClientErrorCode | null;
     }>;
@@ -239,15 +238,8 @@ async function establishHeartbeat(
 }
 
 /**
- * Races the opening heartbeat against this client's own channel-fault signal, so a channel that dies mid
- * establishment is reported as decisive rather than as the generic indeterminate disposition a single RPC
- * rejection carries on its own. Nothing subscribes to `observeControlClient` this early during establishment,
- * so without this race, establishment would see only `heartbeatFailureDisposition`'s per-call verdict —
- * `retry`, since a lone rejection cannot tell a dead channel from a live one that merely answered oddly once.
- *
- * Correctness depends on `client.faulted` settling before the same event rejects whatever heartbeat call was
- * pending — an ordering this file does not control and nothing in either file's types enforces; see
- * connectControlClient in control-client.ts.
+ * Correctness depends on `client.faulted` settling before the same event rejects the pending heartbeat call;
+ * the types do not enforce that ordering. See `connectControlClient` in `src/provider-proxy/control-client.ts`.
  */
 async function establishHeartbeatOrChannelFault(
   role: ProviderProxyRole,

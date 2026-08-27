@@ -11,7 +11,11 @@ vi.mock('node:os', async () => {
   return { ...actual, platform: () => mockState.platform };
 });
 
-import { coordinatorPaths, handoffRoutingStatusPath } from '#src/infra/path/coordinator.js';
+import {
+  coordinatorPaths,
+  handoffRoutingStatusPath,
+  v0109CoordinatorSocketGuardPathsForRunDir,
+} from '#src/infra/path/coordinator.js';
 import { socketFallbackDir } from '#src/infra/path/unix-socket.js';
 
 function baseDirOfLength(length: number): string {
@@ -106,5 +110,27 @@ describe('coordinatorPaths', () => {
 
     expect(userPath).toBe(sudoPath);
     expect(userPath.startsWith(`${socketFallbackDir(join(baseDir, 'gen2'))}/`)).toBe(true);
+  });
+
+  it('names the v0.10.9 fallback addresses for the current and platform-default temp directories', () => {
+    const runDir = baseDirOfLength(120);
+
+    const guardPaths = v0109CoordinatorSocketGuardPathsForRunDir(runDir, 'prod', {
+      platform: 'linux',
+      tempDirectories: ['/custom-temp', '/tmp', '/custom-temp'],
+    });
+
+    expect(guardPaths).toHaveLength(2);
+    expect(guardPaths[0]).toMatch(/^\/custom-temp\/coral-prod-[0-9a-f]{8}\.sock$/u);
+    expect(guardPaths[1]).toBe(guardPaths[0]?.replace('/custom-temp/', '/tmp/'));
+  });
+
+  it('does not add a v0.10.9 fallback guard when that release used the primary address', () => {
+    expect(
+      v0109CoordinatorSocketGuardPathsForRunDir('/short/run', 'dev', {
+        platform: 'linux',
+        tempDirectories: ['/tmp'],
+      }),
+    ).toEqual([]);
   });
 });

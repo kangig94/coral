@@ -13,6 +13,7 @@ import {
   type HandoffSignalPolicy,
 } from '#src/coordinator/handoff.js';
 import { SIGKILL_GRACE_MS, SIGTERM_GRACE_MS } from '#src/infra/process-constants.js';
+import type { IdPort } from '#src/runtime/ports.js';
 import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { IncumbentMatchesError, type IncumbentHealth, type IncumbentIdentity } from '#src/transport/ipc/handoff.js';
@@ -192,6 +193,16 @@ beforeEach(() => {
 afterEach(() => {
   vi.clearAllMocks();
 });
+
+/** Sequential rather than random so a test can say which publication is newer without reading a clock. */
+function countingIds(): IdPort {
+  let issued = 0;
+  return {
+    uuid: () => `00000000-0000-4000-8000-${String(++issued).padStart(12, '0')}`,
+    randomBytes: (size: number) => Buffer.alloc(size),
+    sha256: () => 'sha256',
+  };
+}
 
 describe('bindWithHandoff', () => {
   it('happy path: first bind attempt succeeds → no incumbent observed', async () => {
@@ -1445,7 +1456,7 @@ describe('bindWithHandoff', () => {
         files.set(path, value);
       },
     } as unknown as Parameters<typeof createFileHandoffSignalLedger>[0]['storage'];
-    const signalLedger = createFileHandoffSignalLedger({ storage, runDir: '/tmp/run' });
+    const signalLedger = createFileHandoffSignalLedger({ storage, ids: countingIds(), runDir: '/tmp/run' });
     let signalAccepted = false;
     const { options, time, killCalls } = buildHarness({
       bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }, { kind: 'bound' }],
@@ -1535,7 +1546,7 @@ describe('bindWithHandoff', () => {
       mkdirSync: vi.fn(),
       writeAtomicSync: vi.fn(),
     } as unknown as Parameters<typeof createFileHandoffSignalLedger>[0]['storage'];
-    const signalLedger = createFileHandoffSignalLedger({ storage, runDir: '/tmp/run' });
+    const signalLedger = createFileHandoffSignalLedger({ storage, ids: countingIds(), runDir: '/tmp/run' });
     const { options, time, killCalls } = buildHarness({
       bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
       totalBudgetMs: 0,
@@ -1561,6 +1572,49 @@ describe('bindWithHandoff', () => {
     expect(killCalls).toEqual([]);
   });
 
+  it('uses the newer shadow when the wall clock steps backward before a detail write fails', () => {
+    const files = new Map<string, string>();
+    let rejectDetail = false;
+    const storage = {
+      readFileSync: (path: string) => {
+        const value = files.get(path);
+        if (value === undefined) throw new Error('ENOENT');
+        return value;
+      },
+      mkdirSync: vi.fn(),
+      writeAtomicSync: (path: string, value: string) => {
+        if (rejectDetail && path === '/tmp/run/handoff-signal.v2.json') throw new Error('detail write failed');
+        files.set(path, value);
+      },
+    } as unknown as Parameters<typeof createFileHandoffSignalLedger>[0]['storage'];
+    const signalLedger = createFileHandoffSignalLedger({ storage, ids: countingIds(), runDir: '/tmp/run' });
+    const target: IncumbentIdentity = {
+      pid: 2468,
+      incarnation: testIncarnation(900),
+      source: 'discovery',
+      instanceId: 'backward-clock-incumbent',
+    };
+    const record = {
+      version: 2 as const,
+      accepted: true as const,
+      socketPath: '/tmp/coral.sock',
+      pid: target.pid,
+      incarnation: target.incarnation,
+      instanceId: target.instanceId,
+      signal: 'SIGTERM' as const,
+      signaledAtMs: 10_000,
+    };
+    signalLedger.write(record);
+    rejectDetail = true;
+    signalLedger.write({ ...record, signal: 'SIGKILL', signaledAtMs: 1_000 });
+
+    expect(signalLedger.read('/tmp/coral.sock', target)).toMatchObject({
+      version: 1,
+      signal: 'SIGKILL',
+      signaledAtMs: 1_000,
+    });
+  });
+
   it('does not publish V2 detail when the shipped cooldown shadow write fails', async () => {
     const files = new Map<string, string>();
     const writes: string[] = [];
@@ -1582,7 +1636,7 @@ describe('bindWithHandoff', () => {
         files.set(path, value);
       },
     } as unknown as Parameters<typeof createFileHandoffSignalLedger>[0]['storage'];
-    const signalLedger = createFileHandoffSignalLedger({ storage, runDir: '/tmp/run' });
+    const signalLedger = createFileHandoffSignalLedger({ storage, ids: countingIds(), runDir: '/tmp/run' });
     let signalAccepted = false;
     const { options, time, killCalls } = buildHarness({
       bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }, { kind: 'bound' }],
@@ -1638,7 +1692,7 @@ describe('bindWithHandoff', () => {
       mkdirSync: vi.fn(),
       writeAtomicSync: vi.fn(),
     } as unknown as Parameters<typeof createFileHandoffSignalLedger>[0]['storage'];
-    const signalLedger = createFileHandoffSignalLedger({ storage, runDir: '/tmp/run' });
+    const signalLedger = createFileHandoffSignalLedger({ storage, ids: countingIds(), runDir: '/tmp/run' });
     const { options, time, killCalls } = buildHarness({
       bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
       totalBudgetMs: 500,
