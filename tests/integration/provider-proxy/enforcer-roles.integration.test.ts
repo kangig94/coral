@@ -697,6 +697,9 @@ describe('provider-proxy guardian and reaper', () => {
     // The peer this guardian is the *origin* for, not a relay of: the forward below always fails, standing
     // in for a reaper that is unreachable (crashed, network partition, anything short of a normal reply).
     const unreachableReaperChannel = {
+      exchange: () => {
+        throw new Error('unexpected raw control exchange');
+      },
       call: async (): Promise<never> => {
         throw new Error('reaper unreachable');
       },
@@ -1037,6 +1040,9 @@ describe('provider-proxy guardian and reaper', () => {
       timer,
       mintReceipt: () => 'receipt-bare-guardian',
       reaperChannel: {
+        exchange: () => {
+          throw new Error('unexpected raw control exchange');
+        },
         call: (method, params) =>
           method === 'reaper.record-containment.v1'
             ? Promise.resolve({ state: 'containment-recorded', reaper: reaperIdentity })
@@ -2089,6 +2095,9 @@ describe('provider-proxy guardian and reaper', () => {
       timer,
       mintReceipt: () => randomUUID(),
       reaperChannel: {
+        exchange: () => {
+          throw new Error('unexpected raw control exchange');
+        },
         call: (method) =>
           method === 'reaper.record-containment.v1'
             ? Promise.resolve({ state: 'containment-recorded', reaper: reaperIdentity })
@@ -2326,6 +2335,9 @@ describe('provider-proxy/set-authority: stopAndReap against a real guardian', ()
   /** `stopAndReap`'s own `proxyClient` is never touched by it. */
   function unreachableClient(): ControlClient {
     return {
+      exchange: () => {
+        throw new Error('unreachable: this client was not expected to exchange');
+      },
       call: () => Promise.reject(new Error('unreachable: this client was not expected to be called')),
       faulted: new Promise<never>(() => undefined),
       onFault: () => () => undefined,

@@ -38,6 +38,9 @@ function runtimeWithTime(time: VirtualTime): Runtime {
 function passiveClient(role: 'guardian' | 'reaper'): ControlClient {
   let challenge = 0;
   return {
+    exchange: () => {
+      throw new Error(`unexpected ${role} control exchange`);
+    },
     call: async () => ({ state: 'active', nextHeartbeatChallenge: `${role}-challenge-${++challenge}` }),
     faulted: new Promise<never>(() => undefined),
     onFault: () => () => undefined,

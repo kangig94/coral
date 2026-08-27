@@ -323,6 +323,9 @@ function rejectedConfigRead(generation: number): ProviderResponseDiagnosticFact 
 
 function unreachableClient(): ControlClient {
   return {
+    exchange: () => {
+      throw new Error('unexpected control exchange');
+    },
     call: async () => {
       throw new Error('unexpected control call');
     },

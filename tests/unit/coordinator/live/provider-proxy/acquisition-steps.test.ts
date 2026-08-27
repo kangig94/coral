@@ -57,6 +57,9 @@ const mockedCreateSetAuthority = vi.mocked(createProviderProxySetAuthority);
 
 function passiveClient(): ControlClient {
   return {
+    exchange: () => {
+      throw new Error('unexpected control exchange');
+    },
     call: async () => ({ state: 'active', nextHeartbeatChallenge: 'next' }),
     faulted: new Promise<never>(() => undefined),
     onFault: () => () => undefined,

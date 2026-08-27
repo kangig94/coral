@@ -78,6 +78,9 @@ function statefulRetryEndpoint(method: RetryMethod, ordering: RetryOrdering) {
   };
 
   const client = {
+    exchange: () => {
+      throw new Error('unexpected control exchange');
+    },
     call: vi.fn(async (controlMethod: string, params: unknown) => {
       if (controlMethod === 'operation.attach.v1') {
         const watermark = (params as { committedThroughProviderSeq: number }).committedThroughProviderSeq;
@@ -162,6 +165,9 @@ export function createProviderOperationRetryHarness(method: RetryMethod, orderin
   faults.onFault((fault) => terminalFaults.push(fault));
   const stopAndReap = vi.fn(async () => ({ unconfirmed: 'not requested' }) as const);
   const idleClient = {
+    exchange: () => {
+      throw new Error('unexpected role control exchange');
+    },
     call: async (controlMethod: string) => {
       throw new Error(`unexpected role control call: ${controlMethod}`);
     },

@@ -542,12 +542,18 @@ async function launchThroughRoute(
     call(method: string, params: unknown, timeoutMs: number): Promise<unknown>;
   }) => {
     const proxy = {
+      exchange: () => {
+        throw new Error('unexpected raw control exchange');
+      },
       call: client.call.bind(client),
       faulted: new Promise<never>(() => undefined),
       onFault: () => () => undefined,
       close: () => undefined,
     };
     const guardian = {
+      exchange: () => {
+        throw new Error('unexpected raw control exchange');
+      },
       ...guardianClient,
       faulted: new Promise<never>(() => undefined),
       onFault: () => () => undefined,

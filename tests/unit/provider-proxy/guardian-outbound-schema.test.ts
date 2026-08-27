@@ -144,6 +144,9 @@ function createGuardianHarness() {
     return { state: 'root-recorded' };
   });
   const reaperChannel: ControlClient = {
+    exchange: () => {
+      throw new Error('unexpected reaper control exchange');
+    },
     call: reaperCall,
     faulted: new Promise<never>(() => undefined),
     onFault: () => () => undefined,

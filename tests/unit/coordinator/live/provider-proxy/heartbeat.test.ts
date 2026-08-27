@@ -27,6 +27,9 @@ function scriptedClient(replies: readonly (string | Error)[]): { client: Control
   const calls: RecordedCall[] = [];
   let index = 0;
   const client: ControlClient = {
+    exchange: () => {
+      throw new Error('unexpected control exchange');
+    },
     call: (_method, params) => {
       calls.push(params as RecordedCall);
       const reply = replies[Math.min(index, replies.length - 1)];
@@ -146,6 +149,9 @@ describe('provider proxy authority heartbeats', () => {
   it('rejects an invalid heartbeat before the untyped control client can write it', async () => {
     const call = vi.fn(async () => ({ state: 'active', nextHeartbeatChallenge: 'challenge-1' }));
     const client: ControlClient = {
+      exchange: () => {
+        throw new Error('unexpected control exchange');
+      },
       call,
       faulted: new Promise<never>(() => undefined),
       onFault: () => () => undefined,
@@ -193,6 +199,9 @@ describe('provider proxy authority heartbeats', () => {
       .mockImplementationOnce(() => first)
       .mockResolvedValue({ state: 'active', nextHeartbeatChallenge: 'challenge-2' });
     const client = {
+      exchange: () => {
+        throw new Error('unexpected control exchange');
+      },
       call,
       faulted: new Promise<never>(() => undefined),
       onFault: () => () => undefined,
@@ -525,6 +534,9 @@ describe('provider proxy authority heartbeats', () => {
     // through the ordinary indeterminate channel rather than latch a decisive `local-failure` terminal.
     const time = new VirtualTime();
     const proxyClient: ControlClient = {
+      exchange: () => {
+        throw new Error('unexpected control exchange');
+      },
       call: async () => ({ unexpected: 'shape' }),
       faulted: new Promise<never>(() => undefined),
       onFault: () => () => undefined,

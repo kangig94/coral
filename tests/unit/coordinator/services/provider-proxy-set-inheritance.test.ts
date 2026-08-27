@@ -277,6 +277,9 @@ function fakeClient(
 ): ControlClient {
   const faulted = new Promise<never>(() => undefined);
   return {
+    exchange: () => {
+      throw new Error('unexpected control exchange');
+    },
     call: async (method: string, params: unknown) => {
       calls.push({ method, params });
       const entry = responses[method];
@@ -300,6 +303,9 @@ function faultableClient(
     resolveFault = resolve;
   });
   const client: ControlClient = {
+    exchange: () => {
+      throw new Error('unexpected control exchange');
+    },
     call: async (method, params) => {
       calls.push({ method, params });
       const entry = responses[method];
@@ -387,6 +393,9 @@ async function guardianLeaseClient(
     heartbeatChallenge: string;
   };
   const client: ControlClient = {
+    exchange: () => {
+      throw new Error('unexpected control exchange');
+    },
     call: (method, params, timeoutMs) =>
       method === 'guardian.handoff-redeem.v1'
         ? Promise.resolve({
@@ -1010,6 +1019,9 @@ describe('attemptProviderProxySetInheritance', () => {
     mockedReadCapsule.mockReturnValueOnce(capsuleFor(loc));
     const closed: string[] = [];
     mockedConnect.mockImplementation(async (socketPath: string) => ({
+      exchange: () => {
+        throw new Error('unexpected raw control exchange');
+      },
       call: async (method: string) => {
         if (method === 'guardian.handoff-redeem.v1') {
           return {

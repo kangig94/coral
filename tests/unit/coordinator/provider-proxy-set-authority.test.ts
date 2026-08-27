@@ -86,6 +86,9 @@ const COORDINATOR_IDENTITY: CoordinatorIdentity = {
 /** A client that must never be called — a test that reaches it is exercising a path it did not mean to. */
 function unreachableClient(): ControlClient {
   return {
+    exchange: () => {
+      throw new Error('unreachable: this client was not expected to exchange');
+    },
     call: () => Promise.reject(new Error('unreachable: this client was not expected to be called')),
     faulted: new Promise<never>(() => undefined),
     onFault: () => () => undefined,
@@ -121,6 +124,9 @@ function unusedRuntimePorts(): Pick<Runtime, 'ids' | 'env' | 'storage'> {
  */
 function fakeControlClient(time: VirtualTime, resolveAtMs: number, result: unknown): ControlClient {
   return {
+    exchange: () => {
+      throw new Error('unexpected control exchange');
+    },
     call: (_method, _params, timeoutMs) =>
       new Promise((resolve, reject) => {
         let settled = false;
@@ -241,6 +247,9 @@ describe('createProviderProxySetAuthority: RPC response validation', () => {
 
   it('rejects a non-canonical inventory cwd at the real proxy response receiver', async () => {
     const proxyClient: ControlClient = {
+      exchange: () => {
+        throw new Error('unexpected proxy control exchange');
+      },
       call: () =>
         Promise.resolve({
           hosts: [
@@ -285,6 +294,9 @@ describe('createProviderProxySetAuthority: stopAndReap providerRoots', () => {
   it('names this coordinator’s own recorded provider roots, not an empty claim the guardian would refuse', async () => {
     const calls: unknown[] = [];
     const client: ControlClient = {
+      exchange: () => {
+        throw new Error('unexpected control exchange');
+      },
       call: (_method, params) => {
         calls.push(params);
         return Promise.resolve({ state: 'containment-absent', disappearanceReceipt: 'gone' });
@@ -311,6 +323,9 @@ describe('createProviderProxySetAuthority: stopAndReap providerRoots', () => {
   it('names an empty set when this coordinator holds no live operations against the proxy', async () => {
     const calls: unknown[] = [];
     const client: ControlClient = {
+      exchange: () => {
+        throw new Error('unexpected control exchange');
+      },
       call: (_method, params) => {
         calls.push(params);
         return Promise.resolve({ state: 'containment-absent', disappearanceReceipt: 'gone' });
@@ -353,6 +368,9 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
     ackGrantId?: string,
   ): ControlClient {
     return {
+      exchange: () => {
+        throw new Error(`unexpected ${role} control exchange`);
+      },
       call: (method: string, params: unknown) => {
         calls.push({ role, method, params });
         if (fail !== undefined && method === fail) {

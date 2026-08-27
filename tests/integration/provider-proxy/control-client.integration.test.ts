@@ -119,6 +119,160 @@ describe('control client', () => {
     await expect(client.call('role.work.v1', {}, 5_000)).resolves.toEqual({ ok: true });
   });
 
+  it('names a correlated result as a response', async () => {
+    const { socketPath, sockets } = await startTestServer();
+    const client = await connectControlClient(socketPath, manualTimer(), 5_000);
+    cleanups.push(() => client.close());
+    const serverSocket = await waitForAccept(sockets);
+    respondToNextRequest(serverSocket, (id) => ({ jsonrpc: '2.0', id, result: { ok: true } }));
+
+    await expect(client.exchange('role.work.v1', {}, 5_000)).resolves.toEqual({
+      kind: 'response',
+      response: { kind: 'result', value: { ok: true } },
+    });
+  });
+
+  it('names a correlated JSON-RPC error as a refusal', async () => {
+    const { socketPath, sockets } = await startTestServer();
+    const client = await connectControlClient(socketPath, manualTimer(), 5_000);
+    cleanups.push(() => client.close());
+    const serverSocket = await waitForAccept(sockets);
+    respondToNextRequest(serverSocket, (id) => ({
+      jsonrpc: '2.0',
+      id,
+      error: {
+        code: -32_600,
+        message: 'Control admission was refused (control-active).',
+        data: { code: 'invalid_state', reason: 'control-active' },
+      },
+    }));
+
+    const outcome = await client.exchange('role.redeem.v1', {}, 5_000);
+
+    expect(outcome).toEqual({
+      kind: 'response',
+      response: {
+        kind: 'refusal',
+        failure: {
+          kind: 'json-rpc-error',
+          jsonRpcCode: -32_600,
+          protocolCode: 'invalid_state',
+          admissionReason: 'control-active',
+          heartbeatRefusal: null,
+        },
+        error: expect.objectContaining({
+          code: 'control_call_failed',
+          origin: 'remote-response',
+          message: 'Control admission was refused (control-active).',
+        }),
+      },
+    });
+  });
+
+  it('names an unanswered written request that exceeds its budget as no-response', async () => {
+    const { socketPath, sockets } = await startTestServer();
+    const timer = manualTimer();
+    const client = await connectControlClient(socketPath, timer, 5_000);
+    cleanups.push(() => client.close());
+    await waitForAccept(sockets);
+
+    const exchange = client.exchange('role.slow.v1', {}, 30);
+    timer.fireAll();
+
+    await expect(exchange).resolves.toEqual({
+      kind: 'no-response',
+      cause: 'timeout',
+      error: expect.objectContaining({
+        code: 'control_call_failed',
+        origin: 'timeout',
+        message: 'role.slow.v1 exceeded its 30ms budget.',
+      }),
+    });
+  });
+
+  it('names channel closure with a written request pending as no-response', async () => {
+    const { socketPath, sockets } = await startTestServer();
+    const client = await connectControlClient(socketPath, manualTimer(), 5_000);
+    cleanups.push(() => client.close());
+    const serverSocket = await waitForAccept(sockets);
+
+    const exchange = client.exchange('role.work.v1', {}, 5_000);
+    serverSocket.destroy();
+
+    await expect(exchange).resolves.toEqual({
+      kind: 'no-response',
+      cause: 'connection-closed-after-write',
+      error: expect.objectContaining({ code: 'control_client_closed', origin: 'closed' }),
+    });
+  });
+
+  it('names an exchange made after client closure as not-sent', async () => {
+    const { socketPath, sockets } = await startTestServer();
+    const client = await connectControlClient(socketPath, manualTimer(), 5_000);
+    cleanups.push(() => client.close());
+    await waitForAccept(sockets);
+    client.close();
+
+    await expect(client.exchange('role.work.v1', {}, 5_000)).resolves.toEqual({
+      kind: 'not-sent',
+      cause: 'connection-already-closed',
+      error: expect.objectContaining({ code: 'control_client_closed', origin: 'closed' }),
+    });
+  });
+
+  it('names frame encoding failure as not-sent', async () => {
+    const { socketPath, sockets } = await startTestServer();
+    const client = await connectControlClient(socketPath, manualTimer(), 5_000);
+    cleanups.push(() => client.close());
+    await waitForAccept(sockets);
+    const params: { self?: unknown } = {};
+    params.self = params;
+
+    await expect(client.exchange('role.work.v1', params, 5_000)).resolves.toEqual({
+      kind: 'not-sent',
+      cause: 'encode-failed',
+      error: expect.any(Error),
+    });
+  });
+
+  it('names a synchronous socket write throw as not-sent', async () => {
+    const { socketPath, sockets } = await startTestServer();
+    const client = await connectControlClient(socketPath, manualTimer(), 5_000);
+    cleanups.push(() => client.close());
+    await waitForAccept(sockets);
+    const sentinel = new Error('write sentinel');
+    const write = vi.spyOn(Socket.prototype, 'write').mockImplementationOnce(() => {
+      throw sentinel;
+    });
+    cleanups.push(() => write.mockRestore());
+
+    await expect(client.exchange('role.write.v1', {}, 5_000)).resolves.toEqual({
+      kind: 'not-sent',
+      cause: 'write-threw',
+      error: sentinel,
+    });
+  });
+
+  it('names an invalid unattributable frame as a channel fault', async () => {
+    const { socketPath, sockets } = await startTestServer();
+    const client = await connectControlClient(socketPath, manualTimer(), 5_000);
+    cleanups.push(() => client.close());
+    const serverSocket = await waitForAccept(sockets);
+
+    const exchange = client.exchange('role.work.v1', {}, 5_000);
+    serverSocket.write('not-json\n');
+
+    await expect(exchange).resolves.toEqual({
+      kind: 'channel-fault',
+      cause: 'invalid-unattributable-frame',
+      error: expect.objectContaining({
+        code: 'control_call_failed',
+        origin: 'remote-response',
+        remoteFailure: { kind: 'invalid-frame' },
+      }),
+    });
+  });
+
   it('rejects with control_client_connect_failed when the connect budget is exceeded', async () => {
     // A real, listening server so the socket path is genuine — the manual timer, not a bad path, is what
     // forces the timeout branch: fireAll() runs before Node's real 'connect' event could ever arrive.

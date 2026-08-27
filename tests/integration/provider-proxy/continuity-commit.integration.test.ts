@@ -202,6 +202,9 @@ async function connectRawProviderEventControlClient(
   socket.on('close', latchFault);
 
   return {
+    exchange: () => {
+      throw new Error('unexpected raw control exchange');
+    },
     faulted,
     onFault(listener) {
       if (latchedFault !== null) {

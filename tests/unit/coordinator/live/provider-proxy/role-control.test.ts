@@ -36,7 +36,15 @@ const openResultSchema = z
   .strict();
 
 function client(call: ControlClient['call']): ControlClient {
-  return { call, faulted: NEVER, onFault: () => () => undefined, close: () => undefined };
+  return {
+    exchange: () => {
+      throw new Error('unexpected control exchange');
+    },
+    call,
+    faulted: NEVER,
+    onFault: () => () => undefined,
+    close: () => undefined,
+  };
 }
 
 function remoteFailure(
@@ -324,6 +332,9 @@ describe('role control recovery classification', () => {
     let calls = 0;
     let heartbeatCallStarted = false;
     const fake: ControlClient = {
+      exchange: () => {
+        throw new Error('unexpected control exchange');
+      },
       call: async () => {
         calls += 1;
         if (calls === 1) {
@@ -363,6 +374,9 @@ describe('role control recovery classification', () => {
     let calls = 0;
     let heartbeatCallStarted = false;
     const fake: ControlClient = {
+      exchange: () => {
+        throw new Error('unexpected control exchange');
+      },
       call: async () => {
         calls += 1;
         if (calls === 1) {

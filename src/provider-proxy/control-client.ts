@@ -49,6 +49,34 @@ export type ControlClientRemoteFailure =
     }>
   | Readonly<{ kind: 'invalid-frame' }>;
 
+/** The transport owner's closed classification of one attempted request/reply exchange. */
+export type ControlExchange =
+  | Readonly<{
+      kind: 'response';
+      response:
+        | Readonly<{ kind: 'result'; value: unknown }>
+        | Readonly<{
+            kind: 'refusal';
+            failure: ControlClientRemoteFailure;
+            error: ControlClientError;
+          }>;
+    }>
+  | Readonly<{
+      kind: 'no-response';
+      cause: 'timeout' | 'connection-closed-after-write';
+      error: ControlClientError;
+    }>
+  | Readonly<{
+      kind: 'not-sent';
+      cause: 'connection-already-closed' | 'encode-failed' | 'write-threw';
+      error: unknown;
+    }>
+  | Readonly<{
+      kind: 'channel-fault';
+      cause: 'invalid-unattributable-frame';
+      error: ControlClientError;
+    }>;
+
 const JSON_RPC_INVALID_REQUEST = -32_600;
 
 const admissionRefusalDataSchema = z
@@ -145,6 +173,7 @@ function heartbeatRefusalFrom(jsonRpcCode: number, data: unknown): ControlClient
 }
 
 export interface ControlClient {
+  exchange(method: string, params: unknown, timeoutMs: number): Promise<ControlExchange>;
   call(method: string, params: unknown, timeoutMs: number): Promise<unknown>;
   readonly faulted: Promise<ControlClientError>;
   onFault(listener: (error: ControlClientError) => void): () => void;
@@ -152,8 +181,7 @@ export interface ControlClient {
 }
 
 type Pending = Readonly<{
-  resolve: (value: unknown) => void;
-  reject: (error: Error) => void;
+  resolve: (exchange: ControlExchange) => void;
   budget: { unref?: () => void };
 }>;
 
@@ -213,11 +241,11 @@ export async function connectControlClient(
     for (const listener of faultListeners) listener(error);
   };
 
-  const failAll = (error: Error): void => {
+  const settleAll = (exchange: ControlExchange): void => {
     for (const [id, waiter] of pending) {
       pending.delete(id);
       timer.clearTimeout(waiter.budget);
-      waiter.reject(error);
+      waiter.resolve(exchange);
     }
   };
 
@@ -229,7 +257,7 @@ export async function connectControlClient(
       { kind: 'invalid-frame' },
     );
     latchFault(error);
-    failAll(error);
+    settleAll({ kind: 'channel-fault', cause: 'invalid-unattributable-frame', error });
     socket.destroy();
   };
 
@@ -306,17 +334,17 @@ export async function connectControlClient(
     pending.delete(Number(message.id));
     timer.clearTimeout(waiter.budget);
     if ('error' in message) {
-      waiter.reject(
-        new ControlClientError('control_call_failed', message.error.message, 'remote-response', {
-          kind: 'json-rpc-error',
-          jsonRpcCode: message.error.code,
-          protocolCode: protocolCodeFrom(message.error.data),
-          admissionReason: admissionReasonFrom(message.error.code, message.error.data),
-          heartbeatRefusal: heartbeatRefusalFrom(message.error.code, message.error.data),
-        }),
-      );
+      const failure: ControlClientRemoteFailure = {
+        kind: 'json-rpc-error',
+        jsonRpcCode: message.error.code,
+        protocolCode: protocolCodeFrom(message.error.data),
+        admissionReason: admissionReasonFrom(message.error.code, message.error.data),
+        heartbeatRefusal: heartbeatRefusalFrom(message.error.code, message.error.data),
+      };
+      const error = new ControlClientError('control_call_failed', message.error.message, 'remote-response', failure);
+      waiter.resolve({ kind: 'response', response: { kind: 'refusal', failure, error } });
     } else {
-      waiter.resolve(message.result);
+      waiter.resolve({ kind: 'response', response: { kind: 'result', value: message.result } });
     }
   }, faultInvalidFrame);
   socket.on('data', read);
@@ -325,10 +353,66 @@ export async function connectControlClient(
     closed = true;
     const error = new ControlClientError('control_client_closed', 'The control channel closed.', 'closed');
     latchFault(error);
-    failAll(error);
+    settleAll({ kind: 'no-response', cause: 'connection-closed-after-write', error });
   });
 
+  const exchange = (method: string, params: unknown, timeoutMs: number): Promise<ControlExchange> => {
+    if (closed) {
+      return Promise.resolve({
+        kind: 'not-sent',
+        cause: 'connection-already-closed',
+        error: new ControlClientError('control_client_closed', 'The control channel closed.', 'closed'),
+      });
+    }
+
+    const id = nextId;
+    nextId += 1;
+    let frame: string;
+    try {
+      frame = encodeProxyControlFrame({ jsonrpc: '2.0', id, method, params });
+    } catch (error: unknown) {
+      return Promise.resolve({ kind: 'not-sent', cause: 'encode-failed', error });
+    }
+
+    return new Promise<ControlExchange>((resolve) => {
+      const budget = timer.setTimeout(() => {
+        pending.delete(id);
+        resolve({
+          kind: 'no-response',
+          cause: 'timeout',
+          error: new ControlClientError(
+            'control_call_failed',
+            `${method} exceeded its ${timeoutMs}ms budget.`,
+            'timeout',
+          ),
+        });
+      }, timeoutMs);
+      budget.unref?.();
+      pending.set(id, { resolve, budget });
+      try {
+        socket.write(frame);
+      } catch (error: unknown) {
+        pending.delete(id);
+        timer.clearTimeout(budget);
+        resolve({ kind: 'not-sent', cause: 'write-threw', error });
+      }
+    });
+  };
+
+  const compatibilityCall = async (method: string, params: unknown, timeoutMs: number): Promise<unknown> => {
+    const outcome = await exchange(method, params, timeoutMs);
+    if (outcome.kind === 'response') {
+      if (outcome.response.kind === 'result') return outcome.response.value;
+      throw outcome.response.error;
+    }
+    if (outcome.kind === 'no-response' || outcome.kind === 'channel-fault') throw outcome.error;
+    if (outcome.error instanceof ProxyControlProtocolError) throw outcome.error;
+    if (outcome.cause === 'connection-already-closed') throw outcome.error;
+    throw new ControlClientError('control_call_failed', `${method} could not be sent.`, 'write');
+  };
+
   return {
+    exchange,
     faulted,
     onFault(listener) {
       if (latchedFault !== null) {
@@ -339,34 +423,9 @@ export async function connectControlClient(
       faultListeners.add(listener);
       return () => faultListeners.delete(listener);
     },
-    call(method: string, params: unknown, timeoutMs: number): Promise<unknown> {
-      if (closed) {
-        return Promise.reject(new ControlClientError('control_client_closed', 'The control channel closed.', 'closed'));
-      }
-      const id = nextId;
-      nextId += 1;
-      return new Promise<unknown>((resolve, reject) => {
-        const budget = timer.setTimeout(() => {
-          pending.delete(id);
-          reject(
-            new ControlClientError('control_call_failed', `${method} exceeded its ${timeoutMs}ms budget.`, 'timeout'),
-          );
-        }, timeoutMs);
-        budget.unref?.();
-        pending.set(id, { resolve, reject, budget });
-        try {
-          socket.write(encodeProxyControlFrame({ jsonrpc: '2.0', id, method, params }));
-        } catch (error: unknown) {
-          pending.delete(id);
-          timer.clearTimeout(budget);
-          reject(
-            error instanceof ProxyControlProtocolError
-              ? error
-              : new ControlClientError('control_call_failed', `${method} could not be sent.`, 'write'),
-          );
-        }
-      });
-    },
+    // Stage 1 compatibility adapter. New transport classification belongs in `exchange`; later stages can
+    // find the remaining lossy surface by this name without interpreting resolve-versus-reject themselves.
+    call: compatibilityCall,
     close(): void {
       closed = true;
       socket.destroy();

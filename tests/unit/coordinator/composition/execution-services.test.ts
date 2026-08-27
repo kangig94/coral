@@ -119,6 +119,9 @@ async function createSharedSetHarness(control: SharedSetControl) {
   const formattedTimeout = 'settlement timed out';
   const timeout = Object.assign(new Error(formattedTimeout), { code: 'control_call_failed' });
   const proxyClient = {
+    exchange: () => {
+      throw new Error('unexpected proxy control exchange');
+    },
     call: vi.fn(async (method: string, params: unknown) => {
       if (method === 'operation.attach.v1') {
         const committedThroughProviderSeq = (params as { committedThroughProviderSeq: number })
@@ -133,6 +136,9 @@ async function createSharedSetHarness(control: SharedSetControl) {
     close: () => undefined,
   } satisfies ControlClient;
   const idleClient = {
+    exchange: () => {
+      throw new Error('unexpected role control exchange');
+    },
     call: async (method: string) => {
       throw new Error(`unexpected role control call: ${method}`);
     },
@@ -851,6 +857,9 @@ describe('execution services provider-proxy heartbeat-hold composition', () => {
       containmentKind: setIdentity.containmentKind,
     };
     const roleClient = (role: 'guardian' | 'reaper' | 'proxy'): ControlClient => ({
+      exchange: () => {
+        throw new Error(`unexpected ${role} control exchange`);
+      },
       call: async (method: string) => {
         if (method.endsWith('handoff-install.v1') || method === 'handoff.install.v1') {
           return { state: 'installed-dormant', grantId: recoveryCapsule.grantId };
