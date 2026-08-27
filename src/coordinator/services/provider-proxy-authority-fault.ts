@@ -35,7 +35,11 @@ export type ProviderProxyHeartbeatMethod = 'control.heartbeat.v1' | 'guardian.he
 /** `teardown-latched` is the endpoint's own decisive refusal. `local-failure` is this process's own — it
  *  could not construct or send a heartbeat call at all, so nothing about the peer was ever in question. */
 export type ProviderProxyHeartbeatTerminalReason = 'teardown-latched' | 'local-failure';
-export type ProviderProxyHeartbeatIncidentReason = 'unanswered' | 'challenge-resynchronized' | 'unclassified';
+export type ProviderProxyHeartbeatIncidentReason =
+  | 'unanswered'
+  | 'challenge-resynchronized'
+  | 'unclassified'
+  | 'method-not-found';
 
 export type ProviderProxyAuthorityFault =
   | Readonly<{

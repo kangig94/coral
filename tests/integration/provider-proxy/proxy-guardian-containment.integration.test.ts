@@ -517,7 +517,6 @@ function establishActivationRoute(setIdentity: ProviderProxySetIdentity) {
   const authorityFaults = createProviderProxyAuthorityFaultLatch();
   const lifecycle = new ProviderProxySetLifecycle({
     buildSetId: FIXTURE_BUILD_SET_ID,
-    heartbeatHoldBound: { spanMs: Number.MAX_SAFE_INTEGER, materialSchedulerLatenessMs: Number.MAX_SAFE_INTEGER },
     claims,
     controlEstablished: () => undefined,
     time: { ...timer, now: () => 0, monotonicNow: () => 0n },
@@ -530,6 +529,14 @@ function establishActivationRoute(setIdentity: ProviderProxySetIdentity) {
   lifecycle.completeStartupDiscovery();
   const authority = {
     proxyInstanceId: setIdentity.proxyInstanceId,
+    autonomousDeadline: {
+      owner: 'guardian-and-reaper',
+      orphanTimeoutMs: Number.MAX_SAFE_INTEGER,
+      heartbeatHoldBound: {
+        spanMs: Number.MAX_SAFE_INTEGER,
+        materialSchedulerLatenessMs: Number.MAX_SAFE_INTEGER,
+      },
+    },
     setIdentity,
     faulted: authorityFaults.faulted,
     onFault: authorityFaults.onFault,
@@ -1334,7 +1341,6 @@ describe('provider proxy cumulative root rotation', () => {
     claims.initialize([]);
     const lifecycle = new ProviderProxySetLifecycle({
       buildSetId: FIXTURE_BUILD_SET_ID,
-      heartbeatHoldBound: { spanMs: Number.MAX_SAFE_INTEGER, materialSchedulerLatenessMs: Number.MAX_SAFE_INTEGER },
       claims,
       controlEstablished: () => undefined,
       time: runtime.time,

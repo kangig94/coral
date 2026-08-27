@@ -100,14 +100,14 @@ function inactiveHeartbeats() {
   };
 }
 
-/** `runtime.ids`/`env`/`storage` for the `stopAndReap`-only describe blocks below. */
+/** `runtime.ids`/`storage` plus the default deadline configuration for the `stopAndReap`-only blocks below. */
 function unusedRuntimePorts(): Pick<Runtime, 'ids' | 'env' | 'storage'> {
   const fail = (member: string) => (): never => {
     throw new Error(`unexpected use of runtime.${member} during stopAndReap`);
   };
   return {
     ids: { uuid: fail('ids.uuid'), randomBytes: fail('ids.randomBytes') } as unknown as Runtime['ids'],
-    env: { get: fail('env.get') } as unknown as Runtime['env'],
+    env: { get: () => undefined } as unknown as Runtime['env'],
     storage: new Proxy({}, { get: fail('storage') }) as unknown as Runtime['storage'],
   };
 }

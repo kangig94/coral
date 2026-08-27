@@ -30,7 +30,8 @@ import type {
 import type { ProviderProxySetIdentity } from '../../services/provider-proxy-set/identity.js';
 import type { ProviderProxySetAuthority, ProviderProxySetRecoveryAuthority } from './authority.js';
 
-export interface ProviderProxyOperationAuthority extends ProviderProxySetAuthority {
+export interface ProviderProxyOperationAuthority
+  extends ProviderProxySetAuthority, Pick<ProviderProxySetRecoveryAuthority, 'autonomousDeadline'> {
   readonly setIdentity: ProviderProxySetIdentity;
   registerSuccessionOperation: ProviderProxySetRecoveryAuthority['registerSuccessionOperation'];
 }
@@ -85,6 +86,10 @@ export function isProviderProxyOperationAuthority(
 ): value is DurableProviderProxyOperationAuthority {
   const candidate = value as Partial<DurableProviderProxyOperationAuthority>;
   return (
+    candidate.autonomousDeadline?.owner === 'guardian-and-reaper' &&
+    typeof candidate.autonomousDeadline.orphanTimeoutMs === 'number' &&
+    typeof candidate.autonomousDeadline.heartbeatHoldBound?.spanMs === 'number' &&
+    typeof candidate.autonomousDeadline.heartbeatHoldBound.materialSchedulerLatenessMs === 'number' &&
     candidate.setIdentity !== undefined &&
     candidate.faulted instanceof Promise &&
     typeof candidate.onFault === 'function' &&
@@ -101,7 +106,8 @@ export function isProviderProxyOperationAuthority(
 }
 
 export function createProviderProxyOperationAuthority(deps: {
-  base: ProviderProxySetAuthority & Pick<ProviderProxySetRecoveryAuthority, 'registerSuccessionOperation'>;
+  base: ProviderProxySetAuthority &
+    Pick<ProviderProxySetRecoveryAuthority, 'autonomousDeadline' | 'registerSuccessionOperation'>;
   setIdentity: ProviderProxySetIdentity;
   clients: ProviderProxyRoleClients<ControlClient>;
   faults: ProviderProxyAuthorityFaultLatch;

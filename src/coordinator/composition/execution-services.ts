@@ -45,10 +45,6 @@ import {
   retireProviderHandoffCapsule,
 } from '../services/provider-proxy-capsule-discovery.js';
 import { proxyOperationStatusNonceSchema } from '../../provider-proxy/protocol.js';
-import {
-  providerProxyHeartbeatHoldBound,
-  resolveProviderProxyDeadlineConfiguration,
-} from '../../provider-proxy/orphan-deadline.js';
 import { providerProxySetAvailabilityReason } from '../services/provider-proxy-set/inheritance.js';
 import {
   recoverProviderProxySetAtStartup,
@@ -248,7 +244,6 @@ export function createExecutionServices({
     controlEstablished: notifyProviderProxyControlEstablished,
     time: runtime.time,
     recoveryDispatcher: providerProxyRecovery,
-    heartbeatHoldBound: providerProxyHeartbeatHoldBound(resolveProviderProxyDeadlineConfiguration(runtime.env)),
     onProgressPremiseViolation: (violation) =>
       backendLog.warn(
         `Provider proxy lifecycle ${violation.stage} woke ${violation.latenessMs}ms after its requested time.`,

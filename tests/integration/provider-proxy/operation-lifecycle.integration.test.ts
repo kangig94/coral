@@ -528,6 +528,11 @@ async function launchThroughRoute(
   } as const;
   const base = {
     proxyInstanceId: set.shared.proxyInstanceId,
+    autonomousDeadline: {
+      owner: 'guardian-and-reaper',
+      orphanTimeoutMs: 37_000,
+      heartbeatHoldBound: { spanMs: 23_000, materialSchedulerLatenessMs: 5_750 },
+    },
     registerSuccessionOperation: async () => undefined,
     stopAndReap: async () => ({ disappearanceReceipt: 'gone' }),
     stopHeartbeats: () => undefined,

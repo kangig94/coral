@@ -24,8 +24,10 @@ import { JobStore } from '#src/jobs/store.js';
 import type { ControlClient } from '#src/provider-proxy/control-client.js';
 import {
   CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV,
+  MAX_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS,
+  MIN_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS,
+  PROXY_TEARDOWN_RESERVE_MS,
   providerProxyHeartbeatHoldBound,
-  resolveProviderProxyDeadlineConfiguration,
 } from '#src/provider-proxy/orphan-deadline.js';
 import type { Database } from '#src/store/db.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
@@ -41,6 +43,11 @@ import { providerOperationRecord } from '#tests/unit/store/provider-operation-fi
 
 /** The build these fixture worlds belong to; capsules built from the same fixtures are inheritable, not foreign. */
 const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
+const TEST_AUTONOMOUS_DEADLINE = {
+  owner: 'guardian-and-reaper' as const,
+  orphanTimeoutMs: 37_000,
+  heartbeatHoldBound: providerProxyHeartbeatHoldBound({ orphanTimeoutMs: 37_000, teardownReserveMs: 14_000 }),
+};
 
 type SharedSetControl = 'settlement-timeout' | 'control-channel-fault' | 'heartbeat-failed';
 
@@ -139,6 +146,7 @@ async function createSharedSetHarness(control: SharedSetControl) {
   const authority = createProviderProxyOperationAuthority({
     base: {
       proxyInstanceId: setIdentity.proxyInstanceId,
+      autonomousDeadline: TEST_AUTONOMOUS_DEADLINE,
       stopAndReap,
       stopHeartbeats: () => undefined,
       initiateControlClose: async () => undefined,
@@ -361,6 +369,7 @@ describe('execution services provider-proxy proof composition', () => {
     }));
     const authority = {
       proxyInstanceId: record.operation.proxyInstanceId,
+      autonomousDeadline: TEST_AUTONOMOUS_DEADLINE,
       setIdentity: providerProxySetIdentityFromRecord(record),
       faulted: Promise.resolve(fault),
       onFault: (listener: (observed: ProviderProxyAuthorityFault) => void) => {
@@ -444,6 +453,7 @@ describe('execution services provider-proxy proof composition', () => {
     const buildOperationControl = vi.fn(() => ({ stop: async () => undefined }));
     const authority = {
       proxyInstanceId: record.operation.proxyInstanceId,
+      autonomousDeadline: TEST_AUTONOMOUS_DEADLINE,
       setIdentity: providerProxySetIdentityFromRecord(record),
       faulted: new Promise<never>(() => undefined),
       onFault: () => () => undefined,
@@ -640,6 +650,7 @@ describe('execution services provider-proxy proof composition', () => {
     let stopAttempts = 0;
     const authority = {
       proxyInstanceId: setIdentity.proxyInstanceId,
+      autonomousDeadline: TEST_AUTONOMOUS_DEADLINE,
       setIdentity,
       faulted: new Promise<never>(() => undefined),
       onFault: (listener: (fault: ProviderProxyAuthorityFault) => void) => {
@@ -770,10 +781,12 @@ describe('execution services provider-proxy heartbeat-hold composition', () => {
       time,
       env: {
         ...baseRuntime.env,
-        // Forced regardless of the ambient process env, so this test's expectation never depends on whatever
-        // a developer or CI happens to have exported for this variable.
+        // The successor deliberately disagrees with the redeemed set. The established authority below carries
+        // the capsule-derived value the roles accepted, which must remain authoritative for its hold.
         get: (key: string) =>
-          key === CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV ? undefined : baseRuntime.env.get(key),
+          key === CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV
+            ? String(MAX_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS)
+            : baseRuntime.env.get(key),
       },
     };
     const db = newRawDatabase(':memory:');
@@ -818,9 +831,18 @@ describe('execution services provider-proxy heartbeat-hold composition', () => {
     } satisfies ControlClient;
     const stopAndReap = vi.fn(async () => ({ disappearanceReceipt: 'heartbeat-hold-containment-absent' }) as const);
     const faults = createProviderProxyAuthorityFaultLatch();
+    const redeemedDeadline = {
+      owner: 'guardian-and-reaper' as const,
+      orphanTimeoutMs: MIN_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS,
+      heartbeatHoldBound: providerProxyHeartbeatHoldBound({
+        orphanTimeoutMs: MIN_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS,
+        teardownReserveMs: PROXY_TEARDOWN_RESERVE_MS,
+      }),
+    };
     const authority = createProviderProxyOperationAuthority({
       base: {
         proxyInstanceId: setIdentity.proxyInstanceId,
+        autonomousDeadline: redeemedDeadline,
         stopAndReap,
         stopHeartbeats: () => undefined,
         initiateControlClose: async () => undefined,
@@ -835,37 +857,28 @@ describe('execution services provider-proxy heartbeat-hold composition', () => {
     if (admission.kind !== 'accepted') throw new Error(`fresh set was not admitted: ${admission.kind}`);
     lifecycle.acquisitionSucceeded(admission.slotId, authority);
 
-    return { time, faults, stopAndReap, services };
+    return { time, faults, stopAndReap, redeemedDeadline, services };
   }
 
-  // The join `docs/design-rationale.md` §9 warns can go silently stale: `providerProxyAdoptionWindowMs` and
-  // `PROXY_CONTROL_RPC_TIMEOUT_MS`/`PROXY_CONTROL_HEARTBEAT_MS` are each unit-tested on their own, and every
-  // lifecycle fixture injects `Number.MAX_SAFE_INTEGER` for isolation — so nothing but this test exercises the
-  // actual composed value `execution-services.ts` hands the lifecycle for a real env.
-  it('does not reap when heartbeat scheduler lateness is material across the real composed bound', async () => {
-    const expected = providerProxyHeartbeatHoldBound(
-      resolveProviderProxyDeadlineConfiguration({ get: () => undefined }),
-    );
-    expect(expected).toEqual({ spanMs: 23_000, materialSchedulerLatenessMs: 5_750 });
-    const { time, faults, stopAndReap, services } = await createHeartbeatHoldHarness();
+  it("uses a redeemed set's capsule deadline instead of the successor coordinator's environment", async () => {
+    const { time, faults, stopAndReap, redeemedDeadline, services } = await createHeartbeatHoldHarness();
+    expect(redeemedDeadline.heartbeatHoldBound).toEqual({ spanMs: 5_001, materialSchedulerLatenessMs: 1_250 });
 
-    const incident = (error: string, schedulerLatenessMs: number): void =>
+    const incident = (error: string): void =>
       faults.reportIncident({
         kind: 'heartbeat-indeterminate',
         role: 'guardian',
         method: 'guardian.heartbeat.v1',
         incidentReason: 'unanswered',
-        schedulerLatenessMs,
+        schedulerLatenessMs: 0,
         error,
       });
 
-    incident('first', 0);
-    for (let attempt = 2; attempt <= 4; attempt += 1) {
-      time.tick(8_000);
-      incident(`retry-${attempt}`, 2_000);
-    }
+    incident('first');
+    time.tick(redeemedDeadline.heartbeatHoldBound.spanMs);
+    incident('second');
 
-    expect(stopAndReap).not.toHaveBeenCalled();
+    expect(stopAndReap).toHaveBeenCalledOnce();
     services.stopProviderOperationReconciler();
   });
 });

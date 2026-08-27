@@ -330,12 +330,13 @@ function classifyFulfillment(
       typeof value !== 'object' ||
       value === null ||
       !('kind' in value) ||
-      (value.kind !== 'redeemed' && value.kind !== 'temporarily-unavailable')
+      !['redeemed', 'protocol-incompatible', 'temporarily-unavailable'].includes(String(value.kind))
     ) {
       return unknown(producerId, new Error('provider_proxy_capsule_redemption_contract_violation'));
     }
     const outcome = value as ProviderProxySetRedemptionOutcome;
     if (outcome.kind === 'temporarily-unavailable') return unavailable(producerId, outcome.incident);
+    if (outcome.kind === 'protocol-incompatible') return evidence(outcome);
     if (
       context.capsule !== undefined &&
       !providerProxySetCapsuleMatchesIdentity(context.capsule, outcome.set.setIdentity)

@@ -87,6 +87,11 @@ export type HeartbeatFailureDisposition =
       incidentReason: ProviderProxyHeartbeatIncidentReason;
     }>
   | Readonly<{ kind: 'terminal'; terminalReason: ProviderProxyHeartbeatTerminalReason; error: ControlClientError }>
+  | Readonly<{
+      kind: 'protocol-incompatible';
+      incidentReason: 'method-not-found';
+      error: ControlClientError;
+    }>
   /** Not a disposition about the peer: this process could not construct or send the call at all. Retrying
    *  reproduces the identical failure, so a caller must treat this as decisive rather than folding it into a
    *  hold. */
@@ -109,6 +114,9 @@ export function heartbeatFailureDisposition(error: unknown, challenge: string): 
   }
   if (refusal?.reason === 'teardown-latched') {
     return { kind: 'terminal', terminalReason: 'teardown-latched', error };
+  }
+  if (error.remoteFailure?.kind === 'json-rpc-error' && error.remoteFailure.protocolCode === 'method_not_found') {
+    return { kind: 'protocol-incompatible', incidentReason: 'method-not-found', error };
   }
   if (error.origin !== 'remote-response') {
     return { kind: 'retry', challenge, incidentReason: 'unanswered' };
@@ -160,6 +168,10 @@ function startHeartbeatLoop(
         }
         state = { kind: 'stopped' };
         runtime.time.clearInterval(handle);
+        if (disposition.kind === 'protocol-incompatible') {
+          onIncident(disposition.error, disposition.incidentReason, observedSchedulerLatenessMs);
+          return;
+        }
         // `local-failure` is not a peer disposition, but this loop still has only one way to stop and report a
         // decisive end — the same terminal path `teardown-latched` uses, distinguished by its own reason.
         onTerminal(disposition.error, disposition.kind === 'terminal' ? disposition.terminalReason : 'local-failure');

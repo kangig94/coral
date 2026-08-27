@@ -172,6 +172,11 @@ export function createProviderOperationRetryHarness(method: RetryMethod, orderin
   const authority = createProviderProxyOperationAuthority({
     base: {
       proxyInstanceId: record.operation.proxyInstanceId,
+      autonomousDeadline: {
+        owner: 'guardian-and-reaper',
+        orphanTimeoutMs: 37_000,
+        heartbeatHoldBound: { spanMs: 23_000, materialSchedulerLatenessMs: 5_750 },
+      },
       stopAndReap,
       stopHeartbeats: () => undefined,
       initiateControlClose: async () => undefined,

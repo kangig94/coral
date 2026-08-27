@@ -175,11 +175,11 @@ const validHeartbeatHoldReap: ProviderProxySetDecision = {
   fault: 'heartbeat-hold-exhausted',
   role: 'guardian',
   method: 'guardian.heartbeat.v1',
-  lastIncidentReason: 'unclassified',
+  lastIncidentReason: 'unanswered',
   attempts: 3,
   elapsedMs: 23_000,
   schedulerLatenessMs: 0,
-  error: 'answer could not be decoded',
+  error: 'heartbeat timed out',
   liveClaims: 1,
   setIdentity,
 };

@@ -65,6 +65,14 @@ function authority(): DurableProviderProxyOperationAuthority {
   return {
     proxyInstanceId,
     faulted: new Promise<never>(() => {}),
+    autonomousDeadline: {
+      owner: 'guardian-and-reaper',
+      orphanTimeoutMs: Number.MAX_SAFE_INTEGER,
+      heartbeatHoldBound: {
+        spanMs: Number.MAX_SAFE_INTEGER,
+        materialSchedulerLatenessMs: Number.MAX_SAFE_INTEGER,
+      },
+    },
     onFault: () => () => undefined,
     onIncident: () => () => undefined,
     setIdentity: {

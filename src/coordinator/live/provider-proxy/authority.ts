@@ -1,4 +1,5 @@
 import type { OperationIdentity, ProviderHostInventoryRecordWire } from '../../../provider-proxy/protocol.js';
+import type { ProviderProxyHeartbeatHoldBound } from '../../../provider-proxy/orphan-deadline.js';
 import type { HostRef } from '../../../providers/contract.js';
 
 /**
@@ -36,6 +37,16 @@ export interface ProviderProxySetAuthority {
 }
 
 export interface ProviderProxySetRecoveryAuthority extends ProviderProxySetAuthority {
+  /**
+   * The deadline agreement the established roles accepted. The lifecycle may relinquish a live set to this
+   * owner only because the role boundary already verified the same orphan timeout it uses to derive the hold
+   * bound.
+   */
+  readonly autonomousDeadline: Readonly<{
+    owner: 'guardian-and-reaper';
+    orphanTimeoutMs: number;
+    heartbeatHoldBound: ProviderProxyHeartbeatHoldBound;
+  }>;
   installRecoveryCredential(signal: AbortSignal): Promise<void>;
   registerSuccessionOperation(operation: OperationIdentity, signal?: AbortSignal): Promise<void>;
 }

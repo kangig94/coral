@@ -146,7 +146,6 @@ function lifecycleForSchedule(
   claims.initialize([record]);
   const lifecycle = new ProviderProxySetLifecycle({
     buildSetId: FIXTURE_BUILD_SET_ID,
-    heartbeatHoldBound: { spanMs: Number.MAX_SAFE_INTEGER, materialSchedulerLatenessMs: Number.MAX_SAFE_INTEGER },
     claims,
     controlEstablished: () => undefined,
     time: {
@@ -488,6 +487,14 @@ function createHarness(
   const readPhase = (): string => readProviderOperation(db, record.operation)?.phase ?? 'missing';
   const authority: DurableProviderProxyOperationAuthority = {
     proxyInstanceId: record.operation.proxyInstanceId,
+    autonomousDeadline: {
+      owner: 'guardian-and-reaper',
+      orphanTimeoutMs: Number.MAX_SAFE_INTEGER,
+      heartbeatHoldBound: {
+        spanMs: Number.MAX_SAFE_INTEGER,
+        materialSchedulerLatenessMs: Number.MAX_SAFE_INTEGER,
+      },
+    },
     faulted: new Promise<never>(() => {}),
     onFault: () => () => undefined,
     onIncident: () => () => undefined,

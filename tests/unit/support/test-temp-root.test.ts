@@ -33,9 +33,10 @@ describe('test temp root', () => {
   });
 
   it('falls back when a candidate exists and is writable but is not memory-backed', () => {
-    // Stands in for a CI image with no /dev/shm at all: the repository checkout is on the same on-disk
-    // filesystem every candidate has to be distinguished from.
-    expect(testTempRoot([process.cwd()])).toBe(tmpdir());
+    const writableCandidate = mkdtempSync(join(tmpdir(), 'coral-disk-temp-candidate-'));
+    created.push(writableCandidate);
+
+    expect(testTempRoot([writableCandidate], () => false)).toBe(tmpdir());
   });
 
   it('honours an explicit override ahead of every candidate', () => {

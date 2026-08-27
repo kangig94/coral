@@ -71,7 +71,7 @@ export function providerProxyAdoptionWindowMs(
 /**
  * `spanMs` is `providerProxyAdoptionWindowMs`'s own tolerance. `materialSchedulerLatenessMs` is one quarter of
  * that span: a hold window with at least that much observed scheduler delay cannot authorize the coordinator's
- * own bounded escalation (`ProviderProxySetLifecycleDeps.heartbeatHoldBound`).
+ * own bounded escalation. The established set carries this result beside the deadline agreement it came from.
  */
 export type ProviderProxyHeartbeatHoldBound = Readonly<{
   spanMs: number;

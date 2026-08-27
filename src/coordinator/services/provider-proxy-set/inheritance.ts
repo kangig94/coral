@@ -142,6 +142,11 @@ export type ProviderProxySetInheritanceOutcome =
 
 export type ProviderProxySetRedemptionOutcome =
   | Readonly<{ kind: 'redeemed'; set: DurableProviderProxyOperationAuthority }>
+  | Readonly<{
+      kind: 'protocol-incompatible';
+      role: Extract<ProviderProxyRoleControlAvailabilityIncident, { kind: 'role-heartbeat-indeterminate' }>['role'];
+      method: Extract<ProviderProxyRoleControlAvailabilityIncident, { kind: 'role-heartbeat-indeterminate' }>['method'];
+    }>
   | Readonly<{ kind: 'temporarily-unavailable'; incident: ProviderProxySetAvailabilityIncident }>;
 
 export type ProviderProxySetAvailabilityIncident =
@@ -811,6 +816,17 @@ export function createProviderProxySetInheritance(
         timeoutMs: INHERITANCE_REDEMPTION_DEADLINE_MS,
         produce: (bounded) => redeemCapsule(capsulePath, capsule, null, inheritanceDeps, bounded),
       });
+      if (
+        deadline.kind === 'unavailable' &&
+        deadline.incident.kind === 'role-heartbeat-indeterminate' &&
+        deadline.incident.incidentReason === 'method-not-found'
+      ) {
+        return {
+          kind: 'protocol-incompatible',
+          role: deadline.incident.role,
+          method: deadline.incident.method,
+        };
+      }
       return deadline.kind === 'settled'
         ? { kind: 'redeemed', set: deadline.value }
         : { kind: 'temporarily-unavailable', incident: deadline.incident };

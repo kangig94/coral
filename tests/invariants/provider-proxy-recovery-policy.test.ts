@@ -657,6 +657,7 @@ const EXPECTED_REJECTION_NODE_INVENTORY = [
   'src/coordinator/services/provider-proxy-recovery-policy.ts :: runProviderProxyRecoveryDeadline :: catch#1 :: calls=[] assignments=[]',
   'src/coordinator/services/provider-proxy-recovery-policy.ts :: start :: Promise.then(rejected) :: Promise.resolve(produced).then',
   'src/coordinator/services/provider-proxy-recovery-policy.ts :: start :: catch#1 :: calls=[submit, classifyRejection] assignments=[]',
+  'src/coordinator/services/provider-proxy-set/index.ts :: #releaseAnsweredHeartbeat :: Promise.catch :: slot.authority.initiateControlClose().catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: #report :: catch#1 :: calls=[] assignments=[]',
   'src/coordinator/services/provider-proxy-set/index.ts :: containmentAbsent :: Promise.catch :: authorityToClose .initiateControlClose() .catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: createInitialDispositionLatch :: Promise.catch :: promise.catch',
@@ -682,6 +683,9 @@ function rejectionJustification(fingerprint: string): string {
   }
   if (fingerprint.startsWith('src/coordinator/services/provider-proxy-set/inheritance.ts')) {
     return 'Producer-side inheritance protocol cleanup preserves causal evidence without consuming a dispatcher façade.';
+  }
+  if (fingerprint.includes(' :: #releaseAnsweredHeartbeat :: ')) {
+    return 'A best-effort close cannot revoke a release the successor owner already holds.';
   }
   if (fingerprint.includes(' :: containmentAbsent :: ')) {
     return 'Authority-close observation cannot settle or relabel disappearance delivery.';

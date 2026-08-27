@@ -192,6 +192,14 @@ describe('createProviderProxyAcquisitionSteps', () => {
     });
     mockedCreateSetAuthority.mockImplementation((options) => ({
       proxyInstanceId: options.proxyInstanceId,
+      autonomousDeadline: {
+        owner: 'guardian-and-reaper',
+        orphanTimeoutMs: Number.MAX_SAFE_INTEGER,
+        heartbeatHoldBound: {
+          spanMs: Number.MAX_SAFE_INTEGER,
+          materialSchedulerLatenessMs: Number.MAX_SAFE_INTEGER,
+        },
+      },
       stopHeartbeats: () => {
         options.heartbeats.proxy.stop();
         options.heartbeats.guardian.stop();
@@ -281,6 +289,14 @@ describe('createProviderProxyAcquisitionSteps', () => {
     });
     mockedCreateSetAuthority.mockImplementation((options) => ({
       proxyInstanceId: options.proxyInstanceId,
+      autonomousDeadline: {
+        owner: 'guardian-and-reaper',
+        orphanTimeoutMs: Number.MAX_SAFE_INTEGER,
+        heartbeatHoldBound: {
+          spanMs: Number.MAX_SAFE_INTEGER,
+          materialSchedulerLatenessMs: Number.MAX_SAFE_INTEGER,
+        },
+      },
       stopHeartbeats: () => {
         options.heartbeats.proxy.stop();
         options.heartbeats.guardian.stop();
@@ -326,7 +342,6 @@ describe('createProviderProxyAcquisitionSteps', () => {
     claims.initialize([]);
     const lifecycle = new ProviderProxySetLifecycle({
       buildSetId: FIXTURE_BUILD_SET_ID,
-      heartbeatHoldBound: { spanMs: Number.MAX_SAFE_INTEGER, materialSchedulerLatenessMs: Number.MAX_SAFE_INTEGER },
       claims,
       controlEstablished: notifyProviderProxyControlEstablished,
       time,

@@ -13,6 +13,7 @@ import {
 import type { ProviderProxyOperationSnapshot } from '../../services/operation-registry.js';
 import {
   PROXY_TEARDOWN_RESERVE_MS,
+  providerProxyHeartbeatHoldBound,
   resolveProviderProxyDeadlineConfiguration,
 } from '../../../provider-proxy/orphan-deadline.js';
 import {
@@ -109,12 +110,18 @@ export function createProviderProxySetAuthority(
     operationRegistry,
   } = deps;
 
+  const deadlineConfiguration = deps.recoveryCapsule ?? resolveProviderProxyDeadlineConfiguration(runtime.env);
+  const autonomousDeadline = Object.freeze({
+    owner: 'guardian-and-reaper' as const,
+    orphanTimeoutMs: deadlineConfiguration.orphanTimeoutMs,
+    heartbeatHoldBound: providerProxyHeartbeatHoldBound(deadlineConfiguration),
+  });
+
   // Distinct from `deps.recoveryCapsule` on purpose: this one is *this* build's, and the writer accepts only
   // V3. Conflating them let a redeemed V1 reach a write that must never emit a shape this build cannot verify.
   let mintedRecoveryCapsule: HandoffCapsuleV3 | null = null;
   const mintRecoveryCapsule = (): HandoffCapsuleV3 => {
     if (mintedRecoveryCapsule !== null) return mintedRecoveryCapsule;
-    const deadlineConfig = resolveProviderProxyDeadlineConfiguration(runtime.env);
     mintedRecoveryCapsule = {
       version: CURRENT_HANDOFF_CAPSULE_VERSION,
       grantId: runtime.ids.uuid(),
@@ -129,8 +136,8 @@ export function createProviderProxySetAuthority(
       guardianControlEndpoint: guardianIdentity.canonicalControlEndpoint,
       reaperControlEndpoint: reaperIdentity.canonicalControlEndpoint,
       proxyEndpoint: proxyIdentityFields.canonicalEndpoint,
-      orphanTimeoutMs: deadlineConfig.orphanTimeoutMs,
-      teardownReserveMs: deadlineConfig.teardownReserveMs,
+      orphanTimeoutMs: deadlineConfiguration.orphanTimeoutMs,
+      teardownReserveMs: deadlineConfiguration.teardownReserveMs,
       guardianPid: guardianIdentity.pid,
       guardianIncarnation: guardianIdentity.incarnation,
       proxyPid: proxyIdentityFields.pid,
@@ -213,6 +220,7 @@ export function createProviderProxySetAuthority(
 
   return {
     proxyInstanceId,
+    autonomousDeadline,
     providerHosts: Object.freeze({
       list: async () => {
         const params = providerHostListParamsSchema.parse({});

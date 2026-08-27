@@ -74,13 +74,17 @@ function secureUserRoot(base: string): string | null {
  *
  * Falls back to the platform temp directory whenever a memory-backed root is absent, too small, unsafe, or
  * mounted `noexec`. `CORAL_TEST_TMPDIR` overrides candidate selection but must pass the same root checks.
- * `candidates` is a parameter so the fallback remains reachable on a host with a usable tmpfs.
+ * `candidates` and its classifier are parameters so the fallback remains reachable without assuming what
+ * filesystem the checkout or platform temp directory uses.
  */
-export function testTempRoot(candidates: ReadonlyArray<string | undefined> = DEFAULT_CANDIDATES): string {
+export function testTempRoot(
+  candidates: ReadonlyArray<string | undefined> = DEFAULT_CANDIDATES,
+  isUsableTmpfs: (candidate: string) => boolean = tmpfsWithRoom,
+): string {
   const override = process.env.CORAL_TEST_TMPDIR;
   const base =
     override ??
-    candidates.find((candidate): candidate is string => candidate !== undefined && tmpfsWithRoom(candidate));
+    candidates.find((candidate): candidate is string => candidate !== undefined && isUsableTmpfs(candidate));
   if (base === undefined) return tmpdir();
 
   return secureUserRoot(base) ?? tmpdir();

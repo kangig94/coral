@@ -97,7 +97,7 @@ export type ProviderProxySetHeartbeatHoldExhaustedStopDecision = Readonly<{
   fault: 'heartbeat-hold-exhausted';
   role: ProviderProxyRole;
   method: ProviderProxyHeartbeatMethod;
-  lastIncidentReason: ProviderProxyHeartbeatIncidentReason;
+  lastIncidentReason: 'unanswered';
   attempts: number;
   elapsedMs: number;
   schedulerLatenessMs: number;
@@ -106,6 +106,38 @@ export type ProviderProxySetHeartbeatHoldExhaustedStopDecision = Readonly<{
   liveClaims: number;
   setIdentity: ProviderProxySetIdentity;
 }>;
+
+type ProviderProxySetHeartbeatReleaseFields = Readonly<{
+  action: 'release';
+  role: ProviderProxyRole;
+  method: ProviderProxyHeartbeatMethod;
+  successorOwner: 'guardian-and-reaper';
+  policy?: never;
+  error: string;
+  liveClaims: number;
+  setIdentity: ProviderProxySetIdentity;
+}>;
+
+export type ProviderProxySetHeartbeatAnswerUnusableReleaseDecision = ProviderProxySetHeartbeatReleaseFields &
+  Readonly<{
+    reason: 'heartbeat_answer_unusable_hold_exhausted';
+    fault: 'heartbeat-answer-unusable-hold-exhausted';
+    lastIncidentReason: 'unclassified';
+    attempts: number;
+    elapsedMs: number;
+    schedulerLatenessMs: number;
+  }>;
+
+export type ProviderProxySetHeartbeatProtocolReleaseDecision = ProviderProxySetHeartbeatReleaseFields &
+  Readonly<{
+    reason: 'heartbeat_protocol_incompatible';
+    fault: 'heartbeat-method-not-found';
+    incidentReason: 'method-not-found';
+  }>;
+
+export type ProviderProxySetHeartbeatReleaseDecision =
+  | ProviderProxySetHeartbeatAnswerUnusableReleaseDecision
+  | ProviderProxySetHeartbeatProtocolReleaseDecision;
 
 export type ProviderProxySetDrainDecision = FaultlessDecisionFields &
   Readonly<{
@@ -138,7 +170,8 @@ export type ProviderProxySetContainmentDecision =
 export type ProviderProxySetDecision =
   | ProviderProxySetPreserveDecision
   | ProviderProxySetContainmentDecision
-  | ProviderProxySetDrainDecision;
+  | ProviderProxySetDrainDecision
+  | ProviderProxySetHeartbeatReleaseDecision;
 
 export type ProviderProxySetLogSeverity = 'info' | 'warn';
 
@@ -152,7 +185,11 @@ export function renderProviderProxySetDecision(
   summary?: string,
 ): ProviderProxySetDecisionLog {
   const severity: ProviderProxySetLogSeverity =
-    decision.reason === 'provider_authority_lost' || decision.reason === 'heartbeat_hold_exhausted' ? 'warn' : 'info';
+    decision.reason === 'provider_authority_lost' ||
+    decision.reason === 'heartbeat_hold_exhausted' ||
+    decision.action === 'release'
+      ? 'warn'
+      : 'info';
   let fault: string;
   let subject: string;
   let error: string;
@@ -177,6 +214,12 @@ export function renderProviderProxySetDecision(
       subject = decision.role;
       error = decision.error;
       break;
+    case 'heartbeat_answer_unusable_hold_exhausted':
+    case 'heartbeat_protocol_incompatible':
+      fault = decision.fault;
+      subject = decision.role;
+      error = decision.error;
+      break;
     case 'graceful_idle':
     case 'excess_capacity':
     case 'unclaimed_discovery':
@@ -187,6 +230,6 @@ export function renderProviderProxySetDecision(
   }
   return {
     severity,
-    message: `Provider proxy set action=${decision.action} reason=${decision.reason} fault=${fault} subject=${subject} liveClaims=${decision.liveClaims} set=${providerProxySetReference(decision.setIdentity)} error=${error}${decision.fault === 'heartbeat-failed' ? ` terminalReason=${decision.terminalReason}` : ''}${decision.fault === 'heartbeat-indeterminate' ? ` incidentReason=${decision.incidentReason}` : ''}${decision.fault === 'heartbeat-hold-exhausted' ? ` attempts=${decision.attempts} elapsedMs=${decision.elapsedMs} schedulerLatenessMs=${decision.schedulerLatenessMs} lastIncidentReason=${decision.lastIncidentReason}` : ''}${summary === undefined ? '' : ` ${summary}`}`,
+    message: `Provider proxy set action=${decision.action} reason=${decision.reason} fault=${fault} subject=${subject} liveClaims=${decision.liveClaims} set=${providerProxySetReference(decision.setIdentity)} error=${error}${decision.fault === 'heartbeat-failed' ? ` terminalReason=${decision.terminalReason}` : ''}${decision.fault === 'heartbeat-indeterminate' ? ` incidentReason=${decision.incidentReason}` : ''}${decision.fault === 'heartbeat-hold-exhausted' || decision.fault === 'heartbeat-answer-unusable-hold-exhausted' ? ` attempts=${decision.attempts} elapsedMs=${decision.elapsedMs} schedulerLatenessMs=${decision.schedulerLatenessMs} lastIncidentReason=${decision.lastIncidentReason}` : ''}${decision.fault === 'heartbeat-method-not-found' ? ` incidentReason=${decision.incidentReason}` : ''}${decision.action === 'release' ? ` successorOwner=${decision.successorOwner}` : ''}${summary === undefined ? '' : ` ${summary}`}`,
   };
 }

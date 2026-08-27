@@ -287,6 +287,45 @@ describe('provider proxy authority heartbeats', () => {
     },
   );
 
+  it('reports method-not-found as protocol incompatibility and stops retrying the heartbeat', async () => {
+    const time = new VirtualTime();
+    const methodNotFound = new ControlClientError('control_call_failed', 'method not found', 'remote-response', {
+      kind: 'json-rpc-error',
+      jsonRpcCode: -32_601,
+      protocolCode: 'method_not_found',
+      admissionReason: null,
+      heartbeatRefusal: null,
+    });
+    const proxy = scriptedClient([methodNotFound]);
+    const guardian = scriptedClient(['guardian-challenge-1']);
+    const reaper = scriptedClient(['reaper-challenge-1']);
+    const faults = recordingFaultLatch();
+    const heartbeats = startAll(
+      sessions({ proxy: proxy.client, guardian: guardian.client, reaper: reaper.client }),
+      runtimeWithTime(time),
+      faults.latch,
+    );
+
+    time.tick(PROXY_CONTROL_HEARTBEAT_MS);
+    await flushMicrotasks();
+    time.tick(PROXY_CONTROL_HEARTBEAT_MS * 3);
+    await flushMicrotasks();
+
+    expect(proxy.calls).toEqual([{ controlEpoch: 7, heartbeatChallenge: 'proxy-challenge-0' }]);
+    expect(faults.incidents).toEqual([
+      {
+        kind: 'heartbeat-indeterminate',
+        role: 'proxy',
+        method: 'control.heartbeat.v1',
+        incidentReason: 'method-not-found',
+        schedulerLatenessMs: 0,
+        error: methodNotFound,
+      },
+    ]);
+    expect(faults.faults).toEqual([]);
+    stopAll(heartbeats);
+  });
+
   it('reports an unanswered echo as an incident and retries the same challenge on the next tick', async () => {
     const time = new VirtualTime();
     const timeout = new ControlClientError('control_call_failed', 'heartbeat timed out', 'timeout');

@@ -1489,7 +1489,6 @@ describe('createProviderProxySetInheritance', () => {
     claims.initialize([providerOperationRecord('executing', { operation: loc.operation, locator: loc.locator })]);
     const lifecycle = new ProviderProxySetLifecycle({
       buildSetId: FIXTURE_BUILD_SET_ID,
-      heartbeatHoldBound: { spanMs: Number.MAX_SAFE_INTEGER, materialSchedulerLatenessMs: Number.MAX_SAFE_INTEGER },
       claims,
       controlEstablished: notifyProviderProxyControlEstablished,
       time: runtime.time,
@@ -1556,7 +1555,6 @@ describe('createProviderProxySetInheritance', () => {
     const established = vi.fn();
     const lifecycle = new ProviderProxySetLifecycle({
       buildSetId: FIXTURE_BUILD_SET_ID,
-      heartbeatHoldBound: { spanMs: Number.MAX_SAFE_INTEGER, materialSchedulerLatenessMs: Number.MAX_SAFE_INTEGER },
       claims,
       controlEstablished: established,
       time,
@@ -1628,7 +1626,6 @@ describe('createProviderProxySetInheritance', () => {
     claims.initialize([]);
     const lifecycle = new ProviderProxySetLifecycle({
       buildSetId: FIXTURE_BUILD_SET_ID,
-      heartbeatHoldBound: { spanMs: Number.MAX_SAFE_INTEGER, materialSchedulerLatenessMs: Number.MAX_SAFE_INTEGER },
       claims,
       controlEstablished: () => undefined,
       time,

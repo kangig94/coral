@@ -56,9 +56,8 @@ export type ProviderProxyRoleControlAvailabilityIncident =
       role: ProviderProxyRole;
       method: ProviderProxyHeartbeatMethod;
       incidentReason: ProviderProxyHeartbeatIncidentReason;
-      /** See heartbeatFailureDisposition in heartbeat.ts — carried because the durable retry reason it folds
-       *  incidents into is coarser than this. `null` when this incident is `heartbeatOnce`'s own reply-decode
-       *  failure rather than a `ControlClientError` this build actually received off the wire. */
+      /** See heartbeatFailureDisposition in heartbeat.ts. `null` only when `heartbeatOnce` rejected the
+       *  reply shape rather than receiving a `ControlClientError`. */
       origin: ControlClientErrorOrigin | null;
       controlCode: ControlClientErrorCode | null;
     }>;
@@ -199,7 +198,11 @@ async function establishHeartbeat(
       if (disposition.kind === 'terminal') {
         throw new ProviderProxyRoleControlRemoteError(role, 'heartbeat', method, disposition.error);
       }
-      if (disposition.incidentReason === 'challenge-resynchronized' && !resynchronized) {
+      if (
+        disposition.kind === 'retry' &&
+        disposition.incidentReason === 'challenge-resynchronized' &&
+        !resynchronized
+      ) {
         challenge = disposition.challenge;
         resynchronized = true;
         continue;
@@ -244,8 +247,7 @@ async function establishHeartbeat(
  *
  * Correctness depends on `client.faulted` settling before the same event rejects whatever heartbeat call was
  * pending — an ordering this file does not control and nothing in either file's types enforces; see
- * connectControlClient in control-client.ts. `role-control.integration.test.ts` pins the ordering against a
- * real channel fault arriving while a heartbeat is in flight.
+ * connectControlClient in control-client.ts.
  */
 async function establishHeartbeatOrChannelFault(
   role: ProviderProxyRole,

@@ -1,5 +1,4 @@
 import type { TimePort, TimerHandle } from '../../../infra/port-types.js';
-import type { ProviderProxyHeartbeatHoldBound } from '../../../provider-proxy/orphan-deadline.js';
 import type { ProcessIncarnation, RecordedProcessObserver } from '../../../infra/node-process.js';
 import { errorMessage } from '../../../infra/error-format.js';
 import type { OperationIdentity } from '../../../provider-proxy/protocol.js';
@@ -29,6 +28,10 @@ import {
   type ProviderProxySetContainmentDecision,
   type ProviderProxySetDecision,
   type ProviderProxySetDrainDecision,
+  type ProviderProxySetHeartbeatAnswerUnusableReleaseDecision,
+  type ProviderProxySetHeartbeatHoldExhaustedStopDecision,
+  type ProviderProxySetHeartbeatProtocolReleaseDecision,
+  type ProviderProxySetHeartbeatReleaseDecision,
   type ProviderProxySetLogSeverity,
   type ProviderProxySetPreserveDecision,
   type ProviderProxySetRetirementReason,
@@ -62,18 +65,16 @@ type PreserveReportState = {
 };
 
 /**
- * The hold a role's heartbeat channel is under: continuous indeterminate incidents without evidence that the
- * peer answered, spanning every error identity that run took. Kept separately from `PreserveReportState` because the
- * hold is a property of the role's heartbeat, not of any one error shape — `preserveReports` keys by
- * `[subject, errorIdentity]` so it can coalesce a repeating message, but a wedged proxy that alternates
- * between two failure shapes (a timeout, then an undecodable response) would keep each shape's own report
- * arriving too rarely to ever individually reach `heartbeatHoldBound`. Keyed by `[role, method]`, the same
- * pair `#recordHeartbeatAccepted` clears by.
+ * One evidence disposition a role's heartbeat channel is holding, spanning every error identity that run
+ * took. Silence and answered-but-unusable evidence are separate holds: neither can advance the other's clock.
+ * Within either hold, error identity is deliberately irrelevant — alternating timeout and closed failures
+ * must still advance one silence clock, just as alternating undecodable and unrecognised error replies must
+ * still advance one answered-but-unusable clock. `#recordHeartbeatAccepted` clears both for the role/method.
  */
 type HeartbeatHoldState = {
   /** Monotonic: an authority-bearing span comparison must not move because a wall clock stepped. */
   firstObservedAtMonotonicMs: bigint;
-  /** Every heartbeat-indeterminate incident folded into this hold, across every error identity it took. */
+  /** Every incident of this hold's disposition, across every error identity it took. */
   attempts: number;
   /** Scheduler delay observed by the heartbeat loop during this evidence window. */
   schedulerLatenessMs: number;
@@ -94,6 +95,7 @@ type EstablishedSlot = {
   retirementDecision: ProviderProxySetDrainDecision | null;
   preserveReports: Map<string, PreserveReportState>;
   heartbeatHolds: Map<string, HeartbeatHoldState>;
+  heartbeatHoldBound: DurableProviderProxyOperationAuthority['autonomousDeadline']['heartbeatHoldBound'];
 };
 
 type ProviderProxySetSlot =
@@ -283,11 +285,6 @@ export type ProviderProxySetLifecycleDeps = Readonly<{
    */
   time: Pick<TimePort, 'now' | 'monotonicNow' | 'setTimeout' | 'clearTimeout'>;
   recoveryDispatcher: ProviderProxyRecoveryDispatcher;
-  /**
-   * How long a `heartbeat-indeterminate` hold may run and how much scheduler delay makes that evidence window
-   * inconclusive. Derived from `providerProxyHeartbeatHoldBound` at composition.
-   */
-  heartbeatHoldBound: ProviderProxyHeartbeatHoldBound;
   onProgressPremiseViolation?: (violation: ProviderProxySetLifecycleProgressViolation) => void;
   reportLifecycle(severity: ProviderProxySetLogSeverity, message: string): void;
   onError?: (message: string) => void;
@@ -1018,7 +1015,11 @@ export class ProviderProxySetLifecycle {
           abort.abort();
           slot.attemptAbort = null;
           if (sourceId === 'redemption') {
-            const outcome = value as Extract<ProviderProxySetRedemptionOutcome, { kind: 'redeemed' }>;
+            const outcome = value as Exclude<ProviderProxySetRedemptionOutcome, { kind: 'temporarily-unavailable' }>;
+            if (outcome.kind === 'protocol-incompatible') {
+              this.#releaseProtocolIncompatibleCapsule(slot, outcome.role, outcome.method);
+              return;
+            }
             this.#slots.delete(slot.key);
             this.#identityIndex.delete(slot.identity);
             this.#establish(outcome.set, null, slot.capsulePath, 'contain-unclaimed-discovery');
@@ -1098,6 +1099,7 @@ export class ProviderProxySetLifecycle {
       retirementDecision: null,
       preserveReports: new Map(),
       heartbeatHolds: new Map(),
+      heartbeatHoldBound: authority.autonomousDeadline.heartbeatHoldBound,
     };
     this.#slots.set(key, slot);
     authority.onFault((fault) => this.#faultAuthority(identity, fault));
@@ -1196,8 +1198,17 @@ export class ProviderProxySetLifecycle {
     decision: ProviderProxySetPreserveDecision,
     errorIdentity: string,
   ): void {
-    if (decision.fault === 'heartbeat-indeterminate' && this.#advanceHeartbeatHold(slot, decision)) {
-      return;
+    if (decision.fault === 'heartbeat-indeterminate') {
+      const disposition = this.#advanceHeartbeatHold(slot, decision);
+      if (disposition.action === 'recovered') return;
+      if (disposition.action === 'stop-and-reap') {
+        this.#beginFaultContainment(slot, disposition);
+        return;
+      }
+      if (disposition.action === 'release') {
+        this.#releaseAnsweredHeartbeat(slot, disposition);
+        return;
+      }
     }
     const now = this.#deps.time.now();
     const subject = decision.fault === 'operation-control-failed' ? decision.policy.method : decision.method;
@@ -1231,12 +1242,9 @@ export class ProviderProxySetLifecycle {
   }
 
   /**
-   * Advances `decision.role`/`decision.method`'s heartbeat hold by this one incident and reports whether that
-   * push escalated it. A hold is created on its first incident (never escalating there — there is no span yet
-   * to measure) and every later incident for the same role/method extends the same hold regardless of its own
-   * error identity, which is the whole fix: the per-error-identity `preserveReports` key must not gate whether
-   * a hold's clock advances, or a wedged proxy that alternates failure shapes never trips the bound on either
-   * shape alone.
+   * Advances exactly one of `decision.role`/`decision.method`'s two heartbeat holds. A hold is created on its
+   * first incident and every later incident of that disposition extends it regardless of error identity; the
+   * per-error-identity `preserveReports` key must never gate whether either hold's clock advances.
    *
    * A challenge resynchronization clears the same role/method hold as an accepted echo because it is a completed
    * round trip on the current tenancy. Scheduler lateness at or above the derived material share resets the
@@ -1245,12 +1253,20 @@ export class ProviderProxySetLifecycle {
   #advanceHeartbeatHold(
     slot: EstablishedSlot,
     decision: Extract<ProviderProxySetPreserveDecision, { fault: 'heartbeat-indeterminate' }>,
-  ): boolean {
+  ):
+    | Extract<ProviderProxySetPreserveDecision, { fault: 'heartbeat-indeterminate' }>
+    | ProviderProxySetHeartbeatHoldExhaustedStopDecision
+    | ProviderProxySetHeartbeatReleaseDecision
+    | Readonly<{ action: 'recovered' }> {
     if (decision.incidentReason === 'challenge-resynchronized') {
       this.#recordHeartbeatAccepted(slot, decision.role, decision.method);
-      return false;
+      return { action: 'recovered' };
     }
-    const key = JSON.stringify([decision.role, decision.method]);
+    if (decision.incidentReason === 'method-not-found') {
+      return this.#heartbeatProtocolReleaseDecision(slot, decision);
+    }
+    const holdKind = decision.incidentReason === 'unanswered' ? 'silence' : 'answered-but-unusable';
+    const key = JSON.stringify([decision.role, decision.method, holdKind]);
     const hold = slot.heartbeatHolds.get(key);
     const nowMonotonicMs = this.#deps.time.monotonicNow();
     if (hold === undefined) {
@@ -1259,27 +1275,28 @@ export class ProviderProxySetLifecycle {
         attempts: 1,
         schedulerLatenessMs: 0,
       });
-      return false;
+      return decision;
     }
     hold.attempts += 1;
     hold.schedulerLatenessMs += decision.schedulerLatenessMs;
-    const bound = this.#deps.heartbeatHoldBound;
+    const bound = slot.heartbeatHoldBound;
     if (nowMonotonicMs - hold.firstObservedAtMonotonicMs < BigInt(bound.spanMs)) {
-      return false;
+      return decision;
     }
     if (hold.schedulerLatenessMs >= bound.materialSchedulerLatenessMs) {
       hold.firstObservedAtMonotonicMs = nowMonotonicMs;
       hold.attempts = 1;
       hold.schedulerLatenessMs = 0;
-      return false;
+      return decision;
     }
-    this.#escalateHeartbeatHold(slot, decision, hold, nowMonotonicMs);
-    return true;
+    return decision.incidentReason === 'unanswered'
+      ? this.#silenceHoldExhaustedDecision(slot, decision, hold, nowMonotonicMs)
+      : this.#answeredHeartbeatHoldExhaustedDecision(slot, decision, hold, nowMonotonicMs);
   }
 
   /**
-   * The coordinator's own bounded exit from a heartbeat hold that an accepted echo never closed: `hold` has
-   * carried indeterminate incidents for `decision.role`/`decision.method` continuously since
+   * The coordinator's own bounded exit from a silence hold that an accepted echo never closed: `hold` has
+   * carried unanswered incidents for `decision.role`/`decision.method` continuously since
    * `hold.firstObservedAtMonotonicMs` — across every error identity that run took — and that span has cleared
    * `heartbeatHoldBound` while accumulated scheduler lateness stayed below its material share. This starts a
    * containment attempt — dual
@@ -1287,19 +1304,19 @@ export class ProviderProxySetLifecycle {
    * settles on silence alone. The decision names what was observed (attempts, elapsed span, last incident
    * reason) rather than a bare "exhausted".
    */
-  #escalateHeartbeatHold(
+  #silenceHoldExhaustedDecision(
     slot: EstablishedSlot,
     decision: Extract<ProviderProxySetPreserveDecision, { fault: 'heartbeat-indeterminate' }>,
     hold: HeartbeatHoldState,
     nowMonotonicMs: bigint,
-  ): void {
-    this.#beginFaultContainment(slot, {
+  ): ProviderProxySetHeartbeatHoldExhaustedStopDecision {
+    return {
       action: 'stop-and-reap',
       reason: 'heartbeat_hold_exhausted',
       fault: 'heartbeat-hold-exhausted',
       role: decision.role,
       method: decision.method,
-      lastIncidentReason: decision.incidentReason,
+      lastIncidentReason: 'unanswered',
       attempts: hold.attempts,
       schedulerLatenessMs: hold.schedulerLatenessMs,
       // The decision's `elapsedMs` is log text, not authority, so this is the one place the monotonic span
@@ -1308,7 +1325,48 @@ export class ProviderProxySetLifecycle {
       error: decision.error,
       liveClaims: this.#deps.claims.claimsFor(slot.identity).length,
       setIdentity: slot.identity,
-    });
+    };
+  }
+
+  #answeredHeartbeatHoldExhaustedDecision(
+    slot: EstablishedSlot,
+    decision: Extract<ProviderProxySetPreserveDecision, { fault: 'heartbeat-indeterminate' }>,
+    hold: HeartbeatHoldState,
+    nowMonotonicMs: bigint,
+  ): ProviderProxySetHeartbeatAnswerUnusableReleaseDecision {
+    return {
+      action: 'release',
+      reason: 'heartbeat_answer_unusable_hold_exhausted',
+      fault: 'heartbeat-answer-unusable-hold-exhausted',
+      role: decision.role,
+      method: decision.method,
+      lastIncidentReason: 'unclassified',
+      attempts: hold.attempts,
+      schedulerLatenessMs: hold.schedulerLatenessMs,
+      elapsedMs: Number(nowMonotonicMs - hold.firstObservedAtMonotonicMs),
+      successorOwner: slot.authority.autonomousDeadline.owner,
+      error: decision.error,
+      liveClaims: this.#deps.claims.claimsFor(slot.identity).length,
+      setIdentity: slot.identity,
+    };
+  }
+
+  #heartbeatProtocolReleaseDecision(
+    slot: EstablishedSlot,
+    decision: Extract<ProviderProxySetPreserveDecision, { fault: 'heartbeat-indeterminate' }>,
+  ): ProviderProxySetHeartbeatProtocolReleaseDecision {
+    return {
+      action: 'release',
+      reason: 'heartbeat_protocol_incompatible',
+      fault: 'heartbeat-method-not-found',
+      role: decision.role,
+      method: decision.method,
+      incidentReason: 'method-not-found',
+      successorOwner: slot.authority.autonomousDeadline.owner,
+      error: decision.error,
+      liveClaims: this.#deps.claims.claimsFor(slot.identity).length,
+      setIdentity: slot.identity,
+    };
   }
 
   #recordHeartbeatAccepted(
@@ -1316,7 +1374,8 @@ export class ProviderProxySetLifecycle {
     role: ProviderProxyHeartbeatAccepted['role'],
     method: ProviderProxyHeartbeatAccepted['method'],
   ): void {
-    slot.heartbeatHolds.delete(JSON.stringify([role, method]));
+    slot.heartbeatHolds.delete(JSON.stringify([role, method, 'silence']));
+    slot.heartbeatHolds.delete(JSON.stringify([role, method, 'answered-but-unusable']));
     for (const [key, report] of slot.preserveReports) {
       if (
         report.decision.fault !== 'heartbeat-indeterminate' ||
@@ -1328,6 +1387,46 @@ export class ProviderProxySetLifecycle {
       slot.preserveReports.delete(key);
       this.#reportDecision(report.decision, `summary=recovered suppressed=${report.suppressed}`);
     }
+  }
+
+  #releaseAnsweredHeartbeat(slot: EstablishedSlot, decision: ProviderProxySetHeartbeatReleaseDecision): void {
+    if (this.#slots.get(slot.key) !== slot) return;
+    // `autonomousDeadline` is part of the established authority only after the role boundary accepted the
+    // named timeout; see assertNamedOrphanTimeout in provider-proxy/protocol.ts.
+    this.#recordDecision(slot, decision);
+    this.#removeRoute(slot);
+    slot.authority.stopHeartbeats();
+    this.#slots.delete(slot.key);
+    this.#identityIndex.delete(slot.identity);
+    void slot.authority.initiateControlClose().catch((error: unknown) => {
+      this.#deps.onError?.(
+        `Provider proxy control close after heartbeat release failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    });
+    if (slot.routeKey !== null) this.#deps.onSlotReleased?.(slot.routeKey);
+  }
+
+  #releaseProtocolIncompatibleCapsule(
+    slot: Extract<ProviderProxySetSlot, { kind: 'capsule-recovering' }>,
+    role: ProviderProxySetHeartbeatProtocolReleaseDecision['role'],
+    method: ProviderProxySetHeartbeatProtocolReleaseDecision['method'],
+  ): void {
+    if (this.#slots.get(slot.key) !== slot) return;
+    const decision: ProviderProxySetHeartbeatProtocolReleaseDecision = {
+      action: 'release',
+      reason: 'heartbeat_protocol_incompatible',
+      fault: 'heartbeat-method-not-found',
+      role,
+      method,
+      incidentReason: 'method-not-found',
+      successorOwner: 'guardian-and-reaper',
+      error: 'this set speaks a heartbeat protocol this build cannot use',
+      liveClaims: this.#deps.claims.claimsFor(slot.identity).length,
+      setIdentity: slot.identity,
+    };
+    this.#reportDecision(decision);
+    this.#slots.delete(slot.key);
+    this.#identityIndex.delete(slot.identity);
   }
 
   #makeRoomForPreserveReport(slot: EstablishedSlot): void {
