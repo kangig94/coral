@@ -1363,7 +1363,7 @@ describe('provider proxy cumulative root rotation', () => {
       time: runtime.time,
       recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
         'containment-proof': async () => ({
-          kind: 'enforcer-unobservable' as const,
+          kind: 'enforcers-observed' as const,
           observations: [
             { role: 'guardian', observation: 'unknown' },
             { role: 'reaper', observation: 'unknown' },

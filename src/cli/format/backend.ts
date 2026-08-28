@@ -63,7 +63,7 @@ export function formatProviderProxySetContainResult(result: ProviderProxySetCont
     case 'not-held':
       return `Refusing forced containment for ${token}: the set is ${result.state}, not held. Use ordinary drain for a healthy set, then inspect backend status.`;
     case 'deadline-pending':
-      return `Refusing forced containment for ${token}: its autonomous adoption deadline has ${Math.ceil(result.remainingMs)}ms remaining. Wait for that event, then rerun ${retry}.`;
+      return `Refusing forced containment for ${token}: its monotonic operator-exit observation gate has ${Math.ceil(result.remainingMs)}ms remaining. Wait for that gate, then rerun ${retry}.`;
     case 'authorization-stale':
       return `Refusing forced containment for ${token}: the held attempt changed while Coral gathered containment evidence. Rerun ${retry} against the current hold.`;
     case 'enforcer-alive':

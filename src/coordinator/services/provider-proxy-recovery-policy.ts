@@ -46,7 +46,7 @@ import type {
 import {
   providerProxySetContainmentProofSchema,
   type ProviderProxySetContainmentProof,
-} from '../../provider-proxy/set-containment-contract.js';
+} from '../../provider-proxy/containment-proof-contract.js';
 
 export const PROVIDER_PROXY_RECOVERY_PRODUCERS = [
   'disappearance-terminalization',

@@ -129,22 +129,30 @@ all other pre-existing documented codes remain `1`. The new `store_open_contende
 
 `coral-cli backend provider-proxy-set contain <pps1-token>` is an exact-set operation and does not change the
 shutdown reason, mode, or exit code. `backend status` supplies the token and live-claim count. Its result and
-claim-discharge result are separate discriminators: `contained` and `abandoned` exit `0` only when initial claim
-delivery and capsule retirement completed. Either success with `initial-disposition-retry-owned` or
-`operational-retry-owned` exits `75` because the coordinator still owns the retry and still represents the set;
-the former means an initial successor disposition has not arrived, while the latter carries the incidents that
-moved into operational retry. `set-not-found` and `not-held` exit `1` and are safe in the narrow sense that the
-requested force did not act; use a fresh status token or ordinary drain. `deadline-pending` exits `75`, did not act, and
-names the remaining monotonic time; wait and retry. `enforcer-alive` and `enforcer-unobservable` exit `75`, did
-not act, and render the separate `alive`, `absent`, or `unknown` observation for both guardian and reaper; they
-may proceed only after external verification by repeating the exact command with `--abandon-unobservable`.
-`store-unreadable` exits `75`, did not act, is not overridden by that flag, and must be repaired with
-`coral-cli backend recovery-quarantine` before retrying. An older coordinator's JSON-RPC method-not-found or a
-structurally identified result whose newer shape this CLI cannot decode becomes a named `75` no-verdict telling
-the operator to upgrade or restart, rerun status, and retry. A coordinator that starts draining before the
-request also becomes a named `75` no-verdict, but tells the operator to wait for the successor before rerunning
-status. None is rendered as an internal parse error. Forced containment may leave guardian and reaper live
-until their own adoption deadline because the command has signal authority only for the recorded proxy group.
+claim-discharge result are separate discriminators, with this exhaustive treatment:
+
+| Result | Exit | Destructive effect and required next step |
+| ------ | ---- | ----------------------------------------- |
+| `contained` + `completed` | `0` | Recorded-set reaping may have signalled the recorded proxy process group and recorded provider roots; claim delivery and capsule retirement completed. No follow-up is required. |
+| `contained` + `initial-disposition-retry-owned` | `75` | Recorded-set reaping already completed, but Coral still represents the set while the first successor disposition is pending. Keep the coordinator running and rerun `coral-cli backend status`; do not repeat containment against a release-delivery hold. |
+| `contained` + `operational-retry-owned` | `75` | Recorded-set reaping already completed, but one or more reported delivery/retirement incidents remain retry-owned. Keep the coordinator running, inspect the reported incident and coordinator log, repair that consumer or retirement dependency, then rerun `coral-cli backend status`. |
+| `abandoned` + `completed` | `0` | No process was signalled; Coral released its representation and completed claim delivery and capsule retirement without asserting absence. Verify the proxy, guardian, reaper, and provider processes through external process controls. |
+| `abandoned` + `initial-disposition-retry-owned` | `75` | No process was signalled; abandonment began, but Coral still represents the set while the first successor disposition is pending. Keep the coordinator running and rerun `coral-cli backend status`. |
+| `abandoned` + `operational-retry-owned` | `75` | No process was signalled; abandonment began, but a reported delivery/retirement incident remains retry-owned. Inspect the incident and coordinator log, repair that dependency, then rerun `coral-cli backend status`. |
+| `set-not-found` | `1` | Nothing was signalled or released. Run `coral-cli backend status` and copy the current exact token. |
+| `not-held` | `1` | Nothing was signalled or released. If the reported state is `available` or `draining`, use ordinary drain; for any acquisition, recovery, or release-delivery state, do not repeat containment. Rerun `coral-cli backend status` and let that named owner finish. |
+| `deadline-pending` | `75` | Nothing was signalled or released. For `reattaching`, the remaining time is the hold's recorded adoption-window deadline; for fault-driven `containing`/`containment-wait`, it is the fixed 30-second containment-attempt observation gate. Wait the printed duration, then rerun the exact contain command. |
+| `authorization-stale` | `75` | Nothing was signalled or released under the stale capability; the held attempt changed while proof was gathered. Rerun the exact contain command so authorization and proof bind to the current attempt. |
+| `enforcer-alive` | `75` | Nothing was signalled or released. After external verification, rerun the exact command with `--abandon-unobservable` to release representation without asserting absence. |
+| `enforcer-unobservable` | `75` | Nothing was signalled or released. Restore process observation and rerun the exact command, or externally verify the process set and rerun with `--abandon-unobservable`. |
+| `store-unreadable` | `75` | Nothing was signalled or released, and `--abandon-unobservable` cannot override this fence. Run `coral-cli backend recovery-quarantine list`, repair or remove the named row, clear that exact key/revision coordinate, rerun `coral-cli backend status`, then rerun contain. |
+
+An older coordinator's JSON-RPC method-not-found or a structurally identified result whose newer shape this CLI
+cannot decode becomes a named `75` no-verdict telling the operator to upgrade or restart, rerun status, and
+retry. A coordinator that starts draining before the request also becomes a named `75` no-verdict, but tells the
+operator to wait for the successor before rerunning status. None is rendered as an internal parse error. Forced
+containment may signal the recorded proxy process group plus every recorded provider root for the set that is
+observed present. Guardian and reaper are not signalled and may remain live until their own adoption deadline.
 
 `coral-cli backend status` sets an exit code too, for the same reason `backend shutdown` does: `backend status && <destructive op>` used to read every outcome, including "state is unknown," as permission to proceed. Its daemon-status contribution is `0` for `ok`, `not_running`, `shutting_down`, `unauthorized`, and `recent_failure`, and `75` for `undecodable_record`, `unreachable`, and `no_record_socket_present` (the coordinator's own IPC socket exists with no record written yet — the same boot-race/stale-socket evidence `backend shutdown` reports as `no_record_socket_present`). `not_running` covers both no record/current socket and an observed-absent recorded pid. The residual unpublished window can reach the first path directly and the second through a stale record, so its `0` reports a completed read and does not override the configuration rule that only a successful `backend shutdown` authorizes a destructive follow-up. The command also composes its process-local handoff preflight: of the eight production-reachable routing bases, `same-build-set` and `incumbent-absent` contribute `0`, while the other six contribute `75`; an abandoned handoff whose stdout did not drain also contributes `75`. The composition helper additionally maps no live result and a display-only continuation to `0`, but those are isolated/default test-seam states, not states that reach the production `backend status` action. Only `incumbent-unresolved` is not-observed evidence; the other five nonzero routing-basis contributions mark decisive conditions requiring operator attention, including the ordinary same-version/different-build-set case. For `incumbent-unresolved{cause:'health-shape-rejected'}`, daemon status may still render the peer as healthy, so the successor does not delegate to daemon remediation: run `coral-cli backend shutdown`, then run any `coral-cli` mutating command (or start a Claude Code session) to relaunch the backend from the current installation. A structurally valid provider-proxy-set row whose `disposition`, `cause`, or `waitingFor` value this build does not recognize no longer produces that cause: the health reader skips the row, and `backend status` contributes `75`, prints every retained set token, and names the exact `backend provider-proxy-set contain <token>` command while stating that it cannot show those rows' dispositions, causes, or waiting conditions. A malformed row or non-array `providerProxySets` value still rejects the health shape. Known provider-proxy-set rows render the guardian and reaper observations separately whenever a status disposition carries them. The other two unresolved causes continue to use the daemon-status remediation.
 

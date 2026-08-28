@@ -533,7 +533,7 @@ function unreadableProviderOperationEntries(
 ): RecoveryQuarantineListEntry[] {
   const scan = readProviderOperations(db);
   return attributeUnreadableProviderOperations(db, scan.unreadableKeys).flatMap((row) => {
-    const subject = unreadableProviderOperationSubject(row);
+    const subject = unreadableProviderOperationSubject(row.key, row.revision);
     if (
       stored.some((entry) => sameRecoveryQuarantineCoordinate(entry, UNREADABLE_PROVIDER_OPERATION_BOUNDARY, subject))
     ) {

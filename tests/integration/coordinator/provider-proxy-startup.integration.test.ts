@@ -13,7 +13,7 @@ import {
   type ProviderProxySetRedemptionOutcome,
 } from '#src/coordinator/services/provider-proxy-set/inheritance.js';
 import { createProviderProxySetContainmentProver } from '#src/coordinator/services/provider-proxy-set/containment-proof.js';
-import type { ProviderProxySetContainmentProof } from '#src/provider-proxy/set-containment-contract.js';
+import type { ProviderProxySetContainmentProof } from '#src/provider-proxy/containment-proof-contract.js';
 import {
   ProviderOperationReconciler,
   StartupSetRecoveryProducer,
@@ -199,7 +199,7 @@ function lifecycleFor(
   const proveContainmentAbsent =
     options.proveContainmentAbsent ??
     (async (): Promise<ProviderProxySetContainmentProof> => ({
-      kind: 'enforcer-unobservable',
+      kind: 'enforcers-observed',
       observations: [
         { role: 'guardian', observation: 'unknown' },
         { role: 'reaper', observation: 'unknown' },
@@ -659,7 +659,7 @@ async function roleRecoveryStartupCase(
           },
           operationRegistry,
           proveContainmentAbsent: async () => ({
-            kind: 'enforcer-unobservable' as const,
+            kind: 'enforcers-observed' as const,
             observations: [
               { role: 'guardian', observation: 'unknown' },
               { role: 'reaper', observation: 'unknown' },

@@ -6,10 +6,11 @@ import {
   providerProxyDisappearanceReceipt,
 } from '../../../provider-proxy/enforcement.js';
 import { PROXY_TEARDOWN_RESERVE_MS } from '../../../provider-proxy/orphan-deadline.js';
-import type {
-  ProviderProxySetContainmentProof,
-  ProviderProxySetEnforcerObservations,
-} from '../../../provider-proxy/set-containment-contract.js';
+import {
+  providerProxySetContainmentProofSchema,
+  type ProviderProxySetContainmentProof,
+  type ProviderProxySetEnforcerObservations,
+} from '../../../provider-proxy/containment-proof-contract.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { Database } from '../../../store/db.js';
 import {
@@ -24,6 +25,10 @@ import {
 
 const providerSetDisappearanceClockScope = Symbol('provider-set-disappearance');
 
+/**
+ * Lets dual recorded-enforcer absence authorize recorded-set reaping, then proves the set absent only after the
+ * proxy process group plus every recorded provider root is confirmed absent.
+ */
 export interface ProviderProxySetContainmentProver {
   proveContainmentAbsent(
     identity: ProviderProxySetIdentity,
@@ -76,11 +81,8 @@ async function proveProviderProxySetContainmentAbsent(
       }),
     },
   ];
-  if (observations.some(({ observation }) => observation === 'alive')) {
-    return { kind: 'enforcer-alive', observations };
-  }
-  if (observations.some(({ observation }) => observation === 'unknown')) {
-    return { kind: 'enforcer-unobservable', observations };
+  if (observations.some(({ observation }) => observation !== 'absent')) {
+    return providerProxySetContainmentProofSchema.parse({ kind: 'enforcers-observed', observations });
   }
   signal.throwIfAborted();
 
@@ -117,6 +119,10 @@ async function proveProviderProxySetContainmentAbsent(
   return { kind: 'absent', receipt: providerProxyDisappearanceReceipt(containment, recordedRoots) };
 }
 
+/**
+ * Binds store-aware containment proof to one runtime; callers receive no destructive primitive other than the
+ * prover's validated `absent` receipt path.
+ */
 export function createProviderProxySetContainmentProver(runtime: Runtime): ProviderProxySetContainmentProver {
   return {
     proveContainmentAbsent: (identity, db, signal) =>

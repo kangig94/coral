@@ -190,7 +190,7 @@ export async function quarantineUnreadableProviderOperations(
   const failed: { key: string; error: string }[] = [];
 
   for (const row of rows) {
-    const subject = unreadableProviderOperationSubject(row);
+    const subject = unreadableProviderOperationSubject(row.key, row.revision);
     const write = {
       boundary: UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
       subject,
@@ -1367,7 +1367,7 @@ export function createRecoveryCoordinator(
     // Both names, not just the key's. `decodeCanonicalValue` rejects a row whose payload identity disagrees
     // with its key, so those are exactly the rows where the two differ — fencing the key's job alone would
     // hand the payload's job to generic recovery, which can terminalize it while its operation is live. This
-    // is the sibling of the proxy-set fence in `provider-proxy-set/inheritance.ts`.
+    // is the sibling of the proxy-set fence in `provider-proxy-set/containment-proof.ts`.
     const attributions = attributeUnreadableProviderOperations(progressStore.getDb(), scan.unreadableKeys);
     const unreadableJobIds = attributions.flatMap((attribution) =>
       attribution.jobs.kind === 'known' ? attribution.jobs.values : [],

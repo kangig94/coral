@@ -22,7 +22,7 @@ import {
   type ProviderProxySetIdentity,
 } from '#src/coordinator/services/provider-proxy-set/identity.js';
 import { ProviderProxySetLifecycleRef } from '#src/coordinator/services/provider-proxy-set/lifecycle-ref.js';
-import type { ProviderProxySetContainmentProof } from '#src/provider-proxy/set-containment-contract.js';
+import type { ProviderProxySetContainmentProof } from '#src/provider-proxy/containment-proof-contract.js';
 import { UNREADABLE_PROVIDER_OPERATION_BOUNDARY } from '#src/recovery/source-registry.js';
 import { backendLog } from '#src/infra/backend-log.js';
 import { JobStore } from '#src/jobs/store.js';
@@ -68,7 +68,7 @@ const TEST_AUTONOMOUS_DEADLINE = {
 };
 
 const noContainmentProof = async (): Promise<ProviderProxySetContainmentProof> => ({
-  kind: 'enforcer-unobservable',
+  kind: 'enforcers-observed',
   observations: [
     { role: 'guardian', observation: 'unknown' },
     { role: 'reaper', observation: 'unknown' },
@@ -499,7 +499,7 @@ describe('execution services provider-proxy proof composition', () => {
     });
     const proveContainmentAbsent = vi.fn(
       async (): Promise<ProviderProxySetContainmentProof> => ({
-        kind: 'enforcer-unobservable',
+        kind: 'enforcers-observed',
         observations: [
           { role: 'guardian', observation: 'unknown' },
           { role: 'reaper', observation: 'unknown' },
@@ -958,7 +958,7 @@ describe('execution services provider-proxy proof composition', () => {
       },
       providerProxySetContainmentProver: {
         proveContainmentAbsent: async () => ({
-          kind: 'enforcer-unobservable' as const,
+          kind: 'enforcers-observed' as const,
           observations: [
             { role: 'guardian', observation: 'unknown' },
             { role: 'reaper', observation: 'unknown' },

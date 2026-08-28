@@ -56,7 +56,7 @@ import {
   providerProxySetIdentityFromRecord,
 } from '#src/coordinator/services/provider-proxy-set/identity.js';
 import type { ProviderProxySetRedemptionOutcome } from '#src/coordinator/services/provider-proxy-set/inheritance.js';
-import type { ProviderProxySetContainmentProof } from '#src/provider-proxy/set-containment-contract.js';
+import type { ProviderProxySetContainmentProof } from '#src/provider-proxy/containment-proof-contract.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
@@ -69,7 +69,7 @@ const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
 const PRESERVE_REPORT_INTERVAL_MS = 60_000;
 
 const enforcersUnobservable: ProviderProxySetContainmentProof = {
-  kind: 'enforcer-unobservable',
+  kind: 'enforcers-observed',
   observations: [
     { role: 'guardian', observation: 'unknown' },
     { role: 'reaper', observation: 'unknown' },
@@ -2117,7 +2117,7 @@ describe('ProviderProxySetLifecycle', () => {
       lifecycle.completeOperatorExit(
         authorization.capability,
         {
-          kind: 'enforcer-alive',
+          kind: 'enforcers-observed',
           observations: [
             { role: 'guardian', observation: 'alive' },
             { role: 'reaper', observation: 'unknown' },
@@ -2149,7 +2149,7 @@ describe('ProviderProxySetLifecycle', () => {
       lifecycle.completeOperatorExit(
         authorization.capability,
         {
-          kind: 'enforcer-unobservable',
+          kind: 'enforcers-observed',
           observations: [
             { role: 'guardian', observation: 'absent' },
             { role: 'reaper', observation: 'unknown' },
@@ -2220,7 +2220,7 @@ describe('ProviderProxySetLifecycle', () => {
       lifecycle.completeOperatorExit(
         firstAuthorization.capability,
         {
-          kind: 'enforcer-unobservable',
+          kind: 'enforcers-observed',
           observations: [
             { role: 'guardian', observation: 'unknown' },
             { role: 'reaper', observation: 'unknown' },
@@ -2299,7 +2299,7 @@ describe('ProviderProxySetLifecycle', () => {
     {
       resultKind: 'abandoned' as const,
       proof: {
-        kind: 'enforcer-unobservable' as const,
+        kind: 'enforcers-observed' as const,
         observations: [
           { role: 'guardian', observation: 'unknown' },
           { role: 'reaper', observation: 'unknown' },
@@ -2395,7 +2395,7 @@ describe('ProviderProxySetLifecycle', () => {
     const completion = lifecycle.completeOperatorExit(
       authorization.capability,
       {
-        kind: 'enforcer-unobservable',
+        kind: 'enforcers-observed',
         observations: [
           { role: 'guardian', observation: 'unknown' },
           { role: 'reaper', observation: 'unknown' },
@@ -2406,7 +2406,6 @@ describe('ProviderProxySetLifecycle', () => {
     await expect(completion).resolves.toEqual(
       expect.objectContaining({
         kind: 'abandoned',
-        processObservation: 'enforcer-unobservable',
         enforcerObservations: [
           { role: 'guardian', observation: 'unknown' },
           { role: 'reaper', observation: 'unknown' },

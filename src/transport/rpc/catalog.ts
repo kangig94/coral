@@ -62,11 +62,10 @@ import {
 } from '../../providers/host-inventory-schema.js';
 import { canonicalUuidSchema, hostFingerprintSchema, operationIdentitySchema } from '../../provider-proxy/protocol.js';
 import {
-  PROVIDER_PROXY_SET_LIFECYCLE_STATES,
   providerProxySetAliveEnforcerObservationsSchema,
-  providerProxySetEnforcerObservationsSchema,
   providerProxySetUnobservableEnforcerObservationsSchema,
-} from '../../provider-proxy/set-containment-contract.js';
+} from '../../provider-proxy/containment-proof-contract.js';
+import { PROVIDER_PROXY_SET_LIFECYCLE_STATES } from '../../provider-proxy/set-lifecycle-state-vocabulary.js';
 
 export interface RpcMethodSpec<Req, _Res> {
   readonly name: string;
@@ -196,8 +195,10 @@ const providerProxySetContainKnownResponseSchema = z.discriminatedUnion('kind', 
     .object({
       kind: z.literal('abandoned'),
       ...providerProxySetContainResultBase,
-      processObservation: z.enum(['enforcer-alive', 'enforcer-unobservable']),
-      enforcerObservations: providerProxySetEnforcerObservationsSchema,
+      enforcerObservations: z.union([
+        providerProxySetAliveEnforcerObservationsSchema,
+        providerProxySetUnobservableEnforcerObservationsSchema,
+      ]),
       claimDischarge: providerProxySetClaimDischargeSchema,
     })
     .strict(),
@@ -234,23 +235,7 @@ const providerProxySetContainKnownResponseSchema = z.discriminatedUnion('kind', 
   z.object({ kind: z.literal('store-unreadable'), ...providerProxySetContainResultBase }).strict(),
 ]);
 
-export const providerProxySetContainResponseSchema = providerProxySetContainKnownResponseSchema.superRefine(
-  (result, context) => {
-    if (result.kind !== 'abandoned') return;
-    const matchesProcessObservation = result.enforcerObservations.some(
-      ({ observation }) => observation === (result.processObservation === 'enforcer-alive' ? 'alive' : 'unknown'),
-    );
-    const aliveContradictsUnobservable =
-      result.processObservation === 'enforcer-unobservable' &&
-      result.enforcerObservations.some(({ observation }) => observation === 'alive');
-    if (matchesProcessObservation && !aliveContradictsUnobservable) return;
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['enforcerObservations'],
-      message: 'Abandonment processObservation must agree with the retained per-role observations.',
-    });
-  },
-);
+export const providerProxySetContainResponseSchema = providerProxySetContainKnownResponseSchema;
 
 export type ProviderProxySetContainRequest = z.output<typeof providerProxySetContainRequestSchema>;
 export type ProviderProxySetContainResponse = z.output<typeof providerProxySetContainResponseSchema>;

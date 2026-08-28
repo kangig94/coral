@@ -49,8 +49,10 @@ means for whether it is safe to proceed.
 
 `backend status` prints a canonical `pps1` token and the live durable-claim count for every understood held-set
 disposition. The contain command resolves that exact three-field address; the internal map key and its ordering
-remain unchanged. The coordinator refuses an `available` or `draining` set and refuses a `reattaching` set until
-its monotonic adoption deadline has elapsed.
+remain unchanged. The coordinator refuses an `available` or `draining` set. A `reattaching` set remains refused
+until its recorded monotonic adoption-window deadline; a fault-driven `containing` or `containment-wait` set
+remains refused for the fixed 30-second containment-attempt observation span that began with containment,
+regardless of a longer configured adoption window.
 
 The independent proof now distinguishes confirmed proxy-group absence, an observed-live enforcer, an
 unobservable enforcer, and an unreadable local durable row. Confirmed absence follows the existing
@@ -60,10 +62,10 @@ representation through a separate typed action and a distinct durable terminal d
 process-absence evidence. An unreadable local row cannot be overridden and names
 `coral-cli backend recovery-quarantine` as its repair path.
 
-Only the recorded proxy process group is signalled. The guardian and reaper are not signalled: the reaper is in
-the guardian's group, neither enforcer has a recorded signal-authority pgid, and inventing one could signal the
-wrong group. A successful forced exit can therefore leave both processes live until their own adoption deadline
-tears the set down.
+The recorded proxy process group and every recorded provider root for the set are signalled when observed
+present. The guardian and reaper are not signalled: the reaper is in the guardian's group, neither enforcer has
+a recorded signal-authority pgid, and inventing one could signal the wrong group. A successful forced exit can
+therefore leave both enforcers live until their own adoption deadline tears the set down.
 
 When abandonment reaches a `settlement-pending` row, the reconciler deletes it just as confirmed disappearance
 does. A still-live proxy cannot recreate that settlement: provider-event ingress accepts only an existing exact

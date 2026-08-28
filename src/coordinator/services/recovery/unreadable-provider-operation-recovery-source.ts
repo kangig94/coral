@@ -5,6 +5,10 @@ import { defineRecoverySource, type RecoverySource, type RecoverySubject } from 
 import { UNREADABLE_PROVIDER_OPERATION_BOUNDARY } from '../../../recovery/source-registry.js';
 import { unreadableProviderOperationSubject } from '../../../recovery/unreadable-provider-operation.js';
 
+/**
+ * The exact current row state presented to retry policy. An unreadable row advances the retry coordinate with
+ * its current durable fingerprint; a readable row carries the decoded record and retains the requested key.
+ */
 export type RawUnreadableProviderOperationRecoveryRow =
   | Readonly<{
       kind: 'unreadable';
@@ -35,6 +39,10 @@ function scanUnreadableProviderOperationRows(
   ];
 }
 
+/**
+ * Scans one requested key and advances retries only to that same key's validated current fingerprint; it never
+ * follows a decoded or malformed row to a different coordinate.
+ */
 export function unreadableProviderOperationRecoverySource(
   db: Database,
   subject: RecoverySubject,
@@ -44,9 +52,7 @@ export function unreadableProviderOperationRecoverySource(
     scanSubject: subject,
     scan: () => scanUnreadableProviderOperationRows(db, subject.key),
     subject: (row) =>
-      row.kind === 'unreadable'
-        ? unreadableProviderOperationSubject({ key: row.key, revision: row.currentRevision })
-        : subject,
+      row.kind === 'unreadable' ? unreadableProviderOperationSubject(row.key, row.currentRevision) : subject,
     retryRevision: 'same-key-current-fingerprint',
   });
 }

@@ -79,7 +79,6 @@ describe('backend provider-proxy-set contain', () => {
       runContain({
         kind: 'abandoned',
         setIdentity: address,
-        processObservation: 'enforcer-unobservable',
         enforcerObservations: [
           { role: 'guardian', observation: 'absent' },
           { role: 'reaper', observation: 'unknown' },
@@ -195,10 +194,9 @@ describe('backend provider-proxy-set contain', () => {
       providerProxySetContainResponseSchema.safeParse({
         kind: 'abandoned',
         setIdentity: address,
-        processObservation: 'enforcer-alive',
         enforcerObservations: [
           { role: 'guardian', observation: 'absent' },
-          { role: 'reaper', observation: 'unknown' },
+          { role: 'reaper', observation: 'absent' },
         ],
         claimDischarge: { kind: 'completed' },
       }).success,

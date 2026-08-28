@@ -1,7 +1,7 @@
 # TODO — control-channel failure is not process absence
 
-**Status**: implemented on the unreleased branch. The missing exact-set operator exit remains open in
-[`operator-shutdown-cannot-reap-a-live-set.md`](./operator-shutdown-cannot-reap-a-live-set.md).
+**Status**: implemented on the unreleased branch, including the exact-set operator exit
+`coral-cli backend provider-proxy-set contain <pps1-token>`.
 
 ## What is observed
 
@@ -63,15 +63,18 @@ The reachable exits are authenticated reattachment and combined discharge after 
 containment absence plus durable-claim discharge. Independent absence attempts continue without an attempt
 limit after refusal or expiry.
 
-After the set's monotonic adoption deadline expires, `coral-cli backend provider-proxy-set contain <pps1-token>`
-is the supported exact-set operator exit. The token comes from `backend status`. Confirmed proxy-group absence
-uses the ordinary evidence-backed disappearance path. An observed-live or unobservable enforcer is a refusal
-until the operator supplies `--abandon-unobservable` after external verification; that releases Coral's
-representation without asserting process absence. An unreadable local durable row is non-overridable and must
-be repaired through `backend recovery-quarantine`.
+`coral-cli backend provider-proxy-set contain <pps1-token>` is the supported exact-set operator exit. The token
+comes from `backend status`. A `reattaching` hold refuses it until that hold's recorded monotonic adoption-window
+deadline. A fault-driven `containing` or `containment-wait` hold instead refuses it for the fixed 30-second
+containment-attempt observation span that started when containment began; a longer configured adoption window
+does not extend that gate. Confirmed recorded-set absence uses the ordinary evidence-backed disappearance path.
+An observed-live or unobservable enforcer is a refusal until the operator supplies `--abandon-unobservable`
+after external verification; that releases Coral's representation without asserting process absence. An
+unreadable local durable row is non-overridable and must be repaired through `backend recovery-quarantine`.
 
 `coral-cli backend shutdown` remains intentionally different: both shutdown transports use `replaced`, select
-handoff, and preserve the set for a successor. Shutdown output names each preserved set and its exact contain
-command, but shutdown's reason and exit contract do not change. Forced containment signals only the recorded
-proxy process group. Guardian and reaper may remain live until their own adoption deadline because Coral has no
-recorded signal-authority pgid for them.
+handoff, and preserve the set for a successor. Its best-effort pre-shutdown status read names every set whose
+token decoded and gives its exact contain command; when that read fails or skips a row, shutdown says it could
+not establish that the list is complete. Shutdown's reason and exit contract do not change. Forced containment
+signals the recorded proxy process group plus every recorded provider root for that set that is observed
+present. Guardian and reaper are not signalled and may remain live until their own adoption deadline.

@@ -4,7 +4,7 @@ import { isSerializedCoralSetupError, type SerializedCoralSetupError } from '../
 import {
   providerProxySetEnforcerObservationsSchema,
   type ProviderProxySetEnforcerObservations,
-} from '../../../provider-proxy/set-containment-contract.js';
+} from '../../../provider-proxy/containment-proof-contract.js';
 
 /**
  * Health metadata exposed by the Coral backend over HTTP.

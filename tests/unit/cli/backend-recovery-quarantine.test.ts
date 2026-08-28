@@ -155,7 +155,10 @@ describe('backend recovery-quarantine commands', () => {
     expect(entries).toEqual([
       expect.objectContaining({
         boundary: UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
-        subject: { key, revision: { kind: 'fingerprint', value: expect.stringMatching(/^sha256:/u) } },
+        subject: expect.objectContaining({
+          key,
+          revision: { kind: 'fingerprint', value: expect.stringMatching(/^sha256:/u) },
+        }),
         state: 'active',
         stage: 'hydrate',
         detectedAt: null,

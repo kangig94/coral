@@ -8,6 +8,7 @@ import {
   quarantineUnreadableProviderOperations,
 } from '#src/coordinator/services/recovery/index.js';
 import { RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
+import { unreadableProviderOperationSubject } from '#src/recovery/unreadable-provider-operation.js';
 import type { RecoveryQuarantinePort } from '#src/recovery/containment.js';
 import { createRecoveryQuarantineRetryService, createRecoverySourceRegistry } from '#src/recovery/source-registry.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
@@ -44,6 +45,23 @@ describe('unreadable provider operation recovery quarantine', () => {
   });
 
   afterEach(() => db.close());
+
+  it('validates and freezes the exact durable row coordinate', () => {
+    const subject = unreadableProviderOperationSubject('provider-operation-key', `sha256:${'a'.repeat(64)}`);
+
+    expect(subject).toMatchObject({
+      key: 'provider-operation-key',
+      revision: { kind: 'fingerprint', value: `sha256:${'a'.repeat(64)}` },
+    });
+    expect(Object.isFrozen(subject)).toBe(true);
+    expect(Object.isFrozen(subject.revision)).toBe(true);
+    expect(() => unreadableProviderOperationSubject('', `sha256:${'a'.repeat(64)}`)).toThrow(
+      'unreadable_provider_operation_key_invalid',
+    );
+    expect(() => unreadableProviderOperationSubject('provider-operation-key', 'not-a-fingerprint')).toThrow(
+      'unreadable_provider_operation_revision_invalid',
+    );
+  });
 
   it('adopts a repaired row before removing its quarantine', async () => {
     const repaired = providerOperationRecord('executing');

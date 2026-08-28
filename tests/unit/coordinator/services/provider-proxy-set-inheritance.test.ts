@@ -1303,7 +1303,7 @@ describe('createProviderProxySetInheritance', () => {
       containmentProver.proveContainmentAbsent(providerProxySetIdentityFromRecord(reference), db, controller.signal),
       'an unreadable but living pid is not evidence that the enforcer is gone',
     ).resolves.toEqual({
-      kind: 'enforcer-alive',
+      kind: 'enforcers-observed',
       observations: [
         { role: 'guardian', observation: 'alive' },
         { role: 'reaper', observation: 'alive' },
@@ -1330,7 +1330,7 @@ describe('createProviderProxySetInheritance', () => {
     await expect(
       createProviderProxySetContainmentProver(observedRuntime).proveContainmentAbsent(identity, db, neverAborts),
     ).resolves.toEqual({
-      kind: 'enforcer-alive',
+      kind: 'enforcers-observed',
       observations: [
         { role: 'guardian', observation: 'alive' },
         { role: 'reaper', observation: 'unknown' },
@@ -1398,7 +1398,7 @@ describe('createProviderProxySetInheritance', () => {
       containmentProver.proveContainmentAbsent(providerProxySetIdentityFromRecord(reference), db, neverAborts),
       'an enforcer that could not be observed is not one that is gone',
     ).resolves.toEqual({
-      kind: 'enforcer-unobservable',
+      kind: 'enforcers-observed',
       observations: [
         { role: 'guardian', observation: 'unknown' },
         { role: 'reaper', observation: 'unknown' },
@@ -1602,7 +1602,7 @@ describe('createProviderProxySetInheritance', () => {
       time: runtime.time,
       recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
         'containment-proof': async () => ({
-          kind: 'enforcer-unobservable' as const,
+          kind: 'enforcers-observed' as const,
           observations: [
             { role: 'guardian', observation: 'unknown' },
             { role: 'reaper', observation: 'unknown' },
@@ -1675,7 +1675,7 @@ describe('createProviderProxySetInheritance', () => {
       time,
       recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
         'containment-proof': async () => ({
-          kind: 'enforcer-unobservable' as const,
+          kind: 'enforcers-observed' as const,
           observations: [
             { role: 'guardian', observation: 'unknown' },
             { role: 'reaper', observation: 'unknown' },
@@ -1753,7 +1753,7 @@ describe('createProviderProxySetInheritance', () => {
       time,
       recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
         'containment-proof': async () => ({
-          kind: 'enforcer-unobservable' as const,
+          kind: 'enforcers-observed' as const,
           observations: [
             { role: 'guardian', observation: 'unknown' },
             { role: 'reaper', observation: 'unknown' },
