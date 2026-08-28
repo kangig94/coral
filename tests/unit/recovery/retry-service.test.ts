@@ -190,10 +190,14 @@ describe('recovery quarantine retry service', () => {
       workflowRecoverySource(db).boundary,
       staleJobCleanupSource(db).boundary,
       crashedJobTerminalizationSource(db).boundary,
-      createUnreadableProviderOperationRetryPlan(db, {
-        key: 'provider-operation-row',
-        revision: { kind: 'fingerprint', value: 'revision-1' },
-      }).source.boundary,
+      createUnreadableProviderOperationRetryPlan(
+        db,
+        {
+          key: 'provider-operation-row',
+          revision: { kind: 'fingerprint', value: 'revision-1' },
+        },
+        () => ({ kind: 'refused', reason: 'not exercised by the boundary manifest test' }),
+      ).source.boundary,
     ];
 
     expect(new Set(registeredSourceBoundaries)).toEqual(new Set(repeatableRecoveryBoundaryIds));
@@ -245,7 +249,10 @@ describe('recovery quarantine retry service', () => {
       policy: passThroughPolicy(),
     }));
     runtimeRegistry.register(UNREADABLE_PROVIDER_OPERATION_BOUNDARY, (retrySubject) =>
-      createUnreadableProviderOperationRetryPlan(db, retrySubject),
+      createUnreadableProviderOperationRetryPlan(db, retrySubject, () => ({
+        kind: 'refused',
+        reason: 'not exercised by the registry completeness test',
+      })),
     );
 
     expect(() => assertRecoverySourceRegistryComplete(runtimeRegistry)).not.toThrow();

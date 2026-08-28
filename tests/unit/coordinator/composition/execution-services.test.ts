@@ -23,6 +23,7 @@ import {
 } from '#src/coordinator/services/provider-proxy-set/identity.js';
 import { ProviderProxySetLifecycleRef } from '#src/coordinator/services/provider-proxy-set/lifecycle-ref.js';
 import type { ProviderProxySetContainmentProof } from '#src/coordinator/services/provider-proxy-set/inheritance.js';
+import { UNREADABLE_PROVIDER_OPERATION_BOUNDARY } from '#src/coordinator/services/recovery/index.js';
 import { backendLog } from '#src/infra/backend-log.js';
 import { JobStore } from '#src/jobs/store.js';
 import { ControlClientError, controlExchangeForTest, type ControlClient } from '#src/provider-proxy/control-client.js';
@@ -39,7 +40,17 @@ import type { Database } from '#src/store/db.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
-import { insertProviderOperation, readProviderOperation } from '#src/store/provider-operation-journal.js';
+import {
+  attributeUnreadableProviderOperations,
+  insertProviderOperation,
+  readProviderOperation,
+  readProviderOperations,
+} from '#src/store/provider-operation-journal.js';
+import {
+  PROVIDER_OPERATION_RECORD_VERSION,
+  type ProviderOperationRecord,
+} from '#src/store/provider-operation-record.js';
+import { RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { flushMicrotasks, VirtualTime } from '#tools/simulation/core/virtual-time.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
@@ -60,6 +71,61 @@ type SharedSetControl = 'settlement-timeout' | 'heartbeat-failed';
 
 function setReference(identity: ProviderProxySetIdentity): string {
   return `proxyInstanceId=${identity.proxyInstanceId},buildSetId=${identity.buildSetId}`;
+}
+
+function providerOperationRecordKey(record: ProviderOperationRecord): string {
+  return `provider_operation_saga.v${PROVIDER_OPERATION_RECORD_VERSION}:record:${[
+    record.operation.jobId,
+    record.operation.operationId,
+    record.operation.proxyInstanceId,
+    record.operation.buildSetId,
+  ].join(':')}`;
+}
+
+function createUnreadableStartupHarness() {
+  const runtime = createRealRuntime('prod');
+  const db = newRawDatabase(':memory:');
+  applyBundledStoreSchema(db, currentCoralStoreFormat());
+  const namespace = `execution-services-unreadable-${randomUUID()}`;
+  const progressStore = new JobStore(namespace, runtime, createEventBodyCodec(), {
+    db,
+    providers: permissiveProviderLookupPort,
+  });
+  const claims = new ProviderProxySetClaimMirror();
+  const readable = providerOperationRecord('executing');
+  const unreadable = providerOperationRecord('executing', { job: 2 });
+  const unreadableKey = providerOperationRecordKey(unreadable);
+  insertProviderOperation(db, readable);
+  db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)').run(unreadableKey, 'not-json');
+  const world = {
+    identity: { buildSetId: FIXTURE_BUILD_SET_ID },
+    storeServicesRef: { tryGet: () => ({ progressStore }) },
+    operationRegistry: new LocalOperationRegistry(),
+    providerProxyClaims: claims,
+    providerProxyLifecycleRef: new ProviderProxySetLifecycleRef(),
+    providerHostManager: {},
+  } as never;
+  const services = createExecutionServices({
+    world,
+    runtime,
+    bundleHash: namespace,
+    backendNamespace: namespace,
+    onProviderProxyLifecycleFatal: (error) => {
+      throw error;
+    },
+    createExecutionService: (() => {
+      throw new Error('execution service creation was not expected');
+    }) as never,
+  });
+
+  return {
+    claims,
+    db,
+    quarantine: new RecoveryQuarantineStore(db, runtime.time),
+    readable,
+    services,
+    unreadableKey,
+  };
 }
 
 describe('provider proxy operation routing', () => {
@@ -327,6 +393,84 @@ describe('execution services provider-proxy proof composition', () => {
     // nothing would satisfy the assertion above while losing every live claim.
     expect(claims.claimFor(readable.operation), 'the readable row still became a live claim').not.toBeNull();
     expect(claims.size, 'and the unreadable one contributed none').toBe(1);
+  });
+
+  it('initializes readable claims when quarantine materialization throws and writes durable status', async () => {
+    const harness = createUnreadableStartupHarness();
+    const write = vi.spyOn(RecoveryQuarantineStore.prototype, 'upsert').mockImplementationOnce(() => {
+      throw new Error('injected quarantine write failure');
+    });
+
+    try {
+      await expect(
+        harness.services.reconcileProviderOperationsAtStartup(new AbortController().signal),
+      ).resolves.toBeDefined();
+      expect(harness.claims.claimFor(harness.readable.operation)).not.toBeNull();
+      expect(harness.quarantine.list()).toEqual([
+        expect.objectContaining({
+          boundary: UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
+          errorMessage: 'Provider operation quarantine materialization failed during startup.',
+          state: 'active',
+          subject: expect.objectContaining({ key: harness.unreadableKey }),
+        }),
+      ]);
+    } finally {
+      write.mockRestore();
+      harness.services.stopProviderOperationReconciler();
+      harness.db.close();
+    }
+  });
+
+  it('initializes readable claims while an older revision remains owned by a retry', async () => {
+    const harness = createUnreadableStartupHarness();
+    harness.db
+      .prepare<[string, string]>('UPDATE meta SET value = ? WHERE key = ?')
+      .run('not-json-r1', harness.unreadableKey);
+    const olderAttribution = attributeUnreadableProviderOperations(
+      harness.db,
+      readProviderOperations(harness.db).unreadableKeys,
+    )[0];
+    if (olderAttribution === undefined) throw new Error('expected the older unreadable provider operation row');
+    harness.db
+      .prepare<[string, string]>('UPDATE meta SET value = ? WHERE key = ?')
+      .run('not-json-r2', harness.unreadableKey);
+    const olderSubject = {
+      key: harness.unreadableKey,
+      revision: { kind: 'fingerprint' as const, value: olderAttribution.revision },
+    };
+    expect(
+      harness.quarantine.upsert({
+        boundary: UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
+        subject: olderSubject,
+        state: 'active',
+        stage: 'hydrate',
+        errorMessage: 'Provider operation row is unreadable by this build.',
+        detail: 'Older durable status.',
+      }),
+    ).toBe(true);
+    expect(
+      harness.quarantine.claimRetry({
+        boundary: UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
+        subject: olderSubject,
+        retry: { owner: 'older-coordinator', token: 'older-token' },
+      }),
+    ).toBe(true);
+
+    try {
+      await expect(
+        harness.services.reconcileProviderOperationsAtStartup(new AbortController().signal),
+      ).resolves.toBeDefined();
+      expect(harness.claims.claimFor(harness.readable.operation)).not.toBeNull();
+      expect(harness.quarantine.read(UNREADABLE_PROVIDER_OPERATION_BOUNDARY, harness.unreadableKey)).toEqual({
+        boundary: UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
+        subject: olderSubject,
+        state: 'retrying',
+        retry: { owner: 'older-coordinator', token: 'older-token' },
+      });
+    } finally {
+      harness.services.stopProviderOperationReconciler();
+      harness.db.close();
+    }
   });
 
   it('does not invoke the disappearance consumer producer during assembly', async () => {

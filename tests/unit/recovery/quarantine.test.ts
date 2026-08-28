@@ -239,7 +239,7 @@ describe('RecoveryQuarantineStore', () => {
     expect(
       quarantine.upsert({
         ...activeWrite(subject),
-        expectedRetry: { owner: 'owner-2', token: 'token-2' },
+        expectedRetry: { owner: 'owner-2', token: 'token-2', subject },
       }),
     ).toBe(true);
     expect(readRow(db)).toMatchObject({
@@ -333,8 +333,9 @@ describe('RecoveryQuarantineStore', () => {
     expect(readRow(db, 'held')?.subject_revision).toBeNull();
   });
 
-  it('should compare-and-set retry transitions with the exact revision, owner, and token', () => {
+  it('should compare-and-set retry transitions from the owned revision, owner, and token', () => {
     const subject = fingerprintSubject();
+    const changedSubject = fingerprintSubject('subject-1', 'revision-2');
     seedRetryingRow(db, subject);
 
     expect(quarantine.read(boundary, subject.key)).toEqual({
@@ -347,25 +348,26 @@ describe('RecoveryQuarantineStore', () => {
     expect(readRow(db)?.state).toBe('retrying');
     expect(
       quarantine.upsert({
-        ...activeWrite(fingerprintSubject('subject-1', 'revision-2')),
-        expectedRetry: { owner: 'owner-1', token: 'token-1' },
+        ...activeWrite(changedSubject),
+        expectedRetry: { owner: 'owner-1', token: 'token-1', subject: changedSubject },
       }),
     ).toBe(false);
     expect(
       quarantine.upsert({
         ...activeWrite(subject),
-        expectedRetry: { owner: 'owner-1', token: 'stale-token' },
+        expectedRetry: { owner: 'owner-1', token: 'stale-token', subject },
       }),
     ).toBe(false);
     expect(
       quarantine.upsert({
-        ...activeWrite(subject),
-        expectedRetry: { owner: 'owner-1', token: 'token-1' },
+        ...activeWrite(changedSubject),
+        expectedRetry: { owner: 'owner-1', token: 'token-1', subject },
       }),
     ).toBe(true);
 
     expect(readRow(db)).toMatchObject({
       state: 'active',
+      subject_revision: 'revision-2',
       retry_owner: null,
       retry_token: null,
       detected_at: '2026-08-03T01:00:00.000Z',
@@ -454,7 +456,7 @@ describe('RecoveryQuarantineStore', () => {
     expect(
       quarantine.upsert({
         ...activeWrite(subject),
-        expectedRetry: { owner: 'owner-1', token: 'token-1' },
+        expectedRetry: { owner: 'owner-1', token: 'token-1', subject },
       }),
     ).toBe(false);
     expect(

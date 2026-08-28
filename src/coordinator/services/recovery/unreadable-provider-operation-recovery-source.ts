@@ -1,23 +1,36 @@
 import type { Database } from '../../../store/db.js';
-import {
-  attributeUnreadableProviderOperations,
-  readProviderOperations,
-} from '../../../store/provider-operation-journal.js';
+import { observeProviderOperationRecord } from '../../../store/provider-operation-journal.js';
+import type { ProviderOperationRecord } from '../../../store/provider-operation-record.js';
 import { defineRecoverySource, type RecoverySource, type RecoverySubject } from '../../../recovery/containment.js';
 
-export type RawUnreadableProviderOperationRecoveryRow = Readonly<{
-  key: string;
-  currentRevision: string;
-}>;
+export type RawUnreadableProviderOperationRecoveryRow =
+  | Readonly<{
+      kind: 'unreadable';
+      key: string;
+      currentRevision: string;
+    }>
+  | Readonly<{
+      kind: 'readable';
+      key: string;
+      record: ProviderOperationRecord;
+    }>;
 
 function scanUnreadableProviderOperationRows(
   db: Database,
   subjectKey: string,
 ): readonly RawUnreadableProviderOperationRecoveryRow[] {
-  const unreadableKeys = readProviderOperations(db).unreadableKeys;
-  if (!unreadableKeys.includes(subjectKey)) return [];
-  const current = attributeUnreadableProviderOperations(db, [subjectKey])[0];
-  return current === undefined ? [] : [{ key: current.key, currentRevision: current.revision }];
+  const observation = observeProviderOperationRecord(db, subjectKey);
+  if (observation.kind === 'absent') return [];
+  if (observation.kind === 'readable') {
+    return [{ kind: 'readable', key: subjectKey, record: observation.record }];
+  }
+  return [
+    {
+      kind: 'unreadable',
+      key: observation.attribution.key,
+      currentRevision: observation.attribution.revision,
+    },
+  ];
 }
 
 export function unreadableProviderOperationRecoverySource(
@@ -28,6 +41,10 @@ export function unreadableProviderOperationRecoverySource(
     boundary: 'provider-operation-unreadable',
     scanSubject: subject,
     scan: () => scanUnreadableProviderOperationRows(db, subject.key),
-    subject: () => subject,
+    subject: (row) =>
+      row.kind === 'unreadable'
+        ? { key: row.key, revision: { kind: 'fingerprint', value: row.currentRevision } }
+        : subject,
+    retryRevision: 'same-key-current-fingerprint',
   });
 }

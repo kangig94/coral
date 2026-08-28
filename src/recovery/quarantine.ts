@@ -314,6 +314,11 @@ export class RecoveryQuarantineStore implements RecoveryQuarantinePort {
   upsert(write: RecoveryQuarantineWrite): boolean {
     const row = writeColumns(write);
     if (write.expectedRetry !== undefined) {
+      if (write.expectedRetry.subject.key !== write.subject.key) {
+        throw new Error(
+          `Recovery retry cannot move to a different subject key: ${write.boundary}:${write.subject.key}`,
+        );
+      }
       const result = prepareCached<
         [
           string | null,
@@ -360,7 +365,7 @@ export class RecoveryQuarantineStore implements RecoveryQuarantinePort {
         this.timestamp(),
         row.boundaryId,
         row.subjectKey,
-        row.subjectRevision,
+        revisionValue(write.expectedRetry.subject),
         write.expectedRetry.owner,
         write.expectedRetry.token,
       );

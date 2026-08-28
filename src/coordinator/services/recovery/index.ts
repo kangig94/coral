@@ -45,6 +45,7 @@ import { RecoveryQuarantineStore } from '../../../recovery/quarantine.js';
 import type {
   RecoveryDisposition,
   RecoveryFault,
+  RecoveryObligationId,
   RecoveryQuarantinePort,
   RecoveryReport,
   RecoverySettlementFact,
@@ -168,6 +169,17 @@ type CoordinatorWalkOptions = {
 };
 
 export const UNREADABLE_PROVIDER_OPERATION_BOUNDARY: RepeatableRecoveryBoundaryId = 'provider-operation-unreadable';
+const REPAIRED_PROVIDER_OPERATION_ADOPTION_OBLIGATION = 'repaired-provider-operation-adoption' as RecoveryObligationId;
+
+export type RepairedProviderOperationAdoption =
+  | Readonly<{ kind: 'accepted'; owner: 'provider-proxy-claim-mirror' }>
+  | Readonly<{ kind: 'refused'; reason: string }>;
+
+export type UnreadableProviderOperationQuarantineReport = Readonly<{
+  materialized: number;
+  retained: number;
+  failed: readonly Readonly<{ key: string; error: string }>[];
+}>;
 
 function unreadableProviderOperationSubject(
   row: Pick<UnreadableProviderOperationAttribution, 'key' | 'revision'>,
@@ -181,45 +193,109 @@ function unreadableProviderOperationSubject(
 export async function quarantineUnreadableProviderOperations(
   quarantine: RecoveryQuarantinePort,
   rows: readonly UnreadableProviderOperationAttribution[],
-): Promise<void> {
+): Promise<UnreadableProviderOperationQuarantineReport> {
+  let materialized = 0;
+  let retained = 0;
+  const failed: { key: string; error: string }[] = [];
+
   for (const row of rows) {
     const subject = unreadableProviderOperationSubject(row);
-    const persisted = await quarantine.upsert({
+    const write = {
       boundary: UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
       subject,
-      state: 'active',
-      stage: 'hydrate',
+      state: 'active' as const,
+      stage: 'hydrate' as const,
       errorMessage: 'Provider operation row is unreadable by this build.',
       detail: 'Repair or remove the raw provider operation row, then retry this exact quarantine coordinate.',
-    });
-    if (!persisted) {
+    };
+    let persisted = false;
+    let writeFailure: unknown = null;
+    try {
+      persisted = await quarantine.upsert(write);
+    } catch (error: unknown) {
+      writeFailure = error;
+    }
+    if (persisted) {
+      materialized += 1;
+      continue;
+    }
+
+    try {
       const current = await quarantine.read(UNREADABLE_PROVIDER_OPERATION_BOUNDARY, row.key);
-      if (
-        current?.state === 'retrying' &&
-        current.subject.revision.kind === 'fingerprint' &&
-        current.subject.revision.value === row.revision
-      ) {
+      if (current !== null) {
+        retained += 1;
         continue;
       }
-      throw new Error(`Unreadable provider operation quarantine lost authority for ${row.key}`);
+    } catch (error: unknown) {
+      failed.push({ key: row.key, error: errorMessage(error) });
+      continue;
+    }
+
+    const failureDetail = writeFailure === null ? 'the quarantine write did not persist' : errorMessage(writeFailure);
+    try {
+      persisted = await quarantine.upsert({
+        ...write,
+        errorMessage: 'Provider operation quarantine materialization failed during startup.',
+        detail: `${failureDetail}. The raw row remains unreadable; repair or remove it, then retry this exact coordinate.`,
+      });
+    } catch (error: unknown) {
+      failed.push({ key: row.key, error: `${failureDetail}; durable status retry failed: ${errorMessage(error)}` });
+      continue;
+    }
+    if (persisted) {
+      materialized += 1;
+    } else {
+      failed.push({ key: row.key, error: `${failureDetail}; durable status retry did not persist` });
     }
   }
+
+  return Object.freeze({ materialized, retained, failed: Object.freeze(failed) });
 }
 
 export function createUnreadableProviderOperationRetryPlan(
   db: Database,
   subject: RecoverySubject,
+  adopt: (
+    record: ProviderOperationRecord,
+  ) => RepairedProviderOperationAdoption | Promise<RepairedProviderOperationAdoption>,
 ): RecoverySourceFactoryPlan<RawUnreadableProviderOperationRecoveryRow, RawUnreadableProviderOperationRecoveryRow> {
   return {
     source: unreadableProviderOperationRecoverySource(db, subject),
     policy: {
       processLocalCleanup: { kind: 'not-required' },
       hydrate: (raw) => raw,
-      requiredObligations: () => [],
-      settle: (item) => ({
-        kind: 'quarantine',
-        detail: `Provider operation row ${item.key} remains unreadable at revision ${item.currentRevision}.`,
-      }),
+      requiredObligations: (item) =>
+        item.kind === 'readable' ? [REPAIRED_PROVIDER_OPERATION_ADOPTION_OBLIGATION] : [],
+      settle: async (item) => {
+        if (item.kind === 'unreadable') {
+          return {
+            kind: 'quarantine',
+            detail: `Provider operation row ${item.key} remains unreadable at revision ${item.currentRevision}.`,
+          };
+        }
+
+        const adoption = await adopt(item.record);
+        if (adoption.kind === 'refused') {
+          return {
+            kind: 'quarantine',
+            detail:
+              `Provider operation row ${item.key} is readable, but this coordinator did not accept ownership: ` +
+              `${adoption.reason}. Restart the coordinator to initialize the repaired row at boot, then retry this coordinate.`,
+          };
+        }
+        return {
+          kind: 'advanced',
+          outcome: 'settled',
+          facts: [
+            {
+              obligation: REPAIRED_PROVIDER_OPERATION_ADOPTION_OBLIGATION,
+              outcome: 'done',
+              authorityRef: adoption.owner,
+            },
+          ],
+          detail: `Provider operation row ${item.key} was accepted by ${adoption.owner}.`,
+        };
+      },
       onFault: (fault) => ({
         kind: 'quarantine',
         detail: `Provider operation unreadable-row retry failed during ${fault.stage}.`,

@@ -473,6 +473,12 @@ export function createCoordinatorCore(
   };
   const recoverySources = createRecoverySourceRegistry();
   const recoveryDb = () => getProgressStore().getDb();
+  let adoptRepairedProviderOperation: ReturnType<
+    typeof createExecutionServices
+  >['adoptRepairedProviderOperation'] = () => ({
+    kind: 'refused',
+    reason: 'the coordinator execution services are not composed',
+  });
   const createSystemInvocationContext = (
     projectRoot: CanonicalWorkDir,
     credentialId: string,
@@ -537,7 +543,7 @@ export function createCoordinatorCore(
     createCrashedJobTerminalizationRetryPlan(recoveryDb(), subject),
   );
   recoverySources.register(UNREADABLE_PROVIDER_OPERATION_BOUNDARY, (subject) =>
-    createUnreadableProviderOperationRetryPlan(recoveryDb(), subject),
+    createUnreadableProviderOperationRetryPlan(recoveryDb(), subject, adoptRepairedProviderOperation),
   );
   assertRecoverySourceRegistryComplete(recoverySources);
   const recoveryQuarantine = createRecoveryQuarantineRetryService({
@@ -577,6 +583,7 @@ export function createCoordinatorCore(
       void lifecycleController?.shutdown('provider-proxy-lifecycle-fatal').catch(() => undefined);
     },
   });
+  adoptRepairedProviderOperation = services.adoptRepairedProviderOperation;
 
   const discuss = createDiscussRuntime({
     world,

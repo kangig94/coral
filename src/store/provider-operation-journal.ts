@@ -482,6 +482,21 @@ export type UnreadableProviderOperationAttribution = Readonly<{
   jobs: ProviderOperationAttribution<string>;
 }>;
 
+export type ProviderOperationRecordObservation =
+  | Readonly<{ kind: 'absent' }>
+  | Readonly<{ kind: 'unreadable'; attribution: UnreadableProviderOperationAttribution }>
+  | Readonly<{ kind: 'readable'; record: ProviderOperationRecord }>;
+
+function unreadableProviderOperationAttribution(key: string, value: string): UnreadableProviderOperationAttribution {
+  const claims = claimedOperationIdentities(value);
+  return {
+    key,
+    revision: `sha256:${sha256Hex(value)}`,
+    sets: attribute(providerOperationSetAddressFromRecordKey(key), claims.set, sameSetAddress),
+    jobs: attribute(providerOperationJobIdFromRecordKey(key), claims.job, (left, right) => left === right),
+  };
+}
+
 export function attributeUnreadableProviderOperations(
   db: Database,
   unreadableKeys: readonly string[],
@@ -489,16 +504,19 @@ export function attributeUnreadableProviderOperations(
   return unreadableKeys.flatMap((key) => {
     const value = readCanonicalValue(db, key);
     if (value === undefined) return [];
-    const claims = claimedOperationIdentities(value);
-    return [
-      {
-        key,
-        revision: `sha256:${sha256Hex(value)}`,
-        sets: attribute(providerOperationSetAddressFromRecordKey(key), claims.set, sameSetAddress),
-        jobs: attribute(providerOperationJobIdFromRecordKey(key), claims.job, (left, right) => left === right),
-      },
-    ];
+    return [unreadableProviderOperationAttribution(key, value)];
   });
+}
+
+export function observeProviderOperationRecord(db: Database, key: string): ProviderOperationRecordObservation {
+  const value = readCanonicalValue(db, key);
+  if (value === undefined) return { kind: 'absent' };
+
+  try {
+    return { kind: 'readable', record: decodeCanonicalValue(key, value) };
+  } catch {
+    return { kind: 'unreadable', attribution: unreadableProviderOperationAttribution(key, value) };
+  }
 }
 
 type IdentityClaim<T> =

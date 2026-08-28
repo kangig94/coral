@@ -28,7 +28,11 @@ import { readProviderOperationJobLaunch } from '../../jobs/provider-operation-st
 import { readProjectionProviderSession } from '../../sessions/projections.js';
 import { materializeProviderOperationPrepare } from '../services/provider-operation-prepare.js';
 import { terminalizeProviderOperation } from '../../jobs/provider-operation-terminalization.js';
-import { quarantineUnreadableProviderOperations, type RecoveryCoordinator } from '../services/recovery/index.js';
+import {
+  quarantineUnreadableProviderOperations,
+  type RepairedProviderOperationAdoption,
+  type RecoveryCoordinator,
+} from '../services/recovery/index.js';
 import {
   attributeUnreadableProviderOperations,
   readProviderOperation,
@@ -83,6 +87,7 @@ export function createExecutionServices({
   getExecutionService: (ctx: InvocationContext) => ProjectRequestPort;
   getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
   listExecutionServices: () => ProjectRequestPort[];
+  adoptRepairedProviderOperation: (record: ProviderOperationRecord) => RepairedProviderOperationAdoption;
   connectProviderOperationRecovery: (recoveryCoordinator: RecoveryCoordinator) => void;
   reconcileProviderOperationsAtStartup: (signal: AbortSignal) => Promise<StartupReconciliationReport>;
   startProviderOperationReconciler: () => void;
@@ -264,25 +269,43 @@ export function createExecutionServices({
   let providerProxyClaimsInitialized = false;
   let providerProxyLifecycleInitialized = false;
 
+  const adoptRepairedProviderOperation = (record: ProviderOperationRecord): RepairedProviderOperationAdoption => {
+    if (!providerProxyClaimsInitialized || !providerProxyLifecycleInitialized) {
+      return { kind: 'refused', reason: 'the provider operation ownership path is not initialized' };
+    }
+
+    world.providerProxyClaims.applyMutation({ kind: 'upserted', record });
+    const setIdentity = providerProxySetIdentityFromRecord(record);
+    const accepted = world.providerProxyClaims.claimFor(record.operation);
+    if (accepted === null || !providerProxySetIdentitiesEqual(accepted.setIdentity, setIdentity)) {
+      return { kind: 'refused', reason: 'the provider operation claim mirror did not retain the decoded record' };
+    }
+    providerProxyLifecycle.claimsChanged(setIdentity);
+    return { kind: 'accepted', owner: 'provider-proxy-claim-mirror' };
+  };
+
   const initializeProviderProxyClaims = async (): Promise<void> => {
     if (providerProxyClaimsInitialized) return;
     const db = getProgressStore().getDb();
     const scan = readProviderOperations(db);
-    if (scan.unreadableKeys.length > 0) {
-      await quarantineUnreadableProviderOperations(
-        new RecoveryQuarantineStore(db, runtime.time),
-        attributeUnreadableProviderOperations(db, scan.unreadableKeys),
-      );
-      backendLog.warn(
-        `Quarantined ${scan.unreadableKeys.length} provider operation record(s) this build cannot read: ${scan.unreadableKeys.join(', ')}`,
-      );
-    }
     world.providerProxyClaims.initialize(scan.records);
     providerProxyClaimsInitialized = true;
     unsubscribeProviderOperationMutations = subscribeProviderOperationMutations(db, (mutation) => {
       world.providerProxyClaims.applyMutation(mutation);
       providerProxyLifecycle.claimsChanged(providerProxySetIdentityFromRecord(mutation.record));
     });
+
+    if (scan.unreadableKeys.length > 0) {
+      const quarantineReport = await quarantineUnreadableProviderOperations(
+        new RecoveryQuarantineStore(db, runtime.time),
+        attributeUnreadableProviderOperations(db, scan.unreadableKeys),
+      );
+      backendLog.warn(
+        `Quarantined ${quarantineReport.materialized} provider operation record(s) this build cannot read; ` +
+          `retained ${quarantineReport.retained} existing durable quarantine status(es); ` +
+          `${quarantineReport.failed.length} materialization failure(s): ${scan.unreadableKeys.join(', ')}`,
+      );
+    }
   };
 
   const initializeProviderProxyLifecycle = (): void => {
@@ -380,6 +403,7 @@ export function createExecutionServices({
     getExecutionService,
     getRecoveryService,
     listExecutionServices,
+    adoptRepairedProviderOperation,
     connectProviderOperationRecovery: (recoveryCoordinator) => {
       providerOperationRecovery = recoveryCoordinator;
     },

@@ -124,7 +124,7 @@ class FakeQuarantinePort implements RecoveryQuarantinePort {
       current?.state === 'retrying' &&
       current.retry?.owner === write.expectedRetry.owner &&
       current.retry.token === write.expectedRetry.token &&
-      sameSubject(current.subject, write.subject)
+      sameSubject(current.subject, write.expectedRetry.subject)
     );
   }
 }
