@@ -186,6 +186,8 @@ function formatInvalidTargetFailure(
 // Shared by every shutdown disposition this run could not resolve either way: none of them may tell an
 // operator to do anything but ask again.
 const SHUTDOWN_RETRY_NEXT_STEP = 'Next step: run coral-cli backend status, then retry the shutdown.';
+const SHUTDOWN_UNPUBLISHED_COORDINATOR_NEXT_STEP =
+  'Next step: retry shortly in case a coordinator is still publishing its discovery record. If this persists, verify that no other Coral coordinator process is running before treating the backend as stopped.';
 
 export function formatBackendStatus(
   daemonStatus: BackendStatusFull,
@@ -567,9 +569,17 @@ export function formatShutdown(result: ShutdownResult): string {
     case 'no_response':
       return formatNoResponse(result.detail);
     case 'no_record':
-      return 'Backend not running: no coordinator has recorded itself.';
+      return [
+        'Shutdown not attempted: no coordinator discovery record was found.',
+        'A coordinator may still be serving at an address this build can neither derive nor read from a record; this is not a report that it stopped.',
+        SHUTDOWN_UNPUBLISHED_COORDINATOR_NEXT_STEP,
+      ].join('\n');
     case 'recorded_process_absent':
-      return `Backend not running: the recorded coordinator process (pid ${result.detail}) is gone.`;
+      return [
+        `Shutdown not attempted: the recorded coordinator process (pid ${result.detail}) is gone.`,
+        'A different coordinator may still be starting without having published its own record; this is not a report that the backend stopped.',
+        SHUTDOWN_UNPUBLISHED_COORDINATOR_NEXT_STEP,
+      ].join('\n');
     case 'socket_refused':
       return formatSocketRefused(result);
     case 'nested_child':

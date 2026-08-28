@@ -114,9 +114,10 @@ record narrows the gap but cannot retrofit such a primitive into v0.10.9.
 The same pre-publication interval is also outside operator shutdown discovery. `backend shutdown` reads the
 record and, when it is missing, checks only this build's current coordinator socket. A live v0.10.9 coordinator
 bound at an unenumerated custom fallback has neither observable artifact, so the command returns `no_record`,
-prints `Backend not running: no coordinator has recorded itself.`, and exits `1` without sending a shutdown
-request. That message overstates the observation: in this case it does not establish that the shipped
-coordinator is absent. This entry records the gap; it does not change shutdown behavior.
+prints that no discovery record was found, and exits `75` without sending a shutdown request. If a stale record
+from an earlier coordinator remains and its pid is observed absent, the same interval returns
+`recorded_process_absent`: the named pid is gone, but the unpublished coordinator is still not excluded. Both
+messages state that limit, and neither exit authorizes an operator to proceed as if shutdown succeeded.
 
 ## Part 3 — the assertion proves owner and mode, which is less than privacy
 

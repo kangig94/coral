@@ -470,12 +470,12 @@ describe('cli main routing', () => {
   //
   // 75 rather than 2, which an earlier revision used: 2 is `invalid_usage` across this CLI, so "you called
   // this wrong" and "I could not observe the daemon" would have shared a code.
-  // `socket_refused` exits `75`, not `1`: a refused connection never establishes the recorded pid absent (an
-  // absent pid is excluded before any request is sent), so it cannot join the observed-absence/observed-refusal
-  // rows above it — see the production table's own comment for the deterministic mid-drain window this guards.
+  // `no_record` and `recorded_process_absent` both exit `75`: the former can miss an unpublished v0.10.9
+  // coordinator at an unenumerated fallback, while the latter proves only that the process named by a possibly
+  // stale record is gone. Neither observation establishes whether a different coordinator is running.
   const SHUTDOWN_EXIT_EXPECTATIONS = [
-    ['no_record', 1],
-    ['recorded_process_absent', 1],
+    ['no_record', 75],
+    ['recorded_process_absent', 75],
     ['nested_child', 1],
     ['capability_rejected', 1],
     ['unreadable_record', 75],
@@ -519,7 +519,7 @@ describe('cli main routing', () => {
 
     await program.parseAsync(['node', 'coral-cli', 'backend', 'shutdown']);
 
-    expect(process.exitCode, 'observed refusals exit 1; unobserved state exits 75').toBe(expected);
+    expect(process.exitCode, 'settled refusals exit 1; no-verdict refusals exit 75').toBe(expected);
   });
 
   // The rows above are written out by hand so they are an independent statement of the mapping rather than a

@@ -271,10 +271,10 @@ describe('cli main — backend shutdown routing', () => {
       env: { HOME: tmpDir },
     });
 
-    expect(status).toBe(1);
+    expect(status).toBe(75);
     expect(stdout).toBe('');
-    // `not_running` is no longer a reason any branch produces: an empty HOME reaches `missing` -> `no_record`.
-    expect(stderr).toContain('no coordinator has recorded itself');
+    expect(stderr).toContain('no coordinator discovery record was found');
+    expect(stderr).toContain('may still be serving');
   });
 });
 

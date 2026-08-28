@@ -98,32 +98,28 @@ import { clearHandoffRoutingStatusQuarantine, discardHandoffRoutingStatus } from
  *
  * `docs/configuration.md` tells operators to run `backend shutdown` before `store-reset discard` and
  * `kb-commit quarantine`, so the question this code answers is "may I proceed to destroy state?" — and there
- * are three answers, not two. Exit `0` is "it is stopping". Exit `1` is a refusal this run *observed*: the
- * daemon was seen to be absent, or seen to be alive and unwilling. Exit `75` is the third — this run could not
- * tell, so a caller must neither proceed nor read the outcome as failure.
+ * are three answers, not two. Exit `0` is "it is stopping". Exit `1` is a settled refusal: the coordinator
+ * answered and declined, or this nested child is not permitted to ask. Exit `75` is the third — this run has
+ * no shutdown verdict, so a caller must neither proceed nor read the outcome as failure.
  *
  * `75` rather than `2`: `2` is `invalid_usage` (`docs/cli-errors.md`), so a
  * script could not tell "you called this wrong" from "I could not observe the daemon". `75` is already this
- * CLI's "not concluded, resume or retry" across `wait jobs` and every transient code, which is what both
- * members below are.
+ * CLI's "not concluded" code across `wait jobs` and transient errors. The reason-specific remediation decides
+ * whether retrying can change the evidence.
  *
  * A `Record` rather than a set of the undetermined ones. A set answers only for its members and defaults the
- * rest, so a new `ShutdownReason` silently inherits "observed" — the exact shape of the collapse this table
+ * rest, so a new `ShutdownReason` silently inherits "settled" — the exact shape of the collapse this table
  * exists to prevent. Here it fails to compile until someone decides, which is the same mechanism
  * `formatShutdown`'s `assertNever` provides for the message.
  */
 export const SHUTDOWN_REFUSAL_EXIT_CODES: Readonly<Record<ShutdownReason, 1 | 75>> = {
-  // Observed: nothing recorded itself, or the recorded process is decisively gone.
-  no_record: 1,
-  recorded_process_absent: 1,
   // Observed: the coordinator answered and declined. It is running, and this run knows it.
   capability_rejected: 1,
   // Observed: this process refused to act, before asking anything. Retrying from the same child repeats it.
   nested_child: 1,
   // Not observed: a refused connection proves nothing was listening on that exact socket at that moment, but
   // the recorded pid was never established absent before this request was sent (an absent pid short-circuits
-  // to `recorded_process_absent` first) — so this is not the same "observed absence" as the two rows above.
-  // The deterministic window it must not claim: a coordinator's HTTP listener closes at the top of its drain
+  // to `recorded_process_absent` first). A coordinator's HTTP listener also closes at the top of its drain
   // while its process, confirmed alive, keeps running.
   socket_refused: 75,
   // Not observed: the record could not be read, the request never completed, or a response arrived but did not
@@ -131,6 +127,12 @@ export const SHUTDOWN_REFUSAL_EXIT_CODES: Readonly<Record<ShutdownReason, 1 | 75
   unreadable_record: 75,
   refused_by_response: 75,
   no_response: 75,
+  // Not observed: no record and no current socket do not exclude a v0.10.9 coordinator at an unenumerated
+  // fallback that has not published its record yet.
+  no_record: 75,
+  // Not observed: an absent recorded pid establishes only that record's process is gone. The record may be
+  // stale while a different coordinator has bound its socket but not published its own record yet.
+  recorded_process_absent: 75,
   // Not observed: the coordinator's own IPC socket file exists with no record written yet, which a coordinator
   // mid-boot and a stale socket a killed one left behind both produce, indistinguishably.
   no_record_socket_present: 75,
