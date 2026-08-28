@@ -63,12 +63,14 @@ export function formatProviderProxySetContainResult(result: ProviderProxySetCont
       return `Refusing forced containment for ${token}: the set is ${result.state}, not held. Use ordinary drain for a healthy set, then inspect backend status.`;
     case 'deadline-pending':
       return `Refusing forced containment for ${token}: its autonomous adoption deadline has ${Math.ceil(result.remainingMs)}ms remaining. Wait for that event, then rerun ${retry}.`;
+    case 'authorization-stale':
+      return `Refusing forced containment for ${token}: the held attempt changed while Coral gathered containment evidence. Rerun ${retry} against the current hold.`;
     case 'enforcer-alive':
       return `Refusing to signal ${token}: ${result.roles.join(' and ')} was observed alive. After external verification, run ${retry} --abandon-unobservable to release Coral's representation without asserting process absence.`;
     case 'enforcer-unobservable':
       return `No containment verdict for ${token}: ${result.roles.join(' and ')} could not be observed. Restore process observation and rerun ${retry}, or after external verification run it with --abandon-unobservable.`;
     case 'store-unreadable':
-      return `Refusing forced containment for ${token}: an unreadable durable provider-operation row may hide a provider root. --abandon-unobservable cannot override Coral's own store fence. Run coral-cli backend recovery-quarantine list, repair it with backend recovery-quarantine clear, then rerun backend status and ${retry}.`;
+      return `Refusing forced containment for ${token}: an unreadable durable provider-operation row may hide a provider root. --abandon-unobservable cannot override Coral's own store fence. Run coral-cli backend recovery-quarantine list, repair or remove the row named by its key and revision, run backend recovery-quarantine clear with that exact coordinate, then rerun backend status and ${retry}.`;
     default:
       return assertNever(result);
   }

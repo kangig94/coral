@@ -1,8 +1,3 @@
-// AC10a: `/health.components` is an array of transport component-status entries
-// (4-phase tagged union per `id`). `mutationBlocked` and `consumerStuck`
-// move from `components.kb` to top-level `diagnostics`. The decoder
-// pins this shape so external consumers can rely on the structure.
-
 import { describe, expect, it } from 'vitest';
 
 import { parseBackendHealth, type BackendHealth } from '#src/transport/http/backend/health.js';
@@ -401,6 +396,26 @@ describe('/health typed shape (AC10a)', () => {
     });
   });
 
+  it("skips an unknown cause that does not carry this build's companion fields", () => {
+    const future = {
+      setIdentity: PROVIDER_PROXY_SET.setIdentity,
+      setToken: PROVIDER_PROXY_SET.setToken,
+      disposition: PROVIDER_PROXY_SET.disposition,
+      cause: 'successor-adopted',
+      incidentReason: PROVIDER_PROXY_SET.incidentReason,
+      waitingFor: PROVIDER_PROXY_SET.waitingFor,
+    };
+    const parsed = parseBackendHealth({
+      ...HEALTHY_BASE,
+      diagnostics: { providerProxySets: [future] },
+    });
+
+    expect(parsed).toEqual({
+      health: { ...HEALTHY_BASE, diagnostics: { providerProxySets: [] } },
+      skippedProviderProxySetRows: 1,
+    });
+  });
+
   it('rejects malformed provider proxy set structure instead of counting it as a forward-shaped row', () => {
     const parseWith = (providerProxySets: unknown) =>
       parseBackendHealth({ ...HEALTHY_BASE, diagnostics: { providerProxySets } });
@@ -408,6 +423,9 @@ describe('/health typed shape (AC10a)', () => {
     expect(parseWith('not-an-array')).toBeNull();
     expect(parseWith([{ ...PROVIDER_PROXY_SET, setIdentity: undefined }])).toBeNull();
     expect(parseWith([{ ...PROVIDER_PROXY_SET, attempts: '2' }])).toBeNull();
-    expect(parseWith([{ ...PROVIDER_PROXY_SET, disposition: 'released-by-successor', attempts: '2' }])).toBeNull();
+    expect(parseWith([{ ...PROVIDER_PROXY_SET, disposition: 'released-by-successor', attempts: '2' }])).toEqual({
+      health: { ...HEALTHY_BASE, diagnostics: { providerProxySets: [] } },
+      skippedProviderProxySetRows: 1,
+    });
   });
 });

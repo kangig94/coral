@@ -109,7 +109,11 @@ import {
   createRecoverySourceRegistry,
   type RecoveryRetryQuarantinePort,
 } from '../../recovery/source-registry.js';
-import { createCoordinatorJobRecoveryRetryPlan } from '../services/recovery/index.js';
+import {
+  createCoordinatorJobRecoveryRetryPlan,
+  createUnreadableProviderOperationRetryPlan,
+  UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
+} from '../services/recovery/index.js';
 import { createDiscussionCandidateRetryPlan, createDiscussionSourceRetryPlan } from '../../discuss/shell/recovery.js';
 import {
   createRetentionReleasePairRetryPlan,
@@ -531,6 +535,9 @@ export function createCoordinatorCore(
   recoverySources.register('stale-job-cleanup', (subject) => createStaleJobCleanupRetryPlan(recoveryDb(), subject));
   recoverySources.register('crashed-job-terminalization', (subject) =>
     createCrashedJobTerminalizationRetryPlan(recoveryDb(), subject),
+  );
+  recoverySources.register(UNREADABLE_PROVIDER_OPERATION_BOUNDARY, (subject) =>
+    createUnreadableProviderOperationRetryPlan(recoveryDb(), subject),
   );
   assertRecoverySourceRegistryComplete(recoverySources);
   const recoveryQuarantine = createRecoveryQuarantineRetryService({

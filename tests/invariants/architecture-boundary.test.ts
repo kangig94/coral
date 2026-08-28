@@ -1341,6 +1341,12 @@ const RECOVERY_SOURCE_MATRIX: readonly RecoverySourceMatrixRow[] = [
     rawAuthorities: ['scanCoordinatorJobRecoveryEnvelopes'],
   },
   {
+    boundary: 'coordinator job recovery',
+    factory: 'unreadableProviderOperationRecoverySource',
+    sourceModule: 'src/coordinator/services/recovery/unreadable-provider-operation-recovery-source.ts',
+    rawAuthorities: ['scanUnreadableProviderOperationRows'],
+  },
+  {
     boundary: 'P3 discussion source/candidate',
     factory: 'discussionSourceRecoverySource',
     sourceModule: 'src/discuss/shell/discussion-source-recovery-source.ts',
@@ -3034,6 +3040,7 @@ describe('recovery authority boundary', () => {
   it('derives exact factory and raw-authority sets from the canonical source matrix', () => {
     expect(RECOVERY_SOURCE_FACTORIES.map((factory) => factory.name)).toEqual([
       'coordinatorJobRecoverySource',
+      'unreadableProviderOperationRecoverySource',
       'discussionSourceRecoverySource',
       'discussionCandidateRecoverySource',
       'sessionProjectionRecoverySource',
@@ -3047,6 +3054,7 @@ describe('recovery authority boundary', () => {
     ]);
     expect(RECOVERY_RAW_AUTHORITIES.map((authority) => authority.name)).toEqual([
       'scanCoordinatorJobRecoveryEnvelopes',
+      'scanUnreadableProviderOperationRows',
       'scanDiscussionSourceRows',
       'scanDiscussionCandidateEnvelopes',
       'scanSessionProjectionRows',

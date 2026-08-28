@@ -28,12 +28,14 @@ import { readProviderOperationJobLaunch } from '../../jobs/provider-operation-st
 import { readProjectionProviderSession } from '../../sessions/projections.js';
 import { materializeProviderOperationPrepare } from '../services/provider-operation-prepare.js';
 import { terminalizeProviderOperation } from '../../jobs/provider-operation-terminalization.js';
-import type { RecoveryCoordinator } from '../services/recovery/index.js';
+import { quarantineUnreadableProviderOperations, type RecoveryCoordinator } from '../services/recovery/index.js';
 import {
+  attributeUnreadableProviderOperations,
   readProviderOperation,
   readProviderOperations,
   subscribeProviderOperationMutations,
 } from '../../store/provider-operation-journal.js';
+import { RecoveryQuarantineStore } from '../../recovery/quarantine.js';
 import {
   providerProxySetIdentitiesEqual,
   providerProxySetIdentityFromRecord,
@@ -262,16 +264,17 @@ export function createExecutionServices({
   let providerProxyClaimsInitialized = false;
   let providerProxyLifecycleInitialized = false;
 
-  const initializeProviderProxyClaims = (): void => {
+  const initializeProviderProxyClaims = async (): Promise<void> => {
     if (providerProxyClaimsInitialized) return;
     const db = getProgressStore().getDb();
     const scan = readProviderOperations(db);
     if (scan.unreadableKeys.length > 0) {
-      // The first scan on the boot path, so this is where an operator learns. Reported once and by key: the
-      // rows stay in the store, this build simply cannot act on them, and refusing to boot over them would
-      // trade a stalled operation for no daemon at all.
+      await quarantineUnreadableProviderOperations(
+        new RecoveryQuarantineStore(db, runtime.time),
+        attributeUnreadableProviderOperations(db, scan.unreadableKeys),
+      );
       backendLog.warn(
-        `Skipped ${scan.unreadableKeys.length} provider operation record(s) this build cannot read: ${scan.unreadableKeys.join(', ')}`,
+        `Quarantined ${scan.unreadableKeys.length} provider operation record(s) this build cannot read: ${scan.unreadableKeys.join(', ')}`,
       );
     }
     world.providerProxyClaims.initialize(scan.records);
@@ -380,8 +383,8 @@ export function createExecutionServices({
     connectProviderOperationRecovery: (recoveryCoordinator) => {
       providerOperationRecovery = recoveryCoordinator;
     },
-    reconcileProviderOperationsAtStartup: (signal) => {
-      initializeProviderProxyClaims();
+    reconcileProviderOperationsAtStartup: async (signal) => {
+      await initializeProviderProxyClaims();
       initializeProviderProxyLifecycle();
       return providerOperationReconciler.reconcileAtStartup(signal);
     },

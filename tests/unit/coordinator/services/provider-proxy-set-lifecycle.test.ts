@@ -774,8 +774,6 @@ describe('ProviderProxySetLifecycle', () => {
     unusable();
 
     expect(stopAndReap).not.toHaveBeenCalled();
-    // The accepted echo cleared the window, so the two incidents after it are a fresh run rather than a
-    // continuation: the set stays available, and what is held is the new unusable answer, not a carryover.
     expect(lifecycle.snapshot()).toEqual(
       expect.objectContaining({
         states: ['available'],
@@ -842,16 +840,13 @@ describe('ProviderProxySetLifecycle', () => {
     lifecycle.completeStartupDiscovery();
     lifecycle.registerInheritedSet(authority);
 
-    // First incident: the `report === undefined` branch.
     faults.reportIncident(
       heartbeatAuthorityObservation({ kind: 'no-response-before-deadline', error: 'heartbeat timed out' }),
     );
-    // Second incident inside the suppression window: the "suppressed" existing-report branch.
     clock.elapse(1_000);
     faults.reportIncident(
       heartbeatAuthorityObservation({ kind: 'no-response-before-deadline', error: 'heartbeat timed out' }),
     );
-    // Third incident past the suppression window: the "periodic" existing-report branch.
     clock.elapse(PRESERVE_REPORT_INTERVAL_MS);
     faults.reportIncident(
       heartbeatAuthorityObservation({ kind: 'no-response-before-deadline', error: 'heartbeat timed out' }),
@@ -2145,6 +2140,54 @@ describe('ProviderProxySetLifecycle', () => {
         waitingFor: 'store-repair',
       }),
     );
+  });
+
+  it('gates fault containment on its first attempt deadline and rejects a capability from the prior attempt', async () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const clock = new ManualClock();
+    const authority = fakeAuthority({ record });
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.registerInheritedSet(authority);
+    const address = providerProxySetAddress(authority.setIdentity);
+
+    latchAuthorityFault(authority, terminalAuthorityFault());
+    expect(lifecycle.snapshot().states).toEqual(['containing']);
+    expect(lifecycle.authorizeOperatorExit(address)).toEqual({
+      kind: 'deadline-pending',
+      remainingMs: 30_000,
+    });
+    clock.stepWallClock(60_000);
+    expect(lifecycle.authorizeOperatorExit(address)).toEqual({
+      kind: 'deadline-pending',
+      remainingMs: 30_000,
+    });
+
+    clock.elapse(30_000);
+    const firstAuthorization = lifecycle.authorizeOperatorExit(address);
+    if (firstAuthorization.kind !== 'authorized') {
+      throw new Error(`expected authorization, received ${firstAuthorization.kind}`);
+    }
+    clock.runDue();
+    await drainMicrotasks();
+    expect(lifecycle.snapshot().states).toEqual(['containment-wait']);
+    expect(lifecycle.authorizeOperatorExit(address).kind).toBe('authorized');
+    await expect(
+      lifecycle.completeOperatorExit(
+        firstAuthorization.capability,
+        { kind: 'enforcer-unobservable', roles: ['guardian', 'reaper'] },
+        true,
+      ),
+    ).resolves.toEqual({ kind: 'authorization-stale', setIdentity: address });
   });
 
   it('returns a pending claim disposition when exact-absence delivery has not settled', async () => {

@@ -220,18 +220,7 @@ function parseProviderProxySets(value: unknown): ProviderProxySetsParseResult | 
       typeof entry.setIdentity.proxyInstanceId !== 'string' ||
       typeof entry.setToken !== 'string' ||
       typeof entry.disposition !== 'string' ||
-      (entry.role !== undefined && typeof entry.role !== 'string') ||
-      (entry.method !== undefined && typeof entry.method !== 'string') ||
       (entry.cause !== undefined && typeof entry.cause !== 'string') ||
-      (entry.attempts !== undefined && !isNonNegativeInteger(entry.attempts)) ||
-      (entry.elapsedMs !== undefined && !isNonNegativeFiniteNumber(entry.elapsedMs)) ||
-      (entry.boundMs !== undefined && !isNonNegativeFiniteNumber(entry.boundMs)) ||
-      (entry.liveClaims !== undefined && !isNonNegativeInteger(entry.liveClaims)) ||
-      (entry.cause !== undefined &&
-        (entry.attempts === undefined ||
-          entry.elapsedMs === undefined ||
-          entry.boundMs === undefined ||
-          entry.liveClaims === undefined)) ||
       typeof entry.incidentReason !== 'string' ||
       typeof entry.waitingFor !== 'string'
     ) {
@@ -253,6 +242,22 @@ function parseProviderProxySets(value: unknown): ProviderProxySetsParseResult | 
     if (!understandsEnums) {
       skippedRows += 1;
       continue;
+    }
+
+    if (
+      (entry.role !== undefined && typeof entry.role !== 'string') ||
+      (entry.method !== undefined && typeof entry.method !== 'string') ||
+      (entry.attempts !== undefined && !isNonNegativeInteger(entry.attempts)) ||
+      (entry.elapsedMs !== undefined && !isNonNegativeFiniteNumber(entry.elapsedMs)) ||
+      (entry.boundMs !== undefined && !isNonNegativeFiniteNumber(entry.boundMs)) ||
+      (entry.liveClaims !== undefined && !isNonNegativeInteger(entry.liveClaims)) ||
+      (entry.cause !== undefined &&
+        (entry.attempts === undefined ||
+          entry.elapsedMs === undefined ||
+          entry.boundMs === undefined ||
+          entry.liveClaims === undefined))
+    ) {
+      return null;
     }
 
     understoodRows.push(entry as ProviderProxySet);

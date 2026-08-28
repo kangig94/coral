@@ -54,7 +54,6 @@ type GuardianHandoffRedemption = z.infer<typeof guardianHandoffRedeemResultSchem
 type ReaperHandoffRotation = z.infer<typeof reaperHandoffRotateResultSchema>;
 type ProxyHandoffRedemption = z.infer<typeof proxyHandoffRedeemResultSchema>;
 
-/** The complete replacement control capability produced by one authenticated three-role redemption. */
 export type ProviderProxyControlRedemptionBundle = Readonly<{
   setIdentity: ProviderProxySetIdentity;
   clients: ProviderProxyRoleClients<ControlClient>;
@@ -66,13 +65,11 @@ export type ProviderProxyControlRedemptionBundle = Readonly<{
   recoveryOperations: readonly OperationIdentity[];
 }>;
 
-/** Proof that all three replacement controls were authenticated, heartbeated, and verified as one set. */
 export type RedeemedProviderProxyControl = Readonly<{
   kind: 'redeemed';
   [redeemedProviderProxyControlBrand]: ProviderProxyControlRedemptionBundle;
 }>;
 
-/** A decisive answer that prevents this exact redemption attempt from being retried as peer absence. */
 export type ProviderProxyControlRedemptionRefusal =
   | Readonly<{ kind: 'role-refused'; error: ProviderProxyRoleControlRemoteError }>
   | Readonly<{
@@ -83,7 +80,6 @@ export type ProviderProxyControlRedemptionRefusal =
   | Readonly<{ kind: 'identity-disagreement' }>
   | Readonly<{ kind: 'operation-membership-disagreement' }>;
 
-/** The three observable answers from one authenticated control-redemption attempt. */
 export type ProviderProxyControlRedemptionOutcome =
   | RedeemedProviderProxyControl
   | Readonly<{ kind: 'refused'; refusal: ProviderProxyControlRedemptionRefusal }>
@@ -171,12 +167,13 @@ function returnedIdentitiesMatch(
   );
 }
 
-function retryBefore(deadline: number, runtime: Runtime): RoleConnectRetryOptions {
+function roleConnectRetry(runtime: Runtime): RoleConnectRetryOptions {
+  const startedAtMonotonicMs = runtime.time.monotonicNow();
   return {
     connectTimeoutMs: ESTABLISH_CONTROL_CONNECT_TIMEOUT_MS,
     retryIntervalMs: ESTABLISH_CONTROL_RETRY_INTERVAL_MS,
-    overallDeadlineMs: Math.max(0, deadline - runtime.time.now()),
-    now: () => runtime.time.now(),
+    overallDeadlineMs: ESTABLISH_CONTROL_READY_DEADLINE_MS,
+    now: () => Number(runtime.time.monotonicNow() - startedAtMonotonicMs),
     sleep: (ms: number) => runtime.time.sleep(ms),
   };
 }
@@ -189,14 +186,12 @@ function abandonAttempt(
   for (const client of opened) client.close();
 }
 
-/** Returns the atomically promotable control bundle carried by an owner-minted redemption success. */
 export function providerProxyControlRedemptionBundle(
   redemption: RedeemedProviderProxyControl,
 ): ProviderProxyControlRedemptionBundle {
   return redemption[redeemedProviderProxyControlBrand];
 }
 
-/** Closes a redeemed bundle that its caller could not promote to an authority. */
 export function closeRedeemedProviderProxyControl(redemption: RedeemedProviderProxyControl): void {
   const bundle = providerProxyControlRedemptionBundle(redemption);
   bundle.heartbeats.guardian.stop();
@@ -207,11 +202,6 @@ export function closeRedeemedProviderProxyControl(redemption: RedeemedProviderPr
   bundle.clients.proxy.close();
 }
 
-/**
- * Redeems one stored grant against guardian, reaper, and proxy under one absolute connection deadline.
- * Success is published only after all three roles have completed their initial heartbeat and agreed on the
- * target identity and operation membership.
- */
 export async function redeemProviderProxyControl(
   capsule: HandoffCapsuleV3,
   setIdentity: ProviderProxySetIdentity,
@@ -225,14 +215,13 @@ export async function redeemProviderProxyControl(
   const { runtime, coordinatorIdentity } = deps;
   signal.throwIfAborted();
 
-  const deadline = runtime.time.now() + ESTABLISH_CONTROL_READY_DEADLINE_MS;
   const timer = runtimeControlTimer(runtime);
   const opened: ControlClient[] = [];
   const faults = createProviderProxyAuthorityFaultLatch();
   const heartbeatAssembly = createProviderProxyAuthorityHeartbeatAssembly(runtime, faults);
 
   try {
-    const guardianSession = await establishRoleControl(opened, timer, retryBefore(deadline, runtime), {
+    const guardianSession = await establishRoleControl(opened, timer, roleConnectRetry(runtime), {
       role: 'guardian',
       endpoint: capsule.guardianControlEndpoint,
       openMethod: 'guardian.handoff-redeem.v1',
@@ -251,7 +240,7 @@ export async function redeemProviderProxyControl(
     });
     signal.throwIfAborted();
 
-    const reaperSession = await establishRoleControl(opened, timer, retryBefore(deadline, runtime), {
+    const reaperSession = await establishRoleControl(opened, timer, roleConnectRetry(runtime), {
       role: 'reaper',
       endpoint: capsule.reaperControlEndpoint,
       openMethod: 'reaper.handoff-rotate.v1',
@@ -274,7 +263,7 @@ export async function redeemProviderProxyControl(
     });
     signal.throwIfAborted();
 
-    const proxySession = await establishRoleControl(opened, timer, retryBefore(deadline, runtime), {
+    const proxySession = await establishRoleControl(opened, timer, roleConnectRetry(runtime), {
       role: 'proxy',
       endpoint: capsule.proxyEndpoint,
       openMethod: 'handoff.redeem.v1',

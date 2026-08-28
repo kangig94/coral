@@ -203,6 +203,7 @@ export const PROVIDER_PROXY_SET_CONTAIN_EXIT_CODES: Readonly<
   'set-not-found': 1,
   'not-held': 1,
   'deadline-pending': 75,
+  'authorization-stale': 75,
   'enforcer-alive': 75,
   'enforcer-unobservable': 75,
   'store-unreadable': 75,

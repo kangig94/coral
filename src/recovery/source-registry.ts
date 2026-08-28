@@ -22,6 +22,7 @@ export const repeatableRecoveryBoundaryIds = [
   'workflow-recovery',
   'stale-job-cleanup',
   'crashed-job-terminalization',
+  'provider-operation-unreadable',
 ] as const;
 
 export type RepeatableRecoveryBoundaryId = (typeof repeatableRecoveryBoundaryIds)[number];

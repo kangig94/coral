@@ -14,6 +14,10 @@ import { sessionProjectionRecoverySource } from '#src/sessions/projection-recove
 import { terminalRetentionOutcomeRecoverySource } from '#src/sessions/terminal-retention-outcome-recovery-source.js';
 import { workflowRecoverySource } from '#src/workflow/recovery-source.js';
 import {
+  createUnreadableProviderOperationRetryPlan,
+  UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
+} from '#src/coordinator/services/recovery/index.js';
+import {
   assertRecoverySourceRegistryComplete,
   createRecoveryQuarantineRetryService,
   createRecoverySourceRegistry,
@@ -172,6 +176,7 @@ describe('recovery quarantine retry service', () => {
       'workflow-recovery',
       'stale-job-cleanup',
       'crashed-job-terminalization',
+      'provider-operation-unreadable',
     ]);
     const registeredSourceBoundaries = [
       coordinatorJobRecoverySource(db).boundary,
@@ -185,6 +190,10 @@ describe('recovery quarantine retry service', () => {
       workflowRecoverySource(db).boundary,
       staleJobCleanupSource(db).boundary,
       crashedJobTerminalizationSource(db).boundary,
+      createUnreadableProviderOperationRetryPlan(db, {
+        key: 'provider-operation-row',
+        revision: { kind: 'fingerprint', value: 'revision-1' },
+      }).source.boundary,
     ];
 
     expect(new Set(registeredSourceBoundaries)).toEqual(new Set(repeatableRecoveryBoundaryIds));
@@ -235,6 +244,9 @@ describe('recovery quarantine retry service', () => {
       source: crashedJobTerminalizationSource(db, retrySubject),
       policy: passThroughPolicy(),
     }));
+    runtimeRegistry.register(UNREADABLE_PROVIDER_OPERATION_BOUNDARY, (retrySubject) =>
+      createUnreadableProviderOperationRetryPlan(db, retrySubject),
+    );
 
     expect(() => assertRecoverySourceRegistryComplete(runtimeRegistry)).not.toThrow();
     expect(runtimeRegistry.boundaries()).toEqual(repeatableRecoveryBoundaryIds);

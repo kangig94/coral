@@ -260,7 +260,7 @@ describe('execution services provider-proxy proof composition', () => {
   // green, which turns "tolerated and reported" into "silently dropped" without a single test noticing.
   //
   // This is the first scan on the boot path, so it is the one place the news can be delivered at all.
-  it('reports the rows it skipped, by key, on the first boot-path scan', async () => {
+  it('quarantines the rows it cannot read, by key, on the first boot-path scan', async () => {
     const runtime = createRealRuntime('prod');
     const db = newRawDatabase(':memory:');
     applyBundledStoreSchema(db, currentCoralStoreFormat());
@@ -318,7 +318,7 @@ describe('execution services provider-proxy proof composition', () => {
       db.close();
     }
 
-    const skipped = reported.filter((line) => line.includes('Skipped'));
+    const skipped = reported.filter((line) => line.includes('Quarantined'));
     expect(skipped).toHaveLength(1);
     // By key, because the key is the only thing about the row this build is entitled to claim it understands.
     expect(skipped[0]).toContain(supersededKey);

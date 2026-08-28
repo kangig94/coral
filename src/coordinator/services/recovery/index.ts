@@ -11,6 +11,7 @@ import {
   readProviderOperations,
   readSupersededProviderOperations,
   retireSupersededProviderOperation,
+  type UnreadableProviderOperationAttribution,
 } from '../../../store/provider-operation-journal.js';
 import type { ProviderOperationRecord } from '../../../store/provider-operation-record.js';
 import { isDurableCliRuntime } from '../../../runtime/durable-runtime.js';
@@ -36,6 +37,10 @@ import {
 } from './actions.js';
 import { buildRecoverySnapshot, hydrateCoordinatorRecoveryItem, type CoordinatorRecoveryItem } from './snapshot.js';
 import { coordinatorJobRecoverySource, type RawCoordinatorJobRecoveryEnvelope } from './coordinator-job-source.js';
+import {
+  unreadableProviderOperationRecoverySource,
+  type RawUnreadableProviderOperationRecoveryRow,
+} from './unreadable-provider-operation-recovery-source.js';
 import { RecoveryQuarantineStore } from '../../../recovery/quarantine.js';
 import type {
   RecoveryDisposition,
@@ -45,7 +50,11 @@ import type {
   RecoverySettlementFact,
   RecoverySubject,
 } from '../../../recovery/containment.js';
-import type { RecoveryRetryPolicy, RecoverySourceFactoryPlan } from '../../../recovery/source-registry.js';
+import type {
+  RecoveryRetryPolicy,
+  RecoverySourceFactoryPlan,
+  RepeatableRecoveryBoundaryId,
+} from '../../../recovery/source-registry.js';
 import type { Database } from '../../../store/db.js';
 import { runCoordinatorJobRecovery } from './startup-recovery.js';
 import type { JobLifecycleFault, JobProgressFault } from '../../../jobs/outcome.js';
@@ -157,6 +166,67 @@ type CoordinatorWalkOptions = {
     controls: CoordinatorRecoveryControls,
   ): RecoveryDisposition | Promise<RecoveryDisposition>;
 };
+
+export const UNREADABLE_PROVIDER_OPERATION_BOUNDARY: RepeatableRecoveryBoundaryId = 'provider-operation-unreadable';
+
+function unreadableProviderOperationSubject(
+  row: Pick<UnreadableProviderOperationAttribution, 'key' | 'revision'>,
+): RecoverySubject {
+  return {
+    key: row.key,
+    revision: { kind: 'fingerprint', value: row.revision },
+  };
+}
+
+export async function quarantineUnreadableProviderOperations(
+  quarantine: RecoveryQuarantinePort,
+  rows: readonly UnreadableProviderOperationAttribution[],
+): Promise<void> {
+  for (const row of rows) {
+    const subject = unreadableProviderOperationSubject(row);
+    const persisted = await quarantine.upsert({
+      boundary: UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
+      subject,
+      state: 'active',
+      stage: 'hydrate',
+      errorMessage: 'Provider operation row is unreadable by this build.',
+      detail: 'Repair or remove the raw provider operation row, then retry this exact quarantine coordinate.',
+    });
+    if (!persisted) {
+      const current = await quarantine.read(UNREADABLE_PROVIDER_OPERATION_BOUNDARY, row.key);
+      if (
+        current?.state === 'retrying' &&
+        current.subject.revision.kind === 'fingerprint' &&
+        current.subject.revision.value === row.revision
+      ) {
+        continue;
+      }
+      throw new Error(`Unreadable provider operation quarantine lost authority for ${row.key}`);
+    }
+  }
+}
+
+export function createUnreadableProviderOperationRetryPlan(
+  db: Database,
+  subject: RecoverySubject,
+): RecoverySourceFactoryPlan<RawUnreadableProviderOperationRecoveryRow, RawUnreadableProviderOperationRecoveryRow> {
+  return {
+    source: unreadableProviderOperationRecoverySource(db, subject),
+    policy: {
+      processLocalCleanup: { kind: 'not-required' },
+      hydrate: (raw) => raw,
+      requiredObligations: () => [],
+      settle: (item) => ({
+        kind: 'quarantine',
+        detail: `Provider operation row ${item.key} remains unreadable at revision ${item.currentRevision}.`,
+      }),
+      onFault: (fault) => ({
+        kind: 'quarantine',
+        detail: `Provider operation unreadable-row retry failed during ${fault.stage}.`,
+      }),
+    },
+  };
+}
 
 const coordinatorJobRetryPolicies = new WeakMap<
   Database,

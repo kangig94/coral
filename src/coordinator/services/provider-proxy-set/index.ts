@@ -115,6 +115,8 @@ export type ProviderProxySetDischarge =
 
 export type ProviderProxySetOperatorExitCapability = Readonly<{
   setIdentity: ProviderProxySetIdentity;
+  notBeforeMonotonicMs: bigint;
+  attemptToken: number;
   [operatorExitCapabilityBrand]: ProviderProxySetLifecycle;
 }>;
 
@@ -159,6 +161,7 @@ type EstablishedSlot = {
   heartbeatHoldBound: DurableProviderProxyOperationAuthority['autonomousDeadline']['heartbeatHoldBound'];
   controlReattachmentBoundMs: number;
   controlReattachmentWindow: ControlReattachmentWindow | null;
+  operatorExitNotBeforeMonotonicMs: bigint | null;
 };
 
 type ProviderProxySetSlot =
@@ -412,6 +415,7 @@ export type ProviderProxySetOperatorExitResult =
   | Readonly<{ kind: 'set-not-found'; setIdentity: ProviderProxySetAddress }>
   | Readonly<{ kind: 'not-held'; setIdentity: ProviderProxySetAddress; state: ProviderProxySetLifecycleState }>
   | Readonly<{ kind: 'deadline-pending'; setIdentity: ProviderProxySetAddress; remainingMs: number }>
+  | Readonly<{ kind: 'authorization-stale'; setIdentity: ProviderProxySetAddress }>
   | Readonly<{
       kind: 'enforcer-alive' | 'enforcer-unobservable';
       setIdentity: ProviderProxySetAddress;
@@ -829,24 +833,25 @@ export class ProviderProxySetLifecycle {
     if (key === null) return { kind: 'set-not-found' };
     const slot = this.#slots.get(key);
     if (slot === undefined) return { kind: 'set-not-found' };
-    if (slot.kind === 'reattaching') {
-      const deadline = slot.controlReattachmentWindow?.deadlineMonotonicMs;
-      if (deadline === undefined) return { kind: 'not-held', state: slot.kind };
-      const remainingMs = Number(deadline - this.#deps.time.monotonicNow());
-      if (remainingMs > 0) {
-        this.#recordOperatorExitRefusal(slot, 'operator_exit_deadline_pending', 'set-adoption-deadline');
-        return { kind: 'deadline-pending', remainingMs };
-      }
-    } else if (slot.kind !== 'containing' && slot.kind !== 'containment-wait') {
+    if (slot.kind !== 'reattaching' && slot.kind !== 'containing' && slot.kind !== 'containment-wait') {
       if (slot.kind === 'available' || slot.kind === 'draining') {
         this.#recordOperatorExitRefusal(slot, 'operator_exit_requires_held_set', 'ordinary-drain');
       }
       return { kind: 'not-held', state: slot.kind };
     }
+    const notBeforeMonotonicMs = slot.operatorExitNotBeforeMonotonicMs;
+    if (notBeforeMonotonicMs === null) return { kind: 'not-held', state: slot.kind };
+    const remainingMs = Number(notBeforeMonotonicMs - this.#deps.time.monotonicNow());
+    if (remainingMs > 0) {
+      this.#recordOperatorExitRefusal(slot, 'operator_exit_deadline_pending', 'set-adoption-deadline');
+      return { kind: 'deadline-pending', remainingMs };
+    }
     return {
       kind: 'authorized',
       capability: Object.freeze({
         setIdentity: slot.identity,
+        notBeforeMonotonicMs,
+        attemptToken: slot.attemptToken,
         [operatorExitCapabilityBrand]: this,
       }) as ProviderProxySetOperatorExitCapability,
     };
@@ -868,6 +873,13 @@ export class ProviderProxySetLifecycle {
       !providerProxySetIdentitiesEqual(slot.identity, capability.setIdentity)
     ) {
       return { kind: 'not-held', setIdentity: address, state: slot.kind };
+    }
+    if (
+      slot.operatorExitNotBeforeMonotonicMs !== capability.notBeforeMonotonicMs ||
+      slot.attemptToken !== capability.attemptToken ||
+      this.#deps.time.monotonicNow() < capability.notBeforeMonotonicMs
+    ) {
+      return { kind: 'authorization-stale', setIdentity: address };
     }
     if (proof.kind === 'store-unreadable') {
       this.#recordOperatorExitRefusal(slot, 'operator_exit_store_unreadable', 'store-repair');
@@ -1500,6 +1512,7 @@ export class ProviderProxySetLifecycle {
       heartbeatHoldBound: authority.autonomousDeadline.heartbeatHoldBound,
       controlReattachmentBoundMs: authority.autonomousDeadline.adoptionWindowMs,
       controlReattachmentWindow: null,
+      operatorExitNotBeforeMonotonicMs: null,
     };
     this.#slots.set(key, slot);
     this.#subscribeAuthority(slot, authority, slot.attemptToken);
@@ -1586,6 +1599,7 @@ export class ProviderProxySetLifecycle {
     };
     slot.kind = 'reattaching';
     slot.controlReattachmentWindow = window;
+    slot.operatorExitNotBeforeMonotonicMs = window.deadlineMonotonicMs;
     this.#removeRoute(slot);
     slot.authority.stopHeartbeats();
     this.#scheduleControlReattachmentDeadline(slot, window);
@@ -1740,6 +1754,7 @@ export class ProviderProxySetLifecycle {
     slot.heartbeatEvidenceWindows.clear();
     slot.heartbeatHoldBound = promoted.autonomousDeadline.heartbeatHoldBound;
     slot.controlReattachmentBoundMs = promoted.autonomousDeadline.adoptionWindowMs;
+    slot.operatorExitNotBeforeMonotonicMs = null;
     this.#flushPreserveReports(slot);
     this.#operatorDispositions.delete(slot.key);
     if (slot.kind === 'available' && slot.routeKey !== null) this.#routeIndex.set(slot.routeKey, slot.key);
@@ -1814,6 +1829,7 @@ export class ProviderProxySetLifecycle {
       return;
     }
     this.#recordDecision(slot, decision);
+    slot.operatorExitNotBeforeMonotonicMs ??= this.#deps.time.monotonicNow() + BigInt(CONTAINMENT_ATTEMPT_MS);
     slot.retirementDecision = null;
     this.#removeRoute(slot);
     slot.kind = 'containing';

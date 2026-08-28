@@ -187,6 +187,7 @@ export const providerProxySetContainResponseSchema = z.discriminatedUnion('kind'
       remainingMs: z.number().finite().nonnegative(),
     })
     .strict(),
+  z.object({ kind: z.literal('authorization-stale'), ...providerProxySetContainResultBase }).strict(),
   z
     .object({
       kind: z.literal('enforcer-alive'),

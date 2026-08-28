@@ -200,20 +200,18 @@ beforeEach(() => {
 });
 
 describe('provider proxy control redemption', () => {
-  it('redeems in proof order under one absolute deadline and carries the guardian receipt into rotation', async () => {
+  it('redeems in proof order with a fresh role budget and carries the guardian receipt into rotation', async () => {
     arrangeSessions();
-    const now = vi
-      .fn<() => number>()
-      .mockReturnValueOnce(1_000)
-      .mockReturnValueOnce(1_000)
-      .mockReturnValueOnce(1_250)
-      .mockReturnValueOnce(1_500)
-      .mockReturnValue(1_500);
+    const wallClock = vi.fn<() => number>(() => {
+      throw new Error('role retry budgets must not read wall time');
+    });
+    const monotonicNow = vi.fn(() => 1_000n);
+    const runtime = runtimeWithNow(wallClock);
 
     const outcome = await redeemProviderProxyControl(
       capsule,
       setIdentity,
-      { runtime: runtimeWithNow(now), coordinatorIdentity },
+      { runtime: { ...runtime, time: { ...runtime.time, monotonicNow } }, coordinatorIdentity },
       new AbortController().signal,
     );
 
@@ -228,11 +226,11 @@ describe('provider proxy control redemption', () => {
     expect(calls[0][3].openParams).toMatchObject({ successor: coordinatorIdentity });
     expect(calls[1][3].openParams).toMatchObject({ guardianRedemptionReceipt: 'guardian-receipt' });
     expect(calls[2][3].openParams).toMatchObject({ successor: coordinatorIdentity });
-    expect(calls.map((call) => call[2].overallDeadlineMs)).toEqual([
-      ESTABLISH_CONTROL_READY_DEADLINE_MS,
-      ESTABLISH_CONTROL_READY_DEADLINE_MS - 250,
-      ESTABLISH_CONTROL_READY_DEADLINE_MS - 500,
-    ]);
+    expect(calls.map((call) => call[2].overallDeadlineMs)).toEqual(
+      Array.from({ length: 3 }, () => ESTABLISH_CONTROL_READY_DEADLINE_MS),
+    );
+    expect(wallClock).not.toHaveBeenCalled();
+    expect(monotonicNow).toHaveBeenCalledTimes(3);
     expect(startRole.mock.calls.map((call) => call[0])).toEqual(['guardian', 'reaper', 'proxy']);
   });
 
