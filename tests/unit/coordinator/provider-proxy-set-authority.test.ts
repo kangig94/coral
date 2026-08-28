@@ -610,6 +610,21 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
     ).toHaveLength(3);
   });
 
+  it('returns cancellation to an already-aborted caller after installation completed', async () => {
+    const calls: InstallCall[] = [];
+    const { authority } = authorityForInstall({ calls });
+    await authority.installRecoveryCredential(new AbortController().signal);
+    const cancelled = new AbortController();
+    cancelled.abort();
+
+    const outcome = await authority.installRecoveryCredential(cancelled.signal);
+
+    expect(outcome).toEqual({ kind: 'cancelled' });
+    expect(
+      calls.filter(({ method }) => method.includes('handoff-install') || method === 'handoff.install.v1'),
+    ).toHaveLength(3);
+  });
+
   it('lets succession registration retry a transient install instead of retaining the failed attempt', async () => {
     const calls: InstallCall[] = [];
     const { authority } = authorityForInstall({ calls, transientOnce: 'guardian' });

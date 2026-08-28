@@ -943,14 +943,15 @@ function parseRecoveryQuarantineClearOptions(options: {
 }): RecoveryQuarantineClearRequest {
   const revision = unquoteRecoveryCoordinate(options.revision);
   const decodedKey = decodeRecoveryQuarantineKey(options.key);
-  if (decodedKey.kind === 'invalid') {
+  const key = decodedKey.kind === 'decoded' ? decodedKey.key : unquoteRecoveryCoordinate(options.key);
+  if (decodedKey.kind === 'invalid' && key.includes('\u0000')) {
     throw new InvalidArgumentError(
-      'Recovery subject key must be copied exactly from recovery-quarantine list. Run coral-cli backend recovery-quarantine list and copy the exact boundary, key, and revision.',
+      'Recovery subject keys containing NUL must use the encoded key printed by recovery-quarantine list.',
     );
   }
   const parsed = recoveryQuarantineClearRequestSchema.safeParse({
     boundary: unquoteRecoveryCoordinate(options.boundary),
-    key: decodedKey.key,
+    key,
     revision:
       revision === RECOVERY_REVISION_UNTIL_CLEARED
         ? null

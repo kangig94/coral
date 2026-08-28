@@ -258,6 +258,38 @@ describe('backend recovery-quarantine commands', () => {
     expect(stderr).toBe('');
   });
 
+  it.each([
+    ['the new encoded token', encodeRecoveryQuarantineKey('job-123'), 'job-123'],
+    ['a shipped plain key', 'job-123', 'job-123'],
+    ['a shipped JSON-quoted key', '"job-123"', 'job-123'],
+    ['a shipped plain key with the encoding prefix', 'rqk1-legacy', 'rqk1-legacy'],
+  ])('should resolve %s to the stored recovery key', async (_form, argument, storedKey) => {
+    const clear = vi.fn(async (request: { boundary: string; key: string; revision: string | null }) => ({
+      ...request,
+      disposition: 'advanced' as const,
+    }));
+
+    await programWith({ list: () => [], clear }).parseAsync([
+      'node',
+      'coral-cli',
+      'backend',
+      'recovery-quarantine',
+      'clear',
+      '--boundary',
+      'workflow-recovery',
+      '--key',
+      argument,
+      '--revision',
+      'revision-1',
+    ]);
+
+    expect(clear).toHaveBeenCalledWith({
+      boundary: 'workflow-recovery',
+      key: storedKey,
+      revision: 'revision-1',
+    });
+  });
+
   it('should execute the continuation instruction and show the durable continuation', async () => {
     const instruction = 'coral-cli backend recovery-quarantine list';
     const continuation = {
@@ -329,6 +361,27 @@ describe('backend recovery-quarantine commands', () => {
 
     expect(clear).toHaveBeenCalledTimes(1);
     expect(clear.mock.calls[0]?.[0].key, 'the coordinator must receive the stored key, not its rendering').toBe(key);
+  });
+
+  it('should not accept shipped JSON quoting as an alternate encoding for a NUL-containing key', async () => {
+    const clear = vi.fn();
+
+    await programWith({ list: () => [], clear }).parseAsync([
+      'node',
+      'coral-cli',
+      'backend',
+      'recovery-quarantine',
+      'clear',
+      '--boundary',
+      'session-retention-work',
+      '--key',
+      '"3a15866c\\u00006e83e33f:0:0"',
+      '--revision',
+      'fingerprint:sha256:revision-1',
+    ]);
+
+    expect(clear).not.toHaveBeenCalled();
+    expect(stderr).toContain('keys containing NUL must use the encoded key printed');
   });
 
   it('should refuse clear when coordinator authority is unavailable', async () => {

@@ -325,11 +325,11 @@ export function createProviderProxySetAuthority(
   };
 
   const installRecoveryCredential = async (signal: AbortSignal): Promise<RecoveryCredentialInstallOutcome> => {
+    if (signal.aborted) return { kind: 'cancelled' };
     if (recoveryCredentialInstallState.kind === 'installed') {
       return { kind: 'installed', receipt: recoveryCredentialInstallState.receipt };
     }
     if (recoveryCredentialInstallState.kind === 'idle') {
-      if (signal.aborted) return { kind: 'cancelled' };
       const completion = (async (): Promise<RecoveryCredentialInstallOutcome> => {
         try {
           const outcome = await performRecoveryCredentialInstall();

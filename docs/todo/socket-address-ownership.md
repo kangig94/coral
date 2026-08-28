@@ -111,6 +111,13 @@ when v0.10.9 binds an unenumerated custom fallback and does not publish it until
 would require a continuously enforced operating-system primitive both builds already acquire; the discovery
 record narrows the gap but cannot retrofit such a primitive into v0.10.9.
 
+The same pre-publication interval is also outside operator shutdown discovery. `backend shutdown` reads the
+record and, when it is missing, checks only this build's current coordinator socket. A live v0.10.9 coordinator
+bound at an unenumerated custom fallback has neither observable artifact, so the command returns `no_record`,
+prints `Backend not running: no coordinator has recorded itself.`, and exits `1` without sending a shutdown
+request. That message overstates the observation: in this case it does not establish that the shipped
+coordinator is absent. This entry records the gap; it does not change shutdown behavior.
+
 ## Part 3 — the assertion proves owner and mode, which is less than privacy
 
 `ensurePrivateSocketDir` observes the entry with a non-following `lstat`, requires an owner a `uid_t` can
