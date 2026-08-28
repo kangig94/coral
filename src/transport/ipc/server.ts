@@ -103,6 +103,13 @@ export type IpcListener = {
   onShutdownRequest: ((reason: string) => void) | null;
 };
 
+type IpcResourceTracker = {
+  readonly sockets: Set<Socket>;
+  readonly maxOpenSockets: number;
+  readonly maxAggregatePendingFrameBytes: number;
+  aggregatePendingFrameBytes: number;
+};
+
 export type IpcDispatchEntry = {
   readonly method: string;
   readonly spec: RpcMethodSpec<unknown, unknown>;
@@ -849,35 +856,46 @@ async function dispatchFrame(
 }
 
 export function createIpcServer(rpcPorts: HttpHandlerPorts, options: IpcServerOptions = {}): IpcListener {
+  return createTrackedIpcListener(rpcPorts, options, {
+    sockets: new Set(),
+    maxOpenSockets: options.maxOpenSockets ?? IPC_DEFAULT_MAX_OPEN_SOCKETS,
+    maxAggregatePendingFrameBytes:
+      options.maxAggregatePendingFrameBytes ?? IPC_DEFAULT_MAX_AGGREGATE_PENDING_FRAME_BYTES,
+    aggregatePendingFrameBytes: 0,
+  });
+}
+
+function createTrackedIpcListener(
+  rpcPorts: HttpHandlerPorts,
+  options: IpcServerOptions,
+  resources: IpcResourceTracker,
+): IpcListener {
   const dispatchTable = buildCoordinatorIpcDispatchTable(rpcPorts);
   const dispatchMap = new Map(dispatchTable.map((entry) => [entry.method, entry]));
-  const sockets = new Set<Socket>();
-  const maxOpenSockets = options.maxOpenSockets ?? IPC_DEFAULT_MAX_OPEN_SOCKETS;
   const firstFrameTimeoutMs = options.firstFrameTimeoutMs ?? IPC_DEFAULT_FIRST_FRAME_TIMEOUT_MS;
-  const maxAggregatePendingFrameBytes =
-    options.maxAggregatePendingFrameBytes ?? IPC_DEFAULT_MAX_AGGREGATE_PENDING_FRAME_BYTES;
   const writeDrainTimeoutMs = options.writeDrainTimeoutMs ?? IPC_DEFAULT_WRITE_DRAIN_TIMEOUT_MS;
-  let aggregatePendingFrameBytes = 0;
   // Mutable holder so the per-connection `dispatchFrame` closure reads the
   // current callback via `listener.onShutdownRequest`. Composition writes to
   // it after wiring the lifecycle controller.
   const listenerRef: { current: IpcListener | null } = { current: null };
 
   const server = createServer((socket) => {
-    if (sockets.size >= maxOpenSockets) {
-      rpcPorts.identity.log(`IPC connection cap exceeded (${sockets.size} >= ${maxOpenSockets}); destroying socket\n`);
+    if (resources.sockets.size >= resources.maxOpenSockets) {
+      rpcPorts.identity.log(
+        `IPC connection cap exceeded (${resources.sockets.size} >= ${resources.maxOpenSockets}); destroying socket\n`,
+      );
       void writeEnvelope(
         socket,
         transportErrorResponse('Too many IPC connections', {
           code: 'too_many_ipc_connections',
-          maxOpenSockets,
+          maxOpenSockets: resources.maxOpenSockets,
         }),
         { drainTimeoutMs: writeDrainTimeoutMs },
       ).finally(() => socket.destroy());
       return;
     }
 
-    sockets.add(socket);
+    resources.sockets.add(socket);
     const framer = createLineFramer();
     let inflightRequest = false;
     let pendingFrameBytes = 0;
@@ -888,7 +906,7 @@ export function createIpcServer(rpcPorts: HttpHandlerPorts, options: IpcServerOp
     firstFrameTimer.unref?.();
 
     const updatePendingFrameBytes = (nextBytes: number) => {
-      aggregatePendingFrameBytes += nextBytes - pendingFrameBytes;
+      resources.aggregatePendingFrameBytes += nextBytes - pendingFrameBytes;
       pendingFrameBytes = nextBytes;
     };
 
@@ -908,7 +926,7 @@ export function createIpcServer(rpcPorts: HttpHandlerPorts, options: IpcServerOp
       timers.clearTimeout(firstFrameTimer);
       releasePendingFrameBytes();
       finishRequest();
-      sockets.delete(socket);
+      resources.sockets.delete(socket);
     });
 
     socket.on('error', (error) => {
@@ -942,16 +960,16 @@ export function createIpcServer(rpcPorts: HttpHandlerPorts, options: IpcServerOp
         }
         throw error;
       }
-      if (aggregatePendingFrameBytes > maxAggregatePendingFrameBytes) {
+      if (resources.aggregatePendingFrameBytes > resources.maxAggregatePendingFrameBytes) {
         rpcPorts.identity.log(
-          `IPC pending frame budget exceeded (${aggregatePendingFrameBytes} > ${maxAggregatePendingFrameBytes}); destroying socket\n`,
+          `IPC pending frame budget exceeded (${resources.aggregatePendingFrameBytes} > ${resources.maxAggregatePendingFrameBytes}); destroying socket\n`,
         );
         void writeEnvelope(
           socket,
           transportErrorResponse('Too many pending IPC frame bytes', {
             code: 'ipc_pending_frame_budget_exceeded',
-            maxAggregatePendingFrameBytes,
-            observedBytes: aggregatePendingFrameBytes,
+            maxAggregatePendingFrameBytes: resources.maxAggregatePendingFrameBytes,
+            observedBytes: resources.aggregatePendingFrameBytes,
           }),
           { drainTimeoutMs: writeDrainTimeoutMs },
         ).finally(() => socket.destroy());
@@ -986,9 +1004,9 @@ export function createIpcServer(rpcPorts: HttpHandlerPorts, options: IpcServerOp
 
   const listener: IpcListener = {
     server,
-    sockets,
+    sockets: resources.sockets,
     compatibilityListeners: [],
-    createCompatibilityListener: () => createIpcServer(rpcPorts, options),
+    createCompatibilityListener: () => createTrackedIpcListener(rpcPorts, options, resources),
     socketPath: null,
     onShutdownRequest: null,
   };

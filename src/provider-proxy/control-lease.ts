@@ -51,7 +51,6 @@ export class ControlLeaseEvidence<Scope extends symbol> {
     return this.#eofAt;
   }
 
-  /** When recent evidence stops satisfying live-control preconditions, including an earlier observed EOF. */
   controlLossAt(): MonotonicInstant<Scope> {
     const leaseLossAt = this.#arithmetic.shiftMilliseconds(this.#lastRoundTripEvidenceAt, this.#leaseMs);
     return this.#eofAt === null ? leaseLossAt : this.#arithmetic.earlier(this.#eofAt, leaseLossAt);

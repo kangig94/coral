@@ -170,6 +170,7 @@ function makeRuntime(): Runtime {
       pid: () => process.pid,
       platform: () => process.platform,
       arch: () => process.arch,
+      tmpdir: () => '/tmp',
       coralSnapshot: () => ({}),
     },
     paths: {

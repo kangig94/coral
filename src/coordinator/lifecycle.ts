@@ -1,7 +1,6 @@
 import type { Server, ServerResponse } from 'node:http';
-import { posix, win32 } from 'node:path';
 import { backendLog } from '../infra/backend-log.js';
-import { readBackendInfo, readDiscoveryRecordDisposition, type BackendInfo } from '../infra/backend-discovery.js';
+import { readBackendInfo, type BackendInfo } from '../infra/backend-discovery.js';
 import { formatError } from '../infra/error-format.js';
 import { type LaunchCoordinator } from './live/admission.js';
 import type { RecoveryRegistry } from '../jobs/reconcile/registry.js';
@@ -87,6 +86,7 @@ import {
 } from '../recovery/containment.js';
 import type { RecoveryRetryPolicy, RecoverySourceFactoryPlan } from '../recovery/source-registry.js';
 import { RecoveryQuarantineStore } from '../recovery/quarantine.js';
+import { createCoordinatorSocketAddressClaim } from './socket-address-claim.js';
 import {
   crashedJobTerminalizationSource,
   type RawCrashedJobRow,
@@ -301,45 +301,6 @@ export function verifiedIncumbentFromRuntimeProbe(
   evidence: Readonly<{ socketPath: string; desired: DesiredIncumbentIdentity; lastHealth: IncumbentHealth | null }>,
 ): IncumbentIdentity | null {
   return verifiedIncumbentFromProbe(probeCoordinator(runtime), evidence);
-}
-
-type PublishedCoordinatorSocketRead =
-  | Readonly<{ kind: 'missing' }>
-  | Readonly<{ kind: 'published'; socketPath: string }>;
-
-function readPublishedCoordinatorSocket(runtime: DiscoveryRuntime): PublishedCoordinatorSocketRead {
-  let read: ReturnType<typeof readDiscoveryRecordDisposition>;
-  try {
-    read = readDiscoveryRecordDisposition(runtime);
-  } catch (error: unknown) {
-    throw documentedCoralSetupError({
-      code: 'coordinator_record_unreadable',
-      subject: 'coordinator startup',
-      path: runtime.paths.coral.coordinator.infoFile,
-      detail: formatError(error),
-    });
-  }
-  switch (read.kind) {
-    case 'record':
-      if (!(runtime.env.platform() === 'win32' ? win32 : posix).isAbsolute(read.record.socketPath)) {
-        throw documentedCoralSetupError({
-          code: 'coordinator_record_unreadable',
-          subject: 'coordinator startup',
-          path: runtime.paths.coral.coordinator.infoFile,
-          detail: `published socket path is not absolute: ${JSON.stringify(read.record.socketPath)}`,
-        });
-      }
-      return { kind: 'published', socketPath: read.record.socketPath };
-    case 'missing':
-      return { kind: 'missing' };
-    case 'undecodable':
-      throw documentedCoralSetupError({
-        code: 'coordinator_record_unreadable',
-        subject: 'coordinator startup',
-        path: runtime.paths.coral.coordinator.infoFile,
-        detail: read.reason,
-      });
-  }
 }
 
 export function closeServer(server: Server): Promise<void> {
@@ -943,47 +904,29 @@ async function runLifecycleStartup({
     // `ipcServer.onShutdownRequest`) is already installed before we reach
     // here, so a contender that arrives while we are still 'starting' triggers
     // immediate shutdown via that path.
+    // The address this coordinator publishes is its own canonical one; the claim additionally holds the
+    // legacy and published addresses, which are exclusion inputs rather than what this build serves.
     const socketPath = runtime.paths.coral.coordinator.socketPath;
     let bound: BoundCoordinator | null = null;
     if (ipcServer && listenIpcFn) {
       if (closeIpcServerFn === undefined) {
         throw new Error('IPC startup requires a close operation before binding');
       }
-      const publishedSocketPaths = new Set<string>();
-      const rememberPublishedSocket = (): PublishedCoordinatorSocketRead => {
-        const observation = readPublishedCoordinatorSocket({
-          storage: runtime.storage,
-          env: runtime.env,
-          paths: runtime.paths,
-        });
-        if (observation.kind === 'published' && observation.socketPath !== socketPath) {
-          publishedSocketPaths.add(observation.socketPath);
-        }
-        return observation;
-      };
-      const beforeBind = rememberPublishedSocket();
+      const addressClaim = createCoordinatorSocketAddressClaim(runtime, 'coordinator startup');
       bound = await bindWithHandoff({
-        socketPath: beforeBind.kind === 'published' ? beforeBind.socketPath : socketPath,
+        socketPath: addressClaim.initialIncumbentSocketPath,
         desired: { version, bundleHash, flavor, namespace },
         bindAttempt: async () => {
-          while (true) {
-            signal.throwIfAborted();
-            const attemptedPublishedSocketPaths = new Set(publishedSocketPaths);
-            const listenResult = await listenIpcFn(ipcServer, [...publishedSocketPaths]);
-            const afterBind = rememberPublishedSocket();
-            if (listenResult.kind === 'incumbent') {
-              return { kind: 'addressed-incumbent' as const, socketPath: listenResult.socketPath };
-            }
-            if (
-              afterBind.kind === 'published' &&
-              afterBind.socketPath !== socketPath &&
-              !attemptedPublishedSocketPaths.has(afterBind.socketPath)
-            ) {
-              await closeIpcServerFn(ipcServer);
-              continue;
-            }
-            return { kind: 'bound' as const };
-          }
+          signal.throwIfAborted();
+          const binding = await addressClaim.acquire(async (additionalSocketPaths) => {
+            const listenResult = await listenIpcFn(ipcServer, additionalSocketPaths);
+            return listenResult.kind === 'incumbent'
+              ? listenResult
+              : { kind: 'held' as const, release: () => closeIpcServerFn(ipcServer) };
+          });
+          return binding.kind === 'incumbent'
+            ? { kind: 'addressed-incumbent' as const, socketPath: binding.socketPath }
+            : { kind: 'bound' as const };
         },
         runStartupRecovery,
         runtime,

@@ -37,8 +37,7 @@ export async function quarantineKbCommit({
   assertSafeCommitId(commitId);
   const retryCommand = `coral-cli backend kb-commit quarantine --flavor ${runtime.flavor} --commit ${commitId}`;
   const socketGuard = await acquireOperatorSocketGuard({
-    socketPath: runtime.paths.coral.coordinator.socketPath,
-    flavor: runtime.flavor,
+    runtime,
     operation: 'KB commit quarantine',
     retryCommand,
   });

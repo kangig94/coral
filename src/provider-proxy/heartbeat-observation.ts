@@ -136,14 +136,12 @@ export type HeartbeatEvidenceWindow =
       kind: 'silence';
       firstObservedAtMonotonicMs: bigint;
       attempts: number;
-      /** Scheduler lateness accumulated after the observation that opened this window. */
       schedulerLatenessAfterFirstObservationMs: number;
     }>
   | Readonly<{
       kind: 'answered-unusable';
       firstObservedAtMonotonicMs: bigint;
       attempts: number;
-      /** Scheduler lateness accumulated after the observation that opened this window. */
       schedulerLatenessAfterFirstObservationMs: number;
     }>;
 

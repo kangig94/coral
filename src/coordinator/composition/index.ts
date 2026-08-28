@@ -36,7 +36,6 @@ import {
 import { createHttpHandler, sendJson } from '../../transport/http/handler.js';
 import { closeIpcServer, createIpcServer, listenIpcServer } from '../../transport/ipc/server.js';
 import { probeProcessIncarnation, type ProcessIncarnation } from '../../infra/node-process.js';
-import { v0109CoordinatorSocketGuardSetForRunDir } from '../../infra/path/index.js';
 import type { RpcPorts } from '../../transport/rpc/ports.js';
 import {
   providerHostEvictResponseSchema,
@@ -1244,21 +1243,6 @@ export function createCoordinatorCore(
     });
   });
 
-  const platform = runtime.env.platform();
-  const v0109SocketGuards = v0109CoordinatorSocketGuardSetForRunDir(
-    runtime.paths.coral.coordinator.runDir,
-    identity.flavor,
-    {
-      platform,
-      configuredTempDirectory: runtime.env.get('TMPDIR'),
-      systemTempDirectory: runtime.env.tmpdir(),
-    },
-  );
-  if (v0109SocketGuards.kind === 'address-unenumerable') {
-    throw new Error(
-      `Cannot enumerate the shipped v0.10.9 coordinator socket from ${v0109SocketGuards.source}=${JSON.stringify(v0109SocketGuards.value)}.`,
-    );
-  }
   const lifecycleDeps: LifecycleDeps = {
     identity,
     storeFormat: options.storeFormat,
@@ -1318,10 +1302,7 @@ export function createCoordinatorCore(
     listenIpcFn:
       options.listenIpcFn ??
       ((listener, additionalCompatibilitySocketPaths = []) =>
-        listenIpcServer(listener, runtime.paths.coral.coordinator.socketPath, [
-          ...v0109SocketGuards.paths,
-          ...additionalCompatibilitySocketPaths,
-        ])),
+        listenIpcServer(listener, runtime.paths.coral.coordinator.socketPath, additionalCompatibilitySocketPaths)),
     onStopped: options.onStopped,
     onFatalShutdownError: options.onFatalShutdownError,
   };

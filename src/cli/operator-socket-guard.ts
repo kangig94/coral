@@ -1,7 +1,8 @@
 import { createServer, type Server } from 'node:net';
 
-import type { BuildFlavor } from '../infra/build-flavor.js';
+import { createCoordinatorSocketAddressClaim } from '../coordinator/socket-address-claim.js';
 import { CoralSetupError, documentedCoralSetupError } from '../runtime/errors.js';
+import type { Runtime } from '../runtime/ports.js';
 import { bindSocket } from '../transport/ipc/server.js';
 
 export interface OperatorSocketGuard {
@@ -9,51 +10,82 @@ export interface OperatorSocketGuard {
 }
 
 type AcquireOperatorSocketGuardOptions = {
-  readonly socketPath: string;
-  readonly flavor: BuildFlavor;
+  readonly runtime: Pick<Runtime, 'env' | 'flavor' | 'paths' | 'storage'>;
   readonly operation: string;
   readonly retryCommand: string;
 };
 
 export async function acquireOperatorSocketGuard({
-  socketPath,
-  flavor,
+  runtime,
   operation,
   retryCommand,
 }: AcquireOperatorSocketGuardOptions): Promise<OperatorSocketGuard> {
-  const server = createServer();
-  let binding: Awaited<ReturnType<typeof bindSocket>>;
+  const socketPath = runtime.paths.coral.coordinator.socketPath;
+  let attemptedSocketPath = socketPath;
   try {
-    binding = await bindSocket(server, socketPath);
+    const addressClaim = createCoordinatorSocketAddressClaim(runtime, operation);
+    const binding = await addressClaim.acquire(async (additionalSocketPaths) => {
+      const servers: Server[] = [];
+      try {
+        for (const address of [socketPath, ...additionalSocketPaths]) {
+          attemptedSocketPath = address;
+          const server = createServer();
+          const result = await bindSocket(server, address);
+          if (result.kind === 'incumbent') {
+            await closeSocketGuards(servers);
+            return { kind: 'incumbent', socketPath: address };
+          }
+          servers.push(server);
+        }
+      } catch (error: unknown) {
+        try {
+          await closeSocketGuards(servers);
+        } catch (closeError: unknown) {
+          throw new AggregateError([error, closeError], 'Operator socket guard acquisition and rollback failed', {
+            cause: closeError,
+          });
+        }
+        throw error;
+      }
+      return { kind: 'held', release: () => closeSocketGuards(servers) };
+    });
+    if (binding.kind === 'incumbent') {
+      throw documentedCoralSetupError({
+        code: 'coordinator_socket_in_use',
+        socketPath: binding.socketPath,
+        flavor: runtime.flavor,
+        operation,
+        retryCommand,
+      });
+    }
+    return binding;
   } catch (error: unknown) {
     // Re-wrapping a documented refusal would put "could not observe" and "observed and refused" back under
     // one code and one exit.
     if (error instanceof CoralSetupError) throw error;
     throw documentedCoralSetupError({
       code: 'coordinator_socket_bind_failed',
-      socketPath,
-      flavor,
+      socketPath: attemptedSocketPath,
+      flavor: runtime.flavor,
       operation,
       retryCommand,
       cause: error instanceof Error ? error.message : String(error),
     });
   }
-
-  if (binding.kind === 'incumbent') {
-    throw documentedCoralSetupError({
-      code: 'coordinator_socket_in_use',
-      socketPath,
-      flavor,
-      operation,
-      retryCommand,
-    });
-  }
-
-  return { release: () => closeSocketGuard(server) };
 }
 
-async function closeSocketGuard(server: Server): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    server.close((error) => (error ? reject(error) : resolve()));
-  });
+async function closeSocketGuards(servers: readonly Server[]): Promise<void> {
+  let firstError: unknown;
+  for (const server of [...servers].reverse()) {
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
+    } catch (error: unknown) {
+      firstError ??= error;
+    }
+  }
+  if (firstError === undefined) return;
+  if (firstError instanceof Error) throw firstError;
+  throw new Error('Operator socket guard release failed.', { cause: firstError });
 }

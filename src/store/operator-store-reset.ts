@@ -52,10 +52,7 @@ export type StoreResetDiscardDecision =
   | StoreResetDiscardResult
   | { readonly kind: 'handoff'; readonly target: ValidatedHandoffTarget; readonly source: 'active-selection' };
 
-type AcquireStoreResetSocketGuard = (
-  paths: StoreResetTargetPaths,
-  flavor: BuildFlavor,
-) => Promise<StoreResetSocketGuard>;
+type AcquireStoreResetSocketGuard = (paths: StoreResetTargetPaths, runtime: Runtime) => Promise<StoreResetSocketGuard>;
 
 export type StoreResetDiscardOptions =
   | {
@@ -209,7 +206,7 @@ export async function discardStoreReset(options: StoreResetDiscardOptions): Prom
   }
 
   const paths = resolveStoreResetTargetPaths(options.runtime, options.target);
-  const socket = await options.acquireSocketGuard(paths, options.runtime.flavor);
+  const socket = await options.acquireSocketGuard(paths, options.runtime);
   try {
     return await discardGeneratedStore(options, paths);
   } finally {

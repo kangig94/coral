@@ -58,8 +58,7 @@ export interface HandoffRoutingStatusSocketGuard {
 }
 
 export type AcquireHandoffRoutingStatusSocketGuard = (options: {
-  readonly socketPath: string;
-  readonly flavor: Runtime['flavor'];
+  readonly runtime: Runtime;
   readonly operation: string;
   readonly retryCommand: string;
 }) => Promise<HandoffRoutingStatusSocketGuard>;
@@ -131,7 +130,7 @@ async function underOperatorGuards<T>(
   const socketPath = runtime.paths.coral.coordinator.socketPath;
   let socket: HandoffRoutingStatusSocketGuard;
   try {
-    socket = await options.acquireSocketGuard({ socketPath, flavor: runtime.flavor, ...invocation });
+    socket = await options.acquireSocketGuard({ runtime, ...invocation });
   } catch (error: unknown) {
     const refusal = operatorSocketRefusal(error, socketPath);
     if (refusal !== null) return refusal;

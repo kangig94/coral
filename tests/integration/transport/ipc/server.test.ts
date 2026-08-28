@@ -24,6 +24,7 @@ import { closeIpcServer, createIpcServer, listenIpcServer } from '#src/transport
 import { IpcRpcError, requestIpcMethod } from '#src/transport/ipc/client.js';
 import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
 import { backendLog } from '#src/infra/backend-log.js';
+import { writeDiscoveryRecord } from '#src/infra/backend-discovery.js';
 import type { Principal } from '#src/security/principal.js';
 import { TEST_SYSTEM_PROVIDER_SCOPE } from '../../../helpers/provider-credentials.js';
 import {
@@ -43,6 +44,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import { canonicalizeWorkDir } from '#src/runtime/canonical-work-dir.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
+import { createHandoffCoresHarness } from '#tests/integration/coordinator/handoff-cores-harness.js';
 
 const tempDirs: string[] = [];
 
@@ -377,6 +379,43 @@ describe('ipc server', () => {
     }
 
     expect([socketPath, ...compatibilityPaths].some(existsSync)).toBe(false);
+  });
+
+  it('reports sockets accepted on a published compatibility address in coordinator health', async () => {
+    const harness = createHandoffCoresHarness();
+    const publishedSocketPath = join(harness.homeDir, 'published-coordinator.sock');
+    writeDiscoveryRecord(
+      {
+        pid: process.pid,
+        port: 1,
+        socketPath: publishedSocketPath,
+        bundleHash: 'published-bundle',
+        flavor: 'prod',
+        namespace: 'published-compatibility-health',
+        startedAt: 1,
+        token: 'published-token',
+        bootToken: 'published-boot-token',
+      },
+      { storage: harness.runtime.storage, env: harness.runtime.env, paths: harness.runtime.paths },
+    );
+    let compatibilitySocket: Socket | null = null;
+
+    try {
+      const booted = await harness.bootCore({
+        instanceId: 'published-compatibility-health',
+        backendNamespace: 'published-compatibility-health',
+      });
+      compatibilitySocket = await connectRawIpcSocket(publishedSocketPath);
+
+      await expect(
+        requestIpcMethod(booted.serverInfo.socketPath, 'transport.health', undefined, {
+          auth: { kind: 'boot', token: booted.serverInfo.bootToken },
+        }),
+      ).resolves.toMatchObject({ resources: { ipcOpenSockets: 2 } });
+    } finally {
+      compatibilitySocket?.destroy();
+      await harness.cleanup();
+    }
   });
 
   it('rolls back every address when a compatibility address has an incumbent', async () => {
@@ -719,7 +758,7 @@ describe('ipc server', () => {
     }
   });
 
-  it('rejects IPC connections above the configured socket cap', async () => {
+  it('rejects IPC connections across addresses at the process-wide socket cap', async () => {
     const ports = createPorts();
     const listener = createIpcServer(ports, {
       firstFrameTimeoutMs: 60_000,
@@ -727,14 +766,15 @@ describe('ipc server', () => {
       writeDrainTimeoutMs: 10,
     });
     const socketPath = makeSocketPath();
+    const compatibilitySocketPath = makeSocketPath();
     let first: Socket | null = null;
     let second: Socket | null = null;
 
-    await listenIpcServer(listener, socketPath);
+    await listenIpcServer(listener, socketPath, [compatibilitySocketPath]);
     try {
       first = await connectRawIpcSocket(socketPath);
       await waitForCondition(() => listener.sockets.size === 1, 'first IPC socket tracked');
-      second = await connectRawIpcSocket(socketPath);
+      second = await connectRawIpcSocket(compatibilitySocketPath);
       await waitForCondition(() => hasLogLine(ports, 'IPC connection cap exceeded'), 'IPC connection cap log');
 
       expect(listener.sockets.size).toBe(1);
@@ -754,13 +794,14 @@ describe('ipc server', () => {
       writeDrainTimeoutMs: 10,
     });
     const socketPath = makeSocketPath();
+    const compatibilitySocketPath = makeSocketPath();
     let first: Socket | null = null;
     let second: Socket | null = null;
 
-    await listenIpcServer(listener, socketPath);
+    await listenIpcServer(listener, socketPath, [compatibilitySocketPath]);
     try {
       first = await connectRawIpcSocket(socketPath);
-      second = await connectRawIpcSocket(socketPath);
+      second = await connectRawIpcSocket(compatibilitySocketPath);
       await waitForCondition(() => listener.sockets.size === 2, 'two IPC sockets tracked');
 
       first.write('aaaaa');
