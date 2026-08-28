@@ -1,3 +1,4 @@
+import { v0109CoordinatorSocketGuardSetForRunDir } from '#src/infra/path/coordinator.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { createServer } from 'node:http';
@@ -382,8 +383,20 @@ describe('ipc server', () => {
   });
 
   it('reports sockets accepted on a published compatibility address in coordinator health', async () => {
-    const harness = createHandoffCoresHarness();
-    const publishedSocketPath = join(harness.homeDir, 'published-coordinator.sock');
+    const harness = createHandoffCoresHarness({ relocatedSocket: true });
+    // Derived through the same owner the claim validates against, so the fixture cannot drift from the
+    // shape a shipped coordinator actually publishes.
+    const publishedGuards = v0109CoordinatorSocketGuardSetForRunDir(
+      harness.runtime.paths.coral.coordinator.runDir,
+      harness.runtime.flavor,
+      {
+        platform: harness.runtime.env.platform(),
+        configuredTempDirectory: harness.homeDir,
+        systemTempDirectory: harness.homeDir,
+      },
+    );
+    if (publishedGuards.kind !== 'guarded-addresses') throw new Error('fixture needs a relocated address');
+    const publishedSocketPath = publishedGuards.paths[0];
     writeDiscoveryRecord(
       {
         pid: process.pid,

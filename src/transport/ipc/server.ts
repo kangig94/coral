@@ -369,6 +369,11 @@ async function clearStaleSocket(socketPath: string): Promise<boolean> {
  */
 export type BindSocketResult = { kind: 'bound' } | { kind: 'incumbent'; reason: 'live-listener' };
 
+export type PublishedIpcSocketAddress = Readonly<{
+  socketPath: string;
+  ownedSocketName: string;
+}>;
+
 export type ListenIpcServerResult =
   | Readonly<{ kind: 'bound'; socketPath: string }>
   | Readonly<{ kind: 'incumbent'; socketPath: string }>;
@@ -413,8 +418,34 @@ function prepareSocketParent(socketPath: string): void {
   }
 }
 
-export async function bindSocket(server: NetServer, socketPath: string): Promise<BindSocketResult> {
-  prepareSocketParent(socketPath);
+function assertPublishedSocketAddress(address: PublishedIpcSocketAddress): void {
+  if (basename(address.socketPath) !== address.ownedSocketName) {
+    throw new Error(`Published coordinator socket is outside Coral's namespace: ${address.socketPath}`);
+  }
+  // An absent path has nothing to unlink, which is the only authority this address is being admitted for.
+  // Anything that exists and is not a socket is refused rather than cleared.
+  let entry;
+  try {
+    entry = lstatSync(address.socketPath);
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) return;
+    throw error;
+  }
+  if (!entry.isSocket()) {
+    throw new Error(`Published coordinator socket path is not a socket: ${address.socketPath}`);
+  }
+}
+
+async function bindSocketAtAddress(
+  server: NetServer,
+  address: string | PublishedIpcSocketAddress,
+): Promise<BindSocketResult> {
+  const socketPath = typeof address === 'string' ? address : address.socketPath;
+  if (typeof address === 'string') {
+    prepareSocketParent(socketPath);
+  } else {
+    assertPublishedSocketAddress(address);
+  }
 
   const finalize = (): void => {
     if (process.platform !== 'win32') {
@@ -448,6 +479,7 @@ export async function bindSocket(server: NetServer, socketPath: string): Promise
       }
     }
 
+    if (typeof address !== 'string') assertPublishedSocketAddress(address);
     const cleared = await clearStaleSocket(socketPath);
     if (cleared) {
       try {
@@ -468,10 +500,22 @@ export async function bindSocket(server: NetServer, socketPath: string): Promise
   }
 }
 
+export async function bindSocket(server: NetServer, socketPath: string): Promise<BindSocketResult> {
+  return bindSocketAtAddress(server, socketPath);
+}
+
+export async function bindPublishedSocket(
+  server: NetServer,
+  address: PublishedIpcSocketAddress,
+): Promise<BindSocketResult> {
+  return bindSocketAtAddress(server, address);
+}
+
 export async function listenIpcServer(
   listener: IpcListener,
   socketPath: string,
   compatibilitySocketPaths: readonly string[] = [],
+  publishedCompatibilitySocketAddresses: readonly PublishedIpcSocketAddress[] = [],
 ): Promise<ListenIpcServerResult> {
   const result = await bindSocket(listener.server, socketPath);
   if (result.kind === 'incumbent') {
@@ -479,14 +523,29 @@ export async function listenIpcServer(
   }
   listener.socketPath = socketPath;
   try {
-    for (const compatibilitySocketPath of new Set(compatibilitySocketPaths)) {
+    const compatibilityAddresses = [
+      ...compatibilitySocketPaths.map((path) => ({ kind: 'computed' as const, path })),
+      ...publishedCompatibilitySocketAddresses.map((address) => ({
+        kind: 'published' as const,
+        path: address.socketPath,
+        address,
+      })),
+    ];
+    const attempted = new Set([socketPath]);
+    for (const compatibilityAddress of compatibilityAddresses) {
+      const compatibilitySocketPath = compatibilityAddress.path;
+      if (attempted.has(compatibilitySocketPath)) continue;
+      attempted.add(compatibilitySocketPath);
       if (compatibilitySocketPath === socketPath) continue;
       const compatibility = listener.createCompatibilityListener?.();
       if (compatibility === undefined || listener.compatibilityListeners === undefined) {
         throw new Error('IPC listener does not support compatibility sockets');
       }
       compatibility.onShutdownRequest = (reason) => listener.onShutdownRequest?.(reason);
-      const compatibilityResult = await bindSocket(compatibility.server, compatibilitySocketPath);
+      const compatibilityResult =
+        compatibilityAddress.kind === 'published'
+          ? await bindPublishedSocket(compatibility.server, compatibilityAddress.address)
+          : await bindSocket(compatibility.server, compatibilitySocketPath);
       if (compatibilityResult.kind === 'incumbent') {
         await closeIpcServer(listener);
         return { kind: 'incumbent', socketPath: compatibilitySocketPath };

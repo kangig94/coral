@@ -21,6 +21,7 @@ import type { RunCoordinatorStartupRecoveryFn } from '#src/coordinator/services/
 import type * as BackendStoreResetMod from '#src/store/backend-store-reset.js';
 import type * as BundleManifestMod from '#src/infra/bundle-manifest.js';
 import type * as StartupStoreRoutingMod from '#src/store/startup-store-routing.js';
+import { v0109CoordinatorSocketGuardSetForRunDir } from '#src/infra/path/coordinator.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 
 const mockState = vi.hoisted(() => {
@@ -376,14 +377,37 @@ describe('lifecycle reset authority and finalizer order', () => {
       instanceId: 'v0.10.9-instance',
     });
 
+  const publishedFallback = (deps: LifecycleDeps, directory: string) => {
+    const coordinator = deps.runtime.paths.coral.coordinator as { runDir: string };
+    coordinator.runDir = `/tmp/${'coral-lifecycle-published-address-'.repeat(4)}`;
+    const computed = v0109CoordinatorSocketGuardSetForRunDir(coordinator.runDir, deps.runtime.flavor, {
+      platform: deps.runtime.env.platform(),
+      configuredTempDirectory: deps.runtime.env.get('TMPDIR'),
+      systemTempDirectory: deps.runtime.env.tmpdir(),
+    });
+    const published = v0109CoordinatorSocketGuardSetForRunDir(coordinator.runDir, deps.runtime.flavor, {
+      platform: deps.runtime.env.platform(),
+      configuredTempDirectory: directory,
+      systemTempDirectory: directory,
+    });
+    if (computed.kind !== 'guarded-addresses' || published.kind !== 'guarded-addresses') {
+      throw new Error('test run directory did not produce shipped fallback addresses');
+    }
+    const publishedSocketPath = published.paths[0];
+    if (publishedSocketPath === undefined) throw new Error('test published address was not derived');
+    return { computedSocketPaths: computed.paths, publishedSocketPath };
+  };
+
   it('binds the socket published by a shipped-shaped discovery record as an exclusion address', async () => {
     const { deps } = makeLifecycleDeps();
-    const publishedSocketPath = '/custom-launcher-temp/coral-prod-shipped.sock';
+    const { computedSocketPaths, publishedSocketPath } = publishedFallback(deps, '/custom-launcher-temp');
     vi.mocked(deps.runtime.storage.readFileSync).mockReturnValue(publishedRecord(publishedSocketPath));
 
     await createLifecycle(deps, async () => []).start();
 
-    expect(deps.listenIpcFn).toHaveBeenCalledWith(deps.ipcServer, [publishedSocketPath]);
+    expect(deps.listenIpcFn).toHaveBeenCalledWith(deps.ipcServer, computedSocketPaths, [
+      { socketPath: publishedSocketPath, ownedSocketName: publishedSocketPath.split('/').at(-1) },
+    ]);
     const handoff = await import('#src/coordinator/handoff.js');
     expect(vi.mocked(handoff.bindWithHandoff).mock.calls[0]?.[0].socketPath).toBe(publishedSocketPath);
   });
@@ -392,7 +416,7 @@ describe('lifecycle reset authority and finalizer order', () => {
     const { deps } = makeLifecycleDeps();
     const listenIpcFn = deps.listenIpcFn;
     if (listenIpcFn === undefined) throw new Error('expected IPC listener');
-    const publishedSocketPath = '/late-launcher-temp/coral-prod-shipped.sock';
+    const { computedSocketPaths, publishedSocketPath } = publishedFallback(deps, '/late-launcher-temp');
     const missing = new Error('missing discovery record') as NodeJS.ErrnoException;
     missing.code = 'ENOENT';
     vi.mocked(deps.runtime.storage.readFileSync)
@@ -412,7 +436,9 @@ describe('lifecycle reset authority and finalizer order', () => {
       socketPath: publishedSocketPath,
     });
     expect(deps.closeIpcServerFn).toHaveBeenCalled();
-    expect(listenIpcFn).toHaveBeenNthCalledWith(2, deps.ipcServer, [publishedSocketPath]);
+    expect(listenIpcFn).toHaveBeenNthCalledWith(2, deps.ipcServer, computedSocketPaths, [
+      { socketPath: publishedSocketPath, ownedSocketName: publishedSocketPath.split('/').at(-1) },
+    ]);
     expect(mockState.events).not.toContain('resetAuthority:create');
   });
 

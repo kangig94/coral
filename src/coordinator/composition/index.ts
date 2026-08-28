@@ -1301,8 +1301,13 @@ export function createCoordinatorCore(
     closeIpcServerFn: closeIpcServer,
     listenIpcFn:
       options.listenIpcFn ??
-      ((listener, additionalCompatibilitySocketPaths = []) =>
-        listenIpcServer(listener, runtime.paths.coral.coordinator.socketPath, additionalCompatibilitySocketPaths)),
+      ((listener, additionalCompatibilitySocketPaths = [], publishedCompatibilitySocketAddresses = []) =>
+        listenIpcServer(
+          listener,
+          runtime.paths.coral.coordinator.socketPath,
+          additionalCompatibilitySocketPaths,
+          publishedCompatibilitySocketAddresses,
+        )),
     onStopped: options.onStopped,
     onFatalShutdownError: options.onFatalShutdownError,
   };

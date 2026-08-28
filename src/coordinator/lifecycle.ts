@@ -61,7 +61,7 @@ import {
 import type { RecoveryCapableService } from '../jobs/reconcile/contracts.js';
 import type { ProjectRequestPort } from './contracts.js';
 import type { TypedEventBus } from './event-bus.js';
-import type { IpcListener, ListenIpcServerResult } from '../transport/ipc/server.js';
+import type { IpcListener, ListenIpcServerResult, PublishedIpcSocketAddress } from '../transport/ipc/server.js';
 import { createBackendStoreResetAuthority } from '../store/backend-store-reset.js';
 import { resolveRunningBundleDir } from '../infra/bundle-manifest.js';
 import type { ValidatedHandoffTarget } from '../infra/handoff-target.js';
@@ -808,6 +808,7 @@ export type LifecycleDeps = {
   readonly listenIpcFn?: (
     listener: IpcListener,
     additionalCompatibilitySocketPaths?: readonly string[],
+    publishedCompatibilitySocketAddresses?: readonly PublishedIpcSocketAddress[],
   ) => Promise<ListenIpcServerResult>;
   readonly onStopped?: () => void;
   readonly onFatalShutdownError?: (error: unknown) => void;
@@ -918,8 +919,8 @@ async function runLifecycleStartup({
         desired: { version, bundleHash, flavor, namespace },
         bindAttempt: async () => {
           signal.throwIfAborted();
-          const binding = await addressClaim.acquire(async (additionalSocketPaths) => {
-            const listenResult = await listenIpcFn(ipcServer, additionalSocketPaths);
+          const binding = await addressClaim.acquire(async (additionalSocketPaths, publishedSocketAddresses) => {
+            const listenResult = await listenIpcFn(ipcServer, additionalSocketPaths, publishedSocketAddresses);
             return listenResult.kind === 'incumbent'
               ? listenResult
               : { kind: 'held' as const, release: () => closeIpcServerFn(ipcServer) };

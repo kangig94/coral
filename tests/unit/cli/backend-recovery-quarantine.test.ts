@@ -290,6 +290,46 @@ describe('backend recovery-quarantine commands', () => {
     });
   });
 
+  it('should resolve a stored raw key that is also a well-formed encoded token as the raw key', async () => {
+    const storedKey = 'rqk1-0061';
+    const entry = {
+      boundary: 'workflow-recovery',
+      subject: { key: storedKey, revision: { kind: 'fingerprint' as const, value: 'revision-1' } },
+      state: 'active' as const,
+      stage: 'hydrate' as const,
+      errorMessage: 'failed to hydrate persisted workflow',
+      detail: 'retained for operator retry',
+      retry: null,
+      continuation: null,
+      detectedAt: '2026-08-28T00:00:00.000Z',
+      updatedAt: '2026-08-28T00:00:00.000Z',
+    };
+    const clear = vi.fn(async (request: { boundary: string; key: string; revision: string | null }) => ({
+      ...request,
+      disposition: 'advanced' as const,
+    }));
+
+    await programWith({ list: () => [entry], clear }).parseAsync([
+      'node',
+      'coral-cli',
+      'backend',
+      'recovery-quarantine',
+      'clear',
+      '--boundary',
+      'workflow-recovery',
+      '--key',
+      storedKey,
+      '--revision',
+      'revision-1',
+    ]);
+
+    expect(clear).toHaveBeenCalledWith({
+      boundary: 'workflow-recovery',
+      key: storedKey,
+      revision: 'revision-1',
+    });
+  });
+
   it('should execute the continuation instruction and show the durable continuation', async () => {
     const instruction = 'coral-cli backend recovery-quarantine list';
     const continuation = {
@@ -387,6 +427,7 @@ describe('backend recovery-quarantine commands', () => {
   it('should refuse clear when coordinator authority is unavailable', async () => {
     vi.spyOn(ipcEnsure, 'ensure').mockRejectedValue(new Error('connect ENOENT'));
     const recoveryQuarantine = createRecoveryQuarantineCommandOperations();
+    vi.spyOn(recoveryQuarantine, 'list').mockReturnValue([]);
     const clear = vi.spyOn(recoveryQuarantine, 'clear');
 
     await programWith(recoveryQuarantine).parseAsync([
@@ -439,8 +480,10 @@ describe('backend recovery-quarantine commands', () => {
     vi.spyOn(ipcEnsure, 'ensure').mockResolvedValue({
       request: vi.fn().mockResolvedValue({ disposition: 'advanced' }),
     } as never);
+    const recoveryQuarantine = createRecoveryQuarantineCommandOperations();
+    vi.spyOn(recoveryQuarantine, 'list').mockReturnValue([]);
 
-    await programWith(createRecoveryQuarantineCommandOperations()).parseAsync([
+    await programWith(recoveryQuarantine).parseAsync([
       'node',
       'coral-cli',
       'backend',
@@ -462,8 +505,10 @@ describe('backend recovery-quarantine commands', () => {
     vi.spyOn(ipcEnsure, 'ensure').mockResolvedValue({
       request: vi.fn().mockRejectedValue(new Error('IPC request timed out after 30000ms')),
     } as never);
+    const recoveryQuarantine = createRecoveryQuarantineCommandOperations();
+    vi.spyOn(recoveryQuarantine, 'list').mockReturnValue([]);
 
-    await programWith(createRecoveryQuarantineCommandOperations()).parseAsync([
+    await programWith(recoveryQuarantine).parseAsync([
       'node',
       'coral-cli',
       'backend',

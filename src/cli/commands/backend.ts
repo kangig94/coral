@@ -752,7 +752,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
     .requiredOption('--revision <revision>', "Exact revision shown by list, including 'until-cleared'")
     .action(async (options: { boundary: string; key: string; revision: string }) => {
       try {
-        const request = parseRecoveryQuarantineClearOptions(options);
+        const request = parseRecoveryQuarantineClearOptions(options, recoveryQuarantine.list());
         const result = await recoveryQuarantine.clear(request);
         process.stdout.write(`${formatRecoveryQuarantineClear(result)}\n`);
       } catch (error: unknown) {
@@ -938,19 +938,24 @@ function unquoteRecoveryCoordinate(value: string): string {
   }
 }
 
-function parseRecoveryQuarantineClearOptions(options: {
-  readonly boundary: string;
-  readonly key: string;
-  readonly revision: string;
-}): RecoveryQuarantineClearRequest {
+function parseRecoveryQuarantineClearOptions(
+  options: {
+    readonly boundary: string;
+    readonly key: string;
+    readonly revision: string;
+  },
+  storedEntries: readonly RecoveryQuarantineEntry[],
+): RecoveryQuarantineClearRequest {
   const revision = unquoteRecoveryCoordinate(options.revision);
-  const decodedKey = decodeRecoveryQuarantineKey(options.key);
-  const key = decodedKey.kind === 'decoded' ? decodedKey.key : unquoteRecoveryCoordinate(options.key);
-  if (decodedKey.kind === 'invalid' && key.includes('\u0000')) {
+  const plainKey = unquoteRecoveryCoordinate(options.key);
+  if (plainKey.includes('\u0000')) {
     throw new InvalidArgumentError(
       'Recovery subject keys containing NUL must use the encoded key printed by recovery-quarantine list.',
     );
   }
+  const storedKey = storedEntries.find((entry) => entry.subject.key === plainKey)?.subject.key;
+  const decodedKey = decodeRecoveryQuarantineKey(options.key);
+  const key = storedKey ?? (decodedKey.kind === 'decoded' ? decodedKey.key : plainKey);
   const parsed = recoveryQuarantineClearRequestSchema.safeParse({
     boundary: unquoteRecoveryCoordinate(options.boundary),
     key,

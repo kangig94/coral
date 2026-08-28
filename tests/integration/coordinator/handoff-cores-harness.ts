@@ -6,7 +6,8 @@ import { currentCoralStoreFormat } from '#src/store-format.js';
 // SQLite file in one process is fragile; the journal is process-local already.
 
 import { createServer, type Server } from 'node:http';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { socketPathByteLimit } from '#src/infra/path/unix-socket.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -74,10 +75,25 @@ function createHarnessStoreServices(runtime: Runtime, db: Database, namespace: s
 
 interface CreateHarnessOptions {
   flavor?: 'prod' | 'dev';
+  /** Lengthens the home path until the tagged selector would relocate the coordinator socket, which is
+   *  the only condition under which a published address differs from the derived one. */
+  relocatedSocket?: boolean;
+}
+
+/** The tagged rule relocates when the run-dir socket reaches its byte limit, so the home has to carry the
+ *  difference rather than a fixed pad that stops being enough when the temp root moves. */
+function deepenPastTaggedSocketLimit(baseHomeDir: string): string {
+  const suffixBytes = Buffer.byteLength(join('.coral', 'gen2', 'run', 'coordinator.sock'), 'utf8') + 1;
+  const limit = socketPathByteLimit('linux');
+  const shortfall = limit - (Buffer.byteLength(baseHomeDir, 'utf8') + suffixBytes);
+  const deep = shortfall <= 0 ? baseHomeDir : join(baseHomeDir, 'd'.repeat(shortfall + 1));
+  mkdirSync(deep, { recursive: true });
+  return deep;
 }
 
 export function createHandoffCoresHarness(options: CreateHarnessOptions = {}): HandoffCoresHarness {
-  const homeDir = mkdtempSync(join(tmpdir(), 'coral-handoff-cores-'));
+  const baseHomeDir = mkdtempSync(join(tmpdir(), 'coral-handoff-cores-'));
+  const homeDir = options.relocatedSocket ? deepenPastTaggedSocketLimit(baseHomeDir) : baseHomeDir;
   const flavor = options.flavor ?? 'prod';
   const backendNamespace = 'handoff-cores';
 
@@ -204,7 +220,7 @@ export function createHandoffCoresHarness(options: CreateHarnessOptions = {}): H
     } catch {
       // already closed
     }
-    rmSync(homeDir, { recursive: true, force: true });
+    rmSync(baseHomeDir, { recursive: true, force: true });
   }
 
   return { runtime, db, homeDir, bootCore, cleanup };

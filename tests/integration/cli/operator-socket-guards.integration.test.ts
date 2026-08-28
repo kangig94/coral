@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -63,6 +63,18 @@ function publishSocket(runtime: ReturnType<typeof createRealRuntime>, socketPath
     }),
     'utf-8',
   );
+}
+
+function publishedLegacySocketPath(runtime: ReturnType<typeof createRealRuntime>, directory: string): string {
+  const legacy = v0109CoordinatorSocketGuardSetForRunDir(runtime.paths.coral.coordinator.runDir, runtime.flavor, {
+    platform: runtime.env.platform(),
+    configuredTempDirectory: directory,
+    systemTempDirectory: directory,
+  });
+  if (legacy.kind !== 'guarded-addresses' || legacy.paths[0] === undefined) {
+    throw new Error('Test state root did not produce a shipped compatibility address');
+  }
+  return legacy.paths[0];
 }
 
 afterEach(() => {
@@ -138,7 +150,7 @@ describe('operator coordinator socket bind failures', () => {
       const runtime = createRealRuntime('prod', { baseDir });
       let heldSocketPath: string;
       if (addressKind === 'published') {
-        heldSocketPath = join(root(), 'published-coordinator.sock');
+        heldSocketPath = publishedLegacySocketPath(runtime, root());
         publishSocket(runtime, heldSocketPath);
       } else {
         const legacy = v0109CoordinatorSocketGuardSetForRunDir(runtime.paths.coral.coordinator.runDir, runtime.flavor, {
@@ -170,6 +182,69 @@ describe('operator coordinator socket bind failures', () => {
       }
     },
   );
+
+  it('leaves a non-socket published address in place and refuses the guard', async () => {
+    const runtime = createRealRuntime('prod', {
+      baseDir: join(root(), 'state-root-long-enough-to-relocate-'.repeat(4)),
+    });
+    const publishedSocketPath = publishedLegacySocketPath(runtime, root());
+    writeFileSync(publishedSocketPath, 'sentinel', 'utf-8');
+    publishSocket(runtime, publishedSocketPath);
+
+    let refusal: unknown;
+    try {
+      await acquireOperatorSocketGuard({ runtime, operation: 'store reset', retryCommand: 'retry' });
+    } catch (error: unknown) {
+      refusal = error;
+    }
+
+    expect(serializeCoralSetupError(refusal)).toMatchObject({
+      code: 'coordinator_socket_bind_failed',
+      context: { cause: expect.stringContaining('is not a socket') },
+    });
+    expect(existsSync(publishedSocketPath)).toBe(true);
+  });
+
+  it('does not create parents for a published address outside Coral namespace', async () => {
+    const runtime = createRealRuntime('prod', {
+      baseDir: join(root(), 'state-root-long-enough-to-relocate-'.repeat(4)),
+    });
+    const outsideParent = join(root(), 'outside', 'missing');
+    const publishedSocketPath = join(outsideParent, 'sentinel');
+    publishSocket(runtime, publishedSocketPath);
+
+    let refusal: unknown;
+    try {
+      await acquireOperatorSocketGuard({ runtime, operation: 'store reset', retryCommand: 'retry' });
+    } catch (error: unknown) {
+      refusal = error;
+    }
+
+    expect(serializeCoralSetupError(refusal)).toMatchObject({
+      code: 'coordinator_record_unreadable',
+      context: { detail: expect.stringContaining("outside Coral's coordinator namespace") },
+    });
+    expect(existsSync(outsideParent)).toBe(false);
+  });
+
+  it('does not delete an existing published path outside Coral namespace', async () => {
+    const runtime = createRealRuntime('prod', {
+      baseDir: join(root(), 'state-root-long-enough-to-relocate-'.repeat(4)),
+    });
+    const publishedSocketPath = join(root(), 'sentinel');
+    writeFileSync(publishedSocketPath, 'sentinel', 'utf-8');
+    publishSocket(runtime, publishedSocketPath);
+
+    let refusal: unknown;
+    try {
+      await acquireOperatorSocketGuard({ runtime, operation: 'store reset', retryCommand: 'retry' });
+    } catch (error: unknown) {
+      refusal = error;
+    }
+
+    expect(serializeCoralSetupError(refusal)).toMatchObject({ code: 'coordinator_record_unreadable' });
+    expect(existsSync(publishedSocketPath)).toBe(true);
+  });
 
   it('refuses before binding when a shipped compatibility address is unenumerable', async () => {
     const runtime = createRealRuntime('prod', {
@@ -206,8 +281,10 @@ describe('operator coordinator socket bind failures', () => {
   });
 
   it('releases earlier addresses when a later address is already held', async () => {
-    const runtime = createRealRuntime('prod', { baseDir: root() });
-    const publishedSocketPath = join(root(), 'published-incumbent.sock');
+    const runtime = createRealRuntime('prod', {
+      baseDir: join(root(), 'state-root-long-enough-to-relocate-'.repeat(4)),
+    });
+    const publishedSocketPath = publishedLegacySocketPath(runtime, root());
     publishSocket(runtime, publishedSocketPath);
     const incumbent = await holdSocket(publishedSocketPath);
     const probe = createServer();

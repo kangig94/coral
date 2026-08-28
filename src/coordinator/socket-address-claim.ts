@@ -5,6 +5,7 @@ import { formatError } from '../infra/error-format.js';
 import { v0109CoordinatorSocketGuardSetForRunDir } from '../infra/path/index.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
 import type { Runtime } from '../runtime/ports.js';
+import type { PublishedIpcSocketAddress } from '../transport/ipc/server.js';
 
 type CoordinatorSocketAddressBinding =
   | Readonly<{ kind: 'held'; release(): Promise<void> }>
@@ -13,7 +14,10 @@ type CoordinatorSocketAddressBinding =
 export interface CoordinatorSocketAddressClaim {
   readonly initialIncumbentSocketPath: string;
   acquire(
-    bindAtomicallyWithPrimary: (additionalSocketPaths: readonly string[]) => Promise<CoordinatorSocketAddressBinding>,
+    bindAtomicallyWithPrimary: (
+      additionalSocketPaths: readonly string[],
+      publishedSocketAddresses: readonly PublishedIpcSocketAddress[],
+    ) => Promise<CoordinatorSocketAddressBinding>,
   ): Promise<CoordinatorSocketAddressBinding>;
 }
 
@@ -44,20 +48,48 @@ export function createCoordinatorSocketAddressClaim(
     );
   }
 
-  const publishedSocketPaths = new Set<string>();
+  const computedSocketPaths = new Set(v0109SocketGuards.paths);
+  const publishedSocketAddresses = new Map<string, PublishedIpcSocketAddress>();
+  const asPublishedSocketAddress = (socketPath: string): PublishedIpcSocketAddress => {
+    const path = platform === 'win32' ? win32 : posix;
+    const publishedParent = path.dirname(socketPath);
+    const publishedGuards = v0109CoordinatorSocketGuardSetForRunDir(
+      runtime.paths.coral.coordinator.runDir,
+      runtime.flavor,
+      {
+        platform,
+        configuredTempDirectory: publishedParent,
+        systemTempDirectory: publishedParent,
+      },
+    );
+    if (publishedGuards.kind !== 'guarded-addresses' || !publishedGuards.paths.includes(socketPath)) {
+      throw documentedCoralSetupError({
+        code: 'coordinator_record_unreadable',
+        subject,
+        path: runtime.paths.coral.coordinator.infoFile,
+        detail: `published socket path is outside Coral's coordinator namespace: ${JSON.stringify(socketPath)}`,
+      });
+    }
+    return { socketPath, ownedSocketName: path.basename(socketPath) };
+  };
   const rememberPublishedSocket = (): PublishedCoordinatorSocketRead => {
     const observation = readPublishedCoordinatorSocket(runtime, subject, platform);
-    if (observation.kind === 'published' && observation.socketPath !== primarySocketPath) {
-      publishedSocketPaths.add(observation.socketPath);
+    if (
+      observation.kind === 'published' &&
+      observation.socketPath !== primarySocketPath &&
+      !computedSocketPaths.has(observation.socketPath)
+    ) {
+      publishedSocketAddresses.set(observation.socketPath, asPublishedSocketAddress(observation.socketPath));
     }
     return observation;
   };
   const initial = rememberPublishedSocket();
   let acquireStarted = false;
   const additionalSocketPaths = (): readonly string[] =>
-    [...new Set([...v0109SocketGuards.paths, ...publishedSocketPaths])].filter(
-      (socketPath) => socketPath !== primarySocketPath,
-    );
+    [...computedSocketPaths].filter((socketPath) => socketPath !== primarySocketPath);
+  const additionalPublishedSocketAddresses = (): readonly PublishedIpcSocketAddress[] => [
+    ...publishedSocketAddresses.values(),
+  ];
 
   return {
     initialIncumbentSocketPath: initial.kind === 'published' ? initial.socketPath : primarySocketPath,
@@ -66,8 +98,12 @@ export function createCoordinatorSocketAddressClaim(
       acquireStarted = true;
       while (true) {
         const attemptedSocketPaths = additionalSocketPaths();
-        const attempted = new Set(attemptedSocketPaths);
-        const binding = await bindAtomicallyWithPrimary(attemptedSocketPaths);
+        const attemptedPublishedSocketAddresses = additionalPublishedSocketAddresses();
+        const attempted = new Set([
+          ...attemptedSocketPaths,
+          ...attemptedPublishedSocketAddresses.map((address) => address.socketPath),
+        ]);
+        const binding = await bindAtomicallyWithPrimary(attemptedSocketPaths, attemptedPublishedSocketAddresses);
         if (binding.kind === 'incumbent') return binding;
 
         try {
@@ -76,7 +112,7 @@ export function createCoordinatorSocketAddressClaim(
           await binding.release();
           throw error;
         }
-        if (additionalSocketPaths().some((socketPath) => !attempted.has(socketPath))) {
+        if (additionalPublishedSocketAddresses().some((address) => !attempted.has(address.socketPath))) {
           await binding.release();
           continue;
         }

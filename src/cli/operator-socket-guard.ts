@@ -3,7 +3,7 @@ import { createServer, type Server } from 'node:net';
 import { createCoordinatorSocketAddressClaim } from '../coordinator/socket-address-claim.js';
 import { CoralSetupError, documentedCoralSetupError } from '../runtime/errors.js';
 import type { Runtime } from '../runtime/ports.js';
-import { bindSocket } from '../transport/ipc/server.js';
+import { bindPublishedSocket, bindSocket } from '../transport/ipc/server.js';
 
 export interface OperatorSocketGuard {
   release(): Promise<void>;
@@ -24,16 +24,27 @@ export async function acquireOperatorSocketGuard({
   let attemptedSocketPath = socketPath;
   try {
     const addressClaim = createCoordinatorSocketAddressClaim(runtime, operation);
-    const binding = await addressClaim.acquire(async (additionalSocketPaths) => {
+    const binding = await addressClaim.acquire(async (additionalSocketPaths, publishedSocketAddresses) => {
       const servers: Server[] = [];
       try {
-        for (const address of [socketPath, ...additionalSocketPaths]) {
-          attemptedSocketPath = address;
+        const addresses = [
+          ...[socketPath, ...additionalSocketPaths].map((path) => ({ kind: 'computed' as const, path })),
+          ...publishedSocketAddresses.map((address) => ({
+            kind: 'published' as const,
+            path: address.socketPath,
+            address,
+          })),
+        ];
+        for (const address of addresses) {
+          attemptedSocketPath = address.path;
           const server = createServer();
-          const result = await bindSocket(server, address);
+          const result =
+            address.kind === 'published'
+              ? await bindPublishedSocket(server, address.address)
+              : await bindSocket(server, address.path);
           if (result.kind === 'incumbent') {
             await closeSocketGuards(servers);
-            return { kind: 'incumbent', socketPath: address };
+            return { kind: 'incumbent', socketPath: address.path };
           }
           servers.push(server);
         }

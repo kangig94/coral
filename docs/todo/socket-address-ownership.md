@@ -87,12 +87,14 @@ that no shipped address exists.
 
 The finite selector is no longer the only evidence. Before binding, startup reads the discovery record in this
 state root with `readDiscoveryRecordDisposition`. A decoded absolute record's `socketPath` joins the compatibility
-bind set even when this build could not derive it from its own environment. A live v0.10.9 coordinator launched with
+bind set only when v0.10.9's derivation reproduces its exact Coral-owned socket name from that parent. The bind
+boundary does not create the published parent, inspects the existing entry with non-following `lstat`, requires a
+socket, and repeats that inspection before stale cleanup may unlink it. A live v0.10.9 coordinator launched with
 an absolute selector has therefore published the exact address that excludes a contender, including an address
-selected from its launcher's custom absolute `TMPDIR`. An unreadable or undecodable record stops startup with
-the documented unreadable-record refusal; so does a decoded relative socket string, because v0.10.9 resolved it
-against a launcher working directory that the record does not publish. Only `missing` means there is no published
-address to add.
+selected from its launcher's custom absolute `TMPDIR`, without granting a durable record authority over an arbitrary
+pathname. An unreadable or undecodable record, a decoded relative socket string, or a path outside Coral's
+coordinator namespace stops startup with the documented unreadable-record refusal. A missing or non-socket
+published-only entry stops at the bind boundary. Only `missing` means there is no published address to add.
 
 The ordering is read, bind the current address plus every derived and published address, then read again before
 accepting bind authority. If the second read names an address outside the attempted set, startup closes every

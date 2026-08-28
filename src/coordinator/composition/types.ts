@@ -24,7 +24,7 @@ import type { LocalOperationRegistry } from '../services/operation-registry.js';
 import type { IdleTimer } from '../live/idle.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { RecoveryCapableService } from '../../jobs/reconcile/contracts.js';
-import type { IpcListener, ListenIpcServerResult } from '../../transport/ipc/server.js';
+import type { IpcListener, ListenIpcServerResult, PublishedIpcSocketAddress } from '../../transport/ipc/server.js';
 import type { KbJobRecorder } from '../../jobs/kb/recorder.js';
 import type { Database } from '../../store/db.js';
 import type { CoordinatorStoreServices, StoreServicesRef } from './store-services-ref.js';
@@ -65,6 +65,7 @@ export type CoordinatorCoreOptions = {
   listenIpcFn?: (
     listener: IpcListener,
     additionalCompatibilitySocketPaths?: readonly string[],
+    publishedCompatibilitySocketAddresses?: readonly PublishedIpcSocketAddress[],
   ) => Promise<ListenIpcServerResult>;
   createIdleTimer?: () => IdleTimer;
   createExecutionService?: (ctx: InvocationContext, deps: ExecutionServiceDeps) => ProjectRequestPort;
