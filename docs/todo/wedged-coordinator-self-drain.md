@@ -108,6 +108,12 @@ A coordinator frozen past a deadline loses provider authority, and the reaper th
 on the whole proxy set, terminating every live claim on it. The jobs themselves were healthy; they were
 deliberately killed by a policy acting on the wedge.
 
+**Corrected on the unreleased branch:** channel close is now a non-terminal incident, not an authority fault.
+It removes routing and opens a bounded authenticated-reattachment hold while keeping durable claims attached;
+refusal or expiry waits for independent containment absence and cannot start `stop-and-reap`. The log above
+records the shipped defect rather than current branch behavior. See
+[`control-channel-eof-is-not-process-absence.md`](./control-channel-eof-is-not-process-absence.md).
+
 **Corrected 2026-08-24: the deadline that fires is not the lease.** This entry first named
 `PROXY_CONTROL_LEASE_MS`, 12,000 ms. The log says otherwise — what breaks first is the heartbeat RPC's own
 budget:

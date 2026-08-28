@@ -24,7 +24,7 @@ import {
 import { ControlClientError, type ControlClient } from '#src/provider-proxy/control-client.js';
 import type { HandoffCapsuleV3 } from '#src/provider-proxy/handoff-capsule.js';
 import type { CoordinatorIdentity, OperationIdentity } from '#src/provider-proxy/protocol.js';
-import { ESTABLISH_CONTROL_READY_DEADLINE_MS } from '#src/coordinator/live/provider-proxy/acquisition-steps.js';
+import { ESTABLISH_CONTROL_READY_DEADLINE_MS } from '#src/coordinator/live/provider-proxy/role-control.js';
 import type { ProviderProxySetIdentity } from '#src/coordinator/services/provider-proxy-set/identity.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';

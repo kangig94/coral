@@ -1,5 +1,6 @@
 import type {
   ContainmentRequiredControlCallPolicy,
+  ProviderProxyControlChannelCause,
   ProviderProxyHeartbeatMethod,
   ProviderProxyHeartbeatTerminalReason,
   ProviderProxyRole,
@@ -36,6 +37,21 @@ export type ProviderProxySetPreserveDecision =
     }>
   | Readonly<{
       action: 'preserve';
+      reason: 'control_channel_reattaching';
+      fault: 'control-channel-fault';
+      role: ProviderProxyRole;
+      cause: ProviderProxyControlChannelCause;
+      method?: never;
+      policy?: never;
+      attempts: number;
+      elapsedMs: number;
+      boundMs: number;
+      error: string;
+      liveClaims: number;
+      setIdentity: ProviderProxySetIdentity;
+    }>
+  | Readonly<{
+      action: 'preserve';
       reason: 'heartbeat_echo_indeterminate';
       fault: 'heartbeat-indeterminate';
       role: ProviderProxyRole;
@@ -61,13 +77,17 @@ export type ProviderProxySetOperationFaultStopDecision = Readonly<{
   setIdentity: ProviderProxySetIdentity;
 }>;
 
-export type ProviderProxySetControlChannelFaultStopDecision = Readonly<{
-  action: 'stop-and-reap';
-  reason: 'provider_authority_lost';
+export type ProviderProxySetControlReattachmentAwaitAbsenceDecision = Readonly<{
+  action: 'await-containment-absence';
+  reason: 'control_reattachment_refused' | 'control_reattachment_bound_expired';
   fault: 'control-channel-fault';
   role: ProviderProxyRole;
+  cause: ProviderProxyControlChannelCause;
   method?: never;
   policy?: never;
+  attempts: number;
+  elapsedMs: number;
+  boundMs: number;
   error: string;
   liveClaims: number;
   setIdentity: ProviderProxySetIdentity;
@@ -161,14 +181,14 @@ export type ProviderProxySetRetirementStopDecision = FaultlessDecisionFields &
 
 export type ProviderProxySetAuthorityStopDecision =
   | ProviderProxySetOperationFaultStopDecision
-  | ProviderProxySetControlChannelFaultStopDecision
   | ProviderProxySetHeartbeatFaultStopDecision
   | ProviderProxySetHeartbeatHoldExhaustedStopDecision;
 
 export type ProviderProxySetContainmentDecision =
   | ProviderProxySetAuthorityStopDecision
   | ProviderProxySetRetirementStopDecision
-  | ProviderProxySetHeartbeatAwaitAbsenceDecision;
+  | ProviderProxySetHeartbeatAwaitAbsenceDecision
+  | ProviderProxySetControlReattachmentAwaitAbsenceDecision;
 
 export type ProviderProxySetDecision =
   | ProviderProxySetPreserveDecision
@@ -206,6 +226,13 @@ export function renderProviderProxySetDecision(
       subject = decision.role;
       error = decision.error;
       break;
+    case 'control_channel_reattaching':
+    case 'control_reattachment_refused':
+    case 'control_reattachment_bound_expired':
+      fault = decision.fault;
+      subject = decision.role;
+      error = decision.error;
+      break;
     case 'provider_authority_lost':
       fault = decision.fault;
       subject = decision.fault === 'operation-control-failed' ? decision.policy.method : decision.role;
@@ -232,6 +259,6 @@ export function renderProviderProxySetDecision(
   }
   return {
     severity,
-    message: `Provider proxy set action=${decision.action} reason=${decision.reason} fault=${fault} subject=${subject} liveClaims=${decision.liveClaims} set=${providerProxySetReference(decision.setIdentity)} error=${error}${decision.fault === 'heartbeat-failed' ? ` terminalReason=${decision.terminalReason}` : ''}${decision.fault === 'heartbeat-indeterminate' ? ` incidentReason=${decision.incidentReason}` : ''}${decision.fault === 'heartbeat-hold-exhausted' || decision.fault === 'heartbeat-answer-unusable-hold-exhausted' ? ` attempts=${decision.attempts} elapsedMs=${decision.elapsedMs} schedulerLatenessMs=${decision.schedulerLatenessMs} lastIncidentReason=${decision.lastIncidentReason}` : ''}${decision.fault === 'heartbeat-method-not-found' ? ` incidentReason=${decision.incidentReason}` : ''}${summary === undefined ? '' : ` ${summary}`}`,
+    message: `Provider proxy set action=${decision.action} reason=${decision.reason} fault=${fault} subject=${subject} liveClaims=${decision.liveClaims} set=${providerProxySetReference(decision.setIdentity)} error=${error}${decision.fault === 'control-channel-fault' ? ` cause=${decision.cause} attempts=${decision.attempts} elapsedMs=${decision.elapsedMs} boundMs=${decision.boundMs}` : ''}${decision.fault === 'heartbeat-failed' ? ` terminalReason=${decision.terminalReason}` : ''}${decision.fault === 'heartbeat-indeterminate' ? ` incidentReason=${decision.incidentReason}` : ''}${decision.fault === 'heartbeat-hold-exhausted' || decision.fault === 'heartbeat-answer-unusable-hold-exhausted' ? ` attempts=${decision.attempts} elapsedMs=${decision.elapsedMs} schedulerLatenessMs=${decision.schedulerLatenessMs} lastIncidentReason=${decision.lastIncidentReason}` : ''}${decision.fault === 'heartbeat-method-not-found' ? ` incidentReason=${decision.incidentReason}` : ''}${summary === undefined ? '' : ` ${summary}`}`,
   };
 }

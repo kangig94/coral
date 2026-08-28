@@ -129,8 +129,13 @@ export interface BackendHealth {
       disposition: 'held' | 'awaiting-containment-absence';
       role?: string;
       method?: string;
+      cause?: 'closed' | 'invalid-unattributable-frame';
+      attempts?: number;
+      elapsedMs?: number;
+      boundMs?: number;
+      liveClaims?: number;
       incidentReason: string;
-      waitingFor: 'heartbeat-evidence-window' | 'independent-containment-absence';
+      waitingFor: 'heartbeat-evidence-window' | 'control-reattachment' | 'independent-containment-absence';
     }>;
   };
 }
@@ -192,8 +197,20 @@ function isProviderProxySets(value: unknown): value is NonNullable<BackendHealth
         (entry.disposition === 'held' || entry.disposition === 'awaiting-containment-absence') &&
         (entry.role === undefined || typeof entry.role === 'string') &&
         (entry.method === undefined || typeof entry.method === 'string') &&
+        (entry.cause === undefined || entry.cause === 'closed' || entry.cause === 'invalid-unattributable-frame') &&
+        (entry.attempts === undefined || isNonNegativeInteger(entry.attempts)) &&
+        (entry.elapsedMs === undefined || isNonNegativeFiniteNumber(entry.elapsedMs)) &&
+        (entry.boundMs === undefined || isNonNegativeFiniteNumber(entry.boundMs)) &&
+        (entry.liveClaims === undefined || isNonNegativeInteger(entry.liveClaims)) &&
+        (entry.cause === undefined ||
+          (entry.attempts !== undefined &&
+            entry.elapsedMs !== undefined &&
+            entry.boundMs !== undefined &&
+            entry.liveClaims !== undefined)) &&
         typeof entry.incidentReason === 'string' &&
-        (entry.waitingFor === 'heartbeat-evidence-window' || entry.waitingFor === 'independent-containment-absence'),
+        (entry.waitingFor === 'heartbeat-evidence-window' ||
+          entry.waitingFor === 'control-reattachment' ||
+          entry.waitingFor === 'independent-containment-absence'),
     )
   );
 }

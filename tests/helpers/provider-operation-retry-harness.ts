@@ -178,11 +178,13 @@ export function createProviderOperationRetryHarness(method: RetryMethod, orderin
       proxyInstanceId: record.operation.proxyInstanceId,
       autonomousDeadline: {
         orphanTimeoutMs: 37_000,
+        adoptionWindowMs: 23_000,
         heartbeatHoldBound: { spanMs: 23_000, materialSchedulerLatenessMs: 5_750 },
       },
       stopAndReap,
       stopHeartbeats: () => undefined,
       initiateControlClose: async () => undefined,
+      controlReattachment: {} as never,
       registerSuccessionOperation: async () => ({ kind: 'registered' as const }),
     },
     setIdentity: providerProxySetIdentityFromRecord(record),

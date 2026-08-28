@@ -110,7 +110,7 @@ function inactiveHeartbeats() {
 }
 
 /** `runtime.ids`/`storage` plus the default deadline configuration for the `stopAndReap`-only blocks below. */
-function unusedRuntimePorts(): Pick<Runtime, 'ids' | 'env' | 'storage'> {
+function unusedRuntimePorts(): Runtime {
   const fail = (member: string) => (): never => {
     throw new Error(`unexpected use of runtime.${member} during stopAndReap`);
   };
@@ -118,7 +118,7 @@ function unusedRuntimePorts(): Pick<Runtime, 'ids' | 'env' | 'storage'> {
     ids: { uuid: fail('ids.uuid'), randomBytes: fail('ids.randomBytes') } as unknown as Runtime['ids'],
     env: { get: () => undefined } as unknown as Runtime['env'],
     storage: new Proxy({}, { get: fail('storage') }) as unknown as Runtime['storage'],
-  };
+  } as unknown as Runtime;
 }
 
 /**
@@ -710,6 +710,7 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
     });
     expect(recovered.autonomousDeadline).toEqual({
       orphanTimeoutMs: capsule.orphanTimeoutMs,
+      adoptionWindowMs: capsule.orphanTimeoutMs - capsule.teardownReserveMs,
       heartbeatHoldBound: expect.any(Object),
     });
     expect(recovered.autonomousDeadline).not.toHaveProperty('owner');

@@ -140,7 +140,10 @@ import { acquireProviderProxySet } from '#src/coordinator/live/provider-proxy/in
 import { isProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
 import { createProviderProxyAuthorityHeartbeatAssembly } from '#src/coordinator/live/provider-proxy/heartbeat.js';
 import { establishRoleControl } from '#src/coordinator/live/provider-proxy/role-control.js';
-import { createProviderProxyAuthorityFaultLatch } from '#src/coordinator/services/provider-proxy-authority-fault.js';
+import {
+  createProviderProxyAuthorityFaultLatch,
+  type ProviderProxyAuthorityObservation,
+} from '#src/coordinator/services/provider-proxy-authority-fault.js';
 import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set/claim-mirror.js';
 import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set/index.js';
 import {
@@ -1132,23 +1135,30 @@ describe('provider-proxy process topology: acquisition', () => {
     lifecycle.acquisitionSucceeded(admission.slotId, set);
     expect(lifecycle.routeFor(routeKey)).toBe(set);
 
+    const channelIncident = new Promise<ProviderProxyAuthorityObservation>((resolve) => {
+      const unsubscribe = set.onIncident((incident) => {
+        if (incident.kind !== 'control-channel-fault') return;
+        unsubscribe();
+        resolve(incident);
+      });
+    });
     await environment.handles.reaper?.close();
-    const observedFault = await Promise.race([
-      set.faulted,
+    const observedIncident = await Promise.race([
+      channelIncident,
       new Promise<null>((resolve) => setTimeout(() => resolve(null), 500)),
     ]);
     const observation = {
-      fault:
-        observedFault?.kind === 'control-channel-fault'
-          ? { kind: observedFault.kind, role: observedFault.role }
-          : observedFault,
+      incident:
+        observedIncident?.kind === 'control-channel-fault'
+          ? { kind: observedIncident.kind, role: observedIncident.role, cause: observedIncident.cause }
+          : observedIncident,
       routeAvailable: lifecycle.routeFor(routeKey) !== null,
     };
     set.stopHeartbeats();
     await set.initiateControlClose();
 
     expect(observation).toEqual({
-      fault: { kind: 'control-channel-fault', role: 'reaper' },
+      incident: { kind: 'control-channel-fault', role: 'reaper', cause: 'closed' },
       routeAvailable: false,
     });
   });

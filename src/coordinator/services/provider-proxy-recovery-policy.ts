@@ -17,6 +17,7 @@ import {
   ProviderProxyRoleControlRemoteError,
   ProviderProxyRoleControlUnavailableError,
 } from '../live/provider-proxy/role-control.js';
+import type { ProviderProxyControlRedemptionOutcome } from '../live/provider-proxy/control-redemption.js';
 import {
   disappearanceDeliveryAttemptOutcomeSchema,
   type ContainmentDisappearanceNotice,
@@ -55,6 +56,7 @@ export const PROVIDER_PROXY_RECOVERY_CONSUMER_SEAMS = [
   'startup-set-inheritance',
   'ordinary-set-inheritance',
   'containment-attempt',
+  'control-reattachment',
   'exact-capsule-recovery',
   'capsule-retirement',
   'foreign-capsule-retirement',
@@ -508,6 +510,7 @@ export function createProviderProxyRecoveryDispatcher(
       let retired = false;
       const aborters = new Set<(reason: unknown) => void>();
       const exactSources = new Map<string, Observation>();
+      const reattachmentSources = new Map<string, Observation>();
 
       const retireFatal = (observation: Extract<Observation, { kind: 'corrupt' | 'refused' | 'unknown' }>): void => {
         if (retired) return;
@@ -547,6 +550,61 @@ export function createProviderProxyRecoveryDispatcher(
         throw new Error('provider_proxy_exact_capsule_reducer_incomplete');
       };
 
+      const retireReattachment = (value: unknown, sourceId: string): void => {
+        if (retired) return;
+        retired = true;
+        const reason = new Error(`provider_proxy_control_reattachment_decided:${sourceId}`);
+        for (const abort of aborters) abort(reason);
+        sinks.evidence(value, sourceId);
+      };
+
+      const reduceControlReattachment = (): void => {
+        if (retired) return;
+        const absence = reattachmentSources.get('absence');
+        if (absence?.kind === 'evidence' && absence.value !== null) {
+          retireReattachment(absence.value, 'absence');
+          return;
+        }
+        const redemption = reattachmentSources.get('redemption');
+        if (redemption === undefined) return;
+        if (redemption.kind === 'evidence') {
+          const value = redemption.value;
+          if (typeof value !== 'object' || value === null || !('kind' in value)) {
+            retireFatal(
+              unknown('role-control', new Error('provider_proxy_control_redemption_contract_violation')) as Extract<
+                Observation,
+                { kind: 'unknown' }
+              >,
+            );
+            return;
+          }
+          const outcome = value as ProviderProxyControlRedemptionOutcome;
+          if (outcome.kind === 'redeemed' || outcome.kind === 'refused') {
+            retireReattachment(outcome, 'redemption');
+            return;
+          }
+          if (outcome.kind !== 'unavailable') {
+            retireFatal(
+              unknown('role-control', new Error('provider_proxy_control_redemption_contract_violation')) as Extract<
+                Observation,
+                { kind: 'unknown' }
+              >,
+            );
+            return;
+          }
+          if (absence === undefined) return;
+          retired = true;
+          for (const abort of aborters) abort(new Error('provider_proxy_control_reattachment_retry'));
+          effects.retry(sinks, { producerId: 'role-control', incident: outcome.incident });
+          return;
+        }
+        if (redemption.kind === 'unavailable' && absence !== undefined) {
+          retired = true;
+          for (const abort of aborters) abort(new Error('provider_proxy_control_reattachment_retry'));
+          effects.retry(sinks, { producerId: redemption.producerId, incident: redemption.incident });
+        }
+      };
+
       const submit = (sourceId: string, observation: Observation): void => {
         if (retired) return;
         if (observation.kind === 'forwarded-fatal') {
@@ -578,6 +636,11 @@ export function createProviderProxyRecoveryDispatcher(
         if (seam === 'exact-capsule-recovery') {
           exactSources.set(sourceId, observation);
           reduceExactCapsule();
+          return;
+        }
+        if (seam === 'control-reattachment') {
+          reattachmentSources.set(sourceId, observation);
+          reduceControlReattachment();
           return;
         }
         if (seam === 'containment-attempt') {

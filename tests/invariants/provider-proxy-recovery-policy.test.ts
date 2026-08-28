@@ -665,6 +665,9 @@ const EXPECTED_REJECTION_NODE_INVENTORY = [
   'src/coordinator/services/provider-proxy-recovery-policy.ts :: start :: Promise.then(rejected) :: Promise.resolve(produced).then',
   'src/coordinator/services/provider-proxy-recovery-policy.ts :: start :: catch#1 :: calls=[submit, classifyRejection] assignments=[]',
   'src/coordinator/services/provider-proxy-set/index.ts :: #beginContainment :: Promise.catch :: slot.authority.initiateControlClose().catch',
+  'src/coordinator/services/provider-proxy-set/index.ts :: #promoteControlReattachment :: Promise.catch :: oldAuthority.initiateControlClose().catch',
+  'src/coordinator/services/provider-proxy-set/index.ts :: #promoteControlReattachment :: Promise.catch :: promoted.initiateControlClose().catch',
+  'src/coordinator/services/provider-proxy-set/index.ts :: #promoteControlReattachment :: catch#1 :: calls=[this.#isCurrentControlReattachment, this.#deps.onError, singleLineErrorSummary, this.#scheduleControlReattachmentRetry] assignments=[window.attemptAbort]',
   'src/coordinator/services/provider-proxy-set/index.ts :: #report :: catch#1 :: calls=[] assignments=[]',
   'src/coordinator/services/provider-proxy-set/index.ts :: containmentAbsent :: Promise.catch :: authorityToClose .initiateControlClose() .catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: createInitialDispositionLatch :: Promise.catch :: promise.catch',
@@ -693,6 +696,9 @@ function rejectionJustification(fingerprint: string): string {
   }
   if (fingerprint.includes(' :: #beginContainment :: ')) {
     return 'A best-effort close cannot revoke a containment the lifecycle has already entered.';
+  }
+  if (fingerprint.includes(' :: #promoteControlReattachment :: ')) {
+    return 'Failed promotion keeps the original hold and displaced-control close failure cannot revoke the promoted authority.';
   }
   if (fingerprint.includes(' :: containmentAbsent :: ')) {
     return 'Authority-close observation cannot settle or relabel disappearance delivery.';
@@ -1039,6 +1045,11 @@ describe('provider proxy recovery policy construction', () => {
       },
       {
         occurrence:
+          'src/coordinator/services/provider-proxy-set/index.ts :: #runControlReattachmentAttempt :: control-reattachment',
+        justification: 'A channel hold reduces authenticated redemption and independent absence concurrently.',
+      },
+      {
+        occurrence:
           'src/coordinator/services/provider-proxy-set/index.ts :: #runContainmentAttempt :: containment-attempt',
         justification: 'The containment race reduces stop-and-reap and proof evidence in one registered turn.',
       },
@@ -1089,6 +1100,16 @@ describe('provider proxy recovery policy construction', () => {
         occurrence:
           'src/coordinator/services/provider-proxy-set/index.ts :: #recoverExactCapsule :: redemption/capsule-redemption',
         justification: 'Exact recovery contributes capsule redemption under the redemption source id.',
+      },
+      {
+        occurrence:
+          'src/coordinator/services/provider-proxy-set/index.ts :: #runControlReattachmentAttempt :: absence/containment-proof',
+        justification: 'The channel hold observes independent containment absence alongside redemption.',
+      },
+      {
+        occurrence:
+          'src/coordinator/services/provider-proxy-set/index.ts :: #runControlReattachmentAttempt :: redemption/role-control',
+        justification: 'The channel hold invokes the authority-owned authenticated redemption attempt.',
       },
       {
         occurrence:

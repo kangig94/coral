@@ -1,3 +1,4 @@
+import type * as RoleControlModule from '#src/coordinator/live/provider-proxy/role-control.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { strictControlExchangeResult as strictTestExchange } from '#tests/support/control-exchange.js';
 import { randomUUID } from 'node:crypto';
@@ -16,7 +17,8 @@ vi.mock('#src/provider-proxy/role-spawn.js', async (importOriginal) => {
   };
 });
 
-vi.mock('#src/coordinator/live/provider-proxy/role-control.js', () => ({
+vi.mock('#src/coordinator/live/provider-proxy/role-control.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof RoleControlModule>()),
   establishRoleControl: vi.fn(),
 }));
 
@@ -202,6 +204,7 @@ describe('createProviderProxyAcquisitionSteps', () => {
       proxyInstanceId: options.proxyInstanceId,
       autonomousDeadline: {
         orphanTimeoutMs: Number.MAX_SAFE_INTEGER,
+        adoptionWindowMs: Number.MAX_SAFE_INTEGER,
         heartbeatHoldBound: {
           spanMs: Number.MAX_SAFE_INTEGER,
           materialSchedulerLatenessMs: Number.MAX_SAFE_INTEGER,
@@ -214,6 +217,7 @@ describe('createProviderProxyAcquisitionSteps', () => {
       },
       stopAndReap: () => new Promise<never>(() => undefined),
       initiateControlClose: async () => undefined,
+      controlReattachment: {} as never,
       installRecoveryCredential: async () =>
         ({
           kind: 'installed',
@@ -307,6 +311,7 @@ describe('createProviderProxyAcquisitionSteps', () => {
       proxyInstanceId: options.proxyInstanceId,
       autonomousDeadline: {
         orphanTimeoutMs: Number.MAX_SAFE_INTEGER,
+        adoptionWindowMs: Number.MAX_SAFE_INTEGER,
         heartbeatHoldBound: {
           spanMs: Number.MAX_SAFE_INTEGER,
           materialSchedulerLatenessMs: Number.MAX_SAFE_INTEGER,
@@ -319,6 +324,7 @@ describe('createProviderProxyAcquisitionSteps', () => {
       },
       stopAndReap: () => new Promise<never>(() => undefined),
       initiateControlClose: async () => undefined,
+      controlReattachment: {} as never,
       installRecoveryCredential: async () =>
         ({
           kind: 'installed',

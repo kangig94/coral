@@ -25,6 +25,26 @@ declare const setIdentity: ProviderProxySetIdentity;
 declare const retrySafePolicy: RetrySafeControlCallPolicy;
 declare const containmentPolicy: ContainmentRequiredControlCallPolicy;
 declare const latch: ProviderProxyAuthorityFaultLatch;
+declare const channelIncident: Extract<ProviderProxyAuthorityIncident, { kind: 'control-channel-fault' }>;
+
+// @ts-expect-error a channel ending is an incident and cannot enter the terminal authority latch.
+const channelIncidentCannotBeTerminal: ProviderProxyAuthorityFault = channelIncident;
+void channelIncidentCannotBeTerminal;
+
+// @ts-expect-error the latch accepts only terminal authority faults, never channel-loss observations.
+latch.latch(channelIncident);
+
+const channelIncidentCannotStopAndReap: Extract<ProviderProxySetDecision, { action: 'stop-and-reap' }> = {
+  action: 'stop-and-reap',
+  reason: 'provider_authority_lost',
+  // @ts-expect-error no destructive provider-proxy set decision admits control-channel-fault as its evidence.
+  fault: 'control-channel-fault',
+  role: 'proxy',
+  error: 'closed',
+  liveClaims: 1,
+  setIdentity,
+};
+void channelIncidentCannotStopAndReap;
 
 declare const mutationWithoutDisposition: Readonly<{
   method: string;

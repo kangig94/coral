@@ -37,16 +37,20 @@ export type ProviderProxyHeartbeatMethod = 'control.heartbeat.v1' | 'guardian.he
  *  could not construct or send a heartbeat call at all, so nothing about the peer was ever in question. */
 export type ProviderProxyHeartbeatTerminalReason = 'teardown-latched' | 'local-failure';
 
+export type ProviderProxyControlChannelCause = 'closed' | 'invalid-unattributable-frame';
+
+export type ProviderProxyControlChannelIncident = Readonly<{
+  kind: 'control-channel-fault';
+  role: ProviderProxyRole;
+  cause: ProviderProxyControlChannelCause;
+  error: ControlClientError;
+}>;
+
 export type ProviderProxyAuthorityFault =
   | Readonly<{
       kind: 'operation-control-failed';
       policy: ContainmentRequiredControlCallPolicy;
       error: unknown;
-    }>
-  | Readonly<{
-      kind: 'control-channel-fault';
-      role: ProviderProxyRole;
-      error: ControlClientError;
     }>
   | Readonly<{
       kind: 'heartbeat-failed';
@@ -62,6 +66,7 @@ export type ProviderProxyAuthorityIncident =
       policy: RetrySafeControlCallPolicy;
       error: unknown;
     }>
+  | ProviderProxyControlChannelIncident
   | ProviderProxyHeartbeatObservation;
 
 export type ProviderProxyHeartbeatObservation = Readonly<{
@@ -96,9 +101,25 @@ type PendingIncident = {
 };
 
 function incidentKey(incident: ProviderProxyAuthorityIncident): string {
-  return incident.kind === 'heartbeat-observation'
-    ? JSON.stringify([incident.role, incident.method])
-    : JSON.stringify([incident.kind, incident.policy.method]);
+  switch (incident.kind) {
+    case 'heartbeat-observation':
+      return JSON.stringify([incident.role, incident.method]);
+    case 'control-channel-fault':
+      return JSON.stringify([incident.kind, incident.role]);
+    case 'operation-control-failed':
+      return JSON.stringify([incident.kind, incident.policy.method]);
+  }
+}
+
+export function providerProxyControlChannelIncident(
+  role: ProviderProxyRole,
+  error: ControlClientError,
+): ProviderProxyControlChannelIncident {
+  if (error.origin === 'closed') return { kind: 'control-channel-fault', role, cause: 'closed', error };
+  if (error.origin === 'remote-response' && error.remoteFailure?.kind === 'invalid-frame') {
+    return { kind: 'control-channel-fault', role, cause: 'invalid-unattributable-frame', error };
+  }
+  throw new Error('provider_proxy_control_channel_incident_cause_missing');
 }
 
 function isAcceptedHeartbeat(
@@ -128,10 +149,26 @@ export function createProviderProxyAuthorityFaultLatch(): ProviderProxyAuthority
     resolveFault(fault);
     for (const listener of listeners) listener(fault);
   };
+  const reportIncident = (observation: ProviderProxyAuthorityObservation): void => {
+    if (incidentListeners.size > 0) {
+      for (const listener of incidentListeners) listener(observation);
+      return;
+    }
+    if (isAcceptedHeartbeat(observation)) {
+      const pending = pendingIncidents.get(incidentKey(observation));
+      if (pending !== undefined && pending.incident.kind === 'heartbeat-observation') {
+        pending.accepted = observation;
+      }
+      return;
+    }
+    const key = incidentKey(observation);
+    pendingIncidents.delete(key);
+    pendingIncidents.set(key, { incident: observation, accepted: null });
+  };
   return {
     faulted,
     observeControlClient(role, client) {
-      client.onFault((error) => latch({ kind: 'control-channel-fault', role, error }));
+      client.onFault((error) => reportIncident(providerProxyControlChannelIncident(role, error)));
     },
     latch,
     onFault(listener) {
@@ -142,22 +179,7 @@ export function createProviderProxyAuthorityFaultLatch(): ProviderProxyAuthority
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
-    reportIncident(observation) {
-      if (incidentListeners.size > 0) {
-        for (const listener of incidentListeners) listener(observation);
-        return;
-      }
-      if (isAcceptedHeartbeat(observation)) {
-        const pending = pendingIncidents.get(incidentKey(observation));
-        if (pending !== undefined && pending.incident.kind === 'heartbeat-observation') {
-          pending.accepted = observation;
-        }
-        return;
-      }
-      const key = incidentKey(observation);
-      pendingIncidents.delete(key);
-      pendingIncidents.set(key, { incident: observation, accepted: null });
-    },
+    reportIncident,
     onIncident(listener) {
       incidentListeners.add(listener);
       for (const pending of pendingIncidents.values()) {

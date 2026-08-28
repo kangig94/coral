@@ -14,6 +14,7 @@ import {
 import type { ProviderProxyOperationSnapshot } from '../../services/operation-registry.js';
 import {
   PROXY_TEARDOWN_RESERVE_MS,
+  providerProxyAdoptionWindowMs,
   providerProxyHeartbeatHoldBound,
   resolveProviderProxyDeadlineConfiguration,
 } from '../../../provider-proxy/orphan-deadline.js';
@@ -37,8 +38,16 @@ import {
   type ProxyIdentity,
   type ReaperIdentity,
 } from '../../../provider-proxy/protocol.js';
-import type { ControlClient, ControlExchange } from '../../../provider-proxy/control-client.js';
+import type { ControlClient, ControlExchange, ProviderEventHandler } from '../../../provider-proxy/control-client.js';
 import type { Runtime } from '../../../runtime/ports.js';
+import type { ProviderProxySetIdentity } from '../../services/provider-proxy-set/identity.js';
+import {
+  closeRedeemedProviderProxyControl,
+  providerProxyControlRedemptionBundle,
+  redeemProviderProxyControl,
+  type ProviderProxyControlRedemptionOutcome,
+  type RedeemedProviderProxyControl,
+} from './control-redemption.js';
 import type { ProviderProxyRoleHeartbeats } from './heartbeat.js';
 import type { ProviderProxyAutonomousDeadline, ProviderProxySetAuthority } from './authority.js';
 
@@ -88,11 +97,17 @@ export type SuccessionOperationRegistrationOutcome =
 
 export interface ProviderProxySetRecoveryAuthority extends ProviderProxySetAuthority {
   readonly autonomousDeadline: ProviderProxyAutonomousDeadline;
+  readonly controlReattachment: ProviderProxySetControlReattachment;
   installRecoveryCredential(signal: AbortSignal): Promise<RecoveryCredentialInstallOutcome>;
   registerSuccessionOperation(
     operation: OperationIdentity,
     signal?: AbortSignal,
   ): Promise<SuccessionOperationRegistrationOutcome>;
+}
+
+export interface ProviderProxySetControlReattachment {
+  redeem(setIdentity: ProviderProxySetIdentity, signal: AbortSignal): Promise<ProviderProxyControlRedemptionOutcome>;
+  promote(redemption: RedeemedProviderProxyControl, signal: AbortSignal): Promise<ProviderProxySetRecoveryAuthority>;
 }
 
 type RecoveryCredentialInstallState =
@@ -161,7 +176,8 @@ type ProviderProxySetAuthorityCommonDependencies = Readonly<{
    *  proxy-role path in `acquisition-steps.ts` does. */
   handoffCapsulePath: string;
   /** Kept outside SQLite so the credential secret never enters durable domain records. */
-  runtime: Pick<Runtime, 'ids' | 'env' | 'storage'>;
+  runtime: Runtime;
+  onProviderEvent?(): ProviderEventHandler;
   /** `stopAndReap`'s source for provider roots this generation can still name in set agreement. */
   operationRegistry: ProviderProxyOperationSnapshot;
 }>;
@@ -198,6 +214,7 @@ export function createProviderProxySetAuthority(
   const deadlineConfiguration = deps.recoveryCapsule ?? resolveProviderProxyDeadlineConfiguration(runtime.env);
   const autonomousDeadline: ProviderProxyAutonomousDeadline = Object.freeze({
     orphanTimeoutMs: deadlineConfiguration.orphanTimeoutMs,
+    adoptionWindowMs: providerProxyAdoptionWindowMs(deadlineConfiguration),
     heartbeatHoldBound: providerProxyHeartbeatHoldBound(deadlineConfiguration),
   });
 
@@ -382,11 +399,57 @@ export function createProviderProxySetAuthority(
     return registerInstalledSuccessionOperation(installation.receipt, operation, signal);
   };
 
+  const controlReattachment: ProviderProxySetControlReattachment = {
+    redeem: (setIdentity, signal) =>
+      redeemProviderProxyControl(
+        deps.recoveryCapsule ?? mintRecoveryCapsule(),
+        setIdentity,
+        {
+          runtime,
+          coordinatorIdentity,
+          ...(deps.onProviderEvent === undefined ? {} : { onProviderEvent: deps.onProviderEvent }),
+        },
+        signal,
+      ),
+    promote: async (redemption, signal) => {
+      const bundle = providerProxyControlRedemptionBundle(redemption);
+      try {
+        const promoted = createProviderProxySetAuthority({
+          proxyInstanceId: bundle.proxyIdentity.proxyInstanceId,
+          guardianClient: bundle.clients.guardian,
+          proxyClient: bundle.clients.proxy,
+          reaperClient: bundle.clients.reaper,
+          guardianIdentity: bundle.guardianIdentity,
+          reaperIdentity: bundle.reaperIdentity,
+          proxyIdentityFields: bundle.proxyIdentity,
+          heartbeats: bundle.heartbeats,
+          coordinatorIdentity,
+          handoffCapsulePath,
+          runtime,
+          recoveryCapsule: deps.recoveryCapsule ?? mintRecoveryCapsule(),
+          recoveryOperations: bundle.recoveryOperations,
+          operationRegistry,
+          ...(deps.onProviderEvent === undefined ? {} : { onProviderEvent: deps.onProviderEvent }),
+        });
+        const installation = await promoted.installRecoveryCredential(signal);
+        if (installation.kind === 'cancelled') {
+          signal.throwIfAborted();
+          throw new Error('provider_proxy_recovery_credential_install_cancelled');
+        }
+        return promoted;
+      } catch (error: unknown) {
+        closeRedeemedProviderProxyControl(redemption);
+        throw error;
+      }
+    },
+  };
+
   return {
     proxyInstanceId,
     get autonomousDeadline() {
       return autonomousDeadline;
     },
+    controlReattachment,
     providerHosts: Object.freeze({
       list: async () => {
         const params = providerHostListParamsSchema.parse({});

@@ -578,8 +578,10 @@ async function launchThroughRoute(
     proxyInstanceId: set.shared.proxyInstanceId,
     autonomousDeadline: {
       orphanTimeoutMs: 37_000,
+      adoptionWindowMs: 23_000,
       heartbeatHoldBound: { spanMs: 23_000, materialSchedulerLatenessMs: 5_750 },
     },
+    controlReattachment: {} as never,
     registerSuccessionOperation: async () => ({ kind: 'registered' as const }),
     stopAndReap: async () => ({ disappearanceReceipt: 'gone' }),
     stopHeartbeats: () => undefined,

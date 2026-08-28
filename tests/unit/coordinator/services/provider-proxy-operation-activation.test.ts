@@ -241,13 +241,13 @@ const POLICY_FAILURE_CASES = [
 ] as const satisfies readonly PolicyFailureCase[];
 
 describe('provider proxy operation mutations', () => {
-  it('routes every closed operation client call as a role-specific channel fault', async () => {
-    const closed = Object.assign(new Error('control client closed'), { code: 'control_client_closed' });
+  it('routes every closed operation client call as a role-specific channel incident', async () => {
+    const closed = new ControlClientError('control_client_closed', 'control client closed', 'closed');
     const rejectingClient: OperationControlClient = { exchange: () => Promise.reject(closed) };
-    const faults: ProviderProxyAuthorityFault[] = [];
+    const incidents: ProviderProxyAuthorityIncident[] = [];
     const activationDeps: ProviderProxyOperationActivationDeps = {
       ...deps(rejectingClient, rejectingClient),
-      faultAuthority: (fault) => faults.push(fault),
+      reportIncident: (incident) => incidents.push(incident),
     };
     const prepareAttempt = providerOperationPrepareAttempt(activationDeps, OPERATION, PREPARED);
     const calls = [
@@ -273,15 +273,15 @@ describe('provider proxy operation mutations', () => {
 
     for (const call of calls) await expect(call()).rejects.toBe(closed);
 
-    expect(faults).toEqual([
-      { kind: 'control-channel-fault', role: 'proxy', error: closed },
-      { kind: 'control-channel-fault', role: 'proxy', error: closed },
-      { kind: 'control-channel-fault', role: 'guardian', error: closed },
-      { kind: 'control-channel-fault', role: 'proxy', error: closed },
-      { kind: 'control-channel-fault', role: 'proxy', error: closed },
-      { kind: 'control-channel-fault', role: 'proxy', error: closed },
-      { kind: 'control-channel-fault', role: 'proxy', error: closed },
-      { kind: 'control-channel-fault', role: 'proxy', error: closed },
+    expect(incidents).toEqual([
+      { kind: 'control-channel-fault', role: 'proxy', cause: 'closed', error: closed },
+      { kind: 'control-channel-fault', role: 'proxy', cause: 'closed', error: closed },
+      { kind: 'control-channel-fault', role: 'guardian', cause: 'closed', error: closed },
+      { kind: 'control-channel-fault', role: 'proxy', cause: 'closed', error: closed },
+      { kind: 'control-channel-fault', role: 'proxy', cause: 'closed', error: closed },
+      { kind: 'control-channel-fault', role: 'proxy', cause: 'closed', error: closed },
+      { kind: 'control-channel-fault', role: 'proxy', cause: 'closed', error: closed },
+      { kind: 'control-channel-fault', role: 'proxy', cause: 'closed', error: closed },
     ]);
   });
 
@@ -474,25 +474,26 @@ describe('provider proxy operation mutations', () => {
     ]);
   });
 
-  it('faults authority for a closed settlement channel without reporting an incident', async () => {
-    const closed = Object.assign(new Error('control client closed'), { code: 'control_client_closed' });
+  it('reports a closed settlement channel without faulting authority', async () => {
+    const closed = new ControlClientError('control_client_closed', 'control client closed', 'closed');
     const routing = faultRoutingDeps({ exchange: () => Promise.reject(closed) });
 
     await expect(settleProviderOperation(routing.activationDeps, OPERATION, 7)).rejects.toBe(closed);
 
-    expect(routing.faults).toEqual([
+    expect(routing.faults).toEqual([]);
+    expect(routing.incidents).toEqual([
       {
         kind: 'control-channel-fault',
         role: 'proxy',
+        cause: 'closed',
         error: closed,
       },
     ]);
-    expect(routing.incidents).toEqual([]);
   });
 
-  it('allows a closed settlement channel to latch after a retry-safe incident is preserved', async () => {
+  it('reports a closed settlement channel after a retry-safe incident is preserved', async () => {
     const timeout = Object.assign(new Error('settlement timed out'), { code: 'control_call_failed' });
-    const closed = Object.assign(new Error('control client closed'), { code: 'control_client_closed' });
+    const closed = new ControlClientError('control_client_closed', 'control client closed', 'closed');
     const failures = [timeout, closed];
     const routing = faultRoutingDeps({
       exchange: () => {
@@ -506,14 +507,16 @@ describe('provider proxy operation mutations', () => {
     expect(routing.incidents).toHaveLength(1);
 
     await expect(settleProviderOperation(routing.activationDeps, OPERATION, 7)).rejects.toBe(closed);
-    expect(routing.faults).toEqual([
+    expect(routing.faults).toEqual([]);
+    expect(routing.incidents).toEqual([
+      expect.objectContaining({ kind: 'operation-control-failed' }),
       expect.objectContaining({
         kind: 'control-channel-fault',
         role: 'proxy',
+        cause: 'closed',
         error: closed,
       }),
     ]);
-    expect(routing.incidents).toHaveLength(1);
   });
 
   it.each([

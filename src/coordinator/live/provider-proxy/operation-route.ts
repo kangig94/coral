@@ -27,7 +27,16 @@ import type {
   ProviderProxyAuthorityObservation,
   ProviderProxyRoleClients,
 } from '../../services/provider-proxy-authority-fault.js';
-import type { ProviderProxySetIdentity } from '../../services/provider-proxy-set/identity.js';
+import {
+  providerProxySetIdentitiesEqual,
+  type ProviderProxySetIdentity,
+} from '../../services/provider-proxy-set/identity.js';
+import {
+  closeRedeemedProviderProxyControl,
+  providerProxyControlRedemptionBundle,
+  type ProviderProxyControlRedemptionOutcome,
+  type RedeemedProviderProxyControl,
+} from './control-redemption.js';
 import type { ProviderProxySetAuthority } from './authority.js';
 import type { ProviderProxySetRecoveryAuthority } from './set-authority.js';
 
@@ -41,6 +50,11 @@ export interface DurableProviderProxyOperationAuthority extends ProviderProxyOpe
   readonly faulted: Promise<ProviderProxyAuthorityFault>;
   onFault(listener: (fault: ProviderProxyAuthorityFault) => void): () => void;
   onIncident(listener: (observation: ProviderProxyAuthorityObservation) => void): () => void;
+  redeemControl(signal: AbortSignal): Promise<ProviderProxyControlRedemptionOutcome>;
+  promoteControl(
+    redemption: RedeemedProviderProxyControl,
+    signal: AbortSignal,
+  ): Promise<DurableProviderProxyOperationAuthority>;
   prepareOperation(attempt: ProviderOperationPrepareAttempt): Promise<PrepareProviderOperationResult>;
   inspectOperation(operation: OperationIdentity, prepareAttemptKey: string): Promise<InspectProviderOperationResult>;
   authorizeOperation(
@@ -90,12 +104,15 @@ export function isProviderProxyOperationAuthority(
   return (
     deadline !== undefined &&
     typeof deadline.orphanTimeoutMs === 'number' &&
+    typeof deadline.adoptionWindowMs === 'number' &&
     typeof deadline.heartbeatHoldBound?.spanMs === 'number' &&
     typeof deadline.heartbeatHoldBound.materialSchedulerLatenessMs === 'number' &&
     candidate.setIdentity !== undefined &&
     candidate.faulted instanceof Promise &&
     typeof candidate.onFault === 'function' &&
     typeof candidate.onIncident === 'function' &&
+    typeof candidate.redeemControl === 'function' &&
+    typeof candidate.promoteControl === 'function' &&
     typeof candidate.prepareOperation === 'function' &&
     typeof candidate.inspectOperation === 'function' &&
     typeof candidate.authorizeOperation === 'function' &&
@@ -109,7 +126,10 @@ export function isProviderProxyOperationAuthority(
 
 export function createProviderProxyOperationAuthority(deps: {
   base: ProviderProxySetAuthority &
-    Pick<ProviderProxySetRecoveryAuthority, 'autonomousDeadline' | 'registerSuccessionOperation'>;
+    Pick<
+      ProviderProxySetRecoveryAuthority,
+      'autonomousDeadline' | 'controlReattachment' | 'registerSuccessionOperation'
+    >;
   setIdentity: ProviderProxySetIdentity;
   clients: ProviderProxyRoleClients<ControlClient>;
   faults: ProviderProxyAuthorityFaultLatch;
@@ -123,7 +143,7 @@ export function createProviderProxyOperationAuthority(deps: {
     faultAuthority: deps.faults.latch,
     reportIncident: deps.faults.reportIncident,
   };
-  return {
+  const authority: DurableProviderProxyOperationAuthority = {
     ...deps.base,
     get autonomousDeadline() {
       return deps.base.autonomousDeadline;
@@ -131,6 +151,22 @@ export function createProviderProxyOperationAuthority(deps: {
     faulted: deps.faults.faulted,
     onFault: deps.faults.onFault,
     onIncident: deps.faults.onIncident,
+    redeemControl: (signal) => deps.base.controlReattachment.redeem(deps.setIdentity, signal),
+    promoteControl: async (redemption, signal) => {
+      const bundle = providerProxyControlRedemptionBundle(redemption);
+      if (!providerProxySetIdentitiesEqual(deps.setIdentity, bundle.setIdentity)) {
+        closeRedeemedProviderProxyControl(redemption);
+        throw new Error('provider_proxy_control_promotion_identity_mismatch');
+      }
+      const base = await deps.base.controlReattachment.promote(redemption, signal);
+      return createProviderProxyOperationAuthority({
+        base,
+        setIdentity: bundle.setIdentity,
+        clients: bundle.clients,
+        faults: bundle.faults,
+        mutationRpcTimeoutMs: deps.mutationRpcTimeoutMs,
+      });
+    },
     setIdentity: deps.setIdentity,
     prepareOperation: (attempt) => prepareProviderOperation(activationDeps, attempt),
     inspectOperation: (operation, prepareAttemptKey) =>
@@ -145,4 +181,5 @@ export function createProviderProxyOperationAuthority(deps: {
       settleProviderOperation(activationDeps, operation, finalProviderSeq),
     buildOperationControl: (operation) => buildProviderOperationControl(activationDeps, operation),
   };
+  return authority;
 }

@@ -25,11 +25,6 @@ import {
 } from '../../services/provider-proxy-authority-fault.js';
 import type { ProviderProxySetIdentity } from '../../services/provider-proxy-set/identity.js';
 import {
-  ESTABLISH_CONTROL_CONNECT_TIMEOUT_MS,
-  ESTABLISH_CONTROL_READY_DEADLINE_MS,
-  ESTABLISH_CONTROL_RETRY_INTERVAL_MS,
-} from './acquisition-steps.js';
-import {
   createProviderProxyAuthorityHeartbeatAssembly,
   type ProviderProxyAuthorityHeartbeatAssembly,
   type ProviderProxyRoleHeartbeats,
@@ -39,6 +34,9 @@ import {
   ProviderProxyRoleControlRemoteError,
   ProviderProxyRoleControlUnavailableError,
   type ProviderProxyRoleControlAvailabilityIncident,
+  ESTABLISH_CONTROL_CONNECT_TIMEOUT_MS,
+  ESTABLISH_CONTROL_READY_DEADLINE_MS,
+  ESTABLISH_CONTROL_RETRY_INTERVAL_MS,
 } from './role-control.js';
 
 const redeemedProviderProxyControlBrand: unique symbol = Symbol('RedeemedProviderProxyControl');

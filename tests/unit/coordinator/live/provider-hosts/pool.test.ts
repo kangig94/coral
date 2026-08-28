@@ -59,6 +59,7 @@ function fakeInheritedProxySet(proxyInstanceId: string): ProviderProxyOperationA
     ...base,
     autonomousDeadline: {
       orphanTimeoutMs: Number.MAX_SAFE_INTEGER,
+      adoptionWindowMs: Number.MAX_SAFE_INTEGER,
       heartbeatHoldBound: {
         spanMs: Number.MAX_SAFE_INTEGER,
         materialSchedulerLatenessMs: Number.MAX_SAFE_INTEGER,
@@ -101,6 +102,10 @@ function fakeDurableProxySet(
     faulted: new Promise<never>(() => {}),
     onFault: () => () => undefined,
     onIncident: () => () => undefined,
+    redeemControl: () => new Promise<never>(() => undefined),
+    promoteControl: async () => {
+      throw new Error('unused');
+    },
     prepareOperation:
       options.prepareOperation ??
       (async () => {

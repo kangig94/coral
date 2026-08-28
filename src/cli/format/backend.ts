@@ -757,9 +757,13 @@ function formatRunningStatus(health: RunningHealth): string {
     lines.push('', 'Provider proxy sets:');
     for (const set of providerProxySets) {
       const subject = [set.role, set.method].filter((value) => value !== undefined).join(' ');
+      const reattachment =
+        set.cause === undefined
+          ? ''
+          : ` cause=${set.cause} attempts=${set.attempts ?? 'unknown'} elapsedMs=${set.elapsedMs ?? 'unknown'} boundMs=${set.boundMs ?? 'unknown'} liveClaims=${set.liveClaims ?? 'unknown'}`;
       lines.push(
         `  buildSetId=${set.setIdentity.buildSetId} proxyInstanceId=${set.setIdentity.proxyInstanceId} hostFingerprint=${set.setIdentity.hostFingerprint}`,
-        `    disposition=${set.disposition}${subject.length === 0 ? '' : ` subject=${subject}`} incident=${set.incidentReason} waitingFor=${set.waitingFor}`,
+        `    disposition=${set.disposition}${subject.length === 0 ? '' : ` subject=${subject}`} incident=${set.incidentReason} waitingFor=${set.waitingFor}${reattachment}`,
       );
     }
   }

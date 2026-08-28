@@ -538,6 +538,7 @@ function establishActivationRoute(setIdentity: ProviderProxySetIdentity) {
     proxyInstanceId: setIdentity.proxyInstanceId,
     autonomousDeadline: {
       orphanTimeoutMs: Number.MAX_SAFE_INTEGER,
+      adoptionWindowMs: Number.MAX_SAFE_INTEGER,
       heartbeatHoldBound: {
         spanMs: Number.MAX_SAFE_INTEGER,
         materialSchedulerLatenessMs: Number.MAX_SAFE_INTEGER,
@@ -547,6 +548,10 @@ function establishActivationRoute(setIdentity: ProviderProxySetIdentity) {
     faulted: authorityFaults.faulted,
     onFault: authorityFaults.onFault,
     onIncident: authorityFaults.onIncident,
+    redeemControl: () => new Promise<never>(() => undefined),
+    promoteControl: async () => {
+      throw new Error('unused');
+    },
     stopHeartbeats: () => undefined,
     stopAndReap: () => new Promise<never>(() => undefined),
     initiateControlClose: async () => undefined,

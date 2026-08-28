@@ -38,6 +38,7 @@ export interface ProviderProxySetAuthority {
 
 export type ProviderProxyAutonomousDeadline = Readonly<{
   orphanTimeoutMs: number;
+  adoptionWindowMs: number;
   heartbeatHoldBound: ProviderProxyHeartbeatHoldBound;
 }>;
 

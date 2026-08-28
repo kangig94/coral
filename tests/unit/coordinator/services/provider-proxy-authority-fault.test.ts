@@ -102,7 +102,7 @@ describe('provider proxy authority fault latch', () => {
     expect(observed).toEqual([unusable]);
   });
 
-  it.each(['proxy', 'guardian', 'reaper'] as const)('latches a %s channel fault with its exact role', (role) => {
+  it.each(['proxy', 'guardian', 'reaper'] as const)('reports a %s channel close with its exact role', (role) => {
     const sources = {
       proxy: faultSource(),
       guardian: faultSource(),
@@ -112,19 +112,19 @@ describe('provider proxy authority fault latch', () => {
     latch.observeControlClient('proxy', sources.proxy.client);
     latch.observeControlClient('guardian', sources.guardian.client);
     latch.observeControlClient('reaper', sources.reaper.client);
-    let observed: { role: ProviderProxyRole; code: string } | null = null;
-    latch.onFault((fault) => {
-      if (fault.kind === 'control-channel-fault') {
-        observed = { role: fault.role, code: fault.error.code };
+    let observed: { role: ProviderProxyRole; cause: string; code: string } | null = null;
+    latch.onIncident((incident) => {
+      if (incident.kind === 'control-channel-fault') {
+        observed = { role: incident.role, cause: incident.cause, code: incident.error.code };
       }
     });
 
     sources[role].fault(new ControlClientError('control_client_closed', `${role} channel closed`, 'closed'));
 
-    expect(observed).toEqual({ role, code: 'control_client_closed' });
+    expect(observed).toEqual({ role, cause: 'closed', code: 'control_client_closed' });
   });
 
-  it('retains the first fault and invokes late subscribers inline', () => {
+  it('keeps separate channel observations visible without latching either as terminal', () => {
     const sources = {
       proxy: faultSource(),
       guardian: faultSource(),
@@ -134,16 +134,20 @@ describe('provider proxy authority fault latch', () => {
     latch.observeControlClient('proxy', sources.proxy.client);
     latch.observeControlClient('guardian', sources.guardian.client);
     latch.observeControlClient('reaper', sources.reaper.client);
-    const first = new ControlClientError('control_client_closed', 'guardian channel closed', 'closed');
-    sources.guardian.fault(first);
-    sources.proxy.fault(new ControlClientError('control_client_closed', 'proxy channel closed', 'closed'));
-    let observed: unknown = null;
+    const observedIncidents: unknown[] = [];
+    const observedFaults: unknown[] = [];
+    latch.onIncident((incident) => observedIncidents.push(incident));
+    latch.onFault((fault) => observedFaults.push(fault));
+    const guardian = new ControlClientError('control_client_closed', 'guardian channel closed', 'closed');
+    const proxy = new ControlClientError('control_client_closed', 'proxy channel closed', 'closed');
+    sources.guardian.fault(guardian);
+    sources.proxy.fault(proxy);
 
-    latch.onFault((fault) => {
-      observed = fault;
-    });
-
-    expect(observed).toEqual({ kind: 'control-channel-fault', role: 'guardian', error: first });
+    expect(observedIncidents).toEqual([
+      { kind: 'control-channel-fault', role: 'guardian', cause: 'closed', error: guardian },
+      { kind: 'control-channel-fault', role: 'proxy', cause: 'closed', error: proxy },
+    ]);
+    expect(observedFaults).toEqual([]);
   });
 
   it('observes a client fault that was stored before enrollment inline', () => {
@@ -152,12 +156,29 @@ describe('provider proxy authority fault latch', () => {
     source.fault(error);
     const latch = createProviderProxyAuthorityFaultLatch();
     let observed: unknown = null;
-    latch.onFault((fault) => {
-      observed = fault;
+    latch.onIncident((incident) => {
+      observed = incident;
     });
 
     latch.observeControlClient('reaper', source.client);
 
-    expect(observed).toEqual({ kind: 'control-channel-fault', role: 'reaper', error });
+    expect(observed).toEqual({ kind: 'control-channel-fault', role: 'reaper', cause: 'closed', error });
+  });
+
+  it('preserves an unattributable invalid frame as a different channel cause', () => {
+    const source = faultSource();
+    const error = new ControlClientError('control_call_failed', 'invalid frame', 'remote-response', {
+      kind: 'invalid-frame',
+    });
+    const latch = createProviderProxyAuthorityFaultLatch();
+    const observed: unknown[] = [];
+    latch.onIncident((incident) => observed.push(incident));
+    latch.observeControlClient('proxy', source.client);
+
+    source.fault(error);
+
+    expect(observed).toEqual([
+      { kind: 'control-channel-fault', role: 'proxy', cause: 'invalid-unattributable-frame', error },
+    ]);
   });
 });

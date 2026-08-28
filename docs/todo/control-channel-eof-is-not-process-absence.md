@@ -1,14 +1,15 @@
 # TODO — control-channel failure is not process absence
 
-**Status**: open. Authenticated three-role redemption is now owned by
-`coordinator/live/provider-proxy/control-redemption.ts`; routing a control-channel fault through it remains.
+**Status**: implemented on the unreleased branch. The missing exact-set operator exit remains open in
+[`operator-shutdown-cannot-reap-a-live-set.md`](./operator-shutdown-cannot-reap-a-live-set.md).
 
 ## What is observed
 
 `connectControlClient` reports socket close as `control_client_closed`. It also turns a malformed inbound frame
-into an `invalid-frame` remote failure, latches the client fault, and destroys the socket. The authority fault
-latch records either trigger as `control-channel-fault`, and provider-proxy set policy treats that as a terminal
-fault that authorizes `stop-and-reap`, including while durable claims remain live.
+into an `invalid-frame` remote failure, latches the client fault, and destroys the socket. The authority
+observer reports either trigger as a `control-channel-fault` incident with the exact transport cause (`closed`
+or `invalid-unattributable-frame`). The terminal-fault union has no channel-loss member, so a channel
+observation cannot construct a `stop-and-reap` decision.
 
 The observations are real but narrower than the verdict: one connection ended, either directly or after bytes
 on it failed frame validation. Neither establishes that the coordinator process ended, that a replacement
@@ -35,9 +36,31 @@ appointed to override missing evidence.
 - It must not turn EOF or an invalid frame into silence. The connection did end; the missing piece is a
   non-destructive disposition and a bounded, authenticated route back to control.
 
-## Remaining work
+## Implemented disposition
 
-The standing handoff grant is the re-provable credential: the same coordinator instance identity receives the
-registry's memoized redemption for a retry, and the three-role owner returns one branded replacement bundle.
-Route `control-channel-fault` through a hold that ends on authenticated redemption, decisive containment
-absence, the enforcer's adoption/teardown act, or `coral-cli backend shutdown`.
+The standing handoff grant is the re-provable credential. A channel incident moves the established slot to
+`reattaching`, removes its route immediately, stops the unusable generation's heartbeats, and leaves every
+durable claim attached. The window records the first monotonic observation, triggering role and exact cause,
+attempts, one absolute adoption-window deadline, and the current attempt token. It is separate from every
+heartbeat evidence window.
+
+Each attempt runs authenticated guardian→reaper→proxy redemption beside independent containment proof.
+Decisive absence enters the existing disappearance-delivery path. Branded redemption rebuilds the complete
+operation authority, invalidates callbacks from the displaced attempt token, subscribes the replacement,
+closes the old control, restores `available` or `draining`, restores routing only for `available`, and notifies
+establishment so live operations reconcile against newly built controls. A decisive refusal stops redemption
+immediately. Refusal and absolute-bound expiry both enter the existing `await-containment-absence` path and do
+not initiate destructive action. Unavailability retries only within the original bound; neither a retry nor a
+second channel incident moves its deadline.
+
+## Reachable exits and the unsupported one
+
+The reachable exits are authenticated reattachment and combined discharge after independently proven
+containment absence plus durable-claim discharge. Independent absence attempts continue without an attempt
+limit after refusal or expiry.
+
+There is currently no supported forced exit for a live but unreachable exact set. `coral-cli backend shutdown`
+is not one: both operator shutdown transports use `replaced`, which selects handoff and deliberately preserves
+the set for a successor. An operator must not be directed to ordinary shutdown to end this hold. Until an
+exact-set containment command exists, a peer that remains alive but unreachable can remain represented
+indefinitely; the linked tracking entry owns that follow-up.

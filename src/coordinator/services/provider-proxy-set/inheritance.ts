@@ -417,6 +417,7 @@ async function buildInheritedAuthority(
       recoveryCapsule: capsule,
       recoveryOperations: bundle.recoveryOperations,
       operationRegistry: deps.operationRegistry,
+      ...(deps.onProviderEvent === undefined ? {} : { onProviderEvent: deps.onProviderEvent }),
     });
     const installation = await base.installRecoveryCredential(signal);
     switch (installation.kind) {

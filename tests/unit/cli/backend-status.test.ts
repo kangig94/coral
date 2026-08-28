@@ -1228,6 +1228,22 @@ describe('backend status provider proxy dispositions', () => {
             incidentReason: 'method-not-found',
             waitingFor: 'independent-containment-absence',
           },
+          {
+            setIdentity: {
+              buildSetId: '33333333-3333-4333-8333-333333333333',
+              hostFingerprint: 'b'.repeat(64),
+              proxyInstanceId: '44444444-4444-4444-8444-444444444444',
+            },
+            disposition: 'held',
+            role: 'proxy',
+            cause: 'invalid-unattributable-frame',
+            attempts: 3,
+            elapsedMs: 1250,
+            boundMs: 23000,
+            liveClaims: 2,
+            incidentReason: 'control_channel_reattaching',
+            waitingFor: 'control-reattachment',
+          },
         ],
       },
     } satisfies HealthSnapshot;
@@ -1242,6 +1258,13 @@ describe('backend status provider proxy dispositions', () => {
         '  buildSetId=11111111-1111-4111-8111-111111111111 proxyInstanceId=22222222-2222-4222-8222-222222222222 hostFingerprint=' +
           'a'.repeat(64),
         '    disposition=awaiting-containment-absence subject=guardian guardian.heartbeat.v1 incident=method-not-found waitingFor=independent-containment-absence',
+      ].join('\n'),
+    );
+    expect(formatBackendStatus(status, { kind: 'absent' }, null)).toContain(
+      [
+        '  buildSetId=33333333-3333-4333-8333-333333333333 proxyInstanceId=44444444-4444-4444-8444-444444444444 hostFingerprint=' +
+          'b'.repeat(64),
+        '    disposition=held subject=proxy incident=control_channel_reattaching waitingFor=control-reattachment cause=invalid-unattributable-frame attempts=3 elapsedMs=1250 boundMs=23000 liveClaims=2',
       ].join('\n'),
     );
   });

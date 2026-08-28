@@ -178,8 +178,13 @@ export type HealthSnapshot = {
       disposition: 'held' | 'awaiting-containment-absence';
       role?: string;
       method?: string;
+      cause?: 'closed' | 'invalid-unattributable-frame';
+      attempts?: number;
+      elapsedMs?: number;
+      boundMs?: number;
+      liveClaims?: number;
       incidentReason: string;
-      waitingFor: 'heartbeat-evidence-window' | 'independent-containment-absence';
+      waitingFor: 'heartbeat-evidence-window' | 'control-reattachment' | 'independent-containment-absence';
     }>;
   };
 };

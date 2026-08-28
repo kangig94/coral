@@ -960,6 +960,7 @@ describe('attemptProviderProxySetInheritance', () => {
     if (outcome.kind !== 'inherited') throw new Error('inheritance did not return its operation authority');
     expect(outcome.set.autonomousDeadline).toEqual({
       orphanTimeoutMs: capsule.orphanTimeoutMs,
+      adoptionWindowMs: capsule.orphanTimeoutMs - capsule.teardownReserveMs,
       heartbeatHoldBound: providerProxyHeartbeatHoldBound(capsule),
     });
     expect(isProviderProxyOperationAuthority(outcome.set)).toBe(true);

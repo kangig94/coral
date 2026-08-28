@@ -1,6 +1,7 @@
 import type { z } from 'zod';
 
 import { PROXY_CONTROL_RPC_TIMEOUT_MS } from '../../../provider-proxy/protocol.js';
+import { PROXY_CONTROL_ESTABLISH_READY_MS } from '../../../provider-proxy/orphan-deadline.js';
 import type { ProxyControlProtocolErrorCode } from '../../../provider-proxy/protocol.js';
 import {
   connectRoleControlWithRetry,
@@ -17,6 +18,12 @@ import {
 import type { HeartbeatObservation } from '../../../provider-proxy/heartbeat-observation.js';
 import type { ProviderProxyHeartbeatMethod, ProviderProxyRole } from '../../services/provider-proxy-authority-fault.js';
 import { heartbeatOnce } from './heartbeat.js';
+
+/** How `establishRoleControl` is timed. Here rather than beside a caller: two callers now open role control
+ *  — fresh acquisition and live redemption — and a constant owned by one of them makes the other import it. */
+export const ESTABLISH_CONTROL_CONNECT_TIMEOUT_MS = 2_000;
+export const ESTABLISH_CONTROL_RETRY_INTERVAL_MS = 20;
+export const ESTABLISH_CONTROL_READY_DEADLINE_MS = PROXY_CONTROL_ESTABLISH_READY_MS;
 
 export type ProviderProxyRoleOpenMethod =
   | 'control.open.v1'

@@ -28,11 +28,12 @@ import {
 import type { ProviderOperationRecord } from '../../store/provider-operation-record.js';
 import type { ProviderStopCause } from '../../providers/contract.js';
 import type { OperationStopControl } from './operation-registry.js';
-import type {
-  ControlCallPolicy,
-  ProviderProxyAuthorityFault,
-  ProviderProxyAuthorityIncident,
-  ProviderProxyRole,
+import {
+  providerProxyControlChannelIncident,
+  type ControlCallPolicy,
+  type ProviderProxyAuthorityFault,
+  type ProviderProxyAuthorityIncident,
+  type ProviderProxyRole,
 } from './provider-proxy-authority-fault.js';
 import type { ProviderProxySetIdentity } from './provider-proxy-set/identity.js';
 
@@ -119,7 +120,7 @@ function routeControlCallFailure(
   reportIncident: (incident: ProviderProxyAuthorityIncident) => void,
 ): void {
   if (controlClientErrorCode(error) === 'control_client_closed') {
-    faultAuthority({ kind: 'control-channel-fault', role, error: error as ControlClientError });
+    reportIncident(providerProxyControlChannelIncident(role, error as ControlClientError));
     return;
   }
   if (policy.effect === 'observation') return;

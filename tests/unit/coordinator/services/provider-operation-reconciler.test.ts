@@ -491,6 +491,7 @@ function createHarness(
     proxyInstanceId: record.operation.proxyInstanceId,
     autonomousDeadline: {
       orphanTimeoutMs: Number.MAX_SAFE_INTEGER,
+      adoptionWindowMs: Number.MAX_SAFE_INTEGER,
       heartbeatHoldBound: {
         spanMs: Number.MAX_SAFE_INTEGER,
         materialSchedulerLatenessMs: Number.MAX_SAFE_INTEGER,
@@ -499,6 +500,10 @@ function createHarness(
     faulted: new Promise<never>(() => {}),
     onFault: () => () => undefined,
     onIncident: () => () => undefined,
+    redeemControl: () => new Promise<never>(() => undefined),
+    promoteControl: async () => {
+      throw new Error('unused');
+    },
     setIdentity: {
       buildSetId: record.operation.buildSetId,
       hostFingerprint: record.locator.hostFingerprint,

@@ -33,7 +33,6 @@ import { DETACHED_CONTAINMENT_KIND } from '../../../provider-proxy/guardian.js';
 import type { ControlClient, ProviderEventHandler } from '../../../provider-proxy/control-client.js';
 import {
   CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV,
-  PROXY_CONTROL_ESTABLISH_READY_MS,
   resolveProviderProxyDeadlineConfiguration,
 } from '../../../provider-proxy/orphan-deadline.js';
 import {
@@ -50,7 +49,12 @@ import {
 } from '../../../provider-proxy/protocol.js';
 import type { AcquisitionUndo, ProviderProxyAcquisitionSteps } from './index.js';
 import { createProviderProxyAuthorityHeartbeatAssembly } from './heartbeat.js';
-import { establishRoleControl } from './role-control.js';
+import {
+  establishRoleControl,
+  ESTABLISH_CONTROL_CONNECT_TIMEOUT_MS,
+  ESTABLISH_CONTROL_READY_DEADLINE_MS,
+  ESTABLISH_CONTROL_RETRY_INTERVAL_MS,
+} from './role-control.js';
 import { createProviderProxySetAuthority } from './set-authority.js';
 import { buildGuardianSpawnUndo } from './spawn-undo.js';
 import { createProviderProxyOperationAuthority, type ProviderProxyOperationAuthority } from './operation-route.js';
@@ -69,11 +73,6 @@ import { createProviderProxyAuthorityFaultLatch } from '../../services/provider-
  * request (see `establishRoleControl`, `role-control.ts`) or report a malformed teardown as success (see
  * `createProviderProxySetAuthority`'s `stopAndReap`, `set-authority.ts`).
  */
-
-// See `redeemProviderProxyControl` in `coordinator/live/provider-proxy/control-redemption.ts`.
-export const ESTABLISH_CONTROL_CONNECT_TIMEOUT_MS = 2_000;
-export const ESTABLISH_CONTROL_RETRY_INTERVAL_MS = 20;
-export const ESTABLISH_CONTROL_READY_DEADLINE_MS = PROXY_CONTROL_ESTABLISH_READY_MS;
 
 // Prepare can consume a full app-server cold start plus guardian staging. A shorter caller deadline would turn
 // an ordinary cold start into an ambiguous mutation and delay the reconciler until inspection or replay proves it.
@@ -438,6 +437,7 @@ export function createProviderProxyAcquisitionSteps(
           handoffCapsulePath,
           runtime,
           operationRegistry: options.operationRegistry,
+          ...(options.onProviderEvent === undefined ? {} : { onProviderEvent: options.onProviderEvent }),
         });
         const installation = await base.installRecoveryCredential(new AbortController().signal);
         if (installation.kind !== 'installed') {

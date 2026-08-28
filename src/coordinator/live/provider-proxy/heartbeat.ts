@@ -9,11 +9,12 @@ import {
   heartbeatObservationFromExchange,
   type HeartbeatObservation,
 } from '../../../provider-proxy/heartbeat-observation.js';
-import type {
-  ProviderProxyAuthorityFaultLatch,
-  ProviderProxyHeartbeatMethod,
-  ProviderProxyHeartbeatTerminalReason,
-  ProviderProxyRole,
+import {
+  providerProxyControlChannelIncident,
+  type ProviderProxyAuthorityFaultLatch,
+  type ProviderProxyHeartbeatMethod,
+  type ProviderProxyHeartbeatTerminalReason,
+  type ProviderProxyRole,
 } from '../../services/provider-proxy-authority-fault.js';
 
 /** Sends one heartbeat through the transport's provenance-preserving exchange surface. */
@@ -173,7 +174,7 @@ export function createProviderProxyAuthorityHeartbeatAssembly(
             schedulerLatenessMs,
           });
         },
-        (error) => faults.latch({ kind: 'control-channel-fault', role, error }),
+        (error) => faults.reportIncident(providerProxyControlChannelIncident(role, error)),
         (error, terminalReason) => {
           faults.latch({ kind: 'heartbeat-failed', role, method, terminalReason, error });
           const observed =

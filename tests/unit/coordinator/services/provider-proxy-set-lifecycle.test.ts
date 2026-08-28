@@ -364,6 +364,9 @@ function fakeAuthority(
     stopHeartbeats?: DurableProviderProxyOperationAuthority['stopHeartbeats'];
     initiateControlClose?: DurableProviderProxyOperationAuthority['initiateControlClose'];
     heartbeatHoldBound?: ProviderProxyHeartbeatHoldBound;
+    adoptionWindowMs?: number;
+    redeemControl?: DurableProviderProxyOperationAuthority['redeemControl'];
+    promoteControl?: DurableProviderProxyOperationAuthority['promoteControl'];
   } = {},
 ): DurableProviderProxyOperationAuthority {
   const record = options.record ?? providerOperationRecord('executing');
@@ -373,6 +376,7 @@ function fakeAuthority(
     proxyInstanceId: record.operation.proxyInstanceId,
     autonomousDeadline: {
       orphanTimeoutMs: Number.MAX_SAFE_INTEGER,
+      adoptionWindowMs: options.adoptionWindowMs ?? Number.MAX_SAFE_INTEGER,
       heartbeatHoldBound: options.heartbeatHoldBound ?? {
         spanMs: Number.MAX_SAFE_INTEGER,
         materialSchedulerLatenessMs: Number.MAX_SAFE_INTEGER,
@@ -387,6 +391,12 @@ function fakeAuthority(
         return () => undefined;
       }),
     onIncident: faults?.onIncident ?? (() => () => undefined),
+    redeemControl: options.redeemControl ?? (() => new Promise<never>(() => undefined)),
+    promoteControl:
+      options.promoteControl ??
+      (async () => {
+        throw new Error('unused');
+      }),
     registerSuccessionOperation: async () => ({ kind: 'registered' as const }),
     stopAndReap: options.stopAndReap ?? (async () => ({ unconfirmed: 'not proved' })),
     stopHeartbeats: options.stopHeartbeats ?? (() => undefined),
@@ -745,7 +755,14 @@ describe('ProviderProxySetLifecycle', () => {
     unusable();
 
     expect(stopAndReap).not.toHaveBeenCalled();
-    expect(lifecycle.snapshot().states).toEqual(['available']);
+    // The accepted echo cleared the window, so the two incidents after it are a fresh run rather than a
+    // continuation: the set stays available, and what is held is the new unusable answer, not a carryover.
+    expect(lifecycle.snapshot()).toEqual(
+      expect.objectContaining({
+        states: ['available'],
+        operatorDispositions: [expect.objectContaining({ disposition: 'held', incidentReason: 'unclassified' })],
+      }),
+    );
   });
 
   it('reports summary=periodic for a heartbeat hold past the suppression window, the same as for operation-control', () => {
@@ -1824,35 +1841,212 @@ describe('ProviderProxySetLifecycle', () => {
     ]);
   });
 
-  it('reaps live claims after a control-channel fault', () => {
+  it('reattaches a channel incident atomically, restores routing, and rejects displaced callbacks', async () => {
     const record = providerOperationRecord('executing');
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([record]);
     const stopAndReap = vi.fn(async () => ({ unconfirmed: 'still live' }) as const);
-    const authority = fakeAuthority({ record, stopAndReap });
-    const reportLifecycle = vi.fn();
+    const oldFaults = createProviderProxyAuthorityFaultLatch();
+    const promotedFaults = createProviderProxyAuthorityFaultLatch();
+    const closeOld = vi.fn(async () => undefined);
+    const promoted = fakeAuthority({ record, faults: promotedFaults });
+    const authority = fakeAuthority({
+      record,
+      faults: oldFaults,
+      stopAndReap,
+      initiateControlClose: closeOld,
+      redeemControl: async () => ({ kind: 'redeemed' }) as never,
+      promoteControl: async () => promoted,
+    });
+    const controlEstablished = vi.fn();
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: new ManualClock(),
+      proveContainmentAbsent: noContainmentProof,
+      reportLifecycle: () => undefined,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    const admission = lifecycle.beginFreshAcquisition('reattachment-route');
+    if (admission.kind !== 'accepted') throw new Error('expected reattachment admission');
+    lifecycle.acquisitionSucceeded(admission.slotId, authority);
+
+    oldFaults.reportIncident({
+      kind: 'control-channel-fault',
+      role: 'guardian',
+      cause: 'closed',
+      error: new ControlClientError('control_client_closed', 'guardian channel closed', 'closed'),
+    });
+    await drainMicrotasks();
+
+    expect(lifecycle.routeFor('reattachment-route')).toBe(promoted);
+    expect(lifecycle.snapshot().states).toEqual(['available']);
+    expect(controlEstablished.mock.calls.map(([established]) => established)).toEqual([authority, promoted]);
+    expect(closeOld).toHaveBeenCalledOnce();
+    expect(stopAndReap).not.toHaveBeenCalled();
+
+    oldFaults.latch({
+      kind: 'operation-control-failed',
+      policy: containmentOperationPolicy,
+      error: new Error('displaced generation callback'),
+    });
+
+    expect(lifecycle.routeFor('reattachment-route')).toBe(promoted);
+    expect(lifecycle.snapshot().states).toEqual(['available']);
+    expect(stopAndReap).not.toHaveBeenCalled();
+  });
+
+  it('restores draining after reattachment when the channel ended during a drain', async () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const faults = createProviderProxyAuthorityFaultLatch();
+    const promoted = fakeAuthority({ record });
+    const authority = fakeAuthority({
+      record,
+      faults,
+      redeemControl: async () => ({ kind: 'redeemed' }) as never,
+      promoteControl: async () => promoted,
+    });
     const lifecycle = lifecycleFor({
       claims,
       controlEstablished: ignoreControlEstablished,
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
       time: new ManualClock(),
       proveContainmentAbsent: noContainmentProof,
-      reportLifecycle,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    const admission = lifecycle.beginFreshAcquisition('draining-reattachment');
+    if (admission.kind !== 'accepted') throw new Error('expected reattachment admission');
+    lifecycle.acquisitionSucceeded(admission.slotId, authority);
+    lifecycle.beginGracefulDrain(authority.setIdentity);
+
+    faults.reportIncident({
+      kind: 'control-channel-fault',
+      role: 'proxy',
+      cause: 'invalid-unattributable-frame',
+      error: new ControlClientError('control_call_failed', 'invalid frame', 'remote-response', {
+        kind: 'invalid-frame',
+      }),
+    });
+    await drainMicrotasks();
+
+    expect(lifecycle.snapshot().states).toEqual(['draining']);
+    expect(lifecycle.routeFor('draining-reattachment')).toBeNull();
+  });
+
+  it('stops redemption immediately on refusal and awaits independent absence without reaping', async () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const faults = createProviderProxyAuthorityFaultLatch();
+    const redeemControl = vi.fn(async () => ({
+      kind: 'refused' as const,
+      refusal: { kind: 'identity-disagreement' as const },
+    }));
+    const stopAndReap = vi.fn(async () => ({ unconfirmed: 'must not run' }) as const);
+    const clock = new ManualClock();
+    const authority = fakeAuthority({ record, faults, redeemControl, stopAndReap, adoptionWindowMs: 100 });
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
     lifecycle.registerInheritedSet(authority);
 
-    latchAuthorityFault(authority, {
+    faults.reportIncident({
       kind: 'control-channel-fault',
-      role: 'guardian',
-      error: new Error('guardian channel closed') as never,
+      role: 'reaper',
+      cause: 'closed',
+      error: new ControlClientError('control_client_closed', 'reaper closed', 'closed'),
     });
+    await drainMicrotasks();
+    clock.elapse(99);
+    clock.runDue();
+    await drainMicrotasks();
 
-    expect(stopAndReap).toHaveBeenCalledOnce();
-    expect(reportLifecycle).toHaveBeenCalledWith(
-      'warn',
-      expect.stringContaining('action=stop-and-reap reason=provider_authority_lost fault=control-channel-fault'),
+    expect(redeemControl).toHaveBeenCalledOnce();
+    expect(stopAndReap).not.toHaveBeenCalled();
+    expect(lifecycle.snapshot()).toEqual(
+      expect.objectContaining({
+        states: ['containing'],
+        operatorDispositions: [
+          expect.objectContaining({
+            disposition: 'awaiting-containment-absence',
+            incidentReason: 'control_reattachment_refused',
+            cause: 'closed',
+          }),
+        ],
+      }),
+    );
+  });
+
+  it('keeps one absolute bound across retries and a second fault, then awaits absence without reaping', async () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const faults = createProviderProxyAuthorityFaultLatch();
+    const redeemControl = vi.fn<DurableProviderProxyOperationAuthority['redeemControl']>(
+      async () =>
+        ({
+          kind: 'unavailable',
+          incident: { kind: 'role-control-unavailable' },
+          error: new Error('unavailable'),
+        }) as never,
+    );
+    const stopAndReap = vi.fn(async () => ({ unconfirmed: 'must not run' }) as const);
+    const clock = new ManualClock();
+    const authority = fakeAuthority({ record, faults, redeemControl, stopAndReap, adoptionWindowMs: 2_000 });
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.registerInheritedSet(authority);
+    const firstObservedAt = clock.monotonicNow();
+
+    const channelIncident = {
+      kind: 'control-channel-fault' as const,
+      role: 'guardian' as const,
+      cause: 'closed' as const,
+      error: new ControlClientError('control_client_closed', 'guardian closed', 'closed'),
+    };
+    faults.reportIncident(channelIncident);
+    await drainMicrotasks();
+    clock.elapse(1_000);
+    clock.runDue();
+    await drainMicrotasks();
+    lifecycle.recordAuthorityIncident(authority.setIdentity, channelIncident);
+    clock.elapse(1_000);
+    clock.runDue();
+    await drainMicrotasks();
+
+    expect(clock.monotonicNow() - firstObservedAt).toBe(2_000n);
+    expect(redeemControl.mock.calls.length).toBeGreaterThan(1);
+    expect(stopAndReap).not.toHaveBeenCalled();
+    expect(lifecycle.snapshot()).toEqual(
+      expect.objectContaining({
+        states: ['containing'],
+        operatorDispositions: [
+          expect.objectContaining({
+            disposition: 'awaiting-containment-absence',
+            incidentReason: 'control_reattachment_bound_expired',
+            elapsedMs: 2_000,
+            boundMs: 2_000,
+          }),
+        ],
+      }),
     );
   });
 

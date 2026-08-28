@@ -359,7 +359,7 @@ function reaperIdentity(): ReaperIdentity {
   };
 }
 
-function unusedRuntimePorts(): Pick<Runtime, 'ids' | 'env' | 'storage'> {
+function unusedRuntimePorts(): Runtime {
   const fail = (): never => {
     throw new Error('unexpected runtime port call');
   };
@@ -367,5 +367,5 @@ function unusedRuntimePorts(): Pick<Runtime, 'ids' | 'env' | 'storage'> {
     ids: { uuid: fail, randomBytes: fail } as never,
     env: { get: fail } as never,
     storage: new Proxy({}, { get: fail }) as never,
-  };
+  } as unknown as Runtime;
 }

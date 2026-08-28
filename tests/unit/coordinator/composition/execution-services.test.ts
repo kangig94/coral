@@ -14,6 +14,7 @@ import { ProviderOperationReconciler } from '#src/coordinator/services/provider-
 import {
   createProviderProxyAuthorityFaultLatch,
   type ProviderProxyAuthorityFault,
+  type ProviderProxyAuthorityObservation,
 } from '#src/coordinator/services/provider-proxy-authority-fault.js';
 import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set/claim-mirror.js';
 import {
@@ -50,10 +51,11 @@ import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
 const TEST_AUTONOMOUS_DEADLINE = {
   orphanTimeoutMs: 37_000,
+  adoptionWindowMs: 23_000,
   heartbeatHoldBound: providerProxyHeartbeatHoldBound({ orphanTimeoutMs: 37_000, teardownReserveMs: 14_000 }),
 };
 
-type SharedSetControl = 'settlement-timeout' | 'control-channel-fault' | 'heartbeat-failed';
+type SharedSetControl = 'settlement-timeout' | 'heartbeat-failed';
 
 function setReference(identity: ProviderProxySetIdentity): string {
   return `proxyInstanceId=${identity.proxyInstanceId},buildSetId=${identity.buildSetId}`;
@@ -71,6 +73,7 @@ describe('provider proxy operation routing', () => {
       stopAndReap: async () => ({ unconfirmed: 'unused' }) as const,
       stopHeartbeats: () => undefined,
       initiateControlClose: async () => undefined,
+      controlReattachment: {} as never,
       registerSuccessionOperation: async () => ({ kind: 'registered' as const }),
     };
     const faults = createProviderProxyAuthorityFaultLatch();
@@ -83,6 +86,7 @@ describe('provider proxy operation routing', () => {
     });
     const changed = {
       orphanTimeoutMs: 45_000,
+      adoptionWindowMs: 31_000,
       heartbeatHoldBound: { spanMs: 31_000, materialSchedulerLatenessMs: 7_750 },
     };
 
@@ -193,6 +197,7 @@ async function createSharedSetHarness(control: SharedSetControl) {
       stopAndReap,
       stopHeartbeats: () => undefined,
       initiateControlClose: async () => undefined,
+      controlReattachment: {} as never,
       registerSuccessionOperation: async () => ({ kind: 'registered' as const }),
     },
     setIdentity,
@@ -365,7 +370,7 @@ describe('execution services provider-proxy proof composition', () => {
     services.stopProviderOperationReconciler();
   });
 
-  it('does not publish a stored-fault authority through the production subscriber', async () => {
+  it('does not publish a stored terminal-fault authority through the production subscriber', async () => {
     const time = new VirtualTime();
     const runtime = { ...createRealRuntime('prod'), time };
     const db = newRawDatabase(':memory:');
@@ -402,9 +407,11 @@ describe('execution services provider-proxy proof composition', () => {
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
     const fault = {
-      kind: 'control-channel-fault' as const,
+      kind: 'heartbeat-failed' as const,
       role: 'proxy' as const,
-      error: new Error('control already closed') as never,
+      method: 'control.heartbeat.v1' as const,
+      terminalReason: 'teardown-latched' as const,
+      error: new Error('heartbeat refused'),
     };
     const attachOperation = vi.fn(async () => ({
       state: 'attached' as const,
@@ -574,23 +581,20 @@ describe('execution services provider-proxy proof composition', () => {
     }
   });
 
-  it.each(['control-channel-fault', 'heartbeat-failed'] as const)(
+  it.each(['heartbeat-failed'] as const)(
     'contains and reconciles shared-set claims after a %s authority loss',
     async (control) => {
       const harness = await createSharedSetHarness(control);
       const disappearance = vi.spyOn(ProviderOperationReconciler.prototype, 'containmentDisappeared');
       const warning = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
       try {
-        const fault: ProviderProxyAuthorityFault =
-          control === 'control-channel-fault'
-            ? { kind: control, role: 'proxy', error: new Error('control channel lost') as never }
-            : {
-                kind: control,
-                role: 'proxy',
-                method: 'control.heartbeat.v1',
-                terminalReason: 'teardown-latched',
-                error: new Error('heartbeat failed'),
-              };
+        const fault: ProviderProxyAuthorityFault = {
+          kind: control,
+          role: 'proxy',
+          method: 'control.heartbeat.v1',
+          terminalReason: 'teardown-latched',
+          error: new Error('heartbeat failed'),
+        };
 
         expect(harness.claims.size).toBe(3);
         expect(harness.records.every((record) => harness.claims.claimFor(record.operation) !== null)).toBe(true);
@@ -687,7 +691,7 @@ describe('execution services provider-proxy proof composition', () => {
 
     const record = providerOperationRecord('executing');
     const setIdentity = providerProxySetIdentityFromRecord(record);
-    const faultSubscription: { listener: ((fault: ProviderProxyAuthorityFault) => void) | null } = {
+    const incidentSubscription: { listener: ((incident: ProviderProxyAuthorityObservation) => void) | null } = {
       listener: null,
     };
     let stopAttempts = 0;
@@ -696,13 +700,17 @@ describe('execution services provider-proxy proof composition', () => {
       autonomousDeadline: TEST_AUTONOMOUS_DEADLINE,
       setIdentity,
       faulted: new Promise<never>(() => undefined),
-      onFault: (listener: (fault: ProviderProxyAuthorityFault) => void) => {
-        faultSubscription.listener = listener;
+      onFault: () => () => undefined,
+      onIncident: (listener: (incident: ProviderProxyAuthorityObservation) => void) => {
+        incidentSubscription.listener = listener;
         return () => {
-          faultSubscription.listener = null;
+          incidentSubscription.listener = null;
         };
       },
-      onIncident: () => () => undefined,
+      redeemControl: () => new Promise<never>(() => undefined),
+      promoteControl: async () => {
+        throw new Error('unused');
+      },
       stopAndReap: async () => {
         stopAttempts += 1;
         return { unconfirmed: 'control_client_closed' } as const;
@@ -712,13 +720,14 @@ describe('execution services provider-proxy proof composition', () => {
       registerSuccessionOperation: async () => ({ kind: 'registered' as const }),
     } as unknown as DurableProviderProxyOperationAuthority;
     lifecycle.registerInheritedSet(authority);
-    const faultListener = faultSubscription.listener;
-    if (faultListener === null) throw new Error('lifecycle did not subscribe to authority faults');
+    const incidentListener = incidentSubscription.listener;
+    if (incidentListener === null) throw new Error('lifecycle did not subscribe to authority incidents');
 
-    faultListener({
+    incidentListener({
       kind: 'control-channel-fault',
       role: 'proxy',
-      error: new Error('control_client_closed') as never,
+      cause: 'closed',
+      error: new ControlClientError('control_client_closed', 'control closed', 'closed'),
     });
     await flushMicrotasks();
     time.tick(30_000);
@@ -733,7 +742,7 @@ describe('execution services provider-proxy proof composition', () => {
     }).toEqual({
       publicProofCalls: 1,
       proofDb: db,
-      stopAttempts: 1,
+      stopAttempts: 0,
       represented: 0,
       states: [],
     });

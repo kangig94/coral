@@ -2484,10 +2484,7 @@ describe('provider-proxy/set-authority: stopAndReap against a real guardian', ()
       },
       coordinatorIdentity: set.coordinatorIdentity,
       handoffCapsulePath: '/dev/null/unused-handoff-capsule.json',
-      runtime: { ids: undefined, env: { get: () => undefined }, storage: undefined } as unknown as Pick<
-        Runtime,
-        'ids' | 'env' | 'storage'
-      >,
+      runtime: { ids: undefined, env: { get: () => undefined }, storage: undefined } as unknown as Runtime,
       operationRegistry: { operationsFor: () => [], providerRootsFor: () => [ROOT] },
     });
 
@@ -2571,10 +2568,7 @@ describe('provider-proxy/set-authority: stopAndReap against a real guardian', ()
       },
       coordinatorIdentity: set.coordinatorIdentity,
       handoffCapsulePath: '/dev/null/unused-handoff-capsule.json',
-      runtime: { ids: undefined, env: { get: () => undefined }, storage: undefined } as unknown as Pick<
-        Runtime,
-        'ids' | 'env' | 'storage'
-      >,
+      runtime: { ids: undefined, env: { get: () => undefined }, storage: undefined } as unknown as Runtime,
       operationRegistry,
     });
 
