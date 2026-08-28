@@ -23,6 +23,8 @@ import {
   providerHostEvictResponseSchema,
   providerHostInspectResponseSchema,
   providerHostListResponseSchema,
+  providerProxySetContainResponseSchema,
+  type ProviderProxySetContainRequest,
   type ProviderHostSelectorRequest,
 } from './rpc/catalog.js';
 import type { WorkflowPortInput } from './rpc/ports.js';
@@ -569,6 +571,7 @@ function dispatchCatalogRequest(context: AuthorizedCatalogRequest): Promise<Cata
 function executeCoordinatorCatalogRequest(context: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
   const route = context.spec.name;
   if (route.startsWith('coordinator.provider_host.')) return executeProviderHostCatalogRequest(context);
+  if (route === 'coordinator.provider_proxy_set.contain') return executeProviderProxySetContainCatalogRequest(context);
 
   switch (route) {
     case 'coordinator.recovery_quarantine.clear':
@@ -580,6 +583,21 @@ function executeCoordinatorCatalogRequest(context: AuthorizedCatalogRequest): Pr
     default:
       return executeExpansionCatalogRequest(context);
   }
+}
+
+async function executeProviderProxySetContainCatalogRequest({
+  request,
+  rpcPorts,
+  abortSignal,
+}: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
+  if (rpcPorts.providerProxySets === undefined) {
+    throw new Error('provider_proxy_set_operator_exit_unavailable');
+  }
+  return unary(
+    providerProxySetContainResponseSchema.parse(
+      await rpcPorts.providerProxySets.contain(request as ProviderProxySetContainRequest, abortSignal),
+    ),
+  );
 }
 
 async function executeRecoveryQuarantineCatalogRequest({

@@ -15,11 +15,19 @@ import type {
   RedeemedProviderProxyControl,
 } from '../../live/provider-proxy/control-redemption.js';
 import type { ProviderHandoffCapsuleRetirementOutcome } from '../provider-proxy-capsule-discovery.js';
-import { classifyProviderProxySetInheritance, type ProviderProxySetRedemptionOutcome } from './inheritance.js';
+import {
+  classifyProviderProxySetInheritance,
+  type ProviderProxySetContainmentProof,
+  type ProviderProxySetRedemptionOutcome,
+} from './inheritance.js';
 import type {
   ContainmentDisappearanceNotice,
   DisappearanceDeliveryAttemptOutcome,
 } from '../provider-containment-disappearance.js';
+import type {
+  ProviderRepresentationAbandonmentNotice,
+  RepresentationAbandonmentDeliveryAttemptOutcome,
+} from '../provider-representation-abandonment.js';
 import type { ProviderProxySetClaimMirror } from './claim-mirror.js';
 import type {
   ProviderProxyAuthorityFault,
@@ -43,12 +51,15 @@ import {
   type ProviderProxySetHeartbeatAwaitAbsenceDecision,
   type ProviderProxySetHeartbeatHoldExhaustedStopDecision,
   type ProviderProxySetLogSeverity,
+  type ProviderProxySetOperatorAbandonmentDecision,
+  type ProviderProxySetOperatorContainmentDecision,
   type ProviderProxySetPreserveDecision,
   type ProviderProxySetRetirementReason,
   type ProviderProxySetRetirementStopDecision,
 } from './decisions.js';
 import {
   ProviderProxySetIdentityIndex,
+  encodeProviderProxySetAddress,
   providerProxySetAddress,
   providerProxySetAddressKey,
   providerProxySetCapsuleMatchesIdentity,
@@ -67,6 +78,8 @@ const CONTAINMENT_ATTEMPT_MS = 30_000;
 declare const processContainmentEvidenceBrand: unique symbol;
 declare const durableClaimDischargeBrand: unique symbol;
 declare const providerProxySetDischargeBrand: unique symbol;
+declare const operatorAbandonmentEvidenceBrand: unique symbol;
+const operatorExitCapabilityBrand = Symbol('provider-proxy-set-operator-exit-capability');
 
 export type ProcessContainmentEvidence = Readonly<{
   kind: 'containment-absent';
@@ -80,11 +93,30 @@ export type DurableClaimDischarge = Readonly<{
 }> &
   Readonly<{ [durableClaimDischargeBrand]: true }>;
 
-export type ProviderProxySetDischarge = Readonly<{
-  process: ProcessContainmentEvidence;
-  claims: DurableClaimDischarge;
+export type OperatorAbandonmentEvidence = Readonly<{
+  kind: 'operator-abandoned';
+  processObservation: 'enforcer-alive' | 'enforcer-unobservable';
 }> &
-  Readonly<{ [providerProxySetDischargeBrand]: true }>;
+  Readonly<{ [operatorAbandonmentEvidenceBrand]: true }>;
+
+export type ProviderProxySetDischarge =
+  | (Readonly<{
+      kind: 'evidence-backed';
+      process: ProcessContainmentEvidence;
+      claims: DurableClaimDischarge;
+    }> &
+      Readonly<{ [providerProxySetDischargeBrand]: true }>)
+  | (Readonly<{
+      kind: 'operator-abandoned';
+      abandonment: OperatorAbandonmentEvidence;
+      claims: DurableClaimDischarge;
+    }> &
+      Readonly<{ [providerProxySetDischargeBrand]: true }>);
+
+export type ProviderProxySetOperatorExitCapability = Readonly<{
+  setIdentity: ProviderProxySetIdentity;
+  [operatorExitCapabilityBrand]: ProviderProxySetLifecycle;
+}>;
 
 type CapacityClass = 'retained' | 'excess';
 type EstablishmentIntent = 'serve' | 'contain-unclaimed-discovery';
@@ -119,6 +151,7 @@ type EstablishedSlot = {
   capsulePath: string | null;
   completedAttempts: number;
   attemptToken: number;
+  containmentAttemptAbort: AbortController | null;
   retryTimer: TimerHandle | null;
   retirementDecision: ProviderProxySetDrainDecision | null;
   preserveReports: Map<string, PreserveReportState>;
@@ -187,9 +220,31 @@ type ProviderProxySetSlot =
       retirementState: 'not-ready' | 'initial-pending' | 'retry-owned' | 'retired' | 'fatal';
       retirementTimer: TimerHandle | null;
       initialDisposition: InitialDispositionLatch;
+    }
+  | {
+      kind: 'abandonment-delivery-pending';
+      key: ProviderProxySetKey;
+      identity: ProviderProxySetIdentity;
+      address: ProviderProxySetAddress;
+      capacityClass: CapacityClass;
+      abandonmentEvidence: OperatorAbandonmentEvidence;
+      claimOperations: readonly OperationIdentity[];
+      claimDischarge: DurableClaimDischarge | null;
+      pendingOperations: Map<string, OperationIdentity>;
+      initialDeliveries: Map<string, AbsenceDeliveryState>;
+      deliveryRetryTimers: Map<string, TimerHandle>;
+      capsulePath: string | null;
+      routeKey: string | null;
+      retirementState: 'not-ready' | 'initial-pending' | 'retry-owned' | 'retired' | 'fatal';
+      retirementTimer: TimerHandle | null;
+      initialDisposition: InitialDispositionLatch;
     };
 
 type AbsenceDeliveryPendingSlot = Extract<ProviderProxySetSlot, { kind: 'absence-delivery-pending' }>;
+type ReleaseDeliveryPendingSlot = Extract<
+  ProviderProxySetSlot,
+  { kind: 'absence-delivery-pending' | 'abandonment-delivery-pending' }
+>;
 
 /**
  * A retirement this build is attempting against a capsule it may not dial, keyed by the only thing it owns:
@@ -255,14 +310,15 @@ export type ProviderProxySetLifecycleSnapshot = Readonly<{
   startupDiscoveryCompleted: boolean;
   represented: number;
   available: number;
-  states: readonly ProviderProxySetSlot['kind'][];
+  states: readonly ProviderProxySetLifecycleState[];
   pendingOperationCounts: readonly number[];
   operatorDispositions: readonly ProviderProxySetOperatorDisposition[];
 }>;
 
 export type ProviderProxySetOperatorDisposition = Readonly<{
   setIdentity: ProviderProxySetAddress;
-  disposition: 'held' | 'awaiting-containment-absence';
+  setToken: string;
+  disposition: 'held' | 'awaiting-containment-absence' | 'operator-exit-refused';
   role?: string;
   method?: string;
   cause?: ProviderProxyControlChannelIncident['cause'];
@@ -271,7 +327,14 @@ export type ProviderProxySetOperatorDisposition = Readonly<{
   boundMs?: number;
   liveClaims?: number;
   incidentReason: string;
-  waitingFor: 'heartbeat-evidence-window' | 'control-reattachment' | 'independent-containment-absence';
+  waitingFor:
+    | 'heartbeat-evidence-window'
+    | 'control-reattachment'
+    | 'independent-containment-absence'
+    | 'ordinary-drain'
+    | 'set-adoption-deadline'
+    | 'operator-abandonment'
+    | 'store-repair';
 }>;
 
 export type ProviderProxySetLifecycleProgressViolation = Readonly<{
@@ -284,9 +347,12 @@ export type ProviderProxySetLifecycleProgressViolation = Readonly<{
 export type CapsuleRetirementAttemptOutcome = ProviderHandoffCapsuleRetirementOutcome;
 
 export type ContainmentAbsenceOperationalIncident = Readonly<{
-  stage: 'disappearance-delivery' | 'capsule-retirement';
+  stage: 'disappearance-delivery' | 'representation-abandonment-delivery' | 'capsule-retirement';
   operation?: OperationIdentity;
-  code: 'disappearance_consumer_unavailable' | 'capsule_retirement_unavailable';
+  code:
+    | 'disappearance_consumer_unavailable'
+    | 'representation_abandonment_consumer_unavailable'
+    | 'capsule_retirement_unavailable';
   reason: string;
   nextAttemptAtMs: number;
 }>;
@@ -298,14 +364,63 @@ export type ContainmentAbsenceInitialDisposition =
       incidents: readonly ContainmentAbsenceOperationalIncident[];
     }>;
 
+type InitialDispositionState = 'pending' | 'resolved' | 'rejected';
+
 export type ContainmentAbsenceAcceptance = Readonly<{
   kind: 'accepted';
   disappearanceReceipt: string;
   initialDisposition: Promise<ContainmentAbsenceInitialDisposition>;
+  initialDispositionState: InitialDispositionState;
 }>;
 
+type ProviderProxySetOperatorClaimDischarge =
+  | ContainmentAbsenceInitialDisposition
+  | Readonly<{ kind: 'initial-disposition-retry-owned' }>;
+
+export type ProviderProxySetOperatorExitAuthorization =
+  | Readonly<{ kind: 'authorized'; capability: ProviderProxySetOperatorExitCapability }>
+  | Readonly<{ kind: 'set-not-found' }>
+  | Readonly<{ kind: 'not-held'; state: ProviderProxySetLifecycleState }>
+  | Readonly<{ kind: 'deadline-pending'; remainingMs: number }>;
+
+export type ProviderProxySetLifecycleState =
+  | 'acquiring'
+  | 'capsule-recovering'
+  | 'capsule-foreign'
+  | 'recovering'
+  | 'available'
+  | 'draining'
+  | 'reattaching'
+  | 'containing'
+  | 'containment-wait'
+  | 'absence-delivery-pending'
+  | 'abandonment-delivery-pending';
+
+export type ProviderProxySetOperatorExitResult =
+  | Readonly<{
+      kind: 'contained';
+      setIdentity: ProviderProxySetAddress;
+      disappearanceReceipt: string;
+      claimDischarge: ProviderProxySetOperatorClaimDischarge;
+    }>
+  | Readonly<{
+      kind: 'abandoned';
+      setIdentity: ProviderProxySetAddress;
+      processObservation: 'enforcer-alive' | 'enforcer-unobservable';
+      claimDischarge: ProviderProxySetOperatorClaimDischarge;
+    }>
+  | Readonly<{ kind: 'set-not-found'; setIdentity: ProviderProxySetAddress }>
+  | Readonly<{ kind: 'not-held'; setIdentity: ProviderProxySetAddress; state: ProviderProxySetLifecycleState }>
+  | Readonly<{ kind: 'deadline-pending'; setIdentity: ProviderProxySetAddress; remainingMs: number }>
+  | Readonly<{
+      kind: 'enforcer-alive' | 'enforcer-unobservable';
+      setIdentity: ProviderProxySetAddress;
+      roles: readonly ('guardian' | 'reaper')[];
+    }>
+  | Readonly<{ kind: 'store-unreadable'; setIdentity: ProviderProxySetAddress }>;
+
 type InitialDispositionLatch = {
-  state: 'pending' | 'resolved' | 'rejected';
+  state: InitialDispositionState;
   readonly promise: Promise<ContainmentAbsenceInitialDisposition>;
   resolve(value: ContainmentAbsenceInitialDisposition): void;
   reject(error: ProviderProxySetLifecycleFatalError): void;
@@ -442,6 +557,18 @@ function createInitialDispositionLatch(): InitialDispositionLatch {
   return latch;
 }
 
+/**
+ * Latch state changes synchronously with settlement, so a non-pending state makes this promise read bounded.
+ * A pending latch stays owned by lifecycle retry and must be reported rather than awaited by an operator exit.
+ */
+function operatorExitClaimDischarge(
+  source: ContainmentAbsenceAcceptance | InitialDispositionLatch,
+): Promise<ProviderProxySetOperatorClaimDischarge> {
+  const state = 'initialDispositionState' in source ? source.initialDispositionState : source.state;
+  if (state === 'pending') return Promise.resolve({ kind: 'initial-disposition-retry-owned' });
+  return 'initialDisposition' in source ? source.initialDisposition : source.promise;
+}
+
 export class ProviderProxySetLifecycle {
   readonly #deps: ProviderProxySetLifecycleDeps;
   readonly #identityIndex = new ProviderProxySetIdentityIndex();
@@ -519,7 +646,8 @@ export class ProviderProxySetLifecycle {
             slot.kind === 'draining' ||
             slot.kind === 'containing' ||
             slot.kind === 'containment-wait' ||
-            slot.kind === 'absence-delivery-pending') &&
+            slot.kind === 'absence-delivery-pending' ||
+            slot.kind === 'abandonment-delivery-pending') &&
             slot.routeKey === routeKey),
       )
     ) {
@@ -584,6 +712,7 @@ export class ProviderProxySetLifecycle {
       slot.kind === 'containing' ||
       slot.kind === 'containment-wait' ||
       slot.kind === 'absence-delivery-pending' ||
+      slot.kind === 'abandonment-delivery-pending' ||
       !providerProxySetIdentitiesEqual(slot.identity, identity)
     ) {
       return null;
@@ -638,6 +767,7 @@ export class ProviderProxySetLifecycle {
       slot.kind === 'capsule-foreign' ||
       slot.kind === 'recovering' ||
       slot.kind === 'absence-delivery-pending' ||
+      slot.kind === 'abandonment-delivery-pending' ||
       slot.kind === 'containing' ||
       slot.kind === 'containment-wait' ||
       (authority !== null && (slot.authority !== authority || slot.attemptToken !== token))
@@ -682,6 +812,7 @@ export class ProviderProxySetLifecycle {
       slot.kind === 'capsule-foreign' ||
       slot.kind === 'recovering' ||
       slot.kind === 'absence-delivery-pending' ||
+      slot.kind === 'abandonment-delivery-pending' ||
       slot.authority !== authority ||
       slot.attemptToken !== token
     ) {
@@ -691,6 +822,110 @@ export class ProviderProxySetLifecycle {
       return;
     }
     this.#beginFaultContainment(slot, this.#authorityFaultDecision(slot, fault));
+  }
+
+  authorizeOperatorExit(address: ProviderProxySetAddress): ProviderProxySetOperatorExitAuthorization {
+    const key = this.#identityIndex.keyForAddress(address);
+    if (key === null) return { kind: 'set-not-found' };
+    const slot = this.#slots.get(key);
+    if (slot === undefined) return { kind: 'set-not-found' };
+    if (slot.kind === 'reattaching') {
+      const deadline = slot.controlReattachmentWindow?.deadlineMonotonicMs;
+      if (deadline === undefined) return { kind: 'not-held', state: slot.kind };
+      const remainingMs = Number(deadline - this.#deps.time.monotonicNow());
+      if (remainingMs > 0) {
+        this.#recordOperatorExitRefusal(slot, 'operator_exit_deadline_pending', 'set-adoption-deadline');
+        return { kind: 'deadline-pending', remainingMs };
+      }
+    } else if (slot.kind !== 'containing' && slot.kind !== 'containment-wait') {
+      if (slot.kind === 'available' || slot.kind === 'draining') {
+        this.#recordOperatorExitRefusal(slot, 'operator_exit_requires_held_set', 'ordinary-drain');
+      }
+      return { kind: 'not-held', state: slot.kind };
+    }
+    return {
+      kind: 'authorized',
+      capability: Object.freeze({
+        setIdentity: slot.identity,
+        [operatorExitCapabilityBrand]: this,
+      }) as ProviderProxySetOperatorExitCapability,
+    };
+  }
+
+  async completeOperatorExit(
+    capability: ProviderProxySetOperatorExitCapability,
+    proof: ProviderProxySetContainmentProof,
+    abandonUnobservable: boolean,
+  ): Promise<ProviderProxySetOperatorExitResult> {
+    const address = providerProxySetAddress(capability.setIdentity);
+    if (capability[operatorExitCapabilityBrand] !== this) {
+      throw new Error('provider_proxy_operator_exit_capability_invalid');
+    }
+    const slot = this.#slots.get(providerProxySetKey(capability.setIdentity));
+    if (slot === undefined) return { kind: 'set-not-found', setIdentity: address };
+    if (
+      (slot.kind !== 'containing' && slot.kind !== 'containment-wait' && slot.kind !== 'reattaching') ||
+      !providerProxySetIdentitiesEqual(slot.identity, capability.setIdentity)
+    ) {
+      return { kind: 'not-held', setIdentity: address, state: slot.kind };
+    }
+    if (proof.kind === 'store-unreadable') {
+      this.#recordOperatorExitRefusal(slot, 'operator_exit_store_unreadable', 'store-repair');
+      return { kind: 'store-unreadable', setIdentity: address };
+    }
+    if (proof.kind === 'absent') {
+      const decision: ProviderProxySetOperatorContainmentDecision = {
+        action: 'operator-contain',
+        reason: 'operator_exact_set_containment',
+        liveClaims: this.#deps.claims.claimsFor(slot.identity).length,
+        setIdentity: slot.identity,
+      };
+      this.#recordDecision(slot, decision);
+      if (slot.kind === 'reattaching' && slot.controlReattachmentWindow !== null) {
+        this.#clearControlReattachment(slot, slot.controlReattachmentWindow);
+      }
+      const accepted = this.containmentAbsent(slot.identity, proof.receipt);
+      return {
+        kind: 'contained',
+        setIdentity: address,
+        disappearanceReceipt: proof.receipt,
+        claimDischarge: await operatorExitClaimDischarge(accepted),
+      };
+    }
+    if (!abandonUnobservable) {
+      this.#recordOperatorExitRefusal(slot, `operator_exit_${proof.kind}`, 'operator-abandonment');
+      return { kind: proof.kind, setIdentity: address, roles: proof.roles };
+    }
+
+    const decision: ProviderProxySetOperatorAbandonmentDecision = {
+      action: 'abandon',
+      reason: 'operator_exact_set_abandonment',
+      liveClaims: this.#deps.claims.claimsFor(slot.identity).length,
+      setIdentity: slot.identity,
+    };
+    this.#recordDecision(slot, decision);
+    const evidence = Object.freeze({
+      kind: 'operator-abandoned',
+      processObservation: proof.kind,
+    }) as OperatorAbandonmentEvidence;
+    const pending = this.#commitOperatorAbandonment(slot, evidence);
+    void slot.authority.initiateControlClose().catch((error: unknown) => {
+      this.#deps.onError?.(
+        `Provider proxy control close after operator abandonment failed: ${singleLineErrorSummary(error)}`,
+      );
+    });
+    if (pending.pendingOperations.size === 0) {
+      this.#startRetirement(pending);
+    } else {
+      for (const operation of pending.pendingOperations.values())
+        this.#deliverRepresentationRelease(pending, operation);
+    }
+    return {
+      kind: 'abandoned',
+      setIdentity: address,
+      processObservation: proof.kind,
+      claimDischarge: await operatorExitClaimDischarge(pending.initialDisposition),
+    };
   }
 
   containmentAbsent(identity: ProviderProxySetIdentity, disappearanceReceipt: string): ContainmentAbsenceAcceptance {
@@ -715,7 +950,9 @@ export class ProviderProxySetLifecycle {
     if (pending.pendingOperations.size === 0) {
       this.#startRetirement(pending);
     } else {
-      for (const operation of pending.pendingOperations.values()) void this.#deliverDisappearance(pending, operation);
+      for (const operation of pending.pendingOperations.values()) {
+        void this.#deliverRepresentationRelease(pending, operation);
+      }
     }
     return this.#absenceAcceptance(pending);
   }
@@ -725,6 +962,9 @@ export class ProviderProxySetLifecycle {
       kind: 'accepted',
       disappearanceReceipt: slot.processEvidence.receipt,
       initialDisposition: slot.initialDisposition.promise,
+      get initialDispositionState() {
+        return slot.initialDisposition.state;
+      },
     };
   }
 
@@ -752,15 +992,22 @@ export class ProviderProxySetLifecycle {
     }) as DurableClaimDischarge;
   }
 
-  #providerProxySetDischarge(slot: AbsenceDeliveryPendingSlot): ProviderProxySetDischarge {
+  #providerProxySetDischarge(slot: ReleaseDeliveryPendingSlot): ProviderProxySetDischarge {
     if (slot.claimOperations.length === 0) {
       slot.claimDischarge = this.#noLiveClaimsDischarge(slot.identity);
     }
     if (slot.claimDischarge === null) throw new Error('provider_proxy_claim_discharge_missing');
-    return Object.freeze({
-      process: slot.processEvidence,
-      claims: slot.claimDischarge,
-    }) as ProviderProxySetDischarge;
+    return slot.kind === 'absence-delivery-pending'
+      ? (Object.freeze({
+          kind: 'evidence-backed',
+          process: slot.processEvidence,
+          claims: slot.claimDischarge,
+        }) as ProviderProxySetDischarge)
+      : (Object.freeze({
+          kind: 'operator-abandoned',
+          abandonment: slot.abandonmentEvidence,
+          claims: slot.claimDischarge,
+        }) as ProviderProxySetDischarge);
   }
 
   #commitContainmentAbsence(
@@ -782,6 +1029,9 @@ export class ProviderProxySetLifecycle {
         throw new Error('provider_proxy_containment_absence_conflict');
       }
       return { kind: 'unchanged', pending: slot };
+    }
+    if (slot.kind === 'abandonment-delivery-pending') {
+      throw new Error('provider_proxy_containment_absence_after_abandonment');
     }
     if (slot.kind === 'available' || slot.kind === 'draining') {
       throw new Error('provider_proxy_containment_absence_before_authority_fault');
@@ -816,11 +1066,50 @@ export class ProviderProxySetLifecycle {
       if (slot.retryTimer !== null) this.#deps.time.clearTimeout(slot.retryTimer);
     } else if (slot.kind !== 'recovering') {
       slot.attemptToken += 1;
+      slot.containmentAttemptAbort?.abort(new Error('provider_proxy_containment_released'));
+      slot.containmentAttemptAbort = null;
       if (slot.retryTimer !== null) this.#deps.time.clearTimeout(slot.retryTimer);
     }
     const authorityToClose = slot.kind === 'recovering' || slot.kind === 'capsule-recovering' ? null : slot.authority;
     this.#slots.set(key, pending);
     return { kind: 'committed', pending, authorityToClose };
+  }
+
+  #commitOperatorAbandonment(
+    slot: EstablishedSlot,
+    abandonmentEvidence: OperatorAbandonmentEvidence,
+  ): Extract<ProviderProxySetSlot, { kind: 'abandonment-delivery-pending' }> {
+    const claimOperations = this.#deps.claims.claimsFor(slot.identity).map((claim) => claim.operation);
+    const pendingOperations = new Map(claimOperations.map((operation) => [operationKey(operation), operation]));
+    const pending: Extract<ProviderProxySetSlot, { kind: 'abandonment-delivery-pending' }> = {
+      kind: 'abandonment-delivery-pending',
+      key: slot.key,
+      identity: slot.identity,
+      address: slot.address,
+      capacityClass: slot.capacityClass,
+      abandonmentEvidence,
+      claimOperations,
+      claimDischarge: claimOperations.length === 0 ? this.#noLiveClaimsDischarge(slot.identity) : null,
+      pendingOperations,
+      initialDeliveries: new Map(
+        [...pendingOperations.keys()].map((key) => [key, { kind: 'initial-pending' } as const]),
+      ),
+      deliveryRetryTimers: new Map(),
+      capsulePath: slot.capsulePath,
+      routeKey: slot.routeKey,
+      retirementState: 'not-ready',
+      retirementTimer: null,
+      initialDisposition: createInitialDispositionLatch(),
+    };
+    slot.attemptToken += 1;
+    slot.containmentAttemptAbort?.abort(new Error('provider_proxy_containment_abandoned'));
+    slot.containmentAttemptAbort = null;
+    if (slot.controlReattachmentWindow !== null) this.#clearControlReattachment(slot, slot.controlReattachmentWindow);
+    if (slot.retryTimer !== null) this.#deps.time.clearTimeout(slot.retryTimer);
+    this.#removeRoute(slot);
+    slot.authority.stopHeartbeats();
+    this.#slots.set(slot.key, pending);
+    return pending;
   }
 
   snapshot(): ProviderProxySetLifecycleSnapshot {
@@ -831,7 +1120,9 @@ export class ProviderProxySetLifecycle {
       available: slots.filter((slot) => slot.kind === 'available').length,
       states: slots.map((slot) => slot.kind),
       pendingOperationCounts: slots.flatMap((slot) =>
-        slot.kind === 'absence-delivery-pending' ? [slot.pendingOperations.size] : [],
+        slot.kind === 'absence-delivery-pending' || slot.kind === 'abandonment-delivery-pending'
+          ? [slot.pendingOperations.size]
+          : [],
       ),
       operatorDispositions: [...this.#operatorDispositions.values()].flatMap((dispositions) => [
         ...dispositions.values(),
@@ -1113,9 +1404,9 @@ export class ProviderProxySetLifecycle {
       {
         evidence: (value, sourceId) => {
           if (this.#slots.get(slot.key) !== slot || slot.attemptToken !== token) return;
-          abort.abort();
-          slot.attemptAbort = null;
           if (sourceId === 'redemption') {
+            abort.abort();
+            slot.attemptAbort = null;
             const outcome = value as Exclude<ProviderProxySetRedemptionOutcome, { kind: 'temporarily-unavailable' }>;
             if (outcome.kind === 'protocol-incompatible') {
               this.#dispositionProtocolIncompatibleCapsule(slot, outcome.role, outcome.method);
@@ -1126,7 +1417,11 @@ export class ProviderProxySetLifecycle {
             this.#establish(outcome.set, null, slot.capsulePath, 'contain-unclaimed-discovery');
             return;
           }
-          void this.containmentAbsent(slot.identity, value as string);
+          const proof = value as ProviderProxySetContainmentProof;
+          if (proof.kind !== 'absent') return;
+          abort.abort();
+          slot.attemptAbort = null;
+          void this.containmentAbsent(slot.identity, proof.receipt);
         },
         retry: (retry) => {
           if (this.#slots.get(slot.key) !== slot || slot.attemptToken !== token) return;
@@ -1197,6 +1492,7 @@ export class ProviderProxySetLifecycle {
       capsulePath: capsulePath ?? existing?.capsulePath ?? null,
       completedAttempts: 0,
       attemptToken: 0,
+      containmentAttemptAbort: null,
       retryTimer: null,
       retirementDecision: null,
       preserveReports: new Map(),
@@ -1342,10 +1638,11 @@ export class ProviderProxySetLifecycle {
           if (!this.#isCurrentControlReattachment(slot, window, token)) return;
           window.attemptAbort = null;
           if (sourceId === 'absence') {
-            if (typeof value === 'string') {
+            const proof = value as ProviderProxySetContainmentProof;
+            if (proof.kind === 'absent') {
               this.#clearControlReattachment(slot, window);
               this.#operatorDispositions.delete(slot.key);
-              this.containmentAbsent(slot.identity, value);
+              this.containmentAbsent(slot.identity, proof.receipt);
             }
             return;
           }
@@ -1572,6 +1869,8 @@ export class ProviderProxySetLifecycle {
             : decision.reason;
     const shared = {
       setIdentity: providerProxySetAddress(decision.setIdentity),
+      setToken: encodeProviderProxySetAddress(providerProxySetAddress(decision.setIdentity)),
+      liveClaims: decision.liveClaims,
       ...(role === undefined ? {} : { role }),
       ...(method === undefined ? {} : { method }),
       ...('cause' in decision
@@ -1580,7 +1879,6 @@ export class ProviderProxySetLifecycle {
             attempts: decision.attempts,
             elapsedMs: decision.elapsedMs,
             boundMs: decision.boundMs,
-            liveClaims: decision.liveClaims,
           }
         : {}),
       incidentReason,
@@ -1597,6 +1895,27 @@ export class ProviderProxySetLifecycle {
       ...shared,
       disposition: 'awaiting-containment-absence',
       waitingFor: 'independent-containment-absence',
+    });
+  }
+
+  #recordOperatorExitRefusal(
+    slot: EstablishedSlot,
+    incidentReason: string,
+    waitingFor: ProviderProxySetOperatorDisposition['waitingFor'],
+  ): void {
+    const setKey = providerProxySetKey(slot.identity);
+    let dispositions = this.#operatorDispositions.get(setKey);
+    if (dispositions === undefined) {
+      dispositions = new Map();
+      this.#operatorDispositions.set(setKey, dispositions);
+    }
+    dispositions.set(JSON.stringify(['operator-exit', null]), {
+      setIdentity: slot.address,
+      setToken: encodeProviderProxySetAddress(slot.address),
+      disposition: 'operator-exit-refused',
+      liveClaims: this.#deps.claims.claimsFor(slot.identity).length,
+      incidentReason,
+      waitingFor,
     });
   }
 
@@ -1975,6 +2294,8 @@ export class ProviderProxySetLifecycle {
     slot.attemptToken += 1;
     const token = slot.attemptToken;
     const abort = new AbortController();
+    if (slot.kind === 'capsule-recovering') slot.attemptAbort = abort;
+    else slot.containmentAttemptAbort = abort;
     const dispatcher = this.#deps.recoveryDispatcher;
     const turn = dispatcher.begin(
       'containment-attempt',
@@ -1994,8 +2315,13 @@ export class ProviderProxySetLifecycle {
             }
             return;
           }
-          if (value !== null || capsuleRecovery) {
-            this.#finishContainmentAttempt(slot, decision, token, abort, value as string | null);
+          const proof = value as ProviderProxySetContainmentProof;
+          if (proof.kind === 'absent') {
+            this.#finishContainmentAttempt(slot, decision, token, abort, proof.receipt);
+          } else if (capsuleRecovery) {
+            // A proof that did not establish absence must not end the attempt while the destructive source
+            // is still running: its receipt would arrive against a stale token and be dropped.
+            this.#finishContainmentAttempt(slot, decision, token, abort, null);
           }
         },
         retry: (retry) => {
@@ -2039,6 +2365,11 @@ export class ProviderProxySetLifecycle {
     if (this.#slots.get(slot.key) !== slot || token !== slot.attemptToken) return;
     slot.attemptToken += 1;
     abort.abort();
+    if (slot.kind === 'capsule-recovering') {
+      if (slot.attemptAbort === abort) slot.attemptAbort = null;
+    } else if (slot.containmentAttemptAbort === abort) {
+      slot.containmentAttemptAbort = null;
+    }
     if (slot.retryTimer !== null) {
       this.#deps.time.clearTimeout(slot.retryTimer);
       slot.retryTimer = null;
@@ -2060,6 +2391,14 @@ export class ProviderProxySetLifecycle {
     slot.retryTimer.unref?.();
   }
 
+  #deliverRepresentationRelease(slot: ReleaseDeliveryPendingSlot, operation: OperationIdentity): void {
+    if (slot.kind === 'absence-delivery-pending') {
+      this.#deliverDisappearance(slot, operation);
+      return;
+    }
+    this.#deliverAbandonment(slot, operation);
+  }
+
   #deliverDisappearance(slot: AbsenceDeliveryPendingSlot, operation: OperationIdentity): void {
     const notice: ContainmentDisappearanceNotice = {
       operation,
@@ -2074,11 +2413,11 @@ export class ProviderProxySetLifecycle {
       {
         evidence: () => {
           if (!currentDelivery()) return;
-          this.#acceptDisappearance(slot, operation);
+          this.#acceptRepresentationRelease(slot, operation);
         },
         retry: (retry) => {
           if (!currentDelivery()) return;
-          this.#retainDisappearanceDelivery(
+          this.#retainRepresentationRelease(
             slot,
             operation,
             retry.incident as Extract<DisappearanceDeliveryAttemptOutcome, { kind: 'operational-failure' }>,
@@ -2086,7 +2425,7 @@ export class ProviderProxySetLifecycle {
         },
         fatal: (error) => {
           if (!currentDelivery()) return;
-          this.#failDisappearanceDelivery(slot, operation, error);
+          this.#failRepresentationRelease(slot, operation, error);
         },
       },
     );
@@ -2097,7 +2436,43 @@ export class ProviderProxySetLifecycle {
     });
   }
 
-  #acceptDisappearance(slot: AbsenceDeliveryPendingSlot, operation: OperationIdentity): void {
+  #deliverAbandonment(
+    slot: Extract<ProviderProxySetSlot, { kind: 'abandonment-delivery-pending' }>,
+    operation: OperationIdentity,
+  ): void {
+    const notice: ProviderRepresentationAbandonmentNotice = { operation, setIdentity: slot.identity };
+    const currentDelivery = (): boolean =>
+      this.#slots.get(slot.key) === slot && slot.pendingOperations.has(operationKey(operation));
+    const turn = this.#deps.recoveryDispatcher.begin(
+      'representation-abandonment-delivery',
+      { operation, setIdentity: slot.identity },
+      {
+        evidence: () => {
+          if (!currentDelivery()) return;
+          this.#acceptRepresentationRelease(slot, operation);
+        },
+        retry: (retry) => {
+          if (!currentDelivery()) return;
+          this.#retainRepresentationRelease(
+            slot,
+            operation,
+            retry.incident as Extract<RepresentationAbandonmentDeliveryAttemptOutcome, { kind: 'operational-failure' }>,
+          );
+        },
+        fatal: (error) => {
+          if (!currentDelivery()) return;
+          this.#failRepresentationRelease(slot, operation, error);
+        },
+      },
+    );
+    turn.start({
+      sourceId: 'delivery',
+      producerId: 'representation-abandonment-consumer',
+      input: { notice },
+    });
+  }
+
+  #acceptRepresentationRelease(slot: ReleaseDeliveryPendingSlot, operation: OperationIdentity): void {
     if (this.#slots.get(slot.key) !== slot) return;
     const key = operationKey(operation);
     if (!slot.pendingOperations.delete(key)) return;
@@ -2112,15 +2487,18 @@ export class ProviderProxySetLifecycle {
     this.#finishInitialDisposition(slot);
   }
 
-  #retainDisappearanceDelivery(
-    slot: AbsenceDeliveryPendingSlot,
+  #retainRepresentationRelease(
+    slot: ReleaseDeliveryPendingSlot,
     operation: OperationIdentity,
-    outcome: Extract<DisappearanceDeliveryAttemptOutcome, { kind: 'operational-failure' }>,
+    outcome:
+      | Extract<DisappearanceDeliveryAttemptOutcome, { kind: 'operational-failure' }>
+      | Extract<RepresentationAbandonmentDeliveryAttemptOutcome, { kind: 'operational-failure' }>,
   ): void {
     const key = operationKey(operation);
     const nextAttemptAtMs = this.#deps.time.now() + 1_000;
     const incident: ContainmentAbsenceOperationalIncident = {
-      stage: 'disappearance-delivery',
+      stage:
+        slot.kind === 'absence-delivery-pending' ? 'disappearance-delivery' : 'representation-abandonment-delivery',
       operation,
       code: outcome.code,
       reason: outcome.reason,
@@ -2132,15 +2510,15 @@ export class ProviderProxySetLifecycle {
     const timer = this.#deps.time.setTimeout(() => {
       slot.deliveryRetryTimers.delete(key);
       this.#recordLateness('containment-retry', nextAttemptAtMs);
-      void this.#deliverDisappearance(slot, operation);
+      void this.#deliverRepresentationRelease(slot, operation);
     }, 1_000);
     timer.unref?.();
     slot.deliveryRetryTimers.set(key, timer);
     this.#finishInitialDisposition(slot);
   }
 
-  #failDisappearanceDelivery(
-    slot: AbsenceDeliveryPendingSlot,
+  #failRepresentationRelease(
+    slot: ReleaseDeliveryPendingSlot,
     operation: OperationIdentity,
     error: ProviderProxySetLifecycleFatalError,
   ): void {
@@ -2152,7 +2530,7 @@ export class ProviderProxySetLifecycle {
     this.#rejectInitialDisposition(slot, error);
   }
 
-  #startRetirement(slot: AbsenceDeliveryPendingSlot): void {
+  #startRetirement(slot: ReleaseDeliveryPendingSlot): void {
     if (
       this.#slots.get(slot.key) !== slot ||
       slot.pendingOperations.size !== 0 ||
@@ -2163,7 +2541,7 @@ export class ProviderProxySetLifecycle {
     }
     if (slot.capsulePath === null) {
       slot.retirementState = 'retired';
-      this.#releaseAbsenceSlot(slot, this.#providerProxySetDischarge(slot));
+      this.#releaseRepresentationSlot(slot, this.#providerProxySetDischarge(slot));
       this.#finishInitialDisposition(slot);
       return;
     }
@@ -2171,7 +2549,7 @@ export class ProviderProxySetLifecycle {
     void this.#attemptRetirement(slot);
   }
 
-  #attemptRetirement(slot: AbsenceDeliveryPendingSlot): void {
+  #attemptRetirement(slot: ReleaseDeliveryPendingSlot): void {
     if (this.#slots.get(slot.key) !== slot || slot.pendingOperations.size !== 0 || slot.capsulePath === null) return;
     const dispatcher = this.#deps.recoveryDispatcher;
     const path = slot.capsulePath;
@@ -2182,7 +2560,7 @@ export class ProviderProxySetLifecycle {
         evidence: () => {
           if (this.#slots.get(slot.key) !== slot) return;
           slot.retirementState = 'retired';
-          this.#releaseAbsenceSlot(slot, this.#providerProxySetDischarge(slot));
+          this.#releaseRepresentationSlot(slot, this.#providerProxySetDischarge(slot));
           this.#finishInitialDisposition(slot);
         },
         retry: (retry) => {
@@ -2206,7 +2584,7 @@ export class ProviderProxySetLifecycle {
   }
 
   #recordRetirementOperationalFailure(
-    slot: AbsenceDeliveryPendingSlot,
+    slot: ReleaseDeliveryPendingSlot,
     outcome: Extract<CapsuleRetirementAttemptOutcome, { kind: 'temporarily-unavailable' }>,
   ): void {
     const nextAttemptAtMs = this.#deps.time.now() + 1_000;
@@ -2226,9 +2604,13 @@ export class ProviderProxySetLifecycle {
     });
   }
 
-  #releaseAbsenceSlot(slot: AbsenceDeliveryPendingSlot, discharge: ProviderProxySetDischarge): void {
+  #releaseRepresentationSlot(slot: ReleaseDeliveryPendingSlot, discharge: ProviderProxySetDischarge): void {
     if (this.#slots.get(slot.key) !== slot) return;
-    if (discharge.process !== slot.processEvidence || discharge.claims !== slot.claimDischarge) {
+    const authorityMatches =
+      slot.kind === 'absence-delivery-pending'
+        ? discharge.kind === 'evidence-backed' && discharge.process === slot.processEvidence
+        : discharge.kind === 'operator-abandoned' && discharge.abandonment === slot.abandonmentEvidence;
+    if (!authorityMatches || discharge.claims !== slot.claimDischarge) {
       throw new Error('provider_proxy_set_discharge_mismatch');
     }
     this.#slots.delete(slot.key);
@@ -2244,7 +2626,7 @@ export class ProviderProxySetLifecycle {
   }
 
   #finishInitialDisposition(
-    slot: AbsenceDeliveryPendingSlot,
+    slot: ReleaseDeliveryPendingSlot,
     retirementIncident?: ContainmentAbsenceOperationalIncident,
   ): void {
     if (slot.initialDisposition.state !== 'pending') return;
@@ -2264,7 +2646,7 @@ export class ProviderProxySetLifecycle {
     if (slot.retirementState === 'retired') slot.initialDisposition.resolve({ kind: 'completed' });
   }
 
-  #rejectInitialDisposition(slot: AbsenceDeliveryPendingSlot, error: ProviderProxySetLifecycleFatalError): void {
+  #rejectInitialDisposition(slot: ReleaseDeliveryPendingSlot, error: ProviderProxySetLifecycleFatalError): void {
     if (slot.initialDisposition.state === 'rejected') return;
     slot.initialDisposition.reject(error);
   }

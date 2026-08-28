@@ -22,6 +22,7 @@ import {
   type ProviderProxySetIdentity,
 } from '#src/coordinator/services/provider-proxy-set/identity.js';
 import { ProviderProxySetLifecycleRef } from '#src/coordinator/services/provider-proxy-set/lifecycle-ref.js';
+import type { ProviderProxySetContainmentProof } from '#src/coordinator/services/provider-proxy-set/inheritance.js';
 import { backendLog } from '#src/infra/backend-log.js';
 import { JobStore } from '#src/jobs/store.js';
 import { ControlClientError, controlExchangeForTest, type ControlClient } from '#src/provider-proxy/control-client.js';
@@ -337,7 +338,12 @@ describe('execution services provider-proxy proof composition', () => {
     const redeemDiscoveredCapsule = vi.fn(async () => {
       throw new Error('capsule redemption was not expected');
     });
-    const proveContainmentAbsent = vi.fn(async () => null);
+    const proveContainmentAbsent = vi.fn(
+      async (): Promise<ProviderProxySetContainmentProof> => ({
+        kind: 'enforcer-unobservable',
+        roles: ['guardian', 'reaper'],
+      }),
+    );
     const world = {
       identity: { buildSetId: FIXTURE_BUILD_SET_ID },
       storeServicesRef: { tryGet: () => null },
@@ -652,8 +658,12 @@ describe('execution services provider-proxy proof composition', () => {
     const lifecycleRef = new ProviderProxySetLifecycleRef();
     const operationRegistry = new LocalOperationRegistry();
     const proveContainmentAbsent = vi.fn<
-      (identity: ProviderProxySetIdentity, db: Database, signal: AbortSignal) => Promise<string | null>
-    >(async () => 'process-proof-receipt');
+      (
+        identity: ProviderProxySetIdentity,
+        db: Database,
+        signal: AbortSignal,
+      ) => Promise<ProviderProxySetContainmentProof>
+    >(async () => ({ kind: 'absent', receipt: 'process-proof-receipt' }));
     const world = {
       identity: { buildSetId: FIXTURE_BUILD_SET_ID },
       storeServicesRef: {
@@ -780,7 +790,10 @@ describe('execution services provider-proxy proof composition', () => {
         redeemDiscoveredCapsule: async () => {
           throw new Error('capsule redemption was not expected');
         },
-        proveContainmentAbsent: async () => null,
+        proveContainmentAbsent: async () => ({
+          kind: 'enforcer-unobservable' as const,
+          roles: ['guardian', 'reaper'] as const,
+        }),
       },
       providerHostManager: {},
     } as never;

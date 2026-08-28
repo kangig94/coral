@@ -158,7 +158,10 @@ function lifecycleForSchedule(
     },
     recoveryDispatcher: createTestProviderProxyRecoveryDispatcher(
       {
-        'containment-proof': async () => null,
+        'containment-proof': async () => ({
+          kind: 'enforcer-unobservable' as const,
+          roles: ['guardian', 'reaper'] as const,
+        }),
         'disappearance-consumer': ({ notice }) => reconciler.containmentDisappeared(notice),
       },
       (error) => {
@@ -1553,6 +1556,42 @@ describe('ProviderOperationReconciler publication', () => {
     await Promise.resolve();
     expect(harness.registry.attach).not.toHaveBeenCalled();
     expect(readProviderOperation(harness.db, recovered.operation)).toBeNull();
+  });
+
+  it('terminalizes abandonment with a distinct representation-release directive that never asserts disappearance', async () => {
+    const harness = createHarness();
+    const record = providerOperationRecord('executing');
+    insertProviderOperation(harness.db, record);
+    const terminalize = harness.terminalization.terminalize;
+    const terminalization = vi
+      .spyOn(harness.terminalization, 'terminalize')
+      .mockImplementation((candidate, directive) => terminalize(candidate, directive));
+
+    await expect(
+      harness.reconciler.representationAbandoned({
+        operation: record.operation,
+        setIdentity: providerProxySetIdentityFromRecord(record),
+      }),
+    ).resolves.toEqual({
+      kind: 'accepted',
+      acceptance: {
+        kind: 'accepted',
+        operation: record.operation,
+        disposition: 'terminalization-committed',
+      },
+    });
+
+    const directive = terminalization.mock.calls[0]?.[1];
+    expect(directive).toEqual({
+      kind: 'terminal-failed',
+      code: 'coral_representation_abandoned',
+      reason: expect.stringContaining('without observing the process stop'),
+    });
+    const reason = directive?.kind === 'terminal-failed' ? directive.reason : '';
+    // The operator is the successor owner of a process nobody observed stop, so the reason has to name the
+    // set they must go and check, and must never claim the provider disappeared.
+    expect(reason).toContain(providerProxySetIdentityFromRecord(record).proxyInstanceId);
+    expect(reason).not.toMatch(/became unavailable|retry the job|containment disappeared/iu);
   });
 
   it.each([

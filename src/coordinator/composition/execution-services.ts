@@ -116,10 +116,12 @@ export function createExecutionServices({
       },
       'containment-proof': ({ identity, signal }) =>
         providerProxyInheritance === undefined
-          ? Promise.resolve(null)
+          ? Promise.resolve({ kind: 'enforcer-unobservable' as const, roles: ['guardian', 'reaper'] as const })
           : providerProxyInheritance.proveContainmentAbsent(identity, getProgressStore().getDb(), signal),
       'capsule-retirement': ({ path }) => retireProviderHandoffCapsule(runtime.storage, path),
       'disappearance-consumer': ({ notice }) => providerOperationReconciler.containmentDisappeared(notice),
+      'representation-abandonment-consumer': ({ notice }) =>
+        providerOperationReconciler.representationAbandoned(notice),
     },
     fatalSink: { fatal: onProviderProxyLifecycleFatal },
   });

@@ -30,6 +30,7 @@ const PROVIDER_PROXY_SET = {
     hostFingerprint: 'a'.repeat(64),
     proxyInstanceId: '22222222-2222-4222-8222-222222222222',
   },
+  setToken: 'pps1.fixture',
   disposition: 'held',
   cause: 'closed',
   attempts: 2,

@@ -44,10 +44,11 @@ const PRIMITIVE_FILE = 'src/infra/process-supervision.ts';
 const CONTAINMENT_HELPER_FILE = 'src/infra/process-containment.ts';
 // A negative primitive scan cannot prove an owner still reaps its containment:
 // deleting teardown entirely would also make that scan pass. Keep both owners
-// explicit so adding one cannot silently narrow the escalation guarantee.
+// explicit so adding or removing one cannot silently narrow the escalation guarantee.
 const RECORDED_CONTAINMENT_OWNER_FILES = [
   'src/provider-proxy/enforcement.ts',
   'src/coordinator/live/provider-hosts/drain.ts',
+  'src/coordinator/services/provider-proxy-set/inheritance.ts',
 ] as const;
 
 // File-level allowlist: call sites permitted to use the bare primitive, each
@@ -327,7 +328,7 @@ function hasHandRolledEscalation(source: string): boolean {
 }
 
 describe('process kills do not hand-roll a SIGTERM→SIGKILL escalation outside the sanctioned helpers', () => {
-  it('both recorded-containment owners reap their recorded groups through reapRecordedContainment without an allowlist exemption', () => {
+  it('every recorded-containment owner, including exact-set operator proof, reaps through reapRecordedContainment without an allowlist exemption', () => {
     const ownersWithoutRecordedContainmentReaping = RECORDED_CONTAINMENT_OWNER_FILES.filter(
       (canonical) => !callsReapRecordedContainment(readFileSync(join(REPO_ROOT, canonical), 'utf-8')),
     );

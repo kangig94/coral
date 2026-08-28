@@ -371,7 +371,10 @@ describe('createProviderProxyAcquisitionSteps', () => {
       controlEstablished: notifyProviderProxyControlEstablished,
       time,
       recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
-        'containment-proof': async () => null,
+        'containment-proof': async () => ({
+          kind: 'enforcer-unobservable' as const,
+          roles: ['guardian', 'reaper'] as const,
+        }),
         'disappearance-consumer': async ({ notice }) => ({
           kind: 'accepted',
           acceptance: { kind: 'accepted', operation: notice.operation, disposition: 'record-absent' },

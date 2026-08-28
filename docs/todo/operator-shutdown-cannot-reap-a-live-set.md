@@ -1,7 +1,7 @@
 # TODO — the operator's shutdown hands a wedged proxy set forward instead of ending it
 
-**Status**: open. Found while writing the heartbeat hold's exits, where `coral-cli backend shutdown` was
-named as one of them and turned out not to be.
+**Status**: implemented on `fix/silence-is-not-a-verdict`. The supported exit is
+`coral-cli backend provider-proxy-set contain <pps1-token>`; it is deliberately separate from shutdown.
 
 ## What is observed
 
@@ -44,3 +44,28 @@ operation — that names the sets it will contain and reports what it observed a
 decision the operator made with evidence rather than a mode they fell into. `docs/cli-errors.md` already
 documents this command's exit codes in detail; a new route owes the same treatment, including what a refusal
 means for whether it is safe to proceed.
+
+## Implemented resolution
+
+`backend status` prints a canonical `pps1` token and the live durable-claim count for every understood held-set
+disposition. The contain command resolves that exact three-field address; the internal map key and its ordering
+remain unchanged. The coordinator refuses an `available` or `draining` set and refuses a `reattaching` set until
+its monotonic adoption deadline has elapsed.
+
+The independent proof now distinguishes confirmed proxy-group absence, an observed-live enforcer, an
+unobservable enforcer, and an unreadable local durable row. Confirmed absence follows the existing
+`reapRecordedContainment` and disappearance-delivery path. Alive or unobservable enforcers require the explicit
+`--abandon-unobservable` operator instruction after external verification; that instruction releases Coral's
+representation through a separate typed action and a distinct durable terminal directive. It does not mint
+process-absence evidence. An unreadable local row cannot be overridden and names
+`coral-cli backend recovery-quarantine` as its repair path.
+
+Only the recorded proxy process group is signalled. The guardian and reaper are not signalled: the reaper is in
+the guardian's group, neither enforcer has a recorded signal-authority pgid, and inventing one could signal the
+wrong group. A successful forced exit can therefore leave both processes live until their own adoption deadline
+tears the set down.
+
+When abandonment reaches a `settlement-pending` row, the reconciler deletes it just as confirmed disappearance
+does. A still-live proxy cannot recreate that settlement: provider-event ingress accepts only an existing exact
+saga row, so a later report is rejected as an identity/authority mismatch and remains replay-pending or faults at
+the proxy rather than re-establishing Coral ownership.

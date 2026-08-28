@@ -126,7 +126,8 @@ export interface BackendHealth {
     }>;
     providerProxySets?: Array<{
       setIdentity: { buildSetId: string; hostFingerprint: string; proxyInstanceId: string };
-      disposition: 'held' | 'awaiting-containment-absence';
+      setToken: string;
+      disposition: 'held' | 'awaiting-containment-absence' | 'operator-exit-refused';
       role?: string;
       method?: string;
       cause?: 'closed' | 'invalid-unattributable-frame';
@@ -135,7 +136,14 @@ export interface BackendHealth {
       boundMs?: number;
       liveClaims?: number;
       incidentReason: string;
-      waitingFor: 'heartbeat-evidence-window' | 'control-reattachment' | 'independent-containment-absence';
+      waitingFor:
+        | 'heartbeat-evidence-window'
+        | 'control-reattachment'
+        | 'independent-containment-absence'
+        | 'ordinary-drain'
+        | 'set-adoption-deadline'
+        | 'operator-abandonment'
+        | 'store-repair';
     }>;
   };
 }
@@ -210,6 +218,7 @@ function parseProviderProxySets(value: unknown): ProviderProxySetsParseResult | 
       typeof entry.setIdentity.buildSetId !== 'string' ||
       typeof entry.setIdentity.hostFingerprint !== 'string' ||
       typeof entry.setIdentity.proxyInstanceId !== 'string' ||
+      typeof entry.setToken !== 'string' ||
       typeof entry.disposition !== 'string' ||
       (entry.role !== undefined && typeof entry.role !== 'string') ||
       (entry.method !== undefined && typeof entry.method !== 'string') ||
@@ -230,11 +239,17 @@ function parseProviderProxySets(value: unknown): ProviderProxySetsParseResult | 
     }
 
     const understandsEnums =
-      (entry.disposition === 'held' || entry.disposition === 'awaiting-containment-absence') &&
+      (entry.disposition === 'held' ||
+        entry.disposition === 'awaiting-containment-absence' ||
+        entry.disposition === 'operator-exit-refused') &&
       (entry.cause === undefined || entry.cause === 'closed' || entry.cause === 'invalid-unattributable-frame') &&
       (entry.waitingFor === 'heartbeat-evidence-window' ||
         entry.waitingFor === 'control-reattachment' ||
-        entry.waitingFor === 'independent-containment-absence');
+        entry.waitingFor === 'independent-containment-absence' ||
+        entry.waitingFor === 'ordinary-drain' ||
+        entry.waitingFor === 'set-adoption-deadline' ||
+        entry.waitingFor === 'operator-abandonment' ||
+        entry.waitingFor === 'store-repair');
     if (!understandsEnums) {
       skippedRows += 1;
       continue;

@@ -19,10 +19,60 @@ import type { BackendHealth } from '../../transport/http/backend/health.js';
 import type { BackendStatusFull } from '../../transport/http/backend/status.js';
 import type { ShutdownResult } from '../../transport/http/backend/shutdown.js';
 import type { RecoveryQuarantineClearResult } from '../../recovery/source-registry.js';
+import { encodeProviderProxySetAddress } from '../../coordinator/services/provider-proxy-set/identity.js';
+import type { ProviderProxySetContainResponse } from '../../transport/rpc/catalog.js';
 import { formatHandoffPublicationFailureSuccessor } from './handoff-publication.js';
 
 export const RECOVERY_REVISION_UNTIL_CLEARED = 'until-cleared';
 export const RECOVERY_REVISION_FINGERPRINT_PREFIX = 'fingerprint:';
+
+function formatProviderProxySetClaimDischarge(
+  discharge: Extract<ProviderProxySetContainResponse, { kind: 'contained' | 'abandoned' }>['claimDischarge'],
+): string {
+  switch (discharge.kind) {
+    case 'completed':
+      return 'Every durable claim was accepted by its successor and the set representation was released.';
+    case 'initial-disposition-retry-owned':
+      return 'Claim discharge has not reached an initial disposition; Coral still owns retry and still represents the set.';
+    case 'operational-retry-owned':
+      return `Claim discharge is retry-owned for ${discharge.incidents.length} incident(s); Coral still represents the set until every successor accepts and capsule retirement completes.`;
+    default:
+      return assertNever(discharge);
+  }
+}
+
+export function formatProviderProxySetContainResult(result: ProviderProxySetContainResponse): string {
+  const token = encodeProviderProxySetAddress(result.setIdentity);
+  const retry = `coral-cli backend provider-proxy-set contain ${token}`;
+  switch (result.kind) {
+    case 'contained':
+      return [
+        `Confirmed absence for provider proxy set ${token}: the proxy process group and every recorded provider root were confirmed absent.`,
+        formatProviderProxySetClaimDischarge(result.claimDischarge),
+        'The guardian and reaper were not signalled; if either remains live, its own adoption deadline is its exit.',
+      ].join('\n');
+    case 'abandoned':
+      return [
+        `Coral accepted operator abandonment for provider proxy set ${token}; process absence was not observed.`,
+        formatProviderProxySetClaimDischarge(result.claimDischarge),
+        'Verify the proxy, guardian, reaper, and any provider processes externally. The guardian and reaper were not signalled; their own adoption deadline remains their named exit.',
+      ].join('\n');
+    case 'set-not-found':
+      return `Provider proxy set ${token} is not represented by this coordinator. Run coral-cli backend status and copy the current exact token.`;
+    case 'not-held':
+      return `Refusing forced containment for ${token}: the set is ${result.state}, not held. Use ordinary drain for a healthy set, then inspect backend status.`;
+    case 'deadline-pending':
+      return `Refusing forced containment for ${token}: its autonomous adoption deadline has ${Math.ceil(result.remainingMs)}ms remaining. Wait for that event, then rerun ${retry}.`;
+    case 'enforcer-alive':
+      return `Refusing to signal ${token}: ${result.roles.join(' and ')} was observed alive. After external verification, run ${retry} --abandon-unobservable to release Coral's representation without asserting process absence.`;
+    case 'enforcer-unobservable':
+      return `No containment verdict for ${token}: ${result.roles.join(' and ')} could not be observed. Restore process observation and rerun ${retry}, or after external verification run it with --abandon-unobservable.`;
+    case 'store-unreadable':
+      return `Refusing forced containment for ${token}: an unreadable durable provider-operation row may hide a provider root. --abandon-unobservable cannot override Coral's own store fence. Run coral-cli backend recovery-quarantine list, repair it with backend recovery-quarantine clear, then rerun backend status and ${retry}.`;
+    default:
+      return assertNever(result);
+  }
+}
 
 function formatLiveHandoffResult(result: LiveHandoffResult | null): string | null {
   return result === null ? null : formatHandoffContinuationReason(result.continuation.reason);
@@ -761,10 +811,10 @@ function formatRunningStatus(health: RunningHealth): string {
       const reattachment =
         set.cause === undefined
           ? ''
-          : ` cause=${set.cause} attempts=${set.attempts ?? 'unknown'} elapsedMs=${set.elapsedMs ?? 'unknown'} boundMs=${set.boundMs ?? 'unknown'} liveClaims=${set.liveClaims ?? 'unknown'}`;
+          : ` cause=${set.cause} attempts=${set.attempts ?? 'unknown'} elapsedMs=${set.elapsedMs ?? 'unknown'} boundMs=${set.boundMs ?? 'unknown'}`;
       lines.push(
-        `  buildSetId=${set.setIdentity.buildSetId} proxyInstanceId=${set.setIdentity.proxyInstanceId} hostFingerprint=${set.setIdentity.hostFingerprint}`,
-        `    disposition=${set.disposition}${subject.length === 0 ? '' : ` subject=${subject}`} incident=${set.incidentReason} waitingFor=${set.waitingFor}${reattachment}`,
+        `  set=${set.setToken} buildSetId=${set.setIdentity.buildSetId} proxyInstanceId=${set.setIdentity.proxyInstanceId} hostFingerprint=${set.setIdentity.hostFingerprint}`,
+        `    disposition=${set.disposition}${subject.length === 0 ? '' : ` subject=${subject}`} incident=${set.incidentReason} waitingFor=${set.waitingFor} liveClaims=${set.liveClaims ?? 'unknown'}${reattachment}`,
       );
     }
     if (skippedProviderProxySetRows === 1) {

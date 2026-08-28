@@ -76,6 +76,13 @@ import {
   type ProviderContainmentDisappearanceConsumer,
 } from './provider-containment-disappearance.js';
 import {
+  providerRepresentationAbandonmentNoticeSchema,
+  type ProviderRepresentationAbandonmentAcceptance,
+  type ProviderRepresentationAbandonmentConsumer,
+  type ProviderRepresentationAbandonmentNotice,
+  type RepresentationAbandonmentDeliveryAttemptOutcome,
+} from './provider-representation-abandonment.js';
+import {
   isProviderProxyRecoveryFatalError,
   type ProviderProxyRecoveryDispatcher,
 } from './provider-proxy-recovery-policy.js';
@@ -335,12 +342,12 @@ function awaitStartup<T>(operation: Promise<T>, signal: AbortSignal): Promise<T>
   });
 }
 
-class ContainmentDriveFencedError extends Error {
+class RepresentationDriveFencedError extends Error {
   readonly reason = CONTAINMENT_DRIVE_FENCE;
 
   constructor() {
     super('Provider authority drive was fenced by exact containment disappearance.');
-    this.name = 'ContainmentDriveFencedError';
+    this.name = 'RepresentationDriveFencedError';
   }
 }
 
@@ -367,11 +374,28 @@ type LatchedContainmentDisappearance = {
   delivery: ContainmentDisappearanceDeliveryState;
 };
 
+type RepresentationAbandonmentDeliveryState =
+  | Readonly<{ kind: 'ready' }>
+  | Readonly<{
+      kind: 'delivering';
+      promise: Promise<RepresentationAbandonmentDeliveryAttemptOutcome>;
+    }>
+  | Readonly<{
+      kind: 'consumed';
+      acceptance: ProviderRepresentationAbandonmentAcceptance;
+    }>;
+
+type LatchedRepresentationAbandonment = {
+  notice: ProviderRepresentationAbandonmentNotice;
+  delivery: RepresentationAbandonmentDeliveryState;
+};
+
 type OperationSerializer = {
   epoch: number;
   activeAbort: AbortController | null;
   inFlight: Promise<void> | null;
   disappearance: LatchedContainmentDisappearance | null;
+  abandonment: LatchedRepresentationAbandonment | null;
 };
 
 type ExecutingAttachmentAttempt =
@@ -409,7 +433,9 @@ function boundedPrepareRefusalReason(error: unknown): string {
   return (reason.length === 0 ? 'Provider operation prepare was refused.' : reason).slice(0, 4096);
 }
 
-export class ProviderOperationReconciler implements ProviderContainmentDisappearanceConsumer {
+export class ProviderOperationReconciler
+  implements ProviderContainmentDisappearanceConsumer, ProviderRepresentationAbandonmentConsumer
+{
   readonly #deps: ProviderOperationReconcilerDeps;
   readonly #batchSize: number;
   readonly #publications = new Map<string, ActivePublication>();
@@ -690,7 +716,7 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
     if (serializer.disappearance === null) {
       serializer.disappearance = { notice: parsed, delivery: { kind: 'ready' } };
       serializer.epoch += 1;
-      serializer.activeAbort?.abort(new ContainmentDriveFencedError());
+      serializer.activeAbort?.abort(new RepresentationDriveFencedError());
     } else if (!this.#sameDisappearanceNotice(serializer.disappearance.notice, parsed)) {
       return Promise.reject(new Error('containment_disappearance_conflict'));
     }
@@ -730,6 +756,64 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
     return promise;
   }
 
+  representationAbandoned(
+    notice: ProviderRepresentationAbandonmentNotice,
+  ): Promise<RepresentationAbandonmentDeliveryAttemptOutcome> {
+    const parsed = providerRepresentationAbandonmentNoticeSchema.parse(notice);
+    if (
+      parsed.operation.buildSetId !== parsed.setIdentity.buildSetId ||
+      parsed.operation.proxyInstanceId !== parsed.setIdentity.proxyInstanceId
+    ) {
+      return Promise.reject(new Error('provider_representation_abandonment_identity_mismatch'));
+    }
+    const key = operationKey(parsed.operation);
+    const serializer = this.#serializerFor(key);
+    if (serializer.disappearance !== null) {
+      return Promise.reject(new Error('provider_representation_abandonment_after_disappearance'));
+    }
+    if (serializer.abandonment === null) {
+      serializer.abandonment = { notice: parsed, delivery: { kind: 'ready' } };
+      serializer.epoch += 1;
+      serializer.activeAbort?.abort(new RepresentationDriveFencedError());
+    } else if (!this.#sameAbandonmentNotice(serializer.abandonment.notice, parsed)) {
+      return Promise.reject(new Error('provider_representation_abandonment_conflict'));
+    }
+
+    const abandonment = serializer.abandonment;
+    switch (abandonment.delivery.kind) {
+      case 'consumed':
+        return Promise.resolve({ kind: 'accepted', acceptance: abandonment.delivery.acceptance });
+      case 'delivering':
+        return abandonment.delivery.promise;
+      case 'ready':
+        break;
+    }
+
+    const active = serializer.inFlight ?? Promise.resolve();
+    const consume = async (): Promise<RepresentationAbandonmentDeliveryAttemptOutcome> => {
+      const outcome = await this.#driveContext.exit(() => this.#consumeRepresentationAbandonment(parsed));
+      return outcome.kind === 'operational-failure' ? outcome : { kind: 'accepted', acceptance: outcome };
+    };
+    const promise = active.then(consume, consume);
+    abandonment.delivery = { kind: 'delivering', promise };
+    void promise.then(
+      (outcome) => {
+        if (abandonment.delivery.kind !== 'delivering' || abandonment.delivery.promise !== promise) return;
+        if (outcome.kind === 'operational-failure') {
+          abandonment.delivery = { kind: 'ready' };
+          return;
+        }
+        abandonment.delivery = { kind: 'consumed', acceptance: outcome.acceptance };
+        this.wake();
+      },
+      () => {
+        if (abandonment.delivery.kind !== 'delivering' || abandonment.delivery.promise !== promise) return;
+        abandonment.delivery = { kind: 'ready' };
+      },
+    );
+    return promise;
+  }
+
   reconcile(
     record: ProviderOperationRecord,
     preferredAuthority?: DurableProviderProxyOperationAuthority,
@@ -747,6 +831,16 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
           break;
       }
     }
+    if (serializer.abandonment !== null) {
+      switch (serializer.abandonment.delivery.kind) {
+        case 'ready':
+          return Promise.resolve();
+        case 'delivering':
+          return serializer.abandonment.delivery.promise.then(() => undefined);
+        case 'consumed':
+          break;
+      }
+    }
     if (serializer.inFlight !== null) return serializer.inFlight;
     serializer.epoch += 1;
     const abort = new AbortController();
@@ -760,7 +854,7 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
     const running = this.#driveContext
       .run(context, () => this.#drive(record, preferredAuthority, context.signal))
       .catch((error: unknown) => {
-        if (error instanceof ContainmentDriveFencedError) return;
+        if (error instanceof RepresentationDriveFencedError) return;
         throw error;
       })
       .finally(() => {
@@ -780,6 +874,7 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
       activeAbort: null,
       inFlight: null,
       disappearance: null,
+      abandonment: null,
     };
     this.#serializers.set(key, created);
     return created;
@@ -793,6 +888,16 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
     );
   }
 
+  #sameAbandonmentNotice(
+    left: ProviderRepresentationAbandonmentNotice,
+    right: ProviderRepresentationAbandonmentNotice,
+  ): boolean {
+    return (
+      operationKey(left.operation) === operationKey(right.operation) &&
+      providerProxySetIdentitiesEqual(left.setIdentity, right.setIdentity)
+    );
+  }
+
   async #awaitAuthority<T>(pending: Promise<T>): Promise<T> {
     const context = this.#driveContext.getStore();
     if (context === undefined) return pending;
@@ -800,7 +905,7 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
       const onAbort = (): void => {
         reject(
           context.abort.signal.aborted
-            ? new ContainmentDriveFencedError()
+            ? new RepresentationDriveFencedError()
             : context.signal.reason instanceof Error
               ? context.signal.reason
               : new Error('Provider authority drive was aborted.'),
@@ -839,7 +944,7 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
       serializer.epoch !== context.epoch ||
       serializer.activeAbort !== context.abort
     ) {
-      throw new ContainmentDriveFencedError();
+      throw new RepresentationDriveFencedError();
     }
   }
 
@@ -1554,6 +1659,43 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
     }
   }
 
+  async #consumeRepresentationAbandonment(
+    notice: ProviderRepresentationAbandonmentNotice,
+  ): Promise<
+    | ProviderRepresentationAbandonmentAcceptance
+    | Extract<RepresentationAbandonmentDeliveryAttemptOutcome, { kind: 'operational-failure' }>
+  > {
+    const directive: ProviderOperationTerminalDirective = {
+      kind: 'terminal-failed',
+      code: 'coral_representation_abandoned',
+      reason:
+        'Coral released its representation of this provider operation without observing the process stop. Verify the process externally.',
+    };
+    for (;;) {
+      const record = readProviderOperation(this.#deps.getProgressStore().getDb(), notice.operation);
+      if (record === null) {
+        return { kind: 'accepted', operation: notice.operation, disposition: 'record-absent' };
+      }
+      if (!providerProxySetIdentitiesEqual(providerProxySetIdentityFromRecord(record), notice.setIdentity)) {
+        throw new Error('provider_representation_abandonment_record_identity_mismatch');
+      }
+      if (record.phase === 'settlement-pending') {
+        const deleted = this.#deleteSettledOperation(record);
+        if (deleted.kind === 'conflict') continue;
+        this.#settlements.delete(operationKey(record.operation));
+        return { kind: 'accepted', operation: notice.operation, disposition: 'settlement-deleted' };
+      }
+      if (record.phase === 'local-recovery-pending') {
+        return { kind: 'accepted', operation: notice.operation, disposition: 'local-recovery-committed' };
+      }
+      const terminalized = await this.#terminalizeAbandonment(record, directive);
+      if (terminalized.kind === 'operational-failure') return terminalized;
+      if (terminalized.kind === 'conflict') continue;
+      this.#complete(record.operation, { kind: 'terminalized' });
+      return { kind: 'accepted', operation: notice.operation, disposition: 'terminalization-committed' };
+    }
+  }
+
   #terminalizeDisappearance(
     record: ProviderOperationRecord,
     directive: ProviderOperationTerminalDirective,
@@ -1571,6 +1713,40 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
             resolve({
               kind: 'operational-failure',
               code: 'disappearance_consumer_unavailable',
+              reason: 'Provider operation terminalization is temporarily unavailable.',
+            }),
+          fatal: reject,
+          cancel: reject,
+        },
+      );
+      turn.start({
+        sourceId: 'terminalization',
+        producerId: 'disappearance-terminalization',
+        input: {
+          record,
+          directive: this.#withProviderProxySetReference(directive, providerProxySetIdentityFromRecord(record)),
+        },
+      });
+    });
+  }
+
+  #terminalizeAbandonment(
+    record: ProviderOperationRecord,
+    directive: ProviderOperationTerminalDirective,
+  ): Promise<
+    | ProviderOperationTerminalizationResult
+    | Extract<RepresentationAbandonmentDeliveryAttemptOutcome, { kind: 'operational-failure' }>
+  > {
+    return new Promise((resolve, reject) => {
+      const turn = this.#deps.recoveryDispatcher.begin(
+        'representation-abandonment-delivery',
+        { operation: record.operation, setIdentity: providerProxySetIdentityFromRecord(record) },
+        {
+          evidence: (value) => resolve(value as ProviderOperationTerminalizationResult),
+          retry: () =>
+            resolve({
+              kind: 'operational-failure',
+              code: 'representation_abandonment_consumer_unavailable',
               reason: 'Provider operation terminalization is temporarily unavailable.',
             }),
           fatal: reject,

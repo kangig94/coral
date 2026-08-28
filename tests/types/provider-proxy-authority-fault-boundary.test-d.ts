@@ -6,11 +6,16 @@ import type {
   ProviderProxyAuthorityIncident,
   RetrySafeControlCallPolicy,
 } from '#src/coordinator/services/provider-proxy-authority-fault.js';
-import type { ProviderProxySetDecision } from '#src/coordinator/services/provider-proxy-set/decisions.js';
+import type {
+  ProviderProxySetDecision,
+  ProviderProxySetOperatorAbandonmentDecision,
+  ProviderProxySetOperatorContainmentDecision,
+} from '#src/coordinator/services/provider-proxy-set/decisions.js';
 import type { ProviderProxySetIdentity } from '#src/coordinator/services/provider-proxy-set/identity.js';
 import type {
   ProcessContainmentEvidence,
   ProviderProxySetDischarge,
+  ProviderProxySetOperatorExitCapability,
 } from '#src/coordinator/services/provider-proxy-set/index.js';
 import type { ControlClientError, ControlExchange } from '#src/provider-proxy/control-client.js';
 import {
@@ -26,6 +31,22 @@ declare const retrySafePolicy: RetrySafeControlCallPolicy;
 declare const containmentPolicy: ContainmentRequiredControlCallPolicy;
 declare const latch: ProviderProxyAuthorityFaultLatch;
 declare const channelIncident: Extract<ProviderProxyAuthorityIncident, { kind: 'control-channel-fault' }>;
+
+declare const operatorContainment: ProviderProxySetOperatorContainmentDecision;
+declare const operatorAbandonment: ProviderProxySetOperatorAbandonmentDecision;
+
+// @ts-expect-error exact-set containment is a faultless operator action, never a stop-and-reap decision.
+const operatorContainmentCannotStop: Extract<ProviderProxySetDecision, { action: 'stop-and-reap' }> =
+  operatorContainment;
+void operatorContainmentCannotStop;
+
+// @ts-expect-error abandonment is outside the destructive stop-and-reap action set.
+const abandonmentCannotStop: Extract<ProviderProxySetDecision, { action: 'stop-and-reap' }> = operatorAbandonment;
+void abandonmentCannotStop;
+
+// @ts-expect-error the deadline and held-state checks are the only mint for this opaque capability.
+const forgedOperatorExitCapability: ProviderProxySetOperatorExitCapability = { setIdentity };
+void forgedOperatorExitCapability;
 
 // @ts-expect-error a channel ending is an incident and cannot enter the terminal authority latch.
 const channelIncidentCannotBeTerminal: ProviderProxyAuthorityFault = channelIncident;

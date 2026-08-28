@@ -4,7 +4,11 @@ import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 
 import {
+  decodeProviderProxySetAddress,
+  encodeProviderProxySetAddress,
   ProviderProxySetIdentityIndex,
+  providerProxySetAddress,
+  providerProxySetAddressKey,
   providerProxySetIdentitiesEqual,
   providerProxySetIdentityFromCapsule,
   providerProxySetIdentityFromRecord,
@@ -104,5 +108,32 @@ describe('complete provider proxy set identity', () => {
     index.add(providerProxySetIdentityFromRecord(first));
     expect(() => index.add(providerProxySetIdentityFromRecord(second))).toThrow(/provider_proxy_set_identity_alias/u);
     expect(index.size).toBe(1);
+  });
+
+  it('round-trips the public set token without changing the internal address key', () => {
+    const address = providerProxySetAddress(providerProxySetIdentityFromRecord(providerOperationRecord('executing')));
+    const token = encodeProviderProxySetAddress(address);
+
+    expect(token).toMatch(/^pps1\.[A-Za-z0-9_-]+$/u);
+    expect(decodeProviderProxySetAddress(token)).toEqual(address);
+    expect(providerProxySetAddressKey(address)).toBe(
+      JSON.stringify([address.buildSetId, address.hostFingerprint, address.proxyInstanceId]),
+    );
+  });
+
+  it('rejects non-canonical hand edits instead of resolving them as a set address', () => {
+    const address = providerProxySetAddress(providerProxySetIdentityFromRecord(providerOperationRecord('executing')));
+    const token = encodeProviderProxySetAddress(address);
+    const reordered = `pps1.${Buffer.from(
+      JSON.stringify({
+        proxyInstanceId: address.proxyInstanceId,
+        hostFingerprint: address.hostFingerprint,
+        buildSetId: address.buildSetId,
+      }),
+    ).toString('base64url')}`;
+
+    expect(() => decodeProviderProxySetAddress(token.replace('pps1.', 'pps2.'))).toThrow(/must start with 'pps1\.'/u);
+    expect(() => decodeProviderProxySetAddress(`${token}=`)).toThrow(/unpadded base64url/u);
+    expect(() => decodeProviderProxySetAddress(reordered)).toThrow(/not canonically encoded/u);
   });
 });

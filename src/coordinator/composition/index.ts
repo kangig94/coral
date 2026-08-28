@@ -41,6 +41,7 @@ import {
   providerHostEvictResponseSchema,
   providerHostInspectResponseSchema,
   providerHostListResponseSchema,
+  providerProxySetContainResponseSchema,
 } from '../../transport/rpc/catalog.js';
 import type { KbToolResult } from '../../kb/result.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
@@ -971,6 +972,30 @@ export function createCoordinatorCore(
         }),
       evict: async (selector) =>
         providerHostEvictResponseSchema.parse(await providerHostAdministration.evict(selector)),
+    },
+    providerProxySets: {
+      contain: async (request, signal) => {
+        const lifecycle = world.providerProxyLifecycleRef.get();
+        if (lifecycle === null) throw new Error('provider_proxy_set_operator_exit_unavailable');
+        const authorization = lifecycle.authorizeOperatorExit(request.setIdentity);
+        if (authorization.kind !== 'authorized') {
+          return providerProxySetContainResponseSchema.parse({
+            ...authorization,
+            setIdentity: request.setIdentity,
+          });
+        }
+        if (world.providerProxyInheritance === undefined) {
+          throw new Error('provider_proxy_set_containment_proof_unavailable');
+        }
+        const proof = await world.providerProxyInheritance.proveContainmentAbsent(
+          authorization.capability.setIdentity,
+          getProgressStore().getDb(),
+          signal ?? new AbortController().signal,
+        );
+        return providerProxySetContainResponseSchema.parse(
+          await lifecycle.completeOperatorExit(authorization.capability, proof, request.abandonUnobservable),
+        );
+      },
     },
     kb: kbRpcPort,
     discuss: {

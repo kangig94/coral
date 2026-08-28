@@ -175,7 +175,8 @@ export type HealthSnapshot = {
     }>;
     providerProxySets?: Array<{
       setIdentity: { buildSetId: string; hostFingerprint: string; proxyInstanceId: string };
-      disposition: 'held' | 'awaiting-containment-absence';
+      setToken: string;
+      disposition: 'held' | 'awaiting-containment-absence' | 'operator-exit-refused';
       role?: string;
       method?: string;
       cause?: 'closed' | 'invalid-unattributable-frame';
@@ -184,7 +185,14 @@ export type HealthSnapshot = {
       boundMs?: number;
       liveClaims?: number;
       incidentReason: string;
-      waitingFor: 'heartbeat-evidence-window' | 'control-reattachment' | 'independent-containment-absence';
+      waitingFor:
+        | 'heartbeat-evidence-window'
+        | 'control-reattachment'
+        | 'independent-containment-absence'
+        | 'ordinary-drain'
+        | 'set-adoption-deadline'
+        | 'operator-abandonment'
+        | 'store-repair';
     }>;
   };
 };

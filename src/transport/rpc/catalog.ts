@@ -60,6 +60,7 @@ import {
   reclamationFailedProviderHostInventoryRecordSchema,
   retiredBlockedProviderHostInventoryRecordSchema,
 } from '../../providers/host-inventory-schema.js';
+import { canonicalUuidSchema, hostFingerprintSchema, operationIdentitySchema } from '../../provider-proxy/protocol.js';
 
 export interface RpcMethodSpec<Req, _Res> {
   readonly name: string;
@@ -119,6 +120,93 @@ export type ProviderHostListResponse = z.output<typeof providerHostListResponseS
 export type ProviderHostInspectResponse = z.output<typeof providerHostInspectResponseSchema>;
 export type ProviderHostEvictResponse = z.output<typeof providerHostEvictResponseSchema>;
 
+const providerProxySetAddressWireSchema = z
+  .object({
+    buildSetId: canonicalUuidSchema,
+    hostFingerprint: hostFingerprintSchema,
+    proxyInstanceId: canonicalUuidSchema,
+  })
+  .strict();
+
+export const providerProxySetContainRequestSchema = z
+  .object({
+    setIdentity: providerProxySetAddressWireSchema,
+    abandonUnobservable: z.boolean(),
+  })
+  .strict();
+
+const providerProxySetClaimDischargeSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('completed') }).strict(),
+  z.object({ kind: z.literal('initial-disposition-retry-owned') }).strict(),
+  z
+    .object({
+      kind: z.literal('operational-retry-owned'),
+      incidents: z.array(
+        z
+          .object({
+            stage: z.enum(['disappearance-delivery', 'representation-abandonment-delivery', 'capsule-retirement']),
+            operation: operationIdentitySchema.optional(),
+            code: z.enum([
+              'disappearance_consumer_unavailable',
+              'representation_abandonment_consumer_unavailable',
+              'capsule_retirement_unavailable',
+            ]),
+            reason: z.string().min(1),
+            nextAttemptAtMs: z.number().finite(),
+          })
+          .strict(),
+      ),
+    })
+    .strict(),
+]);
+
+const providerProxySetContainResultBase = { setIdentity: providerProxySetAddressWireSchema };
+export const providerProxySetContainResponseSchema = z.discriminatedUnion('kind', [
+  z
+    .object({
+      kind: z.literal('contained'),
+      ...providerProxySetContainResultBase,
+      disappearanceReceipt: z.string().min(1),
+      claimDischarge: providerProxySetClaimDischargeSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('abandoned'),
+      ...providerProxySetContainResultBase,
+      processObservation: z.enum(['enforcer-alive', 'enforcer-unobservable']),
+      claimDischarge: providerProxySetClaimDischargeSchema,
+    })
+    .strict(),
+  z.object({ kind: z.literal('set-not-found'), ...providerProxySetContainResultBase }).strict(),
+  z.object({ kind: z.literal('not-held'), ...providerProxySetContainResultBase, state: z.string().min(1) }).strict(),
+  z
+    .object({
+      kind: z.literal('deadline-pending'),
+      ...providerProxySetContainResultBase,
+      remainingMs: z.number().finite().nonnegative(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('enforcer-alive'),
+      ...providerProxySetContainResultBase,
+      roles: z.array(z.enum(['guardian', 'reaper'])).min(1),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('enforcer-unobservable'),
+      ...providerProxySetContainResultBase,
+      roles: z.array(z.enum(['guardian', 'reaper'])).min(1),
+    })
+    .strict(),
+  z.object({ kind: z.literal('store-unreadable'), ...providerProxySetContainResultBase }).strict(),
+]);
+
+export type ProviderProxySetContainRequest = z.output<typeof providerProxySetContainRequestSchema>;
+export type ProviderProxySetContainResponse = z.output<typeof providerProxySetContainResponseSchema>;
+
 export const recoveryQuarantineClearRpcSpec = {
   name: 'coordinator.recovery_quarantine.clear',
   kind: 'unary',
@@ -165,6 +253,17 @@ export const providerHostEvictRpcSpec = {
   http: { method: 'POST', path: '/coordinator/provider-hosts/evict' },
 } as const satisfies RpcMethodSpec<unknown, unknown>;
 
+export const providerProxySetContainRpcSpec = {
+  name: 'coordinator.provider_proxy_set.contain',
+  kind: 'unary',
+  requires: 'system:shutdown',
+  requestSchema: providerProxySetContainRequestSchema,
+  responseSchema: providerProxySetContainResponseSchema,
+  responseKind: 'json',
+  portKey: 'providerProxySets',
+  http: { method: 'POST', path: '/coordinator/provider-proxy-sets/contain' },
+} as const satisfies RpcMethodSpec<unknown, unknown>;
+
 export const transportOperationalCarveouts = [
   '/health',
   '/admin/shutdown',
@@ -195,6 +294,7 @@ export const rpcCatalog = [
   providerHostListRpcSpec,
   providerHostInspectRpcSpec,
   providerHostEvictRpcSpec,
+  providerProxySetContainRpcSpec,
   {
     name: 'coordinator.equipExpansion',
     kind: 'unary',

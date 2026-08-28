@@ -1,6 +1,11 @@
 import { InvalidArgumentError, type Command } from 'commander';
 
 import {
+  decodeProviderProxySetAddress,
+  encodeProviderProxySetAddress,
+  type ProviderProxySetAddress,
+} from '../../coordinator/services/provider-proxy-set/identity.js';
+import {
   HandoffRunError,
   liveHandoffResultObligation,
   consumeHandoffRunResult,
@@ -71,10 +76,14 @@ import {
   providerHostListRequestSchema,
   providerHostListResponseSchema,
   providerHostSelectorRequestSchema,
+  providerProxySetContainRequestSchema,
+  providerProxySetContainResponseSchema,
   type ProviderHostEvictResponse,
   type ProviderHostInspectResponse,
   type ProviderHostListResponse,
   type ProviderHostSelectorRequest,
+  type ProviderProxySetContainRequest,
+  type ProviderProxySetContainResponse,
 } from '../../transport/rpc/catalog.js';
 import { decodeHostRef, encodeHostRef } from '../../providers/host-ref-codec.js';
 import { getPluginRoot } from '../dispatch.js';
@@ -86,6 +95,7 @@ import {
   formatHandoffRoutingResolveResult,
   formatRecoveryQuarantineClear,
   formatRecoveryQuarantineList,
+  formatProviderProxySetContainResult,
   formatShutdown,
   RECOVERY_REVISION_FINGERPRINT_PREFIX,
   RECOVERY_REVISION_UNTIL_CLEARED,
@@ -184,6 +194,26 @@ export const HANDOFF_ROUTING_NOT_PUBLISHED_EXIT_CODES: Readonly<Record<HandoffRo
   'rejected-transition': 75,
   'coordination-unavailable': 75,
 };
+
+export const PROVIDER_PROXY_SET_CONTAIN_EXIT_CODES: Readonly<
+  Record<ProviderProxySetContainResponse['kind'], 0 | 1 | 75>
+> = {
+  contained: 0,
+  abandoned: 0,
+  'set-not-found': 1,
+  'not-held': 1,
+  'deadline-pending': 75,
+  'enforcer-alive': 75,
+  'enforcer-unobservable': 75,
+  'store-unreadable': 75,
+};
+
+function providerProxySetContainExitCode(result: ProviderProxySetContainResponse): 0 | 1 | 75 {
+  if ((result.kind === 'contained' || result.kind === 'abandoned') && result.claimDischarge.kind !== 'completed') {
+    return 75;
+  }
+  return PROVIDER_PROXY_SET_CONTAIN_EXIT_CODES[result.kind];
+}
 
 function handoffPublicationIncidentExitContribution(incident: HandoffPublicationIncident): 70 | 75 {
   switch (incident.kind) {
@@ -285,6 +315,14 @@ export interface ProviderHostCommandOperations {
   evict(request: ProviderHostSelectorRequest): Promise<ProviderHostEvictResponse>;
 }
 
+export type ProviderProxySetContainCommandResult =
+  | ProviderProxySetContainResponse
+  | Readonly<{ kind: 'unsupported-coordinator'; setIdentity: ProviderProxySetAddress }>;
+
+export interface ProviderProxySetCommandOperations {
+  contain(request: ProviderProxySetContainRequest): Promise<ProviderProxySetContainCommandResult>;
+}
+
 export type BackendCommandOperations = Readonly<{
   storeReset?: StoreResetCommandOperations;
   kbCommit?: KbCommitCommandOperations;
@@ -293,6 +331,7 @@ export type BackendCommandOperations = Readonly<{
   routingStatusQuarantine?: HandoffRoutingStatusQuarantineCommandOperations;
   recoveryQuarantine?: RecoveryQuarantineCommandOperations;
   providerHosts?: ProviderHostCommandOperations;
+  providerProxySets?: ProviderProxySetCommandOperations;
 }>;
 
 function routingStatusPath(runtime: Runtime): string {
@@ -521,6 +560,34 @@ export function createProviderHostCommandOperations(
   };
 }
 
+export function createProviderProxySetCommandOperations(
+  options: {
+    getClient?: () => Promise<Pick<IpcClient, 'request'>>;
+  } = {},
+): ProviderProxySetCommandOperations {
+  const getClient = options.getClient ?? (async () => ensure(getPluginRoot()));
+  return {
+    contain: async (input) => {
+      const request = providerProxySetContainRequestSchema.parse(input);
+      try {
+        const client = await getClient();
+        return providerProxySetContainResponseSchema.parse(
+          await client.request(
+            'coordinator.provider_proxy_set.contain',
+            request,
+            childPrincipalAuthOptions(childPrincipalAuthFromEnv()),
+          ),
+        );
+      } catch (error: unknown) {
+        if (error instanceof IpcRpcError && error.rpcCode === -32601) {
+          return { kind: 'unsupported-coordinator', setIdentity: request.setIdentity };
+        }
+        throw error;
+      }
+    },
+  };
+}
+
 export function registerBackendCommands(program: Command, operations: BackendCommandOperations = {}): void {
   const {
     storeReset = {
@@ -536,6 +603,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
     routingStatusQuarantine = createRoutingStatusQuarantineCommandOperations(),
     recoveryQuarantine = createRecoveryQuarantineCommandOperations(),
     providerHosts = createProviderHostCommandOperations(),
+    providerProxySets = createProviderProxySetCommandOperations(),
   } = operations;
   const backend = program.command('backend').description('Backend administration and local incident inspection');
 
@@ -677,11 +745,33 @@ export function registerBackendCommands(program: Command, operations: BackendCom
   const shutdownCommand = backend.command('shutdown');
   shutdownCommand.description('Gracefully shut down backend daemon').action(async () => {
     try {
+      let preservedSetTokens: readonly string[] | null = null;
+      try {
+        const statusBeforeShutdown = await backendStatus.getStatus();
+        if (statusBeforeShutdown.status === 'ok') {
+          preservedSetTokens = [
+            ...new Set((statusBeforeShutdown.health.diagnostics?.providerProxySets ?? []).map((set) => set.setToken)),
+          ];
+        }
+      } catch {
+        // Shutdown remains authoritative for its own result; this read contributes output only.
+      }
       const result = await shutdownBackend(getPluginRoot());
       const text = formatShutdown(result);
 
       if (result.ok) {
-        process.stdout.write(text + '\n');
+        const preserved =
+          preservedSetTokens === null
+            ? 'Held provider proxy sets could not be inspected before shutdown; run backend status after the successor starts.'
+            : preservedSetTokens.length === 0
+              ? 'No held provider proxy sets were reported before shutdown.'
+              : [
+                  'Shutdown preserves these held provider proxy sets for successor adoption:',
+                  ...preservedSetTokens.map(
+                    (token) => `  ${token} (contain with: coral-cli backend provider-proxy-set contain ${token})`,
+                  ),
+                ].join('\n');
+        process.stdout.write(`${text}\n${preserved}\n`);
         return;
       }
 
@@ -744,6 +834,46 @@ export function registerBackendCommands(program: Command, operations: BackendCom
         emitError(error);
       }
     });
+  const providerProxySetCommand = backend
+    .command('provider-proxy-set')
+    .description('Contain or abandon one exact held provider-proxy set');
+  const containProviderProxySetCommand = providerProxySetCommand
+    .command('contain')
+    .description('Force containment of one exact held set after its autonomous deadline')
+    .argument('<set-token>', 'Canonical pps1 token copied from `coral-cli backend status`', parseProviderProxySetToken)
+    .option(
+      '--abandon-unobservable',
+      'After external verification, release Coral representation when process absence cannot be proved',
+    );
+  let abandonUnobservableSeen = false;
+  containProviderProxySetCommand.on('option:abandon-unobservable', () => {
+    if (abandonUnobservableSeen) {
+      throw new InvalidArgumentError('Option --abandon-unobservable may only be specified once.');
+    }
+    abandonUnobservableSeen = true;
+  });
+  containProviderProxySetCommand.action(
+    async (setIdentity: ProviderProxySetAddress, options: { abandonUnobservable?: boolean }) => {
+      try {
+        const result = await providerProxySets.contain({
+          setIdentity,
+          abandonUnobservable: options.abandonUnobservable ?? false,
+        });
+        if (result.kind === 'unsupported-coordinator') {
+          process.stderr.write(
+            `No containment verdict for ${encodeProviderProxySetAddress(result.setIdentity)}: this coordinator does not support coordinator.provider_proxy_set.contain. Upgrade or restart into this Coral build, run backend status, and retry the exact token.\n`,
+          );
+          process.exitCode = 75;
+          return;
+        }
+        const exitCode = providerProxySetContainExitCode(result);
+        (exitCode === 0 ? process.stdout : process.stderr).write(`${formatProviderProxySetContainResult(result)}\n`);
+        process.exitCode = exitCode;
+      } catch (error: unknown) {
+        emitError(error);
+      }
+    },
+  );
   recoveryQuarantineCommand
     .command('clear')
     .description('Retry one exact retained recovery failure through the canonical coordinator')
@@ -878,6 +1008,14 @@ export function registerBackendCommands(program: Command, operations: BackendCom
         emitError(error);
       }
     });
+}
+
+export function parseProviderProxySetToken(token: string): ProviderProxySetAddress {
+  try {
+    return decodeProviderProxySetAddress(token);
+  } catch (error: unknown) {
+    throw new InvalidArgumentError(error instanceof Error ? error.message : 'Invalid provider-proxy set token.');
+  }
 }
 
 export function parseProviderHostSelector(

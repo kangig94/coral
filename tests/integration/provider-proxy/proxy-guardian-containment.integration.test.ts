@@ -1362,7 +1362,10 @@ describe('provider proxy cumulative root rotation', () => {
       controlEstablished: () => undefined,
       time: runtime.time,
       recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
-        'containment-proof': async () => null,
+        'containment-proof': async () => ({
+          kind: 'enforcer-unobservable' as const,
+          roles: ['guardian', 'reaper'] as const,
+        }),
       }),
       reportLifecycle: () => undefined,
       onSlotReleased: (routeKey) => manager.providerProxySlotReleased(routeKey),

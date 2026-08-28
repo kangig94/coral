@@ -463,6 +463,44 @@ describe('cli main routing', () => {
     expect(process.exitCode).toBe(1);
   });
 
+  it('names each exact provider-proxy set that successful handoff shutdown preserves', async () => {
+    const token = 'pps1.preserved-set';
+    const program = new Command();
+    program.exitOverride();
+    registerBackendCommands(program, {
+      backendStatus: {
+        getStatus: async () =>
+          ({
+            status: 'ok',
+            health: {
+              diagnostics: {
+                providerProxySets: [
+                  {
+                    setIdentity: {
+                      buildSetId: '11111111-1111-4111-8111-111111111111',
+                      hostFingerprint: 'a'.repeat(64),
+                      proxyInstanceId: '22222222-2222-4222-8222-222222222222',
+                    },
+                    setToken: token,
+                    disposition: 'held',
+                    liveClaims: 1,
+                    incidentReason: 'control_channel_reattaching',
+                    waitingFor: 'control-reattachment',
+                  },
+                ],
+              },
+            },
+          }) as never,
+      } as unknown as BackendStatusCommandOperations,
+    });
+    mockState.shutdownBackend.mockResolvedValueOnce({ ok: true });
+
+    await program.parseAsync(['node', 'coral-cli', 'backend', 'shutdown']);
+
+    expect(stdout).toContain(`coral-cli backend provider-proxy-set contain ${token}`);
+    expect(process.exitCode).toBeUndefined();
+  });
+
   // The exit code is the only machine-readable channel this command has, and `docs/configuration.md` tells
   // operators to run it before `store-reset discard`. Every failure exited 1 alike, so a script could not tell
   // "it is stopped, proceed" from "I could not tell" — the disposition the type had just gained, discarded at

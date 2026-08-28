@@ -12,6 +12,7 @@ const expectedRpcRequires = {
   'coordinator.provider_host.list': 'system:debug',
   'coordinator.provider_host.inspect': 'system:debug',
   'coordinator.provider_host.evict': 'system:shutdown',
+  'coordinator.provider_proxy_set.contain': 'system:shutdown',
   'coordinator.equipExpansion': 'expansion:manage',
   'coordinator.unequipExpansion': 'expansion:manage',
   'coordinator.removeExpansionCatalog': 'expansion:manage',

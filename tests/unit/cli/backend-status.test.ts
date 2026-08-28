@@ -1226,6 +1226,7 @@ describe('backend status provider proxy dispositions', () => {
               hostFingerprint: 'a'.repeat(64),
               proxyInstanceId: '22222222-2222-4222-8222-222222222222',
             },
+            setToken: 'pps1.first',
             disposition: 'awaiting-containment-absence',
             role: 'guardian',
             method: 'guardian.heartbeat.v1',
@@ -1238,6 +1239,7 @@ describe('backend status provider proxy dispositions', () => {
               hostFingerprint: 'b'.repeat(64),
               proxyInstanceId: '44444444-4444-4444-8444-444444444444',
             },
+            setToken: 'pps1.second',
             disposition: 'held',
             role: 'proxy',
             cause: 'invalid-unattributable-frame',
@@ -1254,6 +1256,7 @@ describe('backend status provider proxy dispositions', () => {
               hostFingerprint: 'c'.repeat(64),
               proxyInstanceId: '66666666-6666-4666-8666-666666666666',
             },
+            setToken: 'pps1.third',
             disposition: 'released-by-successor',
             incidentReason: 'successor-adopted',
             waitingFor: 'successor-acknowledgement',
@@ -1264,6 +1267,7 @@ describe('backend status provider proxy dispositions', () => {
               hostFingerprint: 'd'.repeat(64),
               proxyInstanceId: '88888888-8888-4888-8888-888888888888',
             },
+            setToken: 'pps1.fourth',
             disposition: 'held',
             incidentReason: 'successor-adopted',
             waitingFor: 'successor-acknowledgement',
@@ -1276,16 +1280,16 @@ describe('backend status provider proxy dispositions', () => {
     expect(formatBackendStatus(status, { kind: 'absent' }, null)).toContain(
       [
         'Provider proxy sets:',
-        '  buildSetId=11111111-1111-4111-8111-111111111111 proxyInstanceId=22222222-2222-4222-8222-222222222222 hostFingerprint=' +
+        '  set=pps1.first buildSetId=11111111-1111-4111-8111-111111111111 proxyInstanceId=22222222-2222-4222-8222-222222222222 hostFingerprint=' +
           'a'.repeat(64),
-        '    disposition=awaiting-containment-absence subject=guardian guardian.heartbeat.v1 incident=method-not-found waitingFor=independent-containment-absence',
+        '    disposition=awaiting-containment-absence subject=guardian guardian.heartbeat.v1 incident=method-not-found waitingFor=independent-containment-absence liveClaims=unknown',
       ].join('\n'),
     );
     expect(formatBackendStatus(status, { kind: 'absent' }, null)).toContain(
       [
-        '  buildSetId=33333333-3333-4333-8333-333333333333 proxyInstanceId=44444444-4444-4444-8444-444444444444 hostFingerprint=' +
+        '  set=pps1.second buildSetId=33333333-3333-4333-8333-333333333333 proxyInstanceId=44444444-4444-4444-8444-444444444444 hostFingerprint=' +
           'b'.repeat(64),
-        '    disposition=held subject=proxy incident=control_channel_reattaching waitingFor=control-reattachment cause=invalid-unattributable-frame attempts=3 elapsedMs=1250 boundMs=23000 liveClaims=2',
+        '    disposition=held subject=proxy incident=control_channel_reattaching waitingFor=control-reattachment liveClaims=2 cause=invalid-unattributable-frame attempts=3 elapsedMs=1250 boundMs=23000',
       ].join('\n'),
     );
     expect(formatBackendStatus(status, { kind: 'absent' }, null)).toContain(

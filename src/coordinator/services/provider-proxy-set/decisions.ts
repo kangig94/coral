@@ -179,6 +179,26 @@ export type ProviderProxySetRetirementStopDecision = FaultlessDecisionFields &
     setIdentity: ProviderProxySetIdentity;
   }>;
 
+export type ProviderProxySetOperatorContainmentDecision = FaultlessDecisionFields &
+  Readonly<{
+    action: 'operator-contain';
+    reason: 'operator_exact_set_containment';
+    liveClaims: number;
+    setIdentity: ProviderProxySetIdentity;
+  }>;
+
+export type ProviderProxySetOperatorAbandonmentDecision = FaultlessDecisionFields &
+  Readonly<{
+    action: 'abandon';
+    reason: 'operator_exact_set_abandonment';
+    liveClaims: number;
+    setIdentity: ProviderProxySetIdentity;
+  }>;
+
+export type ProviderProxySetOperatorDecision =
+  | ProviderProxySetOperatorContainmentDecision
+  | ProviderProxySetOperatorAbandonmentDecision;
+
 export type ProviderProxySetAuthorityStopDecision =
   | ProviderProxySetOperationFaultStopDecision
   | ProviderProxySetHeartbeatFaultStopDecision
@@ -193,7 +213,8 @@ export type ProviderProxySetContainmentDecision =
 export type ProviderProxySetDecision =
   | ProviderProxySetPreserveDecision
   | ProviderProxySetContainmentDecision
-  | ProviderProxySetDrainDecision;
+  | ProviderProxySetDrainDecision
+  | ProviderProxySetOperatorDecision;
 
 export type ProviderProxySetLogSeverity = 'info' | 'warn';
 
@@ -209,7 +230,9 @@ export function renderProviderProxySetDecision(
   const severity: ProviderProxySetLogSeverity =
     decision.reason === 'provider_authority_lost' ||
     decision.reason === 'heartbeat_hold_exhausted' ||
-    decision.action === 'await-containment-absence'
+    decision.action === 'await-containment-absence' ||
+    decision.action === 'operator-contain' ||
+    decision.action === 'abandon'
       ? 'warn'
       : 'info';
   let fault: string;
@@ -255,6 +278,16 @@ export function renderProviderProxySetDecision(
       fault = 'none';
       subject = 'retirement';
       error = 'none';
+      break;
+    case 'operator_exact_set_containment':
+      fault = 'none';
+      subject = 'operator';
+      error = 'none';
+      break;
+    case 'operator_exact_set_abandonment':
+      fault = 'none';
+      subject = 'operator';
+      error = 'process absence was not observed';
       break;
   }
   return {

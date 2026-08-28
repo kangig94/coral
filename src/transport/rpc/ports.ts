@@ -11,7 +11,13 @@ import type { ToolDomainResult } from '../tool-result.js';
 import type { RecoveryQuarantineClearRequest, RecoveryQuarantineClearResult } from '../../recovery/source-registry.js';
 import type { CanonicalWorkDir } from '../../runtime/canonical-work-dir.js';
 import type { HostRef } from '../../providers/host-inventory-schema.js';
-import type { ProviderHostEvictResponse, ProviderHostInspectResponse, ProviderHostListResponse } from './catalog.js';
+import type {
+  ProviderHostEvictResponse,
+  ProviderHostInspectResponse,
+  ProviderHostListResponse,
+  ProviderProxySetContainRequest,
+  ProviderProxySetContainResponse,
+} from './catalog.js';
 import type { JobScopeRelation, ScopeCheckResult } from '../../jobs/scope.js';
 import type { JobsListFilters } from '../../jobs/read-queries.js';
 
@@ -61,6 +67,10 @@ export interface ProviderHostRequestPort {
   evict(
     selector: Readonly<{ hostRef: HostRef }> | Readonly<{ workDir: CanonicalWorkDir }>,
   ): Promise<ProviderHostEvictResponse>;
+}
+
+export interface ProviderProxySetRequestPort {
+  contain(request: ProviderProxySetContainRequest, signal?: AbortSignal): Promise<ProviderProxySetContainResponse>;
 }
 
 type MaybePromise<T> = T | Promise<T>;
@@ -120,6 +130,7 @@ export interface RpcPorts {
   readonly workflows: WorkflowRequestPort;
   readonly recoveryQuarantine: RecoveryQuarantineRequestPort;
   readonly providerHosts?: ProviderHostRequestPort;
+  readonly providerProxySets?: ProviderProxySetRequestPort;
   readonly kb: KbRequestPort;
   readonly discuss: DiscussRequestPort;
   readonly expansion: ExpansionRequestPort;

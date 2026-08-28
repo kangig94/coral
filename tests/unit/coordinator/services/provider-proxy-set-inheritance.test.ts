@@ -752,9 +752,10 @@ describe('attemptProviderProxySetInheritance', () => {
   it('returns exact disappearance proof instead of treating a missing credential as authority to proceed', async () => {
     mockedReadCapsule.mockReturnValueOnce(null);
     const loc = locator();
-    const proveContainmentAbsent = vi.fn(
-      async () => 'group:200,leader:200@linux:00000000-0000-4000-8000-000000000000:3',
-    );
+    const proveContainmentAbsent = vi.fn(async () => ({
+      kind: 'absent' as const,
+      receipt: 'group:200,leader:200@linux:00000000-0000-4000-8000-000000000000:3',
+    }));
 
     const outcome = await attemptProviderProxySetInheritance(
       loc,
@@ -1310,7 +1311,7 @@ describe('createProviderProxySetInheritance', () => {
     await expect(
       inheritance.proveContainmentAbsent(providerProxySetIdentityFromRecord(reference), db, controller.signal),
       'an unreadable but living pid is not evidence that the enforcer is gone',
-    ).resolves.toBeNull();
+    ).resolves.toEqual({ kind: 'enforcer-alive', roles: ['guardian', 'reaper'] });
     expect(signals, 'nothing may be signalled while a target cannot be observed').toEqual([]);
   });
 
@@ -1340,7 +1341,7 @@ describe('createProviderProxySetInheritance', () => {
     await expect(
       inheritance.proveContainmentAbsent(providerProxySetIdentityFromRecord(reference), db, controller.signal),
       'a pid that is provably someone else does not keep this set alive',
-    ).resolves.not.toBeNull();
+    ).resolves.toEqual(expect.objectContaining({ kind: 'absent' }));
   });
 
   // The third answer, and the polarity that makes it load-bearing: only a proven absence may discount an
@@ -1383,7 +1384,7 @@ describe('createProviderProxySetInheritance', () => {
     await expect(
       inheritance.proveContainmentAbsent(providerProxySetIdentityFromRecord(reference), db, neverAborts),
       'an enforcer that could not be observed is not one that is gone',
-    ).resolves.toBeNull();
+    ).resolves.toEqual({ kind: 'enforcer-unobservable', roles: ['guardian', 'reaper'] });
     expect(signals, 'evidence nobody could produce authorizes no signal').toEqual([]);
   });
 
@@ -1409,7 +1410,7 @@ describe('createProviderProxySetInheritance', () => {
 
     await expect(
       inheritance.proveContainmentAbsent(providerProxySetIdentityFromRecord(reference), db, neverAborts),
-    ).resolves.toBeNull();
+    ).resolves.toEqual({ kind: 'store-unreadable' });
     expect(process.signals).toEqual([]);
   });
 
@@ -1452,7 +1453,7 @@ describe('createProviderProxySetInheritance', () => {
 
     await expect(
       inheritance.proveContainmentAbsent(providerProxySetIdentityFromRecord(reference), db, neverAborts),
-    ).resolves.toBeNull();
+    ).resolves.toEqual({ kind: 'store-unreadable' });
     expect(process.signals).toEqual([]);
   });
 
@@ -1476,7 +1477,7 @@ describe('createProviderProxySetInheritance', () => {
 
     await expect(
       inheritance.proveContainmentAbsent(providerProxySetIdentityFromRecord(reference), db, neverAborts),
-    ).resolves.not.toBeNull();
+    ).resolves.toEqual(expect.objectContaining({ kind: 'absent' }));
   });
 
   it('proves containment through the public factory without selecting an address-distinct root', async () => {
@@ -1501,14 +1502,15 @@ describe('createProviderProxySetInheritance', () => {
       registerInheritedSet: () => undefined,
     });
 
-    const receipt = await inheritance.proveContainmentAbsent(
+    const proof = await inheritance.proveContainmentAbsent(
       providerProxySetIdentityFromRecord(referenceA),
       db,
       neverAborts,
     );
+    if (proof.kind !== 'absent') throw new Error(`expected absence proof, received ${proof.kind}`);
 
     expect({
-      receipt,
+      receipt: proof.receipt,
       signals: process.signals,
       addressDistinctRootAlive: process.live.has(204),
     }).toEqual({
@@ -1540,14 +1542,15 @@ describe('createProviderProxySetInheritance', () => {
       registerInheritedSet: () => undefined,
     });
 
-    const receipt = await inheritance.proveContainmentAbsent(
+    const proof = await inheritance.proveContainmentAbsent(
       providerProxySetIdentityFromRecord(referenceA),
       db,
       neverAborts,
     );
+    if (proof.kind !== 'absent') throw new Error(`expected absence proof, received ${proof.kind}`);
 
-    expect(receipt?.match(/root:/gu)).toHaveLength(65);
-    expect(receipt).not.toContain('root:2000@linux:00000000-0000-4000-8000-000000000000:20000');
+    expect(proof.receipt.match(/root:/gu)).toHaveLength(65);
+    expect(proof.receipt).not.toContain('root:2000@linux:00000000-0000-4000-8000-000000000000:20000');
     expect(process.signals).toEqual([]);
   });
 
@@ -1602,7 +1605,10 @@ describe('createProviderProxySetInheritance', () => {
       controlEstablished: notifyProviderProxyControlEstablished,
       time: runtime.time,
       recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
-        'containment-proof': async () => null,
+        'containment-proof': async () => ({
+          kind: 'enforcer-unobservable' as const,
+          roles: ['guardian', 'reaper'] as const,
+        }),
       }),
       reportLifecycle: () => undefined,
     });
@@ -1668,7 +1674,10 @@ describe('createProviderProxySetInheritance', () => {
       controlEstablished: established,
       time,
       recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
-        'containment-proof': async () => null,
+        'containment-proof': async () => ({
+          kind: 'enforcer-unobservable' as const,
+          roles: ['guardian', 'reaper'] as const,
+        }),
       }),
       reportLifecycle: () => undefined,
     });
@@ -1739,7 +1748,10 @@ describe('createProviderProxySetInheritance', () => {
       controlEstablished: () => undefined,
       time,
       recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
-        'containment-proof': async () => null,
+        'containment-proof': async () => ({
+          kind: 'enforcer-unobservable' as const,
+          roles: ['guardian', 'reaper'] as const,
+        }),
         'disappearance-consumer': async ({ notice }) => ({
           kind: 'accepted',
           acceptance: { kind: 'accepted', operation: notice.operation, disposition: 'record-absent' },

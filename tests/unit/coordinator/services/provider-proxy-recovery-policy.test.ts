@@ -39,6 +39,8 @@ const seamFor = (producerId: ProviderProxyRecoveryProducerId): ProviderProxyReco
       return 'capsule-retirement';
     case 'disappearance-consumer':
       return 'disappearance-delivery';
+    case 'representation-abandonment-consumer':
+      return 'representation-abandonment-delivery';
     case 'role-control':
     case 'containment-proof':
       return 'containment-attempt';
@@ -65,7 +67,14 @@ async function observe(
   const dispatcher = createTestProviderProxyRecoveryDispatcher(
     {
       [producerId]: producer,
-      ...(pairsWithAbsence ? { 'containment-proof': () => null } : {}),
+      ...(pairsWithAbsence
+        ? {
+            'containment-proof': () => ({
+              kind: 'enforcer-unobservable' as const,
+              roles: ['guardian', 'reaper'] as const,
+            }),
+          }
+        : {}),
     } as Partial<ProviderProxyRecoveryProducerPorts>,
     () => {
       globalFatal += 1;
@@ -160,10 +169,17 @@ describe('provider proxy recovery producer classification', () => {
       ['role-control', { disappearanceReceipt: 'role-evidence' }],
       ['set-inheritance', { kind: 'not-bequeathed', reason: 'no capsule' }],
       ['capsule-redemption', { kind: 'redeemed', set: {} }],
-      ['containment-proof', 'containment-absent'],
+      ['containment-proof', { kind: 'absent', receipt: 'containment-absent' }],
       ['capsule-retirement', { kind: 'retired' }],
       [
         'disappearance-consumer',
+        {
+          kind: 'accepted',
+          acceptance: { kind: 'accepted', operation: record.operation, disposition: 'record-absent' },
+        },
+      ],
+      [
+        'representation-abandonment-consumer',
         {
           kind: 'accepted',
           acceptance: { kind: 'accepted', operation: record.operation, disposition: 'record-absent' },
@@ -177,7 +193,9 @@ describe('provider proxy recovery producer classification', () => {
         await observe(
           producerId,
           { kind: 'value', value },
-          producerId === 'disappearance-consumer' ? { operation: record.operation } : {},
+          producerId === 'disappearance-consumer' || producerId === 'representation-abandonment-consumer'
+            ? { operation: record.operation }
+            : {},
         ),
       ]),
     );

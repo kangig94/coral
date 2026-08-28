@@ -98,7 +98,7 @@ export type ProviderProxySetInheritanceDeps = Readonly<{
     identity: ProviderProxySetIdentity,
     db: Database,
     signal: AbortSignal,
-  ) => Promise<string | null>;
+  ) => Promise<ProviderProxySetContainmentProof>;
   registerInheritedSet?(set: ProviderProxyOperationAuthority): void;
 }>;
 
@@ -292,12 +292,18 @@ function capsuleMatchesLocator(
 
 const providerSetDisappearanceClockScope = Symbol('provider-set-disappearance');
 
+export type ProviderProxySetContainmentProof =
+  | Readonly<{ kind: 'absent'; receipt: string }>
+  | Readonly<{ kind: 'enforcer-alive'; roles: readonly ('guardian' | 'reaper')[] }>
+  | Readonly<{ kind: 'enforcer-unobservable'; roles: readonly ('guardian' | 'reaper')[] }>
+  | Readonly<{ kind: 'store-unreadable' }>;
+
 async function proveProviderProxySetContainmentAbsent(
   identity: ProviderProxySetIdentity,
   db: Database,
   runtime: Runtime,
   signal: AbortSignal,
-): Promise<string | null> {
+): Promise<ProviderProxySetContainmentProof> {
   const platform = runtime.env.platform() as NodeJS.Platform;
   const operationScan = readProviderOperations(db);
   // An unreadable row may name another provider root for *this* set, and acting on the decoded subset would
@@ -312,11 +318,11 @@ async function proveProviderProxySetContainmentAbsent(
         (address) => address.proxyInstanceId === identity.proxyInstanceId && address.buildSetId === identity.buildSetId,
       ),
   );
-  if (hidesARootOfThisSet) return null;
+  if (hidesARootOfThisSet) return { kind: 'store-unreadable' };
   const enforcerIdentities = [
-    { pid: identity.guardianPid, incarnation: identity.guardianIncarnation },
-    { pid: identity.reaperPid, incarnation: identity.reaperIncarnation },
-  ];
+    { role: 'guardian' as const, pid: identity.guardianPid, incarnation: identity.guardianIncarnation },
+    { role: 'reaper' as const, pid: identity.reaperPid, incarnation: identity.reaperIncarnation },
+  ] as const;
   // These incarnations were recorded by the guardian and the reaper rather than by this coordinator. A
   // recorded incarnation and a fresh probe of the same process produce the same bytes, so a *different* one
   // is not ambiguity, it is proof the pid belongs to someone else.
@@ -327,10 +333,16 @@ async function proveProviderProxySetContainmentAbsent(
     readIncarnation: (pid) => runtime.process.readProcessIncarnation(pid, platform),
     observeLiveness: (pid) => runtime.process.observeLiveness(pid),
   });
-  const enforcerMayStillBeLive = enforcerIdentities.some((enforcer) => observeEnforcer(enforcer) !== 'absent');
-  if (enforcerMayStillBeLive) {
-    return null;
-  }
+  const observations = enforcerIdentities.map((enforcer) => ({
+    role: enforcer.role,
+    observation: observeEnforcer(enforcer),
+  }));
+  const alive = observations.filter((observation) => observation.observation === 'alive').map(({ role }) => role);
+  if (alive.length > 0) return { kind: 'enforcer-alive', roles: alive };
+  const unobservable = observations
+    .filter((observation) => observation.observation === 'unknown')
+    .map(({ role }) => role);
+  if (unobservable.length > 0) return { kind: 'enforcer-unobservable', roles: unobservable };
   signal.throwIfAborted();
 
   const roots = new Map<string, Readonly<{ pid: number; incarnation: ProcessIncarnation }>>();
@@ -363,7 +375,7 @@ async function proveProviderProxySetContainmentAbsent(
     },
   );
   signal.throwIfAborted();
-  return providerProxyDisappearanceReceipt(containment, recordedRoots);
+  return { kind: 'absent', receipt: providerProxyDisappearanceReceipt(containment, recordedRoots) };
 }
 
 function inheritanceRefusalError(refusal: ProviderProxyControlRedemptionRefusal): Error {
@@ -524,9 +536,9 @@ export async function attemptProviderProxySetInheritance(
   } catch (error: unknown) {
     if (!(error instanceof ProviderProxyRoleControlUnavailableError)) throw error;
     try {
-      const disappearanceReceipt = await deps.proveContainmentAbsent?.(identity, db, signal);
-      if (disappearanceReceipt !== undefined && disappearanceReceipt !== null) {
-        return { kind: 'containment-disappeared', disappearanceReceipt };
+      const proof = await deps.proveContainmentAbsent?.(identity, db, signal);
+      if (proof?.kind === 'absent') {
+        return { kind: 'containment-disappeared', disappearanceReceipt: proof.receipt };
       }
     } catch (proofError: unknown) {
       throw new AggregateError(
@@ -538,10 +550,8 @@ export async function attemptProviderProxySetInheritance(
     return { kind: 'temporarily-unavailable', incident: error.incident };
   }
   if (outcome.kind !== 'not-bequeathed') return outcome;
-  const disappearanceReceipt = await deps.proveContainmentAbsent?.(identity, db, signal);
-  return disappearanceReceipt === undefined || disappearanceReceipt === null
-    ? outcome
-    : { kind: 'containment-disappeared', disappearanceReceipt };
+  const proof = await deps.proveContainmentAbsent?.(identity, db, signal);
+  return proof?.kind === 'absent' ? { kind: 'containment-disappeared', disappearanceReceipt: proof.receipt } : outcome;
 }
 
 /**
@@ -563,7 +573,11 @@ export interface ProviderProxySetInheritance {
     capsulePath: string,
     signal: AbortSignal,
   ): Promise<ProviderProxySetRedemptionOutcome>;
-  proveContainmentAbsent(identity: ProviderProxySetIdentity, db: Database, signal: AbortSignal): Promise<string | null>;
+  proveContainmentAbsent(
+    identity: ProviderProxySetIdentity,
+    db: Database,
+    signal: AbortSignal,
+  ): Promise<ProviderProxySetContainmentProof>;
 }
 
 export type CreateProviderProxySetInheritanceOptions = Readonly<{

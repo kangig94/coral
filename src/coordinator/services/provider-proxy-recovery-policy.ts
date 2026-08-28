@@ -24,6 +24,11 @@ import {
   type DisappearanceDeliveryAttemptOutcome,
 } from './provider-containment-disappearance.js';
 import {
+  representationAbandonmentDeliveryAttemptOutcomeSchema,
+  type ProviderRepresentationAbandonmentNotice,
+  type RepresentationAbandonmentDeliveryAttemptOutcome,
+} from './provider-representation-abandonment.js';
+import {
   providerHandoffCapsuleRetirementOutcomeSchema,
   type ProviderHandoffCapsuleRetirementOutcome,
 } from './provider-proxy-capsule-discovery.js';
@@ -34,6 +39,7 @@ import {
 } from './provider-proxy-set/identity.js';
 import type {
   ProviderProxySetAvailabilityIncident,
+  ProviderProxySetContainmentProof,
   ProviderProxySetInheritanceOutcome,
   ProviderProxySetLocator,
   ProviderProxySetRedemptionOutcome,
@@ -47,12 +53,14 @@ export const PROVIDER_PROXY_RECOVERY_PRODUCERS = [
   'containment-proof',
   'capsule-retirement',
   'disappearance-consumer',
+  'representation-abandonment-consumer',
 ] as const;
 
 export type ProviderProxyRecoveryProducerId = (typeof PROVIDER_PROXY_RECOVERY_PRODUCERS)[number];
 
 export const PROVIDER_PROXY_RECOVERY_CONSUMER_SEAMS = [
   'disappearance-delivery',
+  'representation-abandonment-delivery',
   'startup-set-inheritance',
   'ordinary-set-inheritance',
   'containment-attempt',
@@ -93,6 +101,7 @@ type ContainmentProofInput = Readonly<{
 
 type CapsuleRetirementInput = Readonly<{ path: string }>;
 type DisappearanceConsumerInput = Readonly<{ notice: ContainmentDisappearanceNotice }>;
+type RepresentationAbandonmentConsumerInput = Readonly<{ notice: ProviderRepresentationAbandonmentNotice }>;
 
 export type ProviderProxyRecoveryProducerInput = {
   'disappearance-terminalization': DisappearanceTerminalizationInput;
@@ -102,6 +111,7 @@ export type ProviderProxyRecoveryProducerInput = {
   'containment-proof': ContainmentProofInput;
   'capsule-retirement': CapsuleRetirementInput;
   'disappearance-consumer': DisappearanceConsumerInput;
+  'representation-abandonment-consumer': RepresentationAbandonmentConsumerInput;
 };
 
 export interface ProviderProxyRecoveryProducerPorts {
@@ -111,11 +121,14 @@ export interface ProviderProxyRecoveryProducerPorts {
   'role-control'(input: RoleControlInput): Promise<unknown>;
   'set-inheritance'(input: SetInheritanceInput): Promise<ProviderProxySetInheritanceOutcome>;
   'capsule-redemption'(input: CapsuleRedemptionInput): Promise<ProviderProxySetRedemptionOutcome>;
-  'containment-proof'(input: ContainmentProofInput): Promise<string | null>;
+  'containment-proof'(input: ContainmentProofInput): Promise<ProviderProxySetContainmentProof>;
   'capsule-retirement'(
     input: CapsuleRetirementInput,
   ): Promise<ProviderHandoffCapsuleRetirementOutcome> | ProviderHandoffCapsuleRetirementOutcome;
   'disappearance-consumer'(input: DisappearanceConsumerInput): Promise<DisappearanceDeliveryAttemptOutcome>;
+  'representation-abandonment-consumer'(
+    input: RepresentationAbandonmentConsumerInput,
+  ): Promise<RepresentationAbandonmentDeliveryAttemptOutcome>;
 }
 
 export type ProviderProxyRecoveryRetry = Readonly<{
@@ -147,7 +160,12 @@ const providerProxyRecoveryFatalOrigin: unique symbol = Symbol('provider-proxy-r
 export type ProviderProxySetLifecycleFatalError = Error &
   Readonly<{
     [providerProxyRecoveryFatalOrigin]: true;
-    stage: 'set-inheritance' | 'disappearance-delivery' | 'capsule-retirement' | 'capsule-recovery';
+    stage:
+      | 'set-inheritance'
+      | 'disappearance-delivery'
+      | 'representation-abandonment-delivery'
+      | 'capsule-retirement'
+      | 'capsule-recovery';
     seam: ProviderProxyRecoveryConsumerSeam;
     producerId: ProviderProxyRecoveryProducerId;
     operation?: OperationIdentity;
@@ -297,6 +315,12 @@ function sameOperationIdentity(left: OperationIdentity, right: OperationIdentity
   );
 }
 
+function containmentProofIsAbsent(
+  value: unknown,
+): value is Extract<ProviderProxySetContainmentProof, { kind: 'absent' }> {
+  return typeof value === 'object' && value !== null && 'kind' in value && value.kind === 'absent';
+}
+
 function classifyFulfillment(
   producerId: ProviderProxyRecoveryProducerId,
   value: unknown,
@@ -353,8 +377,16 @@ function classifyFulfillment(
     }
     return evidence(outcome);
   }
-  if (producerId === 'containment-proof' && value !== null && typeof value !== 'string') {
-    return unknown(producerId, new Error('provider_proxy_containment_proof_contract_violation'));
+  if (producerId === 'containment-proof') {
+    if (
+      typeof value !== 'object' ||
+      value === null ||
+      !('kind' in value) ||
+      !['absent', 'enforcer-alive', 'enforcer-unobservable', 'store-unreadable'].includes(String(value.kind))
+    ) {
+      return unknown(producerId, new Error('provider_proxy_containment_proof_contract_violation'));
+    }
+    return evidence(value);
   }
   if (producerId === 'capsule-retirement') {
     const parsed = providerHandoffCapsuleRetirementOutcomeSchema.safeParse(value);
@@ -374,6 +406,18 @@ function classifyFulfillment(
     if (outcome.kind === 'operational-failure') return unavailable(producerId, outcome);
     if (context.operation === undefined || !sameOperationIdentity(outcome.acceptance.operation, context.operation)) {
       return corrupt(producerId, new Error('provider_proxy_disappearance_consumer_identity_mismatch'));
+    }
+    return evidence(outcome.acceptance);
+  }
+  if (producerId === 'representation-abandonment-consumer') {
+    const parsed = representationAbandonmentDeliveryAttemptOutcomeSchema.safeParse(value);
+    if (!parsed.success) {
+      return unknown(producerId, new Error('provider_proxy_representation_abandonment_consumer_contract_violation'));
+    }
+    const outcome = parsed.data;
+    if (outcome.kind === 'operational-failure') return unavailable(producerId, outcome);
+    if (context.operation === undefined || !sameOperationIdentity(outcome.acceptance.operation, context.operation)) {
+      return corrupt(producerId, new Error('provider_proxy_representation_abandonment_consumer_identity_mismatch'));
     }
     return evidence(outcome.acceptance);
   }
@@ -429,7 +473,9 @@ function classifyRejection(
     }
     return unknown(producerId, error);
   }
-  if (producerId === 'disappearance-consumer') return unknown(producerId, error);
+  if (producerId === 'disappearance-consumer' || producerId === 'representation-abandonment-consumer') {
+    return unknown(producerId, error);
+  }
   if (error instanceof ProviderProxyRoleControlUnavailableError) return unavailable(producerId, error.incident);
   if (error instanceof ProviderProxyRoleControlRemoteError) return refused(producerId, error);
   if (
@@ -444,6 +490,7 @@ function classifyRejection(
 function fatalStage(seam: ProviderProxyRecoveryConsumerSeam): ProviderProxySetLifecycleFatalError['stage'] {
   if (seam === 'startup-set-inheritance' || seam === 'ordinary-set-inheritance') return 'set-inheritance';
   if (seam === 'disappearance-delivery') return 'disappearance-delivery';
+  if (seam === 'representation-abandonment-delivery') return 'representation-abandonment-delivery';
   if (seam === 'capsule-retirement') return 'capsule-retirement';
   return 'capsule-recovery';
 }
@@ -485,6 +532,8 @@ function invokeProducer(
       return producers['capsule-retirement'](source.input);
     case 'disappearance-consumer':
       return producers['disappearance-consumer'](source.input);
+    case 'representation-abandonment-consumer':
+      return producers['representation-abandonment-consumer'](source.input);
   }
 }
 
@@ -525,7 +574,7 @@ export function createProviderProxyRecoveryDispatcher(
         const redemption = exactSources.get('redemption');
         const absence = exactSources.get('absence');
         if (redemption === undefined || absence === undefined) return;
-        if (redemption.kind === 'evidence' && absence.kind === 'evidence' && absence.value !== null) {
+        if (redemption.kind === 'evidence' && absence.kind === 'evidence' && containmentProofIsAbsent(absence.value)) {
           retireFatal(
             corrupt('capsule-redemption', new Error('provider_proxy_capsule_recovery_evidence_conflict')) as Extract<
               Observation,
@@ -539,7 +588,7 @@ export function createProviderProxyRecoveryDispatcher(
           sinks.evidence(redemption.value, 'redemption');
           return;
         }
-        if (absence.kind === 'evidence' && absence.value !== null) {
+        if (absence.kind === 'evidence' && containmentProofIsAbsent(absence.value)) {
           sinks.evidence(absence.value, 'absence');
           return;
         }
@@ -561,7 +610,7 @@ export function createProviderProxyRecoveryDispatcher(
       const reduceControlReattachment = (): void => {
         if (retired) return;
         const absence = reattachmentSources.get('absence');
-        if (absence?.kind === 'evidence' && absence.value !== null) {
+        if (absence?.kind === 'evidence' && containmentProofIsAbsent(absence.value)) {
           retireReattachment(absence.value, 'absence');
           return;
         }
