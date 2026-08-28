@@ -753,7 +753,8 @@ function formatRunningStatus(health: RunningHealth): string {
     lines.push(`Queue depth: ${health.queueDepth}`);
   }
   const providerProxySets = health.diagnostics?.providerProxySets ?? [];
-  if (providerProxySets.length > 0) {
+  const skippedProviderProxySetRows = health.skippedProviderProxySetRows;
+  if (providerProxySets.length > 0 || skippedProviderProxySetRows > 0) {
     lines.push('', 'Provider proxy sets:');
     for (const set of providerProxySets) {
       const subject = [set.role, set.method].filter((value) => value !== undefined).join(' ');
@@ -764,6 +765,15 @@ function formatRunningStatus(health: RunningHealth): string {
       lines.push(
         `  buildSetId=${set.setIdentity.buildSetId} proxyInstanceId=${set.setIdentity.proxyInstanceId} hostFingerprint=${set.setIdentity.hostFingerprint}`,
         `    disposition=${set.disposition}${subject.length === 0 ? '' : ` subject=${subject}`} incident=${set.incidentReason} waitingFor=${set.waitingFor}${reattachment}`,
+      );
+    }
+    if (skippedProviderProxySetRows === 1) {
+      lines.push(
+        '  Provider proxy set rows this build could not read: 1; backend status skipped that row and is not showing its disposition, cause, or waiting condition.',
+      );
+    } else if (skippedProviderProxySetRows > 1) {
+      lines.push(
+        `  Provider proxy set rows this build could not read: ${skippedProviderProxySetRows}; backend status skipped those rows and is not showing their dispositions, causes, or waiting conditions.`,
       );
     }
   }

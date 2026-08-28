@@ -1,11 +1,11 @@
 // AC10a: `/health.components` is an array of transport component-status entries
 // (4-phase tagged union per `id`). `mutationBlocked` and `consumerStuck`
-// move from `components.kb` to top-level `diagnostics`. The validator
+// move from `components.kb` to top-level `diagnostics`. The decoder
 // pins this shape so external consumers can rely on the structure.
 
 import { describe, expect, it } from 'vitest';
 
-import { isBackendHealth, type BackendHealth } from '#src/transport/http/backend/health.js';
+import { parseBackendHealth, type BackendHealth } from '#src/transport/http/backend/health.js';
 
 const HEALTHY_BASE: BackendHealth = {
   status: 'ok',
@@ -23,6 +23,26 @@ const HEALTHY_BASE: BackendHealth = {
   textProjectionState: 'idle',
   components: [{ id: 'kb', phase: 'online' }],
 };
+
+const PROVIDER_PROXY_SET = {
+  setIdentity: {
+    buildSetId: '11111111-1111-4111-8111-111111111111',
+    hostFingerprint: 'a'.repeat(64),
+    proxyInstanceId: '22222222-2222-4222-8222-222222222222',
+  },
+  disposition: 'held',
+  cause: 'closed',
+  attempts: 2,
+  elapsedMs: 500,
+  boundMs: 23_000,
+  liveClaims: 0,
+  incidentReason: 'control_channel_closed',
+  waitingFor: 'control-reattachment',
+} as const;
+
+function isBackendHealth(value: unknown): boolean {
+  return parseBackendHealth(value) !== null;
+}
 
 describe('/health typed shape (AC10a)', () => {
   it('accepts a healthy shape with one online component and no diagnostics', () => {
@@ -360,5 +380,33 @@ describe('/health typed shape (AC10a)', () => {
       textProjectionState: 'indexing',
     };
     expect(isBackendHealth(malformed)).toBe(false);
+  });
+
+  it.each([
+    ['disposition', 'released-by-successor'],
+    ['cause', 'peer-generation-changed'],
+    ['waitingFor', 'successor-acknowledgement'],
+  ] as const)('skips a well-formed provider proxy set row with an unknown %s', (field, value) => {
+    const parsed = parseBackendHealth({
+      ...HEALTHY_BASE,
+      diagnostics: {
+        providerProxySets: [PROVIDER_PROXY_SET, { ...PROVIDER_PROXY_SET, [field]: value }],
+      },
+    });
+
+    expect(parsed).toEqual({
+      health: { ...HEALTHY_BASE, diagnostics: { providerProxySets: [PROVIDER_PROXY_SET] } },
+      skippedProviderProxySetRows: 1,
+    });
+  });
+
+  it('rejects malformed provider proxy set structure instead of counting it as a forward-shaped row', () => {
+    const parseWith = (providerProxySets: unknown) =>
+      parseBackendHealth({ ...HEALTHY_BASE, diagnostics: { providerProxySets } });
+
+    expect(parseWith('not-an-array')).toBeNull();
+    expect(parseWith([{ ...PROVIDER_PROXY_SET, setIdentity: undefined }])).toBeNull();
+    expect(parseWith([{ ...PROVIDER_PROXY_SET, attempts: '2' }])).toBeNull();
+    expect(parseWith([{ ...PROVIDER_PROXY_SET, disposition: 'released-by-successor', attempts: '2' }])).toBeNull();
   });
 });

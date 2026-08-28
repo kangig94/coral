@@ -31,7 +31,7 @@ import { RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { handoffRoutingStatusGeneration } from '#src/store/handoff-routing-status-store.js';
-import { isBackendHealth } from '#src/transport/http/backend/health.js';
+import { parseBackendHealth } from '#src/transport/http/backend/health.js';
 import { statusFromStartupDiagnostic, type BackendStatusFull } from '#src/transport/http/backend/status.js';
 import type { HealthSnapshot } from '#src/transport/server-ports.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
@@ -45,6 +45,16 @@ function liveHandoffResult(
   publicationIncidents: readonly HandoffPublicationIncident[] = [],
 ): LiveHandoffResult {
   return { continuation, publicationIncidents };
+}
+
+function runningStatusFromHealthPayload(payload: unknown): Extract<BackendStatusFull, { status: 'ok' }> {
+  const parsed = parseBackendHealth(payload);
+  if (parsed === null) throw new Error('expected the produced health snapshot to validate');
+  const { namespace: _namespace, status: _status, ...health } = parsed.health;
+  return {
+    status: 'ok',
+    health: { ...health, status: 'ok', skippedProviderProxySetRows: parsed.skippedProviderProxySetRows },
+  };
 }
 
 const storeReset: StoreResetCommandOperations = {
@@ -1138,10 +1148,7 @@ describe('backend status recovery quarantine propagation', () => {
         components: [recovery.status],
       } satisfies HealthSnapshot;
 
-      expect(isBackendHealth(produced)).toBe(true);
-      if (!isBackendHealth(produced)) throw new Error('expected the produced health snapshot to validate');
-      const { namespace: _namespace, status: _status, ...health } = produced;
-      const status = { status: 'ok', health: { ...health, status: 'ok' } } satisfies BackendStatusFull;
+      const status = runningStatusFromHealthPayload(produced);
 
       expect(formatBackendStatus(status, { kind: 'absent' }, null)).toContain(
         [
@@ -1183,10 +1190,7 @@ describe('backend status recovery quarantine propagation', () => {
       components: [...registry.list()],
     } satisfies HealthSnapshot;
 
-    expect(isBackendHealth(produced)).toBe(true);
-    if (!isBackendHealth(produced)) throw new Error('expected the produced health snapshot to validate');
-    const { namespace: _namespace, status: _status, ...health } = produced;
-    const status = { status: 'ok', health: { ...health, status: 'ok' } } satisfies BackendStatusFull;
+    const status = runningStatusFromHealthPayload(produced);
 
     expect(formatBackendStatus(status, { kind: 'absent' }, null)).toContain(
       '  recovery: offline\n    reason: Status unavailable:',
@@ -1244,13 +1248,30 @@ describe('backend status provider proxy dispositions', () => {
             incidentReason: 'control_channel_reattaching',
             waitingFor: 'control-reattachment',
           },
+          {
+            setIdentity: {
+              buildSetId: '55555555-5555-4555-8555-555555555555',
+              hostFingerprint: 'c'.repeat(64),
+              proxyInstanceId: '66666666-6666-4666-8666-666666666666',
+            },
+            disposition: 'released-by-successor',
+            incidentReason: 'successor-adopted',
+            waitingFor: 'successor-acknowledgement',
+          },
+          {
+            setIdentity: {
+              buildSetId: '77777777-7777-4777-8777-777777777777',
+              hostFingerprint: 'd'.repeat(64),
+              proxyInstanceId: '88888888-8888-4888-8888-888888888888',
+            },
+            disposition: 'held',
+            incidentReason: 'successor-adopted',
+            waitingFor: 'successor-acknowledgement',
+          },
         ],
       },
-    } satisfies HealthSnapshot;
-    expect(isBackendHealth(produced)).toBe(true);
-    if (!isBackendHealth(produced)) throw new Error('expected the produced health snapshot to validate');
-    const { namespace: _namespace, status: _status, ...health } = produced;
-    const status = { status: 'ok', health: { ...health, status: 'ok' } } satisfies BackendStatusFull;
+    };
+    const status = runningStatusFromHealthPayload(produced);
 
     expect(formatBackendStatus(status, { kind: 'absent' }, null)).toContain(
       [
@@ -1267,6 +1288,12 @@ describe('backend status provider proxy dispositions', () => {
         '    disposition=held subject=proxy incident=control_channel_reattaching waitingFor=control-reattachment cause=invalid-unattributable-frame attempts=3 elapsedMs=1250 boundMs=23000 liveClaims=2',
       ].join('\n'),
     );
+    expect(formatBackendStatus(status, { kind: 'absent' }, null)).toContain(
+      'Provider proxy set rows this build could not read: 2; backend status skipped those rows and is not showing their dispositions, causes, or waiting conditions.',
+    );
+    const rendered = formatBackendStatus(status, { kind: 'absent' }, null);
+    expect(rendered).not.toContain('buildSetId=55555555-5555-4555-8555-555555555555');
+    expect(rendered).not.toContain('buildSetId=77777777-7777-4777-8777-777777777777');
   });
 });
 

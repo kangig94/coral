@@ -7,7 +7,7 @@ import { parseIsoTimestamp } from '../../../infra/time.js';
 import { isSerializedCoralSetupError } from '../../../runtime/errors.js';
 import { createRealRuntime } from '../../../runtime/real.js';
 import { HEALTH_TIMEOUT_MS, parseJsonResponse } from '../sse.js';
-import { isBackendHealth, isBackendPing, type BackendHealth } from './health.js';
+import { isBackendPing, parseBackendHealth, type BackendHealth } from './health.js';
 import { TransientHttpError } from '../../../infra/http-errors.js';
 
 const RECENT_STARTUP_DIAGNOSTIC_MS = 5 * 60_000;
@@ -34,6 +34,7 @@ type BackendStatus =
       components: BackendHealth['components'];
       systemProviderScope?: BackendHealth['systemProviderScope'];
       diagnostics?: BackendHealth['diagnostics'];
+      skippedProviderProxySetRows: number;
     }
   | {
       status: 'shutting_down';
@@ -236,17 +237,19 @@ async function probeDetailedHealth(
   const body = await parseJsonResponse(response);
   if (response.status === 200) {
     // Same split as the unauthenticated ping: a shape rejection says nothing about whose coordinator this is.
-    if (!isBackendHealth(body)) {
+    const parsed = parseBackendHealth(body);
+    if (parsed === null) {
       return unreachable('detailed health responded 200 with a body this build could not decode');
     }
-    if (body.namespace !== info.namespace || body.flavor !== info.flavor) {
+    const { health, skippedProviderProxySetRows } = parsed;
+    if (health.namespace !== info.namespace || health.flavor !== info.flavor) {
       return notOurCoordinator();
     }
-    if (body.status === 'draining') {
+    if (health.status === 'draining') {
       return { status: 'shutting_down' };
     }
-    const { namespace: _namespace, status: _status, ...rest } = body;
-    return { status: 'ok', health: { ...rest, status: 'ok' as const } };
+    const { namespace: _namespace, status: _status, ...rest } = health;
+    return { status: 'ok', health: { ...rest, status: 'ok' as const, skippedProviderProxySetRows } };
   }
   if (response.status === 503 || TransientHttpError.isTransientStatus(response.status)) {
     return { status: 'shutting_down' };

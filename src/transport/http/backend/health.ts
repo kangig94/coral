@@ -140,6 +140,11 @@ export interface BackendHealth {
   };
 }
 
+export type BackendHealthParseResult = Readonly<{
+  health: BackendHealth;
+  skippedProviderProxySetRows: number;
+}>;
+
 export type BackendPing = {
   status: BackendHealth['status'];
   version: string;
@@ -184,35 +189,61 @@ function isConsumerStuck(value: unknown): value is NonNullable<BackendHealth['di
   });
 }
 
-function isProviderProxySets(value: unknown): value is NonNullable<BackendHealth['diagnostics']>['providerProxySets'] {
-  return (
-    Array.isArray(value) &&
-    value.every(
-      (entry) =>
-        isRecord(entry) &&
-        isRecord(entry.setIdentity) &&
-        typeof entry.setIdentity.buildSetId === 'string' &&
-        typeof entry.setIdentity.hostFingerprint === 'string' &&
-        typeof entry.setIdentity.proxyInstanceId === 'string' &&
-        (entry.disposition === 'held' || entry.disposition === 'awaiting-containment-absence') &&
-        (entry.role === undefined || typeof entry.role === 'string') &&
-        (entry.method === undefined || typeof entry.method === 'string') &&
-        (entry.cause === undefined || entry.cause === 'closed' || entry.cause === 'invalid-unattributable-frame') &&
-        (entry.attempts === undefined || isNonNegativeInteger(entry.attempts)) &&
-        (entry.elapsedMs === undefined || isNonNegativeFiniteNumber(entry.elapsedMs)) &&
-        (entry.boundMs === undefined || isNonNegativeFiniteNumber(entry.boundMs)) &&
-        (entry.liveClaims === undefined || isNonNegativeInteger(entry.liveClaims)) &&
-        (entry.cause === undefined ||
-          (entry.attempts !== undefined &&
-            entry.elapsedMs !== undefined &&
-            entry.boundMs !== undefined &&
-            entry.liveClaims !== undefined)) &&
-        typeof entry.incidentReason === 'string' &&
-        (entry.waitingFor === 'heartbeat-evidence-window' ||
-          entry.waitingFor === 'control-reattachment' ||
-          entry.waitingFor === 'independent-containment-absence'),
-    )
-  );
+type ProviderProxySet = NonNullable<NonNullable<BackendHealth['diagnostics']>['providerProxySets']>[number];
+
+type ProviderProxySetsParseResult = Readonly<{
+  understoodRows: ProviderProxySet[];
+  skippedRows: number;
+}>;
+
+function parseProviderProxySets(value: unknown): ProviderProxySetsParseResult | null {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+
+  const understoodRows: ProviderProxySet[] = [];
+  let skippedRows = 0;
+  for (const entry of value) {
+    if (
+      !isRecord(entry) ||
+      !isRecord(entry.setIdentity) ||
+      typeof entry.setIdentity.buildSetId !== 'string' ||
+      typeof entry.setIdentity.hostFingerprint !== 'string' ||
+      typeof entry.setIdentity.proxyInstanceId !== 'string' ||
+      typeof entry.disposition !== 'string' ||
+      (entry.role !== undefined && typeof entry.role !== 'string') ||
+      (entry.method !== undefined && typeof entry.method !== 'string') ||
+      (entry.cause !== undefined && typeof entry.cause !== 'string') ||
+      (entry.attempts !== undefined && !isNonNegativeInteger(entry.attempts)) ||
+      (entry.elapsedMs !== undefined && !isNonNegativeFiniteNumber(entry.elapsedMs)) ||
+      (entry.boundMs !== undefined && !isNonNegativeFiniteNumber(entry.boundMs)) ||
+      (entry.liveClaims !== undefined && !isNonNegativeInteger(entry.liveClaims)) ||
+      (entry.cause !== undefined &&
+        (entry.attempts === undefined ||
+          entry.elapsedMs === undefined ||
+          entry.boundMs === undefined ||
+          entry.liveClaims === undefined)) ||
+      typeof entry.incidentReason !== 'string' ||
+      typeof entry.waitingFor !== 'string'
+    ) {
+      return null;
+    }
+
+    const understandsEnums =
+      (entry.disposition === 'held' || entry.disposition === 'awaiting-containment-absence') &&
+      (entry.cause === undefined || entry.cause === 'closed' || entry.cause === 'invalid-unattributable-frame') &&
+      (entry.waitingFor === 'heartbeat-evidence-window' ||
+        entry.waitingFor === 'control-reattachment' ||
+        entry.waitingFor === 'independent-containment-absence');
+    if (!understandsEnums) {
+      skippedRows += 1;
+      continue;
+    }
+
+    understoodRows.push(entry as ProviderProxySet);
+  }
+
+  return { understoodRows, skippedRows };
 }
 
 function isDegradedReason(
@@ -367,18 +398,25 @@ function isKernel(value: unknown): value is BackendHealth['kernel'] {
   return value.readyAt === null || Number.isFinite(value.readyAt);
 }
 
-function isDiagnostics(value: unknown): value is NonNullable<BackendHealth['diagnostics']> {
+type DiagnosticsParseResult = Readonly<{
+  diagnostics: NonNullable<BackendHealth['diagnostics']>;
+  skippedProviderProxySetRows: number;
+}>;
+
+function parseDiagnostics(value: unknown): DiagnosticsParseResult | null {
   if (!isRecord(value)) {
-    return false;
+    return null;
   }
   if (value.mutationBlocked !== undefined && !isMutationBlocked(value.mutationBlocked)) {
-    return false;
+    return null;
   }
   if (value.consumerStuck !== undefined && !isConsumerStuck(value.consumerStuck)) {
-    return false;
+    return null;
   }
-  if (value.providerProxySets !== undefined && !isProviderProxySets(value.providerProxySets)) {
-    return false;
+  const providerProxySets =
+    value.providerProxySets === undefined ? null : parseProviderProxySets(value.providerProxySets);
+  if (value.providerProxySets !== undefined && providerProxySets === null) {
+    return null;
   }
   if (
     value.carriers !== undefined &&
@@ -388,9 +426,15 @@ function isDiagnostics(value: unknown): value is NonNullable<BackendHealth['diag
       !isNonNegativeInteger(value.carriers.unknownJobs) ||
       !isNonNegativeInteger(value.carriers.recoveryDefectJobs))
   ) {
-    return false;
+    return null;
   }
-  return true;
+  return {
+    diagnostics: {
+      ...value,
+      ...(providerProxySets === null ? {} : { providerProxySets: providerProxySets.understoodRows }),
+    },
+    skippedProviderProxySetRows: providerProxySets?.skippedRows ?? 0,
+  } as DiagnosticsParseResult;
 }
 
 function isResources(value: unknown): value is NonNullable<BackendHealth['resources']> {
@@ -419,30 +463,44 @@ function isSystemProviderScope(value: unknown): value is NonNullable<BackendHeal
   );
 }
 
-export function isBackendHealth(value: unknown): value is BackendHealth {
-  return (
-    isRecord(value) &&
-    (value.status === 'starting' || value.status === 'ok' || value.status === 'draining') &&
-    isKernel(value.kernel) &&
-    typeof value.version === 'string' &&
-    typeof value.bundleHash === 'string' &&
-    (value.flavor === 'prod' || value.flavor === 'dev') &&
-    typeof value.instanceId === 'string' &&
-    typeof value.namespace === 'string' &&
-    value.namespace.length > 0 &&
-    Number.isFinite(value.uptimeMs) &&
-    Number.isInteger(value.active) &&
-    Number.isInteger(value.activeJobs) &&
-    Number.isInteger(value.inflightRequests) &&
-    Number.isInteger(value.queueDepth) &&
-    isTextProjectionState(value.textProjectionState) &&
-    (value.resources === undefined || isResources(value.resources)) &&
-    Array.isArray(value.components) &&
-    value.components.every(isRuntimeComponentStatus) &&
-    (value.systemProviderScope === undefined || isSystemProviderScope(value.systemProviderScope)) &&
-    (value.kbDaemon === undefined || isKbDaemonHealth(value.kbDaemon)) &&
-    (value.diagnostics === undefined || isDiagnostics(value.diagnostics))
-  );
+export function parseBackendHealth(value: unknown): BackendHealthParseResult | null {
+  if (
+    !isRecord(value) ||
+    (value.status !== 'starting' && value.status !== 'ok' && value.status !== 'draining') ||
+    !isKernel(value.kernel) ||
+    typeof value.version !== 'string' ||
+    typeof value.bundleHash !== 'string' ||
+    (value.flavor !== 'prod' && value.flavor !== 'dev') ||
+    typeof value.instanceId !== 'string' ||
+    typeof value.namespace !== 'string' ||
+    value.namespace.length === 0 ||
+    !Number.isFinite(value.uptimeMs) ||
+    !Number.isInteger(value.active) ||
+    !Number.isInteger(value.activeJobs) ||
+    !Number.isInteger(value.inflightRequests) ||
+    !Number.isInteger(value.queueDepth) ||
+    !isTextProjectionState(value.textProjectionState) ||
+    (value.resources !== undefined && !isResources(value.resources)) ||
+    !Array.isArray(value.components) ||
+    !value.components.every(isRuntimeComponentStatus) ||
+    (value.systemProviderScope !== undefined && !isSystemProviderScope(value.systemProviderScope)) ||
+    (value.kbDaemon !== undefined && !isKbDaemonHealth(value.kbDaemon))
+  ) {
+    return null;
+  }
+
+  const diagnostics = value.diagnostics === undefined ? null : parseDiagnostics(value.diagnostics);
+  if (value.diagnostics !== undefined && diagnostics === null) {
+    return null;
+  }
+
+  return {
+    health: {
+      ...value,
+      ...(diagnostics === null ? {} : { diagnostics: diagnostics.diagnostics }),
+    } as BackendHealth,
+    skippedProviderProxySetRows: diagnostics?.skippedProviderProxySetRows ?? 0,
+  };
 }
 
 export function isBackendPing(value: unknown): value is BackendPing {
