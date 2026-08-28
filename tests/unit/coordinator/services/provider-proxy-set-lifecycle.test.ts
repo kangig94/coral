@@ -35,11 +35,13 @@ import {
   type RetrySafeControlCallPolicy,
 } from '#src/coordinator/services/provider-proxy-authority-fault.js';
 import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set/claim-mirror.js';
+import { createProviderProxySetContainmentProver } from '#src/coordinator/services/provider-proxy-set/containment-proof.js';
 import {
   ProviderProxySetLifecycle,
   type CapsuleRetirementAttemptOutcome,
   type ProviderProxySetLifecycleDeps,
   type ProviderProxySetLifecycleProgressViolation,
+  type ProviderProxySetOperatorExitCapability,
   type ProviderProxySetRecordedContainmentReaper,
 } from '#src/coordinator/services/provider-proxy-set/index.js';
 import type {
@@ -58,11 +60,19 @@ import {
 } from '#src/coordinator/services/provider-proxy-set/identity.js';
 import type { ProviderProxySetRedemptionOutcome } from '#src/coordinator/services/provider-proxy-set/inheritance.js';
 import type { ProviderProxySetContainmentEvidence } from '#src/provider-proxy/containment-proof-contract.js';
+import { createRealRuntime } from '#src/runtime/real.js';
+import { applyBundledStoreSchema, type Database } from '#src/store/db.js';
+import { insertProviderOperation } from '#src/store/provider-operation-journal.js';
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
+import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
 import { ProviderOperationTerminalMetadataError } from '#src/jobs/provider-operation-terminalization.js';
-import type { ProviderOperationTerminalDirective } from '#src/store/provider-operation-record.js';
+import {
+  PROVIDER_OPERATION_RECORD_VERSION,
+  type ProviderOperationTerminalDirective,
+} from '#src/store/provider-operation-record.js';
 
 /** The build this fixture lifecycle belongs to — the same one `providerOperationRecord` stamps on its identities, so a discovered capsule is inheritable rather than foreign. */
 const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
@@ -474,6 +484,87 @@ function fakeAuthority(
   if (faults !== undefined) authorityFaultEmitters.set(authority, faults.latch);
   else if (fault !== undefined) authorityFaultEmitters.set(authority, fault.resolve);
   return authority;
+}
+
+function containmentProofDatabase(record: ReturnType<typeof providerOperationRecord>): Database {
+  const db = newRawDatabase(':memory:');
+  applyBundledStoreSchema(db, currentCoralStoreFormat());
+  insertProviderOperation(db, record);
+  return db;
+}
+
+function containmentProofRuntime(
+  identity: ReturnType<typeof providerProxySetIdentityFromRecord>,
+  observations: Readonly<Record<'guardian' | 'reaper', ProcessLiveness>>,
+) {
+  const base = createRealRuntime('prod');
+  const expectedIncarnations = new Map<number, ProcessIncarnation>([
+    [identity.guardianPid, identity.guardianIncarnation],
+    [identity.reaperPid, identity.reaperIncarnation],
+  ]);
+  const observationFor = (pid: number): ProcessLiveness => {
+    if (pid === identity.guardianPid) return observations.guardian;
+    if (pid === identity.reaperPid) return observations.reaper;
+    return 'absent';
+  };
+  const readProcessIncarnation = vi.fn((pid: number) =>
+    observationFor(pid) === 'alive' ? (expectedIncarnations.get(pid) ?? null) : null,
+  );
+  const observeLiveness = vi.fn((pid: number) => observationFor(pid));
+  const kill = vi.fn(() => true);
+  return {
+    runtime: {
+      ...base,
+      process: { ...base.process, readProcessIncarnation, observeLiveness, kill },
+    },
+    kill,
+    observeLiveness,
+    readProcessIncarnation,
+  };
+}
+
+async function authorizedOperatorExitForProof(
+  record: ReturnType<typeof providerOperationRecord>,
+  reapRecordedContainment: ProviderProxySetRecordedContainmentReaper,
+): Promise<
+  Readonly<{
+    capability: ProviderProxySetOperatorExitCapability;
+    lifecycle: ProviderProxySetLifecycle;
+    stopAndReap: DurableProviderProxyOperationAuthority['stopAndReap'];
+  }>
+> {
+  const claims = new ProviderProxySetClaimMirror();
+  claims.initialize([]);
+  const faults = createProviderProxyAuthorityFaultLatch();
+  const stopAndReap = vi.fn<DurableProviderProxyOperationAuthority['stopAndReap']>(
+    () => new Promise<never>(() => undefined),
+  );
+  const clock = new ManualClock();
+  const authority = fakeAuthority({ record, faults, stopAndReap, adoptionWindowMs: 100 });
+  const lifecycle = lifecycleFor({
+    claims,
+    controlEstablished: ignoreControlEstablished,
+    disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+    time: clock,
+    proveContainmentAbsent: noContainmentProof,
+    reapRecordedContainment,
+  });
+  lifecycle.initializeClaimSlots();
+  lifecycle.completeStartupDiscovery();
+  lifecycle.registerInheritedSet(authority);
+  faults.reportIncident({
+    kind: 'control-channel-fault',
+    role: 'guardian',
+    cause: 'closed',
+    error: new ControlClientError('control_client_closed', 'guardian closed', 'closed'),
+  });
+  await drainMicrotasks();
+  clock.elapse(100);
+  const authorization = lifecycle.authorizeOperatorExit(providerProxySetAddress(authority.setIdentity));
+  if (authorization.kind !== 'authorized') {
+    throw new Error(`expected authorization, received ${authorization.kind}`);
+  }
+  return { capability: authorization.capability, lifecycle, stopAndReap };
 }
 
 function capsuleFor(
@@ -1984,7 +2075,7 @@ describe('ProviderProxySetLifecycle', () => {
     expect(lifecycle.routeFor('draining-reattachment')).toBeNull();
   });
 
-  it('stops redemption immediately on refusal and awaits independent absence without reaping', async () => {
+  it('stops redemption immediately on refusal and awaits absence without authority stop-and-reap', async () => {
     const record = providerOperationRecord('executing');
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([record]);
@@ -2034,7 +2125,7 @@ describe('ProviderProxySetLifecycle', () => {
     );
   });
 
-  it('keeps one absolute bound across retries and a second fault, then awaits absence without reaping', async () => {
+  it('keeps the reattachment bound across retries, then awaits absence without authority stop-and-reap', async () => {
     const record = providerOperationRecord('executing');
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([record]);
@@ -2208,6 +2299,137 @@ describe('ProviderProxySetLifecycle', () => {
         waitingFor: 'store-repair',
       }),
     );
+  });
+
+  it.each([
+    {
+      label: 'guardian is alive',
+      observations: { guardian: 'alive', reaper: 'absent' } as const,
+      expectedKind: 'enforcer-alive' as const,
+    },
+    {
+      label: 'reaper is alive',
+      observations: { guardian: 'absent', reaper: 'alive' } as const,
+      expectedKind: 'enforcer-alive' as const,
+    },
+    {
+      label: 'guardian is unobservable',
+      observations: { guardian: 'unknown', reaper: 'absent' } as const,
+      expectedKind: 'enforcer-unobservable' as const,
+    },
+    {
+      label: 'reaper is unobservable',
+      observations: { guardian: 'absent', reaper: 'unknown' } as const,
+      expectedKind: 'enforcer-unobservable' as const,
+    },
+  ])('does not reap recorded containment when the $label', async ({ observations, expectedKind }) => {
+    const record = providerOperationRecord('executing');
+    const db = containmentProofDatabase(record);
+    const identity = providerProxySetIdentityFromRecord(record);
+    const process = containmentProofRuntime(identity, observations);
+    const reapRecordedContainment = vi.fn<ProviderProxySetRecordedContainmentReaper>(async () => 'must-not-reap');
+    const harness = await authorizedOperatorExitForProof(record, reapRecordedContainment);
+
+    try {
+      const evidence = await createProviderProxySetContainmentProver(process.runtime).collectContainmentEvidence(
+        identity,
+        db,
+        new AbortController().signal,
+      );
+      const result = await harness.lifecycle.completeOperatorExit(harness.capability, evidence, false);
+
+      expect(result).toEqual(expect.objectContaining({ kind: expectedKind, effect: noOperatorExitEffect }));
+      expect(process.kill).not.toHaveBeenCalled();
+      expect(reapRecordedContainment).not.toHaveBeenCalled();
+      expect(harness.stopAndReap).not.toHaveBeenCalled();
+    } finally {
+      db.close();
+    }
+  });
+
+  it('reaps the recorded proxy group and roots only after both enforcers are absent', async () => {
+    const record = providerOperationRecord('executing');
+    if (!('providerRoot' in record)) throw new Error('executing fixture did not retain its provider root');
+    const db = containmentProofDatabase(record);
+    const identity = providerProxySetIdentityFromRecord(record);
+    const process = containmentProofRuntime(identity, { guardian: 'absent', reaper: 'absent' });
+    const reapedTargets: number[] = [];
+    const reapRecordedContainment = vi.fn<ProviderProxySetRecordedContainmentReaper>(
+      async (evidence, _signal, onSignal) => {
+        reapedTargets.push(-evidence.containment.processGroupId, ...evidence.recordedRoots.map(({ pid }) => pid));
+        onSignal('SIGTERM');
+        return 'real-proof-recorded-containment-absent';
+      },
+    );
+    const harness = await authorizedOperatorExitForProof(record, reapRecordedContainment);
+
+    try {
+      const evidence = await createProviderProxySetContainmentProver(process.runtime).collectContainmentEvidence(
+        identity,
+        db,
+        new AbortController().signal,
+      );
+      await expect(harness.lifecycle.completeOperatorExit(harness.capability, evidence, false)).resolves.toEqual(
+        expect.objectContaining({
+          kind: 'contained',
+          disappearanceReceipt: 'real-proof-recorded-containment-absent',
+          effect: {
+            signalsSent: ['SIGTERM'],
+            containmentAbsent: true,
+            representationAction: 'absence-release-started',
+          },
+        }),
+      );
+
+      expect(evidence).toEqual({
+        kind: 'reap-required',
+        containment: {
+          pid: identity.proxyPid,
+          incarnation: identity.proxyIncarnation,
+          processGroupId: identity.proxyProcessGroupId,
+        },
+        recordedRoots: [record.providerRoot],
+      });
+      expect(reapedTargets).toEqual([-identity.proxyProcessGroupId, record.providerRoot.pid]);
+      expect(reapRecordedContainment).toHaveBeenCalledOnce();
+      expect(harness.stopAndReap).not.toHaveBeenCalled();
+    } finally {
+      db.close();
+    }
+  });
+
+  it('fences an attributable unreadable row before observation or recorded-containment reaping', async () => {
+    const record = providerOperationRecord('executing');
+    const db = containmentProofDatabase(record);
+    const identity = providerProxySetIdentityFromRecord(record);
+    const unreadableKey =
+      `provider_operation_saga.v${PROVIDER_OPERATION_RECORD_VERSION}:record:${randomUUID()}:${randomUUID()}:` +
+      `${record.operation.proxyInstanceId}:${record.operation.buildSetId}`;
+    db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)').run(unreadableKey, 'not-json');
+    const process = containmentProofRuntime(identity, { guardian: 'absent', reaper: 'absent' });
+    const reapRecordedContainment = vi.fn<ProviderProxySetRecordedContainmentReaper>(async () => 'must-not-reap');
+    const harness = await authorizedOperatorExitForProof(record, reapRecordedContainment);
+
+    try {
+      const evidence = await createProviderProxySetContainmentProver(process.runtime).collectContainmentEvidence(
+        identity,
+        db,
+        new AbortController().signal,
+      );
+      await expect(harness.lifecycle.completeOperatorExit(harness.capability, evidence, true)).resolves.toEqual({
+        kind: 'store-unreadable',
+        setIdentity: providerProxySetAddress(identity),
+        effect: noOperatorExitEffect,
+      });
+
+      expect(process.readProcessIncarnation).not.toHaveBeenCalled();
+      expect(process.observeLiveness).not.toHaveBeenCalled();
+      expect(process.kill).not.toHaveBeenCalled();
+      expect(reapRecordedContainment).not.toHaveBeenCalled();
+      expect(harness.stopAndReap).not.toHaveBeenCalled();
+    } finally {
+      db.close();
+    }
   });
 
   it('gates fault containment on its first attempt deadline and rejects a capability from the prior attempt', async () => {

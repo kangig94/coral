@@ -197,7 +197,7 @@ const providerProxySetClaimDischargeSchema = z.discriminatedUnion('kind', [
   z
     .object({
       kind: z.literal('operational-retry-owned'),
-      incidents: z.array(providerProxySetOperationalIncidentSchema).min(1),
+      incidents: z.array(providerProxySetOperationalIncidentSchema).min(1).readonly(),
     })
     .strict(),
 ]);

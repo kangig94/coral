@@ -22,8 +22,16 @@ import {
   type ProviderProxySetIdentity,
 } from '#src/coordinator/services/provider-proxy-set/identity.js';
 import { ProviderProxySetLifecycleRef } from '#src/coordinator/services/provider-proxy-set/lifecycle-ref.js';
+import {
+  createUnreadableProviderOperationRetryPlan,
+  quarantineUnreadableProviderOperations,
+} from '#src/coordinator/services/recovery/index.js';
 import type { ProviderProxySetContainmentEvidence } from '#src/provider-proxy/containment-proof-contract.js';
-import { UNREADABLE_PROVIDER_OPERATION_BOUNDARY } from '#src/recovery/source-registry.js';
+import {
+  createRecoveryQuarantineRetryService,
+  createRecoverySourceRegistry,
+  UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
+} from '#src/recovery/source-registry.js';
 import { backendLog } from '#src/infra/backend-log.js';
 import { JobStore } from '#src/jobs/store.js';
 import { ControlClientError, controlExchangeForTest, type ControlClient } from '#src/provider-proxy/control-client.js';
@@ -47,12 +55,14 @@ import {
   readProviderOperations,
 } from '#src/store/provider-operation-journal.js';
 import {
+  encodeProviderOperationRecord,
   PROVIDER_OPERATION_RECORD_VERSION,
   type ProviderOperationRecord,
 } from '#src/store/provider-operation-record.js';
 import { RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { flushMicrotasks, VirtualTime } from '#tools/simulation/core/virtual-time.js';
+import { createDeferred } from '#tools/testing/deferred.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { seedTestSessionProjection } from '#tests/helpers/session.js';
@@ -340,8 +350,6 @@ describe('execution services provider-proxy proof composition', () => {
   // Skipping a row this build cannot read is only half the contract; the other half is that an operator can
   // find out. The skip was pinned and the reporting was not — deleting the whole warn block left every gate
   // green, which turns "tolerated and reported" into "silently dropped" without a single test noticing.
-  //
-  // This is the first scan on the boot path, so it is the one place the news can be delivered at all.
   it('quarantines the rows it cannot read, by key, on the first boot-path scan', async () => {
     const runtime = createRealRuntime('prod');
     const db = newRawDatabase(':memory:');
@@ -415,6 +423,100 @@ describe('execution services provider-proxy proof composition', () => {
     // nothing would satisfy the assertion above while losing every live claim.
     expect(claims.claimFor(readable.operation), 'the readable row still became a live claim').not.toBeNull();
     expect(claims.size, 'and the unreadable one contributed none').toBe(1);
+  });
+
+  it('retains repaired-row quarantine until the composed reconciler accepts ownership', async () => {
+    const runtime = createRealRuntime('prod');
+    const db = newRawDatabase(':memory:');
+    applyBundledStoreSchema(db, currentCoralStoreFormat());
+    const namespace = 'execution-services-repaired-row-adoption';
+    const progressStore = new JobStore(namespace, runtime, createEventBodyCodec(), {
+      db,
+      providers: permissiveProviderLookupPort,
+    });
+    const claims = new ProviderProxySetClaimMirror();
+    const lifecycleRef = new ProviderProxySetLifecycleRef();
+    const world = {
+      identity: { buildSetId: FIXTURE_BUILD_SET_ID },
+      storeServicesRef: { tryGet: () => ({ progressStore }) },
+      operationRegistry: new LocalOperationRegistry(),
+      providerProxyClaims: claims,
+      providerProxyLifecycleRef: lifecycleRef,
+      providerProxySetContainmentProver: { collectContainmentEvidence: noContainmentProof },
+      reapRecordedContainment: unexpectedRecordedContainmentReap,
+      providerHostManager: {},
+    } as never;
+    const services = createExecutionServices({
+      world,
+      runtime,
+      bundleHash: namespace,
+      backendNamespace: namespace,
+      onProviderProxyLifecycleFatal: (error) => {
+        throw error;
+      },
+      createExecutionService: (() => {
+        throw new Error('execution service creation was not expected');
+      }) as never,
+    });
+    await services.reconcileProviderOperationsAtStartup(new AbortController().signal);
+
+    const repaired = providerOperationRecord('executing');
+    const key = providerOperationRecordKey(repaired);
+    db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)').run(key, 'not-json');
+    const quarantine = new RecoveryQuarantineStore(db, runtime.time);
+    await quarantineUnreadableProviderOperations(
+      quarantine,
+      attributeUnreadableProviderOperations(db, readProviderOperations(db).unreadableKeys),
+    );
+    const entry = quarantine.list()[0];
+    if (entry === undefined || entry.subject.revision.kind !== 'fingerprint') {
+      throw new Error('expected unreadable provider operation quarantine entry');
+    }
+    db.prepare<[string, string]>('UPDATE meta SET value = ? WHERE key = ?').run(
+      encodeProviderOperationRecord(repaired),
+      key,
+    );
+
+    const lifecycle = lifecycleRef.get();
+    if (lifecycle === null) throw new Error('provider proxy lifecycle was not composed');
+    const claimsChanged = vi.spyOn(lifecycle, 'claimsChanged');
+    const reconciliation = createDeferred<void>();
+    const reconcile = vi
+      .spyOn(ProviderOperationReconciler.prototype, 'reconcile')
+      .mockReturnValue(reconciliation.promise);
+    const sources = createRecoverySourceRegistry();
+    sources.register(UNREADABLE_PROVIDER_OPERATION_BOUNDARY, (subject) =>
+      createUnreadableProviderOperationRetryPlan(db, subject, services.adoptRepairedProviderOperation),
+    );
+    const retry = createRecoveryQuarantineRetryService({
+      instanceId: 'execution-services-repaired-row-adoption',
+      ids: runtime.ids,
+      quarantine,
+      sources,
+    });
+    const request = {
+      boundary: UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
+      key,
+      revision: entry.subject.revision.value,
+    };
+
+    try {
+      const clearing = retry.clear(request);
+      await vi.waitFor(() => expect(reconcile).toHaveBeenCalledExactlyOnceWith(repaired));
+
+      expect(claims.claimFor(repaired.operation)).not.toBeNull();
+      expect(claimsChanged).toHaveBeenCalledExactlyOnceWith(providerProxySetIdentityFromRecord(repaired));
+      expect(quarantine.list()).toHaveLength(1);
+
+      reconciliation.resolve();
+      await expect(clearing).resolves.toEqual({ ...request, disposition: 'advanced' });
+      expect(quarantine.list()).toEqual([]);
+    } finally {
+      reconcile.mockRestore();
+      claimsChanged.mockRestore();
+      services.stopProviderOperationReconciler();
+      db.close();
+    }
   });
 
   it('initializes readable claims when quarantine materialization throws and writes durable status', async () => {
