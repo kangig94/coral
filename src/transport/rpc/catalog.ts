@@ -61,6 +61,12 @@ import {
   retiredBlockedProviderHostInventoryRecordSchema,
 } from '../../providers/host-inventory-schema.js';
 import { canonicalUuidSchema, hostFingerprintSchema, operationIdentitySchema } from '../../provider-proxy/protocol.js';
+import {
+  PROVIDER_PROXY_SET_LIFECYCLE_STATES,
+  providerProxySetAliveEnforcerObservationsSchema,
+  providerProxySetEnforcerObservationsSchema,
+  providerProxySetUnobservableEnforcerObservationsSchema,
+} from '../../provider-proxy/set-containment-contract.js';
 
 export interface RpcMethodSpec<Req, _Res> {
   readonly name: string;
@@ -135,33 +141,49 @@ export const providerProxySetContainRequestSchema = z
   })
   .strict();
 
+const providerProxySetOperationalIncidentBase = {
+  reason: z.string().min(1),
+  nextAttemptAtMs: z.number().finite(),
+};
+const providerProxySetOperationalIncidentSchema = z.discriminatedUnion('stage', [
+  z
+    .object({
+      stage: z.literal('disappearance-delivery'),
+      operation: operationIdentitySchema,
+      code: z.literal('disappearance_consumer_unavailable'),
+      ...providerProxySetOperationalIncidentBase,
+    })
+    .strict(),
+  z
+    .object({
+      stage: z.literal('representation-abandonment-delivery'),
+      operation: operationIdentitySchema,
+      code: z.literal('representation_abandonment_consumer_unavailable'),
+      ...providerProxySetOperationalIncidentBase,
+    })
+    .strict(),
+  z
+    .object({
+      stage: z.literal('capsule-retirement'),
+      code: z.literal('capsule_retirement_unavailable'),
+      ...providerProxySetOperationalIncidentBase,
+    })
+    .strict(),
+]);
+
 const providerProxySetClaimDischargeSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('completed') }).strict(),
   z.object({ kind: z.literal('initial-disposition-retry-owned') }).strict(),
   z
     .object({
       kind: z.literal('operational-retry-owned'),
-      incidents: z.array(
-        z
-          .object({
-            stage: z.enum(['disappearance-delivery', 'representation-abandonment-delivery', 'capsule-retirement']),
-            operation: operationIdentitySchema.optional(),
-            code: z.enum([
-              'disappearance_consumer_unavailable',
-              'representation_abandonment_consumer_unavailable',
-              'capsule_retirement_unavailable',
-            ]),
-            reason: z.string().min(1),
-            nextAttemptAtMs: z.number().finite(),
-          })
-          .strict(),
-      ),
+      incidents: z.array(providerProxySetOperationalIncidentSchema).min(1),
     })
     .strict(),
 ]);
 
 const providerProxySetContainResultBase = { setIdentity: providerProxySetAddressWireSchema };
-export const providerProxySetContainResponseSchema = z.discriminatedUnion('kind', [
+const providerProxySetContainKnownResponseSchema = z.discriminatedUnion('kind', [
   z
     .object({
       kind: z.literal('contained'),
@@ -175,11 +197,18 @@ export const providerProxySetContainResponseSchema = z.discriminatedUnion('kind'
       kind: z.literal('abandoned'),
       ...providerProxySetContainResultBase,
       processObservation: z.enum(['enforcer-alive', 'enforcer-unobservable']),
+      enforcerObservations: providerProxySetEnforcerObservationsSchema,
       claimDischarge: providerProxySetClaimDischargeSchema,
     })
     .strict(),
   z.object({ kind: z.literal('set-not-found'), ...providerProxySetContainResultBase }).strict(),
-  z.object({ kind: z.literal('not-held'), ...providerProxySetContainResultBase, state: z.string().min(1) }).strict(),
+  z
+    .object({
+      kind: z.literal('not-held'),
+      ...providerProxySetContainResultBase,
+      state: z.enum(PROVIDER_PROXY_SET_LIFECYCLE_STATES),
+    })
+    .strict(),
   z
     .object({
       kind: z.literal('deadline-pending'),
@@ -192,18 +221,36 @@ export const providerProxySetContainResponseSchema = z.discriminatedUnion('kind'
     .object({
       kind: z.literal('enforcer-alive'),
       ...providerProxySetContainResultBase,
-      roles: z.array(z.enum(['guardian', 'reaper'])).min(1),
+      enforcerObservations: providerProxySetAliveEnforcerObservationsSchema,
     })
     .strict(),
   z
     .object({
       kind: z.literal('enforcer-unobservable'),
       ...providerProxySetContainResultBase,
-      roles: z.array(z.enum(['guardian', 'reaper'])).min(1),
+      enforcerObservations: providerProxySetUnobservableEnforcerObservationsSchema,
     })
     .strict(),
   z.object({ kind: z.literal('store-unreadable'), ...providerProxySetContainResultBase }).strict(),
 ]);
+
+export const providerProxySetContainResponseSchema = providerProxySetContainKnownResponseSchema.superRefine(
+  (result, context) => {
+    if (result.kind !== 'abandoned') return;
+    const matchesProcessObservation = result.enforcerObservations.some(
+      ({ observation }) => observation === (result.processObservation === 'enforcer-alive' ? 'alive' : 'unknown'),
+    );
+    const aliveContradictsUnobservable =
+      result.processObservation === 'enforcer-unobservable' &&
+      result.enforcerObservations.some(({ observation }) => observation === 'alive');
+    if (matchesProcessObservation && !aliveContradictsUnobservable) return;
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['enforcerObservations'],
+      message: 'Abandonment processObservation must agree with the retained per-role observations.',
+    });
+  },
+);
 
 export type ProviderProxySetContainRequest = z.output<typeof providerProxySetContainRequestSchema>;
 export type ProviderProxySetContainResponse = z.output<typeof providerProxySetContainResponseSchema>;

@@ -122,9 +122,7 @@ export function createExecutionServices({
         return providerProxyInheritance.redeemDiscoveredCapsule(capsule, capsulePath, signal);
       },
       'containment-proof': ({ identity, signal }) =>
-        providerProxyInheritance === undefined
-          ? Promise.resolve({ kind: 'enforcer-unobservable' as const, roles: ['guardian', 'reaper'] as const })
-          : providerProxyInheritance.proveContainmentAbsent(identity, getProgressStore().getDb(), signal),
+        world.providerProxySetContainmentProver.proveContainmentAbsent(identity, getProgressStore().getDb(), signal),
       'capsule-retirement': ({ path }) => retireProviderHandoffCapsule(runtime.storage, path),
       'disappearance-consumer': ({ notice }) => providerOperationReconciler.containmentDisappeared(notice),
       'representation-abandonment-consumer': ({ notice }) =>

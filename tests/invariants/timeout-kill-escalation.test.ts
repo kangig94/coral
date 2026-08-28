@@ -43,12 +43,12 @@ const PRIMITIVE_FILE = 'src/infra/process-supervision.ts';
 // `reapRecordedContainment`'s SIGTERM→SIGKILL sequence.
 const CONTAINMENT_HELPER_FILE = 'src/infra/process-containment.ts';
 // A negative primitive scan cannot prove an owner still reaps its containment:
-// deleting teardown entirely would also make that scan pass. Keep all three owners
-// explicit so adding or removing one cannot silently narrow the escalation guarantee.
+// deleting teardown entirely would also make that scan pass. Keep every owner
+// explicit so an ownership change cannot silently narrow the escalation guarantee.
 const RECORDED_CONTAINMENT_OWNER_FILES = [
   'src/provider-proxy/enforcement.ts',
   'src/coordinator/live/provider-hosts/drain.ts',
-  'src/coordinator/services/provider-proxy-set/inheritance.ts',
+  'src/coordinator/services/provider-proxy-set/containment-proof.ts',
 ] as const;
 
 // File-level allowlist: call sites permitted to use the bare primitive, each

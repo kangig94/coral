@@ -10,6 +10,7 @@ import type { RpcPorts } from './rpc/ports.js';
 import type { Principal } from '../security/principal.js';
 import type { IpcAuthMetadata } from './ipc/json-rpc.js';
 import type { ProviderScope } from '../infra/provider-scope.js';
+import type { ProviderProxySetEnforcerObservations } from '../provider-proxy/set-containment-contract.js';
 
 interface AdminControlPort {
   getLifecycleState?(): 'starting' | 'kernel-ready' | 'running' | 'draining' | 'stopped';
@@ -184,6 +185,7 @@ export type HealthSnapshot = {
       elapsedMs?: number;
       boundMs?: number;
       liveClaims?: number;
+      enforcerObservations?: ProviderProxySetEnforcerObservations;
       incidentReason: string;
       waitingFor:
         | 'heartbeat-evidence-window'

@@ -41,7 +41,7 @@ import {
   unreadableProviderOperationRecoverySource,
   type RawUnreadableProviderOperationRecoveryRow,
 } from './unreadable-provider-operation-recovery-source.js';
-import { unreadableProviderOperationSubject } from './unreadable-provider-operation-subject.js';
+import { unreadableProviderOperationSubject } from '../../../recovery/unreadable-provider-operation.js';
 import { RecoveryQuarantineStore } from '../../../recovery/quarantine.js';
 import type {
   RecoveryDisposition,

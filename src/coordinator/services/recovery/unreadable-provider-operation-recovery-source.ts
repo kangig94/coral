@@ -3,7 +3,7 @@ import { observeProviderOperationRecord } from '../../../store/provider-operatio
 import type { ProviderOperationRecord } from '../../../store/provider-operation-record.js';
 import { defineRecoverySource, type RecoverySource, type RecoverySubject } from '../../../recovery/containment.js';
 import { UNREADABLE_PROVIDER_OPERATION_BOUNDARY } from '../../../recovery/source-registry.js';
-import { unreadableProviderOperationSubject } from './unreadable-provider-operation-subject.js';
+import { unreadableProviderOperationSubject } from '../../../recovery/unreadable-provider-operation.js';
 
 export type RawUnreadableProviderOperationRecoveryRow =
   | Readonly<{

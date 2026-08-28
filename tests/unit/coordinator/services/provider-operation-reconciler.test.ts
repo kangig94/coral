@@ -160,7 +160,10 @@ function lifecycleForSchedule(
       {
         'containment-proof': async () => ({
           kind: 'enforcer-unobservable' as const,
-          roles: ['guardian', 'reaper'] as const,
+          observations: [
+            { role: 'guardian', observation: 'unknown' },
+            { role: 'reaper', observation: 'unknown' },
+          ] as const,
         }),
         'disappearance-consumer': ({ notice }) => reconciler.containmentDisappeared(notice),
       },

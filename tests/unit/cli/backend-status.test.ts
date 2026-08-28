@@ -1204,7 +1204,7 @@ describe('backend status recovery quarantine propagation', () => {
 });
 
 describe('backend status provider proxy dispositions', () => {
-  it('renders the running coordinator wait with set, role, method, and incident identity', () => {
+  it('renders retained set evidence and exits 75 when any structurally identified row was skipped', async () => {
     const produced = {
       status: 'ok',
       kernel: { phase: 'running', readyAt: 1_700_000_000_000 },
@@ -1237,6 +1237,10 @@ describe('backend status provider proxy dispositions', () => {
             method: 'guardian.heartbeat.v1',
             incidentReason: 'method-not-found',
             waitingFor: 'independent-containment-absence',
+            enforcerObservations: [
+              { role: 'guardian', observation: 'alive' },
+              { role: 'reaper', observation: 'unknown' },
+            ],
           },
           {
             setIdentity: {
@@ -1287,7 +1291,7 @@ describe('backend status provider proxy dispositions', () => {
         'Provider proxy sets:',
         '  set=pps1.first buildSetId=11111111-1111-4111-8111-111111111111 proxyInstanceId=22222222-2222-4222-8222-222222222222 hostFingerprint=' +
           'a'.repeat(64),
-        '    disposition=awaiting-containment-absence subject=guardian guardian.heartbeat.v1 incident=method-not-found waitingFor=independent-containment-absence liveClaims=unknown',
+        '    disposition=awaiting-containment-absence subject=guardian guardian.heartbeat.v1 incident=method-not-found waitingFor=independent-containment-absence liveClaims=unknown enforcers=guardian:alive,reaper:unknown',
       ].join('\n'),
     );
     expect(formatBackendStatus(status, { kind: 'absent' }, null)).toContain(
@@ -1298,11 +1302,32 @@ describe('backend status provider proxy dispositions', () => {
       ].join('\n'),
     );
     expect(formatBackendStatus(status, { kind: 'absent' }, null)).toContain(
-      'Provider proxy set rows this build could not read: 2; backend status skipped those rows and is not showing their dispositions, causes, or waiting conditions.',
+      'Provider proxy set rows this build could not read: 2; backend status is not showing their dispositions, causes, or waiting conditions.',
     );
     const rendered = formatBackendStatus(status, { kind: 'absent' }, null);
+    expect(rendered).toContain(
+      'set=pps1.third (contain with: coral-cli backend provider-proxy-set contain pps1.third)',
+    );
+    expect(rendered).toContain(
+      'set=pps1.fourth (contain with: coral-cli backend provider-proxy-set contain pps1.fourth)',
+    );
     expect(rendered).not.toContain('buildSetId=55555555-5555-4555-8555-555555555555');
     expect(rendered).not.toContain('buildSetId=77777777-7777-4777-8777-777777777777');
+
+    const operations: BackendStatusCommandOperations = {
+      inspectReadiness: () => ({ kind: 'no-legacy' }),
+      getStatus: async () => status,
+      getLiveHandoffResult: () => null,
+      getRoutingStatus: async () => ({ kind: 'absent' }),
+    };
+    const program = new Command();
+    program.exitOverride();
+    registerBackendCommands(program, { storeReset, backendStatus: operations });
+
+    await program.parseAsync(['node', 'coral-cli', 'backend', 'status']);
+
+    expect(process.exitCode).toBe(75);
+    expect(stdout).toContain('coral-cli backend provider-proxy-set contain pps1.third');
   });
 });
 

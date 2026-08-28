@@ -28,6 +28,10 @@ import { LocalOperationRegistry } from '../services/operation-registry.js';
 import { ProviderProxySetClaimMirror } from '../services/provider-proxy-set/claim-mirror.js';
 import { ProviderProxySetLifecycleRef } from '../services/provider-proxy-set/lifecycle-ref.js';
 import {
+  createProviderProxySetContainmentProver,
+  type ProviderProxySetContainmentProver,
+} from '../services/provider-proxy-set/containment-proof.js';
+import {
   createProviderProxySetInheritance,
   type ProviderProxySetInheritance,
 } from '../services/provider-proxy-set/inheritance.js';
@@ -305,6 +309,7 @@ export interface CoordinatorWorld {
    *  acquisition (W2.4/W2.5), which startup recovery drives once the store is open and before it can decide
    *  any job carrier-detached. */
   readonly providerProxyInheritance?: ProviderProxySetInheritance;
+  readonly providerProxySetContainmentProver: ProviderProxySetContainmentProver;
   /** This coordinator generation's live app-server operations (W2.3) — see `CoordinatorCoreOptions.operationRegistry`. */
   readonly operationRegistry: LocalOperationRegistry;
   readonly providerProxyClaims: ProviderProxySetClaimMirror;
@@ -394,6 +399,7 @@ export function createCoordinatorWorld(
   const operationRegistry = options.operationRegistry ?? new LocalOperationRegistry();
   const providerProxyClaims = new ProviderProxySetClaimMirror();
   const providerProxyLifecycleRef = new ProviderProxySetLifecycleRef();
+  const providerProxySetContainmentProver = createProviderProxySetContainmentProver(runtime);
   const localCarrierRegistries = {
     getDb: () => storeServicesRef.get().progressStore.getDb(),
     loadJobProjectionDetail: (jobId: string) => storeServicesRef.get().progressStore.loadJobProjectionDetail(jobId),
@@ -446,6 +452,7 @@ export function createCoordinatorWorld(
       runtime,
       identity: { instanceId, buildSetId, flavor },
       operationRegistry,
+      containmentProver: providerProxySetContainmentProver,
       ...(options.buildProviderEventHandler === undefined
         ? {}
         : { onProviderEvent: options.buildProviderEventHandler }),
@@ -495,6 +502,7 @@ export function createCoordinatorWorld(
     providerHostManager,
     ...(providerProxyAuthority === undefined ? {} : { providerProxyAuthority }),
     ...(providerProxyInheritance === undefined ? {} : { providerProxyInheritance }),
+    providerProxySetContainmentProver,
     operationRegistry,
     providerProxyClaims,
     providerProxyLifecycleRef,

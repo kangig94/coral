@@ -11,7 +11,7 @@ vi.mock('#src/coordinator/live/provider-hosts/proxy-set-acquisition.js', () => (
   ensureProviderProxySet: vi.fn(),
 }));
 
-import { hostKeyFromSpec } from '#src/coordinator/live/provider-hosts/index.js';
+import { hostKeyFromSpec } from '#src/coordinator/live/provider-hosts/state.js';
 import type { ProviderHostEntry } from '#src/coordinator/live/provider-hosts/index.js';
 import { MAX_COORDINATOR_PROXY_SET_SLOTS } from '#src/coordinator/services/provider-proxy-set/index.js';
 import { ensureProviderProxySet } from '#src/coordinator/live/provider-hosts/proxy-set-acquisition.js';
@@ -155,7 +155,10 @@ function createProxySetLifecycleRef(onSlotReleased?: (routeKey: string) => void)
     recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
       'containment-proof': async () => ({
         kind: 'enforcer-unobservable' as const,
-        roles: ['guardian', 'reaper'] as const,
+        observations: [
+          { role: 'guardian', observation: 'unknown' },
+          { role: 'reaper', observation: 'unknown' },
+        ] as const,
       }),
     }),
     reportLifecycle: () => undefined,

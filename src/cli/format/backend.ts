@@ -54,6 +54,7 @@ export function formatProviderProxySetContainResult(result: ProviderProxySetCont
     case 'abandoned':
       return [
         `Coral accepted operator abandonment for provider proxy set ${token}; process absence was not observed.`,
+        `Enforcer observations: ${result.enforcerObservations.map(({ role, observation }) => `${role}=${observation}`).join(', ')}.`,
         formatProviderProxySetClaimDischarge(result.claimDischarge),
         'Verify the proxy, guardian, reaper, and any provider processes externally. The guardian and reaper were not signalled; their own adoption deadline remains their named exit.',
       ].join('\n');
@@ -66,9 +67,9 @@ export function formatProviderProxySetContainResult(result: ProviderProxySetCont
     case 'authorization-stale':
       return `Refusing forced containment for ${token}: the held attempt changed while Coral gathered containment evidence. Rerun ${retry} against the current hold.`;
     case 'enforcer-alive':
-      return `Refusing to signal ${token}: ${result.roles.join(' and ')} was observed alive. After external verification, run ${retry} --abandon-unobservable to release Coral's representation without asserting process absence.`;
+      return `Refusing to signal ${token}: enforcer observations were ${result.enforcerObservations.map(({ role, observation }) => `${role}=${observation}`).join(', ')}. After external verification, run ${retry} --abandon-unobservable to release Coral's representation without asserting process absence.`;
     case 'enforcer-unobservable':
-      return `No containment verdict for ${token}: ${result.roles.join(' and ')} could not be observed. Restore process observation and rerun ${retry}, or after external verification run it with --abandon-unobservable.`;
+      return `No containment verdict for ${token}: enforcer observations were ${result.enforcerObservations.map(({ role, observation }) => `${role}=${observation}`).join(', ')}. Restore process observation and rerun ${retry}, or after external verification run it with --abandon-unobservable.`;
     case 'store-unreadable':
       return `Refusing forced containment for ${token}: an unreadable durable provider-operation row may hide a provider root. --abandon-unobservable cannot override Coral's own store fence. Run coral-cli backend recovery-quarantine list, repair or remove the row named by its key and revision, run backend recovery-quarantine clear with that exact coordinate, then rerun backend status and ${retry}.`;
     default:
@@ -816,17 +817,16 @@ function formatRunningStatus(health: RunningHealth): string {
           : ` cause=${set.cause} attempts=${set.attempts ?? 'unknown'} elapsedMs=${set.elapsedMs ?? 'unknown'} boundMs=${set.boundMs ?? 'unknown'}`;
       lines.push(
         `  set=${set.setToken} buildSetId=${set.setIdentity.buildSetId} proxyInstanceId=${set.setIdentity.proxyInstanceId} hostFingerprint=${set.setIdentity.hostFingerprint}`,
-        `    disposition=${set.disposition}${subject.length === 0 ? '' : ` subject=${subject}`} incident=${set.incidentReason} waitingFor=${set.waitingFor} liveClaims=${set.liveClaims ?? 'unknown'}${reattachment}`,
+        `    disposition=${set.disposition}${subject.length === 0 ? '' : ` subject=${subject}`} incident=${set.incidentReason} waitingFor=${set.waitingFor} liveClaims=${set.liveClaims ?? 'unknown'}${reattachment}${set.enforcerObservations === undefined ? '' : ` enforcers=${set.enforcerObservations.map(({ role, observation }) => `${role}:${observation}`).join(',')}`}`,
       );
     }
-    if (skippedProviderProxySetRows === 1) {
+    if (skippedProviderProxySetRows > 0) {
       lines.push(
-        '  Provider proxy set rows this build could not read: 1; backend status skipped that row and is not showing its disposition, cause, or waiting condition.',
+        `  Provider proxy set rows this build could not read: ${skippedProviderProxySetRows}; backend status is not showing ${skippedProviderProxySetRows === 1 ? 'its disposition, cause, or waiting condition' : 'their dispositions, causes, or waiting conditions'}.`,
       );
-    } else if (skippedProviderProxySetRows > 1) {
-      lines.push(
-        `  Provider proxy set rows this build could not read: ${skippedProviderProxySetRows}; backend status skipped those rows and is not showing their dispositions, causes, or waiting conditions.`,
-      );
+      for (const setToken of health.skippedProviderProxySetTokens) {
+        lines.push(`    set=${setToken} (contain with: coral-cli backend provider-proxy-set contain ${setToken})`);
+      }
     }
   }
   return lines.join('\n');

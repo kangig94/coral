@@ -71,7 +71,10 @@ async function observe(
         ? {
             'containment-proof': () => ({
               kind: 'enforcer-unobservable' as const,
-              roles: ['guardian', 'reaper'] as const,
+              observations: [
+                { role: 'guardian', observation: 'unknown' },
+                { role: 'reaper', observation: 'unknown' },
+              ] as const,
             }),
           }
         : {}),

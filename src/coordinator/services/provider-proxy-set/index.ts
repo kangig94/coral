@@ -9,17 +9,18 @@ import {
   type HeartbeatEvidenceWindow,
 } from '../../../provider-proxy/heartbeat-observation.js';
 import { type HandoffCapsule, type HandoffCapsuleV3 } from '../../../provider-proxy/handoff-capsule.js';
+import type {
+  ProviderProxySetContainmentProof,
+  ProviderProxySetEnforcerObservations,
+  ProviderProxySetLifecycleState,
+} from '../../../provider-proxy/set-containment-contract.js';
 import type { DurableProviderProxyOperationAuthority } from '../../live/provider-proxy/operation-route.js';
 import type {
   ProviderProxyControlRedemptionOutcome,
   RedeemedProviderProxyControl,
 } from '../../live/provider-proxy/control-redemption.js';
 import type { ProviderHandoffCapsuleRetirementOutcome } from '../provider-proxy-capsule-discovery.js';
-import {
-  classifyProviderProxySetInheritance,
-  type ProviderProxySetContainmentProof,
-  type ProviderProxySetRedemptionOutcome,
-} from './inheritance.js';
+import { classifyProviderProxySetInheritance, type ProviderProxySetRedemptionOutcome } from './inheritance.js';
 import type {
   ContainmentDisappearanceNotice,
   DisappearanceDeliveryAttemptOutcome,
@@ -78,7 +79,7 @@ const CONTAINMENT_ATTEMPT_MS = 30_000;
 declare const processContainmentEvidenceBrand: unique symbol;
 declare const durableClaimDischargeBrand: unique symbol;
 declare const providerProxySetDischargeBrand: unique symbol;
-declare const operatorAbandonmentEvidenceBrand: unique symbol;
+const operatorAbandonmentEvidenceBrand: unique symbol = Symbol('provider-proxy-set-operator-abandonment-evidence');
 const operatorExitCapabilityBrand = Symbol('provider-proxy-set-operator-exit-capability');
 
 export type ProcessContainmentEvidence = Readonly<{
@@ -96,6 +97,7 @@ export type DurableClaimDischarge = Readonly<{
 export type OperatorAbandonmentEvidence = Readonly<{
   kind: 'operator-abandoned';
   processObservation: 'enforcer-alive' | 'enforcer-unobservable';
+  enforcerObservations: ProviderProxySetEnforcerObservations;
 }> &
   Readonly<{ [operatorAbandonmentEvidenceBrand]: true }>;
 
@@ -329,6 +331,7 @@ export type ProviderProxySetOperatorDisposition = Readonly<{
   elapsedMs?: number;
   boundMs?: number;
   liveClaims?: number;
+  enforcerObservations?: ProviderProxySetEnforcerObservations;
   incidentReason: string;
   waitingFor:
     | 'heartbeat-evidence-window'
@@ -349,22 +352,35 @@ export type ProviderProxySetLifecycleProgressViolation = Readonly<{
 
 export type CapsuleRetirementAttemptOutcome = ProviderHandoffCapsuleRetirementOutcome;
 
-export type ContainmentAbsenceOperationalIncident = Readonly<{
-  stage: 'disappearance-delivery' | 'representation-abandonment-delivery' | 'capsule-retirement';
-  operation?: OperationIdentity;
-  code:
-    | 'disappearance_consumer_unavailable'
-    | 'representation_abandonment_consumer_unavailable'
-    | 'capsule_retirement_unavailable';
+type ContainmentAbsenceOperationalIncidentDetail = Readonly<{
   reason: string;
   nextAttemptAtMs: number;
 }>;
+
+export type ContainmentAbsenceOperationalIncident =
+  | (Readonly<{
+      stage: 'disappearance-delivery';
+      operation: OperationIdentity;
+      code: 'disappearance_consumer_unavailable';
+    }> &
+      ContainmentAbsenceOperationalIncidentDetail)
+  | (Readonly<{
+      stage: 'representation-abandonment-delivery';
+      operation: OperationIdentity;
+      code: 'representation_abandonment_consumer_unavailable';
+    }> &
+      ContainmentAbsenceOperationalIncidentDetail)
+  | (Readonly<{
+      stage: 'capsule-retirement';
+      code: 'capsule_retirement_unavailable';
+    }> &
+      ContainmentAbsenceOperationalIncidentDetail);
 
 export type ContainmentAbsenceInitialDisposition =
   | Readonly<{ kind: 'completed' }>
   | Readonly<{
       kind: 'operational-retry-owned';
-      incidents: readonly ContainmentAbsenceOperationalIncident[];
+      incidents: readonly [ContainmentAbsenceOperationalIncident, ...ContainmentAbsenceOperationalIncident[]];
     }>;
 
 type InitialDispositionState = 'pending' | 'resolved' | 'rejected';
@@ -386,19 +402,6 @@ export type ProviderProxySetOperatorExitAuthorization =
   | Readonly<{ kind: 'not-held'; state: ProviderProxySetLifecycleState }>
   | Readonly<{ kind: 'deadline-pending'; remainingMs: number }>;
 
-export type ProviderProxySetLifecycleState =
-  | 'acquiring'
-  | 'capsule-recovering'
-  | 'capsule-foreign'
-  | 'recovering'
-  | 'available'
-  | 'draining'
-  | 'reattaching'
-  | 'containing'
-  | 'containment-wait'
-  | 'absence-delivery-pending'
-  | 'abandonment-delivery-pending';
-
 export type ProviderProxySetOperatorExitResult =
   | Readonly<{
       kind: 'contained';
@@ -410,6 +413,7 @@ export type ProviderProxySetOperatorExitResult =
       kind: 'abandoned';
       setIdentity: ProviderProxySetAddress;
       processObservation: 'enforcer-alive' | 'enforcer-unobservable';
+      enforcerObservations: ProviderProxySetEnforcerObservations;
       claimDischarge: ProviderProxySetOperatorClaimDischarge;
     }>
   | Readonly<{ kind: 'set-not-found'; setIdentity: ProviderProxySetAddress }>
@@ -419,7 +423,7 @@ export type ProviderProxySetOperatorExitResult =
   | Readonly<{
       kind: 'enforcer-alive' | 'enforcer-unobservable';
       setIdentity: ProviderProxySetAddress;
-      roles: readonly ('guardian' | 'reaper')[];
+      enforcerObservations: ProviderProxySetEnforcerObservations;
     }>
   | Readonly<{ kind: 'store-unreadable'; setIdentity: ProviderProxySetAddress }>;
 
@@ -905,8 +909,8 @@ export class ProviderProxySetLifecycle {
       };
     }
     if (!abandonUnobservable) {
-      this.#recordOperatorExitRefusal(slot, `operator_exit_${proof.kind}`, 'operator-abandonment');
-      return { kind: proof.kind, setIdentity: address, roles: proof.roles };
+      this.#recordOperatorExitRefusal(slot, `operator_exit_${proof.kind}`, 'operator-abandonment', proof.observations);
+      return { kind: proof.kind, setIdentity: address, enforcerObservations: proof.observations };
     }
 
     const decision: ProviderProxySetOperatorAbandonmentDecision = {
@@ -916,10 +920,12 @@ export class ProviderProxySetLifecycle {
       setIdentity: slot.identity,
     };
     this.#recordDecision(slot, decision);
-    const evidence = Object.freeze({
+    const evidence: OperatorAbandonmentEvidence = Object.freeze({
       kind: 'operator-abandoned',
       processObservation: proof.kind,
-    }) as OperatorAbandonmentEvidence;
+      enforcerObservations: proof.observations,
+      [operatorAbandonmentEvidenceBrand]: true as const,
+    });
     const pending = this.#commitOperatorAbandonment(slot, evidence);
     void slot.authority.initiateControlClose().catch((error: unknown) => {
       this.#deps.onError?.(
@@ -936,6 +942,7 @@ export class ProviderProxySetLifecycle {
       kind: 'abandoned',
       setIdentity: address,
       processObservation: proof.kind,
+      enforcerObservations: proof.observations,
       claimDischarge: await operatorExitClaimDischarge(pending.initialDisposition),
     };
   }
@@ -1918,6 +1925,7 @@ export class ProviderProxySetLifecycle {
     slot: EstablishedSlot,
     incidentReason: string,
     waitingFor: ProviderProxySetOperatorDisposition['waitingFor'],
+    enforcerObservations?: ProviderProxySetEnforcerObservations,
   ): void {
     const setKey = providerProxySetKey(slot.identity);
     let dispositions = this.#operatorDispositions.get(setKey);
@@ -1930,6 +1938,7 @@ export class ProviderProxySetLifecycle {
       setToken: encodeProviderProxySetAddress(slot.address),
       disposition: 'operator-exit-refused',
       liveClaims: this.#deps.claims.claimsFor(slot.identity).length,
+      ...(enforcerObservations === undefined ? {} : { enforcerObservations }),
       incidentReason,
       waitingFor,
     });
@@ -2335,8 +2344,8 @@ export class ProviderProxySetLifecycle {
           if (proof.kind === 'absent') {
             this.#finishContainmentAttempt(slot, decision, token, abort, proof.receipt);
           } else if (capsuleRecovery) {
-            // A proof that did not establish absence must not end the attempt while the destructive source
-            // is still running: its receipt would arrive against a stale token and be dropped.
+            // A result that did not establish absence must not end the attempt while a destructive source may
+            // still establish it.
             this.#finishContainmentAttempt(slot, decision, token, abort, null);
           }
         },
@@ -2512,14 +2521,22 @@ export class ProviderProxySetLifecycle {
   ): void {
     const key = operationKey(operation);
     const nextAttemptAtMs = this.#deps.time.now() + 1_000;
-    const incident: ContainmentAbsenceOperationalIncident = {
-      stage:
-        slot.kind === 'absence-delivery-pending' ? 'disappearance-delivery' : 'representation-abandonment-delivery',
-      operation,
-      code: outcome.code,
-      reason: outcome.reason,
-      nextAttemptAtMs,
-    };
+    const incident: ContainmentAbsenceOperationalIncident =
+      slot.kind === 'absence-delivery-pending'
+        ? {
+            stage: 'disappearance-delivery',
+            operation,
+            code: 'disappearance_consumer_unavailable',
+            reason: outcome.reason,
+            nextAttemptAtMs,
+          }
+        : {
+            stage: 'representation-abandonment-delivery',
+            operation,
+            code: 'representation_abandonment_consumer_unavailable',
+            reason: outcome.reason,
+            nextAttemptAtMs,
+          };
     slot.initialDeliveries.set(key, { kind: 'retry-owned', incident });
     const previous = slot.deliveryRetryTimers.get(key);
     if (previous !== undefined) this.#deps.time.clearTimeout(previous);
@@ -2650,8 +2667,12 @@ export class ProviderProxySetLifecycle {
     if (deliveries.some((delivery) => delivery.kind === 'initial-pending')) return;
     const incidents = deliveries.flatMap((delivery) => (delivery.kind === 'retry-owned' ? [delivery.incident] : []));
     if (retirementIncident !== undefined) incidents.push(retirementIncident);
-    if (incidents.length > 0) {
-      slot.initialDisposition.resolve({ kind: 'operational-retry-owned', incidents });
+    const [firstIncident, ...remainingIncidents] = incidents;
+    if (firstIncident !== undefined) {
+      slot.initialDisposition.resolve({
+        kind: 'operational-retry-owned',
+        incidents: [firstIncident, ...remainingIncidents],
+      });
       return;
     }
     if (slot.pendingOperations.size > 0 || slot.retirementState === 'initial-pending') return;

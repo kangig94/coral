@@ -36,6 +36,7 @@ import { resolveBuildFlavor, type BuildFlavor } from '../../infra/build-flavor.j
 import { readBuildFlavor } from '../../infra/bundle-manifest.js';
 import { assertNever } from '../../infra/error-format.js';
 import { BackendUnreachableError } from '../../infra/http-errors.js';
+import { isRecord } from '../../infra/json.js';
 import { handoffRoutingStatusPathForRunDir } from '../../infra/path/index.js';
 import { isSafeKbCommitId } from '../../kb/commit-quarantine.js';
 import {
@@ -43,7 +44,7 @@ import {
   RecoveryQuarantineStore,
   type RecoveryQuarantineListEntry,
 } from '../../recovery/quarantine.js';
-import { unreadableProviderOperationSubject } from '../../coordinator/services/recovery/unreadable-provider-operation-subject.js';
+import { unreadableProviderOperationSubject } from '../../recovery/unreadable-provider-operation.js';
 import {
   UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
   type RecoveryQuarantineClearRequest,
@@ -270,6 +271,7 @@ export function handoffPublicationIncidentsExitContribution(
   ];
   return combineBackendStatusLocalExitContributions(contributions);
 }
+
 import { quarantineKbCommitLocal } from '../kb-commit-quarantine.js';
 import type { StoreResetTarget } from '../../store/operator-store-reset.js';
 import {
@@ -278,6 +280,10 @@ import {
   listStoreResetIncidentsLocal,
   reportStoreResetIncidentLocal,
 } from '../store-reset.js';
+
+function skippedProviderProxySetRowsExitContribution(status: BackendStatusFull): 0 | 75 {
+  return status.status === 'ok' && status.health.skippedProviderProxySetRows > 0 ? 75 : 0;
+}
 
 const OFFLINE_OPERATOR_FLAVOR_HELP =
   'State flavor (prod or dev); required because the daemon that normally supplies it is down';
@@ -327,7 +333,9 @@ export interface ProviderHostCommandOperations {
 
 export type ProviderProxySetContainCommandResult =
   | ProviderProxySetContainResponse
-  | Readonly<{ kind: 'unsupported-coordinator'; setIdentity: ProviderProxySetAddress }>;
+  | Readonly<{ kind: 'unsupported-coordinator'; setIdentity: ProviderProxySetAddress }>
+  | Readonly<{ kind: 'unsupported-coordinator-result'; setIdentity: ProviderProxySetAddress }>
+  | Readonly<{ kind: 'coordinator-draining'; setIdentity: ProviderProxySetAddress }>;
 
 export interface ProviderProxySetCommandOperations {
   contain(request: ProviderProxySetContainRequest): Promise<ProviderProxySetContainCommandResult>;
@@ -625,13 +633,27 @@ export function createProviderProxySetCommandOperations(
       const request = providerProxySetContainRequestSchema.parse(input);
       try {
         const client = await getClient();
-        return providerProxySetContainResponseSchema.parse(
-          await client.request(
-            'coordinator.provider_proxy_set.contain',
-            request,
-            childPrincipalAuthOptions(childPrincipalAuthFromEnv()),
-          ),
+        const response = await client.request(
+          'coordinator.provider_proxy_set.contain',
+          request,
+          childPrincipalAuthOptions(childPrincipalAuthFromEnv()),
         );
+        if (isRecord(response) && response.code === 'backend_shutting_down') {
+          return { kind: 'coordinator-draining', setIdentity: request.setIdentity };
+        }
+        const parsed = providerProxySetContainResponseSchema.safeParse(response);
+        if (parsed.success) return parsed.data;
+        if (
+          isRecord(response) &&
+          typeof response.kind === 'string' &&
+          isRecord(response.setIdentity) &&
+          response.setIdentity.buildSetId === request.setIdentity.buildSetId &&
+          response.setIdentity.hostFingerprint === request.setIdentity.hostFingerprint &&
+          response.setIdentity.proxyInstanceId === request.setIdentity.proxyInstanceId
+        ) {
+          return { kind: 'unsupported-coordinator-result', setIdentity: request.setIdentity };
+        }
+        return providerProxySetContainResponseSchema.parse(response);
       } catch (error: unknown) {
         if (error instanceof IpcRpcError && error.rpcCode === -32601) {
           return { kind: 'unsupported-coordinator', setIdentity: request.setIdentity };
@@ -687,6 +709,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
         liveHandoffObligation.exitContribution,
         handoffRoutingStatusExitContribution(routingStatusRead),
         handoffPublicationIncidentsExitContribution(liveHandoffResult?.publicationIncidents ?? []),
+        skippedProviderProxySetRowsExitContribution(status),
       ];
       process.exitCode = combineBackendStatusLocalExitContributions(localExitContributions);
     } catch (error) {
@@ -933,6 +956,20 @@ export function registerBackendCommands(program: Command, operations: BackendCom
         if (result.kind === 'unsupported-coordinator') {
           process.stderr.write(
             `No containment verdict for ${encodeProviderProxySetAddress(result.setIdentity)}: this coordinator does not support coordinator.provider_proxy_set.contain. Upgrade or restart into this Coral build, run backend status, and retry the exact token.\n`,
+          );
+          process.exitCode = 75;
+          return;
+        }
+        if (result.kind === 'coordinator-draining') {
+          process.stderr.write(
+            `No containment verdict for ${encodeProviderProxySetAddress(result.setIdentity)}: the coordinator is shutting down. Wait for the successor coordinator to start, run backend status, and retry the exact token.\n`,
+          );
+          process.exitCode = 75;
+          return;
+        }
+        if (result.kind === 'unsupported-coordinator-result') {
+          process.stderr.write(
+            `No containment verdict for ${encodeProviderProxySetAddress(result.setIdentity)}: this build does not understand the coordinator's containment result. Upgrade this CLI or restart into one Coral build, run backend status, and retry the exact token.\n`,
           );
           process.exitCode = 75;
           return;

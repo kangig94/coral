@@ -1,10 +1,4 @@
-import {
-  createRecordedProcessObserver,
-  probeProcessIncarnation,
-  type ProcessIncarnation,
-} from '../../../infra/node-process.js';
-import { createMonotonicClock } from '../../../infra/monotonic-clock.js';
-import { reapRecordedContainment } from '../../../infra/process-containment.js';
+import { probeProcessIncarnation } from '../../../infra/node-process.js';
 import {
   currentHandoffCapsulePath,
   readHandoffCapsuleFile,
@@ -13,17 +7,8 @@ import {
 import { PROXY_CONTROL_RPC_TIMEOUT_MS, type CoordinatorIdentity } from '../../../provider-proxy/protocol.js';
 import type { ProviderEventHandler } from '../../../provider-proxy/control-client.js';
 import type { HeartbeatObservation } from '../../../provider-proxy/heartbeat-observation.js';
-import {
-  MAX_PROXY_RECORDED_PROVIDER_ROOTS,
-  providerProxyDisappearanceReceipt,
-} from '../../../provider-proxy/enforcement.js';
-import { PROXY_TEARDOWN_RESERVE_MS } from '../../../provider-proxy/orphan-deadline.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { Database } from '../../../store/db.js';
-import {
-  attributeUnreadableProviderOperations,
-  readProviderOperations,
-} from '../../../store/provider-operation-journal.js';
 import type { ProviderOperationIdentity, ProviderOperationRecord } from '../../../store/provider-operation-record.js';
 import {
   ProviderProxyRoleControlUnavailableError,
@@ -57,6 +42,7 @@ import {
   type ProviderProxyRecoveryDispatcher,
   type ProviderProxyRecoveryTurnSinks,
 } from '../provider-proxy-recovery-policy.js';
+import type { ProviderProxySetContainmentProver } from './containment-proof.js';
 
 /**
  * The branch of proxy-set acquisition that redeems a predecessor's continuously recoverable set instead of
@@ -94,11 +80,7 @@ export type ProviderProxySetInheritanceDeps = Readonly<{
   /** Wired onto the redeemed proxy connection exactly as ordinary acquisition wires it onto a freshly opened
    *  one (`ProviderProxyAcquisitionStepsOptions.onProviderEvent`'s own doc). */
   onProviderEvent?(): ProviderEventHandler;
-  proveContainmentAbsent?: (
-    identity: ProviderProxySetIdentity,
-    db: Database,
-    signal: AbortSignal,
-  ) => Promise<ProviderProxySetContainmentProof>;
+  proveContainmentAbsent?: ProviderProxySetContainmentProver['proveContainmentAbsent'];
   registerInheritedSet?(set: ProviderProxyOperationAuthority): void;
 }>;
 
@@ -288,94 +270,6 @@ function capsuleMatchesLocator(
     capsule.reaperControlEndpoint === locator.reaper.controlEndpoint &&
     capsule.proxyEndpoint === locator.proxy.controlEndpoint
   );
-}
-
-const providerSetDisappearanceClockScope = Symbol('provider-set-disappearance');
-
-export type ProviderProxySetContainmentProof =
-  | Readonly<{ kind: 'absent'; receipt: string }>
-  | Readonly<{ kind: 'enforcer-alive'; roles: readonly ('guardian' | 'reaper')[] }>
-  | Readonly<{ kind: 'enforcer-unobservable'; roles: readonly ('guardian' | 'reaper')[] }>
-  | Readonly<{ kind: 'store-unreadable' }>;
-
-async function proveProviderProxySetContainmentAbsent(
-  identity: ProviderProxySetIdentity,
-  db: Database,
-  runtime: Runtime,
-  signal: AbortSignal,
-): Promise<ProviderProxySetContainmentProof> {
-  const platform = runtime.env.platform() as NodeJS.Platform;
-  const operationScan = readProviderOperations(db);
-  // An unreadable row may name another provider root for *this* set, and acting on the decoded subset would
-  // let that root survive outside the process group while this function minted a disappearance receipt. So the
-  // proof stays unknown — but only for the sets the row could belong to, which is asked of both its key and
-  // its bytes. Those disagree exactly when the decode failed *because* they disagree, and a row attributable
-  // from neither side could belong to any set, so it fences all of them.
-  const hidesARootOfThisSet = attributeUnreadableProviderOperations(db, operationScan.unreadableKeys).some(
-    ({ sets }) =>
-      sets.kind === 'indeterminate' ||
-      sets.values.some(
-        (address) => address.proxyInstanceId === identity.proxyInstanceId && address.buildSetId === identity.buildSetId,
-      ),
-  );
-  if (hidesARootOfThisSet) return { kind: 'store-unreadable' };
-  const enforcerIdentities = [
-    { role: 'guardian' as const, pid: identity.guardianPid, incarnation: identity.guardianIncarnation },
-    { role: 'reaper' as const, pid: identity.reaperPid, incarnation: identity.reaperIncarnation },
-  ] as const;
-  // These incarnations were recorded by the guardian and the reaper rather than by this coordinator. A
-  // recorded incarnation and a fresh probe of the same process produce the same bytes, so a *different* one
-  // is not ambiguity, it is proof the pid belongs to someone else.
-  //
-  // The polarity is this site's own. Discounting an enforcer takes proof it is absent, because concluding
-  // here goes on to signal a process group; anything short of proof leaves that enforcer possibly ours.
-  const observeEnforcer = createRecordedProcessObserver({
-    readIncarnation: (pid) => runtime.process.readProcessIncarnation(pid, platform),
-    observeLiveness: (pid) => runtime.process.observeLiveness(pid),
-  });
-  const observations = enforcerIdentities.map((enforcer) => ({
-    role: enforcer.role,
-    observation: observeEnforcer(enforcer),
-  }));
-  const alive = observations.filter((observation) => observation.observation === 'alive').map(({ role }) => role);
-  if (alive.length > 0) return { kind: 'enforcer-alive', roles: alive };
-  const unobservable = observations
-    .filter((observation) => observation.observation === 'unknown')
-    .map(({ role }) => role);
-  if (unobservable.length > 0) return { kind: 'enforcer-unobservable', roles: unobservable };
-  signal.throwIfAborted();
-
-  const roots = new Map<string, Readonly<{ pid: number; incarnation: ProcessIncarnation }>>();
-  for (const record of operationScan.records) {
-    if (
-      !('providerRoot' in record) ||
-      !providerProxySetIdentitiesEqual(providerProxySetIdentityFromRecord(record), identity)
-    ) {
-      continue;
-    }
-    roots.set(`${record.providerRoot.pid}@${record.providerRoot.incarnation}`, record.providerRoot);
-  }
-  const recordedRoots = [...roots.values()];
-  const containment = {
-    pid: identity.proxyPid,
-    incarnation: identity.proxyIncarnation,
-    processGroupId: identity.proxyProcessGroupId,
-  };
-  const clock = createMonotonicClock(providerSetDisappearanceClockScope);
-  await reapRecordedContainment(
-    containment,
-    recordedRoots,
-    clock.shiftMilliseconds(clock.now(), PROXY_TEARDOWN_RESERVE_MS),
-    {
-      maxRecordedRoots: MAX_PROXY_RECORDED_PROVIDER_ROOTS,
-      clock,
-      process: runtime.process,
-      platform,
-      signal,
-    },
-  );
-  signal.throwIfAborted();
-  return { kind: 'absent', receipt: providerProxyDisappearanceReceipt(containment, recordedRoots) };
 }
 
 function inheritanceRefusalError(refusal: ProviderProxyControlRedemptionRefusal): Error {
@@ -573,17 +467,13 @@ export interface ProviderProxySetInheritance {
     capsulePath: string,
     signal: AbortSignal,
   ): Promise<ProviderProxySetRedemptionOutcome>;
-  proveContainmentAbsent(
-    identity: ProviderProxySetIdentity,
-    db: Database,
-    signal: AbortSignal,
-  ): Promise<ProviderProxySetContainmentProof>;
 }
 
 export type CreateProviderProxySetInheritanceOptions = Readonly<{
   runtime: Runtime;
   identity: ProviderProxySetAcquisitionIdentity;
   operationRegistry: ProviderProxyOperationSnapshot;
+  containmentProver: ProviderProxySetContainmentProver;
   onProviderEvent?(): ProviderEventHandler;
   /** Where a successfully inherited set is folded in so it participates in this coordinator's own later
    *  shutdown. */
@@ -618,8 +508,7 @@ export function createProviderProxySetInheritance(
         buildSetId: options.identity.buildSetId,
       },
       operationRegistry: options.operationRegistry,
-      proveContainmentAbsent: (identity, store, proofSignal) =>
-        proveProviderProxySetContainmentAbsent(identity, store, options.runtime, proofSignal),
+      proveContainmentAbsent: options.containmentProver.proveContainmentAbsent,
       ...(registerInheritedSet === undefined ? {} : { registerInheritedSet }),
       ...(options.onProviderEvent === undefined ? {} : { onProviderEvent: options.onProviderEvent }),
     };
@@ -683,7 +572,5 @@ export function createProviderProxySetInheritance(
         ? { kind: 'redeemed', set: deadline.value }
         : { kind: 'temporarily-unavailable', incident: deadline.incident };
     },
-    proveContainmentAbsent: (identity, db, signal) =>
-      proveProviderProxySetContainmentAbsent(identity, db, options.runtime, signal),
   };
 }

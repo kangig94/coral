@@ -39,11 +39,14 @@ import {
 } from './provider-proxy-set/identity.js';
 import type {
   ProviderProxySetAvailabilityIncident,
-  ProviderProxySetContainmentProof,
   ProviderProxySetInheritanceOutcome,
   ProviderProxySetLocator,
   ProviderProxySetRedemptionOutcome,
 } from './provider-proxy-set/inheritance.js';
+import {
+  providerProxySetContainmentProofSchema,
+  type ProviderProxySetContainmentProof,
+} from '../../provider-proxy/set-containment-contract.js';
 
 export const PROVIDER_PROXY_RECOVERY_PRODUCERS = [
   'disappearance-terminalization',
@@ -378,15 +381,11 @@ function classifyFulfillment(
     return evidence(outcome);
   }
   if (producerId === 'containment-proof') {
-    if (
-      typeof value !== 'object' ||
-      value === null ||
-      !('kind' in value) ||
-      !['absent', 'enforcer-alive', 'enforcer-unobservable', 'store-unreadable'].includes(String(value.kind))
-    ) {
+    const parsed = providerProxySetContainmentProofSchema.safeParse(value);
+    if (!parsed.success) {
       return unknown(producerId, new Error('provider_proxy_containment_proof_contract_violation'));
     }
-    return evidence(value);
+    return evidence(parsed.data);
   }
   if (producerId === 'capsule-retirement') {
     const parsed = providerHandoffCapsuleRetirementOutcomeSchema.safeParse(value);

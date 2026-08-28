@@ -998,10 +998,7 @@ export function createCoordinatorCore(
             setIdentity: request.setIdentity,
           });
         }
-        if (world.providerProxyInheritance === undefined) {
-          throw new Error('provider_proxy_set_containment_proof_unavailable');
-        }
-        const proof = await world.providerProxyInheritance.proveContainmentAbsent(
+        const proof = await world.providerProxySetContainmentProver.proveContainmentAbsent(
           authorization.capability.setIdentity,
           getProgressStore().getDb(),
           signal ?? new AbortController().signal,

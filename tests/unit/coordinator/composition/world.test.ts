@@ -122,6 +122,13 @@ function createWorld(
 }
 
 describe('createCoordinatorWorld bind host guard', () => {
+  it('keeps exact-set containment available when a supplied host manager disables inheritance', () => {
+    const world = createWorld({});
+
+    expect(world.providerProxyInheritance).toBeUndefined();
+    expect(world.providerProxySetContainmentProver.proveContainmentAbsent).toEqual(expect.any(Function));
+  });
+
   it('defaults to loopback without remote opt-in', () => {
     const world = createWorld({});
 

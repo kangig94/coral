@@ -57,6 +57,7 @@ import {
   createProviderProxySetInheritance,
   type ProviderProxySetLocator,
 } from '#src/coordinator/services/provider-proxy-set/inheritance.js';
+import { createProviderProxySetContainmentProver } from '#src/coordinator/services/provider-proxy-set/containment-proof.js';
 import {
   isProviderProxyOperationAuthority,
   notifyProviderProxyControlEstablished,
@@ -1247,14 +1248,9 @@ describe('createProviderProxySetInheritance', () => {
       },
     };
     mockedProbe.mockImplementation((pid) => live.get(pid) ?? null);
-    const inheritance = createProviderProxySetInheritance({
-      runtime: boundedRuntime,
-      identity,
-      operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
-      registerInheritedSet: () => undefined,
-    });
+    const containmentProver = createProviderProxySetContainmentProver(boundedRuntime);
 
-    const proof = inheritance.proveContainmentAbsent(
+    const proof = containmentProver.proveContainmentAbsent(
       providerProxySetIdentityFromRecord(reference),
       db,
       controller.signal,
@@ -1301,18 +1297,45 @@ describe('createProviderProxySetInheritance', () => {
     // No pid can be read at all, while every one of them is alive.
     mockedProbe.mockImplementation(() => null);
 
-    const inheritance = createProviderProxySetInheritance({
-      runtime: boundedRuntime,
-      identity,
-      operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
-      registerInheritedSet: () => undefined,
-    });
+    const containmentProver = createProviderProxySetContainmentProver(boundedRuntime);
 
     await expect(
-      inheritance.proveContainmentAbsent(providerProxySetIdentityFromRecord(reference), db, controller.signal),
+      containmentProver.proveContainmentAbsent(providerProxySetIdentityFromRecord(reference), db, controller.signal),
       'an unreadable but living pid is not evidence that the enforcer is gone',
-    ).resolves.toEqual({ kind: 'enforcer-alive', roles: ['guardian', 'reaper'] });
+    ).resolves.toEqual({
+      kind: 'enforcer-alive',
+      observations: [
+        { role: 'guardian', observation: 'alive' },
+        { role: 'reaper', observation: 'alive' },
+      ],
+    });
     expect(signals, 'nothing may be signalled while a target cannot be observed').toEqual([]);
+  });
+
+  it('retains every enforcer observation when alive is the decisive disposition', async () => {
+    const reference = locator();
+    const identity = providerProxySetIdentityFromRecord(reference);
+    const db = proofDatabase([proofRecord(reference, { pid: 104, incarnation: testIncarnation(1_003) })]);
+    const base = createRealRuntime('prod');
+    const observedRuntime = {
+      ...base,
+      process: {
+        ...base.process,
+        observeLiveness: (pid: number) => (pid === identity.guardianPid ? 'alive' : 'unknown') as ProcessLiveness,
+        kill: () => true,
+      },
+    };
+    mockedProbe.mockImplementation(() => null);
+
+    await expect(
+      createProviderProxySetContainmentProver(observedRuntime).proveContainmentAbsent(identity, db, neverAborts),
+    ).resolves.toEqual({
+      kind: 'enforcer-alive',
+      observations: [
+        { role: 'guardian', observation: 'alive' },
+        { role: 'reaper', observation: 'unknown' },
+      ],
+    });
   });
 
   // The other half of the same rule, and the reason the one above had to narrow. A pid that reads back as a
@@ -1331,15 +1354,10 @@ describe('createProviderProxySetInheritance', () => {
     // Every pid is readable, and every one of them reads back as someone else.
     mockedProbe.mockImplementation(() => testIncarnation(9_999_999));
 
-    const inheritance = createProviderProxySetInheritance({
-      runtime: boundedRuntime,
-      identity,
-      operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
-      registerInheritedSet: () => undefined,
-    });
+    const containmentProver = createProviderProxySetContainmentProver(boundedRuntime);
 
     await expect(
-      inheritance.proveContainmentAbsent(providerProxySetIdentityFromRecord(reference), db, controller.signal),
+      containmentProver.proveContainmentAbsent(providerProxySetIdentityFromRecord(reference), db, controller.signal),
       'a pid that is provably someone else does not keep this set alive',
     ).resolves.toEqual(expect.objectContaining({ kind: 'absent' }));
   });
@@ -1374,17 +1392,18 @@ describe('createProviderProxySetInheritance', () => {
     };
     mockedProbe.mockImplementation(probe);
 
-    const inheritance = createProviderProxySetInheritance({
-      runtime: boundedRuntime,
-      identity,
-      operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
-      registerInheritedSet: () => undefined,
-    });
+    const containmentProver = createProviderProxySetContainmentProver(boundedRuntime);
 
     await expect(
-      inheritance.proveContainmentAbsent(providerProxySetIdentityFromRecord(reference), db, neverAborts),
+      containmentProver.proveContainmentAbsent(providerProxySetIdentityFromRecord(reference), db, neverAborts),
       'an enforcer that could not be observed is not one that is gone',
-    ).resolves.toEqual({ kind: 'enforcer-unobservable', roles: ['guardian', 'reaper'] });
+    ).resolves.toEqual({
+      kind: 'enforcer-unobservable',
+      observations: [
+        { role: 'guardian', observation: 'unknown' },
+        { role: 'reaper', observation: 'unknown' },
+      ],
+    });
     expect(signals, 'evidence nobody could produce authorizes no signal').toEqual([]);
   });
 
@@ -1401,15 +1420,10 @@ describe('createProviderProxySetInheritance', () => {
     db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)').run(unreadableKey, 'not json');
     const process = proofRuntime(new Map());
     mockedProbe.mockImplementation(() => testIncarnation('replacement'));
-    const inheritance = createProviderProxySetInheritance({
-      runtime: process.runtime,
-      identity,
-      operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
-      registerInheritedSet: () => undefined,
-    });
+    const containmentProver = createProviderProxySetContainmentProver(process.runtime);
 
     await expect(
-      inheritance.proveContainmentAbsent(providerProxySetIdentityFromRecord(reference), db, neverAborts),
+      containmentProver.proveContainmentAbsent(providerProxySetIdentityFromRecord(reference), db, neverAborts),
     ).resolves.toEqual({ kind: 'store-unreadable' });
     expect(process.signals).toEqual([]);
   });
@@ -1444,15 +1458,10 @@ describe('createProviderProxySetInheritance', () => {
     const db = proofDatabase([proofRecord(reference, { pid: 104, incarnation: testIncarnation(1_003) })]);
     db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)').run(keyFor(), valueFor(reference));
     const process = proofRuntime(new Map());
-    const inheritance = createProviderProxySetInheritance({
-      runtime: process.runtime,
-      identity,
-      operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
-      registerInheritedSet: () => undefined,
-    });
+    const containmentProver = createProviderProxySetContainmentProver(process.runtime);
 
     await expect(
-      inheritance.proveContainmentAbsent(providerProxySetIdentityFromRecord(reference), db, neverAborts),
+      containmentProver.proveContainmentAbsent(providerProxySetIdentityFromRecord(reference), db, neverAborts),
     ).resolves.toEqual({ kind: 'store-unreadable' });
     expect(process.signals).toEqual([]);
   });
@@ -1468,15 +1477,10 @@ describe('createProviderProxySetInheritance', () => {
       JSON.stringify({ version: 'broken', locator: null, operation: {} }),
     );
     const process = proofRuntime(new Map());
-    const inheritance = createProviderProxySetInheritance({
-      runtime: process.runtime,
-      identity,
-      operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
-      registerInheritedSet: () => undefined,
-    });
+    const containmentProver = createProviderProxySetContainmentProver(process.runtime);
 
     await expect(
-      inheritance.proveContainmentAbsent(providerProxySetIdentityFromRecord(reference), db, neverAborts),
+      containmentProver.proveContainmentAbsent(providerProxySetIdentityFromRecord(reference), db, neverAborts),
     ).resolves.toEqual(expect.objectContaining({ kind: 'absent' }));
   });
 
@@ -1495,14 +1499,9 @@ describe('createProviderProxySetInheritance', () => {
         [204, testIncarnation(2_003)],
       ]),
     );
-    const inheritance = createProviderProxySetInheritance({
-      runtime: process.runtime,
-      identity,
-      operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
-      registerInheritedSet: () => undefined,
-    });
+    const containmentProver = createProviderProxySetContainmentProver(process.runtime);
 
-    const proof = await inheritance.proveContainmentAbsent(
+    const proof = await containmentProver.proveContainmentAbsent(
       providerProxySetIdentityFromRecord(referenceA),
       db,
       neverAborts,
@@ -1535,14 +1534,9 @@ describe('createProviderProxySetInheritance', () => {
     );
     const db = proofDatabase([...exactRecords, ...distinctRecords]);
     const process = proofRuntime(new Map());
-    const inheritance = createProviderProxySetInheritance({
-      runtime: process.runtime,
-      identity,
-      operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
-      registerInheritedSet: () => undefined,
-    });
+    const containmentProver = createProviderProxySetContainmentProver(process.runtime);
 
-    const proof = await inheritance.proveContainmentAbsent(
+    const proof = await containmentProver.proveContainmentAbsent(
       providerProxySetIdentityFromRecord(referenceA),
       db,
       neverAborts,
@@ -1560,6 +1554,7 @@ describe('createProviderProxySetInheritance', () => {
 
     const inheritance = createProviderProxySetInheritance({
       runtime,
+      containmentProver: createProviderProxySetContainmentProver(runtime),
       identity,
       operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
       registerInheritedSet,
@@ -1578,6 +1573,7 @@ describe('createProviderProxySetInheritance', () => {
 
     const inheritance = createProviderProxySetInheritance({
       runtime,
+      containmentProver: createProviderProxySetContainmentProver(runtime),
       identity,
       operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
       registerInheritedSet,
@@ -1607,7 +1603,10 @@ describe('createProviderProxySetInheritance', () => {
       recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
         'containment-proof': async () => ({
           kind: 'enforcer-unobservable' as const,
-          roles: ['guardian', 'reaper'] as const,
+          observations: [
+            { role: 'guardian', observation: 'unknown' },
+            { role: 'reaper', observation: 'unknown' },
+          ] as const,
         }),
       }),
       reportLifecycle: () => undefined,
@@ -1625,6 +1624,7 @@ describe('createProviderProxySetInheritance', () => {
 
     const inheritance = createProviderProxySetInheritance({
       runtime,
+      containmentProver: createProviderProxySetContainmentProver(runtime),
       identity,
       operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
       registerInheritedSet,
@@ -1676,7 +1676,10 @@ describe('createProviderProxySetInheritance', () => {
       recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
         'containment-proof': async () => ({
           kind: 'enforcer-unobservable' as const,
-          roles: ['guardian', 'reaper'] as const,
+          observations: [
+            { role: 'guardian', observation: 'unknown' },
+            { role: 'reaper', observation: 'unknown' },
+          ] as const,
         }),
       }),
       reportLifecycle: () => undefined,
@@ -1685,6 +1688,7 @@ describe('createProviderProxySetInheritance', () => {
     lifecycle.completeStartupDiscovery();
     const inheritance = createProviderProxySetInheritance({
       runtime: { ...runtime, time },
+      containmentProver: createProviderProxySetContainmentProver({ ...runtime, time }),
       identity,
       operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
       registerInheritedSet: (set) => {
@@ -1750,7 +1754,10 @@ describe('createProviderProxySetInheritance', () => {
       recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
         'containment-proof': async () => ({
           kind: 'enforcer-unobservable' as const,
-          roles: ['guardian', 'reaper'] as const,
+          observations: [
+            { role: 'guardian', observation: 'unknown' },
+            { role: 'reaper', observation: 'unknown' },
+          ] as const,
         }),
         'disappearance-consumer': async ({ notice }) => ({
           kind: 'accepted',
@@ -1764,6 +1771,7 @@ describe('createProviderProxySetInheritance', () => {
 
     const inheritance = createProviderProxySetInheritance({
       runtime: inheritedRuntime,
+      containmentProver: createProviderProxySetContainmentProver(inheritedRuntime),
       identity,
       operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
       registerInheritedSet: (set) => {

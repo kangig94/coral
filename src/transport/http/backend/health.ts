@@ -1,6 +1,10 @@
 import { isProcessIncarnation, type ProcessIncarnation } from '../../../infra/node-process.js';
 import { isRecord } from '../../../infra/json.js';
 import { isSerializedCoralSetupError, type SerializedCoralSetupError } from '../../../runtime/errors.js';
+import {
+  providerProxySetEnforcerObservationsSchema,
+  type ProviderProxySetEnforcerObservations,
+} from '../../../provider-proxy/set-containment-contract.js';
 
 /**
  * Health metadata exposed by the Coral backend over HTTP.
@@ -135,6 +139,7 @@ export interface BackendHealth {
       elapsedMs?: number;
       boundMs?: number;
       liveClaims?: number;
+      enforcerObservations?: ProviderProxySetEnforcerObservations;
       incidentReason: string;
       waitingFor:
         | 'heartbeat-evidence-window'
@@ -264,7 +269,16 @@ function parseProviderProxySets(value: unknown): ProviderProxySetsParseResult | 
       return null;
     }
 
-    understoodRows.push(entry as ProviderProxySet);
+    const enforcerObservations =
+      entry.enforcerObservations === undefined
+        ? undefined
+        : providerProxySetEnforcerObservationsSchema.safeParse(entry.enforcerObservations);
+    if (enforcerObservations !== undefined && !enforcerObservations.success) return null;
+
+    understoodRows.push({
+      ...entry,
+      ...(enforcerObservations === undefined ? {} : { enforcerObservations: enforcerObservations.data }),
+    } as ProviderProxySet);
   }
 
   return { understoodRows, skippedRows, skippedSetTokens };

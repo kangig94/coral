@@ -22,7 +22,7 @@ import {
   type ProviderProxySetIdentity,
 } from '#src/coordinator/services/provider-proxy-set/identity.js';
 import { ProviderProxySetLifecycleRef } from '#src/coordinator/services/provider-proxy-set/lifecycle-ref.js';
-import type { ProviderProxySetContainmentProof } from '#src/coordinator/services/provider-proxy-set/inheritance.js';
+import type { ProviderProxySetContainmentProof } from '#src/provider-proxy/set-containment-contract.js';
 import { UNREADABLE_PROVIDER_OPERATION_BOUNDARY } from '#src/recovery/source-registry.js';
 import { backendLog } from '#src/infra/backend-log.js';
 import { JobStore } from '#src/jobs/store.js';
@@ -67,6 +67,14 @@ const TEST_AUTONOMOUS_DEADLINE = {
   heartbeatHoldBound: providerProxyHeartbeatHoldBound({ orphanTimeoutMs: 37_000, teardownReserveMs: 14_000 }),
 };
 
+const noContainmentProof = async (): Promise<ProviderProxySetContainmentProof> => ({
+  kind: 'enforcer-unobservable',
+  observations: [
+    { role: 'guardian', observation: 'unknown' },
+    { role: 'reaper', observation: 'unknown' },
+  ],
+});
+
 type SharedSetControl = 'settlement-timeout' | 'heartbeat-failed';
 
 function setReference(identity: ProviderProxySetIdentity): string {
@@ -103,6 +111,7 @@ function createUnreadableStartupHarness() {
     operationRegistry: new LocalOperationRegistry(),
     providerProxyClaims: claims,
     providerProxyLifecycleRef: new ProviderProxySetLifecycleRef(),
+    providerProxySetContainmentProver: { proveContainmentAbsent: noContainmentProof },
     providerHostManager: {},
   } as never;
   const services = createExecutionServices({
@@ -182,6 +191,7 @@ async function createSharedSetHarness(control: SharedSetControl) {
     operationRegistry,
     providerProxyClaims: claims,
     providerProxyLifecycleRef: lifecycleRef,
+    providerProxySetContainmentProver: { proveContainmentAbsent: noContainmentProof },
     providerHostManager: {},
   } as never;
   const services = createExecutionServices({
@@ -354,6 +364,7 @@ describe('execution services provider-proxy proof composition', () => {
       operationRegistry: new LocalOperationRegistry(),
       providerProxyClaims: claims,
       providerProxyLifecycleRef: new ProviderProxySetLifecycleRef(),
+      providerProxySetContainmentProver: { proveContainmentAbsent: noContainmentProof },
       providerHostManager: {},
     } as never;
 
@@ -489,7 +500,10 @@ describe('execution services provider-proxy proof composition', () => {
     const proveContainmentAbsent = vi.fn(
       async (): Promise<ProviderProxySetContainmentProof> => ({
         kind: 'enforcer-unobservable',
-        roles: ['guardian', 'reaper'],
+        observations: [
+          { role: 'guardian', observation: 'unknown' },
+          { role: 'reaper', observation: 'unknown' },
+        ],
       }),
     );
     const world = {
@@ -498,7 +512,8 @@ describe('execution services provider-proxy proof composition', () => {
       operationRegistry,
       providerProxyClaims: claims,
       providerProxyLifecycleRef: lifecycleRef,
-      providerProxyInheritance: { inheritProviderProxySet, redeemDiscoveredCapsule, proveContainmentAbsent },
+      providerProxyInheritance: { inheritProviderProxySet, redeemDiscoveredCapsule },
+      providerProxySetContainmentProver: { proveContainmentAbsent },
       providerHostManager: {},
     } as never;
 
@@ -541,6 +556,7 @@ describe('execution services provider-proxy proof composition', () => {
       operationRegistry,
       providerProxyClaims: claims,
       providerProxyLifecycleRef: lifecycleRef,
+      providerProxySetContainmentProver: { proveContainmentAbsent: noContainmentProof },
       providerHostManager: {},
     } as never;
     const services = createExecutionServices({
@@ -630,6 +646,7 @@ describe('execution services provider-proxy proof composition', () => {
       operationRegistry,
       providerProxyClaims: claims,
       providerProxyLifecycleRef: lifecycleRef,
+      providerProxySetContainmentProver: { proveContainmentAbsent: noContainmentProof },
       providerHostManager: {},
     } as never;
     const warning = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
@@ -825,8 +842,8 @@ describe('execution services provider-proxy proof composition', () => {
         redeemDiscoveredCapsule: async () => {
           throw new Error('capsule redemption was not expected');
         },
-        proveContainmentAbsent,
       },
+      providerProxySetContainmentProver: { proveContainmentAbsent },
       providerHostManager: {},
     } as never;
     createExecutionServices({
@@ -938,9 +955,14 @@ describe('execution services provider-proxy proof composition', () => {
         redeemDiscoveredCapsule: async () => {
           throw new Error('capsule redemption was not expected');
         },
+      },
+      providerProxySetContainmentProver: {
         proveContainmentAbsent: async () => ({
           kind: 'enforcer-unobservable' as const,
-          roles: ['guardian', 'reaper'] as const,
+          observations: [
+            { role: 'guardian', observation: 'unknown' },
+            { role: 'reaper', observation: 'unknown' },
+          ] as const,
         }),
       },
       providerHostManager: {},
@@ -1015,6 +1037,7 @@ describe('execution services provider-proxy heartbeat-hold composition', () => {
       operationRegistry: new LocalOperationRegistry(),
       providerProxyClaims: new ProviderProxySetClaimMirror(),
       providerProxyLifecycleRef: lifecycleRef,
+      providerProxySetContainmentProver: { proveContainmentAbsent: noContainmentProof },
       providerHostManager: {},
     } as never;
     const services = createExecutionServices({

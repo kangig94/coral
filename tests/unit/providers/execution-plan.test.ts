@@ -39,7 +39,7 @@ import {
 } from '#src/providers/codex/credential-policy.js';
 import { TEST_CLAUDE_ACCESS, TEST_CODEX_ACCESS } from '#tests/helpers/provider-credentials.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
-import { hostKeyFromSpec } from '#src/coordinator/live/provider-hosts/index.js';
+import { hostKeyFromSpec } from '#src/coordinator/live/provider-hosts/state.js';
 import { claudeAppServerLifecycle } from '#src/providers/claude/provider-facets.js';
 import { codexAppServerLifecycle } from '#src/providers/codex/provider-facets.js';
 import { resolveClaudeTransportMode } from '#src/providers/claude/transport-mode.js';

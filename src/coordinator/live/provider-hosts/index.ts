@@ -99,8 +99,6 @@ export type ManagedAppServerSession = Readonly<{
   close(): void;
 }>;
 
-export { hostKeyFromSpec } from './state.js';
-
 function foldedKey(key: string, platform: string): string {
   return platform === 'win32' ? key.toLowerCase() : key;
 }

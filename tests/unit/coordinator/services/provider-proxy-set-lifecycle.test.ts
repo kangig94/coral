@@ -55,10 +55,8 @@ import {
   providerProxySetAddress,
   providerProxySetIdentityFromRecord,
 } from '#src/coordinator/services/provider-proxy-set/identity.js';
-import type {
-  ProviderProxySetContainmentProof,
-  ProviderProxySetRedemptionOutcome,
-} from '#src/coordinator/services/provider-proxy-set/inheritance.js';
+import type { ProviderProxySetRedemptionOutcome } from '#src/coordinator/services/provider-proxy-set/inheritance.js';
+import type { ProviderProxySetContainmentProof } from '#src/provider-proxy/set-containment-contract.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
@@ -72,7 +70,10 @@ const PRESERVE_REPORT_INTERVAL_MS = 60_000;
 
 const enforcersUnobservable: ProviderProxySetContainmentProof = {
   kind: 'enforcer-unobservable',
-  roles: ['guardian', 'reaper'],
+  observations: [
+    { role: 'guardian', observation: 'unknown' },
+    { role: 'reaper', observation: 'unknown' },
+  ],
 };
 const noContainmentProof = async (): Promise<ProviderProxySetContainmentProof> => enforcersUnobservable;
 /** Nothing observed is never absence, so every discovered capsule is retained and no retirement begins. */
@@ -2113,23 +2114,57 @@ describe('ProviderProxySetLifecycle', () => {
     if (authorization.kind !== 'authorized') throw new Error(`expected authorization, received ${authorization.kind}`);
 
     await expect(
-      lifecycle.completeOperatorExit(authorization.capability, { kind: 'enforcer-alive', roles: ['guardian'] }, false),
-    ).resolves.toEqual({ kind: 'enforcer-alive', setIdentity: address, roles: ['guardian'] });
+      lifecycle.completeOperatorExit(
+        authorization.capability,
+        {
+          kind: 'enforcer-alive',
+          observations: [
+            { role: 'guardian', observation: 'alive' },
+            { role: 'reaper', observation: 'unknown' },
+          ],
+        },
+        false,
+      ),
+    ).resolves.toEqual({
+      kind: 'enforcer-alive',
+      setIdentity: address,
+      enforcerObservations: [
+        { role: 'guardian', observation: 'alive' },
+        { role: 'reaper', observation: 'unknown' },
+      ],
+    });
     expect(lifecycle.snapshot().operatorDispositions).toContainEqual(
       expect.objectContaining({
         disposition: 'operator-exit-refused',
         incidentReason: 'operator_exit_enforcer-alive',
         waitingFor: 'operator-abandonment',
+        enforcerObservations: [
+          { role: 'guardian', observation: 'alive' },
+          { role: 'reaper', observation: 'unknown' },
+        ],
       }),
     );
 
     await expect(
       lifecycle.completeOperatorExit(
         authorization.capability,
-        { kind: 'enforcer-unobservable', roles: ['reaper'] },
+        {
+          kind: 'enforcer-unobservable',
+          observations: [
+            { role: 'guardian', observation: 'absent' },
+            { role: 'reaper', observation: 'unknown' },
+          ],
+        },
         false,
       ),
-    ).resolves.toEqual({ kind: 'enforcer-unobservable', setIdentity: address, roles: ['reaper'] });
+    ).resolves.toEqual({
+      kind: 'enforcer-unobservable',
+      setIdentity: address,
+      enforcerObservations: [
+        { role: 'guardian', observation: 'absent' },
+        { role: 'reaper', observation: 'unknown' },
+      ],
+    });
     await expect(
       lifecycle.completeOperatorExit(authorization.capability, { kind: 'store-unreadable' }, true),
     ).resolves.toEqual({ kind: 'store-unreadable', setIdentity: address });
@@ -2184,7 +2219,13 @@ describe('ProviderProxySetLifecycle', () => {
     await expect(
       lifecycle.completeOperatorExit(
         firstAuthorization.capability,
-        { kind: 'enforcer-unobservable', roles: ['guardian', 'reaper'] },
+        {
+          kind: 'enforcer-unobservable',
+          observations: [
+            { role: 'guardian', observation: 'unknown' },
+            { role: 'reaper', observation: 'unknown' },
+          ],
+        },
         true,
       ),
     ).resolves.toEqual({ kind: 'authorization-stale', setIdentity: address });
@@ -2259,7 +2300,10 @@ describe('ProviderProxySetLifecycle', () => {
       resultKind: 'abandoned' as const,
       proof: {
         kind: 'enforcer-unobservable' as const,
-        roles: ['guardian', 'reaper'] as const,
+        observations: [
+          { role: 'guardian', observation: 'unknown' },
+          { role: 'reaper', observation: 'unknown' },
+        ] as const,
       },
       abandonUnobservable: true,
     },
@@ -2350,13 +2394,23 @@ describe('ProviderProxySetLifecycle', () => {
     if (authorization.kind !== 'authorized') throw new Error(`expected authorization, received ${authorization.kind}`);
     const completion = lifecycle.completeOperatorExit(
       authorization.capability,
-      { kind: 'enforcer-unobservable', roles: ['guardian', 'reaper'] },
+      {
+        kind: 'enforcer-unobservable',
+        observations: [
+          { role: 'guardian', observation: 'unknown' },
+          { role: 'reaper', observation: 'unknown' },
+        ],
+      },
       true,
     );
     await expect(completion).resolves.toEqual(
       expect.objectContaining({
         kind: 'abandoned',
         processObservation: 'enforcer-unobservable',
+        enforcerObservations: [
+          { role: 'guardian', observation: 'unknown' },
+          { role: 'reaper', observation: 'unknown' },
+        ],
         claimDischarge: { kind: 'initial-disposition-retry-owned' },
       }),
     );
