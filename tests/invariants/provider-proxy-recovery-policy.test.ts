@@ -698,11 +698,15 @@ const EXPECTED_REJECTION_NODE_INVENTORY = [
   'src/coordinator/services/provider-proxy-set/index.ts :: #promoteControlReattachment :: Promise.catch :: oldAuthority.initiateControlClose().catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: #promoteControlReattachment :: Promise.catch :: promoted.initiateControlClose().catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: #promoteControlReattachment :: catch#1 :: calls=[this.#isCurrentControlReattachment, this.#deps.onError, singleLineErrorSummary, this.#scheduleControlReattachmentRetry] assignments=[window.attemptAbort]',
+  'src/coordinator/services/provider-proxy-set/index.ts :: #recoverExactCapsule :: Promise.then(rejected) :: this.#reapRecordedContainment(evidence, reapAbort.signal, () => undefined).then',
   'src/coordinator/services/provider-proxy-set/index.ts :: #report :: catch#1 :: calls=[] assignments=[]',
+  'src/coordinator/services/provider-proxy-set/index.ts :: #runContainmentAttempt :: Promise.then(rejected) :: this.#reapRecordedContainment(evidence, abort.signal, () => undefined).then',
+  'src/coordinator/services/provider-proxy-set/index.ts :: #runControlReattachmentAttempt :: Promise.then(rejected) :: this.#reapRecordedContainment(evidence, reapAbort.signal, () => undefined).then',
   'src/coordinator/services/provider-proxy-set/index.ts :: completeOperatorExit :: Promise.catch :: slot.authority.initiateControlClose().catch',
+  'src/coordinator/services/provider-proxy-set/index.ts :: completeOperatorExit :: catch#1 :: calls=[this.#slots.get, providerProxySetKey] assignments=[]',
   'src/coordinator/services/provider-proxy-set/index.ts :: containmentAbsent :: Promise.catch :: authorityToClose .initiateControlClose() .catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: createInitialDispositionLatch :: Promise.catch :: promise.catch',
-  'src/coordinator/services/provider-proxy-set/inheritance.ts :: attemptProviderProxySetInheritance :: catch#1 :: calls=[deps.proveContainmentAbsent] assignments=[]',
+  'src/coordinator/services/provider-proxy-set/inheritance.ts :: attemptProviderProxySetInheritance :: catch#1 :: calls=[deps.collectContainmentEvidence, deps.reapRecordedContainment] assignments=[]',
   'src/coordinator/services/provider-proxy-set/inheritance.ts :: attemptProviderProxySetInheritance :: catch#2 :: calls=[] assignments=[]',
   'src/coordinator/services/provider-proxy-set/inheritance.ts :: buildInheritedAuthority :: catch#1 :: calls=[closeRedeemedProviderProxyControl] assignments=[]',
   'src/jobs/provider-operation-terminalization.ts :: readProviderHostUnserviceableEvidence :: catch#1 :: calls=[] assignments=[]',
@@ -726,7 +730,9 @@ function rejectionJustification(fingerprint: string): string {
     return 'Producer-side inheritance protocol cleanup preserves causal evidence without consuming a dispatcher façade.';
   }
   if (fingerprint.includes(' :: #beginContainment :: ')) {
-    return 'A best-effort close cannot revoke a containment the lifecycle has already entered.';
+    return fingerprint.includes('Promise.then(rejected)')
+      ? 'Lifecycle retains the current containment attempt after its sanctioned exact-set reaper rejects.'
+      : 'A best-effort close cannot revoke a containment the lifecycle has already entered.';
   }
   if (fingerprint.includes(' :: #promoteControlReattachment :: ')) {
     return 'Failed promotion keeps the original hold and displaced-control close failure cannot revoke the promoted authority.';
@@ -740,8 +746,16 @@ function rejectionJustification(fingerprint: string): string {
   if (fingerprint.includes(' :: #report :: ')) {
     return 'Lifecycle observability failure cannot interrupt an authority transition.';
   }
+  if (fingerprint.includes(' :: #recoverExactCapsule :: ')) {
+    return 'Lifecycle retains and retries exact-capsule recovery after its sanctioned exact-set reaper rejects.';
+  }
+  if (fingerprint.includes(' :: #runControlReattachmentAttempt :: ')) {
+    return 'Lifecycle retains the reattachment hold and schedules its bounded retry after exact-set reaping rejects.';
+  }
   if (fingerprint.includes(' :: completeOperatorExit :: ')) {
-    return 'A best-effort control close cannot revoke accepted operator abandonment or relabel its process observation.';
+    return fingerprint.includes('catch#1')
+      ? 'Lifecycle converts a moved attempt after signalling into an honest partial authorization-stale outcome.'
+      : 'A best-effort control close cannot revoke accepted operator abandonment or relabel its process observation.';
   }
   if (fingerprint.includes(' :: readProviderHostUnserviceableEvidence :: ')) {
     return 'Malformed provider-host evidence cannot authorize terminalization.';

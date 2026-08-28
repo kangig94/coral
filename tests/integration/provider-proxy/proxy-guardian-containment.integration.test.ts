@@ -530,6 +530,11 @@ function establishActivationRoute(setIdentity: ProviderProxySetIdentity) {
     recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
       'containment-proof': () => new Promise<never>(() => undefined),
     }),
+    reapRecordedContainment: () => {
+      throw new Error(
+        'proxy guardian containment fixture unexpectedly requested lifecycle recorded containment reaping',
+      );
+    },
     reportLifecycle: () => undefined,
   });
   lifecycle.initializeClaimSlots();
@@ -1370,6 +1375,11 @@ describe('provider proxy cumulative root rotation', () => {
           ] as const,
         }),
       }),
+      reapRecordedContainment: () => {
+        throw new Error(
+          'proxy guardian containment fixture unexpectedly requested lifecycle recorded containment reaping',
+        );
+      },
       reportLifecycle: () => undefined,
       onSlotReleased: (routeKey) => manager.providerProxySlotReleased(routeKey),
     });

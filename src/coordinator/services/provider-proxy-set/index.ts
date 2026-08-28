@@ -1,5 +1,8 @@
+import { encodeProviderProxySetAddress, type ProviderProxySetAddress } from '../../../provider-proxy/set-address.js';
 import type { TimePort, TimerHandle } from '../../../infra/port-types.js';
 import type { ProcessIncarnation, RecordedProcessObserver } from '../../../infra/node-process.js';
+import { createMonotonicClock } from '../../../infra/monotonic-clock.js';
+import { reapRecordedContainment } from '../../../infra/process-containment.js';
 import { errorMessage } from '../../../infra/error-format.js';
 import type { OperationIdentity } from '../../../provider-proxy/protocol.js';
 import {
@@ -11,9 +14,15 @@ import {
 import { type HandoffCapsule, type HandoffCapsuleV3 } from '../../../provider-proxy/handoff-capsule.js';
 import {
   providerProxySetEnforcerVerdict,
-  type ProviderProxySetContainmentProof,
+  type ProviderProxySetContainmentEvidence,
   type ProviderProxySetEnforcerObservations,
 } from '../../../provider-proxy/containment-proof-contract.js';
+import {
+  MAX_PROXY_RECORDED_PROVIDER_ROOTS,
+  providerProxyDisappearanceReceipt,
+} from '../../../provider-proxy/enforcement.js';
+import { PROXY_TEARDOWN_RESERVE_MS } from '../../../provider-proxy/orphan-deadline.js';
+import type { Runtime } from '../../../runtime/ports.js';
 import type { ProviderProxySetLifecycleState } from '../../../provider-proxy/set-lifecycle-state-vocabulary.js';
 import type { DurableProviderProxyOperationAuthority } from '../../live/provider-proxy/operation-route.js';
 import type {
@@ -62,7 +71,6 @@ import {
 } from './decisions.js';
 import {
   ProviderProxySetIdentityIndex,
-  encodeProviderProxySetAddress,
   providerProxySetAddress,
   providerProxySetAddressKey,
   providerProxySetCapsuleMatchesIdentity,
@@ -70,7 +78,6 @@ import {
   providerProxySetIdentityFromCapsule,
   providerProxySetKey,
   providerProxySetReference,
-  type ProviderProxySetAddress,
   type ProviderProxySetIdentity,
   type ProviderProxySetKey,
 } from './identity.js';
@@ -83,6 +90,44 @@ declare const durableClaimDischargeBrand: unique symbol;
 declare const providerProxySetDischargeBrand: unique symbol;
 const operatorAbandonmentEvidenceBrand: unique symbol = Symbol('provider-proxy-set-operator-abandonment-evidence');
 const operatorExitCapabilityBrand = Symbol('provider-proxy-set-operator-exit-capability');
+const providerSetDisappearanceClockScope = Symbol('provider-set-disappearance');
+
+type ReapRequiredEvidence = Extract<ProviderProxySetContainmentEvidence, { kind: 'reap-required' }>;
+export type ProviderProxySetContainmentSignal = 'SIGTERM' | 'SIGKILL';
+export type ProviderProxySetRecordedContainmentReaper = (
+  evidence: ReapRequiredEvidence,
+  signal: AbortSignal,
+  onSignal: (signal: ProviderProxySetContainmentSignal) => void,
+  assertSignalAuthorized?: () => void,
+) => Promise<string>;
+
+/** Creates the lifecycle-owned exact-set reaper used by operator and automatic containment paths. */
+export function createProviderProxySetRecordedContainmentReaper(
+  runtime: Runtime,
+): ProviderProxySetRecordedContainmentReaper {
+  return async (evidence, signal, onSignal, assertSignalAuthorized) => {
+    const clock = createMonotonicClock(providerSetDisappearanceClockScope);
+    await reapRecordedContainment(
+      evidence.containment,
+      evidence.recordedRoots,
+      clock.shiftMilliseconds(clock.now(), PROXY_TEARDOWN_RESERVE_MS),
+      {
+        maxRecordedRoots: MAX_PROXY_RECORDED_PROVIDER_ROOTS,
+        clock,
+        process: runtime.process,
+        platform: runtime.env.platform() as NodeJS.Platform,
+        readProcessIncarnation: (pid, platform) => runtime.process.readProcessIncarnation(pid, platform),
+        signal,
+        assertSignalAuthorized,
+        onSignal: ({ signal: delivered }) => {
+          if (delivered === 'SIGTERM' || delivered === 'SIGKILL') onSignal(delivered);
+        },
+      },
+    );
+    signal.throwIfAborted();
+    return providerProxyDisappearanceReceipt(evidence.containment, evidence.recordedRoots);
+  };
+}
 
 export type ProcessContainmentEvidence = Readonly<{
   kind: 'containment-absent';
@@ -382,13 +427,19 @@ type ProviderProxySetOperatorClaimDischarge =
   | ContainmentAbsenceInitialDisposition
   | Readonly<{ kind: 'initial-disposition-retry-owned' }>;
 
+export type ProviderProxySetOperatorExitEffect = Readonly<{
+  signalsSent: readonly ProviderProxySetContainmentSignal[];
+  containmentAbsent: boolean;
+  representationAction: 'none' | 'absence-release-started' | 'abandonment-release-started';
+}>;
+
 export type ProviderProxySetOperatorExitAuthorization =
   | Readonly<{ kind: 'authorized'; capability: ProviderProxySetOperatorExitCapability }>
   | Readonly<{ kind: 'set-not-found' }>
   | Readonly<{ kind: 'not-held'; state: ProviderProxySetLifecycleState }>
   | Readonly<{ kind: 'deadline-pending'; remainingMs: number }>;
 
-export type ProviderProxySetOperatorExitResult =
+export type ProviderProxySetOperatorExitResult = (
   | Readonly<{
       kind: 'contained';
       setIdentity: ProviderProxySetAddress;
@@ -410,7 +461,9 @@ export type ProviderProxySetOperatorExitResult =
       setIdentity: ProviderProxySetAddress;
       enforcerObservations: ProviderProxySetEnforcerObservations;
     }>
-  | Readonly<{ kind: 'store-unreadable'; setIdentity: ProviderProxySetAddress }>;
+  | Readonly<{ kind: 'store-unreadable'; setIdentity: ProviderProxySetAddress }>
+) &
+  Readonly<{ effect: ProviderProxySetOperatorExitEffect }>;
 
 type InitialDispositionLatch = {
   state: InitialDispositionState;
@@ -441,6 +494,7 @@ export type ProviderProxySetLifecycleDeps = Readonly<{
    */
   time: Pick<TimePort, 'now' | 'monotonicNow' | 'setTimeout' | 'clearTimeout'>;
   recoveryDispatcher: ProviderProxyRecoveryDispatcher;
+  reapRecordedContainment: ProviderProxySetRecordedContainmentReaper;
   onProgressPremiseViolation?: (violation: ProviderProxySetLifecycleProgressViolation) => void;
   reportLifecycle(severity: ProviderProxySetLogSeverity, message: string): void;
   onError?: (message: string) => void;
@@ -576,6 +630,15 @@ export class ProviderProxySetLifecycle {
 
   constructor(deps: ProviderProxySetLifecycleDeps) {
     this.#deps = deps;
+  }
+
+  #reapRecordedContainment(
+    evidence: ReapRequiredEvidence,
+    signal: AbortSignal,
+    onSignal: (signal: ProviderProxySetContainmentSignal) => void,
+    assertSignalAuthorized?: () => void,
+  ): Promise<string> {
+    return this.#deps.reapRecordedContainment(evidence, signal, onSignal, assertSignalAuthorized);
   }
 
   initializeClaimSlots(): void {
@@ -848,33 +911,93 @@ export class ProviderProxySetLifecycle {
 
   async completeOperatorExit(
     capability: ProviderProxySetOperatorExitCapability,
-    proof: ProviderProxySetContainmentProof,
-    abandonUnobservable: boolean,
+    evidence: ProviderProxySetContainmentEvidence,
+    abandonWithoutAbsence: boolean,
+    signal: AbortSignal = new AbortController().signal,
   ): Promise<ProviderProxySetOperatorExitResult> {
     const address = providerProxySetAddress(capability.setIdentity);
+    const noEffect: ProviderProxySetOperatorExitEffect = {
+      signalsSent: [],
+      containmentAbsent: false,
+      representationAction: 'none',
+    };
     if (capability[operatorExitCapabilityBrand] !== this) {
       throw new Error('provider_proxy_operator_exit_capability_invalid');
     }
     const slot = this.#slots.get(providerProxySetKey(capability.setIdentity));
-    if (slot === undefined) return { kind: 'set-not-found', setIdentity: address };
+    if (slot === undefined) return { kind: 'set-not-found', setIdentity: address, effect: noEffect };
     if (
       (slot.kind !== 'containing' && slot.kind !== 'containment-wait' && slot.kind !== 'reattaching') ||
       !providerProxySetIdentitiesEqual(slot.identity, capability.setIdentity)
     ) {
-      return { kind: 'not-held', setIdentity: address, state: slot.kind };
+      return { kind: 'not-held', setIdentity: address, state: slot.kind, effect: noEffect };
     }
     if (
       slot.operatorExitNotBeforeMonotonicMs !== capability.notBeforeMonotonicMs ||
       slot.attemptToken !== capability.attemptToken ||
       this.#deps.time.monotonicNow() < capability.notBeforeMonotonicMs
     ) {
-      return { kind: 'authorization-stale', setIdentity: address };
+      return { kind: 'authorization-stale', setIdentity: address, effect: noEffect };
     }
-    if (proof.kind === 'store-unreadable') {
+    if (evidence.kind === 'store-unreadable') {
       this.#recordOperatorExitRefusal(slot, 'operator_exit_store_unreadable', 'store-repair');
-      return { kind: 'store-unreadable', setIdentity: address };
+      return { kind: 'store-unreadable', setIdentity: address, effect: noEffect };
     }
-    if (proof.kind === 'absent') {
+    if (evidence.kind === 'reap-required') {
+      const signalsSent: ProviderProxySetContainmentSignal[] = [];
+      const assertCapabilityCurrent = (): void => {
+        const current = this.#slots.get(providerProxySetKey(capability.setIdentity));
+        if (
+          current !== slot ||
+          current.attemptToken !== capability.attemptToken ||
+          current.operatorExitNotBeforeMonotonicMs !== capability.notBeforeMonotonicMs ||
+          this.#deps.time.monotonicNow() < capability.notBeforeMonotonicMs
+        ) {
+          throw new Error('provider_proxy_operator_exit_authorization_stale');
+        }
+      };
+      const attemptSignal =
+        slot.kind === 'reattaching'
+          ? slot.controlReattachmentWindow?.attemptAbort?.signal
+          : slot.containmentAttemptAbort?.signal;
+      const reapingSignal = attemptSignal === undefined ? signal : AbortSignal.any([signal, attemptSignal]);
+      let disappearanceReceipt: string;
+      try {
+        disappearanceReceipt = await this.#reapRecordedContainment(
+          evidence,
+          reapingSignal,
+          (delivered) => {
+            if (!signalsSent.includes(delivered)) signalsSent.push(delivered);
+          },
+          assertCapabilityCurrent,
+        );
+      } catch (error: unknown) {
+        const current = this.#slots.get(providerProxySetKey(capability.setIdentity));
+        const authorizationMoved =
+          current !== slot ||
+          current.attemptToken !== capability.attemptToken ||
+          current.operatorExitNotBeforeMonotonicMs !== capability.notBeforeMonotonicMs;
+        if (authorizationMoved) {
+          return {
+            kind: 'authorization-stale',
+            setIdentity: address,
+            effect: { signalsSent, containmentAbsent: false, representationAction: 'none' },
+          };
+        }
+        throw error;
+      }
+      const current = this.#slots.get(providerProxySetKey(capability.setIdentity));
+      if (
+        current !== slot ||
+        current.attemptToken !== capability.attemptToken ||
+        current.operatorExitNotBeforeMonotonicMs !== capability.notBeforeMonotonicMs
+      ) {
+        return {
+          kind: 'authorization-stale',
+          setIdentity: address,
+          effect: { signalsSent, containmentAbsent: true, representationAction: 'none' },
+        };
+      }
       const decision: ProviderProxySetOperatorContainmentDecision = {
         action: 'operator-contain',
         reason: 'operator_exact_set_containment',
@@ -885,23 +1008,29 @@ export class ProviderProxySetLifecycle {
       if (slot.kind === 'reattaching' && slot.controlReattachmentWindow !== null) {
         this.#clearControlReattachment(slot, slot.controlReattachmentWindow);
       }
-      const accepted = this.containmentAbsent(slot.identity, proof.receipt);
+      const accepted = this.containmentAbsent(slot.identity, disappearanceReceipt);
       return {
         kind: 'contained',
         setIdentity: address,
-        disappearanceReceipt: proof.receipt,
+        disappearanceReceipt,
         claimDischarge: await operatorExitClaimDischarge(accepted),
+        effect: { signalsSent, containmentAbsent: true, representationAction: 'absence-release-started' },
       };
     }
-    const enforcerVerdict = providerProxySetEnforcerVerdict(proof.observations);
-    if (!abandonUnobservable) {
+    const enforcerVerdict = providerProxySetEnforcerVerdict(evidence.observations);
+    if (!abandonWithoutAbsence) {
       this.#recordOperatorExitRefusal(
         slot,
         `operator_exit_${enforcerVerdict}`,
         'operator-abandonment',
-        proof.observations,
+        evidence.observations,
       );
-      return { kind: enforcerVerdict, setIdentity: address, enforcerObservations: proof.observations };
+      return {
+        kind: enforcerVerdict,
+        setIdentity: address,
+        enforcerObservations: evidence.observations,
+        effect: noEffect,
+      };
     }
 
     const decision: ProviderProxySetOperatorAbandonmentDecision = {
@@ -911,12 +1040,12 @@ export class ProviderProxySetLifecycle {
       setIdentity: slot.identity,
     };
     this.#recordDecision(slot, decision);
-    const evidence: OperatorAbandonmentEvidence = Object.freeze({
+    const abandonmentEvidence: OperatorAbandonmentEvidence = Object.freeze({
       kind: 'operator-abandoned',
-      enforcerObservations: proof.observations,
+      enforcerObservations: evidence.observations,
       [operatorAbandonmentEvidenceBrand]: true as const,
     });
-    const pending = this.#commitOperatorAbandonment(slot, evidence);
+    const pending = this.#commitOperatorAbandonment(slot, abandonmentEvidence);
     void slot.authority.initiateControlClose().catch((error: unknown) => {
       this.#deps.onError?.(
         `Provider proxy control close after operator abandonment failed: ${singleLineErrorSummary(error)}`,
@@ -931,8 +1060,9 @@ export class ProviderProxySetLifecycle {
     return {
       kind: 'abandoned',
       setIdentity: address,
-      enforcerObservations: proof.observations,
+      enforcerObservations: abandonmentEvidence.enforcerObservations,
       claimDischarge: await operatorExitClaimDischarge(pending.initialDisposition),
+      effect: { signalsSent: [], containmentAbsent: false, representationAction: 'abandonment-release-started' },
     };
   }
 
@@ -1417,11 +1547,33 @@ export class ProviderProxySetLifecycle {
             this.#establish(outcome.set, null, slot.capsulePath, 'contain-unclaimed-discovery');
             return;
           }
-          const proof = value as ProviderProxySetContainmentProof;
-          if (proof.kind !== 'absent') return;
-          abort.abort();
-          slot.attemptAbort = null;
-          void this.containmentAbsent(slot.identity, proof.receipt);
+          const evidence = value as ProviderProxySetContainmentEvidence;
+          if (evidence.kind !== 'reap-required') return;
+          const reapAbort = new AbortController();
+          slot.attemptAbort = reapAbort;
+          void this.#reapRecordedContainment(evidence, reapAbort.signal, () => undefined).then(
+            (receipt) => {
+              if (this.#slots.get(slot.key) !== slot || slot.attemptToken !== token) return;
+              slot.attemptAbort = null;
+              this.containmentAbsent(slot.identity, receipt);
+            },
+            (error: unknown) => {
+              if (this.#slots.get(slot.key) !== slot || slot.attemptToken !== token) return;
+              slot.attemptAbort = null;
+              this.#deps.onError?.(
+                `Provider handoff capsule exact containment reap failed: ${singleLineErrorSummary(error)}`,
+              );
+              slot.completedAttempts += 1;
+              const delayMs = retryDelayMs(slot.completedAttempts);
+              const requestedWakeMs = this.#deps.time.now() + delayMs;
+              slot.retryTimer = this.#deps.time.setTimeout(() => {
+                slot.retryTimer = null;
+                this.#recordLateness('containment-retry', requestedWakeMs);
+                this.#recoverExactCapsule(slot);
+              }, delayMs);
+              slot.retryTimer.unref?.();
+            },
+          );
         },
         retry: (retry) => {
           if (this.#slots.get(slot.key) !== slot || slot.attemptToken !== token) return;
@@ -1640,12 +1792,27 @@ export class ProviderProxySetLifecycle {
           if (!this.#isCurrentControlReattachment(slot, window, token)) return;
           window.attemptAbort = null;
           if (sourceId === 'absence') {
-            const proof = value as ProviderProxySetContainmentProof;
-            if (proof.kind === 'absent') {
-              this.#clearControlReattachment(slot, window);
-              this.#operatorDispositions.delete(slot.key);
-              this.containmentAbsent(slot.identity, proof.receipt);
-            }
+            const evidence = value as ProviderProxySetContainmentEvidence;
+            if (evidence.kind !== 'reap-required') return;
+            const reapAbort = new AbortController();
+            window.attemptAbort = reapAbort;
+            void this.#reapRecordedContainment(evidence, reapAbort.signal, () => undefined).then(
+              (receipt) => {
+                if (!this.#isCurrentControlReattachment(slot, window, token)) return;
+                window.attemptAbort = null;
+                this.#clearControlReattachment(slot, window);
+                this.#operatorDispositions.delete(slot.key);
+                this.containmentAbsent(slot.identity, receipt);
+              },
+              (error: unknown) => {
+                if (!this.#isCurrentControlReattachment(slot, window, token)) return;
+                window.attemptAbort = null;
+                this.#deps.onError?.(
+                  `Provider proxy control reattachment containment reap failed: ${singleLineErrorSummary(error)}`,
+                );
+                this.#scheduleControlReattachmentRetry(slot, window);
+              },
+            );
             return;
           }
           const outcome = value as ProviderProxyControlRedemptionOutcome;
@@ -2321,9 +2488,16 @@ export class ProviderProxySetLifecycle {
             }
             return;
           }
-          const proof = value as ProviderProxySetContainmentProof;
-          if (proof.kind === 'absent') {
-            this.#finishContainmentAttempt(slot, decision, token, abort, proof.receipt);
+          const evidence = value as ProviderProxySetContainmentEvidence;
+          if (evidence.kind === 'reap-required') {
+            void this.#reapRecordedContainment(evidence, abort.signal, () => undefined).then(
+              (receipt) => this.#finishContainmentAttempt(slot, decision, token, abort, receipt),
+              (error: unknown) => {
+                if (this.#slots.get(slot.key) === slot && token === slot.attemptToken) {
+                  this.#deps.onError?.(`Provider containment reap failed: ${singleLineErrorSummary(error)}`);
+                }
+              },
+            );
           } else if (capsuleRecovery) {
             // A result that did not establish absence must not end the attempt while a destructive source may
             // still establish it.

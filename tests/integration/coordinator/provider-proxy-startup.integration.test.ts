@@ -13,7 +13,7 @@ import {
   type ProviderProxySetRedemptionOutcome,
 } from '#src/coordinator/services/provider-proxy-set/inheritance.js';
 import { createProviderProxySetContainmentProver } from '#src/coordinator/services/provider-proxy-set/containment-proof.js';
-import type { ProviderProxySetContainmentProof } from '#src/provider-proxy/containment-proof-contract.js';
+import type { ProviderProxySetContainmentEvidence } from '#src/provider-proxy/containment-proof-contract.js';
 import {
   ProviderOperationReconciler,
   StartupSetRecoveryProducer,
@@ -185,7 +185,7 @@ function lifecycleFor(
     proveContainmentAbsent?: (
       identity: ReturnType<typeof providerProxySetIdentityFromRecord>,
       signal: AbortSignal,
-    ) => Promise<ProviderProxySetContainmentProof>;
+    ) => Promise<ProviderProxySetContainmentEvidence>;
     redeemCapsule?: (
       capsule: HandoffCapsuleV3,
       path: string,
@@ -198,7 +198,7 @@ function lifecycleFor(
   claims.initialize(records);
   const proveContainmentAbsent =
     options.proveContainmentAbsent ??
-    (async (): Promise<ProviderProxySetContainmentProof> => ({
+    (async (): Promise<ProviderProxySetContainmentEvidence> => ({
       kind: 'enforcers-observed',
       observations: [
         { role: 'guardian', observation: 'unknown' },
@@ -225,6 +225,7 @@ function lifecycleFor(
     controlEstablished: () => undefined,
     time: options.time,
     recoveryDispatcher,
+    reapRecordedContainment: async () => 'exact-v3-proof',
     reportLifecycle: () => undefined,
   });
   lifecycle.initializeClaimSlots();
@@ -386,6 +387,9 @@ function composeProductionStartup(
     providerProxyLifecycleRef: lifecycleRef,
     providerProxyInheritance: inheritance,
     providerProxySetContainmentProver: createProviderProxySetContainmentProver(runtime),
+    reapRecordedContainment: () => {
+      throw new Error('provider proxy startup fixture unexpectedly requested recorded containment reaping');
+    },
     providerHostManager: {},
   } as never;
   const services = createExecutionServices({
@@ -658,7 +662,7 @@ async function roleRecoveryStartupCase(
             buildSetId: record.operation.buildSetId,
           },
           operationRegistry,
-          proveContainmentAbsent: async () => ({
+          collectContainmentEvidence: async () => ({
             kind: 'enforcers-observed' as const,
             observations: [
               { role: 'guardian', observation: 'unknown' },
@@ -999,9 +1003,10 @@ describe('provider proxy startup set recovery', () => {
     const time = new VirtualTime();
     const scheduled = vi.spyOn(time, 'setTimeout');
     const proof = vi.fn(
-      async (): Promise<ProviderProxySetContainmentProof> => ({
-        kind: 'absent',
-        receipt: 'exact-v3-proof',
+      async (): Promise<ProviderProxySetContainmentEvidence> => ({
+        kind: 'reap-required',
+        containment: { pid: 200, incarnation: testIncarnation(3), processGroupId: 200 },
+        recordedRoots: [],
       }),
     );
     const retirementStarted = deferred<void>();

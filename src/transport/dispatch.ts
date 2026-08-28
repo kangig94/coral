@@ -24,8 +24,10 @@ import {
   providerHostInspectResponseSchema,
   providerHostListResponseSchema,
   providerProxySetContainResponseSchema,
+  unreadableProviderOperationDiscardResultSchema,
   type ProviderProxySetContainRequest,
   type ProviderHostSelectorRequest,
+  type UnreadableProviderOperationDiscardRequest,
 } from './rpc/catalog.js';
 import type { WorkflowPortInput } from './rpc/ports.js';
 import type { JobsListFilters } from '../jobs/read-queries.js';
@@ -576,6 +578,8 @@ function executeCoordinatorCatalogRequest(context: AuthorizedCatalogRequest): Pr
   switch (route) {
     case 'coordinator.recovery_quarantine.clear':
       return executeRecoveryQuarantineCatalogRequest(context);
+    case 'coordinator.recovery_quarantine.discard_provider_operation':
+      return executeUnreadableProviderOperationDiscardCatalogRequest(context);
     case 'sessions.create':
       return executeCreateSessionCatalogRequest(context);
     case 'workflow.run':
@@ -606,6 +610,20 @@ async function executeRecoveryQuarantineCatalogRequest({
   abortSignal,
 }: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
   return unary(await rpcPorts.recoveryQuarantine.clear(request as RecoveryQuarantineClearRequest, abortSignal));
+}
+
+async function executeUnreadableProviderOperationDiscardCatalogRequest({
+  request,
+  rpcPorts,
+}: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
+  if (rpcPorts.recoveryQuarantine.discardProviderOperation === undefined) {
+    throw new Error('unreadable_provider_operation_discard_unavailable');
+  }
+  return unary(
+    unreadableProviderOperationDiscardResultSchema.parse(
+      await rpcPorts.recoveryQuarantine.discardProviderOperation(request as UnreadableProviderOperationDiscardRequest),
+    ),
+  );
 }
 
 async function executeProviderHostListCatalogRequest({

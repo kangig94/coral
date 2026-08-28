@@ -1123,6 +1123,9 @@ describe('provider-proxy process topology: acquisition', () => {
           acceptance: { kind: 'accepted', operation: notice.operation, disposition: 'record-absent' },
         }),
       }),
+      reapRecordedContainment: () => {
+        throw new Error('process topology fixture unexpectedly requested recorded containment reaping');
+      },
       reportLifecycle: () => undefined,
     });
     lifecycle.initializeClaimSlots();

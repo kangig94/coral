@@ -13,7 +13,11 @@ import {
   type StoreResetCommandOperations,
 } from '#src/cli/commands/backend.js';
 import { collectCommandCoverage } from '#src/cli/classify.js';
-import { formatRecoveryQuarantineClear, formatRecoveryQuarantineList } from '#src/cli/format/backend.js';
+import {
+  formatRecoveryQuarantineClear,
+  formatRecoveryQuarantineList,
+  formatUnreadableProviderOperationDiscard,
+} from '#src/cli/format/backend.js';
 import { buildProgram } from '#src/cli/program.js';
 import { encodeRecoveryQuarantineKey, RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
 import { UNREADABLE_PROVIDER_OPERATION_BOUNDARY } from '#src/recovery/source-registry.js';
@@ -169,6 +173,44 @@ describe('backend recovery-quarantine commands', () => {
     expect(rendered).toContain(`key=${encodeRecoveryQuarantineKey(key)}`);
     expect(rendered).toContain('detected_at=unavailable updated_at=unavailable');
     expect(rendered).toContain('derived from the durable unreadable provider operation row');
+  });
+
+  it('should send the exact listed unreadable row revision to the destructive discard operation', async () => {
+    const key = `provider_operation_saga.v${PROVIDER_OPERATION_RECORD_VERSION}:record:job:operation:proxy:build`;
+    const revision = `sha256:${'a'.repeat(64)}`;
+    const entry = {
+      boundary: UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
+      subject: { key, revision: { kind: 'fingerprint' as const, value: revision } },
+      state: 'active' as const,
+      stage: 'hydrate' as const,
+      retry: null,
+      continuation: null,
+      errorMessage: 'unreadable',
+      detail: 'discardable exact row',
+      detectedAt: null,
+      updatedAt: null,
+    };
+    const discardProviderOperation = vi.fn<
+      NonNullable<RecoveryQuarantineCommandOperations['discardProviderOperation']>
+    >(async (request) => ({ ...request, kind: 'discarded' as const }));
+
+    await programWith({ list: () => [entry], clear: vi.fn(), discardProviderOperation }).parseAsync([
+      'node',
+      'coral-cli',
+      'backend',
+      'recovery-quarantine',
+      'discard-provider-operation',
+      '--key',
+      encodeRecoveryQuarantineKey(key),
+      '--revision',
+      `fingerprint:${revision}`,
+    ]);
+
+    expect(discardProviderOperation).toHaveBeenCalledWith({ key, revision });
+    expect(stdout).toBe(`${formatUnreadableProviderOperationDiscard({ key, revision, kind: 'discarded' })}\n`);
+    expect(stdout).toContain('permanently removed');
+    expect(stderr).toBe('');
+    expect(process.exitCode).toBe(0);
   });
 
   it('should round-trip a fingerprint equal to the until-cleared sentinel', async () => {
@@ -488,7 +530,7 @@ describe('backend recovery-quarantine commands', () => {
 
     expect(clear).toHaveBeenCalledOnce();
     expect(stdout).toBe('');
-    expect(stderr).toContain('Recovery quarantine clear requires the canonical coordinator');
+    expect(stderr).toContain('Recovery quarantine mutation requires the canonical coordinator');
     expect(stderr).toContain('coral-cli backend status');
     expect(process.exitCode).toBe(69);
   });
@@ -617,6 +659,12 @@ describe('backend recovery-quarantine commands', () => {
       },
       {
         path: 'backend recovery-quarantine clear',
+        isLeaf: true,
+        kind: 'class',
+        commandClass: 'mutate',
+      },
+      {
+        path: 'backend recovery-quarantine discard-provider-operation',
         isLeaf: true,
         kind: 'class',
         commandClass: 'mutate',

@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BackendInfo } from '#src/infra/backend-discovery.js';
 import type { CoordinatorObservation } from '#src/transport/http/backend/coordinator-observation.js';
 import { reserveRefusedPort } from '../../../fixtures/refused-port.js';
+import { encodeProviderProxySetAddress } from '#src/provider-proxy/set-address.js';
 
 const NOW = 1_700_000_000_000;
 
@@ -368,7 +369,11 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
         hostFingerprint: 'a'.repeat(64),
         proxyInstanceId: '22222222-2222-4222-8222-222222222222',
       },
-      setToken: 'pps1.fixture',
+      setToken: encodeProviderProxySetAddress({
+        buildSetId: '11111111-1111-4111-8111-111111111111',
+        hostFingerprint: 'a'.repeat(64),
+        proxyInstanceId: '22222222-2222-4222-8222-222222222222',
+      }),
       disposition: 'held',
       incidentReason: 'control_channel_reattaching',
       waitingFor: 'control-reattachment',

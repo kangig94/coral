@@ -55,6 +55,10 @@ export type ProcessContainmentEnvironment<Scope extends symbol> = {
   };
   readonly platform: NodeJS.Platform;
   readonly readProcessIncarnation?: (pid: number, platform: NodeJS.Platform) => ProcessIncarnation | null;
+  /** Revalidates the caller's authority immediately before each process-control signal. */
+  readonly assertSignalAuthorized?: () => void;
+  /** Reports only signals whose process-control call returned success. */
+  readonly onSignal?: (effect: Readonly<{ pid: number; signal: NodeJS.Signals }>) => void;
   readonly signal?: AbortSignal;
 };
 
@@ -298,7 +302,8 @@ function signalRecordedSet<Scope extends symbol>(
     const thisCallStartedAt = environment.clock.now();
     assertContainmentAuthorized(environment.signal);
     assertSignalCallWithinBounds(thisCallStartedAt, exitDeadline, environment);
-    environment.process.kill(pid, signal);
+    environment.assertSignalAuthorized?.();
+    if (environment.process.kill(pid, signal)) environment.onSignal?.({ pid, signal });
     assertSignalCallWithinBounds(thisCallStartedAt, exitDeadline, environment);
   };
 

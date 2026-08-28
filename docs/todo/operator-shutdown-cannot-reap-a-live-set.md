@@ -57,7 +57,7 @@ regardless of a longer configured adoption window.
 The independent proof now distinguishes confirmed proxy-group absence, an observed-live enforcer, an
 unobservable enforcer, and an unreadable local durable row. Confirmed absence follows the existing
 `reapRecordedContainment` and disappearance-delivery path. Alive or unobservable enforcers require the explicit
-`--abandon-unobservable` operator instruction after external verification; that instruction releases Coral's
+`--abandon-without-absence` operator instruction after external verification; that instruction releases Coral's
 representation through a separate typed action and a distinct durable terminal directive. It does not mint
 process-absence evidence. An unreadable local row cannot be overridden and names
 `coral-cli backend recovery-quarantine` as its repair path.

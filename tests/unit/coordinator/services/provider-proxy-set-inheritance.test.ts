@@ -46,6 +46,7 @@ import {
   providerProxyHeartbeatHoldBound,
 } from '#src/provider-proxy/orphan-deadline.js';
 import { createProxy } from '#src/provider-proxy/proxy.js';
+import { providerProxyDisappearanceReceipt } from '#src/provider-proxy/enforcement.js';
 import { connectRoleControlWithRetry, runtimeControlTimer } from '#src/provider-proxy/role-spawn.js';
 import { applyBundledStoreSchema, type Database } from '#src/store/db.js';
 import { insertProviderOperation } from '#src/store/provider-operation-journal.js';
@@ -87,6 +88,13 @@ const mockedProbe = vi.mocked(probeProcessIncarnation);
 // this shared `.not.toHaveBeenCalled()`-style assertions must not see a sibling test's earlier calls.
 const runtime = createRealRuntime('prod');
 const unusedDb = {} as Database;
+const reapRecordedEvidence = async (evidence: {
+  containment: Parameters<typeof providerProxyDisappearanceReceipt>[0];
+  recordedRoots: Parameters<typeof providerProxyDisappearanceReceipt>[1];
+}): Promise<string> => providerProxyDisappearanceReceipt(evidence.containment, evidence.recordedRoots);
+const unexpectedLifecycleRecordedContainmentReap = (): never => {
+  throw new Error('provider proxy inheritance fixture unexpectedly requested lifecycle recorded containment reaping');
+};
 // Every test in this file drives one redemption attempt to completion synchronously (fake clients settle
 // immediately), so a signal that never aborts exercises exactly the same path the never-aborted case in
 // production takes; the abort/deadline-checkpoint behavior itself is covered separately.
@@ -750,13 +758,17 @@ describe('attemptProviderProxySetInheritance', () => {
     expect(mockedConnect).not.toHaveBeenCalled();
   });
 
-  it('returns exact disappearance proof instead of treating a missing credential as authority to proceed', async () => {
+  it('reaps exact containment evidence instead of treating a missing credential as authority to proceed', async () => {
     mockedReadCapsule.mockReturnValueOnce(null);
     const loc = locator();
-    const proveContainmentAbsent = vi.fn(async () => ({
-      kind: 'absent' as const,
-      receipt: 'group:200,leader:200@linux:00000000-0000-4000-8000-000000000000:3',
+    const collectContainmentEvidence = vi.fn(async () => ({
+      kind: 'reap-required' as const,
+      containment: { pid: 200, incarnation: testIncarnation(3), processGroupId: 200 },
+      recordedRoots: [],
     }));
+    const reapRecordedContainment = vi.fn(
+      async () => 'group:200,leader:200@linux:00000000-0000-4000-8000-000000000000:3',
+    );
 
     const outcome = await attemptProviderProxySetInheritance(
       loc,
@@ -765,7 +777,8 @@ describe('attemptProviderProxySetInheritance', () => {
         runtime,
         coordinatorIdentity: COORDINATOR_IDENTITY,
         operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
-        proveContainmentAbsent,
+        collectContainmentEvidence,
+        reapRecordedContainment,
       },
       neverAborts,
     );
@@ -774,7 +787,12 @@ describe('attemptProviderProxySetInheritance', () => {
       kind: 'containment-disappeared',
       disappearanceReceipt: 'group:200,leader:200@linux:00000000-0000-4000-8000-000000000000:3',
     });
-    expect(proveContainmentAbsent).toHaveBeenCalledWith(providerProxySetIdentityFromRecord(loc), unusedDb, neverAborts);
+    expect(collectContainmentEvidence).toHaveBeenCalledWith(
+      providerProxySetIdentityFromRecord(loc),
+      unusedDb,
+      neverAborts,
+    );
+    expect(reapRecordedContainment).toHaveBeenCalledOnce();
     expect(mockedConnect).not.toHaveBeenCalled();
   });
 
@@ -1222,7 +1240,7 @@ describe('attemptProviderProxySetInheritance', () => {
 describe('createProviderProxySetInheritance', () => {
   const identity = { instanceId: randomUUID(), buildSetId: BUILD_SET_ID, flavor: 'prod' as const };
 
-  it('stops reclamation after TERM when the bounded recovery signal aborts', async () => {
+  it('collects exact targets without signalling before lifecycle authorization', async () => {
     const reference = locator();
     const record = proofRecord(reference, { pid: 104, incarnation: testIncarnation(1_003) });
     if (!('providerRoot' in record)) throw new Error('proof record did not retain its provider root');
@@ -1250,24 +1268,19 @@ describe('createProviderProxySetInheritance', () => {
     mockedProbe.mockImplementation((pid) => live.get(pid) ?? null);
     const containmentProver = createProviderProxySetContainmentProver(boundedRuntime);
 
-    const proof = containmentProver.proveContainmentAbsent(
+    const evidence = containmentProver.collectContainmentEvidence(
       providerProxySetIdentityFromRecord(reference),
       db,
       controller.signal,
     );
-    expect(signals).toEqual([
-      { pid: -reference.locator.containment.processGroupId, signal: 'SIGTERM' },
-      { pid: record.providerRoot.pid, signal: 'SIGTERM' },
-    ]);
-    const observedProof = proof.catch((error: unknown) => error);
-    controller.abort(new Error('recovery authority expired during TERM grace'));
-    await expect(observedProof).resolves.toBeInstanceOf(Error);
-
-    expect(signals).toEqual([
-      { pid: -reference.locator.containment.processGroupId, signal: 'SIGTERM' },
-      { pid: record.providerRoot.pid, signal: 'SIGTERM' },
-    ]);
-    expect(signals.some(({ signal }) => signal === 'SIGKILL')).toBe(false);
+    await expect(evidence).resolves.toEqual(
+      expect.objectContaining({
+        kind: 'reap-required',
+        containment: expect.objectContaining({ processGroupId: reference.locator.containment.processGroupId }),
+        recordedRoots: [record.providerRoot],
+      }),
+    );
+    expect(signals).toEqual([]);
   });
 
   // Unreadable is the only ambiguity left. While the recorded value carried a per-process clock term a
@@ -1300,7 +1313,11 @@ describe('createProviderProxySetInheritance', () => {
     const containmentProver = createProviderProxySetContainmentProver(boundedRuntime);
 
     await expect(
-      containmentProver.proveContainmentAbsent(providerProxySetIdentityFromRecord(reference), db, controller.signal),
+      containmentProver.collectContainmentEvidence(
+        providerProxySetIdentityFromRecord(reference),
+        db,
+        controller.signal,
+      ),
       'an unreadable but living pid is not evidence that the enforcer is gone',
     ).resolves.toEqual({
       kind: 'enforcers-observed',
@@ -1328,7 +1345,7 @@ describe('createProviderProxySetInheritance', () => {
     mockedProbe.mockImplementation(() => null);
 
     await expect(
-      createProviderProxySetContainmentProver(observedRuntime).proveContainmentAbsent(identity, db, neverAborts),
+      createProviderProxySetContainmentProver(observedRuntime).collectContainmentEvidence(identity, db, neverAborts),
     ).resolves.toEqual({
       kind: 'enforcers-observed',
       observations: [
@@ -1357,9 +1374,13 @@ describe('createProviderProxySetInheritance', () => {
     const containmentProver = createProviderProxySetContainmentProver(boundedRuntime);
 
     await expect(
-      containmentProver.proveContainmentAbsent(providerProxySetIdentityFromRecord(reference), db, controller.signal),
+      containmentProver.collectContainmentEvidence(
+        providerProxySetIdentityFromRecord(reference),
+        db,
+        controller.signal,
+      ),
       'a pid that is provably someone else does not keep this set alive',
-    ).resolves.toEqual(expect.objectContaining({ kind: 'absent' }));
+    ).resolves.toEqual(expect.objectContaining({ kind: 'reap-required' }));
   });
 
   // The third answer, and the polarity that makes it load-bearing: only a proven absence may discount an
@@ -1395,7 +1416,7 @@ describe('createProviderProxySetInheritance', () => {
     const containmentProver = createProviderProxySetContainmentProver(boundedRuntime);
 
     await expect(
-      containmentProver.proveContainmentAbsent(providerProxySetIdentityFromRecord(reference), db, neverAborts),
+      containmentProver.collectContainmentEvidence(providerProxySetIdentityFromRecord(reference), db, neverAborts),
       'an enforcer that could not be observed is not one that is gone',
     ).resolves.toEqual({
       kind: 'enforcers-observed',
@@ -1423,7 +1444,7 @@ describe('createProviderProxySetInheritance', () => {
     const containmentProver = createProviderProxySetContainmentProver(process.runtime);
 
     await expect(
-      containmentProver.proveContainmentAbsent(providerProxySetIdentityFromRecord(reference), db, neverAborts),
+      containmentProver.collectContainmentEvidence(providerProxySetIdentityFromRecord(reference), db, neverAborts),
     ).resolves.toEqual({ kind: 'store-unreadable' });
     expect(process.signals).toEqual([]);
   });
@@ -1461,7 +1482,7 @@ describe('createProviderProxySetInheritance', () => {
     const containmentProver = createProviderProxySetContainmentProver(process.runtime);
 
     await expect(
-      containmentProver.proveContainmentAbsent(providerProxySetIdentityFromRecord(reference), db, neverAborts),
+      containmentProver.collectContainmentEvidence(providerProxySetIdentityFromRecord(reference), db, neverAborts),
     ).resolves.toEqual({ kind: 'store-unreadable' });
     expect(process.signals).toEqual([]);
   });
@@ -1480,8 +1501,8 @@ describe('createProviderProxySetInheritance', () => {
     const containmentProver = createProviderProxySetContainmentProver(process.runtime);
 
     await expect(
-      containmentProver.proveContainmentAbsent(providerProxySetIdentityFromRecord(reference), db, neverAborts),
-    ).resolves.toEqual(expect.objectContaining({ kind: 'absent' }));
+      containmentProver.collectContainmentEvidence(providerProxySetIdentityFromRecord(reference), db, neverAborts),
+    ).resolves.toEqual(expect.objectContaining({ kind: 'reap-required' }));
   });
 
   it('proves containment through the public factory without selecting an address-distinct root', async () => {
@@ -1501,24 +1522,26 @@ describe('createProviderProxySetInheritance', () => {
     );
     const containmentProver = createProviderProxySetContainmentProver(process.runtime);
 
-    const proof = await containmentProver.proveContainmentAbsent(
+    const evidence = await containmentProver.collectContainmentEvidence(
       providerProxySetIdentityFromRecord(referenceA),
       db,
       neverAborts,
     );
-    if (proof.kind !== 'absent') throw new Error(`expected absence proof, received ${proof.kind}`);
+    if (evidence.kind !== 'reap-required') throw new Error(`expected reap evidence, received ${evidence.kind}`);
 
     expect({
-      receipt: proof.receipt,
+      containment: evidence.containment,
+      recordedRoots: evidence.recordedRoots,
       signals: process.signals,
       addressDistinctRootAlive: process.live.has(204),
     }).toEqual({
-      receipt:
-        'group:200,leader:200@linux:00000000-0000-4000-8000-000000000000:3,root:104@linux:00000000-0000-4000-8000-000000000000:1003',
-      signals: [
-        { pid: -200, signal: 'SIGTERM' },
-        { pid: 104, signal: 'SIGTERM' },
-      ],
+      containment: {
+        pid: 200,
+        incarnation: testIncarnation(3),
+        processGroupId: 200,
+      },
+      recordedRoots: [{ pid: 104, incarnation: testIncarnation(1_003) }],
+      signals: [],
       addressDistinctRootAlive: true,
     });
   });
@@ -1536,15 +1559,15 @@ describe('createProviderProxySetInheritance', () => {
     const process = proofRuntime(new Map());
     const containmentProver = createProviderProxySetContainmentProver(process.runtime);
 
-    const proof = await containmentProver.proveContainmentAbsent(
+    const evidence = await containmentProver.collectContainmentEvidence(
       providerProxySetIdentityFromRecord(referenceA),
       db,
       neverAborts,
     );
-    if (proof.kind !== 'absent') throw new Error(`expected absence proof, received ${proof.kind}`);
+    if (evidence.kind !== 'reap-required') throw new Error(`expected reap evidence, received ${evidence.kind}`);
 
-    expect(proof.receipt.match(/root:/gu)).toHaveLength(65);
-    expect(proof.receipt).not.toContain('root:2000@linux:00000000-0000-4000-8000-000000000000:20000');
+    expect(evidence.recordedRoots).toHaveLength(65);
+    expect(evidence.recordedRoots).not.toContainEqual({ pid: 2_000, incarnation: testIncarnation('20000-0') });
     expect(process.signals).toEqual([]);
   });
 
@@ -1555,6 +1578,7 @@ describe('createProviderProxySetInheritance', () => {
     const inheritance = createProviderProxySetInheritance({
       runtime,
       containmentProver: createProviderProxySetContainmentProver(runtime),
+      reapRecordedContainment: reapRecordedEvidence,
       identity,
       operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
       registerInheritedSet,
@@ -1574,6 +1598,7 @@ describe('createProviderProxySetInheritance', () => {
     const inheritance = createProviderProxySetInheritance({
       runtime,
       containmentProver: createProviderProxySetContainmentProver(runtime),
+      reapRecordedContainment: reapRecordedEvidence,
       identity,
       operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
       registerInheritedSet,
@@ -1609,6 +1634,7 @@ describe('createProviderProxySetInheritance', () => {
           ] as const,
         }),
       }),
+      reapRecordedContainment: unexpectedLifecycleRecordedContainmentReap,
       reportLifecycle: () => undefined,
     });
     lifecycle.initializeClaimSlots();
@@ -1625,6 +1651,7 @@ describe('createProviderProxySetInheritance', () => {
     const inheritance = createProviderProxySetInheritance({
       runtime,
       containmentProver: createProviderProxySetContainmentProver(runtime),
+      reapRecordedContainment: reapRecordedEvidence,
       identity,
       operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
       registerInheritedSet,
@@ -1682,6 +1709,7 @@ describe('createProviderProxySetInheritance', () => {
           ] as const,
         }),
       }),
+      reapRecordedContainment: unexpectedLifecycleRecordedContainmentReap,
       reportLifecycle: () => undefined,
     });
     lifecycle.initializeClaimSlots();
@@ -1689,6 +1717,7 @@ describe('createProviderProxySetInheritance', () => {
     const inheritance = createProviderProxySetInheritance({
       runtime: { ...runtime, time },
       containmentProver: createProviderProxySetContainmentProver({ ...runtime, time }),
+      reapRecordedContainment: reapRecordedEvidence,
       identity,
       operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
       registerInheritedSet: (set) => {
@@ -1764,6 +1793,7 @@ describe('createProviderProxySetInheritance', () => {
           acceptance: { kind: 'accepted', operation: notice.operation, disposition: 'record-absent' },
         }),
       }),
+      reapRecordedContainment: unexpectedLifecycleRecordedContainmentReap,
       reportLifecycle: () => undefined,
     });
     lifecycle.initializeClaimSlots();
@@ -1772,6 +1802,7 @@ describe('createProviderProxySetInheritance', () => {
     const inheritance = createProviderProxySetInheritance({
       runtime: inheritedRuntime,
       containmentProver: createProviderProxySetContainmentProver(inheritedRuntime),
+      reapRecordedContainment: reapRecordedEvidence,
       identity,
       operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
       registerInheritedSet: (set) => {

@@ -68,7 +68,7 @@ comes from `backend status`. A `reattaching` hold refuses it until that hold's r
 deadline. A fault-driven `containing` or `containment-wait` hold instead refuses it for the fixed 30-second
 containment-attempt observation span that started when containment began; a longer configured adoption window
 does not extend that gate. Confirmed recorded-set absence uses the ordinary evidence-backed disappearance path.
-An observed-live or unobservable enforcer is a refusal until the operator supplies `--abandon-unobservable`
+An observed-live or unobservable enforcer is a refusal until the operator supplies `--abandon-without-absence`
 after external verification; that releases Coral's representation without asserting process absence. An
 unreadable local durable row is non-overridable and must be repaired through `backend recovery-quarantine`.
 

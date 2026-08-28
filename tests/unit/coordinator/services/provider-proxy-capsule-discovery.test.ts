@@ -196,6 +196,9 @@ describe('provider proxy capsule discovery', () => {
       recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
         'capsule-redemption': () => new Promise<never>(() => undefined),
       }),
+      reapRecordedContainment: () => {
+        throw new Error('capsule discovery fixture unexpectedly requested recorded containment reaping');
+      },
       reportLifecycle: () => undefined,
     });
     lifecycle.initializeClaimSlots();

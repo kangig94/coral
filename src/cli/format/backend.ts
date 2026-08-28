@@ -18,9 +18,16 @@ import { encodeRecoveryQuarantineKey, type RecoveryQuarantineListEntry } from '.
 import type { BackendHealth } from '../../transport/http/backend/health.js';
 import type { BackendStatusFull } from '../../transport/http/backend/status.js';
 import type { ShutdownResult } from '../../transport/http/backend/shutdown.js';
-import type { RecoveryQuarantineClearResult } from '../../recovery/source-registry.js';
-import { encodeProviderProxySetAddress } from '../../coordinator/services/provider-proxy-set/identity.js';
-import type { ProviderProxySetContainResponse } from '../../transport/rpc/catalog.js';
+import {
+  UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
+  type RecoveryQuarantineClearResult,
+} from '../../recovery/source-registry.js';
+import { encodeProviderProxySetAddress } from '../../provider-proxy/set-address.js';
+import type {
+  ProviderProxySetContainResponse,
+  UnreadableProviderOperationDiscardResult,
+} from '../../transport/rpc/catalog.js';
+import type { ProviderProxySetLifecycleState } from '../../provider-proxy/set-lifecycle-state-vocabulary.js';
 import { formatHandoffPublicationFailureSuccessor } from './handoff-publication.js';
 
 export const RECOVERY_REVISION_UNTIL_CLEARED = 'until-cleared';
@@ -44,36 +51,124 @@ function formatProviderProxySetClaimDischarge(
 export function formatProviderProxySetContainResult(result: ProviderProxySetContainResponse): string {
   const token = encodeProviderProxySetAddress(result.setIdentity);
   const retry = `coral-cli backend provider-proxy-set contain ${token}`;
+  const observations = (values: ReadonlyArray<{ role: string; observation: string }>): string =>
+    values.map(({ role, observation }) => `${role}=${observation}`).join(', ');
+  const effect = [
+    result.effect.signalsSent.length === 0
+      ? 'no process signal was sent'
+      : `${result.effect.signalsSent.join(' then ')} was sent to observed-live recorded proxy-group or provider-root targets`,
+    result.effect.containmentAbsent
+      ? 'the recorded containment was confirmed absent'
+      : 'recorded-containment absence was not confirmed',
+    result.effect.representationAction === 'none'
+      ? 'Coral did not start representation release'
+      : result.effect.representationAction === 'absence-release-started'
+        ? 'Coral started evidence-backed representation release'
+        : 'Coral started operator-abandonment representation release',
+  ].join('; ');
   switch (result.kind) {
     case 'contained':
       return [
-        `Confirmed absence for provider proxy set ${token}: the proxy process group and every recorded provider root were confirmed absent.`,
+        `Provider proxy set ${token} was contained.`,
+        'Observed: guardian=absent, reaper=absent, and the recorded proxy process group plus every recorded provider root are absent.',
+        'Not observed: no recorded target remains unaccounted for.',
+        `Effect: ${effect}.`,
         formatProviderProxySetClaimDischarge(result.claimDischarge),
-        'The guardian and reaper were not signalled; if either remains live, its own adoption deadline is its exit.',
+        'Next step: run coral-cli backend status.',
       ].join('\n');
     case 'abandoned':
       return [
-        `Coral accepted operator abandonment for provider proxy set ${token}; process absence was not observed.`,
-        `Enforcer observations: ${result.enforcerObservations.map(({ role, observation }) => `${role}=${observation}`).join(', ')}.`,
+        `Provider proxy set ${token} was abandoned without absence proof.`,
+        `Observed: ${observations(result.enforcerObservations)}.`,
+        'Not observed: absence of the proxy process group and recorded provider roots; guardian and reaper were not signalled.',
+        `Effect: ${effect}.`,
         formatProviderProxySetClaimDischarge(result.claimDischarge),
-        'Verify the proxy, guardian, reaper, and any provider processes externally. The guardian and reaper were not signalled; their own adoption deadline remains their named exit.',
+        'Next step: run coral-cli backend status and verify the proxy, guardian, reaper, and provider processes externally.',
       ].join('\n');
     case 'set-not-found':
-      return `Provider proxy set ${token} is not represented by this coordinator. Run coral-cli backend status and copy the current exact token.`;
+      return [
+        `Provider proxy set ${token} is not represented by this coordinator.`,
+        'Observed: the exact set address has no coordinator representation.',
+        'Not observed: no enforcer or recorded target was inspected.',
+        `Effect: ${effect}.`,
+        'Next step: run coral-cli backend status and copy the current exact token.',
+      ].join('\n');
     case 'not-held':
-      return `Refusing forced containment for ${token}: the set is ${result.state}, not held. Use ordinary drain for a healthy set, then inspect backend status.`;
+      return [
+        `Refusing forced containment for ${token}: the set is ${result.state}, not an operator-exit hold.`,
+        `Observed: coordinator lifecycle state=${result.state}.`,
+        'Not observed: no enforcer or recorded target was inspected.',
+        `Effect: ${effect}.`,
+        `Next step: ${providerProxySetNotHeldNextStep(result.state)}.`,
+      ].join('\n');
     case 'deadline-pending':
-      return `Refusing forced containment for ${token}: its monotonic operator-exit observation gate has ${Math.ceil(result.remainingMs)}ms remaining. Wait for that gate, then rerun ${retry}.`;
+      return [
+        `Refusing forced containment for ${token}: its monotonic operator-exit gate has ${Math.ceil(result.remainingMs)}ms remaining.`,
+        `Observed: the exact set remains held before its state-specific gate.`,
+        'Not observed: no enforcer or recorded target was inspected.',
+        `Effect: ${effect}.`,
+        `Next step: wait for the gate, then run ${retry}.`,
+      ].join('\n');
     case 'authorization-stale':
-      return `Refusing forced containment for ${token}: the held attempt changed while Coral gathered containment evidence. Rerun ${retry} against the current hold.`;
+      return [
+        `The operator-exit authorization for ${token} became stale.`,
+        result.effect.containmentAbsent
+          ? 'Observed: the recorded containment reached confirmed absence before the attempt changed.'
+          : 'Observed: the held attempt changed before containment absence was confirmed.',
+        'Not observed: the stale attempt did not authorize representation release.',
+        `Effect: ${effect}.`,
+        `Next step: run coral-cli backend status, then run ${retry} only if the same set remains held.`,
+      ].join('\n');
     case 'enforcer-alive':
-      return `Refusing to signal ${token}: enforcer observations were ${result.enforcerObservations.map(({ role, observation }) => `${role}=${observation}`).join(', ')}. After external verification, run ${retry} --abandon-unobservable to release Coral's representation without asserting process absence.`;
+      return [
+        `Refusing to signal ${token}: an enforcer was observed alive.`,
+        `Observed: ${observations(result.enforcerObservations)}.`,
+        'Not observed: absence of the proxy process group and recorded provider roots.',
+        `Effect: ${effect}.`,
+        `Next step: after external verification, run ${retry} --abandon-without-absence.`,
+      ].join('\n');
     case 'enforcer-unobservable':
-      return `No containment verdict for ${token}: enforcer observations were ${result.enforcerObservations.map(({ role, observation }) => `${role}=${observation}`).join(', ')}. Restore process observation and rerun ${retry}, or after external verification run it with --abandon-unobservable.`;
+      return [
+        `No containment verdict for ${token}: an enforcer was unobservable.`,
+        `Observed: ${observations(result.enforcerObservations)}.`,
+        'Not observed: absence of both enforcers or of the recorded containment.',
+        `Effect: ${effect}.`,
+        `Next step: restore process observation and run ${retry}; after external verification, the explicit alternative is ${retry} --abandon-without-absence.`,
+      ].join('\n');
     case 'store-unreadable':
-      return `Refusing forced containment for ${token}: an unreadable durable provider-operation row may hide a provider root. --abandon-unobservable cannot override Coral's own store fence. Run coral-cli backend recovery-quarantine list, repair or remove the row named by its key and revision, run backend recovery-quarantine clear with that exact coordinate, then rerun backend status and ${retry}.`;
+      return [
+        `Refusing forced containment for ${token}: an unreadable durable provider-operation row may hide a provider root.`,
+        'Observed: the durable provider-operation scan contains an unreadable row attributable to this set.',
+        'Not observed: enforcer state and the complete recorded target set were not established.',
+        `Effect: ${effect}. --abandon-without-absence cannot override this store fence.`,
+        'Next step: run coral-cli backend recovery-quarantine list, then run coral-cli backend recovery-quarantine discard-provider-operation with the exact printed key and revision if losing that raw operation record is acceptable.',
+      ].join('\n');
     default:
       return assertNever(result);
+  }
+}
+
+function providerProxySetNotHeldNextStep(state: ProviderProxySetLifecycleState): string {
+  switch (state) {
+    case 'available':
+    case 'draining':
+      return 'run coral-cli backend shutdown to use ordinary drain, or run coral-cli backend status without forcing this set';
+    case 'acquiring':
+      return 'let acquisition finish, then run coral-cli backend status';
+    case 'capsule-recovering':
+    case 'recovering':
+      return 'let recovery finish, then run coral-cli backend status';
+    case 'absence-delivery-pending':
+    case 'abandonment-delivery-pending':
+      return 'let successor delivery finish, then run coral-cli backend status';
+    case 'capsule-foreign':
+      return 'run coral-cli backend status and use the Coral build that owns the foreign capsule';
+    case 'reattaching':
+    case 'containing':
+    case 'containment-wait':
+      return 'run coral-cli backend status, copy its current exact token, and retry only after the reported gate';
+    default:
+      return assertNever(state);
   }
 }
 
@@ -750,6 +845,11 @@ export function formatRecoveryQuarantineList(entries: readonly RecoveryQuarantin
       );
     }
     lines.push(`  error=${JSON.stringify(entry.errorMessage)}`, `  detail=${JSON.stringify(entry.detail)}`);
+    if (entry.boundary === UNREADABLE_PROVIDER_OPERATION_BOUNDARY) {
+      lines.push(
+        `  discard=coral-cli backend recovery-quarantine discard-provider-operation --key ${encodeRecoveryQuarantineKey(entry.subject.key)} --revision ${JSON.stringify(formatRecoveryRevision(entry))}`,
+      );
+    }
   }
   return lines.join('\n');
 }
@@ -767,6 +867,28 @@ export function formatRecoveryQuarantineClear(result: RecoveryQuarantineClearRes
       return `Recovery retry made partial progress: ${coordinate}. Run coral-cli backend recovery-quarantine list to inspect the durable continuation; do not run clear again with this coordinate.`;
     default:
       return assertNever(result.disposition);
+  }
+}
+
+export function formatUnreadableProviderOperationDiscard(result: UnreadableProviderOperationDiscardResult): string {
+  const coordinate = `key=${encodeRecoveryQuarantineKey(result.key)} revision=${JSON.stringify(
+    `${RECOVERY_REVISION_FINGERPRINT_PREFIX}${result.revision}`,
+  )}`;
+  switch (result.kind) {
+    case 'discarded':
+      return [
+        `Discarded unreadable provider-operation row ${coordinate}.`,
+        'Effect: the exact raw operation record and every known-generation due pointer to it were permanently removed; no process was signalled and the operation was not settled.',
+        `Next step: run coral-cli backend recovery-quarantine list. If the exact coordinate remains as a stored quarantine row, run coral-cli backend recovery-quarantine clear --boundary ${UNREADABLE_PROVIDER_OPERATION_BOUNDARY} --key ${encodeRecoveryQuarantineKey(result.key)} --revision ${JSON.stringify(`${RECOVERY_REVISION_FINGERPRINT_PREFIX}${result.revision}`)}; otherwise run coral-cli backend status.`,
+      ].join('\n');
+    case 'absent':
+      return `Refusing discard for ${coordinate}: the raw row is absent. Effect: nothing was removed. Next step: run coral-cli backend recovery-quarantine list.`;
+    case 'readable':
+      return `Refusing discard for ${coordinate}: this build can now read the row. Effect: nothing was removed. Next step: run coral-cli backend recovery-quarantine clear --boundary ${UNREADABLE_PROVIDER_OPERATION_BOUNDARY} --key ${encodeRecoveryQuarantineKey(result.key)} --revision ${JSON.stringify(`${RECOVERY_REVISION_FINGERPRINT_PREFIX}${result.revision}`)}.`;
+    case 'revision-mismatch':
+      return `Refusing discard for ${coordinate}: the durable row changed to ${JSON.stringify(`${RECOVERY_REVISION_FINGERPRINT_PREFIX}${result.currentRevision}`)}. Effect: nothing was removed. Next step: run coral-cli backend recovery-quarantine list and inspect the new exact revision.`;
+    default:
+      return assertNever(result);
   }
 }
 
@@ -809,16 +931,39 @@ function formatRunningStatus(health: RunningHealth): string {
   const skippedProviderProxySetRows = health.skippedProviderProxySetRows;
   if (providerProxySets.length > 0 || skippedProviderProxySetRows > 0) {
     lines.push('', 'Provider proxy sets:');
+    const grouped = new Map<string, typeof providerProxySets>();
     for (const set of providerProxySets) {
-      const subject = [set.role, set.method].filter((value) => value !== undefined).join(' ');
-      const reattachment =
-        set.cause === undefined
-          ? ''
-          : ` cause=${set.cause} attempts=${set.attempts ?? 'unknown'} elapsedMs=${set.elapsedMs ?? 'unknown'} boundMs=${set.boundMs ?? 'unknown'}`;
+      grouped.set(set.setToken, [...(grouped.get(set.setToken) ?? []), set]);
+    }
+    for (const [setToken, incidents] of grouped) {
+      const current = incidents[0];
+      if (current === undefined) continue;
       lines.push(
-        `  set=${set.setToken} buildSetId=${set.setIdentity.buildSetId} proxyInstanceId=${set.setIdentity.proxyInstanceId} hostFingerprint=${set.setIdentity.hostFingerprint}`,
-        `    disposition=${set.disposition}${subject.length === 0 ? '' : ` subject=${subject}`} incident=${set.incidentReason} waitingFor=${set.waitingFor} liveClaims=${set.liveClaims ?? 'unknown'}${reattachment}${set.enforcerObservations === undefined ? '' : ` enforcers=${set.enforcerObservations.map(({ role, observation }) => `${role}:${observation}`).join(',')}`}`,
+        `  set=${setToken} liveClaims=${current.liveClaims ?? 'unknown'}`,
+        `    identity buildSetId=${current.setIdentity.buildSetId} proxyInstanceId=${current.setIdentity.proxyInstanceId} hostFingerprint=${current.setIdentity.hostFingerprint}`,
       );
+      for (const incident of incidents) {
+        const subject = [incident.role, incident.method].filter((value) => value !== undefined).join(' ');
+        const reattachment =
+          incident.cause === undefined
+            ? ''
+            : ` cause=${incident.cause} attempts=${incident.attempts ?? 'unknown'} elapsedMs=${incident.elapsedMs ?? 'unknown'} boundMs=${incident.boundMs ?? 'unknown'}`;
+        lines.push(
+          `    - disposition=${incident.disposition}${subject.length === 0 ? '' : ` subject=${subject}`} incident=${incident.incidentReason} waitingFor=${incident.waitingFor}${reattachment}${incident.enforcerObservations === undefined ? '' : ` enforcers=${incident.enforcerObservations.map(({ role, observation }) => `${role}:${observation}`).join(',')}`}`,
+        );
+      }
+      if (
+        incidents.some(
+          ({ waitingFor }) =>
+            waitingFor === 'control-reattachment' ||
+            waitingFor === 'independent-containment-absence' ||
+            waitingFor === 'set-adoption-deadline' ||
+            waitingFor === 'operator-abandonment' ||
+            waitingFor === 'store-repair',
+        )
+      ) {
+        lines.push(`    action=coral-cli backend provider-proxy-set contain ${setToken}`);
+      }
     }
     if (skippedProviderProxySetRows > 0) {
       lines.push(
@@ -826,6 +971,12 @@ function formatRunningStatus(health: RunningHealth): string {
       );
       for (const setToken of health.skippedProviderProxySetTokens) {
         lines.push(`    set=${setToken} (contain with: coral-cli backend provider-proxy-set contain ${setToken})`);
+      }
+      const unaddressableRows = skippedProviderProxySetRows - health.skippedProviderProxySetTokens.length;
+      if (unaddressableRows > 0) {
+        lines.push(
+          `    ${unaddressableRows} skipped ${unaddressableRows === 1 ? 'row has' : 'rows have'} no validated exact-set token; no containment command is available. Run coral-cli backend status from a build that understands the row.`,
+        );
       }
     }
   }

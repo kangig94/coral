@@ -35,6 +35,7 @@ import { parseBackendHealth } from '#src/transport/http/backend/health.js';
 import { statusFromStartupDiagnostic, type BackendStatusFull } from '#src/transport/http/backend/status.js';
 import type { HealthSnapshot } from '#src/transport/server-ports.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
+import { encodeProviderProxySetAddress } from '#src/provider-proxy/set-address.js';
 
 const TEST_TIME = { now: () => Date.parse('2026-08-03T00:00:00.000Z') };
 const HANDOFF_ROUTING_STATUS_GENERATION = handoffRoutingStatusGeneration(handoffRoutingStatusStoreSchema());
@@ -1205,6 +1206,28 @@ describe('backend status recovery quarantine propagation', () => {
 
 describe('backend status provider proxy dispositions', () => {
   it('renders retained set evidence and exits 75 when any structurally identified row was skipped', async () => {
+    const tokens = {
+      first: encodeProviderProxySetAddress({
+        buildSetId: '11111111-1111-4111-8111-111111111111',
+        hostFingerprint: 'a'.repeat(64),
+        proxyInstanceId: '22222222-2222-4222-8222-222222222222',
+      }),
+      second: encodeProviderProxySetAddress({
+        buildSetId: '33333333-3333-4333-8333-333333333333',
+        hostFingerprint: 'b'.repeat(64),
+        proxyInstanceId: '44444444-4444-4444-8444-444444444444',
+      }),
+      third: encodeProviderProxySetAddress({
+        buildSetId: '55555555-5555-4555-8555-555555555555',
+        hostFingerprint: 'c'.repeat(64),
+        proxyInstanceId: '66666666-6666-4666-8666-666666666666',
+      }),
+      fourth: encodeProviderProxySetAddress({
+        buildSetId: '77777777-7777-4777-8777-777777777777',
+        hostFingerprint: 'd'.repeat(64),
+        proxyInstanceId: '88888888-8888-4888-8888-888888888888',
+      }),
+    };
     const produced = {
       status: 'ok',
       kernel: { phase: 'running', readyAt: 1_700_000_000_000 },
@@ -1231,7 +1254,7 @@ describe('backend status provider proxy dispositions', () => {
               hostFingerprint: 'a'.repeat(64),
               proxyInstanceId: '22222222-2222-4222-8222-222222222222',
             },
-            setToken: 'pps1.first',
+            setToken: tokens.first,
             disposition: 'awaiting-containment-absence',
             role: 'guardian',
             method: 'guardian.heartbeat.v1',
@@ -1248,7 +1271,7 @@ describe('backend status provider proxy dispositions', () => {
               hostFingerprint: 'b'.repeat(64),
               proxyInstanceId: '44444444-4444-4444-8444-444444444444',
             },
-            setToken: 'pps1.second',
+            setToken: tokens.second,
             disposition: 'held',
             role: 'proxy',
             cause: 'invalid-unattributable-frame',
@@ -1261,11 +1284,23 @@ describe('backend status provider proxy dispositions', () => {
           },
           {
             setIdentity: {
+              buildSetId: '33333333-3333-4333-8333-333333333333',
+              hostFingerprint: 'b'.repeat(64),
+              proxyInstanceId: '44444444-4444-4444-8444-444444444444',
+            },
+            setToken: tokens.second,
+            disposition: 'operator-exit-refused',
+            liveClaims: 2,
+            incidentReason: 'operator_exit_deadline_pending',
+            waitingFor: 'set-adoption-deadline',
+          },
+          {
+            setIdentity: {
               buildSetId: '55555555-5555-4555-8555-555555555555',
               hostFingerprint: 'c'.repeat(64),
               proxyInstanceId: '66666666-6666-4666-8666-666666666666',
             },
-            setToken: 'pps1.third',
+            setToken: tokens.third,
             disposition: 'released-by-successor',
             incidentReason: 'successor-adopted',
             waitingFor: 'successor-acknowledgement',
@@ -1276,7 +1311,7 @@ describe('backend status provider proxy dispositions', () => {
               hostFingerprint: 'd'.repeat(64),
               proxyInstanceId: '88888888-8888-4888-8888-888888888888',
             },
-            setToken: 'pps1.fourth',
+            setToken: tokens.fourth,
             disposition: 'held',
             incidentReason: 'successor-adopted',
             waitingFor: 'successor-acknowledgement',
@@ -1289,27 +1324,39 @@ describe('backend status provider proxy dispositions', () => {
     expect(formatBackendStatus(status, { kind: 'absent' }, null)).toContain(
       [
         'Provider proxy sets:',
-        '  set=pps1.first buildSetId=11111111-1111-4111-8111-111111111111 proxyInstanceId=22222222-2222-4222-8222-222222222222 hostFingerprint=' +
+        `  set=${tokens.first} liveClaims=unknown`,
+        '    identity buildSetId=11111111-1111-4111-8111-111111111111 proxyInstanceId=22222222-2222-4222-8222-222222222222 hostFingerprint=' +
           'a'.repeat(64),
-        '    disposition=awaiting-containment-absence subject=guardian guardian.heartbeat.v1 incident=method-not-found waitingFor=independent-containment-absence liveClaims=unknown enforcers=guardian:alive,reaper:unknown',
+        '    - disposition=awaiting-containment-absence subject=guardian guardian.heartbeat.v1 incident=method-not-found waitingFor=independent-containment-absence enforcers=guardian:alive,reaper:unknown',
+        `    action=coral-cli backend provider-proxy-set contain ${tokens.first}`,
       ].join('\n'),
     );
     expect(formatBackendStatus(status, { kind: 'absent' }, null)).toContain(
       [
-        '  set=pps1.second buildSetId=33333333-3333-4333-8333-333333333333 proxyInstanceId=44444444-4444-4444-8444-444444444444 hostFingerprint=' +
+        `  set=${tokens.second} liveClaims=2`,
+        '    identity buildSetId=33333333-3333-4333-8333-333333333333 proxyInstanceId=44444444-4444-4444-8444-444444444444 hostFingerprint=' +
           'b'.repeat(64),
-        '    disposition=held subject=proxy incident=control_channel_reattaching waitingFor=control-reattachment liveClaims=2 cause=invalid-unattributable-frame attempts=3 elapsedMs=1250 boundMs=23000',
+        '    - disposition=held subject=proxy incident=control_channel_reattaching waitingFor=control-reattachment cause=invalid-unattributable-frame attempts=3 elapsedMs=1250 boundMs=23000',
+        '    - disposition=operator-exit-refused incident=operator_exit_deadline_pending waitingFor=set-adoption-deadline',
+        `    action=coral-cli backend provider-proxy-set contain ${tokens.second}`,
       ].join('\n'),
     );
     expect(formatBackendStatus(status, { kind: 'absent' }, null)).toContain(
       'Provider proxy set rows this build could not read: 2; backend status is not showing their dispositions, causes, or waiting conditions.',
     );
     const rendered = formatBackendStatus(status, { kind: 'absent' }, null);
-    expect(rendered).toContain(
-      'set=pps1.third (contain with: coral-cli backend provider-proxy-set contain pps1.third)',
+    expect(rendered.split(`  set=${tokens.second}`).length - 1).toBe(1);
+    expect(rendered.split(`    action=coral-cli backend provider-proxy-set contain ${tokens.second}`).length - 1).toBe(
+      1,
     );
     expect(rendered).toContain(
-      'set=pps1.fourth (contain with: coral-cli backend provider-proxy-set contain pps1.fourth)',
+      '    - disposition=operator-exit-refused incident=operator_exit_deadline_pending waitingFor=set-adoption-deadline',
+    );
+    expect(rendered).toContain(
+      `set=${tokens.third} (contain with: coral-cli backend provider-proxy-set contain ${tokens.third})`,
+    );
+    expect(rendered).toContain(
+      `set=${tokens.fourth} (contain with: coral-cli backend provider-proxy-set contain ${tokens.fourth})`,
     );
     expect(rendered).not.toContain('buildSetId=55555555-5555-4555-8555-555555555555');
     expect(rendered).not.toContain('buildSetId=77777777-7777-4777-8777-777777777777');
@@ -1327,7 +1374,7 @@ describe('backend status provider proxy dispositions', () => {
     await program.parseAsync(['node', 'coral-cli', 'backend', 'status']);
 
     expect(process.exitCode).toBe(75);
-    expect(stdout).toContain('coral-cli backend provider-proxy-set contain pps1.third');
+    expect(stdout).toContain(`coral-cli backend provider-proxy-set contain ${tokens.third}`);
   });
 });
 

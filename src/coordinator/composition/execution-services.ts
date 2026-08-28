@@ -122,7 +122,11 @@ export function createExecutionServices({
         return providerProxyInheritance.redeemDiscoveredCapsule(capsule, capsulePath, signal);
       },
       'containment-proof': ({ identity, signal }) =>
-        world.providerProxySetContainmentProver.proveContainmentAbsent(identity, getProgressStore().getDb(), signal),
+        world.providerProxySetContainmentProver.collectContainmentEvidence(
+          identity,
+          getProgressStore().getDb(),
+          signal,
+        ),
       'capsule-retirement': ({ path }) => retireProviderHandoffCapsule(runtime.storage, path),
       'disappearance-consumer': ({ notice }) => providerOperationReconciler.containmentDisappeared(notice),
       'representation-abandonment-consumer': ({ notice }) =>
@@ -251,6 +255,7 @@ export function createExecutionServices({
     controlEstablished: notifyProviderProxyControlEstablished,
     time: runtime.time,
     recoveryDispatcher: providerProxyRecovery,
+    reapRecordedContainment: world.reapRecordedContainment,
     onProgressPremiseViolation: (violation) =>
       backendLog.warn(
         `Provider proxy lifecycle ${violation.stage} woke ${violation.latenessMs}ms after its requested time.`,

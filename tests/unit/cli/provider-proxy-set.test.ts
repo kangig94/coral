@@ -7,10 +7,7 @@ import {
   type ProviderProxySetContainCommandResult,
   type ProviderProxySetCommandOperations,
 } from '#src/cli/commands/backend.js';
-import {
-  encodeProviderProxySetAddress,
-  type ProviderProxySetAddress,
-} from '#src/coordinator/services/provider-proxy-set/identity.js';
+import { encodeProviderProxySetAddress, type ProviderProxySetAddress } from '#src/provider-proxy/set-address.js';
 import { IpcRpcError } from '#src/transport/ipc/client.js';
 import { providerProxySetContainResponseSchema } from '#src/transport/rpc/catalog.js';
 
@@ -18,6 +15,16 @@ const address: ProviderProxySetAddress = {
   buildSetId: '11111111-1111-4111-8111-111111111111',
   hostFingerprint: 'a'.repeat(64),
   proxyInstanceId: '22222222-2222-4222-8222-222222222222',
+};
+const containedEffect = {
+  signalsSent: ['SIGTERM'] as const,
+  containmentAbsent: true,
+  representationAction: 'absence-release-started' as const,
+};
+const abandonedEffect = {
+  signalsSent: [] as const,
+  containmentAbsent: false,
+  representationAction: 'abandonment-release-started' as const,
 };
 
 afterEach(() => {
@@ -61,8 +68,9 @@ describe('backend provider-proxy-set contain', () => {
         setIdentity: address,
         disappearanceReceipt: 'proxy-group-absent',
         claimDischarge: { kind: 'completed' },
+        effect: containedEffect,
       }),
-    ).resolves.toEqual(expect.objectContaining({ stdout: expect.stringContaining('Confirmed absence') }));
+    ).resolves.toEqual(expect.objectContaining({ stdout: expect.stringContaining('was contained') }));
     expect(process.exitCode).toBe(0);
 
     await expect(
@@ -71,6 +79,7 @@ describe('backend provider-proxy-set contain', () => {
         setIdentity: address,
         disappearanceReceipt: 'proxy-group-absent',
         claimDischarge: { kind: 'initial-disposition-retry-owned' },
+        effect: containedEffect,
       }),
     ).resolves.toEqual(expect.objectContaining({ stderr: expect.stringContaining('still owns retry') }));
     expect(process.exitCode).toBe(75);
@@ -84,6 +93,7 @@ describe('backend provider-proxy-set contain', () => {
           { role: 'reaper', observation: 'unknown' },
         ],
         claimDischarge: { kind: 'initial-disposition-retry-owned' },
+        effect: abandonedEffect,
       }),
     ).resolves.toEqual(
       expect.objectContaining({
@@ -114,6 +124,7 @@ describe('backend provider-proxy-set contain', () => {
             },
           ],
         },
+        effect: containedEffect,
       }),
     ).resolves.toEqual(expect.objectContaining({ stderr: expect.stringContaining('retry') }));
     expect(process.exitCode).toBe(75);
@@ -129,10 +140,27 @@ describe('backend provider-proxy-set contain', () => {
         }) as never,
     });
 
-    await expect(operations.contain({ setIdentity: address, abandonUnobservable: false })).resolves.toEqual({
+    await expect(operations.contain({ setIdentity: address, abandonWithoutAbsence: false })).resolves.toEqual({
       kind: 'unsupported-coordinator',
       setIdentity: address,
     });
+  });
+
+  it('renders a stale authorization with the signal that was already delivered', async () => {
+    const output = await runContain({
+      kind: 'authorization-stale',
+      setIdentity: address,
+      effect: {
+        signalsSent: ['SIGTERM'],
+        containmentAbsent: false,
+        representationAction: 'none',
+      },
+    });
+
+    expect(output.stderr).toContain('SIGTERM was sent');
+    expect(output.stderr).toContain('recorded-containment absence was not confirmed');
+    expect(output.stderr).toContain('Coral did not start representation release');
+    expect(process.exitCode).toBe(75);
   });
 
   it('turns the shipped draining response body into a named no-verdict result', async () => {
@@ -143,7 +171,7 @@ describe('backend provider-proxy-set contain', () => {
         }) as never,
     });
 
-    const result = await operations.contain({ setIdentity: address, abandonUnobservable: false });
+    const result = await operations.contain({ setIdentity: address, abandonWithoutAbsence: false });
     expect(result).toEqual({
       kind: 'coordinator-draining',
       setIdentity: address,
@@ -211,7 +239,7 @@ describe('backend provider-proxy-set contain', () => {
         }) as never,
     });
 
-    const result = await operations.contain({ setIdentity: address, abandonUnobservable: false });
+    const result = await operations.contain({ setIdentity: address, abandonWithoutAbsence: false });
     expect(result).toEqual({ kind: 'unsupported-coordinator-result', setIdentity: address });
     await runContain(result);
     expect(process.exitCode).toBe(75);

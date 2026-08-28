@@ -48,7 +48,8 @@ const CONTAINMENT_HELPER_FILE = 'src/infra/process-containment.ts';
 const RECORDED_CONTAINMENT_OWNER_FILES = [
   'src/provider-proxy/enforcement.ts',
   'src/coordinator/live/provider-hosts/drain.ts',
-  'src/coordinator/services/provider-proxy-set/containment-proof.ts',
+  'src/coordinator/services/recovery/interrupted-performer.ts',
+  'src/coordinator/services/provider-proxy-set/index.ts',
 ] as const;
 
 // File-level allowlist: call sites permitted to use the bare primitive, each
@@ -328,7 +329,12 @@ function hasHandRolledEscalation(source: string): boolean {
 }
 
 describe('process kills do not hand-roll a SIGTERM→SIGKILL escalation outside the sanctioned helpers', () => {
-  it('every recorded-containment owner, including exact-set operator proof, reaps through reapRecordedContainment without an allowlist exemption', () => {
+  it('every recorded-containment owner, including exact-set lifecycle, reaps through reapRecordedContainment without an allowlist exemption', () => {
+    const recordedContainmentOwners = listSourceFiles(SRC_ROOT)
+      .map(canonicalSrcPath)
+      .filter((canonical) => canonical !== CONTAINMENT_HELPER_FILE)
+      .filter((canonical) => callsReapRecordedContainment(readFileSync(join(REPO_ROOT, canonical), 'utf-8')))
+      .sort();
     const ownersWithoutRecordedContainmentReaping = RECORDED_CONTAINMENT_OWNER_FILES.filter(
       (canonical) => !callsReapRecordedContainment(readFileSync(join(REPO_ROOT, canonical), 'utf-8')),
     );
@@ -336,7 +342,8 @@ describe('process kills do not hand-roll a SIGTERM→SIGKILL escalation outside 
       (canonical) => ALLOWLIST.has(canonical) || HAND_ROLLED_ESCALATION_ALLOWLIST.has(canonical),
     );
 
-    expect({ ownersWithoutRecordedContainmentReaping, exemptedOwners }).toEqual({
+    expect({ recordedContainmentOwners, ownersWithoutRecordedContainmentReaping, exemptedOwners }).toEqual({
+      recordedContainmentOwners: [...RECORDED_CONTAINMENT_OWNER_FILES].sort(),
       ownersWithoutRecordedContainmentReaping: [],
       exemptedOwners: [],
     });

@@ -5,6 +5,7 @@ import {
   providerProxySetEnforcerObservationsSchema,
   type ProviderProxySetEnforcerObservations,
 } from '../../../provider-proxy/containment-proof-contract.js';
+import { decodeProviderProxySetAddress } from '../../../provider-proxy/set-address.js';
 
 /**
  * Health metadata exposed by the Coral backend over HTTP.
@@ -233,6 +234,22 @@ function parseProviderProxySets(value: unknown): ProviderProxySetsParseResult | 
       typeof entry.waitingFor !== 'string'
     ) {
       return null;
+    }
+
+    let tokenAddress: ReturnType<typeof decodeProviderProxySetAddress>;
+    try {
+      tokenAddress = decodeProviderProxySetAddress(entry.setToken);
+    } catch {
+      skippedRows += 1;
+      continue;
+    }
+    if (
+      tokenAddress.buildSetId !== entry.setIdentity.buildSetId ||
+      tokenAddress.hostFingerprint !== entry.setIdentity.hostFingerprint ||
+      tokenAddress.proxyInstanceId !== entry.setIdentity.proxyInstanceId
+    ) {
+      skippedRows += 1;
+      continue;
     }
 
     const understandsEnums =

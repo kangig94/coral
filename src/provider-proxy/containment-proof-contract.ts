@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { processIncarnationSchema } from '../infra/node-process.js';
+
 const guardianEnforcerObservationSchema = z
   .object({ role: z.literal('guardian'), observation: z.enum(['alive', 'absent', 'unknown']) })
   .strict();
@@ -55,14 +57,30 @@ type ProviderProxySetNonAbsentEnforcerObservations = z.output<
   typeof providerProxySetNonAbsentEnforcerObservationsSchema
 >;
 
+const recordedProcessIdentityShape = {
+  pid: z.number().int().positive().safe(),
+  incarnation: processIncarnationSchema,
+};
+const recordedProcessIdentitySchema = z.object(recordedProcessIdentityShape).strict().readonly();
+const recordedContainmentIdentitySchema = z
+  .object({ ...recordedProcessIdentityShape, processGroupId: z.number().int().positive().safe() })
+  .strict()
+  .readonly();
+
 /**
- * Validates the containment proof boundary. `absent` certifies that recorded-set reaping already completed and
- * alone authorizes downstream disappearance; the other arms authorize neither signalling nor representation
- * release.
+ * Validates the read-only containment-evidence boundary. `reap-required` says both independent enforcers were
+ * observed absent and carries the exact recorded targets; it does not certify target absence and authorizes no
+ * downstream disappearance until a lifecycle-owned reaper returns a receipt.
  */
-export const providerProxySetContainmentProofSchema = z
+export const providerProxySetContainmentEvidenceSchema = z
   .discriminatedUnion('kind', [
-    z.object({ kind: z.literal('absent'), receipt: z.string().min(1) }).strict(),
+    z
+      .object({
+        kind: z.literal('reap-required'),
+        containment: recordedContainmentIdentitySchema,
+        recordedRoots: z.array(recordedProcessIdentitySchema).readonly(),
+      })
+      .strict(),
     z
       .object({
         kind: z.literal('enforcers-observed'),
@@ -74,9 +92,9 @@ export const providerProxySetContainmentProofSchema = z
   .readonly();
 
 /**
- * A validated proof result whose `absent` arm alone may authorize downstream disappearance and claim release.
+ * Read-only evidence gathered before any recorded containment is signalled.
  */
-export type ProviderProxySetContainmentProof = z.output<typeof providerProxySetContainmentProofSchema>;
+export type ProviderProxySetContainmentEvidence = z.output<typeof providerProxySetContainmentEvidenceSchema>;
 
 /**
  * Derives the refusal verdict from the retained role observations. All-absent evidence is rejected because it

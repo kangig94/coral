@@ -15,6 +15,7 @@ import {
 import type { ProviderHandoffCapsuleRetirementOutcome } from '#src/coordinator/services/provider-proxy-capsule-discovery.js';
 import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
 type Settlement = Readonly<{ kind: 'value'; value: unknown }> | Readonly<{ kind: 'throw'; error: unknown }>;
 
@@ -172,7 +173,14 @@ describe('provider proxy recovery producer classification', () => {
       ['role-control', { disappearanceReceipt: 'role-evidence' }],
       ['set-inheritance', { kind: 'not-bequeathed', reason: 'no capsule' }],
       ['capsule-redemption', { kind: 'redeemed', set: {} }],
-      ['containment-proof', { kind: 'absent', receipt: 'containment-absent' }],
+      [
+        'containment-proof',
+        {
+          kind: 'reap-required',
+          containment: { pid: 200, incarnation: testIncarnation(3), processGroupId: 200 },
+          recordedRoots: [],
+        },
+      ],
       ['capsule-retirement', { kind: 'retired' }],
       [
         'disappearance-consumer',

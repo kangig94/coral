@@ -1,11 +1,10 @@
+import { decodeProviderProxySetAddress, encodeProviderProxySetAddress } from '#src/provider-proxy/set-address.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { randomUUID } from 'node:crypto';
 
 import { describe, expect, it } from 'vitest';
 
 import {
-  decodeProviderProxySetAddress,
-  encodeProviderProxySetAddress,
   ProviderProxySetIdentityIndex,
   providerProxySetAddress,
   providerProxySetAddressKey,
@@ -121,7 +120,7 @@ describe('complete provider proxy set identity', () => {
     );
   });
 
-  it('rejects non-canonical hand edits instead of resolving them as a set address', () => {
+  it('rejects every malformed or non-canonical token with one authored recovery message', () => {
     const address = providerProxySetAddress(providerProxySetIdentityFromRecord(providerOperationRecord('executing')));
     const token = encodeProviderProxySetAddress(address);
     const reordered = `pps1.${Buffer.from(
@@ -132,8 +131,18 @@ describe('complete provider proxy set identity', () => {
       }),
     ).toString('base64url')}`;
 
-    expect(() => decodeProviderProxySetAddress(token.replace('pps1.', 'pps2.'))).toThrow(/must start with 'pps1\.'/u);
-    expect(() => decodeProviderProxySetAddress(`${token}=`)).toThrow(/unpadded base64url/u);
-    expect(() => decodeProviderProxySetAddress(reordered)).toThrow(/not canonically encoded/u);
+    const emptyObject = `pps1.${Buffer.from('{}').toString('base64url')}`;
+    const expected =
+      'provider_proxy_set_token_invalid: copy the exact provider-proxy set token from coral-cli backend status';
+    for (const malformed of [token.replace('pps1.', 'pps2.'), `${token}=`, reordered, emptyObject]) {
+      expect(() => decodeProviderProxySetAddress(malformed)).toThrow(expected);
+      try {
+        decodeProviderProxySetAddress(malformed);
+      } catch (error: unknown) {
+        expect(error).toBeInstanceOf(Error);
+        expect((error as Error).message).toBe(expected);
+        expect((error as Error).message).not.toMatch(/Zod|buildSetId|invalid_type/u);
+      }
+    }
   });
 });

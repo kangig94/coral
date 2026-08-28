@@ -40,6 +40,7 @@ import {
   type CapsuleRetirementAttemptOutcome,
   type ProviderProxySetLifecycleDeps,
   type ProviderProxySetLifecycleProgressViolation,
+  type ProviderProxySetRecordedContainmentReaper,
 } from '#src/coordinator/services/provider-proxy-set/index.js';
 import type {
   DisappearanceDeliveryAttemptOutcome,
@@ -56,7 +57,7 @@ import {
   providerProxySetIdentityFromRecord,
 } from '#src/coordinator/services/provider-proxy-set/identity.js';
 import type { ProviderProxySetRedemptionOutcome } from '#src/coordinator/services/provider-proxy-set/inheritance.js';
-import type { ProviderProxySetContainmentProof } from '#src/provider-proxy/containment-proof-contract.js';
+import type { ProviderProxySetContainmentEvidence } from '#src/provider-proxy/containment-proof-contract.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
@@ -68,14 +69,32 @@ const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
 /** Mirrors the unexported `PRESERVE_REPORT_INTERVAL_MS` in `provider-proxy-set/index.ts`. */
 const PRESERVE_REPORT_INTERVAL_MS = 60_000;
 
-const enforcersUnobservable: ProviderProxySetContainmentProof = {
+const enforcersUnobservable: ProviderProxySetContainmentEvidence = {
   kind: 'enforcers-observed',
   observations: [
     { role: 'guardian', observation: 'unknown' },
     { role: 'reaper', observation: 'unknown' },
   ],
 };
-const noContainmentProof = async (): Promise<ProviderProxySetContainmentProof> => enforcersUnobservable;
+const noContainmentProof = async (): Promise<ProviderProxySetContainmentEvidence> => enforcersUnobservable;
+let containmentEvidenceSequence = 0;
+const containmentEvidenceReceipts = new Map<ProcessIncarnation, string>();
+function containmentEvidence(receipt: string): ProviderProxySetContainmentEvidence {
+  const incarnation = testIncarnation(90_000 + containmentEvidenceSequence++);
+  containmentEvidenceReceipts.set(incarnation, receipt);
+  return {
+    kind: 'reap-required',
+    containment: { pid: 9_000, incarnation, processGroupId: 9_000 },
+    recordedRoots: [],
+  };
+}
+const reapContainmentEvidence: ProviderProxySetRecordedContainmentReaper = async (evidence) =>
+  containmentEvidenceReceipts.get(evidence.containment.incarnation) ?? 'fixture-containment-absence';
+const noOperatorExitEffect = {
+  signalsSent: [] as const,
+  containmentAbsent: false,
+  representationAction: 'none' as const,
+};
 /** Nothing observed is never absence, so every discovered capsule is retained and no retirement begins. */
 const retainsEveryCapsule = { observeRecordedProcess: () => 'unknown' as const };
 /** Every recorded process proven gone — the one observation that may retire a capsule. */
@@ -99,6 +118,12 @@ const containmentOperationPolicy: ContainmentRequiredControlCallPolicy = {
 const reportLifecycleIsRequired: Record<PropertyKey, never> extends Pick<
   ProviderProxySetLifecycleDeps,
   'reportLifecycle'
+>
+  ? false
+  : true = true;
+const reapRecordedContainmentIsRequired: Record<PropertyKey, never> extends Pick<
+  ProviderProxySetLifecycleDeps,
+  'reapRecordedContainment'
 >
   ? false
   : true = true;
@@ -216,17 +241,18 @@ function heartbeatAuthorityObservation(
 
 type ProviderProxySetLifecycleFixtureDeps = Omit<
   ProviderProxySetLifecycleDeps,
-  'recoveryDispatcher' | 'reportLifecycle' | 'buildSetId'
+  'recoveryDispatcher' | 'reapRecordedContainment' | 'reportLifecycle' | 'buildSetId'
 > &
   Readonly<{
     recoveryDispatcher?: ProviderProxyRecoveryDispatcher;
     reportLifecycle?: ProviderProxySetLifecycleDeps['reportLifecycle'];
+    reapRecordedContainment?: ProviderProxySetRecordedContainmentReaper;
     disappearanceConsumer: ProviderContainmentDisappearanceConsumer;
     abandonmentConsumer?: ProviderRepresentationAbandonmentConsumer;
     proveContainmentAbsent(
       identity: ReturnType<typeof providerProxySetIdentityFromRecord>,
       signal: AbortSignal,
-    ): Promise<ProviderProxySetContainmentProof>;
+    ): Promise<ProviderProxySetContainmentEvidence>;
     retireCapsule?(path: string): Promise<CapsuleRetirementAttemptOutcome> | CapsuleRetirementAttemptOutcome;
     onFatal?(error: ProviderProxySetLifecycleFatalError): void;
     redeemCapsule?(
@@ -273,6 +299,7 @@ function lifecycleFor(deps: ProviderProxySetLifecycleFixtureDeps): ProviderProxy
     buildSetId: FIXTURE_BUILD_SET_ID,
     ...lifecycleDeps,
     recoveryDispatcher: suppliedDispatcher ?? recoveryDispatcher,
+    reapRecordedContainment: deps.reapRecordedContainment ?? reapContainmentEvidence,
     reportLifecycle: lifecycleDeps.reportLifecycle ?? (() => undefined),
   });
 }
@@ -605,6 +632,10 @@ function retirementWarningFacts(message: string): Readonly<{
 describe('ProviderProxySetLifecycle', () => {
   it('requires the lifecycle reporter in its dependency contract', () => {
     expect(reportLifecycleIsRequired).toBe(true);
+  });
+
+  it('requires the recorded containment reaper in its dependency contract', () => {
+    expect(reapRecordedContainmentIsRequired).toBe(true);
   });
 
   it('reports repeated operation incidents without consuming the terminal fault latch', async () => {
@@ -966,7 +997,7 @@ describe('ProviderProxySetLifecycle', () => {
     const stopAndReap = vi.fn(async () => ({ unconfirmed: 'unused' }) as const);
     const stopHeartbeats = vi.fn();
     const initiateControlClose = vi.fn(async () => undefined);
-    const absence = deferred<ProviderProxySetContainmentProof>();
+    const absence = deferred<ProviderProxySetContainmentEvidence>();
     const containmentDisappeared = vi.fn(
       async (notice: Parameters<ProviderContainmentDisappearanceConsumer['containmentDisappeared']>[0]) => ({
         kind: 'accepted' as const,
@@ -1030,7 +1061,7 @@ describe('ProviderProxySetLifecycle', () => {
       'warn',
       `Provider proxy set action=await-containment-absence reason=heartbeat_answer_unusable_hold_exhausted fault=heartbeat-answer-unusable-hold-exhausted subject=guardian liveClaims=1 set=${setReference(authority.setIdentity)} error=answer still could not be decoded attempts=2 elapsedMs=5000 schedulerLatenessMs=0 lastIncidentReason=unclassified`,
     );
-    absence.resolve({ kind: 'absent', receipt: 'answered-unusable-absence' });
+    absence.resolve(containmentEvidence('answered-unusable-absence'));
     await vi.waitFor(() => expect(containmentDisappeared).toHaveBeenCalledOnce());
     await vi.waitFor(() => expect(lifecycle.snapshot().represented).toBe(0));
   });
@@ -1045,7 +1076,7 @@ describe('ProviderProxySetLifecycle', () => {
     const stopAndReap = vi.fn(async () => ({ unconfirmed: 'unused' }) as const);
     const stopHeartbeats = vi.fn();
     const initiateControlClose = vi.fn(async () => undefined);
-    const absence = deferred<ProviderProxySetContainmentProof>();
+    const absence = deferred<ProviderProxySetContainmentEvidence>();
     const containmentDisappeared = vi.fn(
       async (notice: Parameters<ProviderContainmentDisappearanceConsumer['containmentDisappeared']>[0]) => ({
         kind: 'accepted' as const,
@@ -1093,7 +1124,7 @@ describe('ProviderProxySetLifecycle', () => {
       'warn',
       `Provider proxy set action=await-containment-absence reason=heartbeat_protocol_incompatible fault=heartbeat-method-not-found subject=guardian liveClaims=1 set=${setReference(authority.setIdentity)} error=method not found incidentReason=method-not-found`,
     );
-    absence.resolve({ kind: 'absent', receipt: 'method-not-found-absence' });
+    absence.resolve(containmentEvidence('method-not-found-absence'));
     await vi.waitFor(() => expect(containmentDisappeared).toHaveBeenCalledOnce());
     await vi.waitFor(() => expect(lifecycle.snapshot().represented).toBe(0));
   });
@@ -1106,7 +1137,7 @@ describe('ProviderProxySetLifecycle', () => {
     const stopHeartbeats = vi.fn();
     const initiateControlClose = vi.fn(async () => undefined);
     const authority = fakeAuthority({ faults, stopAndReap, stopHeartbeats, initiateControlClose });
-    const absence = deferred<ProviderProxySetContainmentProof>();
+    const absence = deferred<ProviderProxySetContainmentEvidence>();
     const reportLifecycle = vi.fn();
     const lifecycle = lifecycleFor({
       claims,
@@ -1145,7 +1176,7 @@ describe('ProviderProxySetLifecycle', () => {
       'warn',
       `Provider proxy set action=await-containment-absence reason=heartbeat_protocol_incompatible fault=heartbeat-method-not-found subject=guardian liveClaims=0 set=${setReference(authority.setIdentity)} error=method not found incidentReason=method-not-found`,
     );
-    absence.resolve({ kind: 'absent', receipt: 'method-not-found-no-claim-absence' });
+    absence.resolve(containmentEvidence('method-not-found-no-claim-absence'));
     await vi.waitFor(() => expect(lifecycle.snapshot().represented).toBe(0));
     expect(lifecycle.snapshot().operatorDispositions).toEqual([]);
   });
@@ -1165,7 +1196,7 @@ describe('ProviderProxySetLifecycle', () => {
       initiateControlClose,
       heartbeatHoldBound: { spanMs: 5_000, materialSchedulerLatenessMs: 1_250 },
     });
-    const absence = deferred<ProviderProxySetContainmentProof>();
+    const absence = deferred<ProviderProxySetContainmentEvidence>();
     const reportLifecycle = vi.fn();
     const lifecycle = lifecycleFor({
       claims,
@@ -1189,7 +1220,7 @@ describe('ProviderProxySetLifecycle', () => {
       'warn',
       `Provider proxy set action=await-containment-absence reason=heartbeat_answer_unusable_hold_exhausted fault=heartbeat-answer-unusable-hold-exhausted subject=guardian liveClaims=0 set=${setReference(authority.setIdentity)} error=second unusable answer attempts=2 elapsedMs=5000 schedulerLatenessMs=0 lastIncidentReason=unclassified`,
     );
-    absence.resolve({ kind: 'absent', receipt: 'answered-unusable-no-claim-absence' });
+    absence.resolve(containmentEvidence('answered-unusable-no-claim-absence'));
     await vi.waitFor(() => expect(lifecycle.snapshot().represented).toBe(0));
   });
 
@@ -2132,6 +2163,7 @@ describe('ProviderProxySetLifecycle', () => {
         { role: 'guardian', observation: 'alive' },
         { role: 'reaper', observation: 'unknown' },
       ],
+      effect: noOperatorExitEffect,
     });
     expect(lifecycle.snapshot().operatorDispositions).toContainEqual(
       expect.objectContaining({
@@ -2164,10 +2196,11 @@ describe('ProviderProxySetLifecycle', () => {
         { role: 'guardian', observation: 'absent' },
         { role: 'reaper', observation: 'unknown' },
       ],
+      effect: noOperatorExitEffect,
     });
     await expect(
       lifecycle.completeOperatorExit(authorization.capability, { kind: 'store-unreadable' }, true),
-    ).resolves.toEqual({ kind: 'store-unreadable', setIdentity: address });
+    ).resolves.toEqual({ kind: 'store-unreadable', setIdentity: address, effect: noOperatorExitEffect });
     expect(lifecycle.snapshot().operatorDispositions).toContainEqual(
       expect.objectContaining({
         disposition: 'operator-exit-refused',
@@ -2228,7 +2261,53 @@ describe('ProviderProxySetLifecycle', () => {
         },
         true,
       ),
-    ).resolves.toEqual({ kind: 'authorization-stale', setIdentity: address });
+    ).resolves.toEqual({ kind: 'authorization-stale', setIdentity: address, effect: noOperatorExitEffect });
+  });
+
+  it('reports a delivered signal when the attempt token moves before the next lifecycle authorization check', async () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const clock = new ManualClock();
+    const authority = fakeAuthority({ record });
+    const reapRecordedContainment = vi.fn<ProviderProxySetRecordedContainmentReaper>(
+      async (_evidence, _signal, onSignal, assertSignalAuthorized) => {
+        assertSignalAuthorized?.();
+        onSignal('SIGTERM');
+        clock.runDue();
+        assertSignalAuthorized?.();
+        return 'must-not-complete';
+      },
+    );
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+      reapRecordedContainment,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.registerInheritedSet(authority);
+    const address = providerProxySetAddress(authority.setIdentity);
+
+    latchAuthorityFault(authority, terminalAuthorityFault());
+    clock.elapse(30_000);
+    const authorization = lifecycle.authorizeOperatorExit(address);
+    if (authorization.kind !== 'authorized') {
+      throw new Error(`expected authorization, received ${authorization.kind}`);
+    }
+
+    await expect(
+      lifecycle.completeOperatorExit(authorization.capability, containmentEvidence('operator-partial-stale'), false),
+    ).resolves.toEqual({
+      kind: 'authorization-stale',
+      setIdentity: address,
+      effect: { signalsSent: ['SIGTERM'], containmentAbsent: false, representationAction: 'none' },
+    });
+    expect(reapRecordedContainment).toHaveBeenCalledOnce();
+    expect(lifecycle.snapshot().states).toEqual(['containment-wait']);
   });
 
   it('returns a pending claim disposition when exact-absence delivery has not settled', async () => {
@@ -2265,11 +2344,7 @@ describe('ProviderProxySetLifecycle', () => {
     const authorization = lifecycle.authorizeOperatorExit(providerProxySetAddress(authority.setIdentity));
     if (authorization.kind !== 'authorized') throw new Error(`expected authorization, received ${authorization.kind}`);
     await expect(
-      lifecycle.completeOperatorExit(
-        authorization.capability,
-        { kind: 'absent', receipt: 'operator-exact-absence' },
-        false,
-      ),
+      lifecycle.completeOperatorExit(authorization.capability, containmentEvidence('operator-exact-absence'), false),
     ).resolves.toEqual(
       expect.objectContaining({
         kind: 'contained',
@@ -2293,8 +2368,8 @@ describe('ProviderProxySetLifecycle', () => {
   it.each([
     {
       resultKind: 'contained' as const,
-      proof: { kind: 'absent' as const, receipt: 'operator-exact-absence' },
-      abandonUnobservable: false,
+      proof: containmentEvidence('operator-exact-absence'),
+      abandonWithoutAbsence: false,
     },
     {
       resultKind: 'abandoned' as const,
@@ -2305,11 +2380,11 @@ describe('ProviderProxySetLifecycle', () => {
           { role: 'reaper', observation: 'unknown' },
         ] as const,
       },
-      abandonUnobservable: true,
+      abandonWithoutAbsence: true,
     },
   ])(
     'reports an already-settled $resultKind discharge as completed',
-    async ({ resultKind, proof, abandonUnobservable }) => {
+    async ({ resultKind, proof, abandonWithoutAbsence }) => {
       const claims = new ProviderProxySetClaimMirror();
       claims.initialize([]);
       const faults = createProviderProxyAuthorityFaultLatch();
@@ -2339,7 +2414,7 @@ describe('ProviderProxySetLifecycle', () => {
         throw new Error(`expected authorization, received ${authorization.kind}`);
       }
       await expect(
-        lifecycle.completeOperatorExit(authorization.capability, proof, abandonUnobservable),
+        lifecycle.completeOperatorExit(authorization.capability, proof, abandonWithoutAbsence),
       ).resolves.toEqual(
         expect.objectContaining({
           kind: resultKind,
@@ -2444,7 +2519,7 @@ describe('ProviderProxySetLifecycle', () => {
       const claims = new ProviderProxySetClaimMirror();
       claims.initialize([first, second]);
       const roleControlResult = deferred<Awaited<ReturnType<DurableProviderProxyOperationAuthority['stopAndReap']>>>();
-      const absenceResult = deferred<ProviderProxySetContainmentProof>();
+      const absenceResult = deferred<ProviderProxySetContainmentEvidence>();
       const signals: { roleControl?: AbortSignal; containmentProof?: AbortSignal } = {};
       const stopAndReap = vi.fn((signal: AbortSignal) => {
         signals.roleControl = signal;
@@ -2456,6 +2531,7 @@ describe('ProviderProxySetLifecycle', () => {
           return absenceResult.promise;
         },
       );
+      const reapRecordedContainment = vi.fn<ProviderProxySetRecordedContainmentReaper>(reapContainmentEvidence);
       const notices: Parameters<ProviderContainmentDisappearanceConsumer['containmentDisappeared']>[0][] = [];
       const containmentDisappeared = vi.fn(
         async (notice: Parameters<ProviderContainmentDisappearanceConsumer['containmentDisappeared']>[0]) => {
@@ -2477,6 +2553,7 @@ describe('ProviderProxySetLifecycle', () => {
         disappearanceConsumer: { containmentDisappeared },
         time: new ManualClock(),
         proveContainmentAbsent,
+        reapRecordedContainment,
       });
       lifecycle.initializeClaimSlots();
       lifecycle.completeStartupDiscovery();
@@ -2490,7 +2567,7 @@ describe('ProviderProxySetLifecycle', () => {
       if (winner === 'role-control') {
         roleControlResult.resolve({ disappearanceReceipt });
       } else {
-        absenceResult.resolve({ kind: 'absent', receipt: disappearanceReceipt });
+        absenceResult.resolve(containmentEvidence(disappearanceReceipt));
       }
       await vi.waitFor(() => expect(notices).toHaveLength(2));
 
@@ -2504,7 +2581,7 @@ describe('ProviderProxySetLifecycle', () => {
       );
 
       if (winner === 'role-control') {
-        absenceResult.resolve({ kind: 'absent', receipt: 'guardian:late-guardian;reaper:late-reaper' });
+        absenceResult.resolve(containmentEvidence('guardian:late-guardian;reaper:late-reaper'));
       } else {
         roleControlResult.resolve({
           disappearanceReceipt: 'guardian:late-guardian;reaper:late-reaper',
@@ -2512,6 +2589,7 @@ describe('ProviderProxySetLifecycle', () => {
       }
       await drainMicrotasks();
       expect(containmentDisappeared).toHaveBeenCalledTimes(2);
+      expect(reapRecordedContainment).toHaveBeenCalledTimes(winner === 'containment-proof' ? 1 : 0);
       await vi.waitFor(() => expect(lifecycle.snapshot().represented).toBe(0));
     },
   );
@@ -2631,7 +2709,7 @@ describe('ProviderProxySetLifecycle', () => {
     claims.initialize([]);
     const authority = fakeAuthority({ record });
     const redemption = deferred<ProviderProxySetRedemptionOutcome>();
-    const absence = deferred<ProviderProxySetContainmentProof>();
+    const absence = deferred<ProviderProxySetContainmentEvidence>();
     const proveContainmentAbsent = vi
       .fn<ProviderProxySetLifecycleFixtureDeps['proveContainmentAbsent']>()
       .mockResolvedValueOnce(enforcersUnobservable)
@@ -2672,7 +2750,7 @@ describe('ProviderProxySetLifecycle', () => {
       'warn',
       `Provider proxy set action=await-containment-absence reason=heartbeat_protocol_incompatible fault=heartbeat-method-not-found subject=guardian liveClaims=1 set=${setReference(authority.setIdentity)} error=this set speaks a heartbeat protocol this build cannot use incidentReason=method-not-found`,
     );
-    absence.resolve({ kind: 'absent', receipt: 'protocol-incompatible-absence' });
+    absence.resolve(containmentEvidence('protocol-incompatible-absence'));
     await vi.waitFor(() => expect(containmentDisappeared).toHaveBeenCalledOnce());
     await vi.waitFor(() => expect(lifecycle.snapshot().represented).toBe(0));
   });
@@ -2682,7 +2760,7 @@ describe('ProviderProxySetLifecycle', () => {
     claims.initialize([]);
     const authority = fakeAuthority();
     const reportLifecycle = vi.fn();
-    const absence = deferred<ProviderProxySetContainmentProof>();
+    const absence = deferred<ProviderProxySetContainmentEvidence>();
     const proveContainmentAbsent = vi
       .fn<ProviderProxySetLifecycleFixtureDeps['proveContainmentAbsent']>()
       .mockResolvedValueOnce(enforcersUnobservable)
@@ -2713,7 +2791,7 @@ describe('ProviderProxySetLifecycle', () => {
       'warn',
       `Provider proxy set action=await-containment-absence reason=heartbeat_protocol_incompatible fault=heartbeat-method-not-found subject=guardian liveClaims=0 set=${setReference(authority.setIdentity)} error=this set speaks a heartbeat protocol this build cannot use incidentReason=method-not-found`,
     );
-    absence.resolve({ kind: 'absent', receipt: 'no-claim-protocol-incompatible-absence' });
+    absence.resolve(containmentEvidence('no-claim-protocol-incompatible-absence'));
     await vi.waitFor(() => expect(lifecycle.snapshot().represented).toBe(0));
   });
 
@@ -2722,10 +2800,7 @@ describe('ProviderProxySetLifecycle', () => {
     claims.initialize([]);
     const authority = fakeAuthority();
     const proveContainmentAbsent = vi.fn(
-      async (): Promise<ProviderProxySetContainmentProof> => ({
-        kind: 'absent',
-        receipt: 'exact-v3-absence',
-      }),
+      async (): Promise<ProviderProxySetContainmentEvidence> => containmentEvidence('exact-v3-absence'),
     );
     const retireCapsule = vi.fn(async () => ({ kind: 'retired' as const }));
     const lifecycle = lifecycleFor({
@@ -2804,7 +2879,7 @@ describe('ProviderProxySetLifecycle', () => {
     const clock = new ManualClock();
     const authority = fakeAuthority();
     const redemption = deferred<ProviderProxySetRedemptionOutcome>();
-    const neverProvesAbsence = new Promise<ProviderProxySetContainmentProof>(() => undefined);
+    const neverProvesAbsence = new Promise<ProviderProxySetContainmentEvidence>(() => undefined);
     const fatals = vi.fn();
     const lifecycle = lifecycleFor({
       claims,

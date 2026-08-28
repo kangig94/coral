@@ -487,6 +487,12 @@ export type ProviderOperationRecordObservation =
   | Readonly<{ kind: 'unreadable'; attribution: UnreadableProviderOperationAttribution }>
   | Readonly<{ kind: 'readable'; record: ProviderOperationRecord }>;
 
+export type UnreadableProviderOperationDiscardResult =
+  | Readonly<{ kind: 'discarded' }>
+  | Readonly<{ kind: 'absent' }>
+  | Readonly<{ kind: 'revision-mismatch'; currentRevision: string }>
+  | Readonly<{ kind: 'readable' }>;
+
 function unreadableProviderOperationAttribution(key: string, value: string): UnreadableProviderOperationAttribution {
   const claims = claimedOperationIdentities(value);
   return {
@@ -517,6 +523,58 @@ export function observeProviderOperationRecord(db: Database, key: string): Provi
   } catch {
     return { kind: 'unreadable', attribution: unreadableProviderOperationAttribution(key, value) };
   }
+}
+
+/**
+ * Discards one still-unreadable raw row only while its exact SHA-256 revision matches, and removes every known
+ * generation's due pointer to that row in the same transaction. This deliberately does not reinterpret or
+ * settle the abandoned operation.
+ */
+export function discardUnreadableProviderOperation(
+  db: Database,
+  key: string,
+  expectedRevision: string,
+): UnreadableProviderOperationDiscardResult {
+  if (!/^sha256:[0-9a-f]{64}$/u.test(expectedRevision)) {
+    throw new ProviderOperationJournalError('Unreadable provider operation revision must be a SHA-256 fingerprint.');
+  }
+  if (
+    key.length === 0 ||
+    ![PROVIDER_OPERATION_RECORD_PREFIX, ...SUPERSEDED_PROVIDER_OPERATION_RECORD_PREFIXES].some((prefix) =>
+      key.startsWith(prefix),
+    )
+  ) {
+    throw new ProviderOperationJournalError('Unreadable provider operation key is not a provider-operation row.');
+  }
+
+  return withImmediate(db, () => {
+    const value = readCanonicalValue(db, key);
+    if (value === undefined) return { kind: 'absent' as const };
+    const currentRevision = `sha256:${sha256Hex(value)}`;
+    if (currentRevision !== expectedRevision) return { kind: 'revision-mismatch' as const, currentRevision };
+    try {
+      decodeCanonicalValue(key, value);
+      return { kind: 'readable' as const };
+    } catch {
+      // Exact revision still exists and remains unreadable, which is the only state this operation may discard.
+    }
+    const deleted = db.prepare<[string, string]>('DELETE FROM meta WHERE key = ? AND value = ?').run(key, value);
+    if (deleted.changes !== 1) {
+      const current = readCanonicalValue(db, key);
+      return current === undefined
+        ? { kind: 'absent' as const }
+        : { kind: 'revision-mismatch' as const, currentRevision: `sha256:${sha256Hex(current)}` };
+    }
+    for (const prefix of [PROVIDER_OPERATION_RECORD_PREFIX, ...SUPERSEDED_PROVIDER_OPERATION_RECORD_PREFIXES]) {
+      const duePrefix = `${prefix.slice(0, prefix.length - 'record:'.length)}due:`;
+      db.prepare<[string, string, string]>('DELETE FROM meta WHERE key >= ? AND key < ? AND value = ?').run(
+        duePrefix,
+        keyPrefixUpperBound(duePrefix),
+        key,
+      );
+    }
+    return { kind: 'discarded' as const };
+  });
 }
 
 type IdentityClaim<T> =

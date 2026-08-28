@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { parseBackendHealth, type BackendHealth } from '#src/transport/http/backend/health.js';
+import { encodeProviderProxySetAddress } from '#src/provider-proxy/set-address.js';
 
 const HEALTHY_BASE: BackendHealth = {
   status: 'ok',
@@ -25,7 +26,11 @@ const PROVIDER_PROXY_SET = {
     hostFingerprint: 'a'.repeat(64),
     proxyInstanceId: '22222222-2222-4222-8222-222222222222',
   },
-  setToken: 'pps1.fixture',
+  setToken: encodeProviderProxySetAddress({
+    buildSetId: '11111111-1111-4111-8111-111111111111',
+    hostFingerprint: 'a'.repeat(64),
+    proxyInstanceId: '22222222-2222-4222-8222-222222222222',
+  }),
   disposition: 'held',
   cause: 'closed',
   attempts: 2,
@@ -164,6 +169,28 @@ describe('/health typed shape (AC10a)', () => {
     { coverage: 'unknown', liveJobs: 0, unknownJobs: 3, recoveryDefectJobs: 0 },
   ] as const)('accepts carrier diagnostics with $coverage coverage', (carriers) => {
     expect(isBackendHealth({ ...HEALTHY_BASE, diagnostics: { carriers } })).toBe(true);
+  });
+
+  it.each([
+    ['a malformed token', 'pps2.future'],
+    [
+      'a token for a different identity',
+      encodeProviderProxySetAddress({
+        ...PROVIDER_PROXY_SET.setIdentity,
+        proxyInstanceId: '33333333-3333-4333-8333-333333333333',
+      }),
+    ],
+  ])('skips %s without publishing it as an actionable command token', (_label, setToken) => {
+    const parsed = parseBackendHealth({
+      ...HEALTHY_BASE,
+      diagnostics: { providerProxySets: [{ ...PROVIDER_PROXY_SET, setToken }] },
+    });
+
+    expect(parsed).toEqual({
+      health: { ...HEALTHY_BASE, diagnostics: { providerProxySets: [] } },
+      skippedProviderProxySetRows: 1,
+      skippedProviderProxySetTokens: [],
+    });
   });
 
   it.each([

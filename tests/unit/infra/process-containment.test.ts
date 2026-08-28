@@ -1,6 +1,6 @@
 import type { ProcessLiveness } from '#src/infra/node-process.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createMonotonicClock, type MonotonicInstant } from '#src/infra/monotonic-clock.js';
 import {
@@ -109,6 +109,29 @@ describe('recorded process containment', () => {
       { pid: 101, signal: 'SIGKILL', at: 5_375 },
     ]);
     expect(fake.now()).toBe(6_500);
+  });
+
+  it('revalidates caller authority immediately before each signal and reports only delivered signals', async () => {
+    const fake = createFakeEnvironment({ groupAlive: true, leaderAlive: true, providerRootAlive: true });
+    const delivered: Array<{ pid: number; signal: NodeJS.Signals }> = [];
+    const assertSignalAuthorized = vi
+      .fn<() => void>()
+      .mockImplementationOnce(() => undefined)
+      .mockImplementationOnce(() => {
+        throw new Error('authorization moved');
+      });
+
+    await expect(
+      reapRecordedContainment(containment, [providerRoot], deadlineAfter(fake.environment, 6_500), {
+        ...fake.environment,
+        assertSignalAuthorized,
+        onSignal: (effect) => delivered.push(effect),
+      }),
+    ).rejects.toMatchObject({ code: 'process_containment_reap_failed' });
+
+    expect(assertSignalAuthorized).toHaveBeenCalledTimes(2);
+    expect(fake.signals).toEqual([{ pid: -100, signal: 'SIGTERM', at: 0 }]);
+    expect(delivered).toEqual([{ pid: -100, signal: 'SIGTERM' }]);
   });
 
   it('does not give a late KILL step a fresh deadline', async () => {

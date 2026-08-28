@@ -22,7 +22,7 @@ import {
   type ProviderProxySetIdentity,
 } from '#src/coordinator/services/provider-proxy-set/identity.js';
 import { ProviderProxySetLifecycleRef } from '#src/coordinator/services/provider-proxy-set/lifecycle-ref.js';
-import type { ProviderProxySetContainmentProof } from '#src/provider-proxy/containment-proof-contract.js';
+import type { ProviderProxySetContainmentEvidence } from '#src/provider-proxy/containment-proof-contract.js';
 import { UNREADABLE_PROVIDER_OPERATION_BOUNDARY } from '#src/recovery/source-registry.js';
 import { backendLog } from '#src/infra/backend-log.js';
 import { JobStore } from '#src/jobs/store.js';
@@ -67,13 +67,17 @@ const TEST_AUTONOMOUS_DEADLINE = {
   heartbeatHoldBound: providerProxyHeartbeatHoldBound({ orphanTimeoutMs: 37_000, teardownReserveMs: 14_000 }),
 };
 
-const noContainmentProof = async (): Promise<ProviderProxySetContainmentProof> => ({
+const noContainmentProof = async (): Promise<ProviderProxySetContainmentEvidence> => ({
   kind: 'enforcers-observed',
   observations: [
     { role: 'guardian', observation: 'unknown' },
     { role: 'reaper', observation: 'unknown' },
   ],
 });
+
+const unexpectedRecordedContainmentReap = (): never => {
+  throw new Error('execution services fixture unexpectedly requested recorded containment reaping');
+};
 
 type SharedSetControl = 'settlement-timeout' | 'heartbeat-failed';
 
@@ -111,7 +115,8 @@ function createUnreadableStartupHarness() {
     operationRegistry: new LocalOperationRegistry(),
     providerProxyClaims: claims,
     providerProxyLifecycleRef: new ProviderProxySetLifecycleRef(),
-    providerProxySetContainmentProver: { proveContainmentAbsent: noContainmentProof },
+    providerProxySetContainmentProver: { collectContainmentEvidence: noContainmentProof },
+    reapRecordedContainment: unexpectedRecordedContainmentReap,
     providerHostManager: {},
   } as never;
   const services = createExecutionServices({
@@ -191,7 +196,8 @@ async function createSharedSetHarness(control: SharedSetControl) {
     operationRegistry,
     providerProxyClaims: claims,
     providerProxyLifecycleRef: lifecycleRef,
-    providerProxySetContainmentProver: { proveContainmentAbsent: noContainmentProof },
+    providerProxySetContainmentProver: { collectContainmentEvidence: noContainmentProof },
+    reapRecordedContainment: unexpectedRecordedContainmentReap,
     providerHostManager: {},
   } as never;
   const services = createExecutionServices({
@@ -364,7 +370,8 @@ describe('execution services provider-proxy proof composition', () => {
       operationRegistry: new LocalOperationRegistry(),
       providerProxyClaims: claims,
       providerProxyLifecycleRef: new ProviderProxySetLifecycleRef(),
-      providerProxySetContainmentProver: { proveContainmentAbsent: noContainmentProof },
+      providerProxySetContainmentProver: { collectContainmentEvidence: noContainmentProof },
+      reapRecordedContainment: unexpectedRecordedContainmentReap,
       providerHostManager: {},
     } as never;
 
@@ -498,7 +505,7 @@ describe('execution services provider-proxy proof composition', () => {
       throw new Error('capsule redemption was not expected');
     });
     const proveContainmentAbsent = vi.fn(
-      async (): Promise<ProviderProxySetContainmentProof> => ({
+      async (): Promise<ProviderProxySetContainmentEvidence> => ({
         kind: 'enforcers-observed',
         observations: [
           { role: 'guardian', observation: 'unknown' },
@@ -513,7 +520,8 @@ describe('execution services provider-proxy proof composition', () => {
       providerProxyClaims: claims,
       providerProxyLifecycleRef: lifecycleRef,
       providerProxyInheritance: { inheritProviderProxySet, redeemDiscoveredCapsule },
-      providerProxySetContainmentProver: { proveContainmentAbsent },
+      providerProxySetContainmentProver: { collectContainmentEvidence: proveContainmentAbsent },
+      reapRecordedContainment: unexpectedRecordedContainmentReap,
       providerHostManager: {},
     } as never;
 
@@ -556,7 +564,8 @@ describe('execution services provider-proxy proof composition', () => {
       operationRegistry,
       providerProxyClaims: claims,
       providerProxyLifecycleRef: lifecycleRef,
-      providerProxySetContainmentProver: { proveContainmentAbsent: noContainmentProof },
+      providerProxySetContainmentProver: { collectContainmentEvidence: noContainmentProof },
+      reapRecordedContainment: unexpectedRecordedContainmentReap,
       providerHostManager: {},
     } as never;
     const services = createExecutionServices({
@@ -646,7 +655,8 @@ describe('execution services provider-proxy proof composition', () => {
       operationRegistry,
       providerProxyClaims: claims,
       providerProxyLifecycleRef: lifecycleRef,
-      providerProxySetContainmentProver: { proveContainmentAbsent: noContainmentProof },
+      providerProxySetContainmentProver: { collectContainmentEvidence: noContainmentProof },
+      reapRecordedContainment: unexpectedRecordedContainmentReap,
       providerHostManager: {},
     } as never;
     const warning = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
@@ -827,8 +837,13 @@ describe('execution services provider-proxy proof composition', () => {
         identity: ProviderProxySetIdentity,
         db: Database,
         signal: AbortSignal,
-      ) => Promise<ProviderProxySetContainmentProof>
-    >(async () => ({ kind: 'absent', receipt: 'process-proof-receipt' }));
+      ) => Promise<ProviderProxySetContainmentEvidence>
+    >(async () => ({
+      kind: 'reap-required',
+      containment: { pid: 900_001, incarnation: testIncarnation(900_001), processGroupId: 900_001 },
+      recordedRoots: [],
+    }));
+    const reapRecordedContainment = vi.fn(async () => 'closed-control-path-containment-absent');
     const world = {
       identity: { buildSetId: FIXTURE_BUILD_SET_ID },
       storeServicesRef: {
@@ -843,7 +858,8 @@ describe('execution services provider-proxy proof composition', () => {
           throw new Error('capsule redemption was not expected');
         },
       },
-      providerProxySetContainmentProver: { proveContainmentAbsent },
+      providerProxySetContainmentProver: { collectContainmentEvidence: proveContainmentAbsent },
+      reapRecordedContainment,
       providerHostManager: {},
     } as never;
     createExecutionServices({
@@ -907,16 +923,16 @@ describe('execution services provider-proxy proof composition', () => {
     await flushMicrotasks();
     time.tick(30_000);
     await flushMicrotasks();
-
+    expect(proveContainmentAbsent.mock.calls.length).toBeGreaterThanOrEqual(1);
     expect({
-      publicProofCalls: proveContainmentAbsent.mock.calls.length,
       proofDb: proveContainmentAbsent.mock.calls[0]?.[1],
+      reapAttempts: reapRecordedContainment.mock.calls.length,
       stopAttempts,
       represented: lifecycle.snapshot().represented,
       states: lifecycle.snapshot().states,
     }).toEqual({
-      publicProofCalls: 1,
       proofDb: db,
+      reapAttempts: 1,
       stopAttempts: 0,
       represented: 0,
       states: [],
@@ -957,7 +973,7 @@ describe('execution services provider-proxy proof composition', () => {
         },
       },
       providerProxySetContainmentProver: {
-        proveContainmentAbsent: async () => ({
+        collectContainmentEvidence: async () => ({
           kind: 'enforcers-observed' as const,
           observations: [
             { role: 'guardian', observation: 'unknown' },
@@ -965,6 +981,7 @@ describe('execution services provider-proxy proof composition', () => {
           ] as const,
         }),
       },
+      reapRecordedContainment: unexpectedRecordedContainmentReap,
       providerHostManager: {},
     } as never;
     const services = createExecutionServices({
@@ -1037,7 +1054,8 @@ describe('execution services provider-proxy heartbeat-hold composition', () => {
       operationRegistry: new LocalOperationRegistry(),
       providerProxyClaims: new ProviderProxySetClaimMirror(),
       providerProxyLifecycleRef: lifecycleRef,
-      providerProxySetContainmentProver: { proveContainmentAbsent: noContainmentProof },
+      providerProxySetContainmentProver: { collectContainmentEvidence: noContainmentProof },
+      reapRecordedContainment: unexpectedRecordedContainmentReap,
       providerHostManager: {},
     } as never;
     const services = createExecutionServices({

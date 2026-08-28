@@ -383,6 +383,9 @@ describe('createProviderProxyAcquisitionSteps', () => {
           acceptance: { kind: 'accepted', operation: notice.operation, disposition: 'record-absent' },
         }),
       }),
+      reapRecordedContainment: () => {
+        throw new Error('provider proxy acquisition fixture unexpectedly requested recorded containment reaping');
+      },
       reportLifecycle: () => undefined,
     });
     lifecycle.initializeClaimSlots();

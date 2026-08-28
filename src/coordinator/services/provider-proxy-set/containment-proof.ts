@@ -1,14 +1,7 @@
 import { createRecordedProcessObserver, type ProcessIncarnation } from '../../../infra/node-process.js';
-import { createMonotonicClock } from '../../../infra/monotonic-clock.js';
-import { reapRecordedContainment } from '../../../infra/process-containment.js';
 import {
-  MAX_PROXY_RECORDED_PROVIDER_ROOTS,
-  providerProxyDisappearanceReceipt,
-} from '../../../provider-proxy/enforcement.js';
-import { PROXY_TEARDOWN_RESERVE_MS } from '../../../provider-proxy/orphan-deadline.js';
-import {
-  providerProxySetContainmentProofSchema,
-  type ProviderProxySetContainmentProof,
+  providerProxySetContainmentEvidenceSchema,
+  type ProviderProxySetContainmentEvidence,
   type ProviderProxySetEnforcerObservations,
 } from '../../../provider-proxy/containment-proof-contract.js';
 import type { Runtime } from '../../../runtime/ports.js';
@@ -23,31 +16,28 @@ import {
   type ProviderProxySetIdentity,
 } from './identity.js';
 
-const providerSetDisappearanceClockScope = Symbol('provider-set-disappearance');
-
 /**
- * Lets dual recorded-enforcer absence authorize recorded-set reaping, then proves the set absent only after the
- * proxy process group plus every recorded provider root is confirmed absent.
+ * Observes the dual recorded enforcers and gathers the exact recorded targets without signalling any process.
  */
 export interface ProviderProxySetContainmentProver {
-  proveContainmentAbsent(
+  collectContainmentEvidence(
     identity: ProviderProxySetIdentity,
     db: Database,
     signal: AbortSignal,
-  ): Promise<ProviderProxySetContainmentProof>;
+  ): Promise<ProviderProxySetContainmentEvidence>;
 }
 
-async function proveProviderProxySetContainmentAbsent(
+async function collectProviderProxySetContainmentEvidence(
   identity: ProviderProxySetIdentity,
   db: Database,
   runtime: Runtime,
   signal: AbortSignal,
-): Promise<ProviderProxySetContainmentProof> {
+): Promise<ProviderProxySetContainmentEvidence> {
   const platform = runtime.env.platform() as NodeJS.Platform;
   const operationScan = readProviderOperations(db);
   // An unreadable row may name another provider root for *this* set, and acting on the decoded subset would
   // let that root survive outside the process group while this function minted a disappearance receipt. So the
-  // proof stays unknown — but only for the sets the row could belong to, which is asked of both its key and
+  // evidence stays fenced — but only for the sets the row could belong to, which is asked of both its key and
   // its bytes. Those disagree exactly when the decode failed *because* they disagree, and a row attributable
   // from neither side could belong to any set, so it fences all of them.
   const hidesARootOfThisSet = attributeUnreadableProviderOperations(db, operationScan.unreadableKeys).some(
@@ -82,7 +72,7 @@ async function proveProviderProxySetContainmentAbsent(
     },
   ];
   if (observations.some(({ observation }) => observation !== 'absent')) {
-    return providerProxySetContainmentProofSchema.parse({ kind: 'enforcers-observed', observations });
+    return providerProxySetContainmentEvidenceSchema.parse({ kind: 'enforcers-observed', observations });
   }
   signal.throwIfAborted();
 
@@ -102,30 +92,16 @@ async function proveProviderProxySetContainmentAbsent(
     incarnation: identity.proxyIncarnation,
     processGroupId: identity.proxyProcessGroupId,
   };
-  const clock = createMonotonicClock(providerSetDisappearanceClockScope);
-  await reapRecordedContainment(
-    containment,
-    recordedRoots,
-    clock.shiftMilliseconds(clock.now(), PROXY_TEARDOWN_RESERVE_MS),
-    {
-      maxRecordedRoots: MAX_PROXY_RECORDED_PROVIDER_ROOTS,
-      clock,
-      process: runtime.process,
-      platform,
-      signal,
-    },
-  );
   signal.throwIfAborted();
-  return { kind: 'absent', receipt: providerProxyDisappearanceReceipt(containment, recordedRoots) };
+  return providerProxySetContainmentEvidenceSchema.parse({ kind: 'reap-required', containment, recordedRoots });
 }
 
 /**
- * Binds store-aware containment proof to one runtime; callers receive no destructive primitive other than the
- * prover's validated `absent` receipt path.
+ * Binds store-aware read-only containment evidence collection to one runtime.
  */
 export function createProviderProxySetContainmentProver(runtime: Runtime): ProviderProxySetContainmentProver {
   return {
-    proveContainmentAbsent: (identity, db, signal) =>
-      proveProviderProxySetContainmentAbsent(identity, db, runtime, signal),
+    collectContainmentEvidence: (identity, db, signal) =>
+      collectProviderProxySetContainmentEvidence(identity, db, runtime, signal),
   };
 }

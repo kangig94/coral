@@ -17,6 +17,8 @@ import type {
   ProviderHostListResponse,
   ProviderProxySetContainRequest,
   ProviderProxySetContainResponse,
+  UnreadableProviderOperationDiscardRequest,
+  UnreadableProviderOperationDiscardResult,
 } from './catalog.js';
 import type { JobScopeRelation, ScopeCheckResult } from '../../jobs/scope.js';
 import type { JobsListFilters } from '../../jobs/read-queries.js';
@@ -57,6 +59,9 @@ interface WorkflowRequestPort {
 
 export interface RecoveryQuarantineRequestPort {
   clear(request: RecoveryQuarantineClearRequest, signal?: AbortSignal): Promise<RecoveryQuarantineClearResult>;
+  discardProviderOperation?(
+    request: UnreadableProviderOperationDiscardRequest,
+  ): Promise<UnreadableProviderOperationDiscardResult> | UnreadableProviderOperationDiscardResult;
 }
 
 export interface ProviderHostRequestPort {

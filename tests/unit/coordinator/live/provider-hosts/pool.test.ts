@@ -161,6 +161,9 @@ function createProxySetLifecycleRef(onSlotReleased?: (routeKey: string) => void)
         ] as const,
       }),
     }),
+    reapRecordedContainment: () => {
+      throw new Error('provider host pool fixture unexpectedly requested recorded containment reaping');
+    },
     reportLifecycle: () => undefined,
     ...(onSlotReleased === undefined ? {} : { onSlotReleased }),
   });

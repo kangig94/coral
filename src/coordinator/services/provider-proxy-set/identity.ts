@@ -8,6 +8,7 @@ import {
 } from '../../../provider-proxy/protocol.js';
 import type { HandoffCapsule, HandoffCapsuleV3 } from '../../../provider-proxy/handoff-capsule.js';
 import type { ProviderOperationRecord } from '../../../store/provider-operation-record.js';
+import { providerProxySetAddressSchema, type ProviderProxySetAddress } from '../../../provider-proxy/set-address.js';
 
 const nonNegativeSafeIntegerSchema = z.number().int().nonnegative().safe();
 
@@ -35,19 +36,7 @@ export const providerProxySetIdentitySchema = z
 export type ProviderProxySetIdentity = z.output<typeof providerProxySetIdentitySchema>;
 export type ProviderProxySetKey = string & { readonly __providerProxySetKey: unique symbol };
 
-export const providerProxySetAddressSchema = z
-  .object({
-    buildSetId: canonicalUuidSchema,
-    hostFingerprint: hostFingerprintSchema,
-    proxyInstanceId: canonicalUuidSchema,
-  })
-  .strict();
-
-export type ProviderProxySetAddress = z.output<typeof providerProxySetAddressSchema>;
 export type ProviderProxySetAddressKey = string & { readonly __providerProxySetAddressKey: unique symbol };
-
-const PROVIDER_PROXY_SET_TOKEN_PREFIX = 'pps1.';
-const BASE64URL_PATTERN = /^[A-Za-z0-9_-]+$/;
 
 const IDENTITY_FIELDS = [
   'buildSetId',
@@ -99,39 +88,6 @@ export function providerProxySetAddressKey(address: ProviderProxySetAddress): Pr
     parsed.hostFingerprint,
     parsed.proxyInstanceId,
   ]) as ProviderProxySetAddressKey;
-}
-
-export function encodeProviderProxySetAddress(input: ProviderProxySetAddress): string {
-  const address = providerProxySetAddressSchema.parse(input);
-  const canonical = {
-    buildSetId: address.buildSetId,
-    hostFingerprint: address.hostFingerprint,
-    proxyInstanceId: address.proxyInstanceId,
-  };
-  return `${PROVIDER_PROXY_SET_TOKEN_PREFIX}${Buffer.from(JSON.stringify(canonical), 'utf8').toString('base64url')}`;
-}
-
-export function decodeProviderProxySetAddress(token: string): ProviderProxySetAddress {
-  if (!token.startsWith(PROVIDER_PROXY_SET_TOKEN_PREFIX)) {
-    throw new Error("provider_proxy_set_token_invalid: set token must start with 'pps1.'");
-  }
-  const encoded = token.slice(PROVIDER_PROXY_SET_TOKEN_PREFIX.length);
-  if (!BASE64URL_PATTERN.test(encoded)) {
-    throw new Error('provider_proxy_set_token_invalid: set token payload must be unpadded base64url');
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'));
-  } catch (error: unknown) {
-    throw new Error('provider_proxy_set_token_invalid: set token payload is not valid UTF-8 JSON', { cause: error });
-  }
-
-  const address = providerProxySetAddressSchema.parse(parsed);
-  if (encodeProviderProxySetAddress(address) !== token) {
-    throw new Error('provider_proxy_set_token_invalid: set token is not canonically encoded');
-  }
-  return address;
 }
 
 export function providerProxySetIdentityFromRecord(

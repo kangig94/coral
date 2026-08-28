@@ -5,6 +5,7 @@ import {
   completeExecutingProviderOperationAttachment,
   compareAndSwapProviderOperation,
   deleteProviderOperation,
+  discardUnreadableProviderOperation,
   finishProviderOperationDueSelection,
   insertProviderOperation,
   readProviderOperation,
@@ -14,6 +15,7 @@ import {
   readSupersededProviderOperations,
   retireSupersededProviderOperation,
   readProviderOperationsDue,
+  observeProviderOperationRecord,
   subscribeProviderOperationMutations,
 } from '#src/store/provider-operation-journal.js';
 import {
@@ -604,6 +606,55 @@ describe('provider operation journal', () => {
         db.prepare<[string], { key: string }>('SELECT key FROM meta WHERE key = ?').all(supersededKey),
         'a generation this build cannot read is not a generation it may delete',
       ).toEqual([{ key: supersededKey }]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('discards only the exact unreadable revision and its known-generation due pointers', () => {
+    const db = createDb();
+    try {
+      const stranded = providerOperationRecord('prepare-pending', { job: 2 });
+      const key = recordKey(stranded);
+      const raw = '{"unsupportedVersion":99}';
+      const dueKeys = [`${DUE_PREFIX}legacy-current`, 'provider_operation_saga.v1:due:legacy-superseded'];
+      const insert = db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)');
+      insert.run(key, raw);
+      for (const due of dueKeys) insert.run(due, key);
+      const observed = observeProviderOperationRecord(db, key);
+      if (observed.kind !== 'unreadable') throw new Error(`expected unreadable row, received ${observed.kind}`);
+
+      expect(discardUnreadableProviderOperation(db, key, `sha256:${'0'.repeat(64)}`)).toEqual({
+        kind: 'revision-mismatch',
+        currentRevision: observed.attribution.revision,
+      });
+      expect(observeProviderOperationRecord(db, key).kind).toBe('unreadable');
+
+      expect(discardUnreadableProviderOperation(db, key, observed.attribution.revision)).toEqual({
+        kind: 'discarded',
+      });
+      expect(observeProviderOperationRecord(db, key)).toEqual({ kind: 'absent' });
+      expect(
+        db.prepare<[string], { key: string }>('SELECT key FROM meta WHERE value = ? ORDER BY key').all(key),
+      ).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('refuses to discard a provider-operation row this build can read', () => {
+    const db = createDb();
+    try {
+      const readable = providerOperationRecord('executing');
+      insertProviderOperation(db, readable);
+      const key = recordKey(readable);
+      const value = db.prepare<[string], { value: string }>('SELECT value FROM meta WHERE key = ?').get(key)?.value;
+      if (value === undefined) throw new Error('expected provider operation row');
+      const revision = attributeUnreadableProviderOperations(db, [key])[0]?.revision;
+      if (revision === undefined) throw new Error('expected exact revision');
+
+      expect(discardUnreadableProviderOperation(db, key, revision)).toEqual({ kind: 'readable' });
+      expect(readProviderOperation(db, readable.operation)).toEqual(readable);
     } finally {
       db.close();
     }

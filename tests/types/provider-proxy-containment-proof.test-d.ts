@@ -1,20 +1,20 @@
-import type { ProviderProxySetContainmentProof } from '#src/provider-proxy/containment-proof-contract.js';
+import type { ProviderProxySetContainmentEvidence } from '#src/provider-proxy/containment-proof-contract.js';
 
-const observedEnforcerProof: ProviderProxySetContainmentProof = {
+const observedEnforcerEvidence: ProviderProxySetContainmentEvidence = {
   kind: 'enforcers-observed',
   observations: [
     { role: 'guardian', observation: 'absent' },
     { role: 'reaper', observation: 'unknown' },
   ],
 };
-void observedEnforcerProof;
+void observedEnforcerEvidence;
 
-const contradictoryProof: ProviderProxySetContainmentProof = {
+const contradictoryEvidence: ProviderProxySetContainmentEvidence = {
   kind: 'enforcers-observed',
-  // @ts-expect-error all-absent evidence must continue through recorded-set reaping and return a receipt.
+  // @ts-expect-error all-absent enforcer evidence must carry exact targets for lifecycle-owned reaping.
   observations: [
     { role: 'guardian', observation: 'absent' },
     { role: 'reaper', observation: 'absent' },
   ],
 };
-void contradictoryProof;
+void contradictoryEvidence;

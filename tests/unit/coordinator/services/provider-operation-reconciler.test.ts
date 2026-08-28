@@ -171,6 +171,9 @@ function lifecycleForSchedule(
         throw error;
       },
     ),
+    reapRecordedContainment: () => {
+      throw new Error('provider operation reconciler fixture unexpectedly requested recorded containment reaping');
+    },
     reportLifecycle: () => undefined,
   });
   lifecycle.initializeClaimSlots();

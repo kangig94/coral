@@ -9,6 +9,7 @@ const expectedRpcRequires = {
   'sessions.create': 'jobs:control',
   'workflow.run': 'jobs:control',
   'coordinator.recovery_quarantine.clear': 'system:debug',
+  'coordinator.recovery_quarantine.discard_provider_operation': 'system:shutdown',
   'coordinator.provider_host.list': 'system:debug',
   'coordinator.provider_host.inspect': 'system:debug',
   'coordinator.provider_host.evict': 'system:shutdown',
