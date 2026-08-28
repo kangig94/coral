@@ -316,7 +316,7 @@ coral-cli backend recovery-quarantine list
 coral-cli backend recovery-quarantine clear --boundary <boundary> --key <key> --revision <revision|until-cleared>
 ```
 
-`list` reads a compatible local store directly and works with the daemon down. `clear` sends `coordinator.recovery_quarantine.clear` over authenticated IPC and requires the canonical coordinator to be running—the inverse of the offline `store-reset discard` mutation. It retries one exact `(boundary, key, revision)` coordinate; there is deliberately no clear-all operation. The catalog also projects `POST /coordinator/recovery-quarantine/clear`, but HTTP backend-token capabilities exclude its required `system:debug`; the supported operator path is IPC.
+`list` reads a compatible local store directly and works with the daemon down. Copy the displayed `rqk1-…` key token exactly; it is a shell-safe encoding of the durable subject key, including keys that contain NUL. `clear` sends `coordinator.recovery_quarantine.clear` over authenticated IPC and requires the canonical coordinator to be running—the inverse of the offline `store-reset discard` mutation. It retries one exact `(boundary, key, revision)` coordinate; there is deliberately no clear-all operation. The catalog also projects `POST /coordinator/recovery-quarantine/clear`, but HTTP backend-token capabilities exclude its required `system:debug`; the supported operator path is IPC.
 
 ### Backend state
 

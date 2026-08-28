@@ -1,8 +1,8 @@
 # TODO — who may own the address the singleton lock lives at
 
-**Status**: open for binder-local enforcement, ACL evidence, and legacy invocations with an unguarded
-custom temp directory. Current-build installation identity and the common v0.10.9 rollback addresses are
-closed. Relocated addresses now live under
+**Status**: the startup exclusion gap for a published v0.10.9 address is closed. Binder-local enforcement,
+ACL evidence, and a legacy custom address that remains unpublished across the startup observation window
+remain open. Relocated addresses now live under
 `socketFallbackDir(stateRoot)` — `/tmp/coral-<state-root-hash>/`. The directory
 therefore names the installation rather than the caller, while the bind boundary separately requires the
 calling uid to own it with mode `0700`. A second uid over one state root reaches the same directory and
@@ -71,7 +71,7 @@ still checked at the bind boundary: the first caller that can securely create th
 different uid reaches the same address and receives the existing `foreign` refusal. This supplies the
 three-answer disposition without adding uid to installation identity.
 
-## Shipped-selector compatibility — narrowed to computable rollback addresses
+## Shipped-selector compatibility — published addresses participate in exclusion
 
 The path owner computes v0.10.9 guards from the raw configured temp value and the runtime's system temp
 directory, admits only non-empty absolute directories, and deduplicates the result. It decides whether the
@@ -85,13 +85,31 @@ this process cannot enumerate that address. Startup therefore refuses and names 
 The operator can unset `TMPDIR` or set it to a non-empty absolute directory and retry; Coral will not claim
 that no shipped address exists.
 
-The guarantee is deliberately finite. v0.10.9 inherited its launcher's environment and accepted any writable
-`TMPDIR`, so a later rollback launched with a different absolute custom directory can still derive an address this
-process could not predict. Such a process can bind there and coexist. An operator using a custom rollback
-directory outside the guarded set must either launch the rollback with the current coordinator's `TMPDIR` (or
-the platform default) or stop the current coordinator first. A total cross-environment guarantee still needs
-an operating-system exclusion primitive both builds already acquire; it cannot be retrofitted into v0.10.9's
-unbounded selector.
+The finite selector is no longer the only evidence. Before binding, startup reads the discovery record in this
+state root with `readDiscoveryRecordDisposition`. A decoded absolute record's `socketPath` joins the compatibility
+bind set even when this build could not derive it from its own environment. A live v0.10.9 coordinator launched with
+an absolute selector has therefore published the exact address that excludes a contender, including an address
+selected from its launcher's custom absolute `TMPDIR`. An unreadable or undecodable record stops startup with
+the documented unreadable-record refusal; so does a decoded relative socket string, because v0.10.9 resolved it
+against a launcher working directory that the record does not publish. Only `missing` means there is no published
+address to add.
+
+The ordering is read, bind the current address plus every derived and published address, then read again before
+accepting bind authority. If the second read names an address outside the attempted set, startup closes every
+listener it just acquired and repeats the atomic bind with that address included. A live listener then produces
+the binder's addressed-incumbent disposition and enters the existing handoff against that exact socket; a stale
+record whose address can be bound does not counterfeit handoff provenance. This excludes the race in which
+v0.10.9 selects an otherwise unenumerable socket after the first read, binds it, and publishes its record before
+the contender's post-bind read: the contender cannot keep its own listeners while probing or handing off the
+newly published incumbent.
+
+What remains is the interval in which no usable record exists at either read. If v0.10.9 uses the ordinary run
+socket, an empty derived guard set is safe because both builds still contend for the same primary address. If it
+uses one of the derived fallback guards, that address is bound atomically too. Coexistence is still possible only
+when v0.10.9 binds an unenumerated custom fallback and does not publish it until after this build's post-bind read
+— including a rollback launched later while this coordinator is already running. Closing that last interval
+would require a continuously enforced operating-system primitive both builds already acquire; the discovery
+record narrows the gap but cannot retrofit such a primitive into v0.10.9.
 
 ## Part 3 — the assertion proves owner and mode, which is less than privacy
 
@@ -123,8 +141,9 @@ establish, they cannot either.
 ## Explicitly out of scope
 
 The current-build fallback address and byte bound are settled. Unit coverage changes the calling uid over
-one state root and requires the relocated coordinator and provider addresses to remain unchanged. Arbitrary
-custom legacy temp directories remain outside the narrowed compatibility guarantee described above.
+one state root and requires the relocated coordinator and provider addresses to remain unchanged. A published
+custom legacy address is now covered; only an unenumerated address that remains unpublished across the startup
+observation window is outside the compatibility guarantee described above.
 
 ## Start condition
 

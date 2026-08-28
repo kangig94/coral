@@ -1,3 +1,4 @@
+import type { ListenIpcServerResult } from '#src/transport/ipc/server.js';
 import { createServer } from 'node:http';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { finalizeStoreServices } from '#src/coordinator/index.js';
@@ -37,6 +38,8 @@ const mockState = vi.hoisted(() => {
     events,
     fakeDb,
     acquiredViaHandoff: false,
+    bindAttemptOnly: false,
+    lastBindResult: null as HandoffMod.HandoffBindResult | null,
     currentBundleDir: '/tmp/plugin/bridge' as string | null,
     startupRouting: 'open' as 'open' | 'handoff',
     handoffTarget: Object.freeze(Object.create(null)),
@@ -57,10 +60,11 @@ vi.mock('#src/coordinator/handoff.js', async (importOriginal) => {
   return {
     ...actual,
     bindWithHandoff: vi.fn(async (options: HandoffMod.HandoffOptions) => {
-      const bound = await actual.bindWithHandoff({
-        ...options,
-        bindAttempt: async () => ({ kind: 'bound' }),
-      });
+      if (mockState.bindAttemptOnly) {
+        mockState.lastBindResult = await options.bindAttempt();
+        throw new Error('bind-attempt-observed');
+      }
+      const bound = await actual.bindWithHandoff(options);
       mockState.events.push('bindWithHandoff:return');
       if (!mockState.acquiredViaHandoff) {
         return bound;
@@ -143,6 +147,11 @@ function makeRuntime(): Runtime {
     },
     storage: {
       mkdirSync: vi.fn(),
+      readFileSync: vi.fn(() => {
+        const error = new Error('missing discovery record') as NodeJS.ErrnoException;
+        error.code = 'ENOENT';
+        throw error;
+      }),
       rmSync: vi.fn(),
       writeAtomicSync: vi.fn(),
     },
@@ -329,7 +338,12 @@ function makeLifecycleDeps(): { deps: LifecycleDeps; servicesRef: ReturnType<typ
       listenFn: vi.fn(async () => ({ port: 4321, host: '127.0.0.1' })),
       ipcServer: {} as never,
       closeIpcServerFn: vi.fn(async () => {}),
-      listenIpcFn: vi.fn(async () => ({ socketPath: runtime.paths.coral.coordinator.socketPath })),
+      listenIpcFn: vi.fn(
+        async (): Promise<ListenIpcServerResult> => ({
+          kind: 'bound',
+          socketPath: runtime.paths.coral.coordinator.socketPath,
+        }),
+      ),
     },
   };
 }
@@ -337,6 +351,8 @@ function makeLifecycleDeps(): { deps: LifecycleDeps; servicesRef: ReturnType<typ
 afterEach(() => {
   mockState.events.length = 0;
   mockState.acquiredViaHandoff = false;
+  mockState.bindAttemptOnly = false;
+  mockState.lastBindResult = null;
   mockState.currentBundleDir = '/tmp/plugin/bridge';
   mockState.startupRouting = 'open';
   mockState.fakeDb.closed = false;
@@ -344,6 +360,103 @@ afterEach(() => {
 });
 
 describe('lifecycle reset authority and finalizer order', () => {
+  const publishedRecord = (socketPath: string): string =>
+    JSON.stringify({
+      pid: 4321,
+      port: 4321,
+      socketPath,
+      bundleHash: 'v0.10.9-bundle',
+      flavor: 'prod',
+      namespace: 'test-ns',
+      startedAt: 1_000,
+      token: 'v0.10.9-token',
+      bootToken: 'v0.10.9-boot-token',
+      version: '0.10.9',
+      instanceId: 'v0.10.9-instance',
+    });
+
+  it('binds the socket published by a shipped-shaped discovery record as an exclusion address', async () => {
+    const { deps } = makeLifecycleDeps();
+    const publishedSocketPath = '/custom-launcher-temp/coral-prod-shipped.sock';
+    vi.mocked(deps.runtime.storage.readFileSync).mockReturnValue(publishedRecord(publishedSocketPath));
+
+    await createLifecycle(deps, async () => []).start();
+
+    expect(deps.listenIpcFn).toHaveBeenCalledWith(deps.ipcServer, [publishedSocketPath]);
+    const handoff = await import('#src/coordinator/handoff.js');
+    expect(vi.mocked(handoff.bindWithHandoff).mock.calls[0]?.[0].socketPath).toBe(publishedSocketPath);
+  });
+
+  it('closes its listeners and hands off when a published socket appears between the read and bind', async () => {
+    const { deps } = makeLifecycleDeps();
+    const listenIpcFn = deps.listenIpcFn;
+    if (listenIpcFn === undefined) throw new Error('expected IPC listener');
+    const publishedSocketPath = '/late-launcher-temp/coral-prod-shipped.sock';
+    const missing = new Error('missing discovery record') as NodeJS.ErrnoException;
+    missing.code = 'ENOENT';
+    vi.mocked(deps.runtime.storage.readFileSync)
+      .mockImplementationOnce(() => {
+        throw missing;
+      })
+      .mockReturnValue(publishedRecord(publishedSocketPath));
+    vi.mocked(listenIpcFn)
+      .mockResolvedValueOnce({ kind: 'bound', socketPath: deps.runtime.paths.coral.coordinator.socketPath })
+      .mockResolvedValueOnce({ kind: 'incumbent', socketPath: publishedSocketPath });
+    mockState.bindAttemptOnly = true;
+
+    await expect(createLifecycle(deps, async () => []).start()).rejects.toThrow('bind-attempt-observed');
+
+    expect(mockState.lastBindResult).toEqual({
+      kind: 'addressed-incumbent',
+      socketPath: publishedSocketPath,
+    });
+    expect(deps.closeIpcServerFn).toHaveBeenCalled();
+    expect(listenIpcFn).toHaveBeenNthCalledWith(2, deps.ipcServer, [publishedSocketPath]);
+    expect(mockState.events).not.toContain('resetAuthority:create');
+  });
+
+  it('closes its listeners when the post-bind discovery record is undecodable', async () => {
+    const { deps } = makeLifecycleDeps();
+    const missing = new Error('missing discovery record') as NodeJS.ErrnoException;
+    missing.code = 'ENOENT';
+    vi.mocked(deps.runtime.storage.readFileSync)
+      .mockImplementationOnce(() => {
+        throw missing;
+      })
+      .mockReturnValue('{"pid":');
+
+    await expect(createLifecycle(deps, async () => []).start()).rejects.toMatchObject({
+      code: 'coordinator_record_unreadable',
+    });
+
+    expect(deps.listenIpcFn).toHaveBeenCalledOnce();
+    expect(deps.closeIpcServerFn).toHaveBeenCalled();
+    expect(mockState.events).not.toContain('resetAuthority:create');
+  });
+
+  it.each([
+    ['undecodable', (): string => '{"pid":'],
+    ['relative published socket', (): string => publishedRecord('relative-temp/coral-prod-shipped.sock')],
+    [
+      'unreadable',
+      (): string => {
+        const error = new Error('permission denied') as NodeJS.ErrnoException;
+        error.code = 'EACCES';
+        throw error;
+      },
+    ],
+  ] as const)('does not bind when the discovery record is %s', async (_label, readRecord) => {
+    const { deps } = makeLifecycleDeps();
+    vi.mocked(deps.runtime.storage.readFileSync).mockImplementation(readRecord);
+
+    await expect(createLifecycle(deps, async () => []).start()).rejects.toMatchObject({
+      code: 'coordinator_record_unreadable',
+    });
+
+    expect(deps.listenIpcFn).not.toHaveBeenCalled();
+    expect(mockState.events).not.toContain('resetAuthority:create');
+  });
+
   it('rejects an invalid system provider scope before creating destructive store authority', async () => {
     const { deps: baseDeps } = makeLifecycleDeps();
     const deps: LifecycleDeps = {

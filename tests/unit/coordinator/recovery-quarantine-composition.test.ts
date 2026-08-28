@@ -42,6 +42,26 @@ describe('recovery quarantine composition', () => {
     });
   });
 
+  it('should report a missing quarantine row as an operator coordinate mistake', async () => {
+    harness = createHandoffCoresHarness();
+    const coordinator = await harness.bootCore({ instanceId: 'recovery-quarantine-missing-row' });
+    const client = createIpcClient(coordinator.serverInfo.socketPath, harness.runtime.time, {
+      kind: 'boot',
+      token: coordinator.serverInfo.bootToken,
+    });
+
+    await expect(
+      client.request('coordinator.recovery_quarantine.clear', {
+        boundary: 'workflow-recovery',
+        key: 'not-retained',
+        revision: 'revision-1',
+      }),
+    ).rejects.toMatchObject({
+      code: 'recovery_quarantine_subject_not_found',
+      message: 'That recovery quarantine key does not name a retained row.',
+    });
+  });
+
   it.each(repeatableRecoveryBoundaryIds)(
     'should clear an absent subject retained for registered production boundary %s',
     async (boundary) => {

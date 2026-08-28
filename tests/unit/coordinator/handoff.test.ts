@@ -11,6 +11,7 @@ import {
   HandoffEscalationError,
   registerCoordinatorStartupRecovery,
   type BoundCoordinator,
+  type HandoffBindResult,
   type HandoffOptions,
   type HandoffSignalCooldownDisposition,
   type HandoffSignalLedger,
@@ -52,7 +53,7 @@ interface KillCall {
 
 function buildHarness(opts?: {
   bindAttempt?: HandoffOptions['bindAttempt'];
-  bindSequence?: Array<{ kind: 'bound' } | { kind: 'incumbent'; reason: string }>;
+  bindSequence?: HandoffBindResult[];
   totalBudgetMs?: number;
   observeLiveness?: (pid: number, killAttempted: boolean, killCalls: readonly KillCall[]) => ProcessLiveness;
   killReturns?: (signal: NodeJS.Signals | 0) => boolean;
@@ -254,6 +255,45 @@ describe('bindWithHandoff', () => {
     expect(bindAttempt).toHaveBeenCalledTimes(1);
     expect(mockedShutdown).not.toHaveBeenCalled();
     expect(time.now()).toBe(before);
+  });
+
+  it('moves the handoff channel to the exact published socket reported by the binder', async () => {
+    const publishedSocketPath = '/launcher-specific/coral-prod-shipped.sock';
+    const verifiedIdentity: IncumbentIdentity = {
+      pid: 4242,
+      incarnation: testIncarnation(1_000_000),
+      source: 'discovery',
+      instanceId: 'shipped-incumbent',
+      token: 'token',
+      bootToken: 'boot-token',
+      shutdownToken: 'shutdown-token',
+    };
+    const readDiscovery = vi.fn(() => verifiedIdentity);
+    const { options, time } = buildHarness({
+      bindSequence: [{ kind: 'addressed-incumbent', socketPath: publishedSocketPath }, { kind: 'bound' }],
+      readDiscovery,
+    });
+    mockedShutdown.mockResolvedValue(
+      shutdownResult({
+        health: {
+          bundleHash: 'old',
+          flavor: 'prod',
+          namespace: 'ns',
+          pid: verifiedIdentity.pid,
+          incarnation: verifiedIdentity.incarnation,
+        },
+        verifiedIdentity,
+      }),
+    );
+    mockedProbe.mockReturnValue(verifiedIdentity.incarnation ?? null);
+
+    const result = bindWithHandoff(options);
+    await flush();
+    time.tick(200);
+    await expect(result).resolves.toMatchObject({ acquiredViaHandoff: true });
+
+    expect(mockedShutdown).toHaveBeenCalledWith(expect.objectContaining({ socketPath: publishedSocketPath }));
+    expect(readDiscovery).toHaveBeenCalledWith(expect.objectContaining({ socketPath: publishedSocketPath }));
   });
 
   it('runs startup recovery only after the real bound capability registers its coordinator runner', async () => {

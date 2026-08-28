@@ -53,6 +53,7 @@ export type DocumentedCoralSetupErrorCode =
   | 'store_reset_interrupted_non_resettable'
   | 'store_reset_quarantine_failed'
   | 'recovery_quarantine_boundary_not_registered'
+  | 'recovery_quarantine_subject_not_found'
   | 'recovery_quarantine_revision_changed'
   | 'recovery_quarantine_continuation_pending'
   | 'recovery_quarantine_retry_in_progress'
@@ -417,6 +418,11 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
     userMessage: 'That recovery boundary is not available for operator retry.',
     remediation:
       'Run `coral-cli backend recovery-quarantine list` and copy the boundary from a retained row. If the listed boundary is still rejected, update Coral and retry.',
+  },
+  recovery_quarantine_subject_not_found: {
+    userMessage: 'That recovery quarantine key does not name a retained row.',
+    remediation:
+      'Run `coral-cli backend recovery-quarantine list`, copy one row’s current boundary, key, and revision, then retry clear with that exact coordinate.',
   },
   recovery_quarantine_revision_changed: {
     userMessage: 'That recovery quarantine coordinate is stale because its revision changed.',

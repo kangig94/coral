@@ -15,7 +15,7 @@ import {
 import { collectCommandCoverage } from '#src/cli/classify.js';
 import { formatRecoveryQuarantineClear, formatRecoveryQuarantineList } from '#src/cli/format/backend.js';
 import { buildProgram } from '#src/cli/program.js';
-import { RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
+import { encodeRecoveryQuarantineKey, RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema, classifyStoreFile, openStoreDatabase } from '#src/store/db.js';
@@ -118,10 +118,14 @@ describe('backend recovery-quarantine commands', () => {
     expect(entries).toHaveLength(3);
     expect(stdout).toBe(`${formatRecoveryQuarantineList(entries)}\n`);
     expect(stdout).toContain(
-      '- boundary="workflow-recovery" key="workflow-1" revision="fingerprint:revision-1" state=active stage=hydrate',
+      `- boundary="workflow-recovery" key=${encodeRecoveryQuarantineKey(
+        'workflow-1',
+      )} revision="fingerprint:revision-1" state=active stage=hydrate`,
     );
-    expect(stdout).toContain('key="workflow-literal-sentinel" revision="fingerprint:until-cleared"');
-    expect(stdout).toContain('key="workflow-unversioned" revision="until-cleared"');
+    expect(stdout).toContain(
+      `key=${encodeRecoveryQuarantineKey('workflow-literal-sentinel')} revision="fingerprint:until-cleared"`,
+    );
+    expect(stdout).toContain(`key=${encodeRecoveryQuarantineKey('workflow-unversioned')} revision="until-cleared"`);
     expect(stderr).toBe('');
   });
 
@@ -142,7 +146,7 @@ describe('backend recovery-quarantine commands', () => {
       '--boundary',
       'workflow-recovery',
       '--key',
-      'workflow-literal-sentinel',
+      encodeRecoveryQuarantineKey('workflow-literal-sentinel'),
       '--revision',
       'fingerprint:until-cleared',
     ]);
@@ -238,7 +242,7 @@ describe('backend recovery-quarantine commands', () => {
       '--boundary',
       'workflow-recovery',
       '--key',
-      'workflow-1',
+      encodeRecoveryQuarantineKey('workflow-1'),
       '--revision',
       'revision-1',
     ]);
@@ -285,12 +289,7 @@ describe('backend recovery-quarantine commands', () => {
     expect(stderr).toBe('');
   });
 
-  // The error message on a bad coordinate tells the operator to run `list` and copy the exact key, and
-  // `list` renders every field with `JSON.stringify`. For `session-retention-work` that key joins two
-  // identifiers with a NUL, so the printed form is an escape sequence and the stored form is a byte no
-  // command line can carry. Copying what the tool prints has to work, or those rows are addressable by
-  // nothing.
-  it('should accept a subject key exactly as list prints it, escapes included', async () => {
+  it('should accept a NUL-containing subject key exactly as list prints it', async () => {
     const key = `3a15866c\u00006e83e33f:0:0`;
     const entry = {
       boundary: 'session-retention-work',
@@ -306,8 +305,8 @@ describe('backend recovery-quarantine commands', () => {
     };
 
     const printed = formatRecoveryQuarantineList([entry]);
-    const printedKey = /key=("(?:[^"\\]|\\.)*")/.exec(printed)?.[1];
-    expect(printedKey, 'list must render the key as a JSON string').toBeDefined();
+    const printedKey = /key=(rqk1-[0-9a-f]+)/u.exec(printed)?.[1];
+    expect(printedKey, 'list must render one shell-safe key token').toBeDefined();
     expect(printedKey).not.toContain('\u0000');
 
     const clear = vi.fn(async (request: { boundary: string; key: string; revision: string | null }) => ({
@@ -346,7 +345,7 @@ describe('backend recovery-quarantine commands', () => {
       '--boundary',
       'workflow-recovery',
       '--key',
-      'workflow-1',
+      encodeRecoveryQuarantineKey('workflow-1'),
       '--revision',
       'revision-1',
     ]);
@@ -397,7 +396,7 @@ describe('backend recovery-quarantine commands', () => {
       '--boundary',
       'workflow-recovery',
       '--key',
-      'workflow-1',
+      encodeRecoveryQuarantineKey('workflow-1'),
       '--revision',
       'revision-1',
     ]);
@@ -420,7 +419,7 @@ describe('backend recovery-quarantine commands', () => {
       '--boundary',
       'workflow-recovery',
       '--key',
-      'workflow-1',
+      encodeRecoveryQuarantineKey('workflow-1'),
       '--revision',
       'revision-1',
     ]);
@@ -441,7 +440,7 @@ describe('backend recovery-quarantine commands', () => {
       '--boundary',
       '',
       '--key',
-      'workflow-1',
+      encodeRecoveryQuarantineKey('workflow-1'),
       '--revision',
       'revision-1',
     ]);

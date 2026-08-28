@@ -33,7 +33,11 @@ import { assertNever } from '../../infra/error-format.js';
 import { BackendUnreachableError } from '../../infra/http-errors.js';
 import { handoffRoutingStatusPathForRunDir } from '../../infra/path/index.js';
 import { isSafeKbCommitId } from '../../kb/commit-quarantine.js';
-import { RecoveryQuarantineStore, type RecoveryQuarantineEntry } from '../../recovery/quarantine.js';
+import {
+  decodeRecoveryQuarantineKey,
+  RecoveryQuarantineStore,
+  type RecoveryQuarantineEntry,
+} from '../../recovery/quarantine.js';
 import type { RecoveryQuarantineClearRequest, RecoveryQuarantineClearResult } from '../../recovery/source-registry.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { createRealRuntime } from '../../runtime/real.js';
@@ -920,21 +924,6 @@ function parseKbCommitId(value: string): string {
   throw new InvalidArgumentError('KB commit ID must be one safe filesystem path segment.');
 }
 
-/**
- * Accepts a coordinate exactly as `recovery-quarantine list` prints it, which is what this command's
- * own error message tells the operator to copy.
- *
- * `list` renders each field with `JSON.stringify`, so a subject key containing a character JSON escapes
- * reaches the terminal as an escape sequence — and `session-retention-work` joins its two identifiers
- * with a NUL (see `workKey` in `src/sessions/retention-work-item-recovery-source.ts`), which argv cannot
- * carry at all. Passing the
- * printed text through verbatim therefore never matched the stored key, and no other input could:
- * copying gave a literal backslash-u, and the real byte cannot survive a command line. Those rows were
- * unreachable by the one command documented to reach them.
- *
- * Unquoting here rather than changing the stored key keeps existing durable rows addressable; the key's
- * shape is the recovery source's business, not the CLI's.
- */
 function unquoteRecoveryCoordinate(value: string): string {
   if (!value.startsWith('"') || !value.endsWith('"') || value.length < 2) {
     return value;
@@ -953,9 +942,15 @@ function parseRecoveryQuarantineClearOptions(options: {
   readonly revision: string;
 }): RecoveryQuarantineClearRequest {
   const revision = unquoteRecoveryCoordinate(options.revision);
+  const decodedKey = decodeRecoveryQuarantineKey(options.key);
+  if (decodedKey.kind === 'invalid') {
+    throw new InvalidArgumentError(
+      'Recovery subject key must be copied exactly from recovery-quarantine list. Run coral-cli backend recovery-quarantine list and copy the exact boundary, key, and revision.',
+    );
+  }
   const parsed = recoveryQuarantineClearRequestSchema.safeParse({
     boundary: unquoteRecoveryCoordinate(options.boundary),
-    key: unquoteRecoveryCoordinate(options.key),
+    key: decodedKey.key,
     revision:
       revision === RECOVERY_REVISION_UNTIL_CLEARED
         ? null

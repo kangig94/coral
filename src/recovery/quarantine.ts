@@ -12,6 +12,36 @@ import type {
 
 type RecoveryQuarantineClock = Pick<TimePort, 'now'>;
 
+const RECOVERY_QUARANTINE_KEY_PREFIX = 'rqk1-';
+const ENCODED_CODE_UNIT_WIDTH = 4;
+
+export type RecoveryQuarantineKeyDecode = Readonly<{ kind: 'decoded'; key: string }> | Readonly<{ kind: 'invalid' }>;
+
+/** A shell-safe rendering of the exact JavaScript string used as a recovery subject key. */
+export function encodeRecoveryQuarantineKey(key: string): string {
+  let encoded = RECOVERY_QUARANTINE_KEY_PREFIX;
+  for (let index = 0; index < key.length; index += 1) {
+    encoded += key.charCodeAt(index).toString(16).padStart(ENCODED_CODE_UNIT_WIDTH, '0');
+  }
+  return encoded;
+}
+
+export function decodeRecoveryQuarantineKey(encoded: string): RecoveryQuarantineKeyDecode {
+  if (!encoded.startsWith(RECOVERY_QUARANTINE_KEY_PREFIX)) {
+    return { kind: 'invalid' };
+  }
+  const payload = encoded.slice(RECOVERY_QUARANTINE_KEY_PREFIX.length);
+  if (payload.length === 0 || payload.length % ENCODED_CODE_UNIT_WIDTH !== 0 || !/^[0-9a-f]+$/u.test(payload)) {
+    return { kind: 'invalid' };
+  }
+
+  let key = '';
+  for (let offset = 0; offset < payload.length; offset += ENCODED_CODE_UNIT_WIDTH) {
+    key += String.fromCharCode(Number.parseInt(payload.slice(offset, offset + ENCODED_CODE_UNIT_WIDTH), 16));
+  }
+  return encodeRecoveryQuarantineKey(key) === encoded ? { kind: 'decoded', key } : { kind: 'invalid' };
+}
+
 const READ_ONLY_QUARANTINE_CLOCK: RecoveryQuarantineClock = {
   now() {
     throw new Error('Recovery quarantine mutations require a runtime time port.');

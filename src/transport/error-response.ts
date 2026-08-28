@@ -45,6 +45,7 @@ function setupErrorStatusCode(code: string): number {
     case 'kb_commit_already_quarantined':
     case 'kb_commit_quarantine_failed':
     case 'recovery_quarantine_boundary_not_registered':
+    case 'recovery_quarantine_subject_not_found':
     case 'recovery_quarantine_revision_changed':
     case 'recovery_quarantine_continuation_pending':
     case 'recovery_quarantine_retry_in_progress':
@@ -73,6 +74,8 @@ function publicRecoveryQuarantineError(error: unknown): CoralSetupError | null {
   switch (error.code) {
     case 'boundary-not-registered':
       return documentedCoralSetupError('recovery_quarantine_boundary_not_registered');
+    case 'subject-not-found':
+      return documentedCoralSetupError('recovery_quarantine_subject_not_found');
     case 'revision-mismatch':
       return documentedCoralSetupError('recovery_quarantine_revision_changed');
     case 'continuation-not-active':

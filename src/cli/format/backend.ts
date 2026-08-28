@@ -14,7 +14,7 @@ import {
   type HandoffContinuationReason,
   type LiveHandoffResult,
 } from '../../coordinator/handoff-runner.js';
-import type { RecoveryQuarantineEntry } from '../../recovery/quarantine.js';
+import { encodeRecoveryQuarantineKey, type RecoveryQuarantineEntry } from '../../recovery/quarantine.js';
 import type { BackendHealth } from '../../transport/http/backend/health.js';
 import type { BackendStatusFull } from '../../transport/http/backend/status.js';
 import type { ShutdownResult } from '../../transport/http/backend/shutdown.js';
@@ -673,7 +673,9 @@ export function formatRecoveryQuarantineList(entries: readonly RecoveryQuarantin
   const lines = [`Recovery quarantine (${entries.length} ${entries.length === 1 ? 'entry' : 'entries'}):`];
   for (const entry of entries) {
     lines.push(
-      `- boundary=${JSON.stringify(entry.boundary)} key=${JSON.stringify(entry.subject.key)} revision=${JSON.stringify(formatRecoveryRevision(entry))} state=${entry.state} stage=${entry.stage}`,
+      `- boundary=${JSON.stringify(entry.boundary)} key=${encodeRecoveryQuarantineKey(entry.subject.key)} revision=${JSON.stringify(
+        formatRecoveryRevision(entry),
+      )} state=${entry.state} stage=${entry.stage}`,
       `  detected_at=${entry.detectedAt} updated_at=${entry.updatedAt}`,
     );
     if (entry.retry !== null) {
@@ -690,7 +692,9 @@ export function formatRecoveryQuarantineList(entries: readonly RecoveryQuarantin
 }
 
 export function formatRecoveryQuarantineClear(result: RecoveryQuarantineClearResult): string {
-  const coordinate = `boundary=${JSON.stringify(result.boundary)} key=${JSON.stringify(result.key)} revision=${JSON.stringify(formatRecoveryRevisionValue(result.revision))}`;
+  const coordinate = `boundary=${JSON.stringify(result.boundary)} key=${encodeRecoveryQuarantineKey(
+    result.key,
+  )} revision=${JSON.stringify(formatRecoveryRevisionValue(result.revision))}`;
   switch (result.disposition) {
     case 'advanced':
       return `Recovery quarantine resolved and removed: ${coordinate}`;

@@ -186,6 +186,12 @@ describe('CoralSetupError', () => {
       'Run `coral-cli backend recovery-quarantine list` and copy the boundary from a retained row. If the listed boundary is still rejected, update Coral and retry.',
     ],
     [
+      'recovery_quarantine_subject_not_found',
+      {},
+      'That recovery quarantine key does not name a retained row.',
+      'Run `coral-cli backend recovery-quarantine list`, copy one row’s current boundary, key, and revision, then retry clear with that exact coordinate.',
+    ],
+    [
       'recovery_quarantine_revision_changed',
       {},
       'That recovery quarantine coordinate is stale because its revision changed.',

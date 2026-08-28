@@ -362,6 +362,10 @@ async function clearStaleSocket(socketPath: string): Promise<boolean> {
  */
 export type BindSocketResult = { kind: 'bound' } | { kind: 'incumbent'; reason: 'live-listener' };
 
+export type ListenIpcServerResult =
+  | Readonly<{ kind: 'bound'; socketPath: string }>
+  | Readonly<{ kind: 'incumbent'; socketPath: string }>;
+
 function staleSocketClearLockDir(socketPath: string): string {
   return join(dirname(socketPath), `${basename(socketPath)}.clear.lock`);
 }
@@ -461,12 +465,10 @@ export async function listenIpcServer(
   listener: IpcListener,
   socketPath: string,
   compatibilitySocketPaths: readonly string[] = [],
-): Promise<{ socketPath: string }> {
+): Promise<ListenIpcServerResult> {
   const result = await bindSocket(listener.server, socketPath);
   if (result.kind === 'incumbent') {
-    const error = new Error(`IPC socket already in use: ${socketPath}`) as NodeJS.ErrnoException;
-    error.code = 'EADDRINUSE';
-    throw error;
+    return { kind: 'incumbent', socketPath };
   }
   listener.socketPath = socketPath;
   try {
@@ -479,11 +481,8 @@ export async function listenIpcServer(
       compatibility.onShutdownRequest = (reason) => listener.onShutdownRequest?.(reason);
       const compatibilityResult = await bindSocket(compatibility.server, compatibilitySocketPath);
       if (compatibilityResult.kind === 'incumbent') {
-        const error = new Error(
-          `IPC compatibility socket already in use: ${compatibilitySocketPath}`,
-        ) as NodeJS.ErrnoException;
-        error.code = 'EADDRINUSE';
-        throw error;
+        await closeIpcServer(listener);
+        return { kind: 'incumbent', socketPath: compatibilitySocketPath };
       }
       compatibility.socketPath = compatibilitySocketPath;
       listener.compatibilityListeners.push(compatibility);
@@ -492,7 +491,7 @@ export async function listenIpcServer(
     await closeIpcServer(listener);
     throw error;
   }
-  return { socketPath };
+  return { kind: 'bound', socketPath };
 }
 
 /**

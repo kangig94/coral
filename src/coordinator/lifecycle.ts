@@ -1,6 +1,7 @@
 import type { Server, ServerResponse } from 'node:http';
+import { posix, win32 } from 'node:path';
 import { backendLog } from '../infra/backend-log.js';
-import { readBackendInfo, type BackendInfo } from '../infra/backend-discovery.js';
+import { readBackendInfo, readDiscoveryRecordDisposition, type BackendInfo } from '../infra/backend-discovery.js';
 import { formatError } from '../infra/error-format.js';
 import { type LaunchCoordinator } from './live/admission.js';
 import type { RecoveryRegistry } from '../jobs/reconcile/registry.js';
@@ -61,7 +62,7 @@ import {
 import type { RecoveryCapableService } from '../jobs/reconcile/contracts.js';
 import type { ProjectRequestPort } from './contracts.js';
 import type { TypedEventBus } from './event-bus.js';
-import type { IpcListener } from '../transport/ipc/server.js';
+import type { IpcListener, ListenIpcServerResult } from '../transport/ipc/server.js';
 import { createBackendStoreResetAuthority } from '../store/backend-store-reset.js';
 import { resolveRunningBundleDir } from '../infra/bundle-manifest.js';
 import type { ValidatedHandoffTarget } from '../infra/handoff-target.js';
@@ -270,7 +271,8 @@ export function verifiedIncumbentFromDiscovery(
  *   then refuses on its own terms if the record cannot be tied to the socket, which is the check that belongs
  *   here — not a pid probe standing in for it.
  * - `unreadable-record` has no record to agree with, so `null` is the only value available. It is not a claim
- *   that nobody is there: `probeCoordinator` warns, and the kernel's exclusive bind arbitrates.
+ *   that nobody is there: `probeCoordinator` warns, while coordinator startup separately refuses the
+ *   undecodable pre-bind discovery disposition.
  *
  * The switch is exhaustive on purpose. A fifth `CoordinatorProbe` shape leaves `record` unassigned and fails
  * the build, rather than defaulting into the `null` that reads as "no incumbent".
@@ -299,6 +301,45 @@ export function verifiedIncumbentFromRuntimeProbe(
   evidence: Readonly<{ socketPath: string; desired: DesiredIncumbentIdentity; lastHealth: IncumbentHealth | null }>,
 ): IncumbentIdentity | null {
   return verifiedIncumbentFromProbe(probeCoordinator(runtime), evidence);
+}
+
+type PublishedCoordinatorSocketRead =
+  | Readonly<{ kind: 'missing' }>
+  | Readonly<{ kind: 'published'; socketPath: string }>;
+
+function readPublishedCoordinatorSocket(runtime: DiscoveryRuntime): PublishedCoordinatorSocketRead {
+  let read: ReturnType<typeof readDiscoveryRecordDisposition>;
+  try {
+    read = readDiscoveryRecordDisposition(runtime);
+  } catch (error: unknown) {
+    throw documentedCoralSetupError({
+      code: 'coordinator_record_unreadable',
+      subject: 'coordinator startup',
+      path: runtime.paths.coral.coordinator.infoFile,
+      detail: formatError(error),
+    });
+  }
+  switch (read.kind) {
+    case 'record':
+      if (!(runtime.env.platform() === 'win32' ? win32 : posix).isAbsolute(read.record.socketPath)) {
+        throw documentedCoralSetupError({
+          code: 'coordinator_record_unreadable',
+          subject: 'coordinator startup',
+          path: runtime.paths.coral.coordinator.infoFile,
+          detail: `published socket path is not absolute: ${JSON.stringify(read.record.socketPath)}`,
+        });
+      }
+      return { kind: 'published', socketPath: read.record.socketPath };
+    case 'missing':
+      return { kind: 'missing' };
+    case 'undecodable':
+      throw documentedCoralSetupError({
+        code: 'coordinator_record_unreadable',
+        subject: 'coordinator startup',
+        path: runtime.paths.coral.coordinator.infoFile,
+        detail: read.reason,
+      });
+  }
 }
 
 export function closeServer(server: Server): Promise<void> {
@@ -803,7 +844,10 @@ export type LifecycleDeps = {
   readonly listenFn: (server: Server) => Promise<{ port: number; host: string }>;
   readonly ipcServer?: IpcListener;
   readonly closeIpcServerFn?: (listener: IpcListener) => Promise<void>;
-  readonly listenIpcFn?: (listener: IpcListener) => Promise<{ socketPath: string }>;
+  readonly listenIpcFn?: (
+    listener: IpcListener,
+    additionalCompatibilitySocketPaths?: readonly string[],
+  ) => Promise<ListenIpcServerResult>;
   readonly onStopped?: () => void;
   readonly onFatalShutdownError?: (error: unknown) => void;
 };
@@ -902,18 +946,43 @@ async function runLifecycleStartup({
     const socketPath = runtime.paths.coral.coordinator.socketPath;
     let bound: BoundCoordinator | null = null;
     if (ipcServer && listenIpcFn) {
+      if (closeIpcServerFn === undefined) {
+        throw new Error('IPC startup requires a close operation before binding');
+      }
+      const publishedSocketPaths = new Set<string>();
+      const rememberPublishedSocket = (): PublishedCoordinatorSocketRead => {
+        const observation = readPublishedCoordinatorSocket({
+          storage: runtime.storage,
+          env: runtime.env,
+          paths: runtime.paths,
+        });
+        if (observation.kind === 'published' && observation.socketPath !== socketPath) {
+          publishedSocketPaths.add(observation.socketPath);
+        }
+        return observation;
+      };
+      const beforeBind = rememberPublishedSocket();
       bound = await bindWithHandoff({
-        socketPath,
+        socketPath: beforeBind.kind === 'published' ? beforeBind.socketPath : socketPath,
         desired: { version, bundleHash, flavor, namespace },
         bindAttempt: async () => {
-          try {
-            await listenIpcFn(ipcServer);
-            return { kind: 'bound' as const };
-          } catch (error: unknown) {
-            if ((error as NodeJS.ErrnoException).code === 'EADDRINUSE') {
-              return { kind: 'incumbent' as const, reason: 'live-listener' };
+          while (true) {
+            signal.throwIfAborted();
+            const attemptedPublishedSocketPaths = new Set(publishedSocketPaths);
+            const listenResult = await listenIpcFn(ipcServer, [...publishedSocketPaths]);
+            const afterBind = rememberPublishedSocket();
+            if (listenResult.kind === 'incumbent') {
+              return { kind: 'addressed-incumbent' as const, socketPath: listenResult.socketPath };
             }
-            throw error;
+            if (
+              afterBind.kind === 'published' &&
+              afterBind.socketPath !== socketPath &&
+              !attemptedPublishedSocketPaths.has(afterBind.socketPath)
+            ) {
+              await closeIpcServerFn(ipcServer);
+              continue;
+            }
+            return { kind: 'bound' as const };
           }
         },
         runStartupRecovery,

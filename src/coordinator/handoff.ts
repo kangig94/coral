@@ -56,7 +56,10 @@ export class BackendAlreadyRunningError extends Error {
   }
 }
 
-export type HandoffBindResult = { kind: 'bound' } | { kind: 'incumbent'; reason: string };
+export type HandoffBindResult =
+  | { kind: 'bound' }
+  | { kind: 'incumbent'; reason: string }
+  | { kind: 'addressed-incumbent'; socketPath: string };
 
 export type BoundCoordinator = Readonly<{
   readonly acquiredViaHandoff: boolean;
@@ -964,7 +967,8 @@ function createBoundCoordinator(sawIncumbent: boolean, opts: HandoffOptions): Bo
  * A contender must not evict a same-version incumbent solely because their bundle hashes differ, and an
  * older contender must not evict a healthy newer incumbent.
  */
-export async function bindWithHandoff(opts: HandoffOptions): Promise<BoundCoordinator> {
+export async function bindWithHandoff(initialOptions: HandoffOptions): Promise<BoundCoordinator> {
+  let opts = { ...initialOptions };
   const deadline = opts.runtime.time.now() + opts.totalBudgetMs;
   const platform = opts.runtime.env.platform() as NodeJS.Platform;
   const signalPolicy = resolveSignalPolicy(opts);
@@ -1059,6 +1063,9 @@ export async function bindWithHandoff(opts: HandoffOptions): Promise<BoundCoordi
     const result = await opts.bindAttempt();
     if (result.kind === 'bound') {
       return createBoundCoordinator(sawIncumbent, opts);
+    }
+    if (result.kind === 'addressed-incumbent') {
+      opts = { ...opts, socketPath: result.socketPath };
     }
 
     sawIncumbent = true;

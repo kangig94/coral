@@ -70,21 +70,24 @@ it as a retryable row means the condition is retried forever against a state nob
 That is the same disease as the backlog above, arrived at from the other direction: there, the cause was
 repaired and the row stayed; here, the cause will never be repaired and the row stays anyway.
 
-### And they could not be cleared at all
+### Their coordinates could not reach `clear`
 
 The subject key for this boundary is `${sessionId}\u0000${jobId}`
-(`src/sessions/retention-work-item-recovery-source.ts`). `recovery-quarantine list` renders every
-field with `JSON.stringify`, so it prints as an escape sequence; `clear --key` took its argument from
-argv verbatim, and **argv cannot carry a NUL at all**. Copying what `list` printed produced a literal
-backslash-u that matched nothing, and the real byte could not be typed. The command's own error message
-says "Run `recovery-quarantine list` and copy the exact boundary, key, and revision" — advice that could
-not work for the only rows that needed it.
+(`src/sessions/retention-work-item-recovery-source.ts`). The old `list` rendering used a JSON escape, but
+shell parsing removed the displayed quotes before `clear` saw the argument. The CLI therefore received a
+literal backslash-u, while **argv cannot carry the real NUL at all**.
 
-Fixed here: `clear` now unquotes a coordinate that arrives as a JSON string literal, so the printed form
-round-trips. Unquoting at the CLI rather than changing the stored key keeps existing durable rows
-addressable — the key's shape belongs to the recovery source, not to the command that names it.
+Fixed here: recovery quarantine keys have one recovery-owned `rqk1-` encoding made only from shell-safe
+hexadecimal characters. `list` prints that token and `clear` accepts only that token, decoding it to the
+unchanged durable key before IPC. This keeps existing rows addressable without changing the recovery
+source's stored-key shape. A token naming no retained row now returns a documented operator-coordinate
+refusal instead of the generic IPC internal error.
 
-The disposition question remains open.
+The disposition question remains open: retry still runs the original retention policy, so a provider binding
+that remains unavailable produces another quarantine rather than deleting the row. The retry path rehydrates
+the exact binding captured by the session; it cannot retarget the work to a current account. Restoring that
+captured provider profile and subject can make the retry viable, but no current command can substitute a
+different binding.
 
 ## Explicitly out of scope
 

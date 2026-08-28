@@ -387,8 +387,9 @@ describe('ipc server', () => {
     await listenIpcServer(incumbent, occupiedPath);
 
     try {
-      await expect(listenIpcServer(contender, contenderPath, [occupiedPath])).rejects.toMatchObject({
-        code: 'EADDRINUSE',
+      await expect(listenIpcServer(contender, contenderPath, [occupiedPath])).resolves.toEqual({
+        kind: 'incumbent',
+        socketPath: occupiedPath,
       });
       expect(existsSync(contenderPath)).toBe(false);
     } finally {
