@@ -9,23 +9,10 @@ import {
   currentHandoffCapsulePath,
   readHandoffCapsuleFile,
   type HandoffCapsuleV3,
-  guardianHandoffRedeemFieldsSchema,
-  guardianHandoffRedeemParamsSchema,
-  proxyHandoffRedeemFieldsSchema,
-  proxyHandoffRedeemParamsSchema,
-  reaperHandoffRotateFieldsSchema,
 } from '../../../provider-proxy/handoff-capsule.js';
-import {
-  PROXY_CONTROL_RPC_TIMEOUT_MS,
-  controlEpochSchema,
-  heartbeatChallengeSchema,
-  type CoordinatorIdentity,
-  type OperationIdentity,
-  reaperHandoffRotateParamsSchema,
-} from '../../../provider-proxy/protocol.js';
-import type { ControlClient, ProviderEventHandler } from '../../../provider-proxy/control-client.js';
+import { PROXY_CONTROL_RPC_TIMEOUT_MS, type CoordinatorIdentity } from '../../../provider-proxy/protocol.js';
+import type { ProviderEventHandler } from '../../../provider-proxy/control-client.js';
 import type { HeartbeatObservation } from '../../../provider-proxy/heartbeat-observation.js';
-import { runtimeControlTimer, type RoleConnectRetryOptions } from '../../../provider-proxy/role-spawn.js';
 import {
   MAX_PROXY_RECORDED_PROVIDER_ROOTS,
   providerProxyDisappearanceReceipt,
@@ -39,17 +26,17 @@ import {
 } from '../../../store/provider-operation-journal.js';
 import type { ProviderOperationIdentity, ProviderOperationRecord } from '../../../store/provider-operation-record.js';
 import {
-  ESTABLISH_CONTROL_CONNECT_TIMEOUT_MS,
-  ESTABLISH_CONTROL_READY_DEADLINE_MS,
-  ESTABLISH_CONTROL_RETRY_INTERVAL_MS,
-} from '../../live/provider-proxy/acquisition-steps.js';
-import {
-  establishRoleControl,
   ProviderProxyRoleControlUnavailableError,
   type ProviderProxyRoleControlAvailabilityIncident,
 } from '../../live/provider-proxy/role-control.js';
 import { createProviderProxySetAuthority } from '../../live/provider-proxy/set-authority.js';
-import { createProviderProxyAuthorityHeartbeatAssembly } from '../../live/provider-proxy/heartbeat.js';
+import {
+  closeRedeemedProviderProxyControl,
+  providerProxyControlRedemptionBundle,
+  redeemProviderProxyControl,
+  type ProviderProxyControlRedemptionRefusal,
+  type RedeemedProviderProxyControl,
+} from '../../live/provider-proxy/control-redemption.js';
 import {
   createProviderProxyOperationAuthority,
   type DurableProviderProxyOperationAuthority,
@@ -58,13 +45,12 @@ import {
 import type { ProviderProxySetAcquisitionIdentity } from '../../live/provider-hosts/proxy-set-acquisition.js';
 import {
   providerProxySetIdentitiesEqual,
+  providerProxySetIdentityFromCapsule,
   providerProxySetIdentityFromRecord,
-  providerProxySetIdentitySchema,
   providerProxySetKey,
   type ProviderProxySetIdentity,
 } from './identity.js';
 import type { ProviderProxyOperationSnapshot } from '../operation-registry.js';
-import { createProviderProxyAuthorityFaultLatch } from '../provider-proxy-authority-fault.js';
 import {
   runProviderProxyRecoveryDeadline,
   type ProviderProxyRecoveryArbiter,
@@ -91,31 +77,12 @@ import {
  * backs.
  */
 
-/**
- * The one absolute budget one address's whole redemption attempt — guardian, then reaper, then proxy — may run
- * before `createProviderProxySetInheritance` gives up on it, combined with the recovery
- * walk's own cancellation via `AbortSignal.any` so either one ends the attempt. Three sequential
- * `establishRoleControl` calls each retry up to their own `ESTABLISH_CONTROL_READY_DEADLINE_MS` (10s), so a
- * legitimate attempt against three live-but-slow peers can spend close to three times that — the same
- * reasoning `proxy-set-acquisition.ts`'s `PROVIDER_PROXY_SET_ACQUISITION_DEADLINE_MS` states for ordinary
- * acquisition's own three-role handshake, restated here rather than imported: the two budgets bound distinct
- * attempts (redemption vs. a fresh spawn) that happen to share this shape, not one shared concept.
- */
 const INHERITANCE_REDEMPTION_DEADLINE_MS = 45_000;
 
 export type ProviderProxySetLocator = Readonly<{
   operation: ProviderOperationIdentity;
   locator: ProviderOperationRecord['locator'];
 }>;
-
-const controlSessionFields = {
-  controlEpoch: controlEpochSchema,
-  heartbeatChallenge: heartbeatChallengeSchema,
-} as const;
-
-export const guardianHandoffRedeemResultSchema = guardianHandoffRedeemFieldsSchema.extend(controlSessionFields);
-export const reaperHandoffRotateResultSchema = reaperHandoffRotateFieldsSchema.extend(controlSessionFields);
-export const proxyHandoffRedeemResultSchema = proxyHandoffRedeemFieldsSchema.extend(controlSessionFields);
 
 export type ProviderProxySetInheritanceDeps = Readonly<{
   runtime: Runtime;
@@ -301,29 +268,6 @@ export function classifyProviderProxySetInheritance<T extends Readonly<{ buildSe
   return { kind: 'inheritable', candidate: candidate as Exclude<T, { version: 1 | 2 }> };
 }
 
-function canonicalOperationSet(operations: readonly OperationIdentity[]): string[] {
-  return [
-    ...new Set(
-      operations.map(
-        ({ jobId, operationId, proxyInstanceId, buildSetId }) =>
-          `${jobId}:${operationId}:${proxyInstanceId}:${buildSetId}`,
-      ),
-    ),
-  ].sort();
-}
-
-/** Redemption agreement is order-insensitive set equality over the complete canonical operation identity:
- *  job, operation, proxy, and build-set UUIDs. Each UUID is canonical and therefore contains no `:`, so the
- *  sorted keys are collision-free and role-specific wire order cannot create a false disagreement. */
-function sameOperationSet(left: readonly OperationIdentity[], right: readonly OperationIdentity[]): boolean {
-  const canonicalLeft = canonicalOperationSet(left);
-  const canonicalRight = canonicalOperationSet(right);
-  return (
-    canonicalLeft.length === canonicalRight.length &&
-    canonicalLeft.every((operation, index) => operation === canonicalRight[index])
-  );
-}
-
 /** Every field a capsule read back from disk must agree with the locator that named its address, plus this
  *  successor's own build, because bytes for any other set cannot establish authority over this one. */
 function capsuleMatchesLocator(
@@ -422,211 +366,63 @@ async function proveProviderProxySetContainmentAbsent(
   return providerProxyDisappearanceReceipt(containment, recordedRoots);
 }
 
-/**
- * The real redemption sequence throws freely so ambiguous transport outcomes remain retryable rather than
- * becoming evidence that authority or an operation is absent.
- *
- * `signal` is checked between roles and before authority construction, not inside `establishRoleControl` itself: the
- * connect-retry loop it drives (`connectRoleControlWithRetry`) has no signal awareness of its own, the same
- * granularity `acquireProviderProxySet` already accepts for ordinary acquisition (its own `deadlineSignal` is
- * only ever checked between cuts, never inside one). A dead peer still costs up to one role's own connect
- * budget; what this closes is starting the *next* role once the caller has already given up.
- */
-async function redeemCapsule(
+function inheritanceRefusalError(refusal: ProviderProxyControlRedemptionRefusal): Error {
+  switch (refusal.kind) {
+    case 'role-refused':
+      return refusal.error;
+    case 'protocol-incompatible':
+      return refusal.error;
+    case 'operation-membership-disagreement':
+      return new ProviderProxySetInheritanceCorruptionError(
+        'role_operation_set_disagreement',
+        'Guardian, reaper, and proxy redeemed different operation sets.',
+      );
+    case 'identity-disagreement':
+      return new ProviderProxySetInheritanceCorruptionError(
+        'capsule_identity_disagreement',
+        'Provider proxy redemption identities disagree with the handoff capsule.',
+      );
+  }
+}
+
+async function buildInheritedAuthority(
+  redemption: RedeemedProviderProxyControl,
   capsulePath: string,
   capsule: HandoffCapsuleV3,
   expectedIdentity: ProviderProxySetIdentity | null,
   deps: ProviderProxySetInheritanceDeps,
   signal: AbortSignal,
 ): Promise<DurableProviderProxyOperationAuthority> {
-  const { runtime, coordinatorIdentity } = deps;
-  // A capsule matched, so the socket work below is about to start — refuse to open the first connection at
-  // all if the caller has already given up, rather than spending one role's connect budget on an attempt
-  // nobody is waiting for.
-  signal.throwIfAborted();
-
-  const timer = runtimeControlTimer(runtime);
-  const retry: RoleConnectRetryOptions = {
-    connectTimeoutMs: ESTABLISH_CONTROL_CONNECT_TIMEOUT_MS,
-    retryIntervalMs: ESTABLISH_CONTROL_RETRY_INTERVAL_MS,
-    overallDeadlineMs: ESTABLISH_CONTROL_READY_DEADLINE_MS,
-    now: () => runtime.time.now(),
-    sleep: (ms: number) => runtime.time.sleep(ms),
-  };
-  const opened: ControlClient[] = [];
-  const faults = createProviderProxyAuthorityFaultLatch();
-  const heartbeatAssembly = createProviderProxyAuthorityHeartbeatAssembly(runtime, faults);
-
+  const bundle = providerProxyControlRedemptionBundle(redemption);
   try {
-    // Plan order: guardian first — it is the sole linearization point for the plaintext secret and the party
-    // that forwards the redemption receipt to its own paired reaper before this successor ever reaches it.
-    const guardianSession = await establishRoleControl(opened, timer, retry, {
-      role: 'guardian',
-      endpoint: capsule.guardianControlEndpoint,
-      openMethod: 'guardian.handoff-redeem.v1',
-      openParams: { grantId: capsule.grantId, secret: capsule.secret, successor: coordinatorIdentity },
-      openParamsSchema: guardianHandoffRedeemParamsSchema,
-      openResultSchema: guardianHandoffRedeemResultSchema,
-      identity: (opened) => opened.guardian,
-      heartbeatMethod: 'guardian.heartbeat.v1',
-      expectedIdentity: {},
-    });
-    heartbeatAssembly.startRole('guardian', {
-      client: guardianSession.client,
-      controlEpoch: guardianSession.opened.controlEpoch,
-      nextHeartbeatChallenge: guardianSession.nextHeartbeatChallenge,
-      instanceId: guardianSession.opened.guardian.guardianInstanceId,
-    });
-    signal.throwIfAborted();
-
-    // Reaper next, presenting the guardian's own receipt — the proof only the guardian could have produced,
-    // since only it ever sees the plaintext secret.
-    const reaperSession = await establishRoleControl(opened, timer, retry, {
-      role: 'reaper',
-      endpoint: capsule.reaperControlEndpoint,
-      openMethod: 'reaper.handoff-rotate.v1',
-      openParams: {
-        grantId: capsule.grantId,
-        successor: coordinatorIdentity,
-        guardianRedemptionReceipt: guardianSession.opened.redemptionReceipt,
-      },
-      openParamsSchema: reaperHandoffRotateParamsSchema,
-      openResultSchema: reaperHandoffRotateResultSchema,
-      identity: (opened) => opened.reaper,
-      heartbeatMethod: 'reaper.heartbeat.v1',
-      expectedIdentity: {},
-    });
-    heartbeatAssembly.startRole('reaper', {
-      client: reaperSession.client,
-      controlEpoch: reaperSession.opened.controlEpoch,
-      nextHeartbeatChallenge: reaperSession.nextHeartbeatChallenge,
-      instanceId: reaperSession.opened.reaper.reaperInstanceId,
-    });
-    signal.throwIfAborted();
-
-    // Proxy last: the one role whose control this successor needs to attach operations and receive
-    // `provider.event.v1` on. `onProviderEvent` is wired at connect time here, exactly as ordinary acquisition
-    // wires it onto a freshly opened proxy connection.
-    const proxySession = await establishRoleControl(opened, timer, retry, {
-      role: 'proxy',
-      endpoint: capsule.proxyEndpoint,
-      openMethod: 'handoff.redeem.v1',
-      openParams: {
-        grantId: capsule.grantId,
-        secret: capsule.secret,
-        successor: coordinatorIdentity,
-        generation: coordinatorIdentity.generation,
-        hostFingerprint: capsule.hostFingerprint,
-        buildSetId: capsule.buildSetId,
-        proxyInstanceId: capsule.proxyInstanceId,
-      },
-      openParamsSchema: proxyHandoffRedeemParamsSchema,
-      openResultSchema: proxyHandoffRedeemResultSchema,
-      identity: (opened) => opened.proxy,
-      heartbeatMethod: 'control.heartbeat.v1',
-      expectedIdentity: {},
-      ...(deps.onProviderEvent === undefined ? {} : { onProviderEvent: deps.onProviderEvent() }),
-    });
-    heartbeatAssembly.startRole('proxy', {
-      client: proxySession.client,
-      controlEpoch: proxySession.opened.controlEpoch,
-      nextHeartbeatChallenge: proxySession.nextHeartbeatChallenge,
-      instanceId: proxySession.opened.proxy.proxyInstanceId,
-    });
-
-    if (
-      !sameOperationSet(guardianSession.opened.operations, reaperSession.opened.operations) ||
-      !sameOperationSet(guardianSession.opened.operations, proxySession.opened.operations)
-    ) {
-      throw new ProviderProxySetInheritanceCorruptionError(
-        'role_operation_set_disagreement',
-        'Guardian, reaper, and proxy redeemed different operation sets.',
-      );
-    }
-
-    const guardianIdentity = guardianSession.opened.guardian;
-    const reaperIdentity = reaperSession.opened.reaper;
-    const guardianReportedReaper = guardianSession.opened.reaper;
-    const containment = guardianSession.opened.containment;
-    const proxyIdentity = proxySession.opened.proxy;
-    const setIdentity = providerProxySetIdentitySchema.parse({
-      buildSetId: proxyIdentity.buildSetId,
-      hostFingerprint: proxyIdentity.hostFingerprint,
-      guardianInstanceId: guardianIdentity.guardianInstanceId,
-      guardianPid: guardianIdentity.pid,
-      guardianIncarnation: guardianIdentity.incarnation,
-      guardianControlEndpoint: guardianIdentity.canonicalControlEndpoint,
-      proxyInstanceId: proxyIdentity.proxyInstanceId,
-      proxyPid: proxyIdentity.pid,
-      reaperInstanceId: reaperIdentity.reaperInstanceId,
-      reaperPid: reaperIdentity.pid,
-      reaperIncarnation: reaperIdentity.incarnation,
-      reaperControlEndpoint: reaperIdentity.canonicalControlEndpoint,
-      containmentKind: reaperIdentity.containmentKind,
-      proxyIncarnation: proxyIdentity.incarnation,
-      proxyProcessGroupId: proxyIdentity.processGroupId,
-      canonicalEndpoint: proxyIdentity.canonicalEndpoint,
-    });
-    if (
-      JSON.stringify(guardianReportedReaper) !== JSON.stringify(reaperIdentity) ||
-      containment.pid !== proxyIdentity.pid ||
-      containment.incarnation !== proxyIdentity.incarnation ||
-      containment.processGroupId !== proxyIdentity.processGroupId ||
-      containment.containmentKind !== reaperIdentity.containmentKind ||
-      capsule.buildSetId !== setIdentity.buildSetId ||
-      capsule.hostFingerprint !== setIdentity.hostFingerprint ||
-      capsule.guardianInstanceId !== setIdentity.guardianInstanceId ||
-      capsule.reaperInstanceId !== setIdentity.reaperInstanceId ||
-      capsule.proxyInstanceId !== setIdentity.proxyInstanceId ||
-      capsule.guardianControlEndpoint !== setIdentity.guardianControlEndpoint ||
-      capsule.reaperControlEndpoint !== setIdentity.reaperControlEndpoint ||
-      capsule.proxyEndpoint !== setIdentity.canonicalEndpoint
-    ) {
-      throw new ProviderProxySetInheritanceCorruptionError(
-        'capsule_identity_disagreement',
-        'Provider proxy redemption identities disagree with the handoff capsule.',
-      );
-    }
-    if (expectedIdentity !== null && !providerProxySetIdentitiesEqual(expectedIdentity, setIdentity)) {
+    if (expectedIdentity !== null && !providerProxySetIdentitiesEqual(expectedIdentity, bundle.setIdentity)) {
       throw new ProviderProxySetInheritanceCorruptionError(
         'durable_identity_disagreement',
         'Provider proxy redemption identity disagrees with the durable operation record.',
       );
     }
 
-    const clients = {
-      proxy: proxySession.client,
-      guardian: guardianSession.client,
-      reaper: reaperSession.client,
-    };
-    const heartbeats = heartbeatAssembly.complete();
-    signal.throwIfAborted();
-
-    // Reusing the verified capsule keeps every later epoch bound to the same exact set and protected secret.
     const base = createProviderProxySetAuthority({
-      proxyInstanceId: proxyIdentity.proxyInstanceId,
-      guardianClient: guardianSession.client,
-      proxyClient: proxySession.client,
-      reaperClient: reaperSession.client,
-      guardianIdentity,
-      reaperIdentity,
-      proxyIdentityFields: proxyIdentity,
-      heartbeats,
-      coordinatorIdentity,
+      proxyInstanceId: bundle.proxyIdentity.proxyInstanceId,
+      guardianClient: bundle.clients.guardian,
+      proxyClient: bundle.clients.proxy,
+      reaperClient: bundle.clients.reaper,
+      guardianIdentity: bundle.guardianIdentity,
+      reaperIdentity: bundle.reaperIdentity,
+      proxyIdentityFields: bundle.proxyIdentity,
+      heartbeats: bundle.heartbeats,
+      coordinatorIdentity: deps.coordinatorIdentity,
       handoffCapsulePath: capsulePath,
-      runtime,
+      runtime: deps.runtime,
       recoveryCapsule: capsule,
-      recoveryOperations: guardianSession.opened.operations,
+      recoveryOperations: bundle.recoveryOperations,
       operationRegistry: deps.operationRegistry,
     });
     const installation = await base.installRecoveryCredential(signal);
     switch (installation.kind) {
       case 'installed':
-        break;
       case 'retryable':
       case 'refused':
-        // Redemption already established control. Publish the set with installation idle so the first
-        // succession registration sends a fresh, idempotent grant-install attempt.
         break;
       case 'cancelled':
         signal.throwIfAborted();
@@ -634,25 +430,39 @@ async function redeemCapsule(
     }
     const set = createProviderProxyOperationAuthority({
       base,
-      setIdentity,
-      clients,
-      faults,
+      setIdentity: bundle.setIdentity,
+      clients: bundle.clients,
+      faults: bundle.faults,
       mutationRpcTimeoutMs: PROXY_CONTROL_RPC_TIMEOUT_MS,
     });
     deps.registerInheritedSet?.(set);
-
     return set;
   } catch (error: unknown) {
-    // Stop every heartbeat loop this attempt started before closing its clients — the mirror image of
-    // `createProviderProxySetAuthority`'s own `initiateControlClose` ordering, and the same order ordinary
-    // acquisition's undo already uses (`provider-proxy/acquisition-steps.ts`'s `establishControl` undo). A
-    // loop left running against a closed client would call `client.call` into an `onError` that logs and
-    // continues, forever, on every future heartbeat interval — this attempt failed, so nothing is left to
-    // keep alive.
-    heartbeatAssembly.stop();
-    for (const client of opened) client.close();
+    closeRedeemedProviderProxyControl(redemption);
     throw error;
   }
+}
+
+async function redeemCapsule(
+  capsulePath: string,
+  capsule: HandoffCapsuleV3,
+  expectedIdentity: ProviderProxySetIdentity | null,
+  deps: ProviderProxySetInheritanceDeps,
+  signal: AbortSignal,
+): Promise<DurableProviderProxyOperationAuthority> {
+  const redemption = await redeemProviderProxyControl(
+    capsule,
+    providerProxySetIdentityFromCapsule(capsule),
+    {
+      runtime: deps.runtime,
+      coordinatorIdentity: deps.coordinatorIdentity,
+      ...(deps.onProviderEvent === undefined ? {} : { onProviderEvent: deps.onProviderEvent }),
+    },
+    signal,
+  );
+  if (redemption.kind === 'unavailable') throw redemption.error;
+  if (redemption.kind === 'refused') throw inheritanceRefusalError(redemption.refusal);
+  return buildInheritedAuthority(redemption, capsulePath, capsule, expectedIdentity, deps, signal);
 }
 
 async function redeem(

@@ -70,9 +70,7 @@ import { createProviderProxyAuthorityFaultLatch } from '../../services/provider-
  * `createProviderProxySetAuthority`'s `stopAndReap`, `set-authority.ts`).
  */
 
-// Exported for `services/provider-proxy-set/inheritance.ts`: redemption dials the same three role endpoints this
-// file's own `establishControl` does, on the identical connect-retry budget, so a redeemed tenancy and a
-// freshly spawned one time out the same way rather than silently drifting apart.
+// See `redeemProviderProxyControl` in `coordinator/live/provider-proxy/control-redemption.ts`.
 export const ESTABLISH_CONTROL_CONNECT_TIMEOUT_MS = 2_000;
 export const ESTABLISH_CONTROL_RETRY_INTERVAL_MS = 20;
 export const ESTABLISH_CONTROL_READY_DEADLINE_MS = PROXY_CONTROL_ESTABLISH_READY_MS;

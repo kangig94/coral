@@ -28,7 +28,7 @@ import { MAX_PROXY_OPERATION_LEDGERS } from '#src/provider-proxy/ledger.js';
 import {
   guardianHandoffRedeemResultSchema,
   reaperHandoffRotateResultSchema,
-} from '#src/coordinator/services/provider-proxy-set/inheritance.js';
+} from '#src/coordinator/live/provider-proxy/control-redemption.js';
 import {
   createEnforcerDeadlineStateMachine,
   PROXY_ENFORCER_MAX_WAKE_LATENCY_MS,

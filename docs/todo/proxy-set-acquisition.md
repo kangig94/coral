@@ -93,8 +93,8 @@ half is fixed under `build-identity-and-upgrade.md`. The remaining pairs, enumer
 | --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
 | parent's probe at spawn vs guardian self-report                       | `src/coordinator/live/provider-proxy/acquisition-steps.ts` compared at `src/coordinator/live/provider-proxy/role-control.ts` |
 | proxy self-report vs guardian-observed containment held by the reaper | `src/coordinator/live/provider-proxy/acquisition-steps.ts` vs `src/provider-proxy/reaper.ts`                                 |
-| guardian-reported containment vs proxy self-report during inheritance | `src/coordinator/services/provider-proxy-set/inheritance.ts`                                                                 |
-| successor coordinator's probe vs role-reported durable identity       | `src/coordinator/services/provider-proxy-set/inheritance.ts`, then `src/infra/process-containment.ts`                        |
+| guardian-reported containment vs proxy self-report during redemption  | `src/coordinator/live/provider-proxy/control-redemption.ts`                                                                  |
+| successor coordinator's probe vs role-reported durable identity       | `src/coordinator/live/provider-proxy/control-redemption.ts`, then `src/coordinator/services/provider-proxy-set/inheritance.ts` |
 | predecessor coordinator's durable CLI evidence vs successor's probe   | `src/coordinator/live/durable-transport.ts` vs `src/coordinator/composition/carrier-observation.ts`                          |
 
 The last three **fail open**: a readable mismatch is interpreted as absence, so a live process group is
@@ -192,11 +192,12 @@ Deleted along the way: btime parsing and its cache, `HZ` parsing and its cache a
 subprocess, the `CORAL_DISCOVERY_PROBE_CLK_TCK` environment variable and its row in
 `docs/configuration.md`, and the floor that made 1-second aliasing possible.
 
-The redeem path's three `establishControl` calls pass `expectedIdentity: {}`
-(`src/coordinator/services/provider-proxy-set/inheritance.ts`) and compare nothing, because the capsule secret is the authority — that is
-the pattern the fresh acquisition path should have copied.
+The redeem path's three role-control calls leave the per-call `expectedIdentity` empty, then
+`src/coordinator/live/provider-proxy/control-redemption.ts` compares every role's complete reply with the set
+identity after all three calls answer. The capsule secret authenticates the holder; it does not excuse an
+identity disagreement.
 
-The comparison forty-five lines later (`src/coordinator/services/provider-proxy-set/inheritance.ts`, guardian-observed containment against proxy
+The later comparison (`src/coordinator/live/provider-proxy/control-redemption.ts`, guardian-observed containment against proxy
 self-report) is a **different thing, and it is correct in intent**: an independent cross-check between
 two views of one containment. An earlier revision of this entry called it "the defect again". It is not.
 The check is sound; the primitive underneath it is not, and under a comparable primitive the check
@@ -229,10 +230,10 @@ environment weirdness: a fast machine acquires, a slow one does not, on the same
    derives and self-reports.** The disagreement this entry was opened for cannot recur on any platform,
    because `ProcessIncarnation` no longer accumulates drift across a process's own age the way
    `processStartedAtSeconds` did (see "Confirmed" above) — but the shape is still cross-process, and the
-   alternative is to read the identity
-   the same way on both sides: re-probe the connected pid itself once open, and drop the self-report, the
-   pattern the redeem path already uses (`expectedIdentity: {}`, `src/coordinator/services/provider-proxy-set/inheritance.ts`). This is a
-   design choice now, not a bug fix.
+   alternative is to read the identity the same way on both sides: re-probe the connected pid itself once
+   open, and drop the self-report. Redemption cannot supply that precedent: its per-role selector starts
+   empty, but the redemption owner then verifies the complete returned identity against its exact target.
+   This is a design choice now, not a bug fix.
 2. **Whether disagreement should fail the acquisition at all**, or retire the attempt and retry. A
    failed acquisition currently costs the coordinator its proxy for the rest of its uptime unless
    something else triggers `ensureProxySetFor` again.

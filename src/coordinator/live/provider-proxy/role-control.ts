@@ -239,9 +239,7 @@ export type ControlTimer = ReturnType<typeof runtimeControlTimer>;
 
 /** One role's connect→open→verify→heartbeat plan. `identity` pulls the role's own identity field out of the
  *  already-schema-validated open result — a selector rather than a `result[role]` lookup, so the compiler
- *  checks it against the concrete open-result type instead of trusting a string key at runtime. Exported so
- *  `services/provider-proxy-set/inheritance.ts` can describe its own redeem/rotate opens the same shape
- *  `establishRoleControl` already consumes, rather than a second, parallel plan type. */
+ *  checks it against the concrete open-result type instead of trusting a string key at runtime. */
 export type RoleControlPlan<
   TOpened extends { controlEpoch: number; heartbeatChallenge: string },
   /** No default: `RoleControlPlan<TOpened>` would make `openParams` `any` and quietly undo the check below.
@@ -292,11 +290,7 @@ export type RoleControlPlan<
  * failure — the same close-everything-opened behavior a single inline try/catch gave when this was one block
  * per role instead of one shared function.
  *
- * Exported: `services/provider-proxy-set/inheritance.ts` drives the identical connect→open→verify→heartbeat
- * sequence for a redeemed tenancy (`guardian.handoff-redeem.v1`, `reaper.handoff-rotate.v1`,
- * `handoff.redeem.v1`) that `acquisition-steps.ts` drives for a freshly minted one — the opening credential
- * differs, the mechanics do not, so there is exactly one function that dials a role and keeps its first
- * challenge alive.
+ * See `redeemProviderProxyControl` in `coordinator/live/provider-proxy/control-redemption.ts`.
  */
 export async function establishRoleControl<
   TOpened extends { controlEpoch: number; heartbeatChallenge: string },

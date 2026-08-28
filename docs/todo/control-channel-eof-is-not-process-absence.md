@@ -1,7 +1,7 @@
 # TODO — control-channel failure is not process absence
 
-**Status**: open. Deliberately split from the deadline/silence fix: repairing it needs a credential that can
-prove the same holder again after its control channel has failed.
+**Status**: open. Authenticated three-role redemption is now owned by
+`coordinator/live/provider-proxy/control-redemption.ts`; routing a control-channel fault through it remains.
 
 ## What is observed
 
@@ -16,11 +16,13 @@ connection cannot be made, or that the work carried by the set is absent.
 
 ## Why this is a defect
 
-`createControlEndpoint` already has `reattachControl` for the same holder returning on another socket. The
-terminal latch prevents the coordinator from using that recovery shape after EOF or invalid-frame teardown:
-the set is routed into containment as soon as the channel fault arrives. A transient local socket failure can
-therefore reap healthy provider work on evidence about the transport rather than evidence about the process or
-an act by an authority appointed to override missing evidence.
+An ordinary socket close clears the endpoint tenancy before control loss is reported, so authenticated
+redemption normally enters successor admission and returns a fresh control epoch. Same-holder reattachment is
+only the race where the prior tenancy has not yet been cleared. The terminal latch prevents the coordinator
+from attempting either valid outcome after EOF or invalid-frame teardown: the set is routed into containment
+as soon as the channel fault arrives. A transient local socket failure can therefore reap healthy provider
+work on evidence about the transport rather than evidence about the process or an act by an authority
+appointed to override missing evidence.
 
 ## What a fix must not do
 
@@ -33,9 +35,9 @@ an act by an authority appointed to override missing evidence.
 - It must not turn EOF or an invalid frame into silence. The connection did end; the missing piece is a
   non-destructive disposition and a bounded, authenticated route back to control.
 
-## Start condition
+## Remaining work
 
-Choose and implement a re-provable same-holder credential for bootstrap tenancies, including its replay and
-cross-build rules. Once a replacement socket can prove continuity without reopening the bootstrap nonce,
-route `control-channel-fault` through a hold that ends on authenticated reattachment, decisive containment
+The standing handoff grant is the re-provable credential: the same coordinator instance identity receives the
+registry's memoized redemption for a retry, and the three-role owner returns one branded replacement bundle.
+Route `control-channel-fault` through a hold that ends on authenticated redemption, decisive containment
 absence, the enforcer's adoption/teardown act, or `coral-cli backend shutdown`.

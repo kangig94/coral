@@ -66,7 +66,7 @@ import {
   MAX_PROVIDER_REPLAY_BYTES,
   MAX_PROVIDER_REPLAY_EVENTS,
 } from '#src/provider-proxy/ledger.js';
-import { proxyHandoffRedeemResultSchema } from '#src/coordinator/services/provider-proxy-set/inheritance.js';
+import { proxyHandoffRedeemResultSchema } from '#src/coordinator/live/provider-proxy/control-redemption.js';
 import { PROXY_CONTROL_HEARTBEAT_MS, PROXY_CONTROL_LEASE_MS } from '#src/provider-proxy/orphan-deadline.js';
 import {
   decodeProxyControlFrame,
