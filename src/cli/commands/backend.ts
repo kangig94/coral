@@ -41,9 +41,14 @@ import { isSafeKbCommitId } from '../../kb/commit-quarantine.js';
 import {
   decodeRecoveryQuarantineKey,
   RecoveryQuarantineStore,
-  type RecoveryQuarantineEntry,
+  type RecoveryQuarantineListEntry,
 } from '../../recovery/quarantine.js';
-import type { RecoveryQuarantineClearRequest, RecoveryQuarantineClearResult } from '../../recovery/source-registry.js';
+import { unreadableProviderOperationSubject } from '../../coordinator/services/recovery/unreadable-provider-operation-subject.js';
+import {
+  UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
+  type RecoveryQuarantineClearRequest,
+  type RecoveryQuarantineClearResult,
+} from '../../recovery/source-registry.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { createRealRuntime } from '../../runtime/real.js';
 import {
@@ -54,6 +59,10 @@ import {
 import { currentCoralStoreFormat } from '../../store-format.js';
 import { classifyStoreFile, type Database } from '../../store/db.js';
 import { openReadOnlyStoreDatabase } from '../../store/read-port.js';
+import {
+  attributeUnreadableProviderOperations,
+  readProviderOperations,
+} from '../../store/provider-operation-journal.js';
 import {
   handoffRoutingStatusGeneration,
   listHandoffRoutingStoreQuarantines,
@@ -306,7 +315,7 @@ export interface HandoffRoutingStatusQuarantineCommandOperations {
 }
 
 export interface RecoveryQuarantineCommandOperations {
-  list(): readonly RecoveryQuarantineEntry[];
+  list(): readonly RecoveryQuarantineListEntry[];
   clear(request: RecoveryQuarantineClearRequest): Promise<RecoveryQuarantineClearResult>;
 }
 
@@ -500,9 +509,49 @@ function formatRoutingStatusQuarantineClearStorageFailure(
 
 type RecoveryQuarantineReadRuntime = Pick<Runtime, 'flavor' | 'paths' | 'storage'>;
 
+function sameRecoveryQuarantineCoordinate(
+  entry: RecoveryQuarantineListEntry,
+  boundary: string,
+  subject: RecoveryQuarantineListEntry['subject'],
+): boolean {
+  if (entry.boundary !== boundary || entry.subject.key !== subject.key) return false;
+  if (entry.subject.revision.kind === 'until-cleared') return subject.revision.kind === 'until-cleared';
+  return subject.revision.kind === 'fingerprint' && entry.subject.revision.value === subject.revision.value;
+}
+
+function unreadableProviderOperationEntries(
+  db: Database,
+  stored: readonly RecoveryQuarantineListEntry[],
+): RecoveryQuarantineListEntry[] {
+  const scan = readProviderOperations(db);
+  return attributeUnreadableProviderOperations(db, scan.unreadableKeys).flatMap((row) => {
+    const subject = unreadableProviderOperationSubject(row);
+    if (
+      stored.some((entry) => sameRecoveryQuarantineCoordinate(entry, UNREADABLE_PROVIDER_OPERATION_BOUNDARY, subject))
+    ) {
+      return [];
+    }
+    return [
+      {
+        boundary: UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
+        subject,
+        state: 'active' as const,
+        stage: 'hydrate' as const,
+        retry: null,
+        continuation: null,
+        errorMessage: 'Provider operation quarantine status could not be materialized.',
+        detail:
+          'This coordinate was derived from the durable unreadable provider operation row. Repair or remove the raw row, restart the coordinator, then rerun recovery-quarantine list.',
+        detectedAt: null,
+        updatedAt: null,
+      },
+    ];
+  });
+}
+
 export function listRecoveryQuarantineLocal(
   runtime: RecoveryQuarantineReadRuntime = createRecoveryQuarantineRuntime(),
-): readonly RecoveryQuarantineEntry[] {
+): readonly RecoveryQuarantineListEntry[] {
   const dbPath = runtime.paths.coral.store.dbFile;
   const classification = classifyStoreFile(dbPath, runtime.storage, currentCoralStoreFormat());
   if (
@@ -522,7 +571,11 @@ export function listRecoveryQuarantineLocal(
     storeFormat: currentCoralStoreFormat(),
   }) as unknown as Database;
   try {
-    return RecoveryQuarantineStore.readOnly(db).list();
+    const stored = RecoveryQuarantineStore.readOnly(db).list();
+    return [...stored, ...unreadableProviderOperationEntries(db, stored)].sort((left, right) => {
+      const boundary = left.boundary.localeCompare(right.boundary);
+      return boundary === 0 ? left.subject.key.localeCompare(right.subject.key) : boundary;
+    });
   } finally {
     db.close();
   }
@@ -746,13 +799,19 @@ export function registerBackendCommands(program: Command, operations: BackendCom
   const shutdownCommand = backend.command('shutdown');
   shutdownCommand.description('Gracefully shut down backend daemon').action(async () => {
     try {
-      let preservedSetTokens: readonly string[] | null = null;
+      let preservedSetRead: Readonly<{ tokens: readonly string[]; skippedRows: number }> | null = null;
       try {
         const statusBeforeShutdown = await backendStatus.getStatus();
         if (statusBeforeShutdown.status === 'ok') {
-          preservedSetTokens = [
-            ...new Set((statusBeforeShutdown.health.diagnostics?.providerProxySets ?? []).map((set) => set.setToken)),
-          ];
+          preservedSetRead = {
+            tokens: [
+              ...new Set([
+                ...(statusBeforeShutdown.health.diagnostics?.providerProxySets ?? []).map((set) => set.setToken),
+                ...(statusBeforeShutdown.health.skippedProviderProxySetTokens ?? []),
+              ]),
+            ],
+            skippedRows: statusBeforeShutdown.health.skippedProviderProxySetRows ?? 0,
+          };
         }
       } catch {
         // Shutdown remains authoritative for its own result; this read contributes output only.
@@ -761,17 +820,28 @@ export function registerBackendCommands(program: Command, operations: BackendCom
       const text = formatShutdown(result);
 
       if (result.ok) {
-        const preserved =
-          preservedSetTokens === null
-            ? 'Held provider proxy sets could not be inspected before shutdown; run backend status after the successor starts.'
-            : preservedSetTokens.length === 0
-              ? 'No held provider proxy sets were reported before shutdown.'
-              : [
-                  'Shutdown preserves these held provider proxy sets for successor adoption:',
-                  ...preservedSetTokens.map(
-                    (token) => `  ${token} (contain with: coral-cli backend provider-proxy-set contain ${token})`,
-                  ),
-                ].join('\n');
+        const preserved = (() => {
+          if (preservedSetRead === null) {
+            return 'Held provider proxy sets could not be inspected before shutdown; run backend status after the successor starts.';
+          }
+          if (preservedSetRead.tokens.length === 0 && preservedSetRead.skippedRows === 0) {
+            return 'No held provider proxy sets were reported before shutdown.';
+          }
+          const lines = preservedSetRead.tokens.length
+            ? [
+                'Provider proxy set tokens reported before shutdown:',
+                ...preservedSetRead.tokens.map(
+                  (token) => `  ${token} (contain with: coral-cli backend provider-proxy-set contain ${token})`,
+                ),
+              ]
+            : [];
+          if (preservedSetRead.skippedRows > 0) {
+            lines.push(
+              `The pre-shutdown status read could not interpret ${preservedSetRead.skippedRows} provider proxy set row(s), so it could not confirm that every preserved set was named.`,
+            );
+          }
+          return lines.join('\n');
+        })();
         process.stdout.write(`${text}\n${preserved}\n`);
         return;
       }
@@ -1083,7 +1153,7 @@ function parseRecoveryQuarantineClearOptions(
     readonly key: string;
     readonly revision: string;
   },
-  storedEntries: readonly RecoveryQuarantineEntry[],
+  storedEntries: readonly RecoveryQuarantineListEntry[],
 ): RecoveryQuarantineClearRequest {
   const revision = unquoteRecoveryCoordinate(options.revision);
   const plainKey = unquoteRecoveryCoordinate(options.key);

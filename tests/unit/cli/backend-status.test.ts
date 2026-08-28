@@ -53,7 +53,12 @@ function runningStatusFromHealthPayload(payload: unknown): Extract<BackendStatus
   const { namespace: _namespace, status: _status, ...health } = parsed.health;
   return {
     status: 'ok',
-    health: { ...health, status: 'ok', skippedProviderProxySetRows: parsed.skippedProviderProxySetRows },
+    health: {
+      ...health,
+      status: 'ok',
+      skippedProviderProxySetRows: parsed.skippedProviderProxySetRows,
+      skippedProviderProxySetTokens: parsed.skippedProviderProxySetTokens,
+    },
   };
 }
 

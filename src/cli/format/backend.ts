@@ -14,7 +14,7 @@ import {
   type HandoffContinuationReason,
   type LiveHandoffResult,
 } from '../../coordinator/handoff-runner.js';
-import { encodeRecoveryQuarantineKey, type RecoveryQuarantineEntry } from '../../recovery/quarantine.js';
+import { encodeRecoveryQuarantineKey, type RecoveryQuarantineListEntry } from '../../recovery/quarantine.js';
 import type { BackendHealth } from '../../transport/http/backend/health.js';
 import type { BackendStatusFull } from '../../transport/http/backend/status.js';
 import type { ShutdownResult } from '../../transport/http/backend/shutdown.js';
@@ -727,7 +727,7 @@ function formatCapabilityRejected(result: Extract<ShutdownResult, { reason: 'cap
   ].join('\n');
 }
 
-export function formatRecoveryQuarantineList(entries: readonly RecoveryQuarantineEntry[]): string {
+export function formatRecoveryQuarantineList(entries: readonly RecoveryQuarantineListEntry[]): string {
   if (entries.length === 0) {
     return 'Recovery quarantine is empty.';
   }
@@ -738,7 +738,7 @@ export function formatRecoveryQuarantineList(entries: readonly RecoveryQuarantin
       `- boundary=${JSON.stringify(entry.boundary)} key=${encodeRecoveryQuarantineKey(entry.subject.key)} revision=${JSON.stringify(
         formatRecoveryRevision(entry),
       )} state=${entry.state} stage=${entry.stage}`,
-      `  detected_at=${entry.detectedAt} updated_at=${entry.updatedAt}`,
+      `  detected_at=${entry.detectedAt ?? 'unavailable'} updated_at=${entry.updatedAt ?? 'unavailable'}`,
     );
     if (entry.retry !== null) {
       lines.push(`  retry_owner=${JSON.stringify(entry.retry.owner)} retry_token=${JSON.stringify(entry.retry.token)}`);
@@ -769,7 +769,7 @@ export function formatRecoveryQuarantineClear(result: RecoveryQuarantineClearRes
   }
 }
 
-function formatRecoveryRevision(entry: RecoveryQuarantineEntry): string {
+function formatRecoveryRevision(entry: RecoveryQuarantineListEntry): string {
   return entry.subject.revision.kind === 'fingerprint'
     ? formatRecoveryRevisionValue(entry.subject.revision.value)
     : RECOVERY_REVISION_UNTIL_CLEARED;

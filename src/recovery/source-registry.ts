@@ -10,6 +10,8 @@ import {
 } from './containment.js';
 import type { RecoveryQuarantineClaim, RecoveryQuarantineReclaim } from './quarantine.js';
 
+export const UNREADABLE_PROVIDER_OPERATION_BOUNDARY = 'provider-operation-unreadable';
+
 export const repeatableRecoveryBoundaryIds = [
   'coordinator-job-recovery',
   'discussion-source',
@@ -22,7 +24,7 @@ export const repeatableRecoveryBoundaryIds = [
   'workflow-recovery',
   'stale-job-cleanup',
   'crashed-job-terminalization',
-  'provider-operation-unreadable',
+  UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
 ] as const;
 
 export type RepeatableRecoveryBoundaryId = (typeof repeatableRecoveryBoundaryIds)[number];

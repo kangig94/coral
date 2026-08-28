@@ -35,6 +35,7 @@ type BackendStatus =
       systemProviderScope?: BackendHealth['systemProviderScope'];
       diagnostics?: BackendHealth['diagnostics'];
       skippedProviderProxySetRows: number;
+      skippedProviderProxySetTokens: readonly string[];
     }
   | {
       status: 'shutting_down';
@@ -241,7 +242,7 @@ async function probeDetailedHealth(
     if (parsed === null) {
       return unreachable('detailed health responded 200 with a body this build could not decode');
     }
-    const { health, skippedProviderProxySetRows } = parsed;
+    const { health, skippedProviderProxySetRows, skippedProviderProxySetTokens } = parsed;
     if (health.namespace !== info.namespace || health.flavor !== info.flavor) {
       return notOurCoordinator();
     }
@@ -249,7 +250,10 @@ async function probeDetailedHealth(
       return { status: 'shutting_down' };
     }
     const { namespace: _namespace, status: _status, ...rest } = health;
-    return { status: 'ok', health: { ...rest, status: 'ok' as const, skippedProviderProxySetRows } };
+    return {
+      status: 'ok',
+      health: { ...rest, status: 'ok' as const, skippedProviderProxySetRows, skippedProviderProxySetTokens },
+    };
   }
   if (response.status === 503 || TransientHttpError.isTransientStatus(response.status)) {
     return { status: 'shutting_down' };

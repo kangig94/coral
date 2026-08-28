@@ -805,6 +805,7 @@ describe('cli format', () => {
       activeJobs: 1,
       inflightRequests: 0,
       skippedProviderProxySetRows: 0,
+      skippedProviderProxySetTokens: [],
       textProjectionState: 'idle' as const,
       kernel: { phase: 'running' as const, readyAt: Date.parse('2026-05-05T12:00:00.000Z') },
     };

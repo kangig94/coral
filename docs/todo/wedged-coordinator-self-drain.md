@@ -110,7 +110,8 @@ deliberately killed by a policy acting on the wedge.
 
 **Corrected on the unreleased branch:** channel close is now a non-terminal incident, not an authority fault.
 It removes routing and opens a bounded authenticated-reattachment hold while keeping durable claims attached;
-refusal or expiry waits for independent containment absence and cannot start `stop-and-reap`. The log above
+refusal or expiry waits for independent containment absence and cannot start `stop-and-reap`. Once both
+enforcers are proven absent, the independent proof still reaps the orphaned proxy group. The log above
 records the shipped defect rather than current branch behavior. See
 [`control-channel-eof-is-not-process-absence.md`](./control-channel-eof-is-not-process-absence.md).
 
@@ -179,7 +180,8 @@ own bounded silence exit (`heartbeatHoldBound`, `#silenceHoldExhaustedDecision` 
 `provider-proxy-set/index.ts`), derived from the identical `providerProxyAdoptionWindowMs` formula carried by
 that established set so it does not drift from the enforcer's own tolerance, and reported as
 `reason=heartbeat_hold_exhausted` with what it observed rather than a claim that silence proved the peer dead.
-Answered-but-unusable evidence cannot advance this clock and has a separate non-reaping release.
+Answered-but-unusable evidence cannot advance this clock and has a separate independent-absence release. It
+sends no destructive control RPC, but after both enforcers are proven absent it reaps the orphaned proxy group.
 
 ## Start condition
 

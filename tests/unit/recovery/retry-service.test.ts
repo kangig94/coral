@@ -1,3 +1,4 @@
+import { UNREADABLE_PROVIDER_OPERATION_BOUNDARY } from '#src/recovery/source-registry.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { defineRecoverySource, type RecoveryDisposition, type RecoverySubject } from '#src/recovery/containment.js';
@@ -13,10 +14,7 @@ import { sessionContinuationLeaseRecoverySource } from '#src/sessions/continuati
 import { sessionProjectionRecoverySource } from '#src/sessions/projection-recovery-source.js';
 import { terminalRetentionOutcomeRecoverySource } from '#src/sessions/terminal-retention-outcome-recovery-source.js';
 import { workflowRecoverySource } from '#src/workflow/recovery-source.js';
-import {
-  createUnreadableProviderOperationRetryPlan,
-  UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
-} from '#src/coordinator/services/recovery/index.js';
+import { createUnreadableProviderOperationRetryPlan } from '#src/coordinator/services/recovery/index.js';
 import {
   assertRecoverySourceRegistryComplete,
   createRecoveryQuarantineRetryService,

@@ -501,6 +501,33 @@ describe('cli main routing', () => {
     expect(process.exitCode).toBeUndefined();
   });
 
+  it('reports an incomplete pre-shutdown set read and retains structurally valid opaque tokens', async () => {
+    const token = 'pps1.opaque-set';
+    const program = new Command();
+    program.exitOverride();
+    registerBackendCommands(program, {
+      backendStatus: {
+        getStatus: async () =>
+          ({
+            status: 'ok',
+            health: {
+              diagnostics: { providerProxySets: [] },
+              skippedProviderProxySetRows: 1,
+              skippedProviderProxySetTokens: [token],
+            },
+          }) as never,
+      } as unknown as BackendStatusCommandOperations,
+    });
+    mockState.shutdownBackend.mockResolvedValueOnce({ ok: true });
+
+    await program.parseAsync(['node', 'coral-cli', 'backend', 'shutdown']);
+
+    expect(stdout).toContain(`coral-cli backend provider-proxy-set contain ${token}`);
+    expect(stdout).toContain('could not interpret 1 provider proxy set row(s)');
+    expect(stdout).toContain('could not confirm that every preserved set was named');
+    expect(stdout).not.toContain('No held provider proxy sets were reported');
+  });
+
   // The exit code is the only machine-readable channel this command has, and `docs/configuration.md` tells
   // operators to run it before `store-reset discard`. Every failure exited 1 alike, so a script could not tell
   // "it is stopped, proceed" from "I could not tell" — the disposition the type had just gained, discarded at

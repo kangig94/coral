@@ -393,6 +393,7 @@ describe('/health typed shape (AC10a)', () => {
     expect(parsed).toEqual({
       health: { ...HEALTHY_BASE, diagnostics: { providerProxySets: [PROVIDER_PROXY_SET] } },
       skippedProviderProxySetRows: 1,
+      skippedProviderProxySetTokens: [PROVIDER_PROXY_SET.setToken],
     });
   });
 
@@ -413,6 +414,7 @@ describe('/health typed shape (AC10a)', () => {
     expect(parsed).toEqual({
       health: { ...HEALTHY_BASE, diagnostics: { providerProxySets: [] } },
       skippedProviderProxySetRows: 1,
+      skippedProviderProxySetTokens: [PROVIDER_PROXY_SET.setToken],
     });
   });
 
@@ -426,6 +428,7 @@ describe('/health typed shape (AC10a)', () => {
     expect(parseWith([{ ...PROVIDER_PROXY_SET, disposition: 'released-by-successor', attempts: '2' }])).toEqual({
       health: { ...HEALTHY_BASE, diagnostics: { providerProxySets: [] } },
       skippedProviderProxySetRows: 1,
+      skippedProviderProxySetTokens: [PROVIDER_PROXY_SET.setToken],
     });
   });
 });

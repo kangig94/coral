@@ -124,6 +124,11 @@ export type RecoveryQuarantineEntry = {
   readonly updatedAt: string;
 };
 
+export type RecoveryQuarantineListEntry = Omit<RecoveryQuarantineEntry, 'detectedAt' | 'updatedAt'> & {
+  readonly detectedAt: string | null;
+  readonly updatedAt: string | null;
+};
+
 type RecoveryQuarantineColumns = {
   readonly boundaryId: string;
   readonly subjectKey: string;

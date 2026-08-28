@@ -391,6 +391,7 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
       health: {
         diagnostics: { providerProxySets: [understoodRow] },
         skippedProviderProxySetRows: 1,
+        skippedProviderProxySetTokens: [understoodRow.setToken],
       },
     });
   });

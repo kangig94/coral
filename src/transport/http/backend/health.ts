@@ -151,6 +151,7 @@ export interface BackendHealth {
 export type BackendHealthParseResult = Readonly<{
   health: BackendHealth;
   skippedProviderProxySetRows: number;
+  skippedProviderProxySetTokens: readonly string[];
 }>;
 
 export type BackendPing = {
@@ -202,6 +203,7 @@ type ProviderProxySet = NonNullable<NonNullable<BackendHealth['diagnostics']>['p
 type ProviderProxySetsParseResult = Readonly<{
   understoodRows: ProviderProxySet[];
   skippedRows: number;
+  skippedSetTokens: string[];
 }>;
 
 function parseProviderProxySets(value: unknown): ProviderProxySetsParseResult | null {
@@ -211,6 +213,7 @@ function parseProviderProxySets(value: unknown): ProviderProxySetsParseResult | 
 
   const understoodRows: ProviderProxySet[] = [];
   let skippedRows = 0;
+  const skippedSetTokens: string[] = [];
   for (const entry of value) {
     if (
       !isRecord(entry) ||
@@ -241,6 +244,7 @@ function parseProviderProxySets(value: unknown): ProviderProxySetsParseResult | 
         entry.waitingFor === 'store-repair');
     if (!understandsEnums) {
       skippedRows += 1;
+      skippedSetTokens.push(entry.setToken);
       continue;
     }
 
@@ -263,7 +267,7 @@ function parseProviderProxySets(value: unknown): ProviderProxySetsParseResult | 
     understoodRows.push(entry as ProviderProxySet);
   }
 
-  return { understoodRows, skippedRows };
+  return { understoodRows, skippedRows, skippedSetTokens };
 }
 
 function isDegradedReason(
@@ -421,6 +425,7 @@ function isKernel(value: unknown): value is BackendHealth['kernel'] {
 type DiagnosticsParseResult = Readonly<{
   diagnostics: NonNullable<BackendHealth['diagnostics']>;
   skippedProviderProxySetRows: number;
+  skippedProviderProxySetTokens: readonly string[];
 }>;
 
 function parseDiagnostics(value: unknown): DiagnosticsParseResult | null {
@@ -454,6 +459,7 @@ function parseDiagnostics(value: unknown): DiagnosticsParseResult | null {
       ...(providerProxySets === null ? {} : { providerProxySets: providerProxySets.understoodRows }),
     },
     skippedProviderProxySetRows: providerProxySets?.skippedRows ?? 0,
+    skippedProviderProxySetTokens: providerProxySets?.skippedSetTokens ?? [],
   } as DiagnosticsParseResult;
 }
 
@@ -520,6 +526,7 @@ export function parseBackendHealth(value: unknown): BackendHealthParseResult | n
       ...(diagnostics === null ? {} : { diagnostics: diagnostics.diagnostics }),
     } as BackendHealth,
     skippedProviderProxySetRows: diagnostics?.skippedProviderProxySetRows ?? 0,
+    skippedProviderProxySetTokens: diagnostics?.skippedProviderProxySetTokens ?? [],
   };
 }
 

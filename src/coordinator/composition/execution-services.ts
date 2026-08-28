@@ -87,7 +87,7 @@ export function createExecutionServices({
   getExecutionService: (ctx: InvocationContext) => ProjectRequestPort;
   getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
   listExecutionServices: () => ProjectRequestPort[];
-  adoptRepairedProviderOperation: (record: ProviderOperationRecord) => RepairedProviderOperationAdoption;
+  adoptRepairedProviderOperation: (record: ProviderOperationRecord) => Promise<RepairedProviderOperationAdoption>;
   connectProviderOperationRecovery: (recoveryCoordinator: RecoveryCoordinator) => void;
   reconcileProviderOperationsAtStartup: (signal: AbortSignal) => Promise<StartupReconciliationReport>;
   startProviderOperationReconciler: () => void;
@@ -269,7 +269,9 @@ export function createExecutionServices({
   let providerProxyClaimsInitialized = false;
   let providerProxyLifecycleInitialized = false;
 
-  const adoptRepairedProviderOperation = (record: ProviderOperationRecord): RepairedProviderOperationAdoption => {
+  const adoptRepairedProviderOperation = async (
+    record: ProviderOperationRecord,
+  ): Promise<RepairedProviderOperationAdoption> => {
     if (!providerProxyClaimsInitialized || !providerProxyLifecycleInitialized) {
       return { kind: 'refused', reason: 'the provider operation ownership path is not initialized' };
     }
@@ -281,7 +283,8 @@ export function createExecutionServices({
       return { kind: 'refused', reason: 'the provider operation claim mirror did not retain the decoded record' };
     }
     providerProxyLifecycle.claimsChanged(setIdentity);
-    return { kind: 'accepted', owner: 'provider-proxy-claim-mirror' };
+    await providerOperationReconciler.reconcile(record);
+    return { kind: 'accepted', owner: 'provider-operation-reconciler' };
   };
 
   const initializeProviderProxyClaims = async (): Promise<void> => {
@@ -303,7 +306,8 @@ export function createExecutionServices({
       backendLog.warn(
         `Quarantined ${quarantineReport.materialized} provider operation record(s) this build cannot read; ` +
           `retained ${quarantineReport.retained} existing durable quarantine status(es); ` +
-          `${quarantineReport.failed.length} materialization failure(s): ${scan.unreadableKeys.join(', ')}`,
+          `${quarantineReport.failed.length} materialization failure(s): ` +
+          `${quarantineReport.failed.map(({ key }) => key).join(', ') || 'none'}`,
       );
     }
   };

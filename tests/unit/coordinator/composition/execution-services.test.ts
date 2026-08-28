@@ -23,7 +23,7 @@ import {
 } from '#src/coordinator/services/provider-proxy-set/identity.js';
 import { ProviderProxySetLifecycleRef } from '#src/coordinator/services/provider-proxy-set/lifecycle-ref.js';
 import type { ProviderProxySetContainmentProof } from '#src/coordinator/services/provider-proxy-set/inheritance.js';
-import { UNREADABLE_PROVIDER_OPERATION_BOUNDARY } from '#src/coordinator/services/recovery/index.js';
+import { UNREADABLE_PROVIDER_OPERATION_BOUNDARY } from '#src/recovery/source-registry.js';
 import { backendLog } from '#src/infra/backend-log.js';
 import { JobStore } from '#src/jobs/store.js';
 import { ControlClientError, controlExchangeForTest, type ControlClient } from '#src/provider-proxy/control-client.js';
@@ -373,11 +373,13 @@ describe('execution services provider-proxy proof composition', () => {
     // Captured inside the try, never read off the spy afterwards: `mockRestore()` clears `mock.calls`, so an
     // assertion placed after the teardown reads an empty array and fails whatever the code did.
     const reported: string[] = [];
+    let quarantined!: ReturnType<RecoveryQuarantineStore['list']>;
     const warning = vi.spyOn(backendLog, 'warn').mockImplementation((message) => {
       reported.push(String(message));
     });
     try {
       await services.reconcileProviderOperationsAtStartup(new AbortController().signal);
+      quarantined = new RecoveryQuarantineStore(db, runtime.time).list();
     } finally {
       warning.mockRestore();
       services.stopProviderOperationReconciler();
@@ -387,7 +389,9 @@ describe('execution services provider-proxy proof composition', () => {
     const skipped = reported.filter((line) => line.includes('Quarantined'));
     expect(skipped).toHaveLength(1);
     // By key, because the key is the only thing about the row this build is entitled to claim it understands.
-    expect(skipped[0]).toContain(supersededKey);
+    expect(quarantined).toEqual([
+      expect.objectContaining({ subject: expect.objectContaining({ key: supersededKey }) }),
+    ]);
     // And the boot still happened, on the rows it could read. A report that cost the daemon its startup would
     // be the fatality this whole path exists to avoid, and a scan that reported the skip and then initialized
     // nothing would satisfy the assertion above while losing every live claim.

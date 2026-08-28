@@ -34,7 +34,9 @@ appointed to override missing evidence.
 - It must not weaken the endpoint's socket scoping. A heartbeat or mutation from a socket that has not earned
   the tenancy remains a hard refusal.
 - It must not turn EOF or an invalid frame into silence. The connection did end; the missing piece is a
-  non-destructive disposition and a bounded, authenticated route back to control.
+  non-terminal disposition and a bounded, authenticated route back to control. The disposition may reap the
+  proxy group only after both enforcers are independently proven absent, when the group is an orphan rather
+  than work still owned by a reachable enforcer.
 
 ## Implemented disposition
 
@@ -49,9 +51,11 @@ Decisive absence enters the existing disappearance-delivery path. Branded redemp
 operation authority, invalidates callbacks from the displaced attempt token, subscribes the replacement,
 closes the old control, restores `available` or `draining`, restores routing only for `available`, and notifies
 establishment so live operations reconcile against newly built controls. A decisive refusal stops redemption
-immediately. Refusal and absolute-bound expiry both enter the existing `await-containment-absence` path and do
-not initiate destructive action. Unavailability retries only within the original bound; neither a retry nor a
-second channel incident moves its deadline.
+immediately. Refusal and absolute-bound expiry both enter the existing `await-containment-absence` path without
+sending `stopAndReap`. Unavailability retries only within the original bound; neither a retry nor a second
+channel incident moves its deadline. The independent proof returns while either enforcer may still be live. Once
+guardian and reaper are both proven absent, it reaps the orphaned proxy group: that ends work no reachable
+enforcer can ever reap rather than pre-empting a live owner.
 
 ## Reachable exits
 

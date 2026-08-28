@@ -1,13 +1,14 @@
+import { UNREADABLE_PROVIDER_OPERATION_BOUNDARY } from '#src/recovery/source-registry.js';
 import { randomUUID } from 'node:crypto';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   createUnreadableProviderOperationRetryPlan,
   quarantineUnreadableProviderOperations,
-  UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
 } from '#src/coordinator/services/recovery/index.js';
 import { RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
+import type { RecoveryQuarantinePort } from '#src/recovery/containment.js';
 import { createRecoveryQuarantineRetryService, createRecoverySourceRegistry } from '#src/recovery/source-registry.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema, type Database } from '#src/store/db.js';
@@ -20,7 +21,6 @@ import {
   PROVIDER_OPERATION_RECORD_VERSION,
   type ProviderOperationRecord,
 } from '#src/store/provider-operation-record.js';
-import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set/claim-mirror.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 
@@ -71,16 +71,14 @@ describe('unreadable provider operation recovery quarantine', () => {
     }
 
     const sources = createRecoverySourceRegistry();
-    const claims = new ProviderProxySetClaimMirror();
-    claims.initialize([]);
-    let acceptedBeforeRemoval = false;
+    const acceptForDrive = vi.fn(async (record: ProviderOperationRecord) => {
+      expect(record).toEqual(repaired);
+      expect(quarantine.list()).toHaveLength(1);
+    });
     sources.register(UNREADABLE_PROVIDER_OPERATION_BOUNDARY, (subject) =>
-      createUnreadableProviderOperationRetryPlan(db, subject, (record) => {
-        claims.applyMutation({ kind: 'upserted', record });
-        acceptedBeforeRemoval = claims.claimFor(record.operation) !== null && quarantine.list().length === 1;
-        return acceptedBeforeRemoval
-          ? { kind: 'accepted', owner: 'provider-proxy-claim-mirror' }
-          : { kind: 'refused', reason: 'test claim mirror did not accept the repaired record' };
+      createUnreadableProviderOperationRetryPlan(db, subject, async (record) => {
+        await acceptForDrive(record);
+        return { kind: 'accepted', owner: 'provider-operation-reconciler' };
       }),
     );
     const retry = createRecoveryQuarantineRetryService({
@@ -105,8 +103,7 @@ describe('unreadable provider operation recovery quarantine', () => {
       .get(`provider_operation_saga.v${PROVIDER_OPERATION_RECORD_VERSION}:due:%`)?.count;
     expect(dueRows).toBe(0);
     await expect(retry.clear(request)).resolves.toEqual({ ...request, disposition: 'advanced' });
-    expect(acceptedBeforeRemoval).toBe(true);
-    expect(claims.claimFor(repaired.operation)).not.toBeNull();
+    expect(acceptForDrive).toHaveBeenCalledExactlyOnceWith(repaired);
     expect(quarantine.list()).toEqual([]);
   });
 
@@ -148,6 +145,28 @@ describe('unreadable provider operation recovery quarantine', () => {
     await expect(retry.clear(request)).resolves.toEqual({ ...request, disposition: 'advanced' });
     expect(adoptionCalls).toBe(0);
     expect(quarantine.list()).toEqual([]);
+  });
+
+  it('reports only the unreadable keys whose quarantine status could not be materialized', async () => {
+    const firstKey = recordKey(providerOperationRecord('executing'));
+    const secondKey = `${firstKey}:failed`;
+    db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)').run(firstKey, 'not-json-1');
+    db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)').run(secondKey, 'not-json-2');
+    const rows = attributeUnreadableProviderOperations(db, readProviderOperations(db).unreadableKeys);
+    const materialization: RecoveryQuarantinePort = {
+      read: () => null,
+      upsert: (write) => {
+        if (write.subject.key === secondKey) throw new Error('quarantine storage unavailable');
+        return true;
+      },
+      delete: () => false,
+    };
+
+    const report = await quarantineUnreadableProviderOperations(materialization, rows);
+
+    expect(report.materialized).toBe(1);
+    expect(report.retained).toBe(0);
+    expect(report.failed.map(({ key }) => key)).toEqual([secondKey]);
   });
 
   it('atomically moves retry ownership to the current raw fingerprint', async () => {

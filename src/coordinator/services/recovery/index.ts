@@ -41,6 +41,7 @@ import {
   unreadableProviderOperationRecoverySource,
   type RawUnreadableProviderOperationRecoveryRow,
 } from './unreadable-provider-operation-recovery-source.js';
+import { unreadableProviderOperationSubject } from './unreadable-provider-operation-subject.js';
 import { RecoveryQuarantineStore } from '../../../recovery/quarantine.js';
 import type {
   RecoveryDisposition,
@@ -51,10 +52,10 @@ import type {
   RecoverySettlementFact,
   RecoverySubject,
 } from '../../../recovery/containment.js';
-import type {
-  RecoveryRetryPolicy,
-  RecoverySourceFactoryPlan,
-  RepeatableRecoveryBoundaryId,
+import {
+  UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
+  type RecoveryRetryPolicy,
+  type RecoverySourceFactoryPlan,
 } from '../../../recovery/source-registry.js';
 import type { Database } from '../../../store/db.js';
 import { runCoordinatorJobRecovery } from './startup-recovery.js';
@@ -168,11 +169,10 @@ type CoordinatorWalkOptions = {
   ): RecoveryDisposition | Promise<RecoveryDisposition>;
 };
 
-export const UNREADABLE_PROVIDER_OPERATION_BOUNDARY: RepeatableRecoveryBoundaryId = 'provider-operation-unreadable';
 const REPAIRED_PROVIDER_OPERATION_ADOPTION_OBLIGATION = 'repaired-provider-operation-adoption' as RecoveryObligationId;
 
 export type RepairedProviderOperationAdoption =
-  | Readonly<{ kind: 'accepted'; owner: 'provider-proxy-claim-mirror' }>
+  | Readonly<{ kind: 'accepted'; owner: 'provider-operation-reconciler' }>
   | Readonly<{ kind: 'refused'; reason: string }>;
 
 export type UnreadableProviderOperationQuarantineReport = Readonly<{
@@ -180,15 +180,6 @@ export type UnreadableProviderOperationQuarantineReport = Readonly<{
   retained: number;
   failed: readonly Readonly<{ key: string; error: string }>[];
 }>;
-
-function unreadableProviderOperationSubject(
-  row: Pick<UnreadableProviderOperationAttribution, 'key' | 'revision'>,
-): RecoverySubject {
-  return {
-    key: row.key,
-    revision: { kind: 'fingerprint', value: row.revision },
-  };
-}
 
 export async function quarantineUnreadableProviderOperations(
   quarantine: RecoveryQuarantinePort,

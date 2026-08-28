@@ -18,7 +18,8 @@ therefore cannot retain a live socket that keeps answering, while a peer with a 
 accepted echo or the one fresh mismatch challenge.
 
 Cross-build peers can remain answered-but-unusable because an older coordinator may reject an evolved reply
-shape or receive `method_not_found`. Those states now have explicit non-reaping release dispositions:
+shape or receive `method_not_found`. Those states now have explicit non-terminal independent-absence
+dispositions:
 `heartbeat_answer_unusable_hold_exhausted` after its own hold, and immediate
 `heartbeat_protocol_incompatible`. The remaining subject here is narrower: whether cross-build challenge
 semantics can produce a persistent sequence of accepted fresh challenges that never completes an echo.
@@ -27,5 +28,6 @@ semantics can produce a persistent sequence of accepted fresh challenges that ne
 
 If cross-build endpoints can be shown to repeat mismatch after the coordinator adopts each fresh challenge,
 decide whether that sequence belongs in the existing answered-but-unusable disposition or needs a separate
-non-reaping one. Its evidence and operator status must name repeated answered-but-unaccepted echoes; it must not
-reuse `heartbeat_hold_exhausted` or its silence clock.
+independent-absence one. Such a disposition sends no destructive control RPC, but may reap an orphaned proxy
+group after both enforcers are proven absent. Its evidence and operator status must name repeated
+answered-but-unaccepted echoes; it must not reuse `heartbeat_hold_exhausted` or its silence clock.

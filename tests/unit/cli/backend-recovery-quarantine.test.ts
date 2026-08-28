@@ -16,9 +16,11 @@ import { collectCommandCoverage } from '#src/cli/classify.js';
 import { formatRecoveryQuarantineClear, formatRecoveryQuarantineList } from '#src/cli/format/backend.js';
 import { buildProgram } from '#src/cli/program.js';
 import { encodeRecoveryQuarantineKey, RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
+import { UNREADABLE_PROVIDER_OPERATION_BOUNDARY } from '#src/recovery/source-registry.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema, classifyStoreFile, openStoreDatabase } from '#src/store/db.js';
+import { PROVIDER_OPERATION_RECORD_VERSION } from '#src/store/provider-operation-record.js';
 import * as ipcEnsure from '#src/transport/ipc/ensure.js';
 
 const storeReset: StoreResetCommandOperations = {
@@ -127,6 +129,43 @@ describe('backend recovery-quarantine commands', () => {
     );
     expect(stdout).toContain(`key=${encodeRecoveryQuarantineKey('workflow-unversioned')} revision="until-cleared"`);
     expect(stderr).toBe('');
+  });
+
+  it('should derive a visible coordinate when an unreadable provider operation has no quarantine row', () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'coral-recovery-quarantine-unreadable-provider-operation-'));
+    tempDirectories.push(baseDir);
+    const runtime = createRealRuntime('prod', { baseDir });
+    const dbPath = runtime.paths.coral.store.dbFile;
+    mkdirSync(dirname(dbPath), { recursive: true });
+    const db = openStoreDatabase({
+      path: dbPath,
+      storage: runtime.storage,
+      storeFormat: currentCoralStoreFormat(),
+      flavor: runtime.flavor,
+    });
+    applyBundledStoreSchema(db, currentCoralStoreFormat());
+    const key =
+      `provider_operation_saga.v${PROVIDER_OPERATION_RECORD_VERSION}:record:` + 'job-1:operation-1:proxy-1:build-1';
+    db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)').run(key, 'not-json');
+    expect(RecoveryQuarantineStore.readOnly(db).list()).toEqual([]);
+    db.close();
+
+    const entries = listRecoveryQuarantineLocal(runtime);
+
+    expect(entries).toEqual([
+      expect.objectContaining({
+        boundary: UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
+        subject: { key, revision: { kind: 'fingerprint', value: expect.stringMatching(/^sha256:/u) } },
+        state: 'active',
+        stage: 'hydrate',
+        detectedAt: null,
+        updatedAt: null,
+      }),
+    ]);
+    const rendered = formatRecoveryQuarantineList(entries);
+    expect(rendered).toContain(`key=${encodeRecoveryQuarantineKey(key)}`);
+    expect(rendered).toContain('detected_at=unavailable updated_at=unavailable');
+    expect(rendered).toContain('derived from the durable unreadable provider operation row');
   });
 
   it('should round-trip a fingerprint equal to the until-cleared sentinel', async () => {

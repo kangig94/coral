@@ -107,12 +107,12 @@ import {
   assertRecoverySourceRegistryComplete,
   createRecoveryQuarantineRetryService,
   createRecoverySourceRegistry,
+  UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
   type RecoveryRetryQuarantinePort,
 } from '../../recovery/source-registry.js';
 import {
   createCoordinatorJobRecoveryRetryPlan,
   createUnreadableProviderOperationRetryPlan,
-  UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
 } from '../services/recovery/index.js';
 import { createDiscussionCandidateRetryPlan, createDiscussionSourceRetryPlan } from '../../discuss/shell/recovery.js';
 import {
@@ -475,7 +475,7 @@ export function createCoordinatorCore(
   const recoveryDb = () => getProgressStore().getDb();
   let adoptRepairedProviderOperation: ReturnType<
     typeof createExecutionServices
-  >['adoptRepairedProviderOperation'] = () => ({
+  >['adoptRepairedProviderOperation'] = async () => ({
     kind: 'refused',
     reason: 'the coordinator execution services are not composed',
   });

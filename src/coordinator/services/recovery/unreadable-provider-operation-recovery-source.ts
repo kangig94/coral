@@ -2,6 +2,8 @@ import type { Database } from '../../../store/db.js';
 import { observeProviderOperationRecord } from '../../../store/provider-operation-journal.js';
 import type { ProviderOperationRecord } from '../../../store/provider-operation-record.js';
 import { defineRecoverySource, type RecoverySource, type RecoverySubject } from '../../../recovery/containment.js';
+import { UNREADABLE_PROVIDER_OPERATION_BOUNDARY } from '../../../recovery/source-registry.js';
+import { unreadableProviderOperationSubject } from './unreadable-provider-operation-subject.js';
 
 export type RawUnreadableProviderOperationRecoveryRow =
   | Readonly<{
@@ -38,12 +40,12 @@ export function unreadableProviderOperationRecoverySource(
   subject: RecoverySubject,
 ): RecoverySource<RawUnreadableProviderOperationRecoveryRow> {
   return defineRecoverySource({
-    boundary: 'provider-operation-unreadable',
+    boundary: UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
     scanSubject: subject,
     scan: () => scanUnreadableProviderOperationRows(db, subject.key),
     subject: (row) =>
       row.kind === 'unreadable'
-        ? { key: row.key, revision: { kind: 'fingerprint', value: row.currentRevision } }
+        ? unreadableProviderOperationSubject({ key: row.key, revision: row.currentRevision })
         : subject,
     retryRevision: 'same-key-current-fingerprint',
   });
