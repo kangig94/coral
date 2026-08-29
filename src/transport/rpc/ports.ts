@@ -17,9 +17,11 @@ import type {
   ProviderHostListResponse,
   ProviderProxySetContainRequest,
   ProviderProxySetContainResponse,
+} from './catalog.js';
+import type {
   UnreadableProviderOperationDiscardRequest,
   UnreadableProviderOperationDiscardResult,
-} from './catalog.js';
+} from '../../recovery/unreadable-provider-operation.js';
 import type { JobScopeRelation, ScopeCheckResult } from '../../jobs/scope.js';
 import type { JobsListFilters } from '../../jobs/read-queries.js';
 

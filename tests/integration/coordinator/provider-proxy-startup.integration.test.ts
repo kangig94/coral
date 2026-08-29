@@ -12,7 +12,10 @@ import {
   createProviderProxySetInheritance,
   type ProviderProxySetRedemptionOutcome,
 } from '#src/coordinator/services/provider-proxy-set/inheritance.js';
-import { createProviderProxySetContainmentProver } from '#src/coordinator/services/provider-proxy-set/containment-proof.js';
+import {
+  authorizeProviderProxySetContainmentProof,
+  createProviderProxySetContainmentProver,
+} from '#src/coordinator/services/provider-proxy-set/containment-proof.js';
 import type { ProviderProxySetContainmentEvidence } from '#src/provider-proxy/containment-proof-contract.js';
 import {
   ProviderOperationReconciler,
@@ -20,7 +23,10 @@ import {
   type StartupSetRecoveryPort,
 } from '#src/coordinator/services/provider-operation-reconciler.js';
 import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set/claim-mirror.js';
-import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set/index.js';
+import {
+  createProviderProxySetRecordedContainmentReaper,
+  ProviderProxySetLifecycle,
+} from '#src/coordinator/services/provider-proxy-set/index.js';
 import type { DisappearanceDeliveryAttemptOutcome } from '#src/coordinator/services/provider-containment-disappearance.js';
 import {
   isProviderProxyRecoveryFatalError,
@@ -210,7 +216,42 @@ function lifecycleFor(
   const redeemCapsule = options.redeemCapsule;
   const recoveryDispatcher = createTestProviderProxyRecoveryDispatcher(
     {
-      'containment-proof': ({ identity, signal }) => proveContainmentAbsent(identity, signal),
+      'containment-proof': async ({ identity, signal }) => {
+        const evidence = await proveContainmentAbsent(identity, signal);
+        const db = newRawDatabase(':memory:');
+        applyBundledStoreSchema(db, currentCoralStoreFormat());
+        const observations =
+          evidence.kind === 'enforcers-observed'
+            ? {
+                guardian: evidence.observations.find(({ role }) => role === 'guardian')?.observation ?? 'unknown',
+                reaper: evidence.observations.find(({ role }) => role === 'reaper')?.observation ?? 'unknown',
+              }
+            : { guardian: 'absent' as const, reaper: 'absent' as const };
+        if (evidence.kind === 'store-unreadable') {
+          db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)').run(
+            `provider_operation_saga.v1:record:${randomUUID()}:${randomUUID()}:${identity.proxyInstanceId}:${identity.buildSetId}`,
+            'not-json',
+          );
+        }
+        const proofRuntime = {
+          ...createRealRuntime('prod'),
+          process: {
+            ...createRealRuntime('prod').process,
+            readProcessIncarnation: () => null,
+            observeLiveness: (pid: number) =>
+              pid === identity.guardianPid ? observations.guardian : observations.reaper,
+          },
+        };
+        try {
+          return await createProviderProxySetContainmentProver(proofRuntime).collectContainmentProof(
+            authorizeProviderProxySetContainmentProof(identity),
+            db,
+            signal,
+          );
+        } finally {
+          db.close();
+        }
+      },
       'capsule-retirement': retireCapsule,
       ...(redeemCapsule === undefined
         ? {}
@@ -648,6 +689,14 @@ async function roleRecoveryStartupCase(
     }),
   ]);
   const operationRegistry = new LocalOperationRegistry();
+  const containmentProver = createProviderProxySetContainmentProver({
+    ...runtime,
+    process: {
+      ...runtime.process,
+      readProcessIncarnation: () => null,
+      observeLiveness: () => 'unknown',
+    },
+  });
   const inheritance = {
     inheritProviderProxySet: (locator: ProviderOperationRecord, db: Database, signal: AbortSignal) =>
       attemptProviderProxySetInheritance(
@@ -665,13 +714,10 @@ async function roleRecoveryStartupCase(
             buildSetId: record.operation.buildSetId,
           },
           operationRegistry,
-          collectContainmentEvidence: async () => ({
-            kind: 'enforcers-observed' as const,
-            observations: [
-              { role: 'guardian', observation: 'unknown' },
-              { role: 'reaper', observation: 'unknown' },
-            ] as const,
-          }),
+          collectContainmentProof: containmentProver.collectContainmentProof,
+          reapRecordedContainment: () => {
+            throw new Error('startup fixture unexpectedly requested recorded containment reaping');
+          },
         },
         signal,
       ),
@@ -747,6 +793,7 @@ async function inheritanceDeadlinePrecedenceStartupCase(mode: 'disagreement' | '
   const inheritance = createProviderProxySetInheritance({
     runtime,
     containmentProver: createProviderProxySetContainmentProver(runtime),
+    reapRecordedContainment: createProviderProxySetRecordedContainmentReaper(runtime),
     identity: {
       instanceId: randomUUID(),
       buildSetId: record.operation.buildSetId,
@@ -815,6 +862,7 @@ async function discoveredCapsuleDeadlinePrecedenceCase(mode: 'disagreement' | 'd
   const inheritance = createProviderProxySetInheritance({
     runtime,
     containmentProver: createProviderProxySetContainmentProver(runtime),
+    reapRecordedContainment: createProviderProxySetRecordedContainmentReaper(runtime),
     identity: {
       instanceId: randomUUID(),
       buildSetId: record.operation.buildSetId,

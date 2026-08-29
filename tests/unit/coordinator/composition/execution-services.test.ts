@@ -17,6 +17,7 @@ import {
   type ProviderProxyAuthorityObservation,
 } from '#src/coordinator/services/provider-proxy-authority-fault.js';
 import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set/claim-mirror.js';
+import { createProviderProxySetContainmentProver } from '#src/coordinator/services/provider-proxy-set/containment-proof.js';
 import {
   providerProxySetIdentityFromRecord,
   type ProviderProxySetIdentity,
@@ -26,7 +27,6 @@ import {
   createUnreadableProviderOperationRetryPlan,
   quarantineUnreadableProviderOperations,
 } from '#src/coordinator/services/recovery/index.js';
-import type { ProviderProxySetContainmentEvidence } from '#src/provider-proxy/containment-proof-contract.js';
 import {
   createRecoveryQuarantineRetryService,
   createRecoverySourceRegistry,
@@ -44,7 +44,6 @@ import {
   PROXY_TEARDOWN_RESERVE_MS,
   providerProxyHeartbeatHoldBound,
 } from '#src/provider-proxy/orphan-deadline.js';
-import type { Database } from '#src/store/db.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
@@ -77,12 +76,13 @@ const TEST_AUTONOMOUS_DEADLINE = {
   heartbeatHoldBound: providerProxyHeartbeatHoldBound({ orphanTimeoutMs: 37_000, teardownReserveMs: 14_000 }),
 };
 
-const noContainmentProof = async (): Promise<ProviderProxySetContainmentEvidence> => ({
-  kind: 'enforcers-observed',
-  observations: [
-    { role: 'guardian', observation: 'unknown' },
-    { role: 'reaper', observation: 'unknown' },
-  ],
+const noContainmentProver = createProviderProxySetContainmentProver({
+  ...createRealRuntime('prod'),
+  process: {
+    ...createRealRuntime('prod').process,
+    readProcessIncarnation: () => null,
+    observeLiveness: () => 'unknown',
+  },
 });
 
 const unexpectedRecordedContainmentReap = (): never => {
@@ -125,7 +125,7 @@ function createUnreadableStartupHarness() {
     operationRegistry: new LocalOperationRegistry(),
     providerProxyClaims: claims,
     providerProxyLifecycleRef: new ProviderProxySetLifecycleRef(),
-    providerProxySetContainmentProver: { collectContainmentEvidence: noContainmentProof },
+    providerProxySetContainmentProver: noContainmentProver,
     reapRecordedContainment: unexpectedRecordedContainmentReap,
     providerHostManager: {},
   } as never;
@@ -206,7 +206,7 @@ async function createSharedSetHarness(control: SharedSetControl) {
     operationRegistry,
     providerProxyClaims: claims,
     providerProxyLifecycleRef: lifecycleRef,
-    providerProxySetContainmentProver: { collectContainmentEvidence: noContainmentProof },
+    providerProxySetContainmentProver: noContainmentProver,
     reapRecordedContainment: unexpectedRecordedContainmentReap,
     providerHostManager: {},
   } as never;
@@ -378,7 +378,7 @@ describe('execution services provider-proxy proof composition', () => {
       operationRegistry: new LocalOperationRegistry(),
       providerProxyClaims: claims,
       providerProxyLifecycleRef: new ProviderProxySetLifecycleRef(),
-      providerProxySetContainmentProver: { collectContainmentEvidence: noContainmentProof },
+      providerProxySetContainmentProver: noContainmentProver,
       reapRecordedContainment: unexpectedRecordedContainmentReap,
       providerHostManager: {},
     } as never;
@@ -442,7 +442,7 @@ describe('execution services provider-proxy proof composition', () => {
       operationRegistry: new LocalOperationRegistry(),
       providerProxyClaims: claims,
       providerProxyLifecycleRef: lifecycleRef,
-      providerProxySetContainmentProver: { collectContainmentEvidence: noContainmentProof },
+      providerProxySetContainmentProver: noContainmentProver,
       reapRecordedContainment: unexpectedRecordedContainmentReap,
       providerHostManager: {},
     } as never;
@@ -606,15 +606,7 @@ describe('execution services provider-proxy proof composition', () => {
     const redeemDiscoveredCapsule = vi.fn(async () => {
       throw new Error('capsule redemption was not expected');
     });
-    const proveContainmentAbsent = vi.fn(
-      async (): Promise<ProviderProxySetContainmentEvidence> => ({
-        kind: 'enforcers-observed',
-        observations: [
-          { role: 'guardian', observation: 'unknown' },
-          { role: 'reaper', observation: 'unknown' },
-        ],
-      }),
-    );
+    const proveContainmentAbsent = vi.fn(noContainmentProver.collectContainmentProof);
     const world = {
       identity: { buildSetId: FIXTURE_BUILD_SET_ID },
       storeServicesRef: { tryGet: () => null },
@@ -622,7 +614,7 @@ describe('execution services provider-proxy proof composition', () => {
       providerProxyClaims: claims,
       providerProxyLifecycleRef: lifecycleRef,
       providerProxyInheritance: { inheritProviderProxySet, redeemDiscoveredCapsule },
-      providerProxySetContainmentProver: { collectContainmentEvidence: proveContainmentAbsent },
+      providerProxySetContainmentProver: { collectContainmentProof: proveContainmentAbsent },
       reapRecordedContainment: unexpectedRecordedContainmentReap,
       providerHostManager: {},
     } as never;
@@ -666,7 +658,7 @@ describe('execution services provider-proxy proof composition', () => {
       operationRegistry,
       providerProxyClaims: claims,
       providerProxyLifecycleRef: lifecycleRef,
-      providerProxySetContainmentProver: { collectContainmentEvidence: noContainmentProof },
+      providerProxySetContainmentProver: noContainmentProver,
       reapRecordedContainment: unexpectedRecordedContainmentReap,
       providerHostManager: {},
     } as never;
@@ -757,7 +749,7 @@ describe('execution services provider-proxy proof composition', () => {
       operationRegistry,
       providerProxyClaims: claims,
       providerProxyLifecycleRef: lifecycleRef,
-      providerProxySetContainmentProver: { collectContainmentEvidence: noContainmentProof },
+      providerProxySetContainmentProver: noContainmentProver,
       reapRecordedContainment: unexpectedRecordedContainmentReap,
       providerHostManager: {},
     } as never;
@@ -934,17 +926,15 @@ describe('execution services provider-proxy proof composition', () => {
     const claims = new ProviderProxySetClaimMirror();
     const lifecycleRef = new ProviderProxySetLifecycleRef();
     const operationRegistry = new LocalOperationRegistry();
-    const proveContainmentAbsent = vi.fn<
-      (
-        identity: ProviderProxySetIdentity,
-        db: Database,
-        signal: AbortSignal,
-      ) => Promise<ProviderProxySetContainmentEvidence>
-    >(async () => ({
-      kind: 'reap-required',
-      containment: { pid: 900_001, incarnation: testIncarnation(900_001), processGroupId: 900_001 },
-      recordedRoots: [],
-    }));
+    const proofRuntime = {
+      ...runtime,
+      process: {
+        ...runtime.process,
+        readProcessIncarnation: () => null,
+        observeLiveness: () => 'absent' as const,
+      },
+    };
+    const proveContainmentAbsent = vi.fn(createProviderProxySetContainmentProver(proofRuntime).collectContainmentProof);
     const reapRecordedContainment = vi.fn(async () => ({
       kind: 'containment-absent' as const,
       disappearanceReceipt: 'closed-control-path-containment-absent',
@@ -963,7 +953,7 @@ describe('execution services provider-proxy proof composition', () => {
           throw new Error('capsule redemption was not expected');
         },
       },
-      providerProxySetContainmentProver: { collectContainmentEvidence: proveContainmentAbsent },
+      providerProxySetContainmentProver: { collectContainmentProof: proveContainmentAbsent },
       reapRecordedContainment,
       providerHostManager: {},
     } as never;
@@ -1077,15 +1067,7 @@ describe('execution services provider-proxy proof composition', () => {
           throw new Error('capsule redemption was not expected');
         },
       },
-      providerProxySetContainmentProver: {
-        collectContainmentEvidence: async () => ({
-          kind: 'enforcers-observed' as const,
-          observations: [
-            { role: 'guardian', observation: 'unknown' },
-            { role: 'reaper', observation: 'unknown' },
-          ] as const,
-        }),
-      },
+      providerProxySetContainmentProver: noContainmentProver,
       reapRecordedContainment: unexpectedRecordedContainmentReap,
       providerHostManager: {},
     } as never;
@@ -1159,7 +1141,7 @@ describe('execution services provider-proxy heartbeat-hold composition', () => {
       operationRegistry: new LocalOperationRegistry(),
       providerProxyClaims: new ProviderProxySetClaimMirror(),
       providerProxyLifecycleRef: lifecycleRef,
-      providerProxySetContainmentProver: { collectContainmentEvidence: noContainmentProof },
+      providerProxySetContainmentProver: noContainmentProver,
       reapRecordedContainment: unexpectedRecordedContainmentReap,
       providerHostManager: {},
     } as never;

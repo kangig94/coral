@@ -1,3 +1,7 @@
+import {
+  authorizeProviderProxySetContainmentProof,
+  providerProxySetContainmentProofForTest,
+} from '#src/coordinator/services/provider-proxy-set/containment-proof.js';
 import type * as RoleControlModule from '#src/coordinator/live/provider-proxy/role-control.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { strictControlExchangeResult as strictTestExchange } from '#tests/support/control-exchange.js';
@@ -371,13 +375,14 @@ describe('createProviderProxyAcquisitionSteps', () => {
       controlEstablished: notifyProviderProxyControlEstablished,
       time,
       recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
-        'containment-proof': async () => ({
-          kind: 'enforcers-observed' as const,
-          observations: [
-            { role: 'guardian', observation: 'unknown' },
-            { role: 'reaper', observation: 'unknown' },
-          ] as const,
-        }),
+        'containment-proof': async ({ identity }) =>
+          providerProxySetContainmentProofForTest(authorizeProviderProxySetContainmentProof(identity), {
+            kind: 'enforcers-observed' as const,
+            observations: [
+              { role: 'guardian', observation: 'unknown' },
+              { role: 'reaper', observation: 'unknown' },
+            ] as const,
+          }),
         'disappearance-consumer': async ({ notice }) => ({
           kind: 'accepted',
           acceptance: { kind: 'accepted', operation: notice.operation, disposition: 'record-absent' },

@@ -41,6 +41,7 @@ import { handoffRoutingStatusPathForRunDir } from '../../infra/path/index.js';
 import { isSafeKbCommitId } from '../../kb/commit-quarantine.js';
 import {
   decodeRecoveryQuarantineKey,
+  encodeRecoveryQuarantineKey,
   RecoveryQuarantineStore,
   type RecoveryQuarantineListEntry,
 } from '../../recovery/quarantine.js';
@@ -96,9 +97,11 @@ import {
   type ProviderHostSelectorRequest,
   type ProviderProxySetContainRequest,
   type ProviderProxySetContainResponse,
-  type UnreadableProviderOperationDiscardRequest,
-  type UnreadableProviderOperationDiscardResult,
 } from '../../transport/rpc/catalog.js';
+import type {
+  UnreadableProviderOperationDiscardRequest,
+  UnreadableProviderOperationDiscardResult,
+} from '../../recovery/unreadable-provider-operation.js';
 import { decodeHostRef, encodeHostRef } from '../../providers/host-ref-codec.js';
 import { getPluginRoot } from '../dispatch.js';
 import { emitError } from '../emit.js';
@@ -226,6 +229,17 @@ export const PROVIDER_PROXY_SET_CONTAIN_EXIT_CODES: Readonly<
   'store-unreadable': 75,
 };
 
+export const UNREADABLE_PROVIDER_OPERATION_DISCARD_EXIT_CODES: Readonly<
+  Record<UnreadableProviderOperationDiscardResult['kind'], 0 | 1 | 75>
+> = {
+  discarded: 0,
+  absent: 1,
+  readable: 1,
+  'revision-mismatch': 75,
+  'quarantine-not-found': 75,
+  owned: 75,
+};
+
 function providerProxySetContainExitCode(result: ProviderProxySetContainResponse): 0 | 1 | 75 {
   if (
     (result.kind === 'contained' || result.kind === 'abandoned' || result.kind === 'unattributable-group-abandoned') &&
@@ -335,8 +349,15 @@ export interface RecoveryQuarantineCommandOperations {
   clear(request: RecoveryQuarantineClearRequest): Promise<RecoveryQuarantineClearResult>;
   discardProviderOperation?(
     request: UnreadableProviderOperationDiscardRequest,
-  ): Promise<UnreadableProviderOperationDiscardResult>;
+  ): Promise<UnreadableProviderOperationDiscardCommandResult>;
 }
+
+export type UnreadableProviderOperationDiscardCommandResult =
+  | UnreadableProviderOperationDiscardResult
+  | (UnreadableProviderOperationDiscardRequest &
+      Readonly<{
+        kind: 'unsupported-coordinator' | 'coordinator-draining' | 'unsupported-coordinator-result' | 'timeout';
+      }>);
 
 export interface ProviderHostCommandOperations {
   list(): Promise<ProviderHostListResponse>;
@@ -562,7 +583,7 @@ function unreadableProviderOperationEntries(
         continuation: null,
         errorMessage: 'Provider operation quarantine status could not be materialized.',
         detail:
-          'This coordinate was derived from the durable unreadable provider operation row. Repair it externally, or use discard-provider-operation with this exact key and revision to permanently remove the raw operation record without settling or signalling its work.',
+          'This coordinate was derived from the durable unreadable provider operation row, but no persisted quarantine subject currently grants operator-discard authority. Repair the row externally, or start or repair the canonical coordinator and rerun this list until it publishes an eligible discard command.',
         detectedAt: null,
         updatedAt: null,
       },
@@ -1028,7 +1049,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
     .requiredOption('--revision <revision>', 'Exact fingerprint revision shown by recovery-quarantine list')
     .addHelpText(
       'after',
-      '\nThis permanently removes the raw operation record and its due pointers without settling or signalling its work. The command refuses if the row is readable, absent, or at a different revision.',
+      '\nThis permanently removes the raw operation record, its due pointers, and its exact persisted quarantine evidence without settling or signalling its work. The command refuses if recovery owns the evidence or the row is readable, absent, or at a different revision.',
     )
     .action(async (options: { key: string; revision: string }) => {
       try {
@@ -1037,10 +1058,42 @@ export function registerBackendCommands(program: Command, operations: BackendCom
         }
         const request = parseUnreadableProviderOperationDiscardOptions(options, recoveryQuarantine.list());
         const result = await recoveryQuarantine.discardProviderOperation(request);
-        const output = formatUnreadableProviderOperationDiscard(result);
-        (result.kind === 'discarded' ? process.stdout : process.stderr).write(`${output}\n`);
-        process.exitCode =
-          result.kind === 'discarded' ? 0 : result.kind === 'absent' || result.kind === 'readable' ? 1 : 75;
+        const coordinate =
+          `key=${encodeRecoveryQuarantineKey(result.key)} ` +
+          `revision=${JSON.stringify(`${RECOVERY_REVISION_FINGERPRINT_PREFIX}${result.revision}`)}`;
+        switch (result.kind) {
+          case 'unsupported-coordinator':
+            process.stderr.write(
+              `No discard verdict for ${coordinate}: this coordinator does not support coordinator.recovery_quarantine.discard_provider_operation. Upgrade or restart into this Coral build, run backend recovery-quarantine list, and retry only a currently printed command.\n`,
+            );
+            process.exitCode = 75;
+            return;
+          case 'coordinator-draining':
+            process.stderr.write(
+              `No discard verdict for ${coordinate}: the coordinator is shutting down. Wait for the successor coordinator, then run backend recovery-quarantine list before deciding whether to retry.\n`,
+            );
+            process.exitCode = 75;
+            return;
+          case 'unsupported-coordinator-result':
+            process.stderr.write(
+              `No discard verdict for ${coordinate}: this CLI does not understand the coordinator's exact-coordinate discard result. Upgrade this CLI or restart into one Coral build, then run backend recovery-quarantine list before any retry.\n`,
+            );
+            process.exitCode = 75;
+            return;
+          case 'timeout':
+            process.stderr.write(
+              `No discard verdict for ${coordinate}: the coordinator did not answer before the deadline. Run backend recovery-quarantine list to observe the exact coordinate before any retry.\n`,
+            );
+            process.exitCode = 75;
+            return;
+          default: {
+            const exitCode = UNREADABLE_PROVIDER_OPERATION_DISCARD_EXIT_CODES[result.kind];
+            (exitCode === 0 ? process.stdout : process.stderr).write(
+              `${formatUnreadableProviderOperationDiscard(result)}\n`,
+            );
+            process.exitCode = exitCode;
+          }
+        }
       } catch (error: unknown) {
         emitError(error);
       }
@@ -1336,7 +1389,7 @@ async function clearRecoveryQuarantineWithCoordinator(
 async function discardUnreadableProviderOperationWithCoordinator(
   request: UnreadableProviderOperationDiscardRequest,
   signal?: AbortSignal,
-): Promise<UnreadableProviderOperationDiscardResult> {
+): Promise<UnreadableProviderOperationDiscardCommandResult> {
   const parsedRequest = unreadableProviderOperationDiscardRequestSchema.parse(request);
   signal?.throwIfAborted();
   try {
@@ -1347,22 +1400,31 @@ async function discardUnreadableProviderOperationWithCoordinator(
       parsedRequest,
       { timeoutMs: TOOL_TIMEOUT_MS, ...auth },
     );
-    const result = unreadableProviderOperationDiscardResultSchema.safeParse(response);
-    if (!result.success) {
-      throw new RecoveryQuarantineContractError(
-        'Coordinator returned an invalid unreadable provider-operation discard result. Run coral-cli backend status, then retry the exact coordinate.',
-      );
+    if (isRecord(response) && response.code === 'backend_shutting_down') {
+      return { ...parsedRequest, kind: 'coordinator-draining' };
     }
-    return result.data;
+    const result = unreadableProviderOperationDiscardResultSchema.safeParse(response);
+    if (result.success) return result.data;
+    if (
+      isRecord(response) &&
+      typeof response.kind === 'string' &&
+      response.key === parsedRequest.key &&
+      response.revision === parsedRequest.revision
+    ) {
+      return { ...parsedRequest, kind: 'unsupported-coordinator-result' };
+    }
+    throw new RecoveryQuarantineContractError(
+      'Coordinator returned an invalid unreadable provider-operation discard result. Run coral-cli backend status, then retry the exact coordinate.',
+    );
   } catch (error: unknown) {
     if (signal?.aborted === true) throw signal.reason;
-    if (error instanceof IpcRpcError || error instanceof RecoveryQuarantineContractError) throw error;
-    if (isRecoveryQuarantineTimeout(error)) {
-      throw new Error(
-        'Unreadable provider-operation discard timed out without a verdict. Run coral-cli backend recovery-quarantine list before retrying the exact coordinate.',
-        { cause: error },
-      );
+    if (error instanceof IpcRpcError && error.rpcCode === -32601) {
+      return { ...parsedRequest, kind: 'unsupported-coordinator' };
     }
+    if (isRecoveryQuarantineTimeout(error)) {
+      return { ...parsedRequest, kind: 'timeout' };
+    }
+    if (error instanceof IpcRpcError || error instanceof RecoveryQuarantineContractError) throw error;
     throw recoveryCoordinatorRequiredError();
   }
 }

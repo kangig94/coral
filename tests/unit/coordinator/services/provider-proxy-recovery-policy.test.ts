@@ -16,6 +16,15 @@ import type { ProviderHandoffCapsuleRetirementOutcome } from '#src/coordinator/s
 import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
+import {
+  authorizeProviderProxySetContainmentProof,
+  createProviderProxySetContainmentProver,
+} from '#src/coordinator/services/provider-proxy-set/containment-proof.js';
+import { providerProxySetIdentityFromRecord } from '#src/coordinator/services/provider-proxy-set/identity.js';
+import { createRealRuntime } from '#src/runtime/real.js';
+import { applyBundledStoreSchema } from '#src/store/db.js';
+import { currentCoralStoreFormat } from '#src/store-format.js';
+import { newRawDatabase } from '#tests/helpers/test-db.js';
 
 type Settlement = Readonly<{ kind: 'value'; value: unknown }> | Readonly<{ kind: 'throw'; error: unknown }>;
 
@@ -27,6 +36,30 @@ const unavailable = new ProviderProxyRoleControlUnavailableError({
   origin: 'timeout',
   controlCode: 'control_call_failed',
 });
+
+async function testContainmentProof(reapRequired: boolean) {
+  const identity = providerProxySetIdentityFromRecord(providerOperationRecord('executing'));
+  const db = newRawDatabase(':memory:');
+  applyBundledStoreSchema(db, currentCoralStoreFormat());
+  const runtime = {
+    ...createRealRuntime('prod'),
+    process: {
+      ...createRealRuntime('prod').process,
+      readProcessIncarnation: () => null,
+      observeLiveness: () => (reapRequired ? ('absent' as const) : ('unknown' as const)),
+    },
+  };
+  try {
+    const proof = await createProviderProxySetContainmentProver(runtime).collectContainmentProof(
+      authorizeProviderProxySetContainmentProof(identity),
+      db,
+      new AbortController().signal,
+    );
+    return { identity, proof };
+  } finally {
+    db.close();
+  }
+}
 
 const seamFor = (producerId: ProviderProxyRecoveryProducerId): ProviderProxyRecoveryConsumerSeam => {
   switch (producerId) {
@@ -57,9 +90,27 @@ async function observe(
   let retry = 0;
   let localFatal = 0;
   let globalFatal = 0;
+  const containment = await testContainmentProof(true);
+  const pairedAbsence = await testContainmentProof(false);
+  const effectiveContext: ProviderProxyRecoveryExactContext =
+    producerId === 'containment-proof' || producerId === 'capsule-redemption'
+      ? { ...context, setIdentity: containment.identity }
+      : context;
+  const effectiveSettlement: Settlement =
+    settlement.kind === 'value' && producerId === 'containment-proof'
+      ? { kind: 'value', value: containment.proof }
+      : settlement.kind === 'value' && producerId === 'capsule-redemption'
+        ? {
+            kind: 'value',
+            value: {
+              ...(settlement.value as object),
+              set: { ...((settlement.value as { set?: object }).set ?? {}), setIdentity: containment.identity },
+            },
+          }
+        : settlement;
   const producer = () => {
-    if (settlement.kind === 'throw') throw settlement.error;
-    return settlement.value;
+    if (effectiveSettlement.kind === 'throw') throw effectiveSettlement.error;
+    return effectiveSettlement.value;
   };
   // `capsule-redemption`'s only seam reduces two sources — a redemption and an independent containment proof —
   // and emits nothing until both have landed. Supplying the absence half is what lets this matrix observe the
@@ -70,13 +121,7 @@ async function observe(
       [producerId]: producer,
       ...(pairsWithAbsence
         ? {
-            'containment-proof': () => ({
-              kind: 'enforcers-observed' as const,
-              observations: [
-                { role: 'guardian', observation: 'unknown' },
-                { role: 'reaper', observation: 'unknown' },
-              ] as const,
-            }),
+            'containment-proof': () => pairedAbsence.proof,
           }
         : {}),
     } as Partial<ProviderProxyRecoveryProducerPorts>,
@@ -84,7 +129,7 @@ async function observe(
       globalFatal += 1;
     },
   );
-  const turn = dispatcher.begin(seamFor(producerId), context, {
+  const turn = dispatcher.begin(seamFor(producerId), effectiveContext, {
     evidence: () => {
       evidence += 1;
     },

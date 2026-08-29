@@ -60,7 +60,12 @@ import {
   reclamationFailedProviderHostInventoryRecordSchema,
   retiredBlockedProviderHostInventoryRecordSchema,
 } from '../../providers/host-inventory-schema.js';
-import { canonicalUuidSchema, hostFingerprintSchema, operationIdentitySchema } from '../../provider-proxy/protocol.js';
+import { operationIdentitySchema } from '../../provider-proxy/protocol.js';
+import { providerProxySetAddressSchema } from '../../provider-proxy/set-address.js';
+import type {
+  UnreadableProviderOperationDiscardRequest,
+  UnreadableProviderOperationDiscardResult,
+} from '../../recovery/unreadable-provider-operation.js';
 import {
   providerProxySetAliveEnforcerObservationsSchema,
   providerProxySetUnobservableEnforcerObservationsSchema,
@@ -107,21 +112,21 @@ export const unreadableProviderOperationDiscardRequestSchema = z
     key: z.string().min(1, 'Provider operation key is required'),
     revision: z.string().regex(/^sha256:[0-9a-f]{64}$/u, 'Provider operation revision must be a SHA-256 fingerprint'),
   })
-  .strict();
+  .strict() satisfies ZodType<UnreadableProviderOperationDiscardRequest>;
 
-export const unreadableProviderOperationDiscardResultSchema = z.discriminatedUnion('kind', [
-  unreadableProviderOperationDiscardRequestSchema.extend({ kind: z.literal('discarded') }).strict(),
-  unreadableProviderOperationDiscardRequestSchema.extend({ kind: z.literal('absent') }).strict(),
-  unreadableProviderOperationDiscardRequestSchema
-    .extend({ kind: z.literal('revision-mismatch'), currentRevision: z.string().regex(/^sha256:[0-9a-f]{64}$/u) })
-    .strict(),
-  unreadableProviderOperationDiscardRequestSchema.extend({ kind: z.literal('readable') }).strict(),
-]);
-
-export type UnreadableProviderOperationDiscardRequest = z.output<
-  typeof unreadableProviderOperationDiscardRequestSchema
->;
-export type UnreadableProviderOperationDiscardResult = z.output<typeof unreadableProviderOperationDiscardResultSchema>;
+export const unreadableProviderOperationDiscardResultSchema: ZodType<UnreadableProviderOperationDiscardResult> =
+  z.discriminatedUnion('kind', [
+    unreadableProviderOperationDiscardRequestSchema.extend({ kind: z.literal('discarded') }).strict(),
+    unreadableProviderOperationDiscardRequestSchema.extend({ kind: z.literal('absent') }).strict(),
+    unreadableProviderOperationDiscardRequestSchema
+      .extend({ kind: z.literal('revision-mismatch'), currentRevision: z.string().regex(/^sha256:[0-9a-f]{64}$/u) })
+      .strict(),
+    unreadableProviderOperationDiscardRequestSchema.extend({ kind: z.literal('readable') }).strict(),
+    unreadableProviderOperationDiscardRequestSchema.extend({ kind: z.literal('quarantine-not-found') }).strict(),
+    unreadableProviderOperationDiscardRequestSchema
+      .extend({ kind: z.literal('owned'), state: z.enum(['retrying', 'continuation']) })
+      .strict(),
+  ]);
 
 const providerHostOwnerShape = { ownerId: z.string().min(1) };
 export const providerHostInventoryRowSchema = z.discriminatedUnion('status', [
@@ -146,17 +151,9 @@ export type ProviderHostListResponse = z.output<typeof providerHostListResponseS
 export type ProviderHostInspectResponse = z.output<typeof providerHostInspectResponseSchema>;
 export type ProviderHostEvictResponse = z.output<typeof providerHostEvictResponseSchema>;
 
-const providerProxySetAddressWireSchema = z
-  .object({
-    buildSetId: canonicalUuidSchema,
-    hostFingerprint: hostFingerprintSchema,
-    proxyInstanceId: canonicalUuidSchema,
-  })
-  .strict();
-
 export const providerProxySetContainRequestSchema = z
   .object({
-    setIdentity: providerProxySetAddressWireSchema,
+    setIdentity: providerProxySetAddressSchema,
     abandonWithoutAbsence: z.boolean(),
   })
   .strict();
@@ -210,7 +207,7 @@ const providerProxySetContainEffectSchema = z
   })
   .strict();
 const providerProxySetContainResultBase = {
-  setIdentity: providerProxySetAddressWireSchema,
+  setIdentity: providerProxySetAddressSchema,
   effect: providerProxySetContainEffectSchema,
 };
 const providerProxySetContainKnownResponseSchema = z.discriminatedUnion('kind', [

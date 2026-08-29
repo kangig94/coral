@@ -126,7 +126,7 @@ describe('createCoordinatorWorld bind host guard', () => {
     const world = createWorld({});
 
     expect(world.providerProxyInheritance).toBeUndefined();
-    expect(world.providerProxySetContainmentProver.collectContainmentEvidence).toEqual(expect.any(Function));
+    expect(world.providerProxySetContainmentProver.collectContainmentProof).toEqual(expect.any(Function));
   });
 
   it('defaults to loopback without remote opt-in', () => {

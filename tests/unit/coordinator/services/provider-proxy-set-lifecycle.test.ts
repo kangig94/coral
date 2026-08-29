@@ -35,7 +35,14 @@ import {
   type RetrySafeControlCallPolicy,
 } from '#src/coordinator/services/provider-proxy-authority-fault.js';
 import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set/claim-mirror.js';
-import { createProviderProxySetContainmentProver } from '#src/coordinator/services/provider-proxy-set/containment-proof.js';
+import {
+  authorizeProviderProxySetContainmentProof,
+  createProviderProxySetContainmentProver,
+  inspectProviderProxySetContainmentProof,
+  providerProxySetContainmentEvidenceFor,
+  type ProviderProxySetContainmentProof,
+  type ProviderProxySetContainmentProofAuthorization,
+} from '#src/coordinator/services/provider-proxy-set/containment-proof.js';
 import {
   createProviderProxySetRecordedContainmentReaper,
   ProviderProxySetLifecycle,
@@ -43,8 +50,8 @@ import {
   type ProviderProxySetLifecycleDeps,
   type ProviderProxySetLifecycleProgressViolation,
   type ProviderProxySetOperatorExitCapability,
-  type ProviderProxySetRecordedContainmentReaper,
 } from '#src/coordinator/services/provider-proxy-set/index.js';
+import type { ProviderProxySetRecordedContainmentReaper } from '#src/coordinator/services/provider-proxy-set/recorded-containment-reaper.js';
 import type {
   DisappearanceDeliveryAttemptOutcome,
   ProviderContainmentDisappearanceConsumer,
@@ -99,10 +106,16 @@ function containmentEvidence(receipt: string): ProviderProxySetContainmentEviden
     recordedRoots: [],
   };
 }
-const reapContainmentEvidence: ProviderProxySetRecordedContainmentReaper = async (evidence) => ({
+const reapContainmentEvidence: ProviderProxySetRecordedContainmentReaper = async (identity, proof) => ({
   kind: 'containment-absent',
-  disappearanceReceipt:
-    containmentEvidenceReceipts.get(evidence.containment.incarnation) ?? 'fixture-containment-absence',
+  disappearanceReceipt: (() => {
+    const evidence = providerProxySetContainmentEvidenceFor(proof, identity);
+    return (
+      containmentEvidenceReceipts.get(
+        evidence.kind === 'reap-required' ? evidence.containment.incarnation : identity.proxyIncarnation,
+      ) ?? 'fixture-containment-absence'
+    );
+  })(),
 });
 const noOperatorExitEffect = {
   signalsSent: [] as const,
@@ -287,7 +300,12 @@ function lifecycleFor(deps: ProviderProxySetLifecycleFixtureDeps): ProviderProxy
             'capsule-redemption': ({ capsule, capsulePath, signal }) =>
               deps.redeemCapsule?.(capsule, capsulePath, signal) ?? Promise.reject(new Error('unconfigured')),
           }),
-      'containment-proof': ({ identity, signal }) => deps.proveContainmentAbsent(identity, signal),
+      'containment-proof': async ({ identity, signal }) =>
+        sealedContainmentProof(
+          identity,
+          authorizeProviderProxySetContainmentProof(identity),
+          await deps.proveContainmentAbsent(identity, signal),
+        ),
       'capsule-retirement': ({ path }) => retireCapsule(path),
       'disappearance-consumer': ({ notice }) => deps.disappearanceConsumer.containmentDisappeared(notice),
       ...(deps.abandonmentConsumer === undefined
@@ -525,6 +543,48 @@ function containmentProofRuntime(
     observeLiveness,
     readProcessIncarnation,
   };
+}
+
+async function sealedContainmentProof(
+  identity: ReturnType<typeof providerProxySetIdentityFromRecord>,
+  authorization: ProviderProxySetContainmentProofAuthorization,
+  evidence: ProviderProxySetContainmentEvidence,
+): Promise<ProviderProxySetContainmentProof> {
+  const db = newRawDatabase(':memory:');
+  applyBundledStoreSchema(db, currentCoralStoreFormat());
+  if (evidence.kind === 'store-unreadable') {
+    const unreadableKey =
+      `provider_operation_saga.v${PROVIDER_OPERATION_RECORD_VERSION}:record:${randomUUID()}:${randomUUID()}:` +
+      `${identity.proxyInstanceId}:${identity.buildSetId}`;
+    db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)').run(unreadableKey, 'not-json');
+  }
+  const observations: Readonly<Record<'guardian' | 'reaper', ProcessLiveness>> =
+    evidence.kind === 'enforcers-observed'
+      ? {
+          guardian: evidence.observations.find(({ role }) => role === 'guardian')?.observation ?? 'unknown',
+          reaper: evidence.observations.find(({ role }) => role === 'reaper')?.observation ?? 'unknown',
+        }
+      : { guardian: 'absent', reaper: 'absent' };
+  if (evidence.kind === 'reap-required') {
+    containmentEvidenceReceipts.set(
+      identity.proxyIncarnation,
+      containmentEvidenceReceipts.get(evidence.containment.incarnation) ?? 'fixture-containment-absence',
+    );
+  }
+  try {
+    return await createProviderProxySetContainmentProver(
+      containmentProofRuntime(identity, observations).runtime,
+    ).collectContainmentProof(authorization, db, new AbortController().signal);
+  } finally {
+    db.close();
+  }
+}
+
+function operatorContainmentProof(
+  capability: ProviderProxySetOperatorExitCapability,
+  evidence: ProviderProxySetContainmentEvidence,
+): Promise<ProviderProxySetContainmentProof> {
+  return sealedContainmentProof(capability.setIdentity, capability.containmentProofAuthorization, evidence);
 }
 
 async function authorizedOperatorExitForProof(
@@ -2242,13 +2302,13 @@ describe('ProviderProxySetLifecycle', () => {
     await expect(
       lifecycle.completeOperatorExit(
         authorization.capability,
-        {
+        await operatorContainmentProof(authorization.capability, {
           kind: 'enforcers-observed',
           observations: [
             { role: 'guardian', observation: 'alive' },
             { role: 'reaper', observation: 'unknown' },
           ],
-        },
+        }),
         false,
       ),
     ).resolves.toEqual({
@@ -2275,13 +2335,13 @@ describe('ProviderProxySetLifecycle', () => {
     await expect(
       lifecycle.completeOperatorExit(
         authorization.capability,
-        {
+        await operatorContainmentProof(authorization.capability, {
           kind: 'enforcers-observed',
           observations: [
             { role: 'guardian', observation: 'absent' },
             { role: 'reaper', observation: 'unknown' },
           ],
-        },
+        }),
         false,
       ),
     ).resolves.toEqual({
@@ -2294,7 +2354,11 @@ describe('ProviderProxySetLifecycle', () => {
       effect: noOperatorExitEffect,
     });
     await expect(
-      lifecycle.completeOperatorExit(authorization.capability, { kind: 'store-unreadable' }, true),
+      lifecycle.completeOperatorExit(
+        authorization.capability,
+        await operatorContainmentProof(authorization.capability, { kind: 'store-unreadable' }),
+        true,
+      ),
     ).resolves.toEqual({ kind: 'store-unreadable', setIdentity: address, effect: noOperatorExitEffect });
     expect(lifecycle.snapshot().operatorDispositions).toContainEqual(
       expect.objectContaining({
@@ -2338,12 +2402,12 @@ describe('ProviderProxySetLifecycle', () => {
     const harness = await authorizedOperatorExitForProof(record, reapRecordedContainment);
 
     try {
-      const evidence = await createProviderProxySetContainmentProver(process.runtime).collectContainmentEvidence(
-        identity,
+      const proof = await createProviderProxySetContainmentProver(process.runtime).collectContainmentProof(
+        harness.capability.containmentProofAuthorization,
         db,
         new AbortController().signal,
       );
-      const result = await harness.lifecycle.completeOperatorExit(harness.capability, evidence, false);
+      const result = await harness.lifecycle.completeOperatorExit(harness.capability, proof, false);
 
       expect(result).toEqual(expect.objectContaining({ kind: expectedKind, effect: noOperatorExitEffect }));
       expect(process.kill).not.toHaveBeenCalled();
@@ -2362,7 +2426,9 @@ describe('ProviderProxySetLifecycle', () => {
     const process = containmentProofRuntime(identity, { guardian: 'absent', reaper: 'absent' });
     const reapedTargets: number[] = [];
     const reapRecordedContainment = vi.fn<ProviderProxySetRecordedContainmentReaper>(
-      async (evidence, _signal, onSignal) => {
+      async (identity, proof, _signal, onSignal) => {
+        const evidence = providerProxySetContainmentEvidenceFor(proof, identity);
+        if (evidence.kind !== 'reap-required') throw new Error(`expected reap-required, received ${evidence.kind}`);
         reapedTargets.push(-evidence.containment.processGroupId, ...evidence.recordedRoots.map(({ pid }) => pid));
         onSignal('SIGTERM');
         return {
@@ -2374,12 +2440,12 @@ describe('ProviderProxySetLifecycle', () => {
     const harness = await authorizedOperatorExitForProof(record, reapRecordedContainment);
 
     try {
-      const evidence = await createProviderProxySetContainmentProver(process.runtime).collectContainmentEvidence(
-        identity,
+      const proof = await createProviderProxySetContainmentProver(process.runtime).collectContainmentProof(
+        harness.capability.containmentProofAuthorization,
         db,
         new AbortController().signal,
       );
-      await expect(harness.lifecycle.completeOperatorExit(harness.capability, evidence, false)).resolves.toEqual(
+      await expect(harness.lifecycle.completeOperatorExit(harness.capability, proof, false)).resolves.toEqual(
         expect.objectContaining({
           kind: 'contained',
           disappearanceReceipt: 'real-proof-recorded-containment-absent',
@@ -2391,7 +2457,7 @@ describe('ProviderProxySetLifecycle', () => {
         }),
       );
 
-      expect(evidence).toEqual({
+      expect(inspectProviderProxySetContainmentProof(proof)?.evidence).toEqual({
         kind: 'reap-required',
         containment: {
           pid: identity.proxyPid,
@@ -2408,9 +2474,93 @@ describe('ProviderProxySetLifecycle', () => {
     }
   });
 
+  it.each([
+    { binding: 'different address', sameAddress: false, mode: 'reap' as const },
+    { binding: 'different address', sameAddress: false, mode: 'abandon' as const },
+    { binding: 'same address but different process identity', sameAddress: true, mode: 'reap' as const },
+    { binding: 'same address but different process identity', sameAddress: true, mode: 'abandon' as const },
+  ])('rejects a $binding proof before operator $mode effects', async ({ sameAddress, mode }) => {
+    const record = providerOperationRecord('executing');
+    const reapRecordedContainment = vi.fn<ProviderProxySetRecordedContainmentReaper>(async () => ({
+      kind: 'containment-absent',
+      disappearanceReceipt: 'must-not-reap',
+    }));
+    const harness = await authorizedOperatorExitForProof(record, reapRecordedContainment);
+    const identityA = harness.capability.setIdentity;
+    const identityB = sameAddress
+      ? {
+          ...identityA,
+          proxyPid: identityA.proxyPid + 10,
+          proxyIncarnation: testIncarnation('different-full-identity'),
+          proxyProcessGroupId: identityA.proxyProcessGroupId + 10,
+        }
+      : {
+          ...identityA,
+          proxyInstanceId: randomUUID(),
+          proxyPid: identityA.proxyPid + 20,
+          proxyIncarnation: testIncarnation('different-address-identity'),
+          proxyProcessGroupId: identityA.proxyProcessGroupId + 20,
+        };
+    const foreignAuthorization = authorizeProviderProxySetContainmentProof(identityB);
+    const foreignProof = await sealedContainmentProof(
+      identityB,
+      foreignAuthorization,
+      mode === 'reap'
+        ? containmentEvidence('foreign-set-absence')
+        : {
+            kind: 'enforcers-observed',
+            observations: [
+              { role: 'guardian', observation: 'unknown' },
+              { role: 'reaper', observation: 'unknown' },
+            ],
+          },
+    );
+
+    await expect(
+      harness.lifecycle.completeOperatorExit(harness.capability, foreignProof, mode === 'abandon'),
+    ).rejects.toThrow('provider_proxy_set_containment_proof_identity_mismatch');
+    expect(reapRecordedContainment).not.toHaveBeenCalled();
+    expect(harness.stopAndReap).not.toHaveBeenCalled();
+    expect(harness.lifecycle.snapshot().represented).toBe(1);
+  });
+
+  it('rejects a proof minted for the same full identity under a different operator authorization', async () => {
+    const record = providerOperationRecord('executing');
+    const reapRecordedContainment = vi.fn<ProviderProxySetRecordedContainmentReaper>(async () => ({
+      kind: 'containment-absent',
+      disappearanceReceipt: 'must-not-reap',
+    }));
+    const harness = await authorizedOperatorExitForProof(record, reapRecordedContainment);
+    const otherAuthorization = authorizeProviderProxySetContainmentProof(harness.capability.setIdentity);
+    const proof = await sealedContainmentProof(
+      harness.capability.setIdentity,
+      otherAuthorization,
+      containmentEvidence('wrong-authorization'),
+    );
+
+    await expect(harness.lifecycle.completeOperatorExit(harness.capability, proof, false)).rejects.toThrow(
+      'provider_proxy_set_containment_proof_authorization_mismatch',
+    );
+    expect(reapRecordedContainment).not.toHaveBeenCalled();
+    expect(harness.stopAndReap).not.toHaveBeenCalled();
+    expect(harness.lifecycle.snapshot().represented).toBe(1);
+  });
+
   it('does not mint a lifecycle receipt for an unattributable recorded group', async () => {
     const base = createRealRuntime('prod');
     const recordedIncarnation = testIncarnation('recorded-leader');
+    const identity = {
+      ...providerProxySetIdentityFromRecord(providerOperationRecord('executing')),
+      proxyPid: 9_100,
+      proxyIncarnation: recordedIncarnation,
+      proxyProcessGroupId: 9_100,
+    };
+    const authorization = authorizeProviderProxySetContainmentProof(identity);
+    const proof = await sealedContainmentProof(identity, authorization, {
+      kind: 'reap-required',
+      containment: { pid: 9_100, incarnation: recordedIncarnation, processGroupId: 9_100 },
+      recordedRoots: [],
+    });
     const observeLiveness = vi.fn((pid: number): ProcessLiveness => (pid < 0 ? 'alive' : 'absent'));
     const kill = vi.fn(() => true);
     const reaper = createProviderProxySetRecordedContainmentReaper({
@@ -2423,17 +2573,9 @@ describe('ProviderProxySetLifecycle', () => {
       },
     });
 
-    await expect(
-      reaper(
-        {
-          kind: 'reap-required',
-          containment: { pid: 9_100, incarnation: recordedIncarnation, processGroupId: 9_100 },
-          recordedRoots: [],
-        },
-        new AbortController().signal,
-        () => undefined,
-      ),
-    ).resolves.toEqual({ kind: 'recorded-group-unattributable' });
+    await expect(reaper(identity, proof, new AbortController().signal, () => undefined)).resolves.toEqual({
+      kind: 'recorded-group-unattributable',
+    });
 
     expect(observeLiveness).toHaveBeenCalledWith(-9_100);
     expect(kill).not.toHaveBeenCalled();
@@ -2446,9 +2588,9 @@ describe('ProviderProxySetLifecycle', () => {
     }));
     const harness = await authorizedOperatorExitForProof(record, reapRecordedContainment);
     const setIdentity = providerProxySetAddress(providerProxySetIdentityFromRecord(record));
-    const evidence = containmentEvidence('must-not-be-minted');
+    const proof = await operatorContainmentProof(harness.capability, containmentEvidence('must-not-be-minted'));
 
-    await expect(harness.lifecycle.completeOperatorExit(harness.capability, evidence, false)).resolves.toEqual({
+    await expect(harness.lifecycle.completeOperatorExit(harness.capability, proof, false)).resolves.toEqual({
       kind: 'recorded-group-unattributable',
       setIdentity,
       effect: noOperatorExitEffect,
@@ -2467,7 +2609,7 @@ describe('ProviderProxySetLifecycle', () => {
     );
     expect(harness.stopAndReap).not.toHaveBeenCalled();
 
-    await expect(harness.lifecycle.completeOperatorExit(harness.capability, evidence, true)).resolves.toEqual(
+    await expect(harness.lifecycle.completeOperatorExit(harness.capability, proof, true)).resolves.toEqual(
       expect.objectContaining({
         kind: 'unattributable-group-abandoned',
         setIdentity,
@@ -2498,12 +2640,12 @@ describe('ProviderProxySetLifecycle', () => {
     const harness = await authorizedOperatorExitForProof(record, reapRecordedContainment);
 
     try {
-      const evidence = await createProviderProxySetContainmentProver(process.runtime).collectContainmentEvidence(
-        identity,
+      const proof = await createProviderProxySetContainmentProver(process.runtime).collectContainmentProof(
+        harness.capability.containmentProofAuthorization,
         db,
         new AbortController().signal,
       );
-      await expect(harness.lifecycle.completeOperatorExit(harness.capability, evidence, true)).resolves.toEqual({
+      await expect(harness.lifecycle.completeOperatorExit(harness.capability, proof, true)).resolves.toEqual({
         kind: 'store-unreadable',
         setIdentity: providerProxySetAddress(identity),
         effect: noOperatorExitEffect,
@@ -2561,13 +2703,13 @@ describe('ProviderProxySetLifecycle', () => {
     await expect(
       lifecycle.completeOperatorExit(
         firstAuthorization.capability,
-        {
+        await operatorContainmentProof(firstAuthorization.capability, {
           kind: 'enforcers-observed',
           observations: [
             { role: 'guardian', observation: 'unknown' },
             { role: 'reaper', observation: 'unknown' },
           ],
-        },
+        }),
         true,
       ),
     ).resolves.toEqual({ kind: 'authorization-stale', setIdentity: address, effect: noOperatorExitEffect });
@@ -2580,7 +2722,7 @@ describe('ProviderProxySetLifecycle', () => {
     const clock = new ManualClock();
     const authority = fakeAuthority({ record });
     const reapRecordedContainment = vi.fn<ProviderProxySetRecordedContainmentReaper>(
-      async (_evidence, _signal, onSignal, assertSignalAuthorized) => {
+      async (_identity, _proof, _signal, onSignal, assertSignalAuthorized) => {
         assertSignalAuthorized?.();
         onSignal('SIGTERM');
         clock.runDue();
@@ -2609,7 +2751,11 @@ describe('ProviderProxySetLifecycle', () => {
     }
 
     await expect(
-      lifecycle.completeOperatorExit(authorization.capability, containmentEvidence('operator-partial-stale'), false),
+      lifecycle.completeOperatorExit(
+        authorization.capability,
+        await operatorContainmentProof(authorization.capability, containmentEvidence('operator-partial-stale')),
+        false,
+      ),
     ).resolves.toEqual({
       kind: 'authorization-stale',
       setIdentity: address,
@@ -2653,7 +2799,11 @@ describe('ProviderProxySetLifecycle', () => {
     const authorization = lifecycle.authorizeOperatorExit(providerProxySetAddress(authority.setIdentity));
     if (authorization.kind !== 'authorized') throw new Error(`expected authorization, received ${authorization.kind}`);
     await expect(
-      lifecycle.completeOperatorExit(authorization.capability, containmentEvidence('operator-exact-absence'), false),
+      lifecycle.completeOperatorExit(
+        authorization.capability,
+        await operatorContainmentProof(authorization.capability, containmentEvidence('operator-exact-absence')),
+        false,
+      ),
     ).resolves.toEqual(
       expect.objectContaining({
         kind: 'contained',
@@ -2723,7 +2873,11 @@ describe('ProviderProxySetLifecycle', () => {
         throw new Error(`expected authorization, received ${authorization.kind}`);
       }
       await expect(
-        lifecycle.completeOperatorExit(authorization.capability, proof, abandonWithoutAbsence),
+        lifecycle.completeOperatorExit(
+          authorization.capability,
+          await operatorContainmentProof(authorization.capability, proof),
+          abandonWithoutAbsence,
+        ),
       ).resolves.toEqual(
         expect.objectContaining({
           kind: resultKind,
@@ -2778,13 +2932,13 @@ describe('ProviderProxySetLifecycle', () => {
     if (authorization.kind !== 'authorized') throw new Error(`expected authorization, received ${authorization.kind}`);
     const completion = lifecycle.completeOperatorExit(
       authorization.capability,
-      {
+      await operatorContainmentProof(authorization.capability, {
         kind: 'enforcers-observed',
         observations: [
           { role: 'guardian', observation: 'unknown' },
           { role: 'reaper', observation: 'unknown' },
         ],
-      },
+      }),
       true,
     );
     await expect(completion).resolves.toEqual(
@@ -3503,7 +3657,12 @@ describe('ProviderProxySetLifecycle', () => {
     };
     const dispatcher: ProviderProxyRecoveryDispatcher = createTestProviderProxyRecoveryDispatcher(
       {
-        'containment-proof': noContainmentProof,
+        'containment-proof': async ({ identity }) =>
+          sealedContainmentProof(
+            identity,
+            authorizeProviderProxySetContainmentProof(identity),
+            await noContainmentProof(),
+          ),
         'disappearance-terminalization': () => {
           throw new ProviderOperationTerminalMetadataError(record.operation);
         },

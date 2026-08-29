@@ -44,7 +44,6 @@ import {
   providerProxySetContainResponseSchema,
   unreadableProviderOperationDiscardResultSchema,
 } from '../../transport/rpc/catalog.js';
-import { discardUnreadableProviderOperation } from '../../store/provider-operation-journal.js';
 import type { KbToolResult } from '../../kb/result.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import {
@@ -66,6 +65,7 @@ import {
   type LifecycleDeps,
   type RunStartupRecoveryOrchestratorFn,
 } from '../lifecycle.js';
+import { createUnreadableProviderOperationDiscardService } from '../services/recovery/unreadable-provider-operation-discard.js';
 import { createRuntimeComponentRegistry } from '../runtime-components/registry.js';
 import type { CoordinatorCoreOptions, CoordinatorCoreResult } from './types.js';
 import { isWorkflowInputFailure, workflowCompiler } from '../../workflow/compile.js';
@@ -556,11 +556,15 @@ export function createCoordinatorCore(
   });
   const recoveryQuarantine: RpcPorts['recoveryQuarantine'] = {
     clear: (request, signal) => recoveryQuarantineRetry.clear(request, signal),
-    discardProviderOperation: (request) =>
-      unreadableProviderOperationDiscardResultSchema.parse({
-        ...request,
-        ...discardUnreadableProviderOperation(recoveryDb(), request.key, request.revision),
-      }),
+    discardProviderOperation: (request) => {
+      const discard = createUnreadableProviderOperationDiscardService({
+        instanceId: world.identity.instanceId,
+        ids: runtime.ids,
+        db: recoveryDb(),
+        time: runtime.time,
+      });
+      return unreadableProviderOperationDiscardResultSchema.parse(discard.discard(request));
+    },
   };
 
   // Eager defaults resolve from `runtime` alone.
@@ -1009,18 +1013,13 @@ export function createCoordinatorCore(
             effect: { signalsSent: [], containmentAbsent: false, representationAction: 'none' },
           });
         }
-        const evidence = await world.providerProxySetContainmentProver.collectContainmentEvidence(
-          authorization.capability.setIdentity,
+        const proof = await world.providerProxySetContainmentProver.collectContainmentProof(
+          authorization.capability.containmentProofAuthorization,
           getProgressStore().getDb(),
           signal ?? new AbortController().signal,
         );
         return providerProxySetContainResponseSchema.parse(
-          await lifecycle.completeOperatorExit(
-            authorization.capability,
-            evidence,
-            request.abandonWithoutAbsence,
-            signal,
-          ),
+          await lifecycle.completeOperatorExit(authorization.capability, proof, request.abandonWithoutAbsence, signal),
         );
       },
     },

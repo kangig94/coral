@@ -1,3 +1,8 @@
+import { createProviderProxySetContainmentProver } from '#src/coordinator/services/provider-proxy-set/containment-proof.js';
+import {
+  authorizeProviderProxySetContainmentProof,
+  providerProxySetContainmentProofForTest,
+} from '#src/coordinator/services/provider-proxy-set/containment-proof.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
@@ -145,7 +150,10 @@ import {
   type ProviderProxyAuthorityObservation,
 } from '#src/coordinator/services/provider-proxy-authority-fault.js';
 import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set/claim-mirror.js';
-import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set/index.js';
+import {
+  createProviderProxySetRecordedContainmentReaper,
+  ProviderProxySetLifecycle,
+} from '#src/coordinator/services/provider-proxy-set/index.js';
 import {
   attemptProviderProxySetInheritance,
   type ProviderProxySetLocator,
@@ -1111,13 +1119,14 @@ describe('provider-proxy process topology: acquisition', () => {
       controlEstablished: () => undefined,
       time: environment.outerRuntime().time,
       recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
-        'containment-proof': async () => ({
-          kind: 'enforcers-observed' as const,
-          observations: [
-            { role: 'guardian', observation: 'unknown' },
-            { role: 'reaper', observation: 'unknown' },
-          ] as const,
-        }),
+        'containment-proof': async ({ identity }) =>
+          providerProxySetContainmentProofForTest(authorizeProviderProxySetContainmentProof(identity), {
+            kind: 'enforcers-observed' as const,
+            observations: [
+              { role: 'guardian', observation: 'unknown' },
+              { role: 'reaper', observation: 'unknown' },
+            ] as const,
+          }),
         'disappearance-consumer': async ({ notice }) => ({
           kind: 'accepted',
           acceptance: { kind: 'accepted', operation: notice.operation, disposition: 'record-absent' },
@@ -1250,6 +1259,13 @@ describe('provider-proxy process topology: acquisition', () => {
         baseDir,
         coordinatorIdentity: successorIdentity,
         operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
+        reapRecordedContainment: createProviderProxySetRecordedContainmentReaper(environment.outerRuntime()),
+        collectContainmentProof: (authorization, proofDb, proofSignal) =>
+          createProviderProxySetContainmentProver(environment.outerRuntime()).collectContainmentProof(
+            authorization,
+            proofDb,
+            proofSignal,
+          ),
       },
       AbortSignal.timeout(15_000),
     );

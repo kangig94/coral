@@ -27,10 +27,8 @@ import type { ProviderProxyAuthorityRegistry } from '../live/provider-proxy/auth
 import { LocalOperationRegistry } from '../services/operation-registry.js';
 import { ProviderProxySetClaimMirror } from '../services/provider-proxy-set/claim-mirror.js';
 import { ProviderProxySetLifecycleRef } from '../services/provider-proxy-set/lifecycle-ref.js';
-import {
-  createProviderProxySetRecordedContainmentReaper,
-  type ProviderProxySetRecordedContainmentReaper,
-} from '../services/provider-proxy-set/index.js';
+import { createProviderProxySetRecordedContainmentReaper } from '../services/provider-proxy-set/index.js';
+import type { ProviderProxySetRecordedContainmentReaper } from '../services/provider-proxy-set/recorded-containment-reaper.js';
 import {
   createProviderProxySetContainmentProver,
   type ProviderProxySetContainmentProver,

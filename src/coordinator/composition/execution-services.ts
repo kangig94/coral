@@ -45,6 +45,7 @@ import {
   providerProxySetIdentityFromRecord,
 } from '../services/provider-proxy-set/identity.js';
 import { ProviderProxySetLifecycle } from '../services/provider-proxy-set/index.js';
+import { authorizeProviderProxySetContainmentProof } from '../services/provider-proxy-set/containment-proof.js';
 import type { ProviderProxySetLifecycleFatalError } from '../services/provider-proxy-recovery-policy.js';
 import {
   discoverProviderHandoffCapsules,
@@ -122,8 +123,8 @@ export function createExecutionServices({
         return providerProxyInheritance.redeemDiscoveredCapsule(capsule, capsulePath, signal);
       },
       'containment-proof': ({ identity, signal }) =>
-        world.providerProxySetContainmentProver.collectContainmentEvidence(
-          identity,
+        world.providerProxySetContainmentProver.collectContainmentProof(
+          authorizeProviderProxySetContainmentProof(identity),
           getProgressStore().getDb(),
           signal,
         ),

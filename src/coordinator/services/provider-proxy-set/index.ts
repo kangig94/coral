@@ -14,7 +14,6 @@ import {
 import { type HandoffCapsule, type HandoffCapsuleV3 } from '../../../provider-proxy/handoff-capsule.js';
 import {
   providerProxySetEnforcerVerdict,
-  type ProviderProxySetContainmentEvidence,
   type ProviderProxySetEnforcerObservations,
 } from '../../../provider-proxy/containment-proof-contract.js';
 import {
@@ -31,6 +30,17 @@ import type {
 } from '../../live/provider-proxy/control-redemption.js';
 import type { ProviderHandoffCapsuleRetirementOutcome } from '../provider-proxy-capsule-discovery.js';
 import { classifyProviderProxySetInheritance, type ProviderProxySetRedemptionOutcome } from './inheritance.js';
+import {
+  authorizeProviderProxySetContainmentProof,
+  providerProxySetContainmentEvidenceFor,
+  type ProviderProxySetContainmentProof,
+  type ProviderProxySetContainmentProofAuthorization,
+} from './containment-proof.js';
+import type {
+  ProviderProxySetContainmentSignal,
+  ProviderProxySetRecordedContainmentReaper,
+  ProviderProxySetRecordedContainmentReapResult,
+} from './recorded-containment-reaper.js';
 import type {
   ContainmentDisappearanceNotice,
   DisappearanceDeliveryAttemptOutcome,
@@ -92,23 +102,15 @@ const operatorAbandonmentEvidenceBrand: unique symbol = Symbol('provider-proxy-s
 const operatorExitCapabilityBrand = Symbol('provider-proxy-set-operator-exit-capability');
 const providerSetDisappearanceClockScope = Symbol('provider-set-disappearance');
 
-type ReapRequiredEvidence = Extract<ProviderProxySetContainmentEvidence, { kind: 'reap-required' }>;
-export type ProviderProxySetContainmentSignal = 'SIGTERM' | 'SIGKILL';
-export type ProviderProxySetRecordedContainmentReapResult =
-  | Readonly<{ kind: 'containment-absent'; disappearanceReceipt: string }>
-  | Readonly<{ kind: 'recorded-group-unattributable' }>;
-export type ProviderProxySetRecordedContainmentReaper = (
-  evidence: ReapRequiredEvidence,
-  signal: AbortSignal,
-  onSignal: (signal: ProviderProxySetContainmentSignal) => void,
-  assertSignalAuthorized?: () => void,
-) => Promise<ProviderProxySetRecordedContainmentReapResult>;
-
-/** Creates the lifecycle-owned exact-set reaper used by operator and automatic containment paths. */
+/** Composes the sanctioned recorded-containment escalation for lifecycle and inheritance owners. */
 export function createProviderProxySetRecordedContainmentReaper(
   runtime: Runtime,
 ): ProviderProxySetRecordedContainmentReaper {
-  return async (evidence, signal, onSignal, assertSignalAuthorized) => {
+  return async (identity, proof, signal, onSignal, assertSignalAuthorized) => {
+    const evidence = providerProxySetContainmentEvidenceFor(proof, identity);
+    if (evidence.kind !== 'reap-required') {
+      throw new Error('provider_proxy_set_containment_reap_proof_not_reap_required');
+    }
     const clock = createMonotonicClock(providerSetDisappearanceClockScope);
     const outcome = await reapRecordedContainment(
       evidence.containment,
@@ -175,6 +177,7 @@ export type ProviderProxySetDischarge =
 
 export type ProviderProxySetOperatorExitCapability = Readonly<{
   setIdentity: ProviderProxySetIdentity;
+  containmentProofAuthorization: ProviderProxySetContainmentProofAuthorization;
   notBeforeMonotonicMs: bigint;
   attemptToken: number;
   [operatorExitCapabilityBrand]: ProviderProxySetLifecycle;
@@ -651,12 +654,13 @@ export class ProviderProxySetLifecycle {
   }
 
   #reapRecordedContainment(
-    evidence: ReapRequiredEvidence,
+    identity: ProviderProxySetIdentity,
+    proof: ProviderProxySetContainmentProof,
     signal: AbortSignal,
     onSignal: (signal: ProviderProxySetContainmentSignal) => void,
     assertSignalAuthorized?: () => void,
   ): Promise<ProviderProxySetRecordedContainmentReapResult> {
-    return this.#deps.reapRecordedContainment(evidence, signal, onSignal, assertSignalAuthorized);
+    return this.#deps.reapRecordedContainment(identity, proof, signal, onSignal, assertSignalAuthorized);
   }
 
   initializeClaimSlots(): void {
@@ -920,6 +924,7 @@ export class ProviderProxySetLifecycle {
       kind: 'authorized',
       capability: Object.freeze({
         setIdentity: slot.identity,
+        containmentProofAuthorization: authorizeProviderProxySetContainmentProof(slot.identity),
         notBeforeMonotonicMs,
         attemptToken: slot.attemptToken,
         [operatorExitCapabilityBrand]: this,
@@ -929,7 +934,7 @@ export class ProviderProxySetLifecycle {
 
   async completeOperatorExit(
     capability: ProviderProxySetOperatorExitCapability,
-    evidence: ProviderProxySetContainmentEvidence,
+    proof: ProviderProxySetContainmentProof,
     abandonWithoutAbsence: boolean,
     signal: AbortSignal = new AbortController().signal,
   ): Promise<ProviderProxySetOperatorExitResult> {
@@ -942,6 +947,11 @@ export class ProviderProxySetLifecycle {
     if (capability[operatorExitCapabilityBrand] !== this) {
       throw new Error('provider_proxy_operator_exit_capability_invalid');
     }
+    const evidence = providerProxySetContainmentEvidenceFor(
+      proof,
+      capability.setIdentity,
+      capability.containmentProofAuthorization,
+    );
     const slot = this.#slots.get(providerProxySetKey(capability.setIdentity));
     if (slot === undefined) return { kind: 'set-not-found', setIdentity: address, effect: noEffect };
     if (
@@ -982,7 +992,8 @@ export class ProviderProxySetLifecycle {
       let reapResult: ProviderProxySetRecordedContainmentReapResult;
       try {
         reapResult = await this.#reapRecordedContainment(
-          evidence,
+          capability.setIdentity,
+          proof,
           reapingSignal,
           (delivered) => {
             if (!signalsSent.includes(delivered)) signalsSent.push(delivered);
@@ -1615,11 +1626,12 @@ export class ProviderProxySetLifecycle {
             this.#establish(outcome.set, null, slot.capsulePath, 'contain-unclaimed-discovery');
             return;
           }
-          const evidence = value as ProviderProxySetContainmentEvidence;
+          const proof = value as ProviderProxySetContainmentProof;
+          const evidence = providerProxySetContainmentEvidenceFor(proof, slot.identity);
           if (evidence.kind !== 'reap-required') return;
           const reapAbort = new AbortController();
           slot.attemptAbort = reapAbort;
-          void this.#reapRecordedContainment(evidence, reapAbort.signal, () => undefined).then(
+          void this.#reapRecordedContainment(slot.identity, proof, reapAbort.signal, () => undefined).then(
             (outcome) => {
               if (this.#slots.get(slot.key) !== slot || slot.attemptToken !== token) return;
               slot.attemptAbort = null;
@@ -1872,11 +1884,12 @@ export class ProviderProxySetLifecycle {
           if (!this.#isCurrentControlReattachment(slot, window, token)) return;
           window.attemptAbort = null;
           if (sourceId === 'absence') {
-            const evidence = value as ProviderProxySetContainmentEvidence;
+            const proof = value as ProviderProxySetContainmentProof;
+            const evidence = providerProxySetContainmentEvidenceFor(proof, slot.identity);
             if (evidence.kind !== 'reap-required') return;
             const reapAbort = new AbortController();
             window.attemptAbort = reapAbort;
-            void this.#reapRecordedContainment(evidence, reapAbort.signal, () => undefined).then(
+            void this.#reapRecordedContainment(slot.identity, proof, reapAbort.signal, () => undefined).then(
               (outcome) => {
                 if (!this.#isCurrentControlReattachment(slot, window, token)) return;
                 window.attemptAbort = null;
@@ -2572,9 +2585,10 @@ export class ProviderProxySetLifecycle {
             }
             return;
           }
-          const evidence = value as ProviderProxySetContainmentEvidence;
+          const proof = value as ProviderProxySetContainmentProof;
+          const evidence = providerProxySetContainmentEvidenceFor(proof, slot.identity);
           if (evidence.kind === 'reap-required') {
-            void this.#reapRecordedContainment(evidence, abort.signal, () => undefined).then(
+            void this.#reapRecordedContainment(slot.identity, proof, abort.signal, () => undefined).then(
               (outcome) =>
                 this.#finishContainmentAttempt(
                   slot,

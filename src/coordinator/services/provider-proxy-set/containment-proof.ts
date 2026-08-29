@@ -12,6 +12,7 @@ import {
 } from '../../../store/provider-operation-journal.js';
 import {
   providerProxySetIdentitiesEqual,
+  providerProxySetIdentitySchema,
   providerProxySetIdentityFromRecord,
   type ProviderProxySetIdentity,
 } from './identity.js';
@@ -20,11 +21,71 @@ import {
  * Observes the dual recorded enforcers and gathers the exact recorded targets without signalling any process.
  */
 export interface ProviderProxySetContainmentProver {
-  collectContainmentEvidence(
-    identity: ProviderProxySetIdentity,
+  collectContainmentProof(
+    authorization: ProviderProxySetContainmentProofAuthorization,
     db: Database,
     signal: AbortSignal,
-  ): Promise<ProviderProxySetContainmentEvidence>;
+  ): Promise<ProviderProxySetContainmentProof>;
+}
+
+declare const providerProxySetContainmentProofAuthorizationBrand: unique symbol;
+declare const providerProxySetContainmentProofBrand: unique symbol;
+
+/** An exact-set authorization that only the containment prover may turn into process evidence. */
+export type ProviderProxySetContainmentProofAuthorization = Readonly<{
+  [providerProxySetContainmentProofAuthorizationBrand]: true;
+}>;
+
+/** Opaque store and process evidence bound to one complete provider-proxy set identity. */
+export type ProviderProxySetContainmentProof = Readonly<{
+  [providerProxySetContainmentProofBrand]: true;
+}>;
+
+type ContainmentProofRecord = Readonly<{
+  authorization: ProviderProxySetContainmentProofAuthorization;
+  identity: ProviderProxySetIdentity;
+  evidence: ProviderProxySetContainmentEvidence;
+}>;
+
+const authorizedIdentities = new WeakMap<ProviderProxySetContainmentProofAuthorization, ProviderProxySetIdentity>();
+const containmentProofRecords = new WeakMap<ProviderProxySetContainmentProof, ContainmentProofRecord>();
+
+/** Reads an opaque proof for policy classification without granting signal authority. */
+export function inspectProviderProxySetContainmentProof(
+  value: unknown,
+): Readonly<{ identity: ProviderProxySetIdentity; evidence: ProviderProxySetContainmentEvidence }> | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const record = containmentProofRecords.get(value as ProviderProxySetContainmentProof);
+  return record === undefined ? null : { identity: record.identity, evidence: record.evidence };
+}
+
+/** Mints the only input from which the prover may derive an exact-set proof. */
+export function authorizeProviderProxySetContainmentProof(
+  identity: ProviderProxySetIdentity,
+): ProviderProxySetContainmentProofAuthorization {
+  const authorization = Object.freeze({}) as ProviderProxySetContainmentProofAuthorization;
+  authorizedIdentities.set(authorization, Object.freeze(providerProxySetIdentitySchema.parse(identity)));
+  return authorization;
+}
+
+/**
+ * Returns the raw evidence only when the opaque proof names the complete expected identity and, when supplied,
+ * the same authorization that initiated collection.
+ */
+export function providerProxySetContainmentEvidenceFor(
+  proof: ProviderProxySetContainmentProof,
+  expectedIdentity: ProviderProxySetIdentity,
+  expectedAuthorization?: ProviderProxySetContainmentProofAuthorization,
+): ProviderProxySetContainmentEvidence {
+  const record = containmentProofRecords.get(proof);
+  if (record === undefined) throw new Error('provider_proxy_set_containment_proof_invalid');
+  if (!providerProxySetIdentitiesEqual(record.identity, expectedIdentity)) {
+    throw new Error('provider_proxy_set_containment_proof_identity_mismatch');
+  }
+  if (expectedAuthorization !== undefined && record.authorization !== expectedAuthorization) {
+    throw new Error('provider_proxy_set_containment_proof_authorization_mismatch');
+  }
+  return record.evidence;
 }
 
 async function collectProviderProxySetContainmentEvidence(
@@ -96,12 +157,34 @@ async function collectProviderProxySetContainmentEvidence(
   return providerProxySetContainmentEvidenceSchema.parse({ kind: 'reap-required', containment, recordedRoots });
 }
 
+/** Creates the read-only collector that can seal exact targets only from a minted set authorization. */
 /**
- * Binds store-aware read-only containment evidence collection to one runtime.
+ * Mints a proof from evidence a test supplies rather than from the store. The binding is the same one the
+ * prover establishes, so a test that hands set B's proof to set A's authorization is still refused.
  */
+export function providerProxySetContainmentProofForTest(
+  authorization: ProviderProxySetContainmentProofAuthorization,
+  evidence: ProviderProxySetContainmentEvidence,
+): ProviderProxySetContainmentProof {
+  const identity = authorizedIdentities.get(authorization);
+  if (identity === undefined) throw new Error('provider_proxy_set_containment_proof_authorization_invalid');
+  const proof = Object.freeze({}) as ProviderProxySetContainmentProof;
+  containmentProofRecords.set(proof, { authorization, identity, evidence });
+  return proof;
+}
+
 export function createProviderProxySetContainmentProver(runtime: Runtime): ProviderProxySetContainmentProver {
   return {
-    collectContainmentEvidence: (identity, db, signal) =>
-      collectProviderProxySetContainmentEvidence(identity, db, runtime, signal),
+    async collectContainmentProof(authorization, db, signal) {
+      const identity = authorizedIdentities.get(authorization);
+      if (identity === undefined) throw new Error('provider_proxy_set_containment_proof_authorization_invalid');
+      const proof = Object.freeze({}) as ProviderProxySetContainmentProof;
+      containmentProofRecords.set(proof, {
+        authorization,
+        identity,
+        evidence: await collectProviderProxySetContainmentEvidence(identity, db, runtime, signal),
+      });
+      return proof;
+    },
   };
 }

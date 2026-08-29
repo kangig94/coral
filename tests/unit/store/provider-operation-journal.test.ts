@@ -5,7 +5,7 @@ import {
   completeExecutingProviderOperationAttachment,
   compareAndSwapProviderOperation,
   deleteProviderOperation,
-  discardUnreadableProviderOperation,
+  discardUnreadableProviderOperationWithRecoveryAuthority,
   finishProviderOperationDueSelection,
   insertProviderOperation,
   readProviderOperation,
@@ -78,6 +78,10 @@ function recordKey(record: ProviderOperationRecord): string {
 }
 
 describe('provider operation journal', () => {
+  const discardUnreadable = (db: Database, key: string, revision: string) =>
+    discardUnreadableProviderOperationWithRecoveryAuthority(db, key, revision, {
+      claim: () => ({ kind: 'claimed' as const, settle: () => true }),
+    });
   it('assigns the durable local handoff only to generic job recovery', () => {
     for (const phase of PHASES) {
       expect(providerOperationJobRecoveryOwner(providerOperationRecord(phase))).toBe(
@@ -624,19 +628,46 @@ describe('provider operation journal', () => {
       const observed = observeProviderOperationRecord(db, key);
       if (observed.kind !== 'unreadable') throw new Error(`expected unreadable row, received ${observed.kind}`);
 
-      expect(discardUnreadableProviderOperation(db, key, `sha256:${'0'.repeat(64)}`)).toEqual({
+      expect(discardUnreadable(db, key, `sha256:${'0'.repeat(64)}`)).toEqual({
         kind: 'revision-mismatch',
         currentRevision: observed.attribution.revision,
       });
       expect(observeProviderOperationRecord(db, key).kind).toBe('unreadable');
 
-      expect(discardUnreadableProviderOperation(db, key, observed.attribution.revision)).toEqual({
+      expect(discardUnreadable(db, key, observed.attribution.revision)).toEqual({
         kind: 'discarded',
       });
       expect(observeProviderOperationRecord(db, key)).toEqual({ kind: 'absent' });
       expect(
         db.prepare<[string], { key: string }>('SELECT key FROM meta WHERE value = ? ORDER BY key').all(key),
       ).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('rolls the raw row and due pointers back when recovery authority cannot settle', () => {
+    const db = createDb();
+    try {
+      const stranded = providerOperationRecord('prepare-pending', { job: 2 });
+      const key = recordKey(stranded);
+      const raw = '{"unsupportedVersion":99}';
+      const dueKeys = [`${DUE_PREFIX}rollback-current`, 'provider_operation_saga.v1:due:rollback-superseded'];
+      const insert = db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)');
+      insert.run(key, raw);
+      for (const due of dueKeys) insert.run(due, key);
+      const observed = observeProviderOperationRecord(db, key);
+      if (observed.kind !== 'unreadable') throw new Error(`expected unreadable row, received ${observed.kind}`);
+
+      expect(() =>
+        discardUnreadableProviderOperationWithRecoveryAuthority(db, key, observed.attribution.revision, {
+          claim: () => ({ kind: 'claimed', settle: () => false }),
+        }),
+      ).toThrow('provider_operation_discard_recovery_authority_lost');
+      expect(db.prepare<[string], { value: string }>('SELECT value FROM meta WHERE key = ?').get(key)?.value).toBe(raw);
+      expect(
+        db.prepare<[string], { key: string }>('SELECT key FROM meta WHERE value = ? ORDER BY key').all(key),
+      ).toEqual(dueKeys.sort().map((due) => ({ key: due })));
     } finally {
       db.close();
     }
@@ -653,7 +684,7 @@ describe('provider operation journal', () => {
       const revision = attributeUnreadableProviderOperations(db, [key])[0]?.revision;
       if (revision === undefined) throw new Error('expected exact revision');
 
-      expect(discardUnreadableProviderOperation(db, key, revision)).toEqual({ kind: 'readable' });
+      expect(discardUnreadable(db, key, revision)).toEqual({ kind: 'readable' });
       expect(readProviderOperation(db, readable.operation)).toEqual(readable);
     } finally {
       db.close();

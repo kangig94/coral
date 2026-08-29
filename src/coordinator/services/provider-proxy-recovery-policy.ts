@@ -44,9 +44,9 @@ import type {
   ProviderProxySetRedemptionOutcome,
 } from './provider-proxy-set/inheritance.js';
 import {
-  providerProxySetContainmentEvidenceSchema,
-  type ProviderProxySetContainmentEvidence,
-} from '../../provider-proxy/containment-proof-contract.js';
+  inspectProviderProxySetContainmentProof,
+  type ProviderProxySetContainmentProof,
+} from './provider-proxy-set/containment-proof.js';
 
 export const PROVIDER_PROXY_RECOVERY_PRODUCERS = [
   'disappearance-terminalization',
@@ -124,7 +124,7 @@ export interface ProviderProxyRecoveryProducerPorts {
   'role-control'(input: RoleControlInput): Promise<unknown>;
   'set-inheritance'(input: SetInheritanceInput): Promise<ProviderProxySetInheritanceOutcome>;
   'capsule-redemption'(input: CapsuleRedemptionInput): Promise<ProviderProxySetRedemptionOutcome>;
-  'containment-proof'(input: ContainmentProofInput): Promise<ProviderProxySetContainmentEvidence>;
+  'containment-proof'(input: ContainmentProofInput): Promise<ProviderProxySetContainmentProof>;
   'capsule-retirement'(
     input: CapsuleRetirementInput,
   ): Promise<ProviderHandoffCapsuleRetirementOutcome> | ProviderHandoffCapsuleRetirementOutcome;
@@ -318,10 +318,8 @@ function sameOperationIdentity(left: OperationIdentity, right: OperationIdentity
   );
 }
 
-function containmentEvidenceRequiresReap(
-  value: unknown,
-): value is Extract<ProviderProxySetContainmentEvidence, { kind: 'reap-required' }> {
-  return typeof value === 'object' && value !== null && 'kind' in value && value.kind === 'reap-required';
+function containmentProofRequiresReap(value: unknown): value is ProviderProxySetContainmentProof {
+  return inspectProviderProxySetContainmentProof(value)?.evidence.kind === 'reap-required';
 }
 
 function classifyFulfillment(
@@ -385,11 +383,14 @@ function classifyFulfillment(
     return evidence(outcome);
   }
   if (producerId === 'containment-proof') {
-    const parsed = providerProxySetContainmentEvidenceSchema.safeParse(value);
-    if (!parsed.success) {
+    const proof = inspectProviderProxySetContainmentProof(value);
+    if (proof === null) {
       return unknown(producerId, new Error('provider_proxy_containment_proof_contract_violation'));
     }
-    return evidence(parsed.data);
+    if (context.setIdentity === undefined || !providerProxySetIdentitiesEqual(context.setIdentity, proof.identity)) {
+      return corrupt(producerId, new Error('provider_proxy_containment_proof_identity_mismatch'));
+    }
+    return evidence(value);
   }
   if (producerId === 'capsule-retirement') {
     const parsed = providerHandoffCapsuleRetirementOutcomeSchema.safeParse(value);
@@ -580,7 +581,7 @@ export function createProviderProxyRecoveryDispatcher(
         if (
           redemption.kind === 'evidence' &&
           absence.kind === 'evidence' &&
-          containmentEvidenceRequiresReap(absence.value)
+          containmentProofRequiresReap(absence.value)
         ) {
           retireFatal(
             corrupt('capsule-redemption', new Error('provider_proxy_capsule_recovery_evidence_conflict')) as Extract<
@@ -595,7 +596,7 @@ export function createProviderProxyRecoveryDispatcher(
           sinks.evidence(redemption.value, 'redemption');
           return;
         }
-        if (absence.kind === 'evidence' && containmentEvidenceRequiresReap(absence.value)) {
+        if (absence.kind === 'evidence' && containmentProofRequiresReap(absence.value)) {
           sinks.evidence(absence.value, 'absence');
           return;
         }
@@ -617,7 +618,7 @@ export function createProviderProxyRecoveryDispatcher(
       const reduceControlReattachment = (): void => {
         if (retired) return;
         const absence = reattachmentSources.get('absence');
-        if (absence?.kind === 'evidence' && containmentEvidenceRequiresReap(absence.value)) {
+        if (absence?.kind === 'evidence' && containmentProofRequiresReap(absence.value)) {
           retireReattachment(absence.value, 'absence');
           return;
         }

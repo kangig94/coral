@@ -23,11 +23,10 @@ import {
   type RecoveryQuarantineClearResult,
 } from '../../recovery/source-registry.js';
 import { encodeProviderProxySetAddress } from '../../provider-proxy/set-address.js';
-import type {
-  ProviderProxySetContainResponse,
-  UnreadableProviderOperationDiscardResult,
-} from '../../transport/rpc/catalog.js';
+import type { ProviderProxySetContainResponse } from '../../transport/rpc/catalog.js';
+import type { UnreadableProviderOperationDiscardResult } from '../../recovery/unreadable-provider-operation.js';
 import type { ProviderProxySetLifecycleState } from '../../provider-proxy/set-lifecycle-state-vocabulary.js';
+import { isProviderOperationRecordKey } from '../../store/provider-operation-journal.js';
 import { formatHandoffPublicationFailureSuccessor } from './handoff-publication.js';
 
 export const RECOVERY_REVISION_UNTIL_CLEARED = 'until-cleared';
@@ -865,7 +864,17 @@ export function formatRecoveryQuarantineList(entries: readonly RecoveryQuarantin
       );
     }
     lines.push(`  error=${JSON.stringify(entry.errorMessage)}`, `  detail=${JSON.stringify(entry.detail)}`);
-    if (entry.boundary === UNREADABLE_PROVIDER_OPERATION_BOUNDARY) {
+    if (
+      entry.boundary === UNREADABLE_PROVIDER_OPERATION_BOUNDARY &&
+      entry.state === 'active' &&
+      entry.retry === null &&
+      entry.continuation === null &&
+      entry.subject.revision.kind === 'fingerprint' &&
+      /^sha256:[0-9a-f]{64}$/u.test(entry.subject.revision.value) &&
+      isProviderOperationRecordKey(entry.subject.key) &&
+      entry.detectedAt !== null &&
+      entry.updatedAt !== null
+    ) {
       lines.push(
         `  discard=coral-cli backend recovery-quarantine discard-provider-operation --key ${encodeRecoveryQuarantineKey(entry.subject.key)} --revision ${JSON.stringify(formatRecoveryRevision(entry))}`,
       );
@@ -898,15 +907,19 @@ export function formatUnreadableProviderOperationDiscard(result: UnreadableProvi
     case 'discarded':
       return [
         `Discarded unreadable provider-operation row ${coordinate}.`,
-        'Effect: the exact raw operation record and every known-generation due pointer to it were permanently removed; no process was signalled and the operation was not settled.',
-        `Next step: run coral-cli backend recovery-quarantine list. If the exact coordinate remains as a stored quarantine row, run coral-cli backend recovery-quarantine clear --boundary ${UNREADABLE_PROVIDER_OPERATION_BOUNDARY} --key ${encodeRecoveryQuarantineKey(result.key)} --revision ${JSON.stringify(`${RECOVERY_REVISION_FINGERPRINT_PREFIX}${result.revision}`)}; otherwise run coral-cli backend status.`,
+        'Effect: the exact raw operation record, every known-generation due pointer to it, and its quarantine evidence were permanently removed in one transaction; no process was signalled and the operation was not settled.',
+        'Next step: run coral-cli backend recovery-quarantine list, then run coral-cli backend status.',
       ].join('\n');
     case 'absent':
       return `Refusing discard for ${coordinate}: the raw row is absent. Effect: nothing was removed. Next step: run coral-cli backend recovery-quarantine list.`;
     case 'readable':
       return `Refusing discard for ${coordinate}: this build can now read the row. Effect: nothing was removed. Next step: run coral-cli backend recovery-quarantine clear --boundary ${UNREADABLE_PROVIDER_OPERATION_BOUNDARY} --key ${encodeRecoveryQuarantineKey(result.key)} --revision ${JSON.stringify(`${RECOVERY_REVISION_FINGERPRINT_PREFIX}${result.revision}`)}.`;
     case 'revision-mismatch':
-      return `Refusing discard for ${coordinate}: the durable row changed to ${JSON.stringify(`${RECOVERY_REVISION_FINGERPRINT_PREFIX}${result.currentRevision}`)}. Effect: nothing was removed. Next step: run coral-cli backend recovery-quarantine list and inspect the new exact revision.`;
+      return `Refusing discard for ${coordinate}: the exact recovery coordinate now has revision ${JSON.stringify(`${RECOVERY_REVISION_FINGERPRINT_PREFIX}${result.currentRevision}`)}. Effect: nothing was removed. Next step: run coral-cli backend recovery-quarantine list and inspect the new exact revision.`;
+    case 'quarantine-not-found':
+      return `No discard verdict for ${coordinate}: the exact persisted quarantine subject is absent. Effect: the raw row and due pointers were not changed. Next step: start or repair the canonical coordinator, then run coral-cli backend recovery-quarantine list and use only a currently printed discard command.`;
+    case 'owned':
+      return `No discard verdict for ${coordinate}: recovery currently owns the exact quarantine subject in state ${result.state}. Effect: the raw row, due pointers, and quarantine evidence were not changed. Next step: let that recovery owner finish, then run coral-cli backend recovery-quarantine list before deciding whether to retry.`;
     default:
       return assertNever(result);
   }

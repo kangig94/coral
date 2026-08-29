@@ -4,8 +4,8 @@ const unreadableProviderOperationSubjectBrand: unique symbol = Symbol('unreadabl
 const PROVIDER_OPERATION_FINGERPRINT = /^sha256:[0-9a-f]{64}$/u;
 
 /**
- * A validated exact unreadable-row coordinate. The brand prevents CLI and coordinator callers from replacing
- * the store-derived key/revision pair with a hand-assembled recovery subject.
+ * A validated exact unreadable-row coordinate. The brand keeps the canonical key/fingerprint shape distinct
+ * from recovery subjects whose revisions have different semantics.
  */
 export type UnreadableProviderOperationSubject = Readonly<{
   key: string;
@@ -13,9 +13,25 @@ export type UnreadableProviderOperationSubject = Readonly<{
   [unreadableProviderOperationSubjectBrand]: true;
 }>;
 
+/** The raw row key and exact SHA-256 revision requested for operator discard. */
+export type UnreadableProviderOperationDiscardRequest = Readonly<{
+  key: string;
+  revision: string;
+}>;
+
+/** A destructive discard verdict or an exact recovery-ownership refusal. */
+export type UnreadableProviderOperationDiscardResult = UnreadableProviderOperationDiscardRequest &
+  (
+    | Readonly<{ kind: 'discarded' }>
+    | Readonly<{ kind: 'absent' }>
+    | Readonly<{ kind: 'revision-mismatch'; currentRevision: string }>
+    | Readonly<{ kind: 'readable' }>
+    | Readonly<{ kind: 'quarantine-not-found' }>
+    | Readonly<{ kind: 'owned'; state: 'retrying' | 'continuation' }>
+  );
+
 /**
- * Validates and binds a non-empty durable row key to its canonical current SHA-256 revision. A retry advances
- * only when the same key is observed with a different validated current fingerprint.
+ * Validates and binds a non-empty durable row key to a canonical SHA-256 revision coordinate.
  */
 export function unreadableProviderOperationSubject(
   key: string,

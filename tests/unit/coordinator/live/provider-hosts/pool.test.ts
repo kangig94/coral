@@ -1,3 +1,7 @@
+import {
+  authorizeProviderProxySetContainmentProof,
+  providerProxySetContainmentProofForTest,
+} from '#src/coordinator/services/provider-proxy-set/containment-proof.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
@@ -153,13 +157,14 @@ function createProxySetLifecycleRef(onSlotReleased?: (routeKey: string) => void)
     controlEstablished: () => undefined,
     time: runtime.time,
     recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
-      'containment-proof': async () => ({
-        kind: 'enforcers-observed' as const,
-        observations: [
-          { role: 'guardian', observation: 'unknown' },
-          { role: 'reaper', observation: 'unknown' },
-        ] as const,
-      }),
+      'containment-proof': async ({ identity }) =>
+        providerProxySetContainmentProofForTest(authorizeProviderProxySetContainmentProof(identity), {
+          kind: 'enforcers-observed' as const,
+          observations: [
+            { role: 'guardian', observation: 'unknown' },
+            { role: 'reaper', observation: 'unknown' },
+          ] as const,
+        }),
     }),
     reapRecordedContainment: () => {
       throw new Error('provider host pool fixture unexpectedly requested recorded containment reaping');

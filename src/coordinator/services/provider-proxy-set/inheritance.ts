@@ -42,8 +42,12 @@ import {
   type ProviderProxyRecoveryDispatcher,
   type ProviderProxyRecoveryTurnSinks,
 } from '../provider-proxy-recovery-policy.js';
-import type { ProviderProxySetContainmentProver } from './containment-proof.js';
-import type { ProviderProxySetRecordedContainmentReaper } from './index.js';
+import {
+  authorizeProviderProxySetContainmentProof,
+  providerProxySetContainmentEvidenceFor,
+  type ProviderProxySetContainmentProver,
+} from './containment-proof.js';
+import type { ProviderProxySetRecordedContainmentReaper } from './recorded-containment-reaper.js';
 
 /**
  * The branch of proxy-set acquisition that redeems a predecessor's continuously recoverable set instead of
@@ -81,8 +85,8 @@ export type ProviderProxySetInheritanceDeps = Readonly<{
   /** Wired onto the redeemed proxy connection exactly as ordinary acquisition wires it onto a freshly opened
    *  one (`ProviderProxyAcquisitionStepsOptions.onProviderEvent`'s own doc). */
   onProviderEvent?(): ProviderEventHandler;
-  collectContainmentEvidence?: ProviderProxySetContainmentProver['collectContainmentEvidence'];
-  reapRecordedContainment?: ProviderProxySetRecordedContainmentReaper;
+  collectContainmentProof: ProviderProxySetContainmentProver['collectContainmentProof'];
+  reapRecordedContainment: ProviderProxySetRecordedContainmentReaper;
   registerInheritedSet?(set: ProviderProxyOperationAuthority): void;
 }>;
 
@@ -433,12 +437,10 @@ export async function attemptProviderProxySetInheritance(
   } catch (error: unknown) {
     if (!(error instanceof ProviderProxyRoleControlUnavailableError)) throw error;
     try {
-      const evidence = await deps.collectContainmentEvidence?.(identity, db, signal);
-      if (evidence?.kind === 'reap-required') {
-        if (deps.reapRecordedContainment === undefined) {
-          throw new Error('provider_proxy_set_containment_reaper_unavailable', { cause: error });
-        }
-        const reapResult = await deps.reapRecordedContainment(evidence, signal, () => undefined);
+      const proof = await deps.collectContainmentProof(authorizeProviderProxySetContainmentProof(identity), db, signal);
+      const evidence = providerProxySetContainmentEvidenceFor(proof, identity);
+      if (evidence.kind === 'reap-required') {
+        const reapResult = await deps.reapRecordedContainment(identity, proof, signal, () => undefined);
         if (reapResult.kind === 'containment-absent') {
           return { kind: 'containment-disappeared', disappearanceReceipt: reapResult.disappearanceReceipt };
         }
@@ -454,12 +456,10 @@ export async function attemptProviderProxySetInheritance(
     return { kind: 'temporarily-unavailable', incident: error.incident };
   }
   if (outcome.kind !== 'not-bequeathed') return outcome;
-  const evidence = await deps.collectContainmentEvidence?.(identity, db, signal);
-  if (evidence?.kind !== 'reap-required') return outcome;
-  if (deps.reapRecordedContainment === undefined) {
-    throw new Error('provider_proxy_set_containment_reaper_unavailable');
-  }
-  const reapResult = await deps.reapRecordedContainment(evidence, signal, () => undefined);
+  const proof = await deps.collectContainmentProof(authorizeProviderProxySetContainmentProof(identity), db, signal);
+  const evidence = providerProxySetContainmentEvidenceFor(proof, identity);
+  if (evidence.kind !== 'reap-required') return outcome;
+  const reapResult = await deps.reapRecordedContainment(identity, proof, signal, () => undefined);
   return reapResult.kind === 'containment-absent'
     ? { kind: 'containment-disappeared', disappearanceReceipt: reapResult.disappearanceReceipt }
     : reapResult;
@@ -491,7 +491,7 @@ export type CreateProviderProxySetInheritanceOptions = Readonly<{
   identity: ProviderProxySetAcquisitionIdentity;
   operationRegistry: ProviderProxyOperationSnapshot;
   containmentProver: ProviderProxySetContainmentProver;
-  reapRecordedContainment?: ProviderProxySetRecordedContainmentReaper;
+  reapRecordedContainment: ProviderProxySetRecordedContainmentReaper;
   onProviderEvent?(): ProviderEventHandler;
   /** Where a successfully inherited set is folded in so it participates in this coordinator's own later
    *  shutdown. */
@@ -526,10 +526,8 @@ export function createProviderProxySetInheritance(
         buildSetId: options.identity.buildSetId,
       },
       operationRegistry: options.operationRegistry,
-      collectContainmentEvidence: options.containmentProver.collectContainmentEvidence,
-      ...(options.reapRecordedContainment === undefined
-        ? {}
-        : { reapRecordedContainment: options.reapRecordedContainment }),
+      collectContainmentProof: options.containmentProver.collectContainmentProof,
+      reapRecordedContainment: options.reapRecordedContainment,
       ...(registerInheritedSet === undefined ? {} : { registerInheritedSet }),
       ...(options.onProviderEvent === undefined ? {} : { onProviderEvent: options.onProviderEvent }),
     };

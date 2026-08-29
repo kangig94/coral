@@ -111,6 +111,13 @@ export type RecoveryQuarantineReclaim = RecoveryQuarantineClaim & {
   readonly expectedRetry: RecoveryRetryAuthority;
 };
 
+/** Exact retry claim that may be returned to active quarantine ownership without changing its evidence. */
+export type RecoveryQuarantineRelease = {
+  readonly boundary: string;
+  readonly subject: RecoverySubject;
+  readonly expectedRetry: RecoveryRetryAuthority;
+};
+
 export type RecoveryQuarantineEntry = {
   readonly boundary: string;
   readonly subject: RecoverySubject;
@@ -307,6 +314,29 @@ export class RecoveryQuarantineStore implements RecoveryQuarantinePort {
       request.retry.owner,
       request.retry.token,
       this.timestamp(),
+      request.boundary,
+      request.subject.key,
+      revisionValue(request.subject),
+      request.expectedRetry.owner,
+      request.expectedRetry.token,
+    );
+    return Number(result.changes) === 1;
+  }
+
+  releaseRetry(request: RecoveryQuarantineRelease): boolean {
+    const result = prepareCached<[string, string, string | null, string, string]>(
+      this.db,
+      `UPDATE recovery_quarantine
+       SET state = 'active',
+           retry_owner = NULL,
+           retry_token = NULL
+       WHERE boundary_id = ?
+         AND subject_key = ?
+         AND subject_revision IS ?
+         AND state = 'retrying'
+         AND retry_owner = ?
+         AND retry_token = ?`,
+    ).run(
       request.boundary,
       request.subject.key,
       revisionValue(request.subject),

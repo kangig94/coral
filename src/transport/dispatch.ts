@@ -15,6 +15,7 @@ import { authorizeCapability, authorizeResourceBinding, type Decision } from '..
 import { writeAuthorizationDecisionAudit } from '../infra/audit-log.js';
 import { isRecord } from '../infra/json.js';
 import type { RecoveryQuarantineClearRequest } from '../recovery/source-registry.js';
+import type { UnreadableProviderOperationDiscardRequest } from '../recovery/unreadable-provider-operation.js';
 import { domainError, type ToolDomainResult } from './tool-result.js';
 import { domainResultToHttp, launchToHttp } from './response.js';
 import type { HttpHandlerPorts } from './server-ports.js';
@@ -27,7 +28,6 @@ import {
   unreadableProviderOperationDiscardResultSchema,
   type ProviderProxySetContainRequest,
   type ProviderHostSelectorRequest,
-  type UnreadableProviderOperationDiscardRequest,
 } from './rpc/catalog.js';
 import type { WorkflowPortInput } from './rpc/ports.js';
 import type { JobsListFilters } from '../jobs/read-queries.js';

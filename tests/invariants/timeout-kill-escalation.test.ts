@@ -50,6 +50,7 @@ const RECORDED_CONTAINMENT_OWNER_FILES = [
   'src/coordinator/live/provider-hosts/drain.ts',
   'src/coordinator/services/recovery/interrupted-performer.ts',
   'src/coordinator/services/provider-proxy-set/index.ts',
+  'src/coordinator/services/provider-proxy-set/inheritance.ts',
 ] as const;
 
 // File-level allowlist: call sites permitted to use the bare primitive, each
@@ -94,7 +95,7 @@ function callsSafeKill(source: string): boolean {
 }
 
 function callsReapRecordedContainment(source: string): boolean {
-  return /(^|[^.\w$])reapRecordedContainment\s*\(/u.test(codeTextOnly(source));
+  return /reapRecordedContainment\s*\(/u.test(codeTextOnly(source));
 }
 
 describe('process kills escalate SIGTERM→SIGKILL', () => {
@@ -329,7 +330,7 @@ function hasHandRolledEscalation(source: string): boolean {
 }
 
 describe('process kills do not hand-roll a SIGTERM→SIGKILL escalation outside the sanctioned helpers', () => {
-  it('every recorded-containment owner, including exact-set lifecycle, reaps through reapRecordedContainment without an allowlist exemption', () => {
+  it('every recorded-containment owner, including lifecycle and inheritance, delegates to reapRecordedContainment without an allowlist exemption', () => {
     const recordedContainmentOwners = listSourceFiles(SRC_ROOT)
       .map(canonicalSrcPath)
       .filter((canonical) => canonical !== CONTAINMENT_HELPER_FILE)

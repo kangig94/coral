@@ -1,3 +1,7 @@
+import {
+  authorizeProviderProxySetContainmentProof,
+  providerProxySetContainmentProofForTest,
+} from '#src/coordinator/services/provider-proxy-set/containment-proof.js';
 import type { SuccessionOperationRegistrationOutcome } from '#src/coordinator/live/provider-proxy/set-authority.js';
 import { controlExchangeForTest } from '#src/provider-proxy/control-client.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
@@ -158,13 +162,14 @@ function lifecycleForSchedule(
     },
     recoveryDispatcher: createTestProviderProxyRecoveryDispatcher(
       {
-        'containment-proof': async () => ({
-          kind: 'enforcers-observed' as const,
-          observations: [
-            { role: 'guardian', observation: 'unknown' },
-            { role: 'reaper', observation: 'unknown' },
-          ] as const,
-        }),
+        'containment-proof': async ({ identity }) =>
+          providerProxySetContainmentProofForTest(authorizeProviderProxySetContainmentProof(identity), {
+            kind: 'enforcers-observed' as const,
+            observations: [
+              { role: 'guardian', observation: 'unknown' },
+              { role: 'reaper', observation: 'unknown' },
+            ] as const,
+          }),
         'disappearance-consumer': ({ notice }) => reconciler.containmentDisappeared(notice),
       },
       (error) => {

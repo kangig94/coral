@@ -10,6 +10,7 @@ import {
   listRecoveryQuarantineLocal,
   registerBackendCommands,
   type RecoveryQuarantineCommandOperations,
+  type UnreadableProviderOperationDiscardCommandResult,
   type StoreResetCommandOperations,
 } from '#src/cli/commands/backend.js';
 import { collectCommandCoverage } from '#src/cli/classify.js';
@@ -26,6 +27,7 @@ import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema, classifyStoreFile, openStoreDatabase } from '#src/store/db.js';
 import { PROVIDER_OPERATION_RECORD_VERSION } from '#src/store/provider-operation-record.js';
 import * as ipcEnsure from '#src/transport/ipc/ensure.js';
+import { IpcRpcError } from '#src/transport/ipc/client.js';
 
 const storeReset: StoreResetCommandOperations = {
   list: () => ({ incidents: [] }),
@@ -173,10 +175,90 @@ describe('backend recovery-quarantine commands', () => {
     expect(rendered).toContain(`key=${encodeRecoveryQuarantineKey(key)}`);
     expect(rendered).toContain('detected_at=unavailable updated_at=unavailable');
     expect(rendered).toContain('derived from the durable unreadable provider operation row');
+    expect(rendered).not.toContain('discard=');
   });
 
+  it.each([
+    {
+      state: 'active' as const,
+      retry: null,
+      continuation: null,
+      persisted: true,
+      revision: { kind: 'fingerprint' as const, value: `sha256:${'a'.repeat(64)}` },
+      key: 'provider_operation_saga.v1:record:00000000-0000-4000-8000-000000000001:00000000-0000-4000-8000-000000000002:00000000-0000-4000-8000-000000000003:00000000-0000-4000-8000-000000000004',
+      prints: true,
+    },
+    {
+      state: 'retrying' as const,
+      retry: { owner: 'retry-owner', token: 'retry-token' },
+      continuation: null,
+      persisted: true,
+      revision: { kind: 'fingerprint' as const, value: `sha256:${'a'.repeat(64)}` },
+      key: 'provider_operation_saga.v1:record:00000000-0000-4000-8000-000000000001:00000000-0000-4000-8000-000000000002:00000000-0000-4000-8000-000000000003:00000000-0000-4000-8000-000000000004',
+      prints: false,
+    },
+    {
+      state: 'continuation' as const,
+      retry: null,
+      continuation: { kind: 'provider-retry', key: 'continuation-key' },
+      persisted: true,
+      revision: { kind: 'fingerprint' as const, value: `sha256:${'a'.repeat(64)}` },
+      key: 'provider_operation_saga.v1:record:00000000-0000-4000-8000-000000000001:00000000-0000-4000-8000-000000000002:00000000-0000-4000-8000-000000000003:00000000-0000-4000-8000-000000000004',
+      prints: false,
+    },
+    {
+      state: 'active' as const,
+      retry: null,
+      continuation: null,
+      persisted: false,
+      revision: { kind: 'fingerprint' as const, value: `sha256:${'a'.repeat(64)}` },
+      key: 'provider_operation_saga.v1:record:00000000-0000-4000-8000-000000000001:00000000-0000-4000-8000-000000000002:00000000-0000-4000-8000-000000000003:00000000-0000-4000-8000-000000000004',
+      prints: false,
+    },
+    {
+      state: 'active' as const,
+      retry: null,
+      continuation: null,
+      persisted: true,
+      revision: { kind: 'until-cleared' as const },
+      key: 'provider_operation_saga.v1:record:00000000-0000-4000-8000-000000000001:00000000-0000-4000-8000-000000000002:00000000-0000-4000-8000-000000000003:00000000-0000-4000-8000-000000000004',
+      prints: false,
+    },
+    {
+      state: 'active' as const,
+      retry: null,
+      continuation: null,
+      persisted: true,
+      revision: { kind: 'fingerprint' as const, value: `sha256:${'a'.repeat(64)}` },
+      key: 'not-a-provider-operation-key',
+      prints: false,
+    },
+  ])(
+    'prints discard=$prints for $state persisted=$persisted evidence',
+    ({ state, retry, continuation, persisted, revision, key, prints }) => {
+      const rendered = formatRecoveryQuarantineList([
+        {
+          boundary: UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
+          subject: { key, revision },
+          state,
+          stage: 'hydrate',
+          retry,
+          continuation,
+          errorMessage: 'unreadable',
+          detail: 'operator decision required',
+          detectedAt: persisted ? '2026-08-28T00:00:00.000Z' : null,
+          updatedAt: persisted ? '2026-08-28T00:00:00.000Z' : null,
+        },
+      ]);
+      expect(rendered.includes('discard=')).toBe(prints);
+    },
+  );
+
   it('should send the exact listed unreadable row revision to the destructive discard operation', async () => {
-    const key = `provider_operation_saga.v${PROVIDER_OPERATION_RECORD_VERSION}:record:job:operation:proxy:build`;
+    const key =
+      `provider_operation_saga.v${PROVIDER_OPERATION_RECORD_VERSION}:record:` +
+      '00000000-0000-4000-8000-000000000001:00000000-0000-4000-8000-000000000002:' +
+      '00000000-0000-4000-8000-000000000003:00000000-0000-4000-8000-000000000004';
     const revision = `sha256:${'a'.repeat(64)}`;
     const entry = {
       boundary: UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
@@ -187,8 +269,8 @@ describe('backend recovery-quarantine commands', () => {
       continuation: null,
       errorMessage: 'unreadable',
       detail: 'discardable exact row',
-      detectedAt: null,
-      updatedAt: null,
+      detectedAt: '2026-08-28T00:00:00.000Z',
+      updatedAt: '2026-08-28T00:00:00.000Z',
     };
     const discardProviderOperation = vi.fn<
       NonNullable<RecoveryQuarantineCommandOperations['discardProviderOperation']>
@@ -211,6 +293,92 @@ describe('backend recovery-quarantine commands', () => {
     expect(stdout).toContain('permanently removed');
     expect(stderr).toBe('');
     expect(process.exitCode).toBe(0);
+  });
+
+  it.each<
+    Readonly<{
+      result: UnreadableProviderOperationDiscardCommandResult;
+      exitCode: 0 | 1 | 75;
+      stream: 'stdout' | 'stderr';
+    }>
+  >([
+    {
+      result: { key: 'raw-key', revision: `sha256:${'a'.repeat(64)}`, kind: 'discarded' },
+      exitCode: 0,
+      stream: 'stdout',
+    },
+    { result: { key: 'raw-key', revision: `sha256:${'a'.repeat(64)}`, kind: 'absent' }, exitCode: 1, stream: 'stderr' },
+    {
+      result: { key: 'raw-key', revision: `sha256:${'a'.repeat(64)}`, kind: 'readable' },
+      exitCode: 1,
+      stream: 'stderr',
+    },
+    {
+      result: {
+        key: 'raw-key',
+        revision: `sha256:${'a'.repeat(64)}`,
+        kind: 'revision-mismatch',
+        currentRevision: `sha256:${'b'.repeat(64)}`,
+      },
+      exitCode: 75,
+      stream: 'stderr',
+    },
+    {
+      result: { key: 'raw-key', revision: `sha256:${'a'.repeat(64)}`, kind: 'quarantine-not-found' },
+      exitCode: 75,
+      stream: 'stderr',
+    },
+    {
+      result: { key: 'raw-key', revision: `sha256:${'a'.repeat(64)}`, kind: 'owned', state: 'retrying' },
+      exitCode: 75,
+      stream: 'stderr',
+    },
+    {
+      result: { key: 'raw-key', revision: `sha256:${'a'.repeat(64)}`, kind: 'owned', state: 'continuation' },
+      exitCode: 75,
+      stream: 'stderr',
+    },
+    {
+      result: { key: 'raw-key', revision: `sha256:${'a'.repeat(64)}`, kind: 'unsupported-coordinator' },
+      exitCode: 75,
+      stream: 'stderr',
+    },
+    {
+      result: { key: 'raw-key', revision: `sha256:${'a'.repeat(64)}`, kind: 'coordinator-draining' },
+      exitCode: 75,
+      stream: 'stderr',
+    },
+    {
+      result: { key: 'raw-key', revision: `sha256:${'a'.repeat(64)}`, kind: 'unsupported-coordinator-result' },
+      exitCode: 75,
+      stream: 'stderr',
+    },
+    {
+      result: { key: 'raw-key', revision: `sha256:${'a'.repeat(64)}`, kind: 'timeout' },
+      exitCode: 75,
+      stream: 'stderr',
+    },
+  ])('maps discard result $result.kind to exit $exitCode on $stream', async ({ result, exitCode, stream }) => {
+    const discardProviderOperation = vi.fn(async () => result);
+    await programWith({ list: () => [], clear: vi.fn(), discardProviderOperation }).parseAsync([
+      'node',
+      'coral-cli',
+      'backend',
+      'recovery-quarantine',
+      'discard-provider-operation',
+      '--key',
+      encodeRecoveryQuarantineKey(result.key),
+      '--revision',
+      `fingerprint:${result.revision}`,
+    ]);
+
+    expect(process.exitCode).toBe(exitCode);
+    expect(stream === 'stdout' ? stdout : stderr).toContain(encodeRecoveryQuarantineKey(result.key));
+    expect(stream === 'stdout' ? stderr : stdout).toBe('');
+    if (result.kind.includes('coordinator') || result.kind === 'timeout') {
+      expect(stderr).toContain(`revision="fingerprint:${result.revision}"`);
+      expect(stderr).toContain('No discard verdict');
+    }
   });
 
   it('should round-trip a fingerprint equal to the until-cleared sentinel', async () => {
@@ -558,6 +726,43 @@ describe('backend recovery-quarantine commands', () => {
       { boundary: 'workflow-recovery', key: 'workflow-1', revision: 'revision-1' },
       expect.objectContaining({ timeoutMs: expect.any(Number) }),
     );
+  });
+
+  it.each([
+    {
+      name: 'method-not-found',
+      respond: () => Promise.reject(new IpcRpcError({ code: -32601, message: 'Method not found' })),
+      kind: 'unsupported-coordinator' as const,
+    },
+    {
+      name: 'coordinator draining',
+      respond: () => Promise.resolve({ code: 'backend_shutting_down', message: 'Backend shutting down' }),
+      kind: 'coordinator-draining' as const,
+    },
+    {
+      name: 'future exact-coordinate result',
+      respond: () =>
+        Promise.resolve({
+          kind: 'discarded-with-audit',
+          key: 'raw-key',
+          revision: `sha256:${'a'.repeat(64)}`,
+        }),
+      kind: 'unsupported-coordinator-result' as const,
+    },
+    {
+      name: 'timeout',
+      respond: () => Promise.reject(new Error('IPC request timed out after 30000ms')),
+      kind: 'timeout' as const,
+    },
+  ])('names discard $name as a typed no-verdict', async ({ respond, kind }) => {
+    const request = vi.fn(respond);
+    vi.spyOn(ipcEnsure, 'ensure').mockResolvedValue({ request } as never);
+    const coordinate = { key: 'raw-key', revision: `sha256:${'a'.repeat(64)}` };
+
+    await expect(createRecoveryQuarantineCommandOperations().discardProviderOperation?.(coordinate)).resolves.toEqual({
+      ...coordinate,
+      kind,
+    });
   });
 
   it('should report coordinator contract drift without calling it unreachable', async () => {

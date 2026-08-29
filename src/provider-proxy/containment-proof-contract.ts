@@ -70,7 +70,7 @@ const recordedContainmentIdentitySchema = z
 /**
  * Validates the read-only containment-evidence boundary. `reap-required` says both independent enforcers were
  * observed absent and carries the exact recorded targets; it does not certify target absence and authorizes no
- * downstream disappearance unless a lifecycle-owned reaper returns `containment-absent` with a receipt.
+ * downstream disappearance unless a recorded-containment owner returns `containment-absent` with a receipt.
  */
 export const providerProxySetContainmentEvidenceSchema = z
   .discriminatedUnion('kind', [

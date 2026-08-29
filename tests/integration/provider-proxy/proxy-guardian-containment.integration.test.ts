@@ -1,3 +1,7 @@
+import {
+  authorizeProviderProxySetContainmentProof,
+  providerProxySetContainmentProofForTest,
+} from '#src/coordinator/services/provider-proxy-set/containment-proof.js';
 import type { ProcessLiveness } from '#src/infra/node-process.js';
 import { strictControlExchangeResult as strictTestExchange } from '#tests/support/control-exchange.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
@@ -1367,13 +1371,14 @@ describe('provider proxy cumulative root rotation', () => {
       controlEstablished: () => undefined,
       time: runtime.time,
       recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
-        'containment-proof': async () => ({
-          kind: 'enforcers-observed' as const,
-          observations: [
-            { role: 'guardian', observation: 'unknown' },
-            { role: 'reaper', observation: 'unknown' },
-          ] as const,
-        }),
+        'containment-proof': async ({ identity }) =>
+          providerProxySetContainmentProofForTest(authorizeProviderProxySetContainmentProof(identity), {
+            kind: 'enforcers-observed' as const,
+            observations: [
+              { role: 'guardian', observation: 'unknown' },
+              { role: 'reaper', observation: 'unknown' },
+            ] as const,
+          }),
       }),
       reapRecordedContainment: () => {
         throw new Error(
