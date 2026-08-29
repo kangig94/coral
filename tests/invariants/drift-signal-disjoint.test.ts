@@ -49,7 +49,7 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 
 describe('drift signal split', () => {
   it('rebuilds the corpus authority baseline byte-identically from markdown authority', () => {
-    const db = createKbTestDb(tempRoot());
+    const db = createKbTestDb(':memory:');
     const scan = createCorpusScanView({
       markdownFiles: [
         createCorpusMarkdownFileScan({
@@ -140,7 +140,7 @@ describe('drift signal split', () => {
   });
 
   it('forces unchanged-snapshot corpus apply through waitFreshUntil generation without seq bumps', async () => {
-    const db = createKbTestDb(tempRoot());
+    const db = createKbTestDb(':memory:');
     const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: realConsumerDriverNow });
     const secondStarted = deferred();
     const releaseSecond = deferred();
@@ -191,7 +191,7 @@ describe('drift signal split', () => {
   });
 
   it('surfaces force-apply lifecycle edges through existing waitFreshUntil errors', async () => {
-    const stoppedDb = createKbTestDb(tempRoot());
+    const stoppedDb = createKbTestDb(':memory:');
     const stoppedDriver = new ConsumerDriver({
       db: stoppedDb,
       time: REAL_CONSUMER_DRIVER_TIMERS,
@@ -222,7 +222,7 @@ describe('drift signal split', () => {
       expect(error).toMatchObject({ code: 'consumer_wait_unsupported' });
     }
 
-    const unregisteredDb = createKbTestDb(tempRoot());
+    const unregisteredDb = createKbTestDb(':memory:');
     const unregisteredDriver = new ConsumerDriver({
       db: unregisteredDb,
       time: REAL_CONSUMER_DRIVER_TIMERS,

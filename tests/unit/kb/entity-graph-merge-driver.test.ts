@@ -385,7 +385,7 @@ describe('entity graph merge driver', () => {
   it('normalizes the entity graph after inbound sync only when the graph changed', async () => {
     const root = mkdtempSync(join(tmpdir(), 'coral-entity-graph-inbound-'));
     roots.push(root);
-    const db = createKbTestDb(root);
+    const db = createKbTestDb(':memory:');
     const kb = createTestKbRuntime({
       markdownRoot: root,
       runtimeDir: root,

@@ -76,7 +76,7 @@ function makeWorld(): ServiceWorld {
   mkdirSync(markdownRoot, { recursive: true });
   mkdirSync(runtimeDir, { recursive: true });
 
-  const storeDb = createKbTestDb(runtimeDir);
+  const storeDb = createKbTestDb(':memory:');
   openDbs.push(storeDb);
   const kb = createTestKbRuntime({ markdownRoot, runtimeDir, db: storeDb });
 

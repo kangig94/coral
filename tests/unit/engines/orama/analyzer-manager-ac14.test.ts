@@ -129,7 +129,7 @@ describe('Orama AC14 analyzer manager integration', () => {
     const kb = createTestKbRuntime({
       markdownRoot: root,
       runtimeDir: join(root, '.runtime'),
-      db: createKbTestDb(join(root, '.runtime')),
+      db: createKbTestDb(':memory:'),
       runtime,
     });
     seedNote(kb);
@@ -202,7 +202,7 @@ describe('Orama AC14 analyzer manager integration', () => {
     const kb = createTestKbRuntime({
       markdownRoot: root,
       runtimeDir: join(root, '.runtime'),
-      db: createKbTestDb(join(root, '.runtime')),
+      db: createKbTestDb(':memory:'),
       runtime,
     });
     seedNote(kb);

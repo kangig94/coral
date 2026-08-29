@@ -361,7 +361,7 @@ beforeEach(() => {
   originalClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
   process.env.CLAUDE_CONFIG_DIR = join(tempDir, 'claude-config');
   gitSyncRuntime = createRealRuntime('prod');
-  const db = createKbTestDb(tempDir);
+  const db = createKbTestDb(join(tempDir, 'store.db'));
   ({ kb: runtime } = createKbTestRuntime({
     markdownRoot: tempDir,
     runtimeDir: tempDir,
@@ -2298,7 +2298,7 @@ describe('curate', () => {
       expect(afterFirstStart).toContain('notes/\n');
       expect(afterFirstStart).toContain('# Coral KB runtime (device-local, auto-managed)\ndata/\n');
 
-      const secondDb = createKbTestDb(tempDir);
+      const secondDb = createKbTestDb(join(tempDir, 'store.db'));
       const { kb: secondRuntime } = createKbTestRuntime({
         markdownRoot: tempDir,
         runtimeDir: tempDir,

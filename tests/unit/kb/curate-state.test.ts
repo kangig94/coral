@@ -217,7 +217,7 @@ beforeEach(() => {
   ({ kb: runtime, readDb } = createKbTestRuntime({
     markdownRoot: tempDir,
     runtimeDir: tempDir,
-    db: createKbTestDb(tempDir),
+    db: createKbTestDb(':memory:'),
     runtime: gitSyncRuntime,
     curateAssistant: noopCurateAssistant,
   }));

@@ -313,7 +313,7 @@ async function createSeededRuntime(root: string): Promise<ReturnType<typeof crea
   const runtime = createTestKbRuntime({
     markdownRoot: root,
     runtimeDir: join(root, '.runtime'),
-    db: createKbTestDb(join(root, '.runtime')),
+    db: createKbTestDb(':memory:'),
   });
   seedCorpus(runtime);
   await installCurrentFullSnapshot(runtime);

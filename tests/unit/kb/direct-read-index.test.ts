@@ -75,7 +75,7 @@ function createRuntime() {
   const root = createTempRoot('coral-kb-direct-read-');
   const markdownRoot = join(root, 'kb');
   const runtimeDir = join(root, 'runtime');
-  const db = createKbTestDb(root);
+  const db = createKbTestDb(':memory:');
   openDbs.add(db);
   return {
     markdownRoot,

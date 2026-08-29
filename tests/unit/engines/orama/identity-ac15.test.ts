@@ -60,7 +60,7 @@ function createRuntime(root: string, runtime: Runtime): KbRuntime {
   return createTestKbRuntime({
     markdownRoot: root,
     runtimeDir: join(root, '.runtime'),
-    db: createKbTestDb(join(root, '.runtime')),
+    db: createKbTestDb(':memory:'),
     runtime,
   });
 }

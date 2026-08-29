@@ -78,7 +78,7 @@ export function createRepairFixtureHarness(fixture: string): RepairFixtureHarnes
   const kb = createTestKbRuntime({
     markdownRoot,
     runtimeDir,
-    db: createKbTestDb(runtimeDir),
+    db: createKbTestDb(':memory:'),
   });
 
   return {

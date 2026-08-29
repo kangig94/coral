@@ -99,7 +99,7 @@ describe('KB migrations', () => {
 
     const runtime = createRealRuntime('prod');
     mkdirSync(runtimeDir, { recursive: true });
-    db = createKbTestDb(runtimeDir);
+    db = createKbTestDb(':memory:');
     kb = createTestKbRuntime({
       markdownRoot,
       runtimeDir,

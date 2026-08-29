@@ -74,7 +74,7 @@ describe('kb detection and paths', () => {
     const { kb } = createKbTestRuntime({
       markdownRoot: infraPaths.kbRoot('prod', customRoot),
       runtimeDir: kbRuntimePaths('prod').root,
-      db: createKbTestDb(kbRuntimePaths('prod').root),
+      db: createKbTestDb(':memory:'),
     });
 
     expect(kb.markdownRoot).toBe(customRoot);
@@ -101,7 +101,7 @@ describe('kb detection and paths', () => {
   it('creates the runtime without requiring optional vector equipment at startup', async () => {
     process.env.CORAL_KB_PATH = join(mockState.tmpHome, 'vault');
     await loadKbModules();
-    const db = createKbTestDb(kbRuntimePaths('prod').root);
+    const db = createKbTestDb(':memory:');
     const { kb } = createKbTestRuntime({
       markdownRoot: process.env.CORAL_KB_PATH,
       runtimeDir: kbRuntimePaths('prod').root,
@@ -118,7 +118,7 @@ describe('kb detection and paths', () => {
   it('uses Orama as the base retrieval backend and never creates vec/ anywhere under the machine-local runtime tree', async () => {
     process.env.CORAL_KB_PATH = join(mockState.tmpHome, 'vault');
     const { oramaPaths } = await loadKbModules();
-    const db = createKbTestDb(kbRuntimePaths('prod').root);
+    const db = createKbTestDb(':memory:');
     const { kb } = createKbTestRuntime({
       markdownRoot: process.env.CORAL_KB_PATH,
       runtimeDir: kbRuntimePaths('prod').root,
@@ -146,7 +146,7 @@ describe('kb detection and paths', () => {
     const { kb } = createKbTestRuntime({
       markdownRoot: process.env.CORAL_KB_PATH,
       runtimeDir: kbRuntimePaths('dev').root,
-      db: createKbTestDb(kbRuntimePaths('dev').root),
+      db: createKbTestDb(':memory:'),
     });
     const markdownRoot = join(mockState.tmpHome, 'vault');
     const machineLocalRuntimeDir = join(mockState.tmpHome, '.coral', 'gen2', 'data-dev', 'kb');

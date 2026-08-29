@@ -33,7 +33,7 @@ function createRuntime(): KbRuntime {
   return createTestKbRuntime({
     markdownRoot,
     runtimeDir,
-    db: createKbTestDb(runtimeDir),
+    db: createKbTestDb(':memory:'),
   });
 }
 

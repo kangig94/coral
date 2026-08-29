@@ -37,7 +37,7 @@ function createHarness(): ProjectionHarness {
   const markdownRoot = join(root, 'vault');
   mkdirSync(join(markdownRoot, 'notes'), { recursive: true });
   tempRoots.push(root);
-  const db = createKbTestDb(runtimeDir);
+  const db = createKbTestDb(join(runtimeDir, 'store.db'));
   openDatabases.push(db);
   const { kb } = createKbTestRuntime({ markdownRoot, runtimeDir, db, runtime });
   return { root: markdownRoot, runtimeDir, db, kb, runtime };
@@ -52,7 +52,7 @@ function closeHarnessDatabase(input: ProjectionHarness): void {
 }
 
 function openHarness(input: ProjectionHarness): { db: Database; kb: KbRuntime } {
-  const db = createKbTestDb(input.runtimeDir);
+  const db = createKbTestDb(join(input.runtimeDir, 'store.db'));
   openDatabases.push(db);
   const { kb } = createKbTestRuntime({
     markdownRoot: input.root,
@@ -105,7 +105,7 @@ async function createInterruptedPendingProjection(harness: ProjectionHarness): P
 
 function refuseHarnessBoot(input: ProjectionHarness): CoralSetupError {
   closeHarnessDatabase(input);
-  const db = createKbTestDb(input.runtimeDir);
+  const db = createKbTestDb(join(input.runtimeDir, 'store.db'));
   openDatabases.push(db);
   input.db = db;
   try {

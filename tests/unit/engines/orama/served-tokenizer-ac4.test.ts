@@ -57,7 +57,7 @@ function createKbFixture(): { kb: KbRuntime; runtime: Runtime } {
   const kb = createTestKbRuntime({
     markdownRoot: root,
     runtimeDir: join(root, '.runtime'),
-    db: createKbTestDb(join(root, '.runtime')),
+    db: createKbTestDb(':memory:'),
     runtime,
   });
 

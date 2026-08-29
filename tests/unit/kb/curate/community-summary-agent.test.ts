@@ -50,7 +50,7 @@ describe('runCommunitySummaryAgent', () => {
     originalClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
     process.env.CLAUDE_CONFIG_DIR = join(tempDir, 'claude-config');
     gitSyncRuntime = createRealRuntime('prod');
-    const db = createKbTestDb(tempDir);
+    const db = createKbTestDb(':memory:');
     ({ kb: runtime } = createKbTestRuntime({
       markdownRoot: tempDir,
       runtimeDir: tempDir,

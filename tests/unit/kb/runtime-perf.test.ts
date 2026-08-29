@@ -201,7 +201,7 @@ describe('runtime hot-path perf regressions', () => {
     const kb = createTestKbRuntime({
       markdownRoot: tempRoot,
       runtimeDir: tempRoot,
-      db: createKbTestDb(tempRoot),
+      db: createKbTestDb(':memory:'),
     });
     const { bindOramaFtsForTest } = await import('#tests/unit/kb/expansion-test-helpers.js');
     bindOramaFtsForTest(kb);
@@ -262,7 +262,7 @@ describe('runtime hot-path perf regressions', () => {
     const kb = createTestKbRuntime({
       markdownRoot: tempRoot,
       runtimeDir: tempRoot,
-      db: createKbTestDb(tempRoot),
+      db: createKbTestDb(':memory:'),
     });
     kb.readIndex();
     clearFsObservability();

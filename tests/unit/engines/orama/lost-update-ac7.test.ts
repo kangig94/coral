@@ -68,7 +68,7 @@ function createKbFixture(): { readonly kb: KbRuntime; readonly runtime: Runtime 
     kb: createTestKbRuntime({
       markdownRoot: root,
       runtimeDir: join(root, '.runtime'),
-      db: createKbTestDb(join(root, '.runtime')),
+      db: createKbTestDb(':memory:'),
       runtime,
     }),
   };

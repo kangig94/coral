@@ -49,7 +49,7 @@ function createRuntime(_paths: Awaited<ReturnType<typeof loadModules>>['paths'])
   return createTestKbRuntime({
     markdownRoot: process.env.CORAL_KB_PATH!,
     runtimeDir: kbRuntimePaths('prod').root,
-    db: createKbTestDb(kbRuntimePaths('prod').root),
+    db: createKbTestDb(':memory:'),
   });
 }
 

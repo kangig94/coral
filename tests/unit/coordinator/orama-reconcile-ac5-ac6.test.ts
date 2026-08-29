@@ -149,7 +149,7 @@ function createKiwiAnalyzerManagerPort(manager: KiwiAnalyzerManager): OramaAnaly
 function createKbFixture(): { readonly db: Database; readonly kb: KbRuntime; readonly runtime: Runtime } {
   const root = allocateRoot();
   const runtime = withKoEnv(createRealRuntime('prod'));
-  const db = createKbTestDb(join(root, '.runtime'));
+  const db = createKbTestDb(':memory:');
   return {
     db,
     runtime,

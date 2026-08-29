@@ -96,7 +96,7 @@ describe('orama coalescing burst', () => {
     const kb = createTestKbRuntime({
       markdownRoot: root,
       runtimeDir: join(root, '.runtime'),
-      db: createKbTestDb(join(root, '.runtime')),
+      db: createKbTestDb(':memory:'),
     });
 
     seedNote(kb, 'alpha-note', 'Body alpha.', 1);

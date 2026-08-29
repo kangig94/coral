@@ -123,7 +123,7 @@ function resultFor(results: readonly KbResult[], note: string): KbResult {
 describe('Korean body-only snippets', () => {
   it('returns matchedBy content and a non-empty snippet for a Korean body-only hit', async () => {
     const root = allocateRoot();
-    const db = createKbTestDb(join(root, '.runtime'));
+    const db = createKbTestDb(':memory:');
     const { kb } = createKbTestRuntime({
       markdownRoot: root,
       runtimeDir: join(root, '.runtime'),
@@ -144,7 +144,7 @@ describe('Korean body-only snippets', () => {
 
   it('uses leased Kiwi tokens for Korean matchedBy and snippet anchoring', async () => {
     const root = allocateRoot();
-    const db = createKbTestDb(join(root, '.runtime'));
+    const db = createKbTestDb(':memory:');
     const kiwiRuntime = withKoEnv(createRealRuntime('prod'));
     const { kb } = createKbTestRuntime({
       markdownRoot: root,

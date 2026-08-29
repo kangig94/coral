@@ -38,7 +38,7 @@ function createSeededKbRuntime(): { kb: KbRuntime; root: string } {
   mkdirSync(join(root, 'sources'), { recursive: true });
   mkdirSync(join(root, 'communities'), { recursive: true });
 
-  const db = createKbTestDb(root);
+  const db = createKbTestDb(':memory:');
   const { kb } = createKbTestRuntime({
     markdownRoot: root,
     runtimeDir: root,

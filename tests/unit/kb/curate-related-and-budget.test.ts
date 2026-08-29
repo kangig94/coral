@@ -197,7 +197,7 @@ describe('curate related-resolution and budget guards', () => {
     runtime = createTestKbRuntime({
       markdownRoot: tempDir,
       runtimeDir: tempDir,
-      db: createKbTestDb(tempDir),
+      db: createKbTestDb(':memory:'),
       runtime: gitSyncRuntime,
     });
     useScheduler(assistantFromText('[]'));
@@ -379,7 +379,7 @@ describe('curate related-resolution and budget guards', () => {
     runtime = createTestKbRuntime({
       markdownRoot: tempDir,
       runtimeDir: join(tempDir, 'data'),
-      db: createKbTestDb(join(tempDir, 'data')),
+      db: createKbTestDb(':memory:'),
       runtime: gitSyncRuntime,
     });
     mkdirSync(runtime.notesDir(), { recursive: true });

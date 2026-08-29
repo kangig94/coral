@@ -43,7 +43,7 @@ describe('entity-graph', () => {
     const kb = createTestKbRuntime({
       markdownRoot: root,
       runtimeDir: root,
-      db: createKbTestDb(root),
+      db: createKbTestDb(':memory:'),
     });
     const warnSpy = vi.spyOn(backendLog, 'warn');
 
@@ -63,7 +63,7 @@ describe('entity-graph', () => {
     const kb = createTestKbRuntime({
       markdownRoot: root,
       runtimeDir: root,
-      db: createKbTestDb(root),
+      db: createKbTestDb(':memory:'),
     });
     const warnSpy = vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
 
@@ -113,7 +113,7 @@ describe('entity-graph', () => {
     const kb = createTestKbRuntime({
       markdownRoot: root,
       runtimeDir: root,
-      db: createKbTestDb(root),
+      db: createKbTestDb(':memory:'),
     });
 
     kb.writeIndex({
@@ -148,7 +148,7 @@ describe('entity-graph', () => {
     const kb = createTestKbRuntime({
       markdownRoot: root,
       runtimeDir: root,
-      db: createKbTestDb(root),
+      db: createKbTestDb(':memory:'),
     });
 
     writeFileSync(

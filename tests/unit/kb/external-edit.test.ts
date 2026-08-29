@@ -50,7 +50,7 @@ function allocateRoot(): string {
 }
 
 async function createRegisteredRuntime(root: string): Promise<KbRuntime> {
-  const db = createKbTestDb(root);
+  const db = createKbTestDb(join(root, 'store.db'));
   const { kb } = createKbTestRuntime({
     markdownRoot: root,
     runtimeDir: root,

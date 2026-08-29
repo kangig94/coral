@@ -132,7 +132,7 @@ async function createRuntimeFixture(
   tempRoots.push(root);
   seed(root);
 
-  const db = createKbTestDb(root);
+  const db = createKbTestDb(':memory:');
   const { kb } = createKbTestRuntime({
     markdownRoot: root,
     runtimeDir: root,

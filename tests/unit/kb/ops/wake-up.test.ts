@@ -22,7 +22,7 @@ function createRuntime(): { kb: KbRuntime; db: Database; root: string; vault: st
   mkdirSync(vault, { recursive: true });
   mkdirSync(join(vault, 'wiki'), { recursive: true });
   mkdirSync(runtimeDir, { recursive: true });
-  const db = createKbTestDb(runtimeDir);
+  const db = createKbTestDb(':memory:');
   const kb = createTestKbRuntime({
     markdownRoot: vault,
     runtimeDir,

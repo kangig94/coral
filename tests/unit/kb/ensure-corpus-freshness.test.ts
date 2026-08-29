@@ -81,7 +81,7 @@ async function waitForGateInvocation(gate: RescanGate): Promise<void> {
 function makeRuntime(): KbRuntime {
   const root = mkdtempSync(join(tmpdir(), 'coral-ensure-fresh-'));
   tempRoots.push(root);
-  const db = createKbTestDb(root);
+  const db = createKbTestDb(':memory:');
   openDatabases.push(db);
   return createTestKbRuntime({ markdownRoot: root, runtimeDir: root, db });
 }

@@ -39,7 +39,7 @@ describe('curate scheduler failure cap (S2)', () => {
     runtime = createTestKbRuntime({
       markdownRoot: tempDir,
       runtimeDir: tempDir,
-      db: createKbTestDb(tempDir),
+      db: createKbTestDb(':memory:'),
       runtime: gitSyncRuntime,
       curateAssistant: noopCurateAssistant,
     });

@@ -27,7 +27,7 @@ function createHarness(): { root: string; runtimeDir: string; db: Database; kb: 
   const root = mkdtempSync(join(tmpdir(), 'coral-generated-community-lifecycle-'));
   const markdownRoot = join(root, 'vault');
   const runtimeDir = join(root, 'runtime');
-  const db = createKbTestDb(runtimeDir);
+  const db = createKbTestDb(join(runtimeDir, 'store.db'));
   tempRoots.push(root);
   openDatabases.push(db);
   return {
@@ -44,7 +44,7 @@ function reopenHarness(input: { root: string; runtimeDir: string; db: Database }
   if (index >= 0) {
     openDatabases.splice(index, 1);
   }
-  const db = createKbTestDb(input.runtimeDir);
+  const db = createKbTestDb(join(input.runtimeDir, 'store.db'));
   openDatabases.push(db);
   return {
     db,
