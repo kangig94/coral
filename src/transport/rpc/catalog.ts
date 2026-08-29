@@ -273,7 +273,9 @@ const providerProxySetContainKnownResponseSchema = z.discriminatedUnion('kind', 
 
 export const providerProxySetContainResponseSchema = providerProxySetContainKnownResponseSchema;
 
+/** Exact-set containment input; abandonment authority must be chosen explicitly by the caller. */
 export type ProviderProxySetContainRequest = z.output<typeof providerProxySetContainRequestSchema>;
+/** Exhaustive wire verdict including observable effects of a partially completed containment attempt. */
 export type ProviderProxySetContainResponse = z.output<typeof providerProxySetContainResponseSchema>;
 
 export const recoveryQuarantineClearRpcSpec = {

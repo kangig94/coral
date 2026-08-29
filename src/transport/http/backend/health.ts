@@ -154,6 +154,7 @@ export interface BackendHealth {
   };
 }
 
+/** A decoded health payload plus any provider-proxy rows omitted because this build cannot interpret them. */
 export type BackendHealthParseResult = Readonly<{
   health: BackendHealth;
   skippedProviderProxySetRows: number;
@@ -227,13 +228,10 @@ function parseProviderProxySets(value: unknown): ProviderProxySetsParseResult | 
       typeof entry.setIdentity.buildSetId !== 'string' ||
       typeof entry.setIdentity.hostFingerprint !== 'string' ||
       typeof entry.setIdentity.proxyInstanceId !== 'string' ||
-      typeof entry.setToken !== 'string' ||
-      typeof entry.disposition !== 'string' ||
-      (entry.cause !== undefined && typeof entry.cause !== 'string') ||
-      typeof entry.incidentReason !== 'string' ||
-      typeof entry.waitingFor !== 'string'
+      typeof entry.setToken !== 'string'
     ) {
-      return null;
+      skippedRows += 1;
+      continue;
     }
 
     let tokenAddress: ReturnType<typeof decodeProviderProxySetAddress>;
@@ -249,6 +247,17 @@ function parseProviderProxySets(value: unknown): ProviderProxySetsParseResult | 
       tokenAddress.proxyInstanceId !== entry.setIdentity.proxyInstanceId
     ) {
       skippedRows += 1;
+      continue;
+    }
+
+    if (
+      typeof entry.disposition !== 'string' ||
+      (entry.cause !== undefined && typeof entry.cause !== 'string') ||
+      typeof entry.incidentReason !== 'string' ||
+      typeof entry.waitingFor !== 'string'
+    ) {
+      skippedRows += 1;
+      skippedSetTokens.push(entry.setToken);
       continue;
     }
 
@@ -283,14 +292,20 @@ function parseProviderProxySets(value: unknown): ProviderProxySetsParseResult | 
           entry.boundMs === undefined ||
           entry.liveClaims === undefined))
     ) {
-      return null;
+      skippedRows += 1;
+      skippedSetTokens.push(entry.setToken);
+      continue;
     }
 
     const enforcerObservations =
       entry.enforcerObservations === undefined
         ? undefined
         : providerProxySetEnforcerObservationsSchema.safeParse(entry.enforcerObservations);
-    if (enforcerObservations !== undefined && !enforcerObservations.success) return null;
+    if (enforcerObservations !== undefined && !enforcerObservations.success) {
+      skippedRows += 1;
+      skippedSetTokens.push(entry.setToken);
+      continue;
+    }
 
     understoodRows.push({
       ...entry,

@@ -8,6 +8,7 @@ import {
   type ProviderProxySetCommandOperations,
 } from '#src/cli/commands/backend.js';
 import { encodeProviderProxySetAddress, type ProviderProxySetAddress } from '#src/provider-proxy/set-address.js';
+import { TOOL_TIMEOUT_MS } from '#src/transport/http/sse.js';
 import { IpcRpcError } from '#src/transport/ipc/client.js';
 import { providerProxySetContainResponseSchema } from '#src/transport/rpc/catalog.js';
 
@@ -183,6 +184,13 @@ const containCommandCases: readonly ContainCommandCase[] = [
     stream: 'stderr',
     message: 'the coordinator is shutting down',
   },
+  {
+    name: 'timeout',
+    result: { kind: 'timeout', setIdentity: address },
+    exitCode: 75,
+    stream: 'stderr',
+    message: 'did not answer before the deadline',
+  },
 ];
 
 afterEach(() => {
@@ -219,12 +227,27 @@ async function runContain(
 }
 
 describe('backend provider-proxy-set contain', () => {
+  it('documents unattributable recorded groups as abandonment-authorized holds', () => {
+    const program = new Command();
+    registerBackendCommands(program);
+    const backend = program.commands.find((command) => command.name() === 'backend');
+    const providerProxySet = backend?.commands.find((command) => command.name() === 'provider-proxy-set');
+    const contain = providerProxySet?.commands.find((command) => command.name() === 'contain');
+    if (contain === undefined) throw new Error('expected provider-proxy-set contain command');
+
+    expect(contain.helpInformation()).toContain('unattributable recorded group');
+  });
+
   it.each(containCommandCases)(
     'routes $name to the command exit contract',
     async ({ result, exitCode, stream, message }) => {
       const output = await runContain(result);
 
       expect(output[stream]).toContain(message);
+      expect(output[stream]).toContain('Observed:');
+      expect(output[stream]).toContain('Not observed:');
+      expect(output[stream]).toContain('Effect:');
+      expect(output[stream]).toContain('Next step:');
       expect(output[stream === 'stdout' ? 'stderr' : 'stdout']).toBe('');
       expect(process.exitCode).toBe(exitCode);
     },
@@ -367,6 +390,50 @@ describe('backend provider-proxy-set contain', () => {
       expect.objectContaining({ stderr: expect.stringContaining('the coordinator is shutting down') }),
     );
     expect(process.exitCode).toBe(75);
+  });
+
+  it('bounds containment IPC and names a timed-out accepted request as a no-verdict', async () => {
+    const request = vi.fn().mockRejectedValue(
+      Object.assign(new Error('Failed to connect to the Coral coordinator.'), {
+        context: { cause: 'IPC connection timed out after 300000ms' },
+      }),
+    );
+    const operations = createProviderProxySetCommandOperations({
+      getClient: async () => ({ request }) as never,
+    });
+
+    const result = await operations.contain({ setIdentity: address, abandonWithoutAbsence: false });
+
+    expect(request).toHaveBeenCalledWith(
+      'coordinator.provider_proxy_set.contain',
+      { setIdentity: address, abandonWithoutAbsence: false },
+      expect.objectContaining({ timeoutMs: TOOL_TIMEOUT_MS }),
+    );
+    expect(result).toEqual({ kind: 'timeout', setIdentity: address });
+    const output = await runContain(result);
+    expect(output.stderr).toContain('a process signal or representation release may already have happened');
+    expect(output.stderr).toContain('run coral-cli backend status before deciding whether to retry');
+    expect(process.exitCode).toBe(75);
+  });
+
+  it('retains the requested set when a known containment result names another set', async () => {
+    const operations = createProviderProxySetCommandOperations({
+      getClient: async () =>
+        ({
+          request: async () => ({
+            kind: 'contained',
+            setIdentity: { ...address, proxyInstanceId: '33333333-3333-4333-8333-333333333333' },
+            disappearanceReceipt: 'proxy-group-absent',
+            claimDischarge: { kind: 'completed' },
+            effect: containedEffect,
+          }),
+        }) as never,
+    });
+
+    await expect(operations.contain({ setIdentity: address, abandonWithoutAbsence: false })).resolves.toEqual({
+      kind: 'unsupported-coordinator-result',
+      setIdentity: address,
+    });
   });
 
   it('rejects containment results that the producer cannot make', () => {

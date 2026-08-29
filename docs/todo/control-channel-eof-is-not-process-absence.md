@@ -59,9 +59,10 @@ enforcer can ever reap rather than pre-empting a live owner.
 
 ## Reachable exits
 
-The reachable exits are authenticated reattachment and combined discharge after independently proven
-containment absence plus durable-claim discharge. Independent absence attempts continue without an attempt
-limit after refusal or expiry.
+The three reachable exits are authenticated reattachment; evidence-backed combined discharge after the reaper
+confirms containment absence and durable claims are discharged; and capability-authorized abandonment after
+external verification, which discharges the claims and Coral representation without minting absence.
+Independent absence attempts continue without an attempt limit after refusal or expiry.
 
 `coral-cli backend provider-proxy-set contain <pps1-token>` is the supported exact-set operator exit. The token
 comes from `backend status`. A `reattaching` hold refuses it until that hold's recorded monotonic adoption-window

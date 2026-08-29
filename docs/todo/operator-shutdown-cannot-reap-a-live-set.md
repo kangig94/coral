@@ -54,10 +54,11 @@ until its recorded monotonic adoption-window deadline; a fault-driven `containin
 remains refused for the fixed 30-second containment-attempt observation span that began with containment,
 regardless of a longer configured adoption window.
 
-The independent proof now distinguishes confirmed proxy-group absence, an observed-live enforcer, an
-unobservable enforcer, and an unreadable local durable row. Recorded-set reaping adds one further no-verdict:
-the recorded leader identity is gone while the surviving or unobservable numeric group cannot be attributed
-to the set. Only confirmed absence follows the disappearance-delivery path. Alive or unobservable enforcers
+The independent proof distinguishes observed-live or unobservable enforcers, an unreadable local durable row,
+and `reap-required` evidence containing the exact recorded targets. `reap-required` is not an absence verdict:
+only the recorded-set reaper can establish confirmed absence, and it may instead report that the recorded
+leader identity is gone while the surviving or unobservable numeric group cannot be attributed to the set.
+Only the reaper's confirmed absence follows the disappearance-delivery path. Alive or unobservable enforcers
 and an unattributable recorded group require the explicit `--abandon-without-absence` operator instruction
 after external verification; that instruction releases Coral's representation through a separate typed action
 and a distinct durable terminal directive. It does not mint process-absence evidence. An unreadable local row cannot be overridden and names

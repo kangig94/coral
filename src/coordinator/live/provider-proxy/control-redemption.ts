@@ -54,6 +54,7 @@ type GuardianHandoffRedemption = z.infer<typeof guardianHandoffRedeemResultSchem
 type ReaperHandoffRotation = z.infer<typeof reaperHandoffRotateResultSchema>;
 type ProxyHandoffRedemption = z.infer<typeof proxyHandoffRedeemResultSchema>;
 
+/** A complete three-role redemption result that is published only after identities and membership agree. */
 export type ProviderProxyControlRedemptionBundle = Readonly<{
   setIdentity: ProviderProxySetIdentity;
   clients: ProviderProxyRoleClients<ControlClient>;

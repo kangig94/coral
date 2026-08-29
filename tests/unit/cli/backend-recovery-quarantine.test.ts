@@ -25,6 +25,7 @@ import { UNREADABLE_PROVIDER_OPERATION_BOUNDARY } from '#src/recovery/source-reg
 import { createRealRuntime } from '#src/runtime/real.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema, classifyStoreFile, openStoreDatabase } from '#src/store/db.js';
+import { TOOL_TIMEOUT_MS } from '#src/transport/http/sse.js';
 import { PROVIDER_OPERATION_RECORD_VERSION } from '#src/store/provider-operation-record.js';
 import * as ipcEnsure from '#src/transport/ipc/ensure.js';
 import { IpcRpcError } from '#src/transport/ipc/client.js';
@@ -373,7 +374,12 @@ describe('backend recovery-quarantine commands', () => {
     ]);
 
     expect(process.exitCode).toBe(exitCode);
-    expect(stream === 'stdout' ? stdout : stderr).toContain(encodeRecoveryQuarantineKey(result.key));
+    const rendered = stream === 'stdout' ? stdout : stderr;
+    expect(rendered).toContain(encodeRecoveryQuarantineKey(result.key));
+    expect(rendered).toContain('Observed:');
+    expect(rendered).toContain('Not observed:');
+    expect(rendered).toContain('Effect:');
+    expect(rendered).toContain('Next step:');
     expect(stream === 'stdout' ? stderr : stdout).toBe('');
     if (result.kind.includes('coordinator') || result.kind === 'timeout') {
       expect(stderr).toContain(`revision="fingerprint:${result.revision}"`);
@@ -750,8 +756,33 @@ describe('backend recovery-quarantine commands', () => {
       kind: 'unsupported-coordinator-result' as const,
     },
     {
+      name: 'known result without a coordinate',
+      respond: () => Promise.resolve({ kind: 'discarded' }),
+      kind: 'unsupported-coordinator-result' as const,
+    },
+    {
+      name: 'result with malformed coordinates',
+      respond: () => Promise.resolve({ kind: 'discarded', key: 42, revision: null }),
+      kind: 'unsupported-coordinator-result' as const,
+    },
+    {
+      name: 'result for a mismatched coordinate',
+      respond: () =>
+        Promise.resolve({
+          kind: 'discarded',
+          key: 'another-key',
+          revision: `sha256:${'b'.repeat(64)}`,
+        }),
+      kind: 'unsupported-coordinator-result' as const,
+    },
+    {
       name: 'timeout',
-      respond: () => Promise.reject(new Error('IPC request timed out after 30000ms')),
+      respond: () =>
+        Promise.reject(
+          Object.assign(new Error('Failed to connect to the Coral coordinator.'), {
+            context: { cause: 'IPC connection deadline exceeded before retry' },
+          }),
+        ),
       kind: 'timeout' as const,
     },
   ])('names discard $name as a typed no-verdict', async ({ respond, kind }) => {
@@ -763,6 +794,11 @@ describe('backend recovery-quarantine commands', () => {
       ...coordinate,
       kind,
     });
+    expect(request).toHaveBeenCalledWith(
+      'coordinator.recovery_quarantine.discard_provider_operation',
+      coordinate,
+      expect.objectContaining({ timeoutMs: TOOL_TIMEOUT_MS }),
+    );
   });
 
   it('should report coordinator contract drift without calling it unreachable', async () => {

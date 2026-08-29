@@ -498,6 +498,7 @@ describe('cli main routing', () => {
     await program.parseAsync(['node', 'coral-cli', 'backend', 'shutdown']);
 
     expect(stdout).toContain(`coral-cli backend provider-proxy-set contain ${token}`);
+    expect(stdout.split(token)).toHaveLength(2);
     expect(process.exitCode).toBeUndefined();
   });
 
@@ -523,6 +524,7 @@ describe('cli main routing', () => {
     await program.parseAsync(['node', 'coral-cli', 'backend', 'shutdown']);
 
     expect(stdout).toContain(`coral-cli backend provider-proxy-set contain ${token}`);
+    expect(stdout.split(token)).toHaveLength(2);
     expect(stdout).toContain('could not interpret 1 provider proxy set row(s)');
     expect(stdout).toContain('could not confirm that every preserved set was named');
     expect(stdout).not.toContain('No held provider proxy sets were reported');

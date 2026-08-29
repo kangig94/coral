@@ -51,6 +51,7 @@ const RECORDED_CONTAINMENT_OWNER_FILES = [
   'src/coordinator/services/recovery/interrupted-performer.ts',
   'src/coordinator/services/provider-proxy-set/index.ts',
   'src/coordinator/services/provider-proxy-set/inheritance.ts',
+  'src/coordinator/services/provider-proxy-set/recorded-containment-reaper.ts',
 ] as const;
 
 // File-level allowlist: call sites permitted to use the bare primitive, each

@@ -1352,12 +1352,10 @@ describe('backend status provider proxy dispositions', () => {
     expect(rendered).toContain(
       '    - disposition=operator-exit-refused incident=operator_exit_deadline_pending waitingFor=set-adoption-deadline',
     );
-    expect(rendered).toContain(
-      `set=${tokens.third} (contain with: coral-cli backend provider-proxy-set contain ${tokens.third})`,
-    );
-    expect(rendered).toContain(
-      `set=${tokens.fourth} (contain with: coral-cli backend provider-proxy-set contain ${tokens.fourth})`,
-    );
+    expect(rendered).toContain(`action=coral-cli backend provider-proxy-set contain ${tokens.third}`);
+    expect(rendered).toContain(`action=coral-cli backend provider-proxy-set contain ${tokens.fourth}`);
+    expect(rendered.split(tokens.third).length - 1).toBe(1);
+    expect(rendered.split(tokens.fourth).length - 1).toBe(1);
     expect(rendered).not.toContain('buildSetId=55555555-5555-4555-8555-555555555555');
     expect(rendered).not.toContain('buildSetId=77777777-7777-4777-8777-777777777777');
 
@@ -1375,6 +1373,58 @@ describe('backend status provider proxy dispositions', () => {
 
     expect(process.exitCode).toBe(75);
     expect(stdout).toContain(`coral-cli backend provider-proxy-set contain ${tokens.third}`);
+  });
+
+  it('exits 75 for a fully understood held set even when no row was skipped', async () => {
+    const setIdentity = {
+      buildSetId: '99999999-9999-4999-8999-999999999999',
+      hostFingerprint: 'e'.repeat(64),
+      proxyInstanceId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    };
+    const setToken = encodeProviderProxySetAddress(setIdentity);
+    const status = runningStatusFromHealthPayload({
+      status: 'ok',
+      kernel: { phase: 'running', readyAt: 1_700_000_000_000 },
+      version: '0.10.4',
+      bundleHash: 'bundle-hash',
+      flavor: 'prod',
+      namespace: 'test-ns',
+      instanceId: 'instance-1',
+      uptimeMs: 1_000,
+      active: 0,
+      activeJobs: 0,
+      queueDepth: 0,
+      inflightRequests: 0,
+      textProjectionState: 'idle',
+      components: [],
+      diagnostics: {
+        providerProxySets: [
+          {
+            setIdentity,
+            setToken,
+            disposition: 'held',
+            incidentReason: 'control_channel_reattaching',
+            waitingFor: 'control-reattachment',
+          },
+        ],
+      },
+    });
+    expect(status.health.skippedProviderProxySetRows).toBe(0);
+
+    const operations: BackendStatusCommandOperations = {
+      inspectReadiness: () => ({ kind: 'no-legacy' }),
+      getStatus: async () => status,
+      getLiveHandoffResult: () => null,
+      getRoutingStatus: async () => ({ kind: 'absent' }),
+    };
+    const program = new Command();
+    program.exitOverride();
+    registerBackendCommands(program, { storeReset, backendStatus: operations });
+
+    await program.parseAsync(['node', 'coral-cli', 'backend', 'status']);
+
+    expect(stdout).toContain(`action=coral-cli backend provider-proxy-set contain ${setToken}`);
+    expect(process.exitCode).toBe(75);
   });
 });
 

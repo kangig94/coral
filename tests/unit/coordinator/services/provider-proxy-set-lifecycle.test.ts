@@ -44,14 +44,16 @@ import {
   type ProviderProxySetContainmentProofAuthorization,
 } from '#src/coordinator/services/provider-proxy-set/containment-proof.js';
 import {
-  createProviderProxySetRecordedContainmentReaper,
   ProviderProxySetLifecycle,
   type CapsuleRetirementAttemptOutcome,
   type ProviderProxySetLifecycleDeps,
   type ProviderProxySetLifecycleProgressViolation,
   type ProviderProxySetOperatorExitCapability,
 } from '#src/coordinator/services/provider-proxy-set/index.js';
-import type { ProviderProxySetRecordedContainmentReaper } from '#src/coordinator/services/provider-proxy-set/recorded-containment-reaper.js';
+import {
+  createProviderProxySetRecordedContainmentReaper,
+  type ProviderProxySetRecordedContainmentReaper,
+} from '#src/coordinator/services/provider-proxy-set/recorded-containment-reaper.js';
 import type {
   DisappearanceDeliveryAttemptOutcome,
   ProviderContainmentDisappearanceConsumer,

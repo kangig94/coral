@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createUnreadableProviderOperationDiscardService } from '#src/coordinator/services/recovery/unreadable-provider-operation-discard.js';
 import { sha256Hex } from '#src/infra/hash.js';
@@ -45,10 +45,10 @@ describe('unreadable provider-operation discard ownership', () => {
     return { key, raw, dueKeys, record, revision: observation.attribution.revision };
   }
 
-  function service() {
+  function service(uuid: () => string = () => 'operator-discard-token') {
     return createUnreadableProviderOperationDiscardService({
       instanceId: 'operator-discard-test',
-      ids: { uuid: () => 'operator-discard-token' },
+      ids: { uuid },
       db,
       time: { now: () => NOW },
     });
@@ -157,6 +157,29 @@ describe('unreadable provider-operation discard ownership', () => {
       }),
       state: 'active',
     });
+  });
+
+  it('reports the persisted quarantine fingerprint before claiming a still-matching raw row', () => {
+    const seeded = seedRaw();
+    const quarantineRevision = `sha256:${'b'.repeat(64)}`;
+    persistActive(seeded.key, quarantineRevision);
+    const before = quarantine.read(UNREADABLE_PROVIDER_OPERATION_BOUNDARY, seeded.key);
+    const uuid = vi.fn(() => 'operator-discard-token');
+
+    expect(service(uuid).discard({ key: seeded.key, revision: seeded.revision })).toEqual({
+      key: seeded.key,
+      revision: seeded.revision,
+      kind: 'revision-mismatch',
+      currentRevision: quarantineRevision,
+    });
+    expect(db.prepare<[string], { value: string }>('SELECT value FROM meta WHERE key = ?').get(seeded.key)?.value).toBe(
+      seeded.raw,
+    );
+    expect(db.prepare<[string], { key: string }>('SELECT key FROM meta WHERE value = ?').all(seeded.key)).toHaveLength(
+      seeded.dueKeys.length,
+    );
+    expect(quarantine.read(UNREADABLE_PROVIDER_OPERATION_BOUNDARY, seeded.key)).toEqual(before);
+    expect(uuid).not.toHaveBeenCalled();
   });
 
   it.each(['absent', 'readable'] as const)('releases its temporary claim when the raw row is %s', (kind) => {

@@ -516,7 +516,9 @@ async function applyDisposition<Raw, Item>(
     return;
   }
 
-  const expectedRetry = retryWriteClaim(policy.retry);
+  const expectedRetry: RecoveryQuarantineWrite['expectedRetry'] | undefined = policy.retry
+    ? { owner: policy.retry.owner, token: policy.retry.token, subject: policy.retry.subject }
+    : undefined;
   const write: RecoveryQuarantineWrite = {
     boundary: context.boundary,
     subject: context.subject,
@@ -793,10 +795,6 @@ function retryClaim(
   retry: RecoveryRetry | undefined,
 ): { readonly owner: string; readonly token: string } | undefined {
   return retry && sameSubject(subject, retry.subject) ? { owner: retry.owner, token: retry.token } : undefined;
-}
-
-function retryWriteClaim(retry: RecoveryRetry | undefined): RecoveryQuarantineWrite['expectedRetry'] | undefined {
-  return retry ? { owner: retry.owner, token: retry.token, subject: retry.subject } : undefined;
 }
 
 function sameSubject(left: RecoverySubject, right: RecoverySubject): boolean {

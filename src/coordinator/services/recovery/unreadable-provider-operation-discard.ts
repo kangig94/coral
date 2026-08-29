@@ -10,12 +10,14 @@ import { RecoveryQuarantineStore } from '../../../recovery/quarantine.js';
 import type { Database } from '../../../store/db.js';
 import { discardUnreadableProviderOperationWithRecoveryAuthority } from '../../../store/provider-operation-journal.js';
 
-/** What claiming the quarantine can answer with instead of taking ownership. Named so the generic refusal
- *  is not inferred from whichever branch the compiler reads first. */
-type UnreadableProviderOperationDiscardOwnershipRefusal =
-  | Readonly<{ kind: 'quarantine-not-found' }>
-  | Readonly<{ kind: 'revision-mismatch'; currentRevision: string }>
-  | Readonly<{ kind: 'owned'; state: 'retrying' | 'continuation' }>;
+type UnreadableProviderOperationDiscardOwnershipRefusalKind = 'quarantine-not-found' | 'revision-mismatch' | 'owned';
+
+type UnreadableProviderOperationDiscardOwnershipRefusal = {
+  [Kind in UnreadableProviderOperationDiscardOwnershipRefusalKind]: Omit<
+    Extract<UnreadableProviderOperationDiscardResult, { kind: Kind }>,
+    keyof UnreadableProviderOperationDiscardRequest
+  >;
+}[UnreadableProviderOperationDiscardOwnershipRefusalKind];
 
 /** Recovery-owned destructive operation for one exact unreadable provider-operation quarantine. */
 export interface UnreadableProviderOperationDiscardService {
@@ -30,7 +32,7 @@ export type UnreadableProviderOperationDiscardServiceOptions = Readonly<{
   time: Pick<TimePort, 'now'>;
 }>;
 
-/** Creates the sole runtime owner of raw unreadable provider-operation discard. */
+/** Requires an exact unowned quarantine subject before the raw row and its evidence can be deleted atomically. */
 export function createUnreadableProviderOperationDiscardService(
   options: UnreadableProviderOperationDiscardServiceOptions,
 ): UnreadableProviderOperationDiscardService {

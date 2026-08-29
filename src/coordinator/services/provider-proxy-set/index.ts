@@ -1,8 +1,6 @@
 import { encodeProviderProxySetAddress, type ProviderProxySetAddress } from '../../../provider-proxy/set-address.js';
 import type { TimePort, TimerHandle } from '../../../infra/port-types.js';
 import type { ProcessIncarnation, RecordedProcessObserver } from '../../../infra/node-process.js';
-import { createMonotonicClock } from '../../../infra/monotonic-clock.js';
-import { reapRecordedContainment } from '../../../infra/process-containment.js';
 import { errorMessage } from '../../../infra/error-format.js';
 import type { OperationIdentity } from '../../../provider-proxy/protocol.js';
 import {
@@ -16,12 +14,6 @@ import {
   providerProxySetEnforcerVerdict,
   type ProviderProxySetEnforcerObservations,
 } from '../../../provider-proxy/containment-proof-contract.js';
-import {
-  MAX_PROXY_RECORDED_PROVIDER_ROOTS,
-  providerProxyDisappearanceReceipt,
-} from '../../../provider-proxy/enforcement.js';
-import { PROXY_TEARDOWN_RESERVE_MS } from '../../../provider-proxy/orphan-deadline.js';
-import type { Runtime } from '../../../runtime/ports.js';
 import type { ProviderProxySetLifecycleState } from '../../../provider-proxy/set-lifecycle-state-vocabulary.js';
 import type { DurableProviderProxyOperationAuthority } from '../../live/provider-proxy/operation-route.js';
 import type {
@@ -100,45 +92,6 @@ declare const durableClaimDischargeBrand: unique symbol;
 declare const providerProxySetDischargeBrand: unique symbol;
 const operatorAbandonmentEvidenceBrand: unique symbol = Symbol('provider-proxy-set-operator-abandonment-evidence');
 const operatorExitCapabilityBrand = Symbol('provider-proxy-set-operator-exit-capability');
-const providerSetDisappearanceClockScope = Symbol('provider-set-disappearance');
-
-/** Composes the sanctioned recorded-containment escalation for lifecycle and inheritance owners. */
-export function createProviderProxySetRecordedContainmentReaper(
-  runtime: Runtime,
-): ProviderProxySetRecordedContainmentReaper {
-  return async (identity, proof, signal, onSignal, assertSignalAuthorized) => {
-    const evidence = providerProxySetContainmentEvidenceFor(proof, identity);
-    if (evidence.kind !== 'reap-required') {
-      throw new Error('provider_proxy_set_containment_reap_proof_not_reap_required');
-    }
-    const clock = createMonotonicClock(providerSetDisappearanceClockScope);
-    const outcome = await reapRecordedContainment(
-      evidence.containment,
-      evidence.recordedRoots,
-      clock.shiftMilliseconds(clock.now(), PROXY_TEARDOWN_RESERVE_MS),
-      {
-        maxRecordedRoots: MAX_PROXY_RECORDED_PROVIDER_ROOTS,
-        clock,
-        process: runtime.process,
-        platform: runtime.env.platform() as NodeJS.Platform,
-        readProcessIncarnation: (pid, platform) => runtime.process.readProcessIncarnation(pid, platform),
-        signal,
-        assertSignalAuthorized,
-        onSignal: ({ signal: delivered }) => {
-          if (delivered === 'SIGTERM' || delivered === 'SIGKILL') onSignal(delivered);
-        },
-      },
-    );
-    signal.throwIfAborted();
-    return outcome.kind === 'containment-absent'
-      ? {
-          kind: 'containment-absent',
-          disappearanceReceipt: providerProxyDisappearanceReceipt(evidence.containment, evidence.recordedRoots),
-        }
-      : outcome;
-  };
-}
-
 export type ProcessContainmentEvidence = Readonly<{
   kind: 'containment-absent';
   receipt: string;
@@ -454,6 +407,7 @@ export type ProviderProxySetOperatorExitAuthorization =
   | Readonly<{ kind: 'not-held'; state: ProviderProxySetLifecycleState }>
   | Readonly<{ kind: 'deadline-pending'; remainingMs: number }>;
 
+/** An exact-set operator verdict whose effect records every signal and representation-release transition. */
 export type ProviderProxySetOperatorExitResult = (
   | Readonly<{
       kind: 'contained';

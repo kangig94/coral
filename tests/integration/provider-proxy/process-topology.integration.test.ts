@@ -150,10 +150,8 @@ import {
   type ProviderProxyAuthorityObservation,
 } from '#src/coordinator/services/provider-proxy-authority-fault.js';
 import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set/claim-mirror.js';
-import {
-  createProviderProxySetRecordedContainmentReaper,
-  ProviderProxySetLifecycle,
-} from '#src/coordinator/services/provider-proxy-set/index.js';
+import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set/index.js';
+import { createProviderProxySetRecordedContainmentReaper } from '#src/coordinator/services/provider-proxy-set/recorded-containment-reaper.js';
 import {
   attemptProviderProxySetInheritance,
   type ProviderProxySetLocator,

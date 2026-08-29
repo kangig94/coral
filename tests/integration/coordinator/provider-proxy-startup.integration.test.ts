@@ -23,10 +23,8 @@ import {
   type StartupSetRecoveryPort,
 } from '#src/coordinator/services/provider-operation-reconciler.js';
 import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set/claim-mirror.js';
-import {
-  createProviderProxySetRecordedContainmentReaper,
-  ProviderProxySetLifecycle,
-} from '#src/coordinator/services/provider-proxy-set/index.js';
+import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set/index.js';
+import { createProviderProxySetRecordedContainmentReaper } from '#src/coordinator/services/provider-proxy-set/recorded-containment-reaper.js';
 import type { DisappearanceDeliveryAttemptOutcome } from '#src/coordinator/services/provider-containment-disappearance.js';
 import {
   isProviderProxyRecoveryFatalError,

@@ -157,10 +157,9 @@ async function collectProviderProxySetContainmentEvidence(
   return providerProxySetContainmentEvidenceSchema.parse({ kind: 'reap-required', containment, recordedRoots });
 }
 
-/** Creates the read-only collector that can seal exact targets only from a minted set authorization. */
 /**
- * Mints a proof from evidence a test supplies rather than from the store. The binding is the same one the
- * prover establishes, so a test that hands set B's proof to set A's authorization is still refused.
+ * Preserves the production identity/authorization binding when tests must supply evidence for the
+ * module-private proof brand.
  */
 export function providerProxySetContainmentProofForTest(
   authorization: ProviderProxySetContainmentProofAuthorization,
@@ -173,6 +172,7 @@ export function providerProxySetContainmentProofForTest(
   return proof;
 }
 
+/** Collects read-only evidence and seals it only for a minted exact-set authorization. */
 export function createProviderProxySetContainmentProver(runtime: Runtime): ProviderProxySetContainmentProver {
   return {
     async collectContainmentProof(authorization, db, signal) {

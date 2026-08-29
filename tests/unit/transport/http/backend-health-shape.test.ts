@@ -445,13 +445,44 @@ describe('/health typed shape (AC10a)', () => {
     });
   });
 
-  it('rejects malformed provider proxy set structure instead of counting it as a forward-shaped row', () => {
+  it('skips a row with a future enforcer observation without rejecting the health payload', () => {
+    const parsed = parseBackendHealth({
+      ...HEALTHY_BASE,
+      diagnostics: {
+        providerProxySets: [
+          {
+            ...PROVIDER_PROXY_SET,
+            enforcerObservations: [
+              { role: 'guardian', observation: 'paused' },
+              { role: 'reaper', observation: 'absent' },
+            ],
+          },
+        ],
+      },
+    });
+
+    expect(parsed).toEqual({
+      health: { ...HEALTHY_BASE, diagnostics: { providerProxySets: [] } },
+      skippedProviderProxySetRows: 1,
+      skippedProviderProxySetTokens: [PROVIDER_PROXY_SET.setToken],
+    });
+  });
+
+  it('skips malformed provider proxy set rows but still rejects a non-array collection', () => {
     const parseWith = (providerProxySets: unknown) =>
       parseBackendHealth({ ...HEALTHY_BASE, diagnostics: { providerProxySets } });
 
     expect(parseWith('not-an-array')).toBeNull();
-    expect(parseWith([{ ...PROVIDER_PROXY_SET, setIdentity: undefined }])).toBeNull();
-    expect(parseWith([{ ...PROVIDER_PROXY_SET, attempts: '2' }])).toBeNull();
+    expect(parseWith([{ ...PROVIDER_PROXY_SET, setIdentity: undefined }])).toEqual({
+      health: { ...HEALTHY_BASE, diagnostics: { providerProxySets: [] } },
+      skippedProviderProxySetRows: 1,
+      skippedProviderProxySetTokens: [],
+    });
+    expect(parseWith([{ ...PROVIDER_PROXY_SET, attempts: '2' }])).toEqual({
+      health: { ...HEALTHY_BASE, diagnostics: { providerProxySets: [] } },
+      skippedProviderProxySetRows: 1,
+      skippedProviderProxySetTokens: [PROVIDER_PROXY_SET.setToken],
+    });
     expect(parseWith([{ ...PROVIDER_PROXY_SET, disposition: 'released-by-successor', attempts: '2' }])).toEqual({
       health: { ...HEALTHY_BASE, diagnostics: { providerProxySets: [] } },
       skippedProviderProxySetRows: 1,

@@ -35,12 +35,11 @@ Two things survive from that version and remain true:
   `capacity` refusal. Every other non-accepted admission returns silently, and so does the
   earlier `routeFor(identityKey) !== null` short-circuit. That is still a reporting gap worth
   closing, and it is why the real cause took a second incident to surface.
-- `ProviderProxySetLifecycleSnapshot` already computes `startupDiscoveryCompleted`, `represented`,
-  `available` and `states` (`src/coordinator/services/provider-proxy-set/index.ts`, produced by
-  `snapshot()`), and has **no production consumer** — its only readers are in
-  `tests/unit/coordinator/services/provider-proxy-set-lifecycle.test.ts`, a unit test, not an
-  integration test as an earlier revision said. The observability this needs is already built and
-  unpublished.
+- `ProviderProxySetLifecycleSnapshot` (`src/coordinator/services/provider-proxy-set/index.ts`, produced by
+  `snapshot()`) has a production health consumer, but only its `operatorDispositions` projection is published.
+  That projection carries each actionable set identity/token, disposition, incident/wait condition, optional
+  control evidence, live-claim count, and enforcer observations. `startupDiscoveryCompleted`, `represented`,
+  `available`, `states`, and `pendingOperationCounts` remain internal and are not published by health.
 
 ## The defect
 

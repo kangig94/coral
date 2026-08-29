@@ -250,6 +250,94 @@ function providerProxySetContainExitCode(result: ProviderProxySetContainResponse
   return PROVIDER_PROXY_SET_CONTAIN_EXIT_CODES[result.kind];
 }
 
+function formatProviderProxySetContainNoVerdict(
+  result: Exclude<ProviderProxySetContainCommandResult, ProviderProxySetContainResponse>,
+): string {
+  const token = encodeProviderProxySetAddress(result.setIdentity);
+  const kind = result.kind;
+  switch (kind) {
+    case 'unsupported-coordinator':
+      return [
+        `No containment verdict for ${token}: this coordinator does not support coordinator.provider_proxy_set.contain.`,
+        'Observed: the coordinator rejected the method before accepting a containment operation.',
+        'Not observed: enforcer state or recorded-target state.',
+        'Effect: no process signal was sent and no representation release was started.',
+        'Next step: upgrade or restart into this Coral build, then run coral-cli backend status before retrying the exact token.',
+      ].join('\n');
+    case 'coordinator-draining':
+      return [
+        `No containment verdict for ${token}: the coordinator is shutting down.`,
+        'Observed: the coordinator refused the request before dispatch while draining.',
+        'Not observed: enforcer state or recorded-target state.',
+        'Effect: no process signal was sent and no representation release was started.',
+        'Next step: wait for the successor coordinator, then run coral-cli backend status before retrying the exact token.',
+      ].join('\n');
+    case 'unsupported-coordinator-result':
+      return [
+        `No containment verdict for ${token}: this build does not understand the coordinator's containment result.`,
+        'Observed: the coordinator returned a response that this CLI could not decode.',
+        'Not observed: whether recorded targets were signalled or Coral started representation release.',
+        'Effect: unknown; a process signal or representation release may already have happened.',
+        'Next step: upgrade this CLI or converge on one Coral build, then run coral-cli backend status before any retry.',
+      ].join('\n');
+    case 'timeout':
+      return [
+        `No containment verdict for ${token}: the coordinator did not answer before the deadline.`,
+        'Observed: the bounded request deadline expired without a response.',
+        'Not observed: whether recorded targets were signalled or Coral started representation release.',
+        'Effect: unknown; a process signal or representation release may already have happened.',
+        'Next step: run coral-cli backend status before deciding whether to retry the exact token.',
+      ].join('\n');
+    default:
+      return assertNever(kind);
+  }
+}
+
+function formatUnreadableProviderOperationDiscardNoVerdict(
+  result: Exclude<UnreadableProviderOperationDiscardCommandResult, UnreadableProviderOperationDiscardResult>,
+): string {
+  const coordinate =
+    `key=${encodeRecoveryQuarantineKey(result.key)} ` +
+    `revision=${JSON.stringify(`${RECOVERY_REVISION_FINGERPRINT_PREFIX}${result.revision}`)}`;
+  const kind = result.kind;
+  switch (kind) {
+    case 'unsupported-coordinator':
+      return [
+        `No discard verdict for ${coordinate}: this coordinator does not support coordinator.recovery_quarantine.discard_provider_operation.`,
+        'Observed: the coordinator rejected the method before accepting a discard operation.',
+        'Not observed: raw-row contents or quarantine state.',
+        'Effect: no raw row, due pointer, or quarantine evidence was removed.',
+        'Next step: upgrade or restart into this Coral build, then run coral-cli backend recovery-quarantine list before retrying only a currently printed command.',
+      ].join('\n');
+    case 'coordinator-draining':
+      return [
+        `No discard verdict for ${coordinate}: the coordinator is shutting down.`,
+        'Observed: the coordinator refused the request before dispatch while draining.',
+        'Not observed: raw-row contents or quarantine state.',
+        'Effect: no raw row, due pointer, or quarantine evidence was removed.',
+        'Next step: wait for the successor coordinator, then run coral-cli backend recovery-quarantine list before deciding whether to retry.',
+      ].join('\n');
+    case 'unsupported-coordinator-result':
+      return [
+        `No discard verdict for ${coordinate}: this CLI does not understand the coordinator's discard response.`,
+        'Observed: the coordinator returned a response that this CLI could not decode.',
+        'Not observed: whether the exact raw row, due pointers, and quarantine evidence still exist.',
+        'Effect: unknown; the destructive discard may already have completed.',
+        'Next step: upgrade this CLI or converge on one Coral build, then run coral-cli backend recovery-quarantine list and coral-cli backend status before any retry.',
+      ].join('\n');
+    case 'timeout':
+      return [
+        `No discard verdict for ${coordinate}: the coordinator did not answer before the deadline.`,
+        'Observed: the bounded request deadline expired without a response.',
+        'Not observed: whether the exact raw row, due pointers, and quarantine evidence still exist.',
+        'Effect: unknown; the destructive discard may already have completed.',
+        'Next step: run coral-cli backend recovery-quarantine list and coral-cli backend status before deciding whether to retry.',
+      ].join('\n');
+    default:
+      return assertNever(kind);
+  }
+}
+
 function handoffPublicationIncidentExitContribution(incident: HandoffPublicationIncident): 70 | 75 {
   switch (incident.kind) {
     case 'not-published':
@@ -305,8 +393,12 @@ import {
   reportStoreResetIncidentLocal,
 } from '../store-reset.js';
 
-function skippedProviderProxySetRowsExitContribution(status: BackendStatusFull): 0 | 75 {
-  return status.status === 'ok' && status.health.skippedProviderProxySetRows > 0 ? 75 : 0;
+function providerProxySetNoVerdictExitContribution(status: BackendStatusFull): 0 | 75 {
+  if (status.status !== 'ok') return 0;
+  return status.health.skippedProviderProxySetRows > 0 ||
+    (status.health.diagnostics?.providerProxySets?.length ?? 0) > 0
+    ? 75
+    : 0;
 }
 
 const OFFLINE_OPERATOR_FLAVOR_HELP =
@@ -352,6 +444,7 @@ export interface RecoveryQuarantineCommandOperations {
   ): Promise<UnreadableProviderOperationDiscardCommandResult>;
 }
 
+/** A discard verdict or a requested-coordinate no-verdict from the coordinator boundary. */
 export type UnreadableProviderOperationDiscardCommandResult =
   | UnreadableProviderOperationDiscardResult
   | (UnreadableProviderOperationDiscardRequest &
@@ -365,11 +458,30 @@ export interface ProviderHostCommandOperations {
   evict(request: ProviderHostSelectorRequest): Promise<ProviderHostEvictResponse>;
 }
 
+type ProviderProxySetContainNoVerdictKind =
+  | 'unsupported-coordinator'
+  | 'unsupported-coordinator-result'
+  | 'coordinator-draining'
+  | 'timeout';
+
+const PROVIDER_PROXY_SET_CONTAIN_NO_VERDICT_KINDS: ReadonlySet<string> = new Set([
+  'unsupported-coordinator',
+  'unsupported-coordinator-result',
+  'coordinator-draining',
+  'timeout',
+] satisfies readonly ProviderProxySetContainNoVerdictKind[]);
+
+/** A decoded containment verdict or a named reason this CLI cannot establish one. */
 export type ProviderProxySetContainCommandResult =
   | ProviderProxySetContainResponse
-  | Readonly<{ kind: 'unsupported-coordinator'; setIdentity: ProviderProxySetAddress }>
-  | Readonly<{ kind: 'unsupported-coordinator-result'; setIdentity: ProviderProxySetAddress }>
-  | Readonly<{ kind: 'coordinator-draining'; setIdentity: ProviderProxySetAddress }>;
+  | Readonly<{ kind: ProviderProxySetContainNoVerdictKind; setIdentity: ProviderProxySetAddress }>;
+
+/** Narrows the CLI-only outcomes, whose shared union discriminant the compiler cannot exclude member-wise. */
+function isProviderProxySetContainNoVerdict(
+  result: ProviderProxySetContainCommandResult,
+): result is Readonly<{ kind: ProviderProxySetContainNoVerdictKind; setIdentity: ProviderProxySetAddress }> {
+  return PROVIDER_PROXY_SET_CONTAIN_NO_VERDICT_KINDS.has(result.kind);
+}
 
 export interface ProviderProxySetCommandOperations {
   contain(request: ProviderProxySetContainRequest): Promise<ProviderProxySetContainCommandResult>;
@@ -668,30 +780,29 @@ export function createProviderProxySetCommandOperations(
       const request = providerProxySetContainRequestSchema.parse(input);
       try {
         const client = await getClient();
-        const response = await client.request(
-          'coordinator.provider_proxy_set.contain',
-          request,
-          childPrincipalAuthOptions(childPrincipalAuthFromEnv()),
-        );
+        const response = await client.request('coordinator.provider_proxy_set.contain', request, {
+          timeoutMs: TOOL_TIMEOUT_MS,
+          ...childPrincipalAuthOptions(childPrincipalAuthFromEnv()),
+        });
         if (isRecord(response) && response.code === 'backend_shutting_down') {
           return { kind: 'coordinator-draining', setIdentity: request.setIdentity };
         }
         const parsed = providerProxySetContainResponseSchema.safeParse(response);
-        if (parsed.success) return parsed.data;
         if (
-          isRecord(response) &&
-          typeof response.kind === 'string' &&
-          isRecord(response.setIdentity) &&
-          response.setIdentity.buildSetId === request.setIdentity.buildSetId &&
-          response.setIdentity.hostFingerprint === request.setIdentity.hostFingerprint &&
-          response.setIdentity.proxyInstanceId === request.setIdentity.proxyInstanceId
+          parsed.success &&
+          parsed.data.setIdentity.buildSetId === request.setIdentity.buildSetId &&
+          parsed.data.setIdentity.hostFingerprint === request.setIdentity.hostFingerprint &&
+          parsed.data.setIdentity.proxyInstanceId === request.setIdentity.proxyInstanceId
         ) {
-          return { kind: 'unsupported-coordinator-result', setIdentity: request.setIdentity };
+          return parsed.data;
         }
-        return providerProxySetContainResponseSchema.parse(response);
+        return { kind: 'unsupported-coordinator-result', setIdentity: request.setIdentity };
       } catch (error: unknown) {
         if (error instanceof IpcRpcError && error.rpcCode === -32601) {
           return { kind: 'unsupported-coordinator', setIdentity: request.setIdentity };
+        }
+        if (isIpcRequestTimeout(error)) {
+          return { kind: 'timeout', setIdentity: request.setIdentity };
         }
         throw error;
       }
@@ -744,7 +855,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
         liveHandoffObligation.exitContribution,
         handoffRoutingStatusExitContribution(routingStatusRead),
         handoffPublicationIncidentsExitContribution(liveHandoffResult?.publicationIncidents ?? []),
-        skippedProviderProxySetRowsExitContribution(status),
+        providerProxySetNoVerdictExitContribution(status),
       ];
       process.exitCode = combineBackendStatusLocalExitContributions(localExitContributions);
     } catch (error) {
@@ -888,9 +999,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
           const lines = preservedSetRead.tokens.length
             ? [
                 'Provider proxy set tokens reported before shutdown:',
-                ...preservedSetRead.tokens.map(
-                  (token) => `  ${token} (contain with: coral-cli backend provider-proxy-set contain ${token})`,
-                ),
+                ...preservedSetRead.tokens.map((token) => `  coral-cli backend provider-proxy-set contain ${token}`),
               ]
             : [];
           if (preservedSetRead.skippedRows > 0) {
@@ -972,14 +1081,14 @@ export function registerBackendCommands(program: Command, operations: BackendCom
     .argument('<set-token>', 'Canonical pps1 token copied from `coral-cli backend status`', parseProviderProxySetToken)
     .option(
       '--abandon-without-absence',
-      'After external verification, release Coral representation when either enforcer is alive or unobservable',
+      'After external verification, release Coral representation for a live/unobservable enforcer or unattributable recorded group',
     )
     .addHelpText(
       'after',
       [
         '',
         'Default mode requires guardian and reaper absence, then reaps the recorded proxy process group and every recorded provider root.',
-        '--abandon-without-absence signals no process and releases Coral representation despite observed life or unknown observation.',
+        '--abandon-without-absence signals no process and releases Coral representation despite observed life, unknown observation, or an unattributable recorded group.',
         'Neither mode signals the guardian or reaper.',
         'A reattachment hold is gated by its control-adoption deadline; containing and containment-wait are gated by their current containment-attempt deadline.',
       ].join('\n'),
@@ -998,24 +1107,8 @@ export function registerBackendCommands(program: Command, operations: BackendCom
           setIdentity,
           abandonWithoutAbsence: options.abandonWithoutAbsence ?? false,
         });
-        if (result.kind === 'unsupported-coordinator') {
-          process.stderr.write(
-            `No containment verdict for ${encodeProviderProxySetAddress(result.setIdentity)}: this coordinator does not support coordinator.provider_proxy_set.contain. Upgrade or restart into this Coral build, run backend status, and retry the exact token.\n`,
-          );
-          process.exitCode = 75;
-          return;
-        }
-        if (result.kind === 'coordinator-draining') {
-          process.stderr.write(
-            `No containment verdict for ${encodeProviderProxySetAddress(result.setIdentity)}: the coordinator is shutting down. Wait for the successor coordinator to start, run backend status, and retry the exact token.\n`,
-          );
-          process.exitCode = 75;
-          return;
-        }
-        if (result.kind === 'unsupported-coordinator-result') {
-          process.stderr.write(
-            `No containment verdict for ${encodeProviderProxySetAddress(result.setIdentity)}: this build does not understand the coordinator's containment result. Upgrade this CLI or restart into one Coral build, run backend status, and retry the exact token.\n`,
-          );
+        if (isProviderProxySetContainNoVerdict(result)) {
+          process.stderr.write(`${formatProviderProxySetContainNoVerdict(result)}\n`);
           process.exitCode = 75;
           return;
         }
@@ -1058,32 +1151,12 @@ export function registerBackendCommands(program: Command, operations: BackendCom
         }
         const request = parseUnreadableProviderOperationDiscardOptions(options, recoveryQuarantine.list());
         const result = await recoveryQuarantine.discardProviderOperation(request);
-        const coordinate =
-          `key=${encodeRecoveryQuarantineKey(result.key)} ` +
-          `revision=${JSON.stringify(`${RECOVERY_REVISION_FINGERPRINT_PREFIX}${result.revision}`)}`;
         switch (result.kind) {
           case 'unsupported-coordinator':
-            process.stderr.write(
-              `No discard verdict for ${coordinate}: this coordinator does not support coordinator.recovery_quarantine.discard_provider_operation. Upgrade or restart into this Coral build, run backend recovery-quarantine list, and retry only a currently printed command.\n`,
-            );
-            process.exitCode = 75;
-            return;
           case 'coordinator-draining':
-            process.stderr.write(
-              `No discard verdict for ${coordinate}: the coordinator is shutting down. Wait for the successor coordinator, then run backend recovery-quarantine list before deciding whether to retry.\n`,
-            );
-            process.exitCode = 75;
-            return;
           case 'unsupported-coordinator-result':
-            process.stderr.write(
-              `No discard verdict for ${coordinate}: this CLI does not understand the coordinator's exact-coordinate discard result. Upgrade this CLI or restart into one Coral build, then run backend recovery-quarantine list before any retry.\n`,
-            );
-            process.exitCode = 75;
-            return;
           case 'timeout':
-            process.stderr.write(
-              `No discard verdict for ${coordinate}: the coordinator did not answer before the deadline. Run backend recovery-quarantine list to observe the exact coordinate before any retry.\n`,
-            );
+            process.stderr.write(`${formatUnreadableProviderOperationDiscardNoVerdict(result)}\n`);
             process.exitCode = 75;
             return;
           default: {
@@ -1376,7 +1449,7 @@ async function clearRecoveryQuarantineWithCoordinator(
     if (error instanceof IpcRpcError || error instanceof RecoveryQuarantineContractError) {
       throw error;
     }
-    if (isRecoveryQuarantineTimeout(error)) {
+    if (isIpcRequestTimeout(error)) {
       throw new Error(
         'Recovery quarantine clear timed out before the coordinator returned a result. Run coral-cli backend status, then retry the exact clear.',
         { cause: error },
@@ -1404,24 +1477,16 @@ async function discardUnreadableProviderOperationWithCoordinator(
       return { ...parsedRequest, kind: 'coordinator-draining' };
     }
     const result = unreadableProviderOperationDiscardResultSchema.safeParse(response);
-    if (result.success) return result.data;
-    if (
-      isRecord(response) &&
-      typeof response.kind === 'string' &&
-      response.key === parsedRequest.key &&
-      response.revision === parsedRequest.revision
-    ) {
-      return { ...parsedRequest, kind: 'unsupported-coordinator-result' };
+    if (result.success && result.data.key === parsedRequest.key && result.data.revision === parsedRequest.revision) {
+      return result.data;
     }
-    throw new RecoveryQuarantineContractError(
-      'Coordinator returned an invalid unreadable provider-operation discard result. Run coral-cli backend status, then retry the exact coordinate.',
-    );
+    return { ...parsedRequest, kind: 'unsupported-coordinator-result' };
   } catch (error: unknown) {
     if (signal?.aborted === true) throw signal.reason;
     if (error instanceof IpcRpcError && error.rpcCode === -32601) {
       return { ...parsedRequest, kind: 'unsupported-coordinator' };
     }
-    if (isRecoveryQuarantineTimeout(error)) {
+    if (isIpcRequestTimeout(error)) {
       return { ...parsedRequest, kind: 'timeout' };
     }
     if (error instanceof IpcRpcError || error instanceof RecoveryQuarantineContractError) throw error;
@@ -1436,8 +1501,15 @@ class RecoveryQuarantineContractError extends Error {
   }
 }
 
-function isRecoveryQuarantineTimeout(error: unknown): boolean {
-  return error instanceof Error && /timed out|deadline (?:already )?exceeded/iu.test(error.message);
+function isIpcRequestTimeout(error: unknown): boolean {
+  const timeoutPattern = /timed out|deadline (?:already )?exceeded/iu;
+  if (error instanceof Error && timeoutPattern.test(error.message)) return true;
+  return (
+    isRecord(error) &&
+    isRecord(error.context) &&
+    typeof error.context.cause === 'string' &&
+    timeoutPattern.test(error.context.cause)
+  );
 }
 
 function recoveryCoordinatorRequiredError(): BackendUnreachableError {
