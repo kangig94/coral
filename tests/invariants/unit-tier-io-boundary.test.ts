@@ -17,9 +17,9 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import ts from 'typescript';
+import { UNIT_TIER_ROOTS } from '#tests/unit-tier-roots.js';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const UNIT_TIER_ROOTS = ['tests/unit', 'tests/invariants'];
 
 function testFilesUnder(root: string): string[] {
   const absolute = resolve(REPO_ROOT, root);
