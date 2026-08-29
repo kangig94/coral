@@ -4,11 +4,16 @@ import { join, resolve } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import {
+  createStoreServicesRef,
+  type CoordinatorStoreServices,
+} from '#src/coordinator/composition/store-services-ref.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Database } from '#src/store/db.js';
 import { openKbTestStoreDb, openTestStoreDb } from '#tests/helpers/store-db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import * as storeDbLocation from '#tools/testing/store-db-location.js';
+import { setStoreServicesForTest } from '#tools/testing/store-services.js';
 
 const runtime = createRealRuntime('prod');
 const scratchDirectories: string[] = [];
@@ -21,12 +26,26 @@ function storePath(name: string): string {
 
 function expectUnitDoorToRejectAndClose(open: () => Database): void {
   const guard = vi.spyOn(storeDbLocation, 'assertTestDatabaseLocation');
+  const outcome = (() => {
+    try {
+      return { kind: 'returned' as const, db: open() };
+    } catch (error: unknown) {
+      return { kind: 'threw' as const, error };
+    }
+  })();
+  const db = outcome.kind === 'returned' ? outcome.db : guard.mock.calls.at(-1)?.[0];
 
-  expect(open).toThrow(/unit test database resolved to/u);
-  const db = guard.mock.calls.at(-1)?.[0];
-  if (db === undefined) throw new Error('Database door did not pass its opened handle to the location guard');
-  expect(db.isOpen).toBe(false);
-  expect(() => db.prepare('SELECT 1')).toThrow();
+  try {
+    expect(() => {
+      if (outcome.kind === 'threw') throw outcome.error;
+    }).toThrow(/unit test database resolved to/u);
+    expect(db).toBeDefined();
+    if (db === undefined) return;
+    expect(db.isOpen).toBe(false);
+    expect(() => db.prepare('SELECT 1')).toThrow();
+  } finally {
+    if (db?.isOpen === true) db.close();
+  }
 }
 
 afterEach(() => {
@@ -61,5 +80,27 @@ describe('checked test database doors', () => {
     const path = storePath('raw.db');
 
     expectUnitDoorToRejectAndClose(() => newRawDatabase(path));
+  });
+
+  it('closes and refuses store services backed by a file under the unit tier', () => {
+    const path = storePath('services.db');
+    const bypass = vi.spyOn(storeDbLocation, 'assertTestDatabaseLocation').mockImplementationOnce(() => undefined);
+    const db = (() => {
+      try {
+        return newRawDatabase(path);
+      } finally {
+        bypass.mockRestore();
+      }
+    })();
+    const ref = createStoreServicesRef();
+    const services = { storeDb: db } as CoordinatorStoreServices;
+
+    try {
+      expect(() => setStoreServicesForTest(ref, services)).toThrow(/unit test database resolved to/u);
+      expect(db.isOpen).toBe(false);
+      expect(ref.tryGet()).toBeNull();
+    } finally {
+      if (db.isOpen) db.close();
+    }
   });
 });

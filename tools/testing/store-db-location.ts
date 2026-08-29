@@ -1,3 +1,4 @@
+import { existsSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import type { Database } from '../../src/store/db.js';
@@ -5,10 +6,13 @@ import type { Database } from '../../src/store/db.js';
 export type TestTier = 'unit' | 'integration' | 'simulation' | 'e2e';
 
 const TEST_TIERS = new Set<TestTier>(['unit', 'integration', 'simulation', 'e2e']);
+const ENFORCED_TEST_LOCATION_POLICY = Symbol.for('coral.testing.enforced-test-location-policy');
 
 type EnforcedTestLocationPolicy = Readonly<{ tier: string | undefined; tempRoot: string }>;
 
-let enforcedTestLocationPolicy: EnforcedTestLocationPolicy | undefined;
+type TestLocationPolicyGlobal = typeof globalThis & {
+  [ENFORCED_TEST_LOCATION_POLICY]?: EnforcedTestLocationPolicy;
+};
 
 export type TestDatabaseLocationDisposition =
   | Readonly<{ kind: 'allowed' }>
@@ -21,11 +25,21 @@ function isTestTier(tier: string | undefined): tier is TestTier {
 }
 
 function enforcedLocationPolicy(): EnforcedTestLocationPolicy {
-  enforcedTestLocationPolicy ??= {
+  const policyGlobal = globalThis as TestLocationPolicyGlobal;
+  const frozenPolicy = policyGlobal[ENFORCED_TEST_LOCATION_POLICY];
+  if (frozenPolicy !== undefined) return frozenPolicy;
+
+  const policy = Object.freeze({
     tier: process.env.CORAL_TEST_TIER,
     tempRoot: resolve(process.env.TMPDIR ?? tmpdir()),
-  };
-  return enforcedTestLocationPolicy;
+  });
+  policyGlobal[ENFORCED_TEST_LOCATION_POLICY] = policy;
+  return policy;
+}
+
+function realPathWhenPresent(path: string): string {
+  const resolvedPath = resolve(path);
+  return existsSync(resolvedPath) ? realpathSync(resolvedPath) : resolvedPath;
 }
 
 export function classifyTestDatabaseLocation(
@@ -43,8 +57,8 @@ export function classifyTestDatabaseLocation(
 
   if (location === null) return { kind: 'allowed' };
 
-  const resolvedTempRoot = resolve(tempRoot);
-  const resolvedLocation = resolve(location);
+  const resolvedTempRoot = realPathWhenPresent(tempRoot);
+  const resolvedLocation = realPathWhenPresent(location);
   const pathFromTempRoot = relative(resolvedTempRoot, resolvedLocation);
   if (
     pathFromTempRoot === '' ||

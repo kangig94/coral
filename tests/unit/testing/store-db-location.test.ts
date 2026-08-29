@@ -1,10 +1,22 @@
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { Database } from '#src/store/db.js';
 import { classifyTestDatabaseLocation } from '#tools/testing/store-db-location.js';
 
 const TEMP_ROOT = resolve('test-temp-root');
+const scratchDirectories: string[] = [];
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
+  vi.resetModules();
+  for (const directory of scratchDirectories.splice(0)) {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 describe('test database location', () => {
   it('accepts in-memory databases in every recognized tier', () => {
@@ -77,39 +89,78 @@ describe('test database location', () => {
     expect(classifyTestDatabaseLocation('integration', TEMP_ROOT, location)).toEqual({ kind: 'allowed' });
   });
 
+  it('rejects an existing location whose in-root symlink resolves outside the temp root', () => {
+    const scratch = mkdtempSync(join(tmpdir(), 'coral-store-location-'));
+    scratchDirectories.push(scratch);
+    const tempRoot = join(scratch, 'temp');
+    const outside = join(scratch, 'outside');
+    mkdirSync(tempRoot);
+    mkdirSync(outside);
+    const outsideStore = join(outside, 'store.db');
+    writeFileSync(outsideStore, '');
+    symlinkSync(outside, join(tempRoot, 'linked'), 'dir');
+
+    expect(classifyTestDatabaseLocation('integration', tempRoot, join(tempRoot, 'linked', 'store.db'))).toEqual({
+      kind: 'outside-temp-root',
+      tier: 'integration',
+      location: realpathSync(outsideStore),
+      tempRoot: realpathSync(tempRoot),
+    });
+  });
+
   it('refuses an unrecognized tier explicitly', () => {
     expect(classifyTestDatabaseLocation(undefined, TEMP_ROOT, null)).toEqual({ kind: 'unrecognized-tier' });
     expect(classifyTestDatabaseLocation('other', TEMP_ROOT, null)).toEqual({ kind: 'unrecognized-tier' });
   });
 
-  it('snapshots the environment on first assertion and freezes it', async () => {
-    const previousTier = process.env.CORAL_TEST_TIER;
-    delete process.env.CORAL_TEST_TIER;
+  it('keeps the original e2e tier and temp root after a module reset', async () => {
+    const policySymbol = Symbol.for('coral.testing.enforced-test-location-policy');
+    const originalTempRoot = resolve('original-test-temp-root');
+    const changedTempRoot = resolve('changed-test-temp-root');
+    vi.stubGlobal(policySymbol, undefined);
+    vi.stubEnv('CORAL_TEST_TIER', 'e2e');
+    vi.stubEnv('TMPDIR', originalTempRoot);
     vi.resetModules();
+    const policy = await import('#tools/testing/store-db-location.js');
+    const outsideClose = vi.fn();
+    const outside = {
+      location: () => resolve('outside-test-temp-root', 'store.db'),
+      close: outsideClose,
+    } as unknown as Database;
 
+    expect(() => policy.assertTestDatabaseLocation(outside)).toThrow(/e2e test database resolved to/u);
+    expect(outsideClose).toHaveBeenCalledOnce();
+
+    const originalClose = vi.fn();
+    const originalLocation = {
+      location: () => join(originalTempRoot, 'case', 'store.db'),
+      close: originalClose,
+    } as unknown as Database;
+    expect(() => policy.assertTestDatabaseLocation(originalLocation)).not.toThrow();
+
+    vi.resetModules();
+    vi.stubEnv('CORAL_TEST_TIER', 'unit');
+    vi.stubEnv('TMPDIR', changedTempRoot);
+    const reloadedPolicy = await import('#tools/testing/store-db-location.js');
+    expect(() => reloadedPolicy.assertTestDatabaseLocation(originalLocation)).not.toThrow();
+    expect(originalClose).not.toHaveBeenCalled();
+    const close = vi.fn();
+    const changedLocation = {
+      location: () => join(changedTempRoot, 'case', 'store.db'),
+      close,
+    } as unknown as Database;
+
+    let changedLocationError: unknown;
     try {
-      const policy = await import('#tools/testing/store-db-location.js');
-      process.env.CORAL_TEST_TIER = 'unit';
-      const memory = {
-        location: () => null,
-        close: vi.fn(),
-      } as unknown as Database;
-
-      expect(() => policy.assertTestDatabaseLocation(memory)).not.toThrow();
-
-      process.env.CORAL_TEST_TIER = 'integration';
-      const close = vi.fn();
-      const file = {
-        location: () => join(TEMP_ROOT, 'case', 'store.db'),
-        close,
-      } as unknown as Database;
-
-      expect(() => policy.assertTestDatabaseLocation(file)).toThrow(/unit test database resolved to/u);
-      expect(close).toHaveBeenCalledOnce();
-    } finally {
-      if (previousTier === undefined) delete process.env.CORAL_TEST_TIER;
-      else process.env.CORAL_TEST_TIER = previousTier;
-      vi.resetModules();
+      reloadedPolicy.assertTestDatabaseLocation(changedLocation);
+    } catch (error: unknown) {
+      changedLocationError = error;
     }
+    expect(changedLocationError).toBeInstanceOf(Error);
+    expect((changedLocationError as Error).message).toContain(
+      `e2e test database resolved to ${join(changedTempRoot, 'case', 'store.db')}`,
+    );
+    expect((changedLocationError as Error).message).toContain(`test temp root ${originalTempRoot}`);
+    expect(close).toHaveBeenCalledOnce();
   });
 });

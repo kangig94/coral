@@ -1,7 +1,4 @@
-// TypeScript under tests and tools/testing, except integration and e2e, must not import or directly access
-// DatabaseSync or openStoreDatabase from their defining modules outside the checked doors.
-// Computed non-literal access, Reflect.get, and factories returning an opener are intentionally out of scope
-// because recognizing them would require inference.
+// Test support must not acquire native SQLite or the production store opener through unsanctioned forms.
 
 import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
@@ -19,16 +16,38 @@ const MODULE_RESOLUTION_OPTIONS: ts.CompilerOptions = {
 };
 const STORE_DOOR_SCAN_ROOTS = ['tests', 'tools/testing'] as const;
 const STORE_DOOR_SCAN_EXCLUSIONS = new Set([resolve(REPO_ROOT, 'tests/integration'), resolve(REPO_ROOT, 'tests/e2e')]);
+const SQLITE_DOOR_MODULE = 'tests/helpers/test-db.ts';
 const STORE_DOOR_MODULES = new Set(['tests/helpers/store-db.ts', 'tests/helpers/test-db.ts']);
+const STORE_DB_NAMESPACE_SPY_MODULE = 'tests/unit/store/active-store-selection-locking.test.ts';
 
 type StoreAcquisition = Readonly<{
   file: string;
   line: number;
-  kind: 'DatabaseSync acquisition' | 'openStoreDatabase acquisition';
+  kind:
+    | 'node:sqlite acquisition'
+    | 'openStoreDatabase acquisition'
+    | 'store module acquisition'
+    | 'unresolved module specifier';
   text: string;
 }>;
 
+type StoreDbResolution = 'store-db' | 'elsewhere' | 'unresolved';
+
 type SourceReader = (file: string) => string;
+
+type StoreModuleAcquisition = Readonly<{
+  node: ts.Node;
+  kind: 'openStoreDatabase acquisition' | 'store module acquisition';
+}>;
+
+type AcquisitionRecorder = (node: ts.Node, kind: StoreAcquisition['kind'], text?: string) => void;
+
+type StoreResolutionRecorder = (
+  moduleSpecifier: ts.StringLiteralLike,
+  acquisition: ts.Node,
+  kind: StoreModuleAcquisition['kind'],
+  exemptProtectedModule?: boolean,
+) => void;
 
 function isTypeScriptSource(fileName: string): boolean {
   return /\.(?:[cm]?ts|tsx)$/u.test(fileName);
@@ -49,136 +68,164 @@ function sourceFilesUnder(root: string): string[] {
   return files;
 }
 
-function importedName(specifier: ts.ImportSpecifier): string {
+function importedName(specifier: ts.ImportSpecifier | ts.ExportSpecifier): string {
   return specifier.propertyName?.text ?? specifier.name.text;
 }
 
-function resolvesToStoreDb(moduleSpecifier: string, containingFile: string): boolean {
+function resolvesToStoreDb(moduleSpecifier: string, containingFile: string): StoreDbResolution {
+  if (moduleSpecifier.startsWith('node:')) return 'elsewhere';
+
   const resolvedModule = ts.resolveModuleName(
     moduleSpecifier,
     resolve(REPO_ROOT, containingFile),
     MODULE_RESOLUTION_OPTIONS,
     ts.sys,
   ).resolvedModule;
-  return resolvedModule !== undefined && resolve(resolvedModule.resolvedFileName) === STORE_DB_SOURCE;
+  if (resolvedModule === undefined) return 'unresolved';
+  return resolve(resolvedModule.resolvedFileName) === STORE_DB_SOURCE ? 'store-db' : 'elsewhere';
 }
 
-function namespaceBinding(expression: ts.Expression): ts.Identifier | null {
-  let current = expression;
-  while (
-    ts.isParenthesizedExpression(current) ||
-    ts.isAsExpression(current) ||
-    ts.isNonNullExpression(current) ||
-    ts.isSatisfiesExpression(current) ||
-    ts.isTypeAssertionExpression(current)
-  ) {
-    current = current.expression;
+function hasRuntimeImport(statement: ts.ImportDeclaration): boolean {
+  const clause = statement.importClause;
+  if (clause === undefined) return true;
+  if (clause.isTypeOnly) return false;
+  if (clause.name !== undefined) return true;
+  const bindings = clause.namedBindings;
+  return (
+    bindings !== undefined &&
+    (ts.isNamespaceImport(bindings) ||
+      bindings.elements.length === 0 ||
+      bindings.elements.some((specifier) => !specifier.isTypeOnly))
+  );
+}
+
+function runtimeOpenStoreImport(statement: ts.ImportDeclaration): StoreModuleAcquisition | null {
+  const clause = statement.importClause;
+  if (clause === undefined || clause.isTypeOnly) return null;
+  if (clause.name !== undefined) return { node: clause.name, kind: 'store module acquisition' };
+
+  const bindings = clause.namedBindings;
+  if (bindings === undefined) return null;
+  if (ts.isNamespaceImport(bindings)) {
+    return { node: bindings, kind: 'store module acquisition' };
   }
-  return ts.isIdentifier(current) ? current : null;
+  const opener = bindings.elements.find(
+    (specifier) => !specifier.isTypeOnly && importedName(specifier) === 'openStoreDatabase',
+  );
+  return opener === undefined ? null : { node: opener, kind: 'openStoreDatabase acquisition' };
 }
 
-function accessedProperty(node: ts.PropertyAccessExpression | ts.ElementAccessExpression): string | null {
-  if (ts.isPropertyAccessExpression(node)) return node.name.text;
-  return ts.isStringLiteralLike(node.argumentExpression) ? node.argumentExpression.text : null;
+function runtimeOpenStoreExport(statement: ts.ExportDeclaration): StoreModuleAcquisition | null {
+  if (statement.isTypeOnly) return null;
+  const exports = statement.exportClause;
+  if (exports === undefined || ts.isNamespaceExport(exports)) {
+    return { node: statement, kind: 'store module acquisition' };
+  }
+  const opener = exports.elements.find(
+    (specifier) => !specifier.isTypeOnly && importedName(specifier) === 'openStoreDatabase',
+  );
+  return opener === undefined ? null : { node: opener, kind: 'openStoreDatabase acquisition' };
 }
 
-function bindingProperty(element: ts.BindingElement): string | null {
-  const property = element.propertyName ?? element.name;
-  return ts.isIdentifier(property) || ts.isStringLiteralLike(property) ? property.text : null;
+function hasRuntimeExport(statement: ts.ExportDeclaration): boolean {
+  if (statement.isTypeOnly) return false;
+  const exports = statement.exportClause;
+  return (
+    exports === undefined ||
+    ts.isNamespaceExport(exports) ||
+    exports.elements.length === 0 ||
+    exports.elements.some((specifier) => !specifier.isTypeOnly)
+  );
 }
 
-function typeCheckerFor(source: ts.SourceFile): ts.TypeChecker {
-  const options: ts.CompilerOptions = { ...MODULE_RESOLUTION_OPTIONS, noLib: true, noResolve: true };
-  const host = ts.createCompilerHost(options, true);
-  const getSourceFile = host.getSourceFile;
-  host.getSourceFile = (fileName, languageVersion, onError, shouldCreateNewSourceFile) =>
-    resolve(fileName) === source.fileName
-      ? source
-      : getSourceFile(fileName, languageVersion, onError, shouldCreateNewSourceFile);
-  return ts.createProgram([source.fileName], options, host).getTypeChecker();
+function inspectImportDeclaration(
+  file: string,
+  statement: ts.ImportDeclaration,
+  record: AcquisitionRecorder,
+  recordStoreResolution: StoreResolutionRecorder,
+): void {
+  if (!ts.isStringLiteralLike(statement.moduleSpecifier)) return;
+  const moduleSpecifier = statement.moduleSpecifier;
+  if (moduleSpecifier.text === 'node:sqlite' && file !== SQLITE_DOOR_MODULE && hasRuntimeImport(statement)) {
+    record(statement, 'node:sqlite acquisition');
+  }
+  if (STORE_DOOR_MODULES.has(file)) return;
+
+  const acquisition = runtimeOpenStoreImport(statement);
+  if (acquisition === null) return;
+  const sanctionedNamespaceSpy = file === STORE_DB_NAMESPACE_SPY_MODULE && ts.isNamespaceImport(acquisition.node);
+  recordStoreResolution(moduleSpecifier, acquisition.node, acquisition.kind, sanctionedNamespaceSpy);
+}
+
+function inspectExportDeclaration(
+  file: string,
+  statement: ts.ExportDeclaration,
+  record: AcquisitionRecorder,
+  recordStoreResolution: StoreResolutionRecorder,
+): void {
+  const moduleSpecifier = statement.moduleSpecifier;
+  if (moduleSpecifier === undefined || !ts.isStringLiteralLike(moduleSpecifier)) return;
+  if (moduleSpecifier.text === 'node:sqlite' && file !== SQLITE_DOOR_MODULE && hasRuntimeExport(statement)) {
+    record(statement, 'node:sqlite acquisition');
+  }
+  if (STORE_DOOR_MODULES.has(file)) return;
+
+  const acquisition = runtimeOpenStoreExport(statement);
+  if (acquisition !== null) recordStoreResolution(moduleSpecifier, acquisition.node, acquisition.kind);
+}
+
+function inspectDynamicImports(
+  file: string,
+  node: ts.Node,
+  record: AcquisitionRecorder,
+  recordStoreResolution: StoreResolutionRecorder,
+): void {
+  if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+    const moduleSpecifier = node.arguments[0];
+    if (moduleSpecifier !== undefined && ts.isStringLiteralLike(moduleSpecifier)) {
+      if (moduleSpecifier.text === 'node:sqlite' && file !== SQLITE_DOOR_MODULE) {
+        record(node, 'node:sqlite acquisition');
+      }
+      if (!STORE_DOOR_MODULES.has(file)) {
+        recordStoreResolution(moduleSpecifier, node, 'store module acquisition');
+      }
+    }
+  }
+  ts.forEachChild(node, (child) => inspectDynamicImports(file, child, record, recordStoreResolution));
 }
 
 function storeAcquisitionsIn(file: string, sourceText: string): StoreAcquisition[] {
   const scriptKind = file.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
   const source = ts.createSourceFile(resolve(REPO_ROOT, file), sourceText, ts.ScriptTarget.Latest, true, scriptKind);
-  const sqliteNamespaceImports: ts.NamespaceImport[] = [];
-  const storeNamespaceImports: ts.NamespaceImport[] = [];
   const acquisitions: StoreAcquisition[] = [];
-  const record = (node: ts.Node, kind: StoreAcquisition['kind']): void => {
+  const record = (node: ts.Node, kind: StoreAcquisition['kind'], text = node.getText(source)): void => {
     acquisitions.push({
       file,
       line: source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1,
       kind,
-      text: node.getText(source),
+      text,
     });
+  };
+  const recordStoreResolution = (
+    moduleSpecifier: ts.StringLiteralLike,
+    acquisition: ts.Node,
+    kind: StoreModuleAcquisition['kind'],
+    exemptProtectedModule = false,
+  ): void => {
+    const resolution = resolvesToStoreDb(moduleSpecifier.text, file);
+    if (resolution === 'unresolved') record(moduleSpecifier, 'unresolved module specifier', moduleSpecifier.text);
+    else if (resolution === 'store-db' && !exemptProtectedModule) record(acquisition, kind);
   };
 
   for (const statement of source.statements) {
-    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
-    const moduleSpecifier = statement.moduleSpecifier.text;
-    const imports = statement.importClause?.namedBindings;
-    if (imports === undefined) continue;
-
-    if (ts.isNamedImports(imports)) {
-      for (const specifier of imports.elements) {
-        if (moduleSpecifier === 'node:sqlite' && importedName(specifier) === 'DatabaseSync') {
-          record(specifier, 'DatabaseSync acquisition');
-        }
-        if (importedName(specifier) === 'openStoreDatabase' && resolvesToStoreDb(moduleSpecifier, file)) {
-          record(specifier, 'openStoreDatabase acquisition');
-        }
-      }
-      continue;
+    if (ts.isImportDeclaration(statement)) {
+      inspectImportDeclaration(file, statement, record, recordStoreResolution);
+    } else if (ts.isExportDeclaration(statement)) {
+      inspectExportDeclaration(file, statement, record, recordStoreResolution);
     }
-
-    if (moduleSpecifier === 'node:sqlite') sqliteNamespaceImports.push(imports);
-    if (resolvesToStoreDb(moduleSpecifier, file)) storeNamespaceImports.push(imports);
   }
 
-  const checker =
-    sqliteNamespaceImports.length > 0 || storeNamespaceImports.length > 0 ? typeCheckerFor(source) : undefined;
-  const sqliteNamespaces = new Set(
-    sqliteNamespaceImports.flatMap((namespaceImport) => checker?.getSymbolAtLocation(namespaceImport.name) ?? []),
-  );
-  const storeNamespaces = new Set(
-    storeNamespaceImports.flatMap((namespaceImport) => checker?.getSymbolAtLocation(namespaceImport.name) ?? []),
-  );
-
-  const visit = (node: ts.Node): void => {
-    if (ts.isVariableDeclaration(node) && ts.isObjectBindingPattern(node.name) && node.initializer !== undefined) {
-      const binding = namespaceBinding(node.initializer);
-      const bindingSymbol = binding === null ? undefined : checker?.getSymbolAtLocation(binding);
-      for (const element of node.name.elements) {
-        const property = bindingProperty(element);
-        if (bindingSymbol !== undefined && sqliteNamespaces.has(bindingSymbol) && property === 'DatabaseSync') {
-          record(element, 'DatabaseSync acquisition');
-        }
-        if (bindingSymbol !== undefined && storeNamespaces.has(bindingSymbol) && property === 'openStoreDatabase') {
-          record(element, 'openStoreDatabase acquisition');
-        }
-      }
-    }
-    if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
-      const moduleSpecifier = node.arguments[0];
-      if (moduleSpecifier !== undefined && ts.isStringLiteral(moduleSpecifier)) {
-        if (moduleSpecifier.text === 'node:sqlite') record(node, 'DatabaseSync acquisition');
-        if (resolvesToStoreDb(moduleSpecifier.text, file)) record(node, 'openStoreDatabase acquisition');
-      }
-    }
-    if (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) {
-      const binding = namespaceBinding(node.expression);
-      const bindingSymbol = binding === null ? undefined : checker?.getSymbolAtLocation(binding);
-      const property = accessedProperty(node);
-      if (bindingSymbol !== undefined && sqliteNamespaces.has(bindingSymbol) && property === 'DatabaseSync') {
-        record(node, 'DatabaseSync acquisition');
-      }
-      if (bindingSymbol !== undefined && storeNamespaces.has(bindingSymbol) && property === 'openStoreDatabase') {
-        record(node, 'openStoreDatabase acquisition');
-      }
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(source);
+  inspectDynamicImports(file, source, record, recordStoreResolution);
   return acquisitions;
 }
 
@@ -189,22 +236,22 @@ function scannedSourceFiles(): string[] {
 function testSupportStoreAcquisitions(files: readonly string[], readSource: SourceReader): StoreAcquisition[] {
   return files.flatMap((filePath) => {
     const canonicalPath = relative(REPO_ROOT, filePath).replaceAll('\\', '/');
-    const acquisitions = storeAcquisitionsIn(canonicalPath, readSource(filePath));
-    return STORE_DOOR_MODULES.has(canonicalPath) ? [] : acquisitions;
+    return storeAcquisitionsIn(canonicalPath, readSource(filePath));
   });
 }
 
 describe('test-support database doors', () => {
-  it('contains no store-opening acquisition outside the checked doors', () => {
+  it('contains no unsanctioned store-opening acquisition', () => {
     expect(testSupportStoreAcquisitions(scannedSourceFiles(), (file) => readFileSync(file, 'utf-8'))).toEqual([]);
   });
 
-  it('scans support and door modules while excluding integration and e2e', () => {
+  it('scans every configured root while excluding integration and e2e', () => {
     const files = scannedSourceFiles();
 
     expect(files).toContain(resolve(REPO_ROOT, 'tests/support/control-exchange.ts'));
     expect(files).toContain(resolve(REPO_ROOT, 'tests/helpers/store-db.ts'));
     expect(files).toContain(resolve(REPO_ROOT, 'tests/helpers/test-db.ts'));
+    expect(files).toContain(resolve(REPO_ROOT, 'tools/testing/store-db-location.ts'));
     expect(files.some((file) => file.startsWith(resolve(REPO_ROOT, 'tests/integration')))).toBe(false);
     expect(files.some((file) => file.startsWith(resolve(REPO_ROOT, 'tests/e2e')))).toBe(false);
   });
@@ -219,90 +266,103 @@ describe('test-support database doors', () => {
     expect(isTypeScriptSource('case.js')).toBe(false);
   });
 
-  it('rejects named and namespace acquisitions from the exact modules', () => {
+  it('rejects every runtime acquisition form of node:sqlite', () => {
     const source = `
+      import sqlite from 'node:sqlite';
+      import * as sqliteNamespace from 'node:sqlite';
       import { DatabaseSync as Sqlite } from 'node:sqlite';
-      import * as sqlite from 'node:sqlite';
-      import { openStoreDatabase as openStore } from '../src/store/db.js';
-      import * as store from '#src/store/db.js';
-      const api = { open: store.openStoreDatabase };
-      Reflect.construct(sqlite.DatabaseSync, [path]);
-      (store satisfies typeof store).openStoreDatabase;
-      ((<typeof sqlite>sqlite).DatabaseSync);
+      import {} from 'node:sqlite';
+      import 'node:sqlite';
+      export { DatabaseSync } from 'node:sqlite';
+      export {} from 'node:sqlite';
+      export * from 'node:sqlite';
+      const dynamic = import(\`node:sqlite\`);
+    `;
+
+    expect(storeAcquisitionsIn('tests/fixture.ts', source).map((acquisition) => acquisition.kind)).toEqual(
+      Array.from({ length: 9 }, () => 'node:sqlite acquisition'),
+    );
+  });
+
+  it('rejects the store opener and every whole-module acquisition', () => {
+    const source = `
+      import { openStoreDatabase as openStore } from '#src/store/db.js';
+      import store from '#src/store/db.js';
+      import * as storeNamespace from '#src/store/db.js';
+      export { openStoreDatabase as openStore } from '#src/store/db.js';
+      export * from '#src/store/db.js';
+      export * as storeNamespaceExport from '#src/store/db.js';
+      const dynamic = import(\`#src/store/db.js\`);
     `;
 
     expect(storeAcquisitionsIn('tests/fixture.ts', source).map((acquisition) => acquisition.kind)).toEqual([
-      'DatabaseSync acquisition',
       'openStoreDatabase acquisition',
+      'store module acquisition',
+      'store module acquisition',
       'openStoreDatabase acquisition',
-      'DatabaseSync acquisition',
-      'openStoreDatabase acquisition',
-      'DatabaseSync acquisition',
+      'store module acquisition',
+      'store module acquisition',
+      'store module acquisition',
     ]);
   });
 
-  it('rejects plain and renamed destructuring from namespace bindings', () => {
+  it('accepts type-only forms and named imports owned by the store module', () => {
     const source = `
-      import * as sqlite from 'node:sqlite';
-      import * as store from '#src/store/db.js';
-      const { DatabaseSync } = sqlite;
-      const { DatabaseSync: Sqlite } = sqlite;
-      const { openStoreDatabase } = store;
-      const { openStoreDatabase: openStore } = store;
-    `;
-
-    expect(storeAcquisitionsIn('tests/fixture.ts', source).map((acquisition) => acquisition.kind)).toEqual([
-      'DatabaseSync acquisition',
-      'DatabaseSync acquisition',
-      'openStoreDatabase acquisition',
-      'openStoreDatabase acquisition',
-    ]);
-  });
-
-  it('rejects literal dynamic imports of the exact modules', () => {
-    const source = `
-      const sqlite = await import('node:sqlite');
-      const store = await import('../src/store/db.js');
-    `;
-
-    expect(storeAcquisitionsIn('tests/fixture.ts', source).map((acquisition) => acquisition.kind)).toEqual([
-      'DatabaseSync acquisition',
-      'openStoreDatabase acquisition',
-    ]);
-  });
-
-  it('accepts unrelated names, checked doors, and namespace spies', () => {
-    const source = `
-      import { DatabaseSync } from 'unrelated-sqlite';
-      import { openStoreDatabase } from 'unrelated-store';
-      import * as sqlite from 'node:sqlite';
-      import * as dbModule from '#src/store/db.js';
-      function useAdapter(DatabaseSync) {
-        new DatabaseSync(path);
-        adapter.openStoreDatabase();
-        openStoreDatabase();
-      }
-      function useShadowedNamespaces(sqlite, dbModule) {
-        sqlite.DatabaseSync;
-        dbModule.openStoreDatabase;
-      }
-      openTestStoreDb(runtime, path);
-      openKbTestStoreDb(path);
-      newRawDatabase(path);
-      vi.spyOn(sqlite, 'DatabaseSync');
-      vi.spyOn(dbModule, 'openStoreDatabase');
+      import type { Database, openStoreDatabase } from '#src/store/db.js';
+      import { type openStoreDatabase, applyBundledStoreSchema, withImmediate } from '#src/store/db.js';
+      export type { openStoreDatabase } from '#src/store/db.js';
+      import type { DatabaseSync } from 'node:sqlite';
+      import { type DatabaseSync as Sqlite } from 'node:sqlite';
+      export type { DatabaseSync } from 'node:sqlite';
     `;
 
     expect(storeAcquisitionsIn('tests/fixture.ts', source)).toEqual([]);
   });
 
-  it('drives the integrated scan and reader over a violating synthetic entry', () => {
-    const syntheticFile = resolve(REPO_ROOT, 'tests/support/store-door-negative-control.ts');
+  it('exempts only the sanctioned doors and namespace mocking site', () => {
+    const sqlite = `import sqlite from 'node:sqlite';`;
+    const storeNamespace = `import * as dbModule from '#src/store/db.js';`;
+    const storeOpener = `import { openStoreDatabase } from '#src/store/db.js';`;
 
-    expect(testSupportStoreAcquisitions([syntheticFile], () => STORE_DOOR_ACQUISITION_NEGATIVE_CONTROL)).toEqual([
+    expect(storeAcquisitionsIn('tests/helpers/test-db.ts', sqlite)).toEqual([]);
+    expect(storeAcquisitionsIn('tests/helpers/store-db.ts', sqlite)).toHaveLength(1);
+    expect(storeAcquisitionsIn('tests/helpers/store-db.ts', storeOpener)).toEqual([]);
+    expect(storeAcquisitionsIn('tests/helpers/test-db.ts', storeNamespace)).toEqual([]);
+    expect(storeAcquisitionsIn(STORE_DB_NAMESPACE_SPY_MODULE, storeNamespace)).toEqual([]);
+    expect(storeAcquisitionsIn(STORE_DB_NAMESPACE_SPY_MODULE, storeOpener)).toHaveLength(1);
+    expect(
+      storeAcquisitionsIn(STORE_DB_NAMESPACE_SPY_MODULE, `import * as missing from './missing-store-module.js';`),
+    ).toEqual([
       expect.objectContaining({
-        file: 'tests/support/store-door-negative-control.ts',
-        kind: 'DatabaseSync acquisition',
+        kind: 'unresolved module specifier',
+        text: './missing-store-module.js',
+      }),
+    ]);
+  });
+
+  it('refuses module-handing forms whose specifier cannot be resolved', () => {
+    const source = `import missing from './missing-store-module.js';`;
+
+    expect(storeAcquisitionsIn('tests/fixture.ts', source)).toEqual([
+      expect.objectContaining({
+        file: 'tests/fixture.ts',
+        kind: 'unresolved module specifier',
+        text: './missing-store-module.js',
+      }),
+    ]);
+  });
+
+  it('drives the real traversal and reader over a violating fixture', () => {
+    const negativeControl = resolve(REPO_ROOT, 'tests/fixtures/store-door-bypass-negative-control.ts');
+
+    expect(
+      testSupportStoreAcquisitions(scannedSourceFiles(), (file) =>
+        file === negativeControl ? STORE_DOOR_ACQUISITION_NEGATIVE_CONTROL : readFileSync(file, 'utf-8'),
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        file: 'tests/fixtures/store-door-bypass-negative-control.ts',
+        kind: 'node:sqlite acquisition',
       }),
     ]);
   });
