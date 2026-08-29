@@ -8,6 +8,7 @@ import { projectPathKey } from '../../../clients/hooks/lib/plugin-paths.mjs';
 
 // Hook entry points — absolute paths so tests are independent of cwd resolution.
 export const SESSION_START_HOOK = join(process.cwd(), 'clients', 'hooks', 'session-start.mjs');
+export const KB_START_HOOK = join(process.cwd(), 'clients', 'hooks', 'kb-start.mjs');
 export const SUBAGENT_START_HOOK = join(process.cwd(), 'clients', 'hooks', 'subagent-start.mjs');
 export const SUBAGENT_TRACK_HOOK = join(process.cwd(), 'clients', 'hooks', 'subagent-track.mjs');
 export const KB_MEMO_REMINDER_HOOK = join(process.cwd(), 'clients', 'hooks', 'kb-memo-reminder.mjs');

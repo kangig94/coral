@@ -32,7 +32,7 @@ export function readProjectScopedWakeUp(kbRoot, projectSlug) {
 
     return `## project wiki: ${projectSlug} (${updatedAt})\n${understanding}\n`;
   } catch (error) {
-    logHookLine('session-start', 'wake-up parse error: ' + (error instanceof Error ? error.message : String(error)));
+    logHookLine('kb-start', 'wake-up parse error: ' + (error instanceof Error ? error.message : String(error)));
     return null;
   }
 }

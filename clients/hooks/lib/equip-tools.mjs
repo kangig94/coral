@@ -19,7 +19,7 @@ import { join } from 'node:path';
 
 import { buildFlavor, coralStateRoot } from './hook-utils.mjs';
 
-const EQUIP_AGENT_TOOLS = [
+export const EQUIP_AGENT_TOOLS = [
   {
     id: 'codebase-memory',
     bin: 'codebase-memory-mcp',

@@ -4,7 +4,6 @@ import { existsSync } from 'node:fs';
 import { resolveEquippedTools } from './lib/equip-tools.mjs';
 import { exitIfChildProcess, exitIfWrongFlavor, readStdin, writeHookOutput } from './lib/hook-utils.mjs';
 import { renderInject } from './lib/inject-render.mjs';
-import { isKbEnabled } from './lib/kb-toggle.mjs';
 exitIfChildProcess();
 exitIfWrongFlavor();
 
@@ -21,7 +20,7 @@ try {
     projectDir,
     sessionId,
     asOwner: false,
-    kbEnabled: isKbEnabled(),
+    group: 'base',
     equippedTools: resolveEquippedTools(),
   });
 

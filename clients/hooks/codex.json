@@ -8,6 +8,11 @@
             "type": "command",
             "command": "test -d \"${PLUGIN_ROOT}\" || exit 0; node \"${PLUGIN_ROOT}/hooks/session-start.mjs\"",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "test -d \"${PLUGIN_ROOT}\" || exit 0; node \"${PLUGIN_ROOT}/hooks/kb-start.mjs\"",
+            "timeout": 5
           }
         ]
       },

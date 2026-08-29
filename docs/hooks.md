@@ -8,9 +8,9 @@ Hook registration is split per client, each `plugin.json` pointing at its own fi
 
 | Event                      | Scripts                                                                                 | Purpose                                                                                                                           |
 | -------------------------- | --------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `SessionStart` (`*`)       | `session-start.mjs`, `hud-auto-update.mjs`                                              | Inject the shared fragment bundle (and spawn the backend daemon — absorbed from the former `backend-warm-start.mjs`), refresh HUD |
+| `SessionStart` (`*`)       | `session-start.mjs`, `kb-start.mjs`, `hud-auto-update.mjs`                              | Inject bounded base and KB payloads, spawn the backend daemon, refresh HUD                                                       |
 | `SessionStart` (`compact`) | `kb-promote-gate.mjs`, `post-compact.mjs`                                               | Restore KB/promotion guidance and recover active jobs after compaction                                                            |
-| `SubagentStart`            | `subagent-start.mjs`                                                                    | Inject the subagent-safe fragment bundle                                                                                          |
+| `SubagentStart`            | `subagent-start.mjs`, `kb-start.mjs`                                                    | Inject bounded base and subagent-safe KB payloads                                                                                  |
 | `PreCompact`               | `pre-compact.mjs`                                                                       | Snapshot active jobs before compaction                                                                                            |
 | `UserPromptSubmit`         | `kb-promote-gate.mjs`, `ralph-loop.mjs`, `kb-memo-reminder.mjs`, `coral-skill-vars.mjs` | KB flags, Ralph loop state, memo reminders, skill vars                                                                            |
 | `PreToolUse` (`Skill`)     | `kb-promote-gate.mjs`, `ralph-loop.mjs`, `coral-skill-vars.mjs`                         | Same state setup for skill-initiated flows                                                                                        |
@@ -32,7 +32,7 @@ Copilot reuses Claude Code's hook vocabulary, but six details differ. All were v
 
 **Event names.** Copilot fires both its native camelCase event (`sessionStart`) and the PascalCase Claude alias (`SessionStart`) for the same underlying event, so registering both would run every hook twice. `copilot.json` registers only the PascalCase names — which additionally makes Copilot deliver Claude's snake_case payload (`session_id`, `tool_name`, `tool_input`), the shape the shared scripts already parse.
 
-**Matchers and tool names.** Under PascalCase events Copilot maps its native tool names onto Claude's where an equivalent exists (`bash` → `Bash`, `view` → `Read`), but `skill` has no alias and stays lowercase — hence `PreToolUse` matches `skill`, not `Skill`. `Monitor` is Claude-only and is omitted. `SessionStart` matchers are *not* filtered (a `compact` matcher fires on every session start), so `copilot.json` keeps one unmatched `SessionStart` group containing only `session-start.mjs`.
+**Matchers and tool names.** Under PascalCase events Copilot maps its native tool names onto Claude's where an equivalent exists (`bash` → `Bash`, `view` → `Read`), but `skill` has no alias and stays lowercase — hence `PreToolUse` matches `skill`, not `Skill`. `Monitor` is Claude-only and is omitted. `SessionStart` matchers are *not* filtered (a `compact` matcher fires on every session start), so `copilot.json` keeps one unmatched `SessionStart` group containing the two independent inject hooks, `session-start.mjs` and `kb-start.mjs`.
 
 **Skill field values.** `tool_input.skill` carries the *bare* skill name under Copilot (`ralph`), not `coral:ralph`; Copilot namespaces it only when two installed plugins ship the same skill name. `isCoralSkillField()` / `isKbSkillField()` accept the bare form **only** when the host is Copilot — on Claude and Codex a bare `plan` is a user's own skill of that name, and matching it would fire Coral's hooks for a skill Coral does not own.
 
@@ -64,14 +64,14 @@ The `clients/inject/` directory separates behavioral guidelines, tools, and audi
 | `kb/orchestrator.md` | Top-level owner propagation, wiki maintenance, and source management |
 | `kb/session.md`      | Session-scoped memo, promotion, update, and invalidation guidance    |
 
-Renderers select fragments explicitly for each surface. There is no conditional-block markup inside the Markdown files.
+Renderers select fragments explicitly for each surface. There is no conditional-block markup inside the Markdown files. Host hooks emit the base and KB groups as separate payloads because the host applies its 8,000-byte inline-size threshold per payload. Before emission, the session and KB start hooks retain their fixed contract text and fit appended notices or project wake-up text into the bytes that remain. An oversized wake-up is cut on a UTF-8 boundary and ends with a notice naming the full project wiki path.
 
 ### Delivery paths
 
 | Surface                                                                  | Mechanism                                                            | When                   |
 | ------------------------------------------------------------------------ | -------------------------------------------------------------------- | ---------------------- |
-| Host Claude main session                                                 | `session-start.mjs` → `renderInject` (`asOwner: true`)               | `SessionStart`         |
-| Claude Code native subagent (`Agent` tool)                               | `subagent-start.mjs` → `renderInject` (`asOwner: false`)             | `SubagentStart`        |
+| Host main session                                                        | `session-start.mjs` (base) + `kb-start.mjs` (KB and project wiki)    | `SessionStart`         |
+| Claude Code native subagent (`Agent` tool)                               | `subagent-start.mjs` (base) + `kb-start.mjs` (KB, non-owner)         | `SubagentStart`        |
 | Provider child (`coral-cli codex\|claude`, workflow atoms, discuss jobs) | `jobs/shell/launch.ts` → `applyInjectBundle` → `resolveInjectBundle` | Every job `executeJob` |
 
 Provider children set `CORAL_CHILD=1`, so hooks self-exit and **do not** re-inject. Adapters must not re-resolve the bundle; they consume the pre-merged `request.systemPrompt` (Claude: `--append-system-prompt`; Codex: turn-text prefix — presentation order only, not a separate system channel).
@@ -113,9 +113,9 @@ The `tools.md` fragment's `{{EQUIPPED_TOOLS}}` placeholder lists agent-facing to
 
 ## SessionStart
 
-`clients/hooks/session-start.mjs` renders the fragment bundle via `renderInject({ asOwner: true })` and returns it through `hookSpecificOutput.additionalContext`.
+`clients/hooks/session-start.mjs` renders only `core.md` and `tools.md`, adds the session header, and fits any backend-startup, migration, or project-ignore notices into the remaining payload budget. Independently, `clients/hooks/kb-start.mjs` renders the owner KB group and, when a project source is available, fits the project wiki wake-up into that payload's remaining bytes. Each script returns its payload through `hookSpecificOutput.additionalContext`, so one payload crossing the host threshold cannot discard the other.
 
-KB wake-up reads no runtime database. `readProjectScopedWakeUp()` reads the project wiki directly from the configured Markdown KB root and fails open with `null` on missing or malformed content. The separate PreCompact snapshot hook mirrors the canonical store path as `~/.coral/gen2/data/store/store.db` or `~/.coral/gen2/data-dev/store/store.db`; it validates the installed fingerprint before opening that projection read-only.
+KB wake-up reads no runtime database. `readProjectScopedWakeUp()` reads the project wiki directly from the configured Markdown KB root and fails open with `null` on missing or malformed content. An owner session without a project source still receives the fixed KB contract; only the wake-up is omitted. The separate PreCompact snapshot hook mirrors the canonical store path as `~/.coral/gen2/data/store/store.db` or `~/.coral/gen2/data-dev/store/store.db`; it validates the installed fingerprint before opening that projection read-only.
 
 Hook SQLite access goes through the supported Node runtime's built-in `node:sqlite` module. Missing or unreadable snapshot data fails open instead of breaking hook startup.
 
@@ -162,10 +162,10 @@ Two different “subagent” concepts must not be mixed:
 
 | Kind                        | What it is                                                       | Inject path                                                          |
 | --------------------------- | ---------------------------------------------------------------- | -------------------------------------------------------------------- |
-| Claude Code native subagent | Host `Agent` tool spawn                                          | `SubagentStart` → `subagent-start.mjs`                               |
+| Claude Code native subagent | Host `Agent` tool spawn                                          | `SubagentStart` → `subagent-start.mjs` + `kb-start.mjs`              |
 | Coral provider agent        | `coral-cli codex\|claude <agent>`, workflow atom, discuss worker | **No hooks** (`CORAL_CHILD=1`); `applyInjectBundle` in the job shell |
 
-`clients/hooks/subagent-start.mjs` covers only the first kind. It calls `renderInject({ asOwner: false })`, which composes `core.md`, `tools.md`, `kb/common.md`, and `kb/session.md` when KB is enabled. It omits `kb/orchestrator.md`, while retaining session guidance because subagents share the parent session id for memo scope. `subagent-track.mjs` records live markers for Ralph / promote-gate deferral; it does not inject text.
+For the first kind, `clients/hooks/subagent-start.mjs` emits the `core.md` and `tools.md` base group, while `clients/hooks/kb-start.mjs` independently emits `kb/common.md` and `kb/session.md` when KB is enabled. The KB hook omits `kb/orchestrator.md` and does not resolve a project source or read a project wake-up for subagents; its session guidance only needs the parent's session id for memo scope. `subagent-track.mjs` records live markers for Ralph / promote-gate deferral; it does not inject text.
 
 ## UserPromptSubmit and PreToolUse
 
