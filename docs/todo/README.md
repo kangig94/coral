@@ -301,6 +301,19 @@ in a corpus whose index is the entry point is a file nobody reads.
 
 ---
 
+## Developer tooling nobody runs on a schedule
+
+Added 2026-08-30, both found while verifying an unrelated test branch rather than by anything that watches
+them. They share a shape: a path only a developer walks by hand, so the breakage sits until someone walks it.
+They are independent and can ship in either order.
+
+|                                                                                |                                                                                                                                                                                                              |
+| ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| [`dev-tool-bundles-share-the-shipping-directory.md`](./dev-tool-bundles-share-the-shipping-directory.md) | **Startable now; decide where dev artifacts live first.** `npm run simulate` and the discuss golden-master capture both stage esbuild output into `clients/build/`, where the Kiwi build contract permits exactly four bundles plus a receipt, and nothing clears it — so the next `npm run build` fails and blames WASM staging. Loosening the contract is the wrong direction; the shipping directory should hold what ships. |
+| [`src-imports-itself-through-the-test-alias.md`](./src-imports-itself-through-the-test-alias.md) | **Startable now.** Nine files under `src/` import other `src/` files through the `#src/` test alias, `tsc` carries the specifier into seven `dist/` artifacts, and the imports map sends a loader back into `src/*.ts` where the `.js` extension no longer resolves. Production bundles are unaffected; the one tool that loads `dist/**` as modules cannot run. Nine rewrites plus an invariant. |
+
+---
+
 ## How to add an entry
 
 State the problem with symbol-and-path evidence, the decision already made, what is explicitly out of scope,
