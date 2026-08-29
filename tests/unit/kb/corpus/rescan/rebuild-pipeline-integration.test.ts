@@ -18,13 +18,13 @@ import { noteEntryId } from '#src/kb/entry-types.js';
 import type { PendingRepair } from '#src/kb/curate/state/model.js';
 import { createGitSyncController } from '#src/kb/curate/git-sync.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import { createKbTestDb } from '#tests/helpers/kb/runtime-test-helpers.js';
+import { openKbTestStoreDb } from '#tests/helpers/store-db.js';
 import { createKbTestRuntime } from '#tests/helpers/kb-test-runtime.js';
 import { curateDb } from '../../../../../src/kb/curate/db-access.js';
 
 const tempRoots: string[] = [];
 const openDatabases: Array<{ close(): void }> = [];
-const writableDbByRuntime = new WeakMap<KbRuntime, ReturnType<typeof createKbTestDb>>();
+const writableDbByRuntime = new WeakMap<KbRuntime, ReturnType<typeof openKbTestStoreDb>>();
 
 function allocateRoot(prefix: string): string {
   const root = mkdtempSync(join(tmpdir(), prefix));
@@ -38,7 +38,7 @@ function createSeededKbRuntime(): { kb: KbRuntime; root: string } {
   mkdirSync(join(root, 'sources'), { recursive: true });
   mkdirSync(join(root, 'communities'), { recursive: true });
 
-  const db = createKbTestDb(':memory:');
+  const db = openKbTestStoreDb(':memory:');
   const { kb } = createKbTestRuntime({
     markdownRoot: root,
     runtimeDir: root,

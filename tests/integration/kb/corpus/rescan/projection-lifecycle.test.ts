@@ -15,7 +15,7 @@ import { update } from '#src/kb/ops/update.js';
 import { CoralSetupError } from '#src/runtime/errors.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
-import { createKbTestDb } from '#tests/helpers/kb/runtime-test-helpers.js';
+import { openKbTestStoreDb } from '#tests/helpers/store-db.js';
 import { createKbTestRuntime } from '#tests/helpers/kb-test-runtime.js';
 
 const scanGate = vi.hoisted(() => {
@@ -97,7 +97,7 @@ function createHarness(): ProjectionHarness {
   const markdownRoot = join(root, 'vault');
   mkdirSync(join(markdownRoot, 'notes'), { recursive: true });
   tempRoots.push(root);
-  const db = createKbTestDb(join(runtimeDir, 'store.db'));
+  const db = openKbTestStoreDb(join(runtimeDir, 'store.db'));
   openDatabases.push(db);
   const { kb } = createKbTestRuntime({ markdownRoot, runtimeDir, db, runtime });
   return { root: markdownRoot, runtimeDir, db, kb, runtime };
@@ -112,7 +112,7 @@ function closeHarnessDatabase(input: ProjectionHarness): void {
 }
 
 function openHarness(input: ProjectionHarness): { db: Database; kb: KbRuntime } {
-  const db = createKbTestDb(join(input.runtimeDir, 'store.db'));
+  const db = openKbTestStoreDb(join(input.runtimeDir, 'store.db'));
   openDatabases.push(db);
   const { kb } = createKbTestRuntime({
     markdownRoot: input.root,
@@ -214,7 +214,7 @@ function snapshotBaselineGenerations(db: Database): string {
 
 function refuseHarnessBoot(input: ProjectionHarness): CoralSetupError {
   closeHarnessDatabase(input);
-  const db = createKbTestDb(join(input.runtimeDir, 'store.db'));
+  const db = openKbTestStoreDb(join(input.runtimeDir, 'store.db'));
   openDatabases.push(db);
   input.db = db;
   try {

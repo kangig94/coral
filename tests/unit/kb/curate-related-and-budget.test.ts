@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as CorpusScanMod from '#src/kb/corpus/rescan/scan.js';
 import { createCurateTestHandle, type CurateTestHandle } from '#tests/unit/kb/curate/__helpers__/test-handle.js';
-import { createKbTestDb } from '#tests/helpers/kb/runtime-test-helpers.js';
+import { openKbTestStoreDb } from '#tests/helpers/store-db.js';
 import { createCurateScheduler, type CurateHandle } from '#src/kb/curate/scheduler.js';
 import type { CurateAssistantPort } from '#src/kb/curate/assistant.js';
 import type { KbRuntime } from '#src/kb/contract.js';
@@ -197,7 +197,7 @@ describe('curate related-resolution and budget guards', () => {
     runtime = createTestKbRuntime({
       markdownRoot: tempDir,
       runtimeDir: tempDir,
-      db: createKbTestDb(':memory:'),
+      db: openKbTestStoreDb(':memory:'),
       runtime: gitSyncRuntime,
     });
     useScheduler(assistantFromText('[]'));
@@ -379,7 +379,7 @@ describe('curate related-resolution and budget guards', () => {
     runtime = createTestKbRuntime({
       markdownRoot: tempDir,
       runtimeDir: join(tempDir, 'data'),
-      db: createKbTestDb(':memory:'),
+      db: openKbTestStoreDb(':memory:'),
       runtime: gitSyncRuntime,
     });
     mkdirSync(runtime.notesDir(), { recursive: true });

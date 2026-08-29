@@ -28,7 +28,7 @@ import {
   createCorpusScanView,
 } from '#src/kb/corpus/rescan/scan.js';
 import type { CorpusMarkdownKind } from '#src/kb/corpus/rescan/storage.js';
-import { createKbTestDb } from '#tests/helpers/kb/runtime-test-helpers.js';
+import { openKbTestStoreDb } from '#tests/helpers/store-db.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 import { curateDb } from '../../../../../src/kb/curate/db-access.js';
 
@@ -78,7 +78,7 @@ export function createRepairFixtureHarness(fixture: string): RepairFixtureHarnes
   const kb = createTestKbRuntime({
     markdownRoot,
     runtimeDir,
-    db: createKbTestDb(':memory:'),
+    db: openKbTestStoreDb(':memory:'),
   });
 
   return {

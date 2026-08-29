@@ -7,7 +7,7 @@ import type { KbRuntime } from '#src/kb/contract.js';
 import * as rescanModule from '#src/kb/corpus/rescan/index.js';
 import type { RescanCounts } from '#src/kb/corpus/projection-lifecycle.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
-import { createKbTestDb } from '#tests/helpers/kb/runtime-test-helpers.js';
+import { openKbTestStoreDb } from '#tests/helpers/store-db.js';
 
 // Spec §12.3 lazy non-blocking rescan: KB read paths return immediately with
 // the current index and dispatch a single shared background rebuild;
@@ -81,7 +81,7 @@ async function waitForGateInvocation(gate: RescanGate): Promise<void> {
 function makeRuntime(): KbRuntime {
   const root = mkdtempSync(join(tmpdir(), 'coral-ensure-fresh-'));
   tempRoots.push(root);
-  const db = createKbTestDb(':memory:');
+  const db = openKbTestStoreDb(':memory:');
   openDatabases.push(db);
   return createTestKbRuntime({ markdownRoot: root, runtimeDir: root, db });
 }

@@ -9,7 +9,7 @@ import { INDEX_FILE, INDEX_STATE_FILE } from '#src/kb/corpus/index/store.js';
 import type { KbIndex } from '#src/kb/entry-types.js';
 import { listPrinciples } from '#src/kb/ops/principles-list.js';
 import { listSources } from '#src/kb/ops/source/store.js';
-import { createKbTestDb } from '#tests/helpers/kb/runtime-test-helpers.js';
+import { openKbTestStoreDb } from '#tests/helpers/store-db.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 
 const tempRoots: string[] = [];
@@ -75,7 +75,7 @@ function createRuntime() {
   const root = createTempRoot('coral-kb-direct-read-');
   const markdownRoot = join(root, 'kb');
   const runtimeDir = join(root, 'runtime');
-  const db = createKbTestDb(':memory:');
+  const db = openKbTestStoreDb(':memory:');
   openDbs.add(db);
   return {
     markdownRoot,

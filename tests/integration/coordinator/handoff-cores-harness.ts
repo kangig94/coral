@@ -179,10 +179,7 @@ export function createHandoffCoresHarness(options: CreateHarnessOptions = {}): H
       },
       runStartupRecovery,
     );
-    setStoreServicesForTest(core.storeServicesRef, storeServices, {
-      storeDbPath: ':memory:',
-      tier: 'integration',
-    });
+    setStoreServicesForTest(core.storeServicesRef, storeServices);
 
     liveServers.push(core.server);
 

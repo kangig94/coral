@@ -30,7 +30,7 @@ import {
   type DetectedIncident,
 } from '#src/kb/corpus/rescan/incidents/catalog.js';
 import type { CurateAssistantPort } from '#src/kb/curate/assistant.js';
-import { createKbTestDb } from '#tests/helpers/kb/runtime-test-helpers.js';
+import { openKbTestStoreDb } from '#tests/helpers/store-db.js';
 import { curateDb } from '../../../src/kb/curate/db-access.js';
 
 const tempRoots: string[] = [];
@@ -132,7 +132,7 @@ async function createRuntimeFixture(
   tempRoots.push(root);
   seed(root);
 
-  const db = createKbTestDb(':memory:');
+  const db = openKbTestStoreDb(':memory:');
   const { kb } = createKbTestRuntime({
     markdownRoot: root,
     runtimeDir: root,

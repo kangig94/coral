@@ -23,7 +23,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type { CorpusConsumerApplyContext } from '#src/store/consumer-contract.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
-import { createKbTestDb } from '#tests/helpers/kb/runtime-test-helpers.js';
+import { openKbTestStoreDb } from '#tests/helpers/store-db.js';
 
 vi.setConfig({ testTimeout: 30_000 });
 
@@ -68,7 +68,7 @@ function createKbFixture(): { readonly kb: KbRuntime; readonly runtime: Runtime 
     kb: createTestKbRuntime({
       markdownRoot: root,
       runtimeDir: join(root, '.runtime'),
-      db: createKbTestDb(':memory:'),
+      db: openKbTestStoreDb(':memory:'),
       runtime,
     }),
   };

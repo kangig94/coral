@@ -6042,10 +6042,7 @@ describe('execution backend server', () => {
       const fakeIdleTimer = createFakeIdleTimer();
       const { runtimeState } = createRuntimeStateMock();
       const storeServicesRef = createStoreServicesRef();
-      setStoreServicesForTest(storeServicesRef, createStoreServicesForProgressStore(progressStore), {
-        storeDbPath: runtime.paths.coral.store.dbFile,
-        tier: 'integration',
-      });
+      setStoreServicesForTest(storeServicesRef, createStoreServicesForProgressStore(progressStore));
       runtimeState.setLifecycle('running');
 
       const kbDaemonSupervisor = createMockKbDaemonSupervisor();

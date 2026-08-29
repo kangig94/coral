@@ -14,7 +14,7 @@ import {
   bindVectorBacked,
   seedVectorRouteState,
 } from '#tests/unit/kb/expansion-test-helpers.js';
-import { createKbTestDb } from '#tests/helpers/kb/runtime-test-helpers.js';
+import { openKbTestStoreDb } from '#tests/helpers/store-db.js';
 import { applyBoundCorpusConsumerForTest, createKbTestRuntime } from '#tests/helpers/kb-test-runtime.js';
 
 const mockState = vi.hoisted(() => ({
@@ -22,7 +22,7 @@ const mockState = vi.hoisted(() => ({
   oramaSearch: null as null | ((...args: unknown[]) => unknown),
 }));
 
-const writableDbByRuntime = new WeakMap<KbRuntime, ReturnType<typeof createKbTestDb>>();
+const writableDbByRuntime = new WeakMap<KbRuntime, ReturnType<typeof openKbTestStoreDb>>();
 
 vi.mock('node:os', async () => {
   const actual = await vi.importActual<typeof NodeOs>('node:os');
@@ -69,7 +69,7 @@ function createRuntime(
   _createKbRuntime: Awaited<ReturnType<typeof loadKbModules>>['createKbRuntime'],
   _paths: Awaited<ReturnType<typeof loadKbModules>>['paths'],
 ) {
-  const db = createKbTestDb(':memory:');
+  const db = openKbTestStoreDb(':memory:');
   const { kb } = createKbTestRuntime({
     markdownRoot: process.env.CORAL_KB_PATH!,
     runtimeDir: kbRuntimePaths('prod').root,

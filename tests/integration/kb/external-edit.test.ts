@@ -11,7 +11,7 @@ import { applyBoundCorpusConsumerForTest, createKbTestRuntime } from '#tests/hel
 import { persistCorpusState, readCorpusState } from '#src/kb/state/corpus-state.js';
 import { OramaSnapshotStore } from '#src/engines/orama/snapshot.js';
 import { bindEmbedding, bindOramaFtsForTest, type OramaFtsBinding } from '#tests/unit/kb/expansion-test-helpers.js';
-import { createKbTestDb } from '#tests/helpers/kb/runtime-test-helpers.js';
+import { openKbTestStoreDb } from '#tests/helpers/store-db.js';
 
 type StoredOramaDocument = {
   title: string;
@@ -26,7 +26,7 @@ type BaseProjectionSpyTarget = {
 
 const tempRoots: string[] = [];
 const openDatabases: Array<{ close(): void }> = [];
-const writableDbByRuntime = new WeakMap<KbRuntime, ReturnType<typeof createKbTestDb>>();
+const writableDbByRuntime = new WeakMap<KbRuntime, ReturnType<typeof openKbTestStoreDb>>();
 
 function embedText(text: string): Float32Array {
   const buckets = [0, 0, 0, 0];
@@ -50,7 +50,7 @@ function allocateRoot(): string {
 }
 
 async function createRegisteredRuntime(root: string): Promise<KbRuntime> {
-  const db = createKbTestDb(join(root, 'store.db'));
+  const db = openKbTestStoreDb(join(root, 'store.db'));
   const { kb } = createKbTestRuntime({
     markdownRoot: root,
     runtimeDir: root,

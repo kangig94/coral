@@ -113,15 +113,11 @@ function createHarness(): Readonly<{
     },
     async () => [],
   );
-  setStoreServicesForTest(
-    core.storeServicesRef,
-    {
-      storeDb: db,
-      progressStore: { getDb: () => db } as JobStore,
-      consumerDriver: null,
-    } satisfies CoordinatorStoreServices,
-    { storeDbPath: ':memory:', tier: 'unit' },
-  );
+  setStoreServicesForTest(core.storeServicesRef, {
+    storeDb: db,
+    progressStore: { getDb: () => db } as JobStore,
+    consumerDriver: null,
+  } satisfies CoordinatorStoreServices);
 
   const world = captured.world;
   const ports = captured.ports;

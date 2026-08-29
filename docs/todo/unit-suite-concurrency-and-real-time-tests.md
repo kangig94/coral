@@ -58,19 +58,18 @@ to remove the tmpfs root.
 
 ## Closed: the store opens
 
-The half of this entry about badly-shaped fixtures is done. `openTestStoreDb` defaulted its path to the real
-store file and 71 of its 85 callers overrode that, so the expensive store was what a test got by saying
-nothing; the path is required now. `createKbTestDb` had the same shape one hop further out — one argument
-decided both where the KB runtime tree lived and whether the store was a file, and all 78 call sites passed a
-directory, so its `':memory:'` branch was dead code. Those two defaults, not a missing abstraction, are why
-unit tests opened real stores.
+The half of this entry about badly-shaped fixtures is done. Test database opening was spread across three
+helper homes: the runtime-aware formatted-store door, a KB-named duplicate of that operation, and the raw
+SQLite handle helper. The duplicated formatted door let the unit-tier rule forget one path. The formatted
+variants now live together in `tests/helpers/store-db.ts`; the raw helper remains separate because it
+deliberately applies neither the Coral schema nor its pragmas. Every door requires an explicit path.
 
-`tests/invariants/unit-tier-store-path-literal.test.ts` now requires the literal `':memory:'` at the store
-doors in the concurrent tier. It refuses to guess rather than inferring: a variable does not pass, which is
-what keeps it from becoming the kind of scanner
-[`liveness-is-never-a-boolean.test.ts`](../../tests/invariants/liveness-is-never-a-boolean.test.ts) records as
-written and deleted. Seventeen tests that genuinely need a store file moved to `tests/integration`, which is
-limited to one worker and therefore cannot saturate anything.
+The rule no longer trusts the path expression a caller presents. Each opened handle reports its own location:
+unit and simulation reject file-backed databases, while integration and e2e reject files outside the run's
+temporary root. `tests/invariants/unit-tier-store-door-bypass.test.ts` prevents concurrent-tier tests from
+constructing `DatabaseSync` or calling the production store opener directly, so a test uses a checked door or
+does not open a database. Tests whose behavior depends on reopen, multiple connections, durable routing, or
+file classification live under `tests/integration`, which is limited to one worker.
 
 What the entry proposed for this half — "those can take the in-memory storage port instead" — assumed a seam
 that does not exist. `openStoreDatabase` and `classifyStoreFile` construct `DatabaseSync` directly rather than
@@ -89,8 +88,8 @@ than a swap. `vi.waitFor` appears 232 times but polls and returns on the conditi
 
 So this half is not a load problem. Its justification is flake: on a loaded host a 25 ms wait is not 25 ms,
 and a test racing a 300 ms timeout against real work inverts. That justification is now weaker than when it
-was written, because the load that produced the flakes is smaller — the store opens are gone from this tier
-and the e2e backend leak that accumulated a set per run is fixed.
+was written, because the load that produced the flakes is smaller — file-backed store opens are rejected in
+this tier and the e2e backend leak that accumulated a set per run is fixed.
 
 Start condition: a flake observed under current conditions, naming which of the 22 sites produced it. Starting
 from the list rather than from an observation would be converting sleeps that no longer hurt.

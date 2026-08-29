@@ -58,11 +58,7 @@ describe('provider host idle close/acquire race', () => {
       providers: permissiveProviderLookupPort,
     });
     const storeServicesRef = createStoreServicesRef();
-    setStoreServicesForTest(
-      storeServicesRef,
-      { storeDb: db, progressStore, consumerDriver: null },
-      { storeDbPath: ':memory:', tier: 'integration' },
-    );
+    setStoreServicesForTest(storeServicesRef, { storeDb: db, progressStore, consumerDriver: null });
     const operationRegistry = new LocalOperationRegistry();
     const productionCarrierBlocksRetirement = createCarrierBlocksRetirement(storeServicesRef, {
       getDb: () => db,

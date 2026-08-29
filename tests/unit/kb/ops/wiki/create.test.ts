@@ -5,7 +5,7 @@ import type * as NodeOs from 'node:os';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { kbRuntimePaths } from '#src/infra/path/kb-runtime.js';
 import { wikiEntryId } from '#src/kb/entry-types.js';
-import { createKbTestDb } from '#tests/helpers/kb/runtime-test-helpers.js';
+import { openKbTestStoreDb } from '#tests/helpers/store-db.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 
 const mockState = vi.hoisted(() => ({ tmpHome: '' }));
@@ -29,7 +29,7 @@ function createRuntime(_paths: Awaited<ReturnType<typeof loadModules>>['paths'])
   return createTestKbRuntime({
     markdownRoot: process.env.CORAL_KB_PATH!,
     runtimeDir: kbRuntimePaths('prod').root,
-    db: createKbTestDb(':memory:'),
+    db: openKbTestStoreDb(':memory:'),
   });
 }
 

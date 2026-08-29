@@ -16,7 +16,7 @@ import {
   type PromoteRecoveryPhase,
 } from '#src/kb/ops/promote-marker.js';
 import { runPromoteRecovery } from '#src/kb/ops/promote-recovery.js';
-import { createKbTestDb } from '#tests/helpers/kb/runtime-test-helpers.js';
+import { openKbTestStoreDb } from '#tests/helpers/store-db.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 
 const mockState = vi.hoisted(() => ({ tmpHome: '' }));
@@ -36,7 +36,7 @@ function createRuntime(_paths: Awaited<ReturnType<typeof loadKbModules>>['paths'
   return createTestKbRuntime({
     markdownRoot: process.env.CORAL_KB_PATH!,
     runtimeDir: kbRuntimePaths('prod').root,
-    db: createKbTestDb(':memory:'),
+    db: openKbTestStoreDb(':memory:'),
   });
 }
 

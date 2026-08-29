@@ -26,7 +26,7 @@ import {
 } from '#src/kb/entry-types.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
-import { createKbTestDb } from '#tests/helpers/kb/runtime-test-helpers.js';
+import { openKbTestStoreDb } from '#tests/helpers/store-db.js';
 
 const REPO_ROOT = process.cwd();
 const CORPUS_GRAPH_FIXTURE = join(
@@ -385,7 +385,7 @@ describe('entity graph merge driver', () => {
   it('normalizes the entity graph after inbound sync only when the graph changed', async () => {
     const root = mkdtempSync(join(tmpdir(), 'coral-entity-graph-inbound-'));
     roots.push(root);
-    const db = createKbTestDb(':memory:');
+    const db = openKbTestStoreDb(':memory:');
     const kb = createTestKbRuntime({
       markdownRoot: root,
       runtimeDir: root,

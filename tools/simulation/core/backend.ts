@@ -858,7 +858,7 @@ export function createSimulationBackend(
       return recoveredDiscussResumes;
     },
   );
-  setStoreServicesForTest(core.storeServicesRef, storeServices, { storeDbPath: ':memory:', tier: 'simulation' });
+  setStoreServicesForTest(core.storeServicesRef, storeServices);
 
   let cleanedRuntimeRoot = false;
   const cleanupRuntimeRoot = (): void => {
