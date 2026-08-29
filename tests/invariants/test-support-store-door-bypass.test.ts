@@ -1,13 +1,27 @@
-// Unit-tier tests open databases through test helpers, never DatabaseSync or openStoreDatabase directly.
+// Every tier the location policy restricts to memory — unit, invariants, simulation — and the support closure
+// they share must use checked database doors. Integration and e2e stay outside this scan because direct
+// opening is often the behavior under test there. No Vitest config covers
+// `npm run simulate`, so the standalone entry point itself must stamp the simulation tier before loading its runner.
 
 import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import ts from 'typescript';
+import { OUTSIDE_ROOT_STORE_BYPASS } from '#tests/fixtures/store-door-bypass-negative-control.js';
 import { UNIT_TIER_ROOTS } from '../../vitest/tiers.js';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+const STORE_DOOR_SCAN_ROOTS = [
+  ...UNIT_TIER_ROOTS,
+  'tests/simulation',
+  'tests/helpers',
+  'tests/fixtures',
+  'tools/testing',
+] as const;
+const STORE_DOOR_MODULES = new Set(['tests/helpers/store-db.ts', 'tests/helpers/test-db.ts']);
+const NEGATIVE_CONTROL = resolve(REPO_ROOT, 'tests/fixtures/store-door-bypass-negative-control.ts');
+const SIMULATOR_ENTRY = resolve(REPO_ROOT, 'tools/simulation/cli.ts');
 
 type StoreBypass = Readonly<{
   file: string;
@@ -152,17 +166,33 @@ function storeBypassesIn(file: string, sourceText: string): StoreBypass[] {
   return bypasses;
 }
 
-function unitTierStoreBypasses(): StoreBypass[] {
-  return UNIT_TIER_ROOTS.flatMap((root) =>
-    sourceFilesUnder(root).flatMap((filePath) =>
-      storeBypassesIn(relative(REPO_ROOT, filePath).replaceAll('\\', '/'), readFileSync(filePath, 'utf-8')),
-    ),
+function scannedSourceFiles(): ReadonlyArray<Readonly<{ root: string; files: string[] }>> {
+  return STORE_DOOR_SCAN_ROOTS.map((root) => ({ root, files: sourceFilesUnder(root) }));
+}
+
+function testSupportStoreBypasses(scan: ReturnType<typeof scannedSourceFiles>): StoreBypass[] {
+  return scan.flatMap(({ files }) =>
+    files.flatMap((filePath) => {
+      const canonicalPath = relative(REPO_ROOT, filePath).replaceAll('\\', '/');
+      return STORE_DOOR_MODULES.has(canonicalPath)
+        ? []
+        : storeBypassesIn(canonicalPath, readFileSync(filePath, 'utf-8'));
+    }),
   );
 }
 
-describe('unit-tier database doors', () => {
+describe('test-support database doors', () => {
   it('contains no direct database-opening bypass', () => {
-    expect(unitTierStoreBypasses()).toEqual([]);
+    expect(testSupportStoreBypasses(scannedSourceFiles())).toEqual([]);
+  });
+
+  it('finds source files in every configured root', () => {
+    const scan = scannedSourceFiles();
+
+    expect(scan).not.toHaveLength(0);
+    for (const { root, files } of scan) {
+      expect(files, `${root} yielded no TypeScript source files`).not.toHaveLength(0);
+    }
   });
 
   it('rejects direct and aliased bypasses', () => {
@@ -187,5 +217,36 @@ describe('unit-tier database doors', () => {
       vi.spyOn(dbModule, 'openStoreDatabase');
     `;
     expect(storeBypassesIn('fixture.ts', source)).toEqual([]);
+  });
+
+  it('detects a bypass in a support module outside the concurrent-tier roots', () => {
+    const scan = scannedSourceFiles();
+    const fixtureFiles = scan.find(({ root }) => root === 'tests/fixtures')?.files ?? [];
+
+    expect(fixtureFiles).toContain(NEGATIVE_CONTROL);
+    expect(storeBypassesIn('tests/fixtures/store-door-bypass-negative-control.ts', OUTSIDE_ROOT_STORE_BYPASS)).toEqual([
+      expect.objectContaining({
+        file: 'tests/fixtures/store-door-bypass-negative-control.ts',
+        kind: 'DatabaseSync construction',
+      }),
+    ]);
+  });
+
+  it('keeps the standalone simulator tier stamp ahead of its runtime graph', () => {
+    const source = readFileSync(SIMULATOR_ENTRY, 'utf-8');
+    const parsed = ts.createSourceFile(SIMULATOR_ENTRY, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    const tierStamp = source.indexOf("process.env.CORAL_TEST_TIER ??= 'simulation'");
+    const runnerLoad = source.indexOf("await import('./runner.js')");
+    const eagerRunnerImports = parsed.statements.filter(
+      (statement) =>
+        ts.isImportDeclaration(statement) &&
+        ts.isStringLiteral(statement.moduleSpecifier) &&
+        statement.moduleSpecifier.text === './runner.js' &&
+        statement.importClause?.isTypeOnly !== true,
+    );
+
+    expect(tierStamp).toBeGreaterThanOrEqual(0);
+    expect(runnerLoad).toBeGreaterThan(tierStamp);
+    expect(eagerRunnerImports).toEqual([]);
   });
 });

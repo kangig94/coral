@@ -8,6 +8,11 @@ const REPO_ROOT = process.cwd();
 const SKIPPED_DIRECTORIES = new Set(['.git', 'node_modules']);
 
 type PackageManifest = Readonly<{ scripts?: Readonly<Record<string, string>> }>;
+type ScriptTestPathInspection = Readonly<{
+  manifestCount: number;
+  extractedPathCount: number;
+  missingPaths: string[];
+}>;
 
 function packageJsonFilesUnder(root: string): string[] {
   const files: string[] = [];
@@ -27,23 +32,32 @@ function testPathsIn(script: string): string[] {
   return [...script.matchAll(/((?:\.{1,2}\/)?(?:[\w@.-]+\/)+[\w@.-]+\.test\.ts)/gu)].map((match) => match[1]);
 }
 
-function missingScriptTestPaths(): string[] {
-  return packageJsonFilesUnder(REPO_ROOT).flatMap((manifestPath) => {
+function inspectScriptTestPaths(): ScriptTestPathInspection {
+  const manifestPaths = packageJsonFilesUnder(REPO_ROOT);
+  let extractedPathCount = 0;
+  const missingPaths = manifestPaths.flatMap((manifestPath) => {
     const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8')) as PackageManifest;
     return Object.entries(manifest.scripts ?? {}).flatMap(([scriptName, script]) =>
-      testPathsIn(script)
-        .map((testPath) => resolve(dirname(manifestPath), testPath))
-        .filter((testPath) => !existsSync(testPath) || !statSync(testPath).isFile())
-        .map(
-          (testPath) => `${relative(REPO_ROOT, manifestPath)}#scripts.${scriptName}: ${relative(REPO_ROOT, testPath)}`,
-        ),
+      testPathsIn(script).flatMap((testPath) => {
+        extractedPathCount += 1;
+        const resolvedPath = resolve(dirname(manifestPath), testPath);
+        return !existsSync(resolvedPath) || !statSync(resolvedPath).isFile()
+          ? [`${relative(REPO_ROOT, manifestPath)}#scripts.${scriptName}: ${relative(REPO_ROOT, resolvedPath)}`]
+          : [];
+      }),
     );
   });
+
+  return { manifestCount: manifestPaths.length, extractedPathCount, missingPaths };
 }
 
 describe('package script test paths', () => {
   it('all exist on disk', () => {
-    expect(missingScriptTestPaths()).toEqual([]);
+    const inspection = inspectScriptTestPaths();
+
+    expect(inspection.manifestCount).toBeGreaterThan(0);
+    expect(inspection.extractedPathCount).toBeGreaterThan(0);
+    expect(inspection.missingPaths).toEqual([]);
   });
 
   it('extracts only TypeScript test paths', () => {

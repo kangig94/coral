@@ -1,4 +1,3 @@
-import { currentCoralStoreFormat } from '#src/store-format.js';
 import { describe, expect, it } from 'vitest';
 
 import { ConsumerDriver } from '#src/projection-consumers/index.js';
@@ -8,11 +7,12 @@ import type { Runtime } from '#src/runtime/ports.js';
 import type { CoralEventInput } from '#src/store/envelope.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
-import { openStoreDatabase, type Database } from '#src/store/db.js';
+import type { Database } from '#src/store/db.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { applyTestCounterSchema, testCounterRegistry } from '#tests/unit/store/fixtures/test-counter-registry.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { openTestStoreDb } from '#tests/helpers/store-db.js';
 
 const CONSUMER_ID = 'journal-projection-consumer';
 const EVENT_COUNT = 1_000;
@@ -39,11 +39,7 @@ interface Snapshot {
 }
 
 function openMemoryDatabase(runtime: Pick<Runtime, 'storage'>): Database {
-  return openStoreDatabase({
-    storeFormat: currentCoralStoreFormat(),
-    path: ':memory:',
-    storage: runtime.storage,
-  });
+  return openTestStoreDb(runtime, ':memory:');
 }
 
 function registerConsumer(driver: ConsumerDriver): void {

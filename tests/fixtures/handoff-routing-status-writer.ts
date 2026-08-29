@@ -1,6 +1,5 @@
 import { writeSync } from 'node:fs';
 import { performance } from 'node:perf_hooks';
-import { DatabaseSync } from 'node:sqlite';
 
 import {
   publishGenerationCoordinatedHandoffRoutingTransitions,
@@ -14,6 +13,7 @@ import { acquireOperatorSocketGuard } from '#src/cli/operator-socket-guard.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { handoffRoutingStatusGeneration } from '#src/store/handoff-routing-status-store.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
+import { newRawDatabase } from '#tests/helpers/test-db.js';
 
 const [, , mode, path, identity = 'worker', baseDir] = process.argv;
 if (mode === undefined || path === undefined) throw new Error('Expected mode and database path');
@@ -63,7 +63,7 @@ function terminal(eventIdentity: string, offset: number, selectionSequence: numb
   };
 }
 
-function insertGapRecord(db: DatabaseSync, sequence: number): void {
+function insertGapRecord(db: ReturnType<typeof newRawDatabase>, sequence: number): void {
   const eventId = `crash-gap-event-${sequence}`;
   const invocationId = `crash-gap-invocation-${sequence}`;
   const event = {
@@ -95,7 +95,7 @@ function insertGapRecord(db: DatabaseSync, sequence: number): void {
 }
 
 function runValidateStop(): void {
-  const db = new DatabaseSync(path);
+  const db = newRawDatabase(path);
   try {
     db.exec('PRAGMA busy_timeout=0');
     db.exec('PRAGMA synchronous=FULL');
@@ -110,7 +110,7 @@ function runValidateStop(): void {
 }
 
 function runBetweenStatements(): void {
-  const db = new DatabaseSync(path);
+  const db = newRawDatabase(path);
   try {
     db.exec('PRAGMA busy_timeout=0');
     db.exec('PRAGMA synchronous=FULL');
@@ -132,7 +132,7 @@ async function runAfterCommit(): Promise<void> {
 }
 
 function runHoldingTransaction(): void {
-  const db = new DatabaseSync(path);
+  const db = newRawDatabase(path);
   try {
     db.exec('PRAGMA busy_timeout=0');
     db.exec('PRAGMA synchronous=FULL');

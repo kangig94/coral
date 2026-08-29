@@ -66,10 +66,11 @@ deliberately applies neither the Coral schema nor its pragmas. Every door requir
 
 The rule no longer trusts the path expression a caller presents. Each opened handle reports its own location:
 unit and simulation reject file-backed databases, while integration and e2e reject files outside the run's
-temporary root. `tests/invariants/unit-tier-store-door-bypass.test.ts` prevents concurrent-tier tests from
-constructing `DatabaseSync` or calling the production store opener directly, so a test uses a checked door or
-does not open a database. Tests whose behavior depends on reopen, multiple connections, durable routing, or
-file classification live under `tests/integration`, which is limited to one worker.
+temporary root. `tests/invariants/test-support-store-door-bypass.test.ts` prevents the concurrent-tier roots and
+their shared support modules under `tests/helpers/`, `tests/fixtures/`, and `tools/testing/` from constructing
+`DatabaseSync` or calling the production store opener outside the two checked door modules. `tests/integration/`
+and `tests/e2e/` stay outside that rule because opening and classifying databases directly is often the behavior
+under test there; integration runs with one worker.
 
 What the entry proposed for this half — "those can take the in-memory storage port instead" — assumed a seam
 that does not exist. `openStoreDatabase` and `classifyStoreFile` construct `DatabaseSync` directly rather than

@@ -1,13 +1,13 @@
-import { currentCoralStoreFormat } from '#src/store-format.js';
 import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
 
 import type { StoragePort } from '#src/infra/port-types.js';
 import { resolveBuildFlavor } from '#src/infra/build-flavor.js';
 import type { JobEvent, JobStatus } from '#src/jobs/records.js';
-import { openStoreDatabase } from '#src/store/db.js';
+import type { Database } from '#src/store/db.js';
 import { storePaths } from '#src/infra/path/store.js';
 import { loadJobProjectionDetail, readJobEvents } from '#src/jobs/read-queries.js';
 import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
+import { openTestStoreDb } from '#tests/helpers/store-db.js';
 
 const nodeStoreReaderStorage: Pick<StoragePort, 'existsSync' | 'mkdirSync' | 'readFileSync' | 'readdirSync'> = {
   readFileSync: (filePath, encoding) => readFileSync(filePath, encoding),
@@ -16,18 +16,13 @@ const nodeStoreReaderStorage: Pick<StoragePort, 'existsSync' | 'mkdirSync' | 're
   mkdirSync: (dirPath, options) => mkdirSync(dirPath, options),
 };
 
-function withReadonlyStore<T>(read: (db: ReturnType<typeof openStoreDatabase>) => T, fallback: T): T {
+function withReadonlyStore<T>(read: (db: Database) => T, fallback: T): T {
   const dbPath = storePaths(resolveBuildFlavor(process.env)).dbFile;
   if (!existsSync(dbPath)) {
     return fallback;
   }
 
-  const db = openStoreDatabase({
-    storeFormat: currentCoralStoreFormat(),
-    path: dbPath,
-    storage: nodeStoreReaderStorage,
-    readonly: true,
-  });
+  const db = openTestStoreDb({ storage: nodeStoreReaderStorage }, dbPath, { readonly: true });
 
   try {
     return read(db);

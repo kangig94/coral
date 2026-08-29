@@ -17,8 +17,7 @@ vi.mock('#src/kb/curate/usage-budget.js', () => ({
   isUsageBudgetExhausted: () => false,
 }));
 
-// The real corpus scan runs in a worker thread whose completion no `advanceTimersByTime` drain can observe,
-// so a fake-timer settle loop never sees the runtime stop.
+// This mock must stay because the fake-timer settle loop otherwise cannot terminate.
 vi.mock('#src/kb/corpus/rescan/scan-worker.js', async () => {
   const actual = await vi.importActual<typeof CorpusScanMod>('#src/kb/corpus/rescan/scan.js');
   return {

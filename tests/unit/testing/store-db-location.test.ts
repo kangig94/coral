@@ -1,62 +1,59 @@
-import { join } from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { join, resolve } from 'node:path';
+import { describe, expect, it } from 'vitest';
 
-import type { Database } from '#src/store/db.js';
-import { assertTestDatabaseLocation } from '#tools/testing/store-db-location.js';
+import { classifyTestDatabaseLocation } from '#tools/testing/store-db-location.js';
 
-const originalTier = process.env.CORAL_TEST_TIER;
-
-function databaseAt(location: string | null): { db: Database; close: ReturnType<typeof vi.fn> } {
-  const close = vi.fn();
-  return { db: { location: () => location, close } as unknown as Database, close };
-}
-
-afterEach(() => {
-  if (originalTier === undefined) delete process.env.CORAL_TEST_TIER;
-  else process.env.CORAL_TEST_TIER = originalTier;
-});
+const TEMP_ROOT = resolve('test-temp-root');
 
 describe('test database location', () => {
-  it('accepts an in-memory unit handle', () => {
-    process.env.CORAL_TEST_TIER = 'unit';
-    const { db, close } = databaseAt(null);
-
-    expect(() => assertTestDatabaseLocation(db)).not.toThrow();
-    expect(close).not.toHaveBeenCalled();
+  it('accepts in-memory databases in every recognized tier', () => {
+    expect(classifyTestDatabaseLocation('unit', TEMP_ROOT, null)).toEqual({ kind: 'allowed' });
+    expect(classifyTestDatabaseLocation('simulation', TEMP_ROOT, null)).toEqual({ kind: 'allowed' });
+    expect(classifyTestDatabaseLocation('integration', TEMP_ROOT, null)).toEqual({ kind: 'allowed' });
+    expect(classifyTestDatabaseLocation('e2e', TEMP_ROOT, null)).toEqual({ kind: 'allowed' });
   });
 
-  it('closes and rejects a file-backed unit handle with integration guidance', () => {
-    process.env.CORAL_TEST_TIER = 'unit';
-    const { db, close } = databaseAt('/tmp/coral-unit-store.db');
+  it('rejects files in unit and simulation tiers', () => {
+    const location = join(TEMP_ROOT, 'case', 'store.db');
 
-    expect(() => assertTestDatabaseLocation(db)).toThrow(
-      "unit test database resolved to /tmp/coral-unit-store.db; use ':memory:' or move the case to tests/integration",
-    );
-    expect(close).toHaveBeenCalledOnce();
+    expect(classifyTestDatabaseLocation('unit', TEMP_ROOT, location)).toEqual({
+      kind: 'file-forbidden',
+      tier: 'unit',
+      location,
+    });
+    expect(classifyTestDatabaseLocation('simulation', TEMP_ROOT, location)).toEqual({
+      kind: 'file-forbidden',
+      tier: 'simulation',
+      location,
+    });
   });
 
-  it('accepts integration files under the stamped temp root', () => {
-    process.env.CORAL_TEST_TIER = 'integration';
-    const { db, close } = databaseAt(join(process.env.TMPDIR!, 'case', 'store.db'));
+  it('accepts integration and e2e files under the temp root', () => {
+    const location = join(TEMP_ROOT, 'case', 'store.db');
 
-    expect(() => assertTestDatabaseLocation(db)).not.toThrow();
-    expect(close).not.toHaveBeenCalled();
+    expect(classifyTestDatabaseLocation('integration', TEMP_ROOT, location)).toEqual({ kind: 'allowed' });
+    expect(classifyTestDatabaseLocation('e2e', TEMP_ROOT, location)).toEqual({ kind: 'allowed' });
   });
 
-  it('closes and rejects integration files outside the stamped temp root', () => {
-    process.env.CORAL_TEST_TIER = 'integration';
-    const path = `${process.env.TMPDIR!}-outside/store.db`;
-    const { db, close } = databaseAt(path);
+  it('rejects integration files outside the temp root', () => {
+    const location = `${TEMP_ROOT}-outside/store.db`;
 
-    expect(() => assertTestDatabaseLocation(db)).toThrow(`integration test database resolved to ${path}`);
-    expect(close).toHaveBeenCalledOnce();
+    expect(classifyTestDatabaseLocation('integration', TEMP_ROOT, location)).toEqual({
+      kind: 'outside-temp-root',
+      tier: 'integration',
+      location,
+      tempRoot: TEMP_ROOT,
+    });
   });
 
-  it('closes and rejects an unstamped tier', () => {
-    delete process.env.CORAL_TEST_TIER;
-    const { db, close } = databaseAt(null);
+  it('accepts a child whose name begins with two dots', () => {
+    const location = join(TEMP_ROOT, '..cache', 'store.db');
 
-    expect(() => assertTestDatabaseLocation(db)).toThrow('CORAL_TEST_TIER=<unset>');
-    expect(close).toHaveBeenCalledOnce();
+    expect(classifyTestDatabaseLocation('integration', TEMP_ROOT, location)).toEqual({ kind: 'allowed' });
+  });
+
+  it('refuses an unrecognized tier explicitly', () => {
+    expect(classifyTestDatabaseLocation(undefined, TEMP_ROOT, null)).toEqual({ kind: 'unrecognized-tier' });
+    expect(classifyTestDatabaseLocation('other', TEMP_ROOT, null)).toEqual({ kind: 'unrecognized-tier' });
   });
 });

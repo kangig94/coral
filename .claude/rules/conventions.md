@@ -76,7 +76,7 @@ The GitHub release body is generated automatically (`gh release create --generat
 - One test file per source module
 - Test naming: `describe('<module>')` with `it('should <behavior>')`
 - Mock external dependencies (Codex CLI, filesystem) — never call real Codex in tests
-- Flaky tests: add `// @flaky — <reason>` comment at file/describe top, then `{ retry: 2 }` on the `describe` options. Timing-sensitive or shared-state tests go in `vitest/integration.ts` for process-level isolation.
+- Flaky tests: add `// @flaky — <reason>` comment at file/describe top, then `{ retry: 2 }` on the `describe` options. Timing-sensitive or shared-state tests go under `tests/integration/`; `vitest/integration.ts` runs them with process-level isolation.
 
 ## Error Handling
 
