@@ -26,23 +26,23 @@ const STORE_DOORS = new Set<StoreDoor>(['newRawDatabase', 'openStoreDatabase', '
 const REAL_STORE_MIGRATION_LEDGER = new Map<string, string>([
   [
     'tests/unit/cli/backend-recovery-quarantine.test.ts',
-    'openStoreDatabase: daemon-down reads reopen seeded rows and classify older or unsupported stores from disk',
+    'openStoreDatabase: daemon-down readers reopen the seeded runtime store, while older and unsupported cases classify that file',
   ],
   [
     'tests/unit/cli/coral-store-read-parity.test.ts',
-    'openStoreDatabase: production readers reopen the seeded runtime store for CLI parity assertions',
+    'openStoreDatabase: CLI readers resolve the production store path internally and reopen rows seeded into that file',
   ],
   [
     'tests/unit/cli/follow.test.ts',
-    'openStoreDatabase: follow rendering reopens persisted cause-chain events beneath a temporary HOME',
+    'openStoreDatabase: follow cause rendering resolves the production store path internally and reopens seeded events',
   ],
   [
     'tests/unit/cli/kb-diagnose.test.ts',
-    'openStoreDatabase: the diagnose command reopens persisted retry-queue rows at the runtime store path',
+    'openStoreDatabase: the diagnose command resolves the production store path internally and reopens seeded retry rows',
   ],
   [
     'tests/unit/cli/main-routing.test.ts',
-    'openStoreDatabase: CLI wait routing reads persisted cause-chain events through production path resolution',
+    'openStoreDatabase: CLI wait cause rendering resolves the production store path internally and reopens seeded events',
   ],
   [
     'tests/unit/cli/store-reset.test.ts',
@@ -54,7 +54,7 @@ const REAL_STORE_MIGRATION_LEDGER = new Map<string, string>([
   ],
   [
     'tests/unit/coordinator/service-composition.test.ts',
-    'openTestStoreDb: progress and session services open independent handles to the production-resolved store',
+    'openTestStoreDb: progress and session services require independent handles to the same production-resolved store file',
   ],
   [
     'tests/unit/discuss/cross-connection-launch.test.ts',
@@ -62,15 +62,15 @@ const REAL_STORE_MIGRATION_LEDGER = new Map<string, string>([
   ],
   [
     'tests/unit/expansion/activate.test.ts',
-    'openStoreDatabase: activation discovers and classifies the current store at the runtime path',
+    'openStoreDatabase: activation reads the catalog through an internally resolved production store path',
   ],
   [
     'tests/unit/kb-daemon/runtime-host.test.ts',
-    'openTestStoreDb: the owned runtime host reopens the seeded store while dispose waits on its handle',
+    'openTestStoreDb: the owned runtime host internally reopens the seeded production store while dispose waits on its handle',
   ],
   [
     'tests/unit/kb/runtime-test-helpers.ts',
-    'openStoreDatabase: callers with a runtime directory need another component to reopen that store file',
+    'openStoreDatabase: runtime-directory callers use a second connection to reopen the same store file',
   ],
   [
     'tests/unit/sessions/shell.test.ts',
@@ -82,23 +82,19 @@ const REAL_STORE_MIGRATION_LEDGER = new Map<string, string>([
   ],
   [
     'tests/unit/store/format-classification.test.ts',
-    'openStoreDatabase: classification, readonly reopening, sidecars, and product versions require store files',
+    'openStoreDatabase: assertions cover absent paths, byte identity, readonly reopening, classification, and on-disk metadata',
   ],
   [
     'tests/unit/store/generation-readiness.test.ts',
-    'openStoreDatabase: readable legacy history must remain on disk while a new generation opens beside it',
+    'openStoreDatabase: path assertions require readable legacy history to remain on disk while a new generation opens beside it',
   ],
   [
     'tests/unit/store/open-or-reset.test.ts',
     'openStoreDatabase: reset and readonly cases assert creation, absence, replacement, and preservation by path',
   ],
   [
-    'tests/unit/store/schemas.idempotent.test.ts',
-    "newRawDatabase: nothing would stop being exercised on ':memory:', so this is direct migration debt",
-  ],
-  [
     'tests/unit/testing/persistence-readers.test.ts',
-    'openStoreDatabase: the readers under test reopen data seeded at the resolved production store path',
+    'openStoreDatabase: the readers resolve the production store path internally and reopen data seeded into that file',
   ],
 ]);
 
@@ -194,8 +190,8 @@ describe('unit-tier store paths are explicit memory literals', () => {
       ledgerFiles: REAL_STORE_MIGRATION_LEDGER.size,
       realStoreSites: REAL_STORE_SITES.length,
     }).toEqual({
-      ledgerFiles: 19,
-      realStoreSites: 37,
+      ledgerFiles: 18,
+      realStoreSites: 36,
     });
   });
 
