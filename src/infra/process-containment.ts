@@ -89,12 +89,18 @@ export class ProcessContainmentError extends Error {
   }
 }
 
-type TargetObservation = 'absent' | 'present';
+type TargetObservation = 'absent' | 'present' | 'recorded-group-unattributable';
 
 type RecordedSetObservation = Readonly<{
   containment: TargetObservation;
   recordedRoots: readonly TargetObservation[];
 }>;
+
+type RecordedSetAbsenceVerdict = 'absent' | 'not-confirmed' | 'recorded-group-unattributable';
+
+export type RecordedContainmentReapResult =
+  | Readonly<{ kind: 'containment-absent' }>
+  | Readonly<{ kind: 'recorded-group-unattributable' }>;
 
 function reapFailure(message: string, context: Readonly<Record<string, unknown>> = {}): ProcessContainmentError {
   return new ProcessContainmentError('process_containment_reap_failed', message, context);
@@ -191,10 +197,12 @@ function observeContainment<Scope extends symbol>(
   const observedIncarnation = readIncarnation(containment, environment);
   if (observedIncarnation !== null && observedIncarnation !== containment.incarnation) {
     // A mismatched incarnation proves that pid no longer identifies the recorded leader, not that every member
-    // of its old group is gone. Do not probe or signal -processGroupId after reuse because the numeric group can
-    // no longer be proven ours. This can strand original members: the guarantee is never to signal the wrong
-    // group, not always to reap ours.
-    return 'absent';
+    // of its old group is gone. The group probe may prove absence, but observed life or an unanswered probe
+    // cannot prove the numeric group is still ours and therefore authorizes no signal. This can strand original
+    // members: the guarantee is never to signal the wrong group, not always to reap ours.
+    return environment.process.observeLiveness(-containment.processGroupId) === 'absent'
+      ? 'absent'
+      : 'recorded-group-unattributable';
   }
   if (observedIncarnation === null && environment.process.observeLiveness(containment.pid) !== 'absent') {
     throw new ProcessContainmentError(
@@ -254,6 +262,11 @@ function observeRecordedSet<Scope extends symbol>(
 
 function allRecordedTargetsAbsent(observation: RecordedSetObservation): boolean {
   return observation.containment === 'absent' && observation.recordedRoots.every((root) => root === 'absent');
+}
+
+function recordedSetAbsenceVerdict(observation: RecordedSetObservation): RecordedSetAbsenceVerdict {
+  if (observation.containment === 'recorded-group-unattributable') return 'recorded-group-unattributable';
+  return allRecordedTargetsAbsent(observation) ? 'absent' : 'not-confirmed';
 }
 
 function assertSignalCallWithinBounds<Scope extends symbol>(
@@ -354,14 +367,13 @@ async function waitForAbsence<Scope extends symbol>(
   recordedRoots: readonly RecordedProcessIdentity[],
   waitDeadline: MonotonicInstant<Scope>,
   environment: ProcessContainmentEnvironment<Scope>,
-): Promise<boolean> {
+): Promise<RecordedSetAbsenceVerdict> {
   while (true) {
     assertContainmentAuthorized(environment.signal);
-    if (allRecordedTargetsAbsent(observeRecordedSet(containment, recordedRoots, environment))) {
-      return true;
-    }
+    const verdict = recordedSetAbsenceVerdict(observeRecordedSet(containment, recordedRoots, environment));
+    if (verdict !== 'not-confirmed') return verdict;
     const remainingMs = environment.clock.millisecondsBetween(environment.clock.now(), waitDeadline);
-    if (remainingMs <= 0) return false;
+    if (remainingMs <= 0) return 'not-confirmed';
     await sleepWhileAuthorized(Math.min(ABSENCE_POLL_MS, remainingMs), environment);
   }
 }
@@ -371,24 +383,23 @@ async function confirmAbsence<Scope extends symbol>(
   recordedRoots: readonly RecordedProcessIdentity[],
   exitDeadline: MonotonicInstant<Scope>,
   environment: ProcessContainmentEnvironment<Scope>,
-): Promise<boolean> {
+): Promise<RecordedSetAbsenceVerdict> {
   const confirmationDeadline = environment.clock.shiftMilliseconds(
     environment.clock.now(),
     CONTAINMENT_DISAPPEARANCE_CONFIRM_MS,
   );
-  if (environment.clock.compare(confirmationDeadline, exitDeadline) > 0) return false;
+  if (environment.clock.compare(confirmationDeadline, exitDeadline) > 0) return 'not-confirmed';
 
   while (environment.clock.compare(environment.clock.now(), confirmationDeadline) < 0) {
     assertContainmentAuthorized(environment.signal);
-    if (!allRecordedTargetsAbsent(observeRecordedSet(containment, recordedRoots, environment))) {
-      return false;
-    }
+    const verdict = recordedSetAbsenceVerdict(observeRecordedSet(containment, recordedRoots, environment));
+    if (verdict !== 'absent') return verdict;
     // Observing the set can outlast the remaining window; clamping keeps that from becoming a negative
     // sleep, which would throw outside this module's closed failure set and report an absent set as failed.
     const remainingMs = environment.clock.millisecondsBetween(environment.clock.now(), confirmationDeadline);
     await sleepWhileAuthorized(Math.max(0, Math.min(ABSENCE_POLL_MS, remainingMs)), environment);
   }
-  return allRecordedTargetsAbsent(observeRecordedSet(containment, recordedRoots, environment));
+  return recordedSetAbsenceVerdict(observeRecordedSet(containment, recordedRoots, environment));
 }
 
 /**
@@ -399,13 +410,17 @@ export async function reapRecordedContainment<Scope extends symbol>(
   recordedRoots: readonly RecordedProcessIdentity[],
   exitDeadline: MonotonicInstant<Scope>,
   environment: ProcessContainmentEnvironment<Scope>,
-): Promise<void> {
+): Promise<RecordedContainmentReapResult> {
   assertContainmentAuthorized(environment.signal);
   assertRecordedSet(containment, recordedRoots, environment.maxRecordedRoots);
 
   let observation = observeRecordedSet(containment, recordedRoots, environment);
-  if (allRecordedTargetsAbsent(observation)) {
-    if (await confirmAbsence(containment, recordedRoots, exitDeadline, environment)) return;
+  let verdict = recordedSetAbsenceVerdict(observation);
+  if (verdict === 'recorded-group-unattributable') return { kind: verdict };
+  if (verdict === 'absent') {
+    verdict = await confirmAbsence(containment, recordedRoots, exitDeadline, environment);
+    if (verdict === 'recorded-group-unattributable') return { kind: verdict };
+    if (verdict === 'absent') return { kind: 'containment-absent' };
     throw reapFailure('Recorded containment absence could not be confirmed before the exit deadline.');
   }
 
@@ -414,8 +429,12 @@ export async function reapRecordedContainment<Scope extends symbol>(
     exitDeadline,
     environment.clock.shiftMilliseconds(environment.clock.now(), SIGTERM_GRACE_MS),
   );
-  if (await waitForAbsence(containment, recordedRoots, termWaitDeadline, environment)) {
-    if (await confirmAbsence(containment, recordedRoots, exitDeadline, environment)) return;
+  verdict = await waitForAbsence(containment, recordedRoots, termWaitDeadline, environment);
+  if (verdict === 'recorded-group-unattributable') return { kind: verdict };
+  if (verdict === 'absent') {
+    verdict = await confirmAbsence(containment, recordedRoots, exitDeadline, environment);
+    if (verdict === 'recorded-group-unattributable') return { kind: verdict };
+    if (verdict === 'absent') return { kind: 'containment-absent' };
     throw reapFailure('Recorded containment absence could not be confirmed before the exit deadline.');
   }
 
@@ -426,11 +445,12 @@ export async function reapRecordedContainment<Scope extends symbol>(
     exitDeadline,
     environment.clock.shiftMilliseconds(environment.clock.now(), SIGKILL_GRACE_MS),
   );
-  if (
-    (await waitForAbsence(containment, recordedRoots, killWaitDeadline, environment)) &&
-    (await confirmAbsence(containment, recordedRoots, exitDeadline, environment))
-  ) {
-    return;
+  verdict = await waitForAbsence(containment, recordedRoots, killWaitDeadline, environment);
+  if (verdict === 'recorded-group-unattributable') return { kind: verdict };
+  if (verdict === 'absent') {
+    verdict = await confirmAbsence(containment, recordedRoots, exitDeadline, environment);
+    if (verdict === 'recorded-group-unattributable') return { kind: verdict };
+    if (verdict === 'absent') return { kind: 'containment-absent' };
   }
 
   throw reapFailure('Recorded containment remained present at the exit deadline.', {

@@ -55,11 +55,12 @@ remains refused for the fixed 30-second containment-attempt observation span tha
 regardless of a longer configured adoption window.
 
 The independent proof now distinguishes confirmed proxy-group absence, an observed-live enforcer, an
-unobservable enforcer, and an unreadable local durable row. Confirmed absence follows the existing
-`reapRecordedContainment` and disappearance-delivery path. Alive or unobservable enforcers require the explicit
-`--abandon-without-absence` operator instruction after external verification; that instruction releases Coral's
-representation through a separate typed action and a distinct durable terminal directive. It does not mint
-process-absence evidence. An unreadable local row cannot be overridden and names
+unobservable enforcer, and an unreadable local durable row. Recorded-set reaping adds one further no-verdict:
+the recorded leader identity is gone while the surviving or unobservable numeric group cannot be attributed
+to the set. Only confirmed absence follows the disappearance-delivery path. Alive or unobservable enforcers
+and an unattributable recorded group require the explicit `--abandon-without-absence` operator instruction
+after external verification; that instruction releases Coral's representation through a separate typed action
+and a distinct durable terminal directive. It does not mint process-absence evidence. An unreadable local row cannot be overridden and names
 `coral-cli backend recovery-quarantine` as its repair path.
 
 The recorded proxy process group and every recorded provider root for the set are signalled when observed

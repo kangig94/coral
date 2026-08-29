@@ -91,7 +91,10 @@ const unusedDb = {} as Database;
 const reapRecordedEvidence = async (evidence: {
   containment: Parameters<typeof providerProxyDisappearanceReceipt>[0];
   recordedRoots: Parameters<typeof providerProxyDisappearanceReceipt>[1];
-}): Promise<string> => providerProxyDisappearanceReceipt(evidence.containment, evidence.recordedRoots);
+}) => ({
+  kind: 'containment-absent' as const,
+  disappearanceReceipt: providerProxyDisappearanceReceipt(evidence.containment, evidence.recordedRoots),
+});
 const unexpectedLifecycleRecordedContainmentReap = (): never => {
   throw new Error('provider proxy inheritance fixture unexpectedly requested lifecycle recorded containment reaping');
 };
@@ -766,9 +769,10 @@ describe('attemptProviderProxySetInheritance', () => {
       containment: { pid: 200, incarnation: testIncarnation(3), processGroupId: 200 },
       recordedRoots: [],
     }));
-    const reapRecordedContainment = vi.fn(
-      async () => 'group:200,leader:200@linux:00000000-0000-4000-8000-000000000000:3',
-    );
+    const reapRecordedContainment = vi.fn(async () => ({
+      kind: 'containment-absent' as const,
+      disappearanceReceipt: 'group:200,leader:200@linux:00000000-0000-4000-8000-000000000000:3',
+    }));
 
     const outcome = await attemptProviderProxySetInheritance(
       loc,
@@ -793,6 +797,33 @@ describe('attemptProviderProxySetInheritance', () => {
       neverAborts,
     );
     expect(reapRecordedContainment).toHaveBeenCalledOnce();
+    expect(mockedConnect).not.toHaveBeenCalled();
+  });
+
+  it('keeps a missing-credential set held when its recorded group is unattributable', async () => {
+    mockedReadCapsule.mockReturnValueOnce(null);
+    const loc = locator();
+    const collectContainmentEvidence = vi.fn(async () => ({
+      kind: 'reap-required' as const,
+      containment: { pid: 200, incarnation: testIncarnation(3), processGroupId: 200 },
+      recordedRoots: [],
+    }));
+    const reapRecordedContainment = vi.fn(async () => ({ kind: 'recorded-group-unattributable' as const }));
+
+    const outcome = await attemptProviderProxySetInheritance(
+      loc,
+      unusedDb,
+      {
+        runtime,
+        coordinatorIdentity: COORDINATOR_IDENTITY,
+        operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
+        collectContainmentEvidence,
+        reapRecordedContainment,
+      },
+      neverAborts,
+    );
+
+    expect(outcome).toEqual({ kind: 'recorded-group-unattributable' });
     expect(mockedConnect).not.toHaveBeenCalled();
   });
 

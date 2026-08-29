@@ -89,6 +89,7 @@ export type ProviderProxySetInheritanceDeps = Readonly<{
 export type ProviderProxySetInheritanceOutcome =
   | Readonly<{ kind: 'inherited'; set: DurableProviderProxyOperationAuthority }>
   | Readonly<{ kind: 'containment-disappeared'; disappearanceReceipt: string }>
+  | Readonly<{ kind: 'recorded-group-unattributable' }>
   | Readonly<{ kind: 'not-bequeathed'; reason: string }>
   | Readonly<{ kind: 'temporarily-unavailable'; incident: ProviderProxySetAvailabilityIncident }>;
 
@@ -437,8 +438,11 @@ export async function attemptProviderProxySetInheritance(
         if (deps.reapRecordedContainment === undefined) {
           throw new Error('provider_proxy_set_containment_reaper_unavailable', { cause: error });
         }
-        const disappearanceReceipt = await deps.reapRecordedContainment(evidence, signal, () => undefined);
-        return { kind: 'containment-disappeared', disappearanceReceipt };
+        const reapResult = await deps.reapRecordedContainment(evidence, signal, () => undefined);
+        if (reapResult.kind === 'containment-absent') {
+          return { kind: 'containment-disappeared', disappearanceReceipt: reapResult.disappearanceReceipt };
+        }
+        return reapResult;
       }
     } catch (proofError: unknown) {
       throw new AggregateError(
@@ -455,10 +459,10 @@ export async function attemptProviderProxySetInheritance(
   if (deps.reapRecordedContainment === undefined) {
     throw new Error('provider_proxy_set_containment_reaper_unavailable');
   }
-  return {
-    kind: 'containment-disappeared',
-    disappearanceReceipt: await deps.reapRecordedContainment(evidence, signal, () => undefined),
-  };
+  const reapResult = await deps.reapRecordedContainment(evidence, signal, () => undefined);
+  return reapResult.kind === 'containment-absent'
+    ? { kind: 'containment-disappeared', disappearanceReceipt: reapResult.disappearanceReceipt }
+    : reapResult;
 }
 
 /**

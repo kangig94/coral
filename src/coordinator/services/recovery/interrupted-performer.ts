@@ -5,6 +5,7 @@ import { backendLog } from '../../../infra/backend-log.js';
 import { errorMessage, formatError } from '../../../infra/error-format.js';
 import type { MonotonicClock } from '../../../infra/monotonic-clock.js';
 import {
+  ProcessContainmentError,
   reapRecordedContainment,
   type RecordedContainmentIdentity,
   type RecordedProcessIdentity,
@@ -102,7 +103,7 @@ export async function reapProviderOperationCarrier<Scope extends symbol>(
     DEFAULT_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS + PROXY_TEARDOWN_RESERVE_MS,
   );
 
-  await reapRecordedContainment(containment, recordedRoots, exitDeadline, {
+  const reapResult = await reapRecordedContainment(containment, recordedRoots, exitDeadline, {
     maxRecordedRoots: MAX_PROXY_RECORDED_PROVIDER_ROOTS,
     clock: deps.clock,
     process: deps.process,
@@ -110,6 +111,13 @@ export async function reapProviderOperationCarrier<Scope extends symbol>(
     signal: deps.signal,
     ...(deps.readProcessIncarnation === undefined ? {} : { readProcessIncarnation: deps.readProcessIncarnation }),
   });
+  if (reapResult.kind === 'recorded-group-unattributable') {
+    throw new ProcessContainmentError(
+      'process_identity_unverified',
+      'The recorded carrier leader identity is gone, but the surviving process group cannot be attributed.',
+      { pid: containment.pid, processGroupId: containment.processGroupId },
+    );
+  }
 
   try {
     deleteProviderOperation(deps.db, record);

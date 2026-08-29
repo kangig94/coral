@@ -233,6 +233,13 @@ const providerProxySetContainKnownResponseSchema = z.discriminatedUnion('kind', 
       claimDischarge: providerProxySetClaimDischargeSchema,
     })
     .strict(),
+  z
+    .object({
+      kind: z.literal('unattributable-group-abandoned'),
+      ...providerProxySetContainResultBase,
+      claimDischarge: providerProxySetClaimDischargeSchema,
+    })
+    .strict(),
   z.object({ kind: z.literal('set-not-found'), ...providerProxySetContainResultBase }).strict(),
   z
     .object({
@@ -263,6 +270,7 @@ const providerProxySetContainKnownResponseSchema = z.discriminatedUnion('kind', 
       enforcerObservations: providerProxySetUnobservableEnforcerObservationsSchema,
     })
     .strict(),
+  z.object({ kind: z.literal('recorded-group-unattributable'), ...providerProxySetContainResultBase }).strict(),
   z.object({ kind: z.literal('store-unreadable'), ...providerProxySetContainResultBase }).strict(),
 ]);
 

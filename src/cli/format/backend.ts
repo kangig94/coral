@@ -34,7 +34,10 @@ export const RECOVERY_REVISION_UNTIL_CLEARED = 'until-cleared';
 export const RECOVERY_REVISION_FINGERPRINT_PREFIX = 'fingerprint:';
 
 function formatProviderProxySetClaimDischarge(
-  discharge: Extract<ProviderProxySetContainResponse, { kind: 'contained' | 'abandoned' }>['claimDischarge'],
+  discharge: Extract<
+    ProviderProxySetContainResponse,
+    { kind: 'contained' | 'abandoned' | 'unattributable-group-abandoned' }
+  >['claimDischarge'],
 ): string {
   switch (discharge.kind) {
     case 'completed':
@@ -85,6 +88,15 @@ export function formatProviderProxySetContainResult(result: ProviderProxySetCont
         formatProviderProxySetClaimDischarge(result.claimDischarge),
         'Next step: run coral-cli backend status and verify the proxy, guardian, reaper, and provider processes externally.',
       ].join('\n');
+    case 'unattributable-group-abandoned':
+      return [
+        `Provider proxy set ${token} was abandoned after its recorded process group became unattributable.`,
+        'Observed: the recorded leader identity is gone.',
+        'Not observed: absence of the process group or proof that its numeric group id still belongs to this set.',
+        `Effect: ${effect}.`,
+        formatProviderProxySetClaimDischarge(result.claimDischarge),
+        'Next step: run coral-cli backend status and verify the proxy and provider processes externally.',
+      ].join('\n');
     case 'set-not-found':
       return [
         `Provider proxy set ${token} is not represented by this coordinator.`,
@@ -134,6 +146,14 @@ export function formatProviderProxySetContainResult(result: ProviderProxySetCont
         'Not observed: absence of both enforcers or of the recorded containment.',
         `Effect: ${effect}.`,
         `Next step: restore process observation and run ${retry}; after external verification, the explicit alternative is ${retry} --abandon-without-absence.`,
+      ].join('\n');
+    case 'recorded-group-unattributable':
+      return [
+        `No containment verdict for ${token}: the recorded leader identity is gone, and the process group is alive or unobservable but cannot be proven to belong to this set.`,
+        'Observed: the pid no longer identifies the recorded process-group leader.',
+        'Not observed: absence of the recorded process group or authority to signal its numeric group id.',
+        `Effect: ${effect}.`,
+        `Next step: after external verification, run ${retry} --abandon-without-absence; abandonment releases Coral's representation without asserting absence or signalling the group.`,
       ].join('\n');
     case 'store-unreadable':
       return [

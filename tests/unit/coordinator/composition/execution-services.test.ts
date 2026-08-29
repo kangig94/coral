@@ -945,7 +945,10 @@ describe('execution services provider-proxy proof composition', () => {
       containment: { pid: 900_001, incarnation: testIncarnation(900_001), processGroupId: 900_001 },
       recordedRoots: [],
     }));
-    const reapRecordedContainment = vi.fn(async () => 'closed-control-path-containment-absent');
+    const reapRecordedContainment = vi.fn(async () => ({
+      kind: 'containment-absent' as const,
+      disappearanceReceipt: 'closed-control-path-containment-absent',
+    }));
     const world = {
       identity: { buildSetId: FIXTURE_BUILD_SET_ID },
       storeServicesRef: {

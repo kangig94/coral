@@ -1,4 +1,4 @@
-import type { ProcessLiveness } from '#src/infra/node-process.js';
+import type { ProcessIncarnation, ProcessLiveness } from '#src/infra/node-process.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -28,15 +28,23 @@ type FakeState = {
 
 function createFakeEnvironment(
   state: FakeState,
-  options: { signalCostMs?: number; unreadablePids?: ReadonlySet<number>; groupLiveness?: ProcessLiveness } = {},
+  options: {
+    signalCostMs?: number;
+    unreadablePids?: ReadonlySet<number>;
+    groupLiveness?: ProcessLiveness;
+    leaderIncarnation?: ProcessIncarnation;
+  } = {},
 ): {
   environment: ProcessContainmentEnvironment<typeof containmentClockScope>;
   now: () => number;
+  observedPids: number[];
   signals: Array<{ pid: number; signal: NodeJS.Signals | 0; at: number }>;
 } {
   let elapsedMs = 0;
+  const observedPids: number[] = [];
   const signals: Array<{ pid: number; signal: NodeJS.Signals | 0; at: number }> = [];
   const observeLiveness = (pid: number): ProcessLiveness => {
+    observedPids.push(pid);
     if (pid === -containment.processGroupId) {
       return options.groupLiveness ?? (state.groupAlive ? 'alive' : 'absent');
     }
@@ -54,6 +62,7 @@ function createFakeEnvironment(
 
   return {
     now: () => elapsedMs,
+    observedPids,
     signals,
     environment: {
       clock,
@@ -73,7 +82,9 @@ function createFakeEnvironment(
       maxRecordedRoots: 128,
       readProcessIncarnation: (pid) => {
         if (options.unreadablePids?.has(pid)) return null;
-        if (pid === containment.pid && state.leaderAlive) return containment.incarnation;
+        if (pid === containment.pid && state.leaderAlive) {
+          return options.leaderIncarnation ?? containment.incarnation;
+        }
         if (pid === providerRoot.pid && state.providerRootAlive) return providerRoot.incarnation;
         return null;
       },
@@ -220,6 +231,35 @@ describe('recorded process containment', () => {
     expect(failure).toBeInstanceOf(ProcessContainmentError);
     expect(failure).toMatchObject({ code: 'process_identity_unverified' });
     expect(fake.signals, 'nothing may be signalled on an answer nobody has').toEqual([]);
+  });
+
+  it.each(['alive', 'unknown'] as const)(
+    'returns the named no-verdict when the leader identity is gone and group liveness is %s',
+    async (groupLiveness) => {
+      const fake = createFakeEnvironment(
+        { groupAlive: true, leaderAlive: true, providerRootAlive: false },
+        { groupLiveness, leaderIncarnation: testIncarnation('recycled') },
+      );
+
+      await expect(
+        reapRecordedContainment(containment, [], deadlineAfter(fake.environment, 10_000), fake.environment),
+      ).resolves.toEqual({ kind: 'recorded-group-unattributable' });
+      expect(fake.observedPids).toContain(-containment.processGroupId);
+      expect(fake.signals).toEqual([]);
+    },
+  );
+
+  it('confirms absence after a leader identity mismatch only when the group probe observes absence', async () => {
+    const fake = createFakeEnvironment(
+      { groupAlive: false, leaderAlive: true, providerRootAlive: false },
+      { leaderIncarnation: testIncarnation('recycled') },
+    );
+
+    await expect(
+      reapRecordedContainment(containment, [], deadlineAfter(fake.environment, 10_000), fake.environment),
+    ).resolves.toEqual({ kind: 'containment-absent' });
+    expect(fake.observedPids).toContain(-containment.processGroupId);
+    expect(fake.signals).toEqual([]);
   });
 
   it('rejects provider root 129 before probing or signalling', async () => {

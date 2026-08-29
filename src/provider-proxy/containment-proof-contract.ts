@@ -70,7 +70,7 @@ const recordedContainmentIdentitySchema = z
 /**
  * Validates the read-only containment-evidence boundary. `reap-required` says both independent enforcers were
  * observed absent and carries the exact recorded targets; it does not certify target absence and authorizes no
- * downstream disappearance until a lifecycle-owned reaper returns a receipt.
+ * downstream disappearance unless a lifecycle-owned reaper returns `containment-absent` with a receipt.
  */
 export const providerProxySetContainmentEvidenceSchema = z
   .discriminatedUnion('kind', [
@@ -98,7 +98,7 @@ export type ProviderProxySetContainmentEvidence = z.output<typeof providerProxyS
 
 /**
  * Derives the refusal verdict from the retained role observations. All-absent evidence is rejected because it
- * must continue through recorded-set reaping and return an `absent` receipt instead.
+ * must continue through recorded-set reaping; only its `containment-absent` result carries a receipt.
  */
 export function providerProxySetEnforcerVerdict(
   observations: ProviderProxySetNonAbsentEnforcerObservations,

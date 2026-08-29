@@ -127,7 +127,18 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
     // the set were still adoptable.
     deadlines.latchTeardown();
     try {
-      await reapRecordedContainment(containment, orderedRecordedRoots(), exitDeadline, containmentEnvironment);
+      const outcome = await reapRecordedContainment(
+        containment,
+        orderedRecordedRoots(),
+        exitDeadline,
+        containmentEnvironment,
+      );
+      if (outcome.kind === 'recorded-group-unattributable') {
+        return settle({
+          kind: 'reap-failed',
+          reason: 'The recorded leader identity is gone, but the surviving process group cannot be attributed.',
+        });
+      }
     } catch (error: unknown) {
       return settle({ kind: 'reap-failed', reason: error instanceof Error ? error.message : 'reap failed' });
     }

@@ -215,17 +215,22 @@ export const PROVIDER_PROXY_SET_CONTAIN_EXIT_CODES: Readonly<
 > = {
   contained: 0,
   abandoned: 0,
+  'unattributable-group-abandoned': 0,
   'set-not-found': 1,
   'not-held': 1,
   'deadline-pending': 75,
   'authorization-stale': 75,
   'enforcer-alive': 75,
   'enforcer-unobservable': 75,
+  'recorded-group-unattributable': 75,
   'store-unreadable': 75,
 };
 
 function providerProxySetContainExitCode(result: ProviderProxySetContainResponse): 0 | 1 | 75 {
-  if ((result.kind === 'contained' || result.kind === 'abandoned') && result.claimDischarge.kind !== 'completed') {
+  if (
+    (result.kind === 'contained' || result.kind === 'abandoned' || result.kind === 'unattributable-group-abandoned') &&
+    result.claimDischarge.kind !== 'completed'
+  ) {
     return 75;
   }
   return PROVIDER_PROXY_SET_CONTAIN_EXIT_CODES[result.kind];

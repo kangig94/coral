@@ -703,6 +703,7 @@ const EXPECTED_REJECTION_NODE_INVENTORY = [
   'src/coordinator/services/provider-proxy-set/index.ts :: #runContainmentAttempt :: Promise.then(rejected) :: this.#reapRecordedContainment(evidence, abort.signal, () => undefined).then',
   'src/coordinator/services/provider-proxy-set/index.ts :: #runControlReattachmentAttempt :: Promise.then(rejected) :: this.#reapRecordedContainment(evidence, reapAbort.signal, () => undefined).then',
   'src/coordinator/services/provider-proxy-set/index.ts :: completeOperatorExit :: Promise.catch :: slot.authority.initiateControlClose().catch',
+  'src/coordinator/services/provider-proxy-set/index.ts :: completeOperatorExit :: Promise.catch :: slot.authority.initiateControlClose().catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: completeOperatorExit :: catch#1 :: calls=[this.#slots.get, providerProxySetKey] assignments=[]',
   'src/coordinator/services/provider-proxy-set/index.ts :: containmentAbsent :: Promise.catch :: authorityToClose .initiateControlClose() .catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: createInitialDispositionLatch :: Promise.catch :: promise.catch',

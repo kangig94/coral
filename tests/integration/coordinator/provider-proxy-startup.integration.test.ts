@@ -225,7 +225,10 @@ function lifecycleFor(
     controlEstablished: () => undefined,
     time: options.time,
     recoveryDispatcher,
-    reapRecordedContainment: async () => 'exact-v3-proof',
+    reapRecordedContainment: async () => ({
+      kind: 'containment-absent',
+      disappearanceReceipt: 'exact-v3-proof',
+    }),
     reportLifecycle: () => undefined,
   });
   lifecycle.initializeClaimSlots();

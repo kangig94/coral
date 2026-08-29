@@ -122,13 +122,25 @@ The one genuinely same-frame caller is the coordinator-local drain — record in
 `providers/app-server-transport.ts`, reap in `live/provider-hosts/drain.ts`, one process. That is what
 `drain.test.ts` protects, and it is the only one.
 
-### Still open on `main`: a disappearance receipt for a live orphaned group
+### Resolved: a lost leader identity is not group absence
 
-Guardian and reaper both dead while the detached proxy group survives — a real topology, since the proxy
-outlives its parents by design. `enforcerMayStillBeLive` is false, `observeContainment` reads the
-cross-frame mismatch as absence **without ever probing `-processGroupId`**, `confirmAbsence` re-reads the
-same mismatch and agrees, the reap returns cleanly, and a disappearance receipt is minted for a live
-group that nothing will ever signal.
+Guardian and reaper both dead while the detached proxy group survives remains a real topology, since the
+proxy outlives its parents by design. `observeContainment` now probes `-processGroupId` after the recorded
+leader incarnation no longer matches. An absent group remains decisive. An alive group, or one whose
+liveness cannot be observed, returns the typed `recorded-group-unattributable` verdict through absence
+confirmation, recorded-set reaping, and the lifecycle reaper. That verdict authorizes no signal, mints no
+disappearance receipt, and leaves Coral's representation held. The exact-set operator command reports the
+no-verdict and names `--abandon-without-absence` as the honest exit: abandonment releases Coral's
+representation without asserting process absence.
+
+This corrects the branch-history claims in `7f2b5b50` that the operator path always mints a receipt from a
+confirmed reap and in `42f47813` that containment always settles on a disappearance receipt. A reap may now
+settle with no absence verdict; only repeated observation of the group and every recorded root as absent
+mints the receipt.
+
+The residual is deliberate: members of a group whose recorded leader identity was lost can remain stranded.
+Once that identity is gone the numeric group can no longer be proven to belong to the recorded set, and
+signalling the wrong group is worse than leaving those members alive.
 
 ### Shipped: the primitive is now an opaque token
 
@@ -150,20 +162,21 @@ thing the type cannot catch — a module rebuilding an absolute timestamp from `
 Deleted with it: btime parsing and its cache, `HZ` parsing and its cache, the `getconf` subprocess, and
 the `CORAL_DISCOVERY_PROBE_CLK_TCK` environment variable with its row in `docs/configuration.md`.
 
-### Why the primitive was the answer, and the question dissolved
+### Why the primitive was necessary, and why it was not sufficient
 
-`observeContainment` (`infra/process-containment.ts`) reads a mismatch as absence, and **for its
-original caller that is correct**: the reaper recorded the value itself, so a disagreement really does
-prove the recorded leader is gone. The same function is also reached by a successor coordinator that
-recorded nothing, and for that caller the identical inference is unsound.
+`observeContainment` (`infra/process-containment.ts`) can soundly read an incarnation mismatch as proof that
+the recorded leader is gone. It cannot extend that proof to a detached process group whose members are
+allowed to outlive the leader. Recording confers authority over the identity while it still matches; it does
+not confer permanent authority over a recycled numeric group id.
 
-Widening its result to `present | absent | unverifiable` was tried and reverted. It fails closed
-everywhere by construction — both decisions are positive matches — but it also destroys the sound
-conclusion the recorder is entitled to, and the coordinator-local recycled-group case regressed from a
-clean reap into a hard error.
+An earlier `present | absent | unverifiable` widening was reverted because it made every mismatch a hard
+failure without asking the separate group-liveness question. The current shape keeps the decisive case: after
+a mismatch it probes the group, returns `absent` when the group is observed absent, and returns
+`recorded-group-unattributable` for observed life or an unanswered probe. The third answer preserves the
+no-wrong-signal constraint without certifying a surviving group absent.
 
-The question "how does a non-recorder prove absence?" presupposes that recording confers epistemic
-privilege. It does not — **sharing a frame does**, and the recorder merely shares a frame with itself.
+Sharing a frame still matters for comparing process identities. It does not turn leader disappearance into
+group disappearance.
 
 Replace `processStartedAtSeconds` with an opaque, equality-only `ProcessIncarnation`: on Linux
 `boot_id:startTicks`, with no clock term, no `HZ` division and no `Math.floor`; on macOS and Windows the
@@ -171,9 +184,9 @@ kernel-stored creation stamps those platforms already expose. `startTicks` alone
 reboot a durable `pid=1234, ticks=500` can genuinely match a fresh low-pid process, a false _match_ at
 exactly the pids reused earliest in boot. `boot_id` closes that structurally.
 
-Then every site above becomes sound at once, `src/coordinator/services/provider-proxy-set/inheritance.ts` becomes a real cross-check, and the
-`enforcerMayStillBeLive` softening shipped alongside this entry can be deleted in favour of the stronger
-comparison it replaced.
+Then every identity-comparison site above becomes sound, and
+`src/coordinator/services/provider-proxy-set/inheritance.ts` becomes a real cross-check. The separate
+leader-versus-group disposition remains necessary even with an opaque incarnation.
 
 **The build gate makes the wire half atomic.** `assertNamedCoordinatorBuild` (`src/provider-proxy/protocol.ts`) requires
 `buildSetId` equality and gates handoff-redeem on guardian, proxy and reaper, so a new build can never

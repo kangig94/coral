@@ -71,6 +71,18 @@ const containCommandCases: readonly ContainCommandCase[] = [
     message: 'was abandoned without absence proof',
   },
   {
+    name: 'unattributable group abandoned',
+    result: {
+      kind: 'unattributable-group-abandoned',
+      setIdentity: address,
+      claimDischarge: { kind: 'completed' },
+      effect: abandonedEffect,
+    },
+    exitCode: 0,
+    stream: 'stdout',
+    message: 'was abandoned after its recorded process group became unattributable',
+  },
+  {
     name: 'set-not-found',
     result: { kind: 'set-not-found', setIdentity: address, effect: noEffect },
     exitCode: 1,
@@ -116,6 +128,17 @@ const containCommandCases: readonly ContainCommandCase[] = [
     exitCode: 75,
     stream: 'stderr',
     message: 'an enforcer was observed alive',
+  },
+  {
+    name: 'recorded group unattributable',
+    result: {
+      kind: 'recorded-group-unattributable',
+      setIdentity: address,
+      effect: noEffect,
+    },
+    exitCode: 75,
+    stream: 'stderr',
+    message: 'the recorded leader identity is gone',
   },
   {
     name: 'enforcer-unobservable',
@@ -311,6 +334,19 @@ describe('backend provider-proxy-set contain', () => {
     expect(output.stderr).toContain('SIGTERM was sent');
     expect(output.stderr).toContain('recorded-containment absence was not confirmed');
     expect(output.stderr).toContain('Coral did not start representation release');
+    expect(process.exitCode).toBe(75);
+  });
+
+  it('names abandonment as the exit from an unattributable recorded-group hold', async () => {
+    const output = await runContain({
+      kind: 'recorded-group-unattributable',
+      setIdentity: address,
+      effect: noEffect,
+    });
+
+    expect(output.stderr).toContain('cannot be proven to belong to this set');
+    expect(output.stderr).toContain('--abandon-without-absence');
+    expect(output.stderr).toContain("releases Coral's representation without asserting absence");
     expect(process.exitCode).toBe(75);
   });
 

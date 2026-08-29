@@ -345,9 +345,13 @@ function classifyFulfillment(
       typeof value !== 'object' ||
       value === null ||
       !('kind' in value) ||
-      !['inherited', 'containment-disappeared', 'not-bequeathed', 'temporarily-unavailable'].includes(
-        String(value.kind),
-      )
+      ![
+        'inherited',
+        'containment-disappeared',
+        'recorded-group-unattributable',
+        'not-bequeathed',
+        'temporarily-unavailable',
+      ].includes(String(value.kind))
     ) {
       return unknown(producerId, new Error('provider_proxy_set_inheritance_contract_violation'));
     }

@@ -169,6 +169,12 @@ export function createExecutionServices({
           kind: 'absence-accepted',
           acceptance: providerProxyLifecycle.containmentAbsent(work.identity, outcome.disappearanceReceipt),
         };
+      case 'recorded-group-unattributable':
+        return {
+          kind: 'retry-scheduled',
+          reason: 'The recorded leader identity is gone, but the surviving process group cannot be attributed.',
+          nextAttemptAtMs: runtime.time.now() + 25,
+        };
       case 'not-bequeathed':
         return {
           kind: 'retry-scheduled',
@@ -206,6 +212,11 @@ export function createExecutionServices({
           return {
             kind: 'temporarily-unavailable',
             reason: providerProxySetAvailabilityReason(outcome.incident),
+          };
+        case 'recorded-group-unattributable':
+          return {
+            kind: 'temporarily-unavailable',
+            reason: 'The recorded leader identity is gone, but the surviving process group cannot be attributed.',
           };
         case 'containment-disappeared':
           providerProxyLifecycle.containmentAbsent(

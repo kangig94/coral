@@ -37,6 +37,7 @@ import {
 import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set/claim-mirror.js';
 import { createProviderProxySetContainmentProver } from '#src/coordinator/services/provider-proxy-set/containment-proof.js';
 import {
+  createProviderProxySetRecordedContainmentReaper,
   ProviderProxySetLifecycle,
   type CapsuleRetirementAttemptOutcome,
   type ProviderProxySetLifecycleDeps,
@@ -98,8 +99,11 @@ function containmentEvidence(receipt: string): ProviderProxySetContainmentEviden
     recordedRoots: [],
   };
 }
-const reapContainmentEvidence: ProviderProxySetRecordedContainmentReaper = async (evidence) =>
-  containmentEvidenceReceipts.get(evidence.containment.incarnation) ?? 'fixture-containment-absence';
+const reapContainmentEvidence: ProviderProxySetRecordedContainmentReaper = async (evidence) => ({
+  kind: 'containment-absent',
+  disappearanceReceipt:
+    containmentEvidenceReceipts.get(evidence.containment.incarnation) ?? 'fixture-containment-absence',
+});
 const noOperatorExitEffect = {
   signalsSent: [] as const,
   containmentAbsent: false,
@@ -2327,7 +2331,10 @@ describe('ProviderProxySetLifecycle', () => {
     const db = containmentProofDatabase(record);
     const identity = providerProxySetIdentityFromRecord(record);
     const process = containmentProofRuntime(identity, observations);
-    const reapRecordedContainment = vi.fn<ProviderProxySetRecordedContainmentReaper>(async () => 'must-not-reap');
+    const reapRecordedContainment = vi.fn<ProviderProxySetRecordedContainmentReaper>(async () => ({
+      kind: 'containment-absent',
+      disappearanceReceipt: 'must-not-reap',
+    }));
     const harness = await authorizedOperatorExitForProof(record, reapRecordedContainment);
 
     try {
@@ -2358,7 +2365,10 @@ describe('ProviderProxySetLifecycle', () => {
       async (evidence, _signal, onSignal) => {
         reapedTargets.push(-evidence.containment.processGroupId, ...evidence.recordedRoots.map(({ pid }) => pid));
         onSignal('SIGTERM');
-        return 'real-proof-recorded-containment-absent';
+        return {
+          kind: 'containment-absent',
+          disappearanceReceipt: 'real-proof-recorded-containment-absent',
+        };
       },
     );
     const harness = await authorizedOperatorExitForProof(record, reapRecordedContainment);
@@ -2398,6 +2408,80 @@ describe('ProviderProxySetLifecycle', () => {
     }
   });
 
+  it('does not mint a lifecycle receipt for an unattributable recorded group', async () => {
+    const base = createRealRuntime('prod');
+    const recordedIncarnation = testIncarnation('recorded-leader');
+    const observeLiveness = vi.fn((pid: number): ProcessLiveness => (pid < 0 ? 'alive' : 'absent'));
+    const kill = vi.fn(() => true);
+    const reaper = createProviderProxySetRecordedContainmentReaper({
+      ...base,
+      process: {
+        ...base.process,
+        observeLiveness,
+        kill,
+        readProcessIncarnation: () => testIncarnation('replacement-leader'),
+      },
+    });
+
+    await expect(
+      reaper(
+        {
+          kind: 'reap-required',
+          containment: { pid: 9_100, incarnation: recordedIncarnation, processGroupId: 9_100 },
+          recordedRoots: [],
+        },
+        new AbortController().signal,
+        () => undefined,
+      ),
+    ).resolves.toEqual({ kind: 'recorded-group-unattributable' });
+
+    expect(observeLiveness).toHaveBeenCalledWith(-9_100);
+    expect(kill).not.toHaveBeenCalled();
+  });
+
+  it('keeps the operator hold when the recorded leader is gone but its group is unattributable', async () => {
+    const record = providerOperationRecord('executing');
+    const reapRecordedContainment = vi.fn<ProviderProxySetRecordedContainmentReaper>(async () => ({
+      kind: 'recorded-group-unattributable',
+    }));
+    const harness = await authorizedOperatorExitForProof(record, reapRecordedContainment);
+    const setIdentity = providerProxySetAddress(providerProxySetIdentityFromRecord(record));
+    const evidence = containmentEvidence('must-not-be-minted');
+
+    await expect(harness.lifecycle.completeOperatorExit(harness.capability, evidence, false)).resolves.toEqual({
+      kind: 'recorded-group-unattributable',
+      setIdentity,
+      effect: noOperatorExitEffect,
+    });
+
+    expect(harness.lifecycle.snapshot()).toEqual(
+      expect.objectContaining({
+        represented: 1,
+        operatorDispositions: expect.arrayContaining([
+          expect.objectContaining({
+            incidentReason: 'operator_exit_recorded_group_unattributable',
+            waitingFor: 'operator-abandonment',
+          }),
+        ]),
+      }),
+    );
+    expect(harness.stopAndReap).not.toHaveBeenCalled();
+
+    await expect(harness.lifecycle.completeOperatorExit(harness.capability, evidence, true)).resolves.toEqual(
+      expect.objectContaining({
+        kind: 'unattributable-group-abandoned',
+        setIdentity,
+        claimDischarge: { kind: 'completed' },
+        effect: {
+          signalsSent: [],
+          containmentAbsent: false,
+          representationAction: 'abandonment-release-started',
+        },
+      }),
+    );
+    expect(harness.stopAndReap).not.toHaveBeenCalled();
+  });
+
   it('fences an attributable unreadable row before observation or recorded-containment reaping', async () => {
     const record = providerOperationRecord('executing');
     const db = containmentProofDatabase(record);
@@ -2407,7 +2491,10 @@ describe('ProviderProxySetLifecycle', () => {
       `${record.operation.proxyInstanceId}:${record.operation.buildSetId}`;
     db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)').run(unreadableKey, 'not-json');
     const process = containmentProofRuntime(identity, { guardian: 'absent', reaper: 'absent' });
-    const reapRecordedContainment = vi.fn<ProviderProxySetRecordedContainmentReaper>(async () => 'must-not-reap');
+    const reapRecordedContainment = vi.fn<ProviderProxySetRecordedContainmentReaper>(async () => ({
+      kind: 'containment-absent',
+      disappearanceReceipt: 'must-not-reap',
+    }));
     const harness = await authorizedOperatorExitForProof(record, reapRecordedContainment);
 
     try {
@@ -2498,7 +2585,7 @@ describe('ProviderProxySetLifecycle', () => {
         onSignal('SIGTERM');
         clock.runDue();
         assertSignalAuthorized?.();
-        return 'must-not-complete';
+        return { kind: 'containment-absent', disappearanceReceipt: 'must-not-complete' };
       },
     );
     const lifecycle = lifecycleFor({
