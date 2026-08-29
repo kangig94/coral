@@ -112,8 +112,7 @@ deliberately killed by a policy acting on the wedge.
 It removes routing and opens a bounded authenticated-reattachment hold while keeping durable claims attached;
 refusal or expiry waits for independent containment absence and cannot start `stop-and-reap`. Once both
 enforcers are proven absent, the independent proof still reaps the orphaned proxy group. The log above
-records the shipped defect rather than current branch behavior. See
-[`control-channel-eof-is-not-process-absence.md`](./control-channel-eof-is-not-process-absence.md).
+records the shipped defect rather than current branch behavior.
 
 **Corrected 2026-08-24: the deadline that fires is not the lease.** This entry first named
 `PROXY_CONTROL_LEASE_MS`, 12,000 ms. The log says otherwise — what breaks first is the heartbeat RPC's own
